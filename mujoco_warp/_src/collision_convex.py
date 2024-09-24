@@ -17,27 +17,28 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_gjk import ccd
-from .collision_gjk import multicontact
-from .collision_gjk import support
-from .collision_primitive import Geom
-from .collision_primitive import contact_params
-from .collision_primitive import geom_collision_pair
-from .collision_primitive import write_contact
-from .math import make_frame
-from .math import upper_trid_index
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
-from .types import MJ_MAXCONPAIR
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import mat43
-from .types import mat63
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_primitive import contact_params
+from mujoco_warp._src.collision_primitive import geom_collision_pair
+from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAX_EPAFACES
+from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -120,7 +121,7 @@ def _hfield_filter(
   r2 = geom_rbound[rbound_id, g2]
 
   # TODO(team): margin?
-  margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
+  margin = geom_margin[margin_id, g1] + geom_margin[margin_id, g2]
 
   # box-sphere test: horizontal plane
   for i in range(2):
@@ -230,7 +231,6 @@ def ccd_hfield_kernel_builder(
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -375,7 +375,6 @@ def ccd_hfield_kernel_builder(
     geom2.margin = margin
 
     # EPA memory
-    epa_vert = epa_vert_in[tid]
     epa_vert1 = epa_vert1_in[tid]
     epa_vert2 = epa_vert2_in[tid]
     epa_vert_index1 = epa_vert_index1_in[tid]
@@ -457,7 +456,6 @@ def ccd_hfield_kernel_builder(
             geomtype2,
             x1,
             geom2.pos,
-            epa_vert,
             epa_vert1,
             epa_vert2,
             epa_vert_index1,
@@ -717,7 +715,6 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -790,7 +787,6 @@ def ccd_kernel_builder(
       geomtype2,
       x1,
       x2,
-      epa_vert_in[tid],
       epa_vert1_in[tid],
       epa_vert2_in[tid],
       epa_vert_index1_in[tid],
@@ -932,7 +928,6 @@ def ccd_kernel_builder(
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -1031,7 +1026,6 @@ def ccd_kernel_builder(
       opt_ccd_tolerance,
       geom_type,
       naconmax_in,
-      epa_vert_in,
       epa_vert1_in,
       epa_vert2_in,
       epa_vert_index1_in,
@@ -1142,12 +1136,10 @@ def convex_narrowphase(m: Model, d: Data):
   epa_iterations = m.opt.ccd_iterations
 
   # set to true to enable multiccd
-  use_multiccd = False
+  use_multiccd = m.opt.enableflags & EnableBit.MULTICCD
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
   nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
-  # epa_vert: vertices in EPA polytope in Minkowski space
-  epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
   # epa_vert1: vertices in EPA polytope in geom 1 space
   epa_vert1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
   # epa_vert2: vertices in EPA polytope in geom 2 space
@@ -1163,7 +1155,7 @@ def convex_narrowphase(m: Model, d: Data):
   # epa_norm2: epa_pr * epa_pr
   epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
   # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+  epa_horizon = wp.empty(shape=(d.naconmax, MJ_MAX_EPAHORIZON), dtype=int)
 
   # Contact outputs
   contact_outputs = [
@@ -1238,7 +1230,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
@@ -1324,7 +1315,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,

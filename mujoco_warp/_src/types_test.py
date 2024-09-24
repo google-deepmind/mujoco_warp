@@ -22,9 +22,9 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
-from .types import Data
-from .types import Model
-from .types import Option
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import Option
 
 
 class TypesTest(parameterized.TestCase):
