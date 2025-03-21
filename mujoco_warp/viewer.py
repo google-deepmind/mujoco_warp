@@ -38,6 +38,7 @@ _ENGINE = flags.DEFINE_enum("engine", "mjwarp", ["mjwarp", "mjc"], "Simulation e
 _LS_PARALLEL = flags.DEFINE_bool(
   "ls_parallel", False, "Engine solver with parallel linesearch"
 )
+_ISLAND = flags.DEFINE_bool("island", True, "Engine island routines")
 _VIEWER_GLOBAL_STATE = {
   "running": True,
   "step_once": False,
@@ -69,7 +70,7 @@ def _main(argv: Sequence[str]) -> None:
     print("Engine: MuJoCo C")
   else:  # mjwarp
     print("Engine: MuJoCo Warp")
-    m = mjwarp.put_model(mjm)
+    m = mjwarp.put_model(mjm, island=_ISLAND.value)
     m.opt.ls_parallel = _LS_PARALLEL.value
     d = mjwarp.put_data(mjm, mjd)
 

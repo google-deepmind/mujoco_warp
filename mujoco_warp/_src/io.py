@@ -21,7 +21,7 @@ from . import support
 from . import types
 
 
-def put_model(mjm: mujoco.MjModel) -> types.Model:
+def put_model(mjm: mujoco.MjModel, island: bool = True) -> types.Model:
   if mjm.neq > 0:
     raise NotImplementedError("Equality constraints are unsupported.")
 
@@ -161,6 +161,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     qLD_tileadr = np.cumsum(tile_off)[:-1]
     qLD_tilesize = np.array(sorted(tiles.keys()))
 
+    if not island:
+      qLD_tile = np.array([0])
+      qLD_tileadr = np.array([0])
+      qLD_tilesize = np.array([mjm.nv])
+
   # tiles for actuator_moment - needs nu + nv tile size and offset
   actuator_moment_offset_nv = np.empty(shape=(0,), dtype=int)
   actuator_moment_offset_nu = np.empty(shape=(0,), dtype=int)
@@ -202,6 +207,13 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_moment_tilesize_nu = np.array(
       [int(a[1]) for a in sorted_keys]
     )  # for this level
+
+    if not island:
+      actuator_moment_offset_nv = np.array([0])
+      actuator_moment_offset_nu = np.array([0])
+      actuator_moment_tileadr = np.array([0])
+      actuator_moment_tilesize_nv = np.array([mjm.nv])
+      actuator_moment_tilesize_nu = np.array([mjm.nu])
 
   m.qM_fullm_i = wp.array(qM_fullm_i, dtype=wp.int32, ndim=1)
   m.qM_fullm_j = wp.array(qM_fullm_j, dtype=wp.int32, ndim=1)
