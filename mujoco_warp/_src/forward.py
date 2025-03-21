@@ -627,9 +627,7 @@ def fwd_actuation(m: Model, d: Data):
     for i in range(len(qderiv_tileadr)):
       beg = qderiv_tileadr[i]
       end = (
-        m.actuator_moment_tileadr.shape[0]
-        if i == len(qderiv_tileadr) - 1
-        else qderiv_tileadr[i + 1]
+        m.qLD_tile.shape[0] if i == len(qderiv_tileadr) - 1 else qderiv_tileadr[i + 1]
       )
       if qderiv_tilesize_nu[i] != 0 and qderiv_tilesize_nv[i] != 0:
         qfrc_actuator(
