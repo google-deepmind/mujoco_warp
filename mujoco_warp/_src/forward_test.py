@@ -44,6 +44,7 @@ class ForwardTest(absltest.TestCase):
     mjm.opt.jacobian = is_sparse
     mjd = mujoco.MjData(mjm)
     mujoco.mj_resetDataKeyframe(mjm, mjd, 1)  # reset to stand_on_left_leg
+    np.random.seed(42)
     mjd.qvel = np.random.uniform(low=-0.01, high=0.01, size=mjd.qvel.shape)
     mjd.ctrl = np.random.normal(scale=1, size=mjd.ctrl.shape)
     mujoco.mj_forward(mjm, mjd)
