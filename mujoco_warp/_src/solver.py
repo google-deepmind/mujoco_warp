@@ -86,7 +86,7 @@ def _update_constraint(m: types.Model, d: types.Data):
     d.efc.gauss[worldid] = 0.0
 
   @kernel
-  def _efc_kernel(d: types.Data):
+  def _efc(d: types.Data, dsbl_floss: bool):
     efcid = wp.tid()
 
     if efcid >= d.nefc[0]:
@@ -101,18 +101,31 @@ def _update_constraint(m: types.Model, d: types.Data):
     Jaref = d.efc.Jaref[efcid]
     efc_D = d.efc.D[efcid]
 
-    # TODO(team): active and conditionally active constraints
-    active = int(Jaref < 0.0)
-    d.efc.active[efcid] = active
+    active = (Jaref < 0.0) or (efcid < d.ne[0] + d.nf[0])
 
-    if active:
-      # efc_force = -efc_D * Jaref * active
-      d.efc.force[efcid] = -1.0 * efc_D * Jaref
+    # cost = 0.5 * sum(efc_D * Jaref * Jaref * active)
+    cost = 0.5 * efc_D * Jaref * Jaref
 
-      # cost = 0.5 * sum(efc_D * Jaref * Jaref * active))
-      wp.atomic_add(d.efc.cost, worldid, 0.5 * efc_D * Jaref * Jaref)
+    # efc_force = -efc_D * Jaref * active
+    efc_force = -1.0 * efc_D * Jaref
+
+    if wp.static(m.dof_frictionloss_adr.size) > 0 and (not dsbl_floss):
+      f = d.efc.frictionloss[efcid]
+      r = _safe_div(1.0, d.efc.D[efcid])
+      linear_neg = (Jaref <= -r * f) and (f > 0.0)
+      linear_pos = (Jaref >= r * f) and (f > 0.0)
+      active = active and (not linear_neg) and (not linear_pos)
+
+      floss_force = float(linear_neg) * f + float(linear_pos) * -f
+      floss_cost = float(linear_neg) * (-0.5 * r * f * f - f * Jaref)
+      floss_cost += float(linear_pos) * (-0.5 * r * f * f + f * Jaref)
     else:
-      d.efc.force[efcid] = 0.0
+      floss_cost = 0.0
+      floss_force = 0.0
+
+    d.efc.active[efcid] = int(active)
+    d.efc.force[efcid] = float(active) * efc_force + floss_force
+    wp.atomic_add(d.efc.cost, worldid, float(active) * cost + floss_cost)
 
   @kernel
   def _zero_qfrc_constraint(d: types.Data):
@@ -161,7 +174,8 @@ def _update_constraint(m: types.Model, d: types.Data):
 
   wp.launch(_init_cost, dim=(d.nworld), inputs=[d])
 
-  wp.launch(_efc_kernel, dim=(d.njmax,), inputs=[d])
+  dsbl_floss = m.opt.disableflags & types.DisableBit.FRICTIONLOSS
+  wp.launch(_efc, dim=(d.njmax,), inputs=[d, dsbl_floss])
 
   # qfrc_constraint = efc_J.T @ efc_force
   wp.launch(_zero_qfrc_constraint, dim=(d.nworld, m.nv), inputs=[d])
@@ -332,12 +346,34 @@ def _eval_pt(quad: wp.vec3, alpha: wp.float32) -> wp.vec3:
 
 
 @wp.func
+def _quad_floss(
+  quad: wp.vec3, floss: float, efc_D: float, Jaref: float, jv: float
+) -> wp.vec3:
+  r = _safe_div(1.0, efc_D)
+  rf = r * floss
+  linear_neg = Jaref <= -rf
+  linear_pos = Jaref >= rf
+  quadfloss = wp.vec3(
+    float(linear_neg) * floss * (-0.5 * rf - Jaref)
+    + float(linear_pos) * floss * (-0.5 * rf + Jaref),
+    float(linear_neg) * -floss * jv + float(linear_pos) * floss * jv,
+    0.0,
+  )
+
+  if (linear_neg or linear_pos) and (floss > 0.0):
+    return quadfloss
+  else:
+    return quad
+
+
+@wp.func
 def _safe_div(x: wp.float32, y: wp.float32) -> wp.float32:
   return x / wp.where(y != 0.0, y, types.MJ_MINVAL)
 
 
 def _linesearch_iterative(m: types.Model, d: types.Data):
   ITERATIONS = m.opt.iterations
+  dsbl_floss = m.opt.disableflags & types.DisableBit.FRICTIONLOSS
 
   @kernel
   def _gtol(m: types.Model, d: types.Data):
@@ -364,7 +400,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     p0[worldid] = wp.vec3(quad[0], quad[1], 2.0 * quad[2])
 
   @kernel
-  def _init_p0(p0: wp.array(dtype=wp.vec3), d: types.Data):
+  def _init_p0(p0: wp.array(dtype=wp.vec3), d: types.Data, dsbl_floss: bool):
     efcid = wp.tid()
 
     if efcid >= d.nefc[0]:
@@ -376,11 +412,18 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
       if d.efc.done[worldid]:
         return
 
-    # TODO(team): active and conditionally active constraints:
-    if d.efc.Jaref[efcid] >= 0.0:
+    Jaref = d.efc.Jaref[efcid]
+    if (Jaref >= 0.0) and (efcid >= d.ne[0] + d.nf[0]):
       return
 
     quad = d.efc.quad[efcid]
+    jv = d.efc.jv[efcid]
+
+    if wp.static(m.dof_frictionloss_adr.size) > 0 and (not dsbl_floss):
+      floss = d.efc.frictionloss[efcid]
+      efc_D = d.efc.D[efcid]
+      quad = _quad_floss(quad, floss, efc_D, Jaref, jv)
+
     wp.atomic_add(p0, worldid, wp.vec3(quad[0], quad[1], 2.0 * quad[2]))
 
   @kernel
@@ -406,6 +449,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     lo: wp.array(dtype=wp.vec3),
     lo_alpha: wp.array(dtype=wp.float32),
     d: types.Data,
+    dsbl_floss: bool,
   ):
     efcid = wp.tid()
 
@@ -420,9 +464,17 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
     alpha = lo_alpha[worldid]
 
-    # TODO(team): active and conditionally active constraints
-    if d.efc.Jaref[efcid] + alpha * d.efc.jv[efcid] < 0.0:
-      wp.atomic_add(lo, worldid, _eval_pt(d.efc.quad[efcid], alpha))
+    quad = d.efc.quad[efcid]
+    Jaref = d.efc.Jaref[efcid]
+    jv = d.efc.jv[efcid]
+
+    if wp.static(m.dof_frictionloss_adr.size) > 0 and (not dsbl_floss):
+      floss = d.efc.frictionloss[efcid]
+      efc_D = d.efc.D[efcid]
+      quad = _quad_floss(quad, floss, efc_D, Jaref, jv)
+
+    if (Jaref + alpha * jv < 0.0) or (efcid < d.ne[0] + d.nf[0]):
+      wp.atomic_add(lo, worldid, _eval_pt(quad, alpha))
 
   @kernel
   def _init_bounds(
@@ -500,6 +552,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     mid: wp.array(dtype=wp.vec3),
     mid_alpha: wp.array(dtype=wp.float32),
     d: types.Data,
+    dsbl_floss: bool,
   ):
     efcid = wp.tid()
 
@@ -519,19 +572,23 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     jaref = d.efc.Jaref[efcid]
     jv = d.efc.jv[efcid]
 
+    nef_active = efcid < d.ne[0] + d.nf[0]
+
+    if wp.static(m.dof_frictionloss_adr.size) > 0 and (not dsbl_floss):
+      floss = d.efc.frictionloss[efcid]
+      efc_D = d.efc.D[efcid]
+      quad = _quad_floss(quad, floss, efc_D, jaref, jv)
+
     alpha = lo_next_alpha[worldid]
-    # TODO(team): active and conditionally active constraints
-    if jaref + alpha * jv < 0.0:
+    if (jaref + alpha * jv < 0.0) or nef_active:
       wp.atomic_add(lo_next, worldid, _eval_pt(quad, alpha))
 
     alpha = hi_next_alpha[worldid]
-    # TODO(team): active and conditionally active constraints
-    if jaref + alpha * jv < 0.0:
+    if (jaref + alpha * jv < 0.0) or nef_active:
       wp.atomic_add(hi_next, worldid, _eval_pt(quad, alpha))
 
     alpha = mid_alpha[worldid]
-    # TODO(team): active and conditionally active constraints
-    if jaref + alpha * jv < 0.0:
+    if (jaref + alpha * jv < 0.0) or nef_active:
       wp.atomic_add(mid, worldid, _eval_pt(quad, alpha))
 
   @kernel
@@ -637,11 +694,11 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
   wp.launch(_init_p0_gauss, dim=(d.nworld,), inputs=[p0, d])
 
-  wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d])
+  wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d, dsbl_floss])
 
   wp.launch(_init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d])
 
-  wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d])
+  wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d, dsbl_floss])
 
   # set the lo/hi interval bounds
 
@@ -656,7 +713,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     wp.launch(_next_alpha_gauss, dim=(d.nworld,), inputs=inputs)
 
     inputs = [done, lo_next, lo_next_alpha, hi_next, hi_next_alpha, mid, mid_alpha]
-    inputs += [d]
+    inputs += [d, dsbl_floss]
     wp.launch(_next_quad, dim=(d.njmax,), inputs=inputs)
 
     inputs = [done, p0, lo, lo_alpha, hi, hi_alpha, lo_next, lo_next_alpha, hi_next]
@@ -679,7 +736,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     d.efc.quad_total_candidate[worldid, alphaid] = d.efc.quad_gauss[worldid]
 
   @kernel
-  def _quad_total_candidate(m: types.Model, d: types.Data):
+  def _quad_total_candidate(m: types.Model, d: types.Data, dsbl_floss: bool):
     # TODO(team): static m?
     efcid, alphaid = wp.tid()
 
@@ -692,10 +749,19 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
       if d.efc.done[worldid]:
         return
 
-    x = d.efc.Jaref[efcid] + m.alpha_candidate[alphaid] * d.efc.jv[efcid]
-    # TODO(team): active and conditionally active constraints
-    if x < 0.0:
-      wp.atomic_add(d.efc.quad_total_candidate[worldid], alphaid, d.efc.quad[efcid])
+    Jaref = d.efc.Jaref[efcid]
+    jv = d.efc.jv[efcid]
+    quad = d.efc.quad[efcid]
+
+    if wp.static(m.dof_frictionloss_adr.size) > 0 and (not dsbl_floss):
+      floss = d.efc.frictionloss[efcid]
+      efc_D = d.efc.D[efcid]
+      quad = _quad_floss(quad, floss, efc_D, Jaref, jv)
+
+    alpha = m.alpha_candidate[alphaid]
+
+    if (Jaref + alpha * jv) < 0.0 or (efcid < d.ne[0] + d.nf[0]):
+      wp.atomic_add(d.efc.quad_total_candidate[worldid], alphaid, quad)
 
   @kernel
   def _cost_alpha(m: types.Model, d: types.Data):
@@ -729,7 +795,10 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     d.efc.alpha[worldid] = m.alpha_candidate[bestid]
 
   wp.launch(_quad_total, dim=(d.nworld, m.nlsp), inputs=[m, d])
-  wp.launch(_quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d])
+
+  dsbl_floss = m.opt.disableflags & types.DisableBit.FRICTIONLOSS
+  wp.launch(_quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d, dsbl_floss])
+
   wp.launch(_cost_alpha, dim=(d.nworld, m.nlsp), inputs=[m, d])
   wp.launch(_best_alpha, dim=(d.nworld), inputs=[d])
 

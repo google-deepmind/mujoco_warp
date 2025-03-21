@@ -325,6 +325,33 @@ class SolverTest(parameterized.TestCase):
         "efc_force2",
       )
 
+  def test_frictionloss(self):
+    """Tests solver with frictionloss."""
+    mjm = mujoco.MjModel.from_xml_string(""""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="slide" axis="0 0 1" frictionloss=".2"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="1" qvel="1"/>
+        </keyframe>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+    mjwarp.solve(m, d)
+
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
+    _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
+
 
 if __name__ == "__main__":
   wp.init()

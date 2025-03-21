@@ -304,6 +304,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.dof_Madr = wp.array(mjm.dof_Madr, dtype=wp.int32, ndim=1)
   m.dof_armature = wp.array(mjm.dof_armature, dtype=wp.float32, ndim=1)
   m.dof_damping = wp.array(mjm.dof_damping, dtype=wp.float32, ndim=1)
+  m.dof_frictionloss = wp.array(mjm.dof_frictionloss, dtype=wp.float32, ndim=1)
+  m.dof_frictionloss_adr = wp.array(
+    np.nonzero(mjm.dof_frictionloss > 0.0)[0], dtype=wp.int32, ndim=1
+  )
+  m.dof_solimp = wp.array(mjm.dof_solimp, dtype=types.vec5, ndim=1)
+  m.dof_solref = wp.array(mjm.dof_solref, dtype=wp.vec2, ndim=1)
   m.dof_tri_row = wp.from_numpy(dof_tri_row, dtype=wp.int32)
   m.dof_tri_col = wp.from_numpy(dof_tri_col, dtype=wp.int32)
   m.dof_invweight0 = wp.array(mjm.dof_invweight0, dtype=wp.float32, ndim=1)
@@ -341,6 +347,7 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
   efc.D = wp.zeros((njmax,), dtype=wp.float32)
   efc.pos = wp.zeros((njmax,), dtype=wp.float32)
   efc.aref = wp.zeros((njmax,), dtype=wp.float32)
+  efc.frictionloss = wp.zeros((njmax,), dtype=wp.float32)
   efc.force = wp.zeros((njmax,), dtype=wp.float32)
   efc.margin = wp.zeros((njmax,), dtype=wp.float32)
   efc.worldid = wp.zeros((njmax,), dtype=wp.int32)
@@ -410,7 +417,10 @@ def make_data(
 
   d.ncon = wp.zeros(1, dtype=wp.int32)
   d.nefc = wp.zeros(1, dtype=wp.int32, ndim=1)
-  d.nl = 0
+  d.ne = wp.zeros(1, dtype=wp.int32)
+  d.nf = wp.zeros(1, dtype=wp.int32)
+  d.nl = wp.zeros(1, dtype=wp.int32)
+
   d.time = 0.0
 
   qpos0 = np.tile(mjm.qpos0, (nworld, 1))
@@ -530,7 +540,9 @@ def put_data(
     raise ValueError("nworld * nefc > njmax")
 
   d.ncon = wp.array([mjd.ncon * nworld], dtype=wp.int32, ndim=1)
-  d.nl = mjd.nl
+  d.ne = wp.array([mjd.ne * nworld], dtype=wp.int32, ndim=1)
+  d.nf = wp.array([mjd.nf * nworld], dtype=wp.int32, ndim=1)
+  d.nl = wp.array([mjd.nl * nworld], dtype=wp.int32, ndim=1)
   d.nefc = wp.array([mjd.nefc * nworld], dtype=wp.int32, ndim=1)
   d.time = mjd.time
 
@@ -624,6 +636,9 @@ def put_data(
   efc_aref_fill = np.concatenate(
     [np.repeat(mjd.efc_aref, nworld, axis=0), np.zeros(nefc_fill)]
   )
+  efc_frictionloss_fill = np.concatenate(
+    [np.repeat(mjd.efc_frictionloss, nworld, axis=0), np.zeros(nefc_fill)]
+  )
   efc_force_fill = np.concatenate(
     [np.repeat(mjd.efc_force, nworld, axis=0), np.zeros(nefc_fill)]
   )
@@ -693,6 +708,7 @@ def put_data(
   d.efc.D = wp.array(efc_D_fill, dtype=wp.float32, ndim=1)
   d.efc.pos = wp.array(efc_pos_fill, dtype=wp.float32, ndim=1)
   d.efc.aref = wp.array(efc_aref_fill, dtype=wp.float32, ndim=1)
+  d.efc.frictionloss = wp.array(efc_frictionloss_fill, dtype=wp.float32, ndim=1)
   d.efc.force = wp.array(efc_force_fill, dtype=wp.float32, ndim=1)
   d.efc.margin = wp.array(efc_margin_fill, dtype=wp.float32, ndim=1)
   d.efc.worldid = wp.from_numpy(efc_worldid, dtype=wp.int32)

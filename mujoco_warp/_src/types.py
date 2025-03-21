@@ -29,6 +29,7 @@ class DisableBit(enum.IntFlag):
 
   Members:
     CONSTRAINT:   entire constraint solver
+    FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
     PASSIVE:      passive forces
@@ -41,6 +42,7 @@ class DisableBit(enum.IntFlag):
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
+  FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
   PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
@@ -50,7 +52,7 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
-  # unsupported: EQUALITY, FRICTIONLOSS, MIDPHASE, WARMSTART, SENSOR
+  # unsupported: EQUALITY, MIDPHASE, WARMSTART, SENSOR
 
 
 class TrnType(enum.IntEnum):
@@ -272,6 +274,7 @@ class Constraint:
     margin: inclusion margin (contact)                (njmax,)
     D: constraint mass                                (njmax,)
     aref: reference pseudo-acceleration               (njmax,)
+    frictionloss: frictionloss (friction)             (njmax,)
     force: constraint force in constraint space       (njmax,)
     Jaref: Jac*qacc - aref                            (njmax,)
     Ma: M*qacc                                        (nworld, nv)
@@ -320,6 +323,7 @@ class Constraint:
   margin: wp.array(dtype=wp.float32, ndim=1)
   D: wp.array(dtype=wp.float32, ndim=1)
   aref: wp.array(dtype=wp.float32, ndim=1)
+  frictionloss: wp.array(dtype=wp.float32, ndim=1)
   force: wp.array(dtype=wp.float32, ndim=1)
   Jaref: wp.array(dtype=wp.float32, ndim=1)
   Ma: wp.array(dtype=wp.float32, ndim=2)
@@ -444,6 +448,10 @@ class Model:
     dof_armature: dof armature inertia/mass                  (nv,)
     dof_damping: damping coefficient                         (nv,)
     dof_invweight0: diag. inverse inertia in qpos0           (nv,)
+    dof_frictionloss: dof friction loss                      (nv,)
+    dof_frictionloss_adr: address for active friction loss   (nv,)
+    dof_solimp: constraint solver impedance: frictionloss    (nv, NIMP)
+    dof_solref: constraint solver reference: frictionloss    (nv, NREF)
     dof_tri_row: np.tril_indices                             (mjm.nv)[0]
     dof_tri_col: np.tril_indices                             (mjm.nv)[1]
     geom_type: geometric type (mjtGeom)                      (ngeom,)
@@ -566,6 +574,10 @@ class Model:
   dof_armature: wp.array(dtype=wp.float32, ndim=1)
   dof_damping: wp.array(dtype=wp.float32, ndim=1)
   dof_invweight0: wp.array(dtype=wp.float32, ndim=1)
+  dof_frictionloss: wp.array(dtype=wp.float32, ndim=1)
+  dof_frictionloss_adr: wp.array(dtype=wp.int32, ndim=1)
+  dof_solimp: wp.array(dtype=vec5, ndim=1)
+  dof_solref: wp.array(dtype=wp.vec2, ndim=1)
   dof_tri_row: wp.array(dtype=wp.int32, ndim=1)  # warp only
   dof_tri_col: wp.array(dtype=wp.int32, ndim=1)  # warp only
   geom_type: wp.array(dtype=wp.int32, ndim=1)
@@ -651,6 +663,8 @@ class Data:
 
   Attributes:
     ncon: number of detected contacts                           ()
+    ne: number of equality constraints                          ()
+    nf: number of friction constraints                          ()
     nl: number of limit constraints                             ()
     nefc: number of constraints                                 (nworld,)
     time: simulation time                                       ()
@@ -725,7 +739,9 @@ class Data:
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
-  nl: int
+  ne: wp.array(dtype=wp.int32, ndim=1)
+  nf: wp.array(dtype=wp.int32, ndim=1)
+  nl: wp.array(dtype=wp.int32, ndim=1)
   nefc: wp.array(dtype=wp.int32, ndim=1)
   time: float
   qpos: wp.array(dtype=wp.float32, ndim=2)
