@@ -18,9 +18,10 @@ import mujoco
 import numpy as np
 from absl.testing import absltest
 from absl.testing import parameterized
-from . import test_util
 
 import mujoco_warp as mjwarp
+
+from . import test_util
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
