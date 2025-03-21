@@ -308,7 +308,7 @@ def get_contact_solver_params_kernel(
 ):
   tid = wp.tid()
 
-  n_contact_pts = d.ncon[0]
+  n_contact_pts = min(d.ncon[0], d.nconmax)
   if tid >= n_contact_pts:
     return
 

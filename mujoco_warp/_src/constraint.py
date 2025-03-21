@@ -149,7 +149,7 @@ def _efc_contact_pyramidal(
 ):
   conid, dimid = wp.tid()
 
-  if conid >= d.ncon[0]:
+  if conid >= min(d.ncon[0], d.nconmax):
     return
 
   if d.contact.dim[conid] != 3:
