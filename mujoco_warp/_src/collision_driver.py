@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+import mujoco
+import numpy as np
 import warp as wp
 
 from .collision_primitive import primitive_narrowphase
@@ -22,6 +24,45 @@ from .types import DisableBit
 from .types import Model
 from .types import vec5
 from .warp_util import event_scope
+
+
+def geom_pair(m: mujoco.MjModel) -> np.array:
+  filterparent = not (m.opt.disableflags & DisableBit.FILTERPARENT.value)
+  exclude_signature = set(m.exclude_signature)
+
+  tri = np.triu_indices(m.ngeom)
+  ntri = tri[0].size
+
+  pairs = []
+  for i in range(ntri):
+    geom1 = tri[0][i]
+    geom2 = tri[1][i]
+
+    bodyid1 = m.geom_bodyid[geom1]
+    bodyid2 = m.geom_bodyid[geom2]
+    contype1 = m.geom_contype[geom1]
+    contype2 = m.geom_contype[geom2]
+    conaffinity1 = m.geom_conaffinity[geom1]
+    conaffinity2 = m.geom_conaffinity[geom2]
+    weldid1 = m.body_weldid[bodyid1]
+    weldid2 = m.body_weldid[bodyid2]
+    weld_parentid1 = m.body_weldid[m.body_parentid[weldid1]]
+    weld_parentid2 = m.body_weldid[m.body_parentid[weldid2]]
+
+    self_collision = weldid1 == weldid2
+    parent_child_collision = (
+      filterparent
+      and (weldid1 != 0)
+      and (weldid2 != 0)
+      and ((weldid1 == weld_parentid2) or (weldid2 == weld_parentid1))
+    )
+    mask = (contype1 & conaffinity2) or (contype2 & conaffinity1)
+    exclude = (bodyid1 << 16) + (bodyid2) in exclude_signature
+
+    if mask and (not self_collision) and (not parent_child_collision) and (not exclude):
+      pairs.append([geom1, geom2])
+
+  return np.array(pairs)
 
 
 @wp.func
@@ -457,25 +498,13 @@ def sap_broadphase(m: Model, d: Data):
 
 def nxn_broadphase(m: Model, d: Data):
   """Broadphase collision detective via brute-force search."""
-  filterparent = not (m.opt.disableflags & DisableBit.FILTERPARENT.value)
 
   @wp.kernel
   def _nxn_broadphase(m: Model, d: Data):
     worldid, elementid = wp.tid()
-    geom1 = (
-      m.ngeom
-      - 2
-      - int(
-        wp.sqrt(float(-8 * elementid + 4 * m.ngeom * (m.ngeom - 1) - 7)) / 2.0 - 0.5
-      )
-    )
-    geom2 = (
-      elementid
-      + geom1
-      + 1
-      - m.ngeom * (m.ngeom - 1) // 2
-      + (m.ngeom - geom1) * ((m.ngeom - geom1) - 1) // 2
-    )
+    geom = m.nxn_geom_pair[elementid]
+    geom1 = geom[0]
+    geom2 = geom[1]
 
     margin1 = m.geom_margin[geom1]
     margin2 = m.geom_margin[geom2]
@@ -502,14 +531,11 @@ def nxn_broadphase(m: Model, d: Data):
       dist = wp.dot(-dif, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
       bounds_filter = dist <= bound
 
-    geom_filter = _geom_filter(m, geom1, geom2, filterparent)
-
-    if bounds_filter and geom_filter:
+    if bounds_filter:
       _add_geom_pair(m, d, geom1, geom2, worldid)
 
-  wp.launch(
-    _nxn_broadphase, dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d]
-  )
+  if m.nxn_geom_pair.shape[0]:
+    wp.launch(_nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d])
 
 
 def get_contact_solver_params(m: Model, d: Data):

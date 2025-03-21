@@ -18,6 +18,7 @@ import mujoco
 import numpy as np
 from absl.testing import absltest
 from absl.testing import parameterized
+from . import collision_driver
 from . import test_util
 
 import mujoco_warp as mjwarp
@@ -129,6 +130,32 @@ class PrimitiveTest(parameterized.TestCase):
       _assert_eq(d.contact.frame.numpy()[i].flatten(), mjd.contact.frame[i], "frame")
 
   # TODO(team): test primitive_narrowphase
+
+  def test_contact_exclude(self):
+    """Tests contact exclude."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <body name="body3">
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <contact>
+          <exclude body1="body1" body2="body2"/>
+        </contact>
+      </mujoco>
+    """)
+    pairs = collision_driver.geom_pair(mjm)
+    self.assertEqual(pairs.shape[0], 2)
 
   @parameterized.parameters(
     (True, True),

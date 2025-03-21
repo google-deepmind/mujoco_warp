@@ -228,9 +228,10 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d3.collision_pair.numpy()[3][1], 2)
 
     # one world and zero collisions: contype and conaffinity incompatibility
-    _, _, m4, d4 = _load_from_string(_NXN_MODEL, keyframe=1)
-    m4.geom_contype = wp.array(np.array([0, 0, 0]), dtype=wp.int32)
-    m4.geom_conaffinity = wp.array(np.array([1, 1, 1]), dtype=wp.int32)
+    mjm4, _, m4, d4 = _load_from_string(_NXN_MODEL, keyframe=1)
+    mjm4.geom_contype[:3] = 0
+    m4.geom_contype = wp.array(mjm4.geom_contype, dtype=wp.int32)
+    m4.nxn_geom_pair = wp.array(collision_driver.geom_pair(mjm4), dtype=wp.vec2i)
     collision_driver.nxn_broadphase(m4, d4)
     np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)
 

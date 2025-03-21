@@ -488,6 +488,7 @@ class Model:
     actuator_gear: scale length and transmitted force        (nu, 6)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     actuator_affine_bias_gain: affine bias/gain present
+    nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
   """
 
   nq: int
@@ -610,6 +611,7 @@ class Model:
   actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
   exclude_signature: wp.array(dtype=wp.int32, ndim=1)
   actuator_affine_bias_gain: bool  # warp only
+  nxn_geom_pair: wp.array(dtype=wp.vec2i, ndim=1)  # warp only
 
 
 @wp.struct
