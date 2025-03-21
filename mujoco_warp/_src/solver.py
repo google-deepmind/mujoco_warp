@@ -23,15 +23,14 @@ from .warp_util import kernel
 from .warp_util import kernel_copy
 
 
-def _create_context(m: types.Model, d: types.Data, grad: bool = True):
+def _create_context(m: types.Model, d: types.Data):
   @kernel
   def _init_context(d: types.Data):
     worldid = wp.tid()
     d.efc.cost[worldid] = wp.inf
     d.efc.solver_niter[worldid] = 0
     d.efc.done[worldid] = False
-    if grad:
-      d.efc.search_dot[worldid] = 0.0
+    d.efc.search_dot[worldid] = 0.0
 
   @kernel
   def _jaref(m: types.Model, d: types.Data):
@@ -47,13 +46,6 @@ def _create_context(m: types.Model, d: types.Data, grad: bool = True):
       d.efc.J[efcid, dofid] * d.qacc[worldid, dofid] - d.efc.aref[efcid] / float(m.nv),
     )
 
-  @kernel
-  def _search(d: types.Data):
-    worldid, dofid = wp.tid()
-    search = -1.0 * d.efc.Mgrad[worldid, dofid]
-    d.efc.search[worldid, dofid] = search
-    wp.atomic_add(d.efc.search_dot, worldid, search * search)
-
   wp.launch(_init_context, dim=(d.nworld), inputs=[d])
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
@@ -65,11 +57,128 @@ def _create_context(m: types.Model, d: types.Data, grad: bool = True):
   support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
 
   _update_constraint(m, d)
-  if grad:
-    _update_gradient(m, d)
 
-    # search = -Mgrad
-    wp.launch(_search, dim=(d.nworld, m.nv), inputs=[d])
+
+def _create_context_warmstart(m: types.Model, d: types.Data):
+  @kernel
+  def _init(d: types.Data):
+    worldid = wp.tid()
+    d.efc.cost[worldid] = 0.0
+    d.efc.cost_warmstart[worldid] = 0.0
+    d.efc.solver_niter[worldid] = 0
+    d.efc.done[worldid] = False
+    d.efc.search_dot[worldid] = 0.0
+
+  @kernel
+  def _jaref(m: types.Model, d: types.Data):
+    efcid, dofid = wp.tid()
+
+    if efcid >= d.nefc[0]:
+      return
+
+    worldid = d.efc.worldid[efcid]
+    J = d.efc.J[efcid, dofid]
+    aref = d.efc.aref[efcid]
+    scl = 1.0 / float(m.nv)
+
+    wp.atomic_add(
+      d.efc.Jaref,
+      efcid,
+      J * d.qacc_smooth[worldid, dofid] - aref * scl,
+    )
+
+    wp.atomic_add(
+      d.efc.Jaref_warmstart,
+      efcid,
+      J * d.qacc_warmstart[worldid, dofid] - aref * scl,
+    )
+
+  @kernel
+  def _cost(d: types.Data):
+    efcid = wp.tid()
+
+    if efcid >= d.nefc[0]:
+      return
+
+    worldid = d.efc.worldid[efcid]
+
+    Jaref = d.efc.Jaref[efcid]
+    Jaref_warmstart = d.efc.Jaref_warmstart[efcid]
+    efc_D = d.efc.D[efcid]
+
+    # cost = 0.5 * sum(efc_D * Jaref * Jaref * active)
+    # TODO(team): active and conditionally active constraints
+    if Jaref < 0.0:
+      wp.atomic_add(d.efc.cost, worldid, 0.5 * efc_D * Jaref * Jaref)
+
+    if Jaref_warmstart < 0.0:
+      wp.atomic_add(
+        d.efc.cost_warmstart, worldid, 0.5 * efc_D * Jaref_warmstart * Jaref_warmstart
+      )
+
+  @kernel
+  def _gauss(d: types.Data):
+    worldid, dofid = wp.tid()
+    qfrc_smooth = d.qfrc_smooth[worldid, dofid]
+    qacc_smooth = d.qacc_smooth[worldid, dofid]
+
+    gauss_cost = (
+      0.5
+      * (d.efc.Ma[worldid, dofid] - qfrc_smooth)
+      * (d.qacc_smooth[worldid, dofid] - qacc_smooth)
+    )
+    wp.atomic_add(d.efc.cost, worldid, gauss_cost)
+
+    gauss_cost_warmstart = (
+      0.5
+      * (d.efc.Ma_warmstart[worldid, dofid] - qfrc_smooth)
+      * (d.qacc_warmstart[worldid, dofid] - qacc_smooth)
+    )
+    wp.atomic_add(d.efc.cost_warmstart, worldid, gauss_cost_warmstart)
+
+  @kernel
+  def _qacc_ma_warmstart(d: types.Data):
+    worldid, dofid = wp.tid()
+
+    if d.efc.cost_warmstart[worldid] < d.efc.cost[worldid]:
+      d.qacc[worldid, dofid] = d.qacc_warmstart[worldid, dofid]
+      d.efc.Ma[worldid, dofid] = d.efc.Ma_warmstart[worldid, dofid]
+    else:
+      d.qacc[worldid, dofid] = d.qacc_smooth[worldid, dofid]
+
+  @kernel
+  def _jaref_warmstart(d: types.Data):
+    efcid = wp.tid()
+
+    if efcid >= d.nefc[0]:
+      return
+    
+    worldid = d.efc.worldid[efcid]
+
+    if d.efc.cost_warmstart[worldid] < d.efc.cost[worldid]:
+      d.efc.Jaref[efcid] = d.efc.Jaref_warmstart[efcid]
+
+  wp.launch(_init, dim=(d.nworld), inputs=[d])
+
+  # jaref = d.efc_J @ qacc - d.efc_aref
+  d.efc.Jaref.zero_()
+  d.efc.Jaref_warmstart.zero_()
+  wp.launch(_jaref, dim=(d.njmax, m.nv), inputs=[m, d])
+
+  # Ma = qM @ qacc
+  support.mul_m(m, d, d.efc.Ma, d.qacc_smooth, d.efc.done)
+  support.mul_m(m, d, d.efc.Ma_warmstart, d.qacc_warmstart, d.efc.done)
+
+  # cost = 0.5 * sum(efc_D * Jaref * Jaref * active)
+  wp.launch(_cost, dim=(d.njmax,), inputs=[d])
+
+  # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
+  wp.launch(_gauss, dim=(d.nworld, m.nv), inputs=[d])
+
+  wp.launch(_qacc_ma_warmstart, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_jaref_warmstart, dim=(d.njmax), inputs=[d])
+
+  _update_constraint(m, d)
 
 
 def _update_constraint(m: types.Model, d: types.Data):
@@ -875,6 +984,13 @@ def solve(m: types.Model, d: types.Data):
   ITERATIONS = m.opt.iterations
 
   @kernel
+  def _init_search(d: types.Data):
+    worldid, dofid = wp.tid()
+    search = -1.0 * d.efc.Mgrad[worldid, dofid]
+    d.efc.search[worldid, dofid] = search
+    wp.atomic_add(d.efc.search_dot, worldid, search * search)
+
+  @kernel
   def _zero_search_dot(d: types.Data):
     worldid = wp.tid()
 
@@ -970,9 +1086,14 @@ def solve(m: types.Model, d: types.Data):
       )
 
   # warmstart
-  kernel_copy(d.qacc, d.qacc_warmstart)
+  if not m.opt.disableflags & types.DisableBit.WARMSTART:
+    _create_context_warmstart(m, d)
+  else:
+    wp.copy(d.qacc, d.qacc_smooth)
+    _create_context(m, d)
 
-  _create_context(m, d, grad=True)
+  _update_gradient(m, d)
+  wp.launch(_init_search, dim=(d.nworld, m.nv), inputs=[d])
 
   for i in range(m.opt.iterations):
     _linesearch(m, d)

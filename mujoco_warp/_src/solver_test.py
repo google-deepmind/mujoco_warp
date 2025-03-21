@@ -67,6 +67,8 @@ class SolverTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd, nworld=nworld, njmax=njmax)
     return mjm, mjd, m, d
 
+  # TODO(team): test disableflags warmstart
+
   @parameterized.parameters(
     (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtSolver.mjSOL_CG, 25, 5, False, False),
     (

@@ -346,7 +346,9 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
   efc.worldid = wp.zeros((njmax,), dtype=wp.int32)
 
   efc.Jaref = wp.empty(shape=(njmax,), dtype=wp.float32)
+  efc.Jaref_warmstart = wp.empty(shape=(njmax,), dtype=wp.float32)
   efc.Ma = wp.empty(shape=(nworld, mjm.nv), dtype=wp.float32)
+  efc.Ma_warmstart = wp.empty(shape=(nworld, mjm.nv), dtype=wp.float32)
   efc.grad = wp.empty(shape=(nworld, mjm.nv), dtype=wp.float32)
   efc.grad_dot = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.Mgrad = wp.empty(shape=(nworld, mjm.nv), dtype=wp.float32)
@@ -354,6 +356,7 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
   efc.search_dot = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.gauss = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.cost = wp.empty(shape=(nworld,), dtype=wp.float32)
+  efc.cost_warmstart = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.prev_cost = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.solver_niter = wp.empty(shape=(nworld,), dtype=wp.int32)
   efc.active = wp.empty(shape=(njmax,), dtype=wp.int32)
