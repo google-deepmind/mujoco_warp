@@ -311,7 +311,6 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
 
-    # wp.launch(_JTDAJ, dim=(d.njmax, m.dof_tri_row.size), inputs=[m, d])
     # Optimization: launching _JTDAJ with limited number of blocks. 
     # Profiling suggests that only a fraction of blocks out of the original d.njmax blocks 
     # do the actual work. It aims to minimize #CTAs with no effective work.
