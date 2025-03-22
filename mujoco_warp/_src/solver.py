@@ -262,7 +262,7 @@ def _update_gradient(m: types.Model, d: types.Data):
 
       if ITERATIONS > 1:
         if d.efc.done[worldid]:
-          return
+          continue
 
       dofi = m.dof_tri_row[elementid]
       dofj = m.dof_tri_col[elementid]
@@ -270,7 +270,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       efc_D = d.efc.D[efcid]
       active = d.efc.active[efcid]
       if efc_D == 0.0 or active == 0:
-        return
+        continue
 
       # TODO(team): sparse efc_J
       wp.atomic_add(
