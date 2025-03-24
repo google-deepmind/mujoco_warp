@@ -247,8 +247,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       d.efc.h[worldid, rowid, colid] = d.qM[worldid, rowid, colid]
 
   @kernel
-  def _JTDAJ(m: types.Model, d: types.Data,
-             nblocks_perblock: int, dim_x: int):
+  def _JTDAJ(m: types.Model, d: types.Data, nblocks_perblock: int, dim_x: int):
     # TODO(team): static m?
     efcid_temp, elementid = wp.tid()
 
@@ -317,13 +316,13 @@ def _update_gradient(m: types.Model, d: types.Data):
     # It launches with #blocks that's proportional to the number of SMs on the GPU.
     # We can now query the SM count: https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
     sm_count = wp.get_device().sm_count 
-    dim_x = int((sm_count*6*256)/m.dof_tri_row.size)
+    dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
     
-    wp.launch(_JTDAJ, 
-              dim=(dim_x, m.dof_tri_row.size), 
-              inputs=[m, d, 
-                      int((d.njmax+dim_x-1)/dim_x),
-                      dim_x])
+    wp.launch(
+      _JTDAJ, 
+      dim=(dim_x, m.dof_tri_row.size), 
+      inputs=[m, d, int((d.njmax + dim_x - 1) / dim_x), dim_x]
+    )
 
     wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32)
 
