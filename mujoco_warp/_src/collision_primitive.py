@@ -29,7 +29,8 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
-  # TODO(team): mesh fields: vertadr, vertnum
+  vertadr: int
+  vertnum: int
 
 
 @wp.func
@@ -45,6 +46,13 @@ def _geom(
   geom.rot = rot
   geom.size = m.geom_size[gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
+  dataid = m.geom_dataid[gid]
+  if dataid >= 0:
+    geom.vertadr = m.mesh_vertadr[dataid]
+    geom.vertnum = m.mesh_vertnum[dataid]
+  else:
+    geom.vertadr = 0
+    geom.vertnum = 0
 
   return geom
 
