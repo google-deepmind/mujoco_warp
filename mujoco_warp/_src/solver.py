@@ -316,7 +316,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     # effective work. It launches with #blocks that's proportional to the number
     # of SMs on the GPU. We can now query the SM count:
     # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
-    if wp.get_device().is_cuda: 
+    if wp.get_device().is_cuda:
       sm_count = wp.get_device().sm_count
 
       # Here we assume one block has 256 threads. We use a factor of 6, which
@@ -325,7 +325,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       # simultaneously run on the SM. TODO: This factor can be tuned further.
       dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
     else:
-      dim_x = d.njmax # fall back
+      dim_x = d.njmax  # fall back
 
     wp.launch(
       _JTDAJ,
