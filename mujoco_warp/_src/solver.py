@@ -310,19 +310,22 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
 
-    # Optimization: launching _JTDAJ with limited number of blocks. Profiling
-    # suggests that only a fraction of blocks out of the original d.njmax blocks
-    # do the actual work. It aims to minimize #CTAs with no effective work. It
-    # launches with #blocks that's proportional to the number of SMs on the GPU.
-    # We can now query the SM count:
+    # Optimization: launching _JTDAJ with limited number of blocks on a GPU.
+    # Profiling suggests that only a fraction of blocks out of the original
+    # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
+    # effective work. It launches with #blocks that's proportional to the number
+    # of SMs on the GPU. We can now query the SM count:
     # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
-    sm_count = wp.get_device().sm_count
+    if wp.get_device().is_cuda: 
+      sm_count = wp.get_device().sm_count
 
-    # Here we assume one block has 256 threads. We use a factor of 6, which can
-    # be change in future to fine-tune the perf. The optimal factor will depend
-    # on the kernel's occupancy, which determines how many blocks can
-    # simultaneously run on the SM. TODO: This factor can be tuned further.
-    dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+      # Here we assume one block has 256 threads. We use a factor of 6, which
+      # can be change in future to fine-tune the perf. The optimal factor will
+      # depend on the kernel's occupancy, which determines how many blocks can
+      # simultaneously run on the SM. TODO: This factor can be tuned further.
+      dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+    else:
+      dim_x = d.njmax # fall back
 
     wp.launch(
       _JTDAJ,
