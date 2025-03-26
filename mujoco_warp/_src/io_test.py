@@ -19,6 +19,7 @@ import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+from etils import epath
 
 import mujoco_warp as mjwarp
 
@@ -88,6 +89,13 @@ class IOTest(absltest.TestCase):
     """)
 
     with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_dense(self):
+    path = epath.resource_path("mujoco_warp") / "test_data/humanoid/n_humanoids.xml"
+    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+
+    with self.assertRaises(ValueError):
       mjwarp.put_model(mjm)
 
 
