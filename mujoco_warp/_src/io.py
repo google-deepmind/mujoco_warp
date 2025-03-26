@@ -24,6 +24,16 @@ from . import types
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
+  geom_type_render = mjm.geom_type >= mujoco.mjtGeom.mjNGEOMTYPES.value
+  geom_type_supported = np.isin(mjm.geom_type, list(types.GeomType))
+  geom_type_unsupported = ~(geom_type_supported | geom_type_render)
+  if geom_type_unsupported.any():
+    raise NotImplementedError(
+      f"Geom type {mjm.geom_type[geom_type_unsupported]} is unsupported."
+    )
+
+  # TODO(team): check for unsupported render geom types
+
   if mjm.neq > 0:
     raise NotImplementedError("Equality constraints are unsupported.")
 
