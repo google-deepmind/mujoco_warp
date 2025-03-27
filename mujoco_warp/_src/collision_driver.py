@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .collision_convex import gjk_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MINVAL
 from .types import Data
@@ -548,7 +549,9 @@ def collision(m: Model, d: Data):
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
-  primitive_narrowphase(m, d)
-  # TODO(team) switch between collision functions and GJK/EPA here
+  if m.opt.enableGjk:
+    gjk_narrowphase(m, d)
+  else:
+    primitive_narrowphase(m, d)
 
   get_contact_solver_params(m, d)
