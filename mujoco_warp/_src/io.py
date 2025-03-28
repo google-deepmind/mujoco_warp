@@ -37,8 +37,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  if mjm.nsensor > 0:
-    raise NotImplementedError("Sensors are unsupported.")
+  # TODO(team): check sensors by type
+
+  if mjm.sensor_cutoff.any():
+    raise NotImplementedError("Sensor cutoff is unsupported.")
 
   if mjm.ntendon > 0:
     raise NotImplementedError("Tendons are unsupported.")
@@ -77,6 +79,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nsite = mjm.nsite
   m.nmocap = mjm.nmocap
   m.nM = mjm.nM
+  m.nsensor = mjm.nsensor
+  m.nsensordata = mjm.nsensordata
   m.nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
   m.nexclude = mjm.nexclude
   m.opt.timestep = mjm.opt.timestep
@@ -385,6 +389,33 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     or np.any(mjm.actuator_gaintype == types.GainType.AFFINE.value)
   )
 
+  # sensors
+  m.sensor_type = wp.array(mjm.sensor_type, dtype=wp.int32, ndim=1)
+  m.sensor_datatype = wp.array(mjm.sensor_datatype, dtype=wp.int32, ndim=1)
+  m.sensor_needstage = wp.array(mjm.sensor_needstage, dtype=wp.int32, ndim=1)
+  m.sensor_objtype = wp.array(mjm.sensor_objtype, dtype=wp.int32, ndim=1)
+  m.sensor_objid = wp.array(mjm.sensor_objid, dtype=wp.int32, ndim=1)
+  m.sensor_reftype = wp.array(mjm.sensor_reftype, dtype=wp.int32, ndim=1)
+  m.sensor_refid = wp.array(mjm.sensor_refid, dtype=wp.int32, ndim=1)
+  m.sensor_dim = wp.array(mjm.sensor_dim, dtype=wp.int32, ndim=1)
+  m.sensor_adr = wp.array(mjm.sensor_adr, dtype=wp.int32, ndim=1)
+  m.sensor_cutoff = wp.array(mjm.sensor_cutoff, dtype=wp.float32, ndim=1)
+  m.sensor_pos_adr = wp.array(
+    np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0],
+    dtype=wp.int32,
+    ndim=1,
+  )
+  m.sensor_vel_adr = wp.array(
+    np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0],
+    dtype=wp.int32,
+    ndim=1,
+  )
+  m.sensor_acc_adr = wp.array(
+    np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0],
+    dtype=wp.int32,
+    ndim=1,
+  )
+
   return m
 
 
@@ -556,6 +587,9 @@ def make_data(
   d.collision_pair = wp.empty(nconmax, dtype=wp.vec2i, ndim=1)
   d.collision_worldid = wp.empty(nconmax, dtype=wp.int32, ndim=1)
   d.ncollision = wp.zeros(1, dtype=wp.int32, ndim=1)
+
+  # sensors
+  d.sensordata = wp.zeros((nworld, mjm.nsensordata), dtype=wp.float32)
 
   return d
 
@@ -787,6 +821,10 @@ def put_data(
   d.collision_pair = wp.empty(nconmax, dtype=wp.vec2i, ndim=1)
   d.collision_worldid = wp.empty(nconmax, dtype=wp.int32, ndim=1)
   d.ncollision = wp.zeros(1, dtype=wp.int32, ndim=1)
+
+  # sensors
+  d.sensordata = wp.array(tile(mjd.sensordata), dtype=wp.float32, ndim=2)
+
   return d
 
 
@@ -894,3 +932,6 @@ def get_data_into(
   result.efc_margin[:] = d.efc.margin.numpy()[:nefc]
 
   # TODO: other efc_ fields, anything else missing
+
+  # sensors
+  result.sensordata[:] = d.sensordata.numpy()

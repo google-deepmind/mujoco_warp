@@ -38,6 +38,7 @@ class DisableBit(enum.IntFlag):
     REFSAFE:      integrator safety: make ref[0]>=2*timestep
     EULERDAMP:    implicit damping for Euler integration
     FILTERPARENT: disable collisions between parent and child bodies
+    SENSOR: sensors
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
@@ -50,7 +51,8 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
-  # unsupported: EQUALITY, FRICTIONLOSS, MIDPHASE, WARMSTART, SENSOR
+  SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
+  # unsupported: EQUALITY, FRICTIONLOSS, MIDPHASE, WARMSTART
 
 
 class TrnType(enum.IntEnum):
@@ -186,9 +188,14 @@ class SensorType(enum.IntEnum):
   """Type of sensor.
 
   Members:
+    JOINTPOS: joint position
+    JOINTVEL: joint velocity
+    ACTUATORFRC: scalar actuator force
   """
 
-  pass
+  JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
+  JOINTVEL = mujoco.mjtSensor.mjSENS_JOINTVEL
+  ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
 
 
 class EqType(enum.IntEnum):
@@ -379,6 +386,8 @@ class Model:
     nexclude: number of excluded geom pairs                  ()
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
+    nsensor: number of sensors                               ()
+    nsensordata: number of elements in sensor data vector    ()
     nlsp: number of step sizes for parallel linsearch        ()
     opt: physics options
     stat: model statistics
@@ -492,6 +501,19 @@ class Model:
     actuator_gear: scale length and transmitted force        (nu, 6)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     actuator_affine_bias_gain: affine bias/gain present
+    sensor_type: sensor type (mjtSensor)                     (nsensor,)
+    sensor_datatype: numeric data type (mjtDataType)         (nsensor,)
+    sensor_needstage: required compute stage (mjtState)      (nsensor,)
+    sensor_objtype: type of sensorized object (mjtObj)       (nsensor,)
+    sensor_objid: id of sensorized object                    (nsensor,)
+    sensor_reftype: type of reference frame (mjtObj)         (nsensor,)
+    sensor_refid: id of reference frame; -1: global frame    (nsensor,)
+    sensor_dim: number of scalar outputs                     (nsensor,)
+    sensor_adr: address in sensor array                      (nsensor,)
+    sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
+    sensor_pos_adr: addresses for position sensors           (<=nsensor,)
+    sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
+    sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
   """
 
   nq: int
@@ -505,6 +527,8 @@ class Model:
   nexclude: int
   nmocap: int
   nM: int
+  nsensor: int
+  nsensordata: int
   nlsp: int  # warp only
   opt: Option
   stat: Statistic
@@ -618,6 +642,19 @@ class Model:
   actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
   exclude_signature: wp.array(dtype=wp.int32, ndim=1)
   actuator_affine_bias_gain: bool  # warp only
+  sensor_type: wp.array(dtype=wp.int32, ndim=1)
+  sensor_datatype: wp.array(dtype=wp.int32, ndim=1)
+  sensor_needstage: wp.array(dtype=wp.int32, ndim=1)
+  sensor_objtype: wp.array(dtype=wp.int32, ndim=1)
+  sensor_objid: wp.array(dtype=wp.int32, ndim=1)
+  sensor_reftype: wp.array(dtype=wp.int32, ndim=1)
+  sensor_refid: wp.array(dtype=wp.int32, ndim=1)
+  sensor_dim: wp.array(dtype=wp.int32, ndim=1)
+  sensor_adr: wp.array(dtype=wp.int32, ndim=1)
+  sensor_cutoff: wp.array(dtype=wp.float32, ndim=1)
+  sensor_pos_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  sensor_vel_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
 
 
 @wp.struct
@@ -730,6 +767,7 @@ class Data:
     collision_type: collision types from broadphase             (nconmax,)
     collision_worldid: collision world ids from broadphase      (nconmax,)
     ncollision: collision count from broadphase                 ()
+    sensordata: sensor data array                               (nsensordata,)
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
@@ -806,3 +844,6 @@ class Data:
   collision_pair: wp.array(dtype=wp.vec2i, ndim=1)
   collision_worldid: wp.array(dtype=wp.int32, ndim=1)
   ncollision: wp.array(dtype=wp.int32, ndim=1)
+
+  # sensors
+  sensordata: wp.array(dtype=wp.float32, ndim=2)
