@@ -46,11 +46,12 @@ class DisableBit(enum.IntFlag):
   PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
+  WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
   ACTUATION = mujoco.mjtDisableBit.mjDSBL_ACTUATION
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
-  # unsupported: EQUALITY, FRICTIONLOSS, MIDPHASE, WARMSTART, SENSOR
+  # unsupported: EQUALITY, FRICTIONLOSS, MIDPHASE, SENSOR
 
 
 class TrnType(enum.IntEnum):
@@ -274,7 +275,9 @@ class Constraint:
     aref: reference pseudo-acceleration               (njmax,)
     force: constraint force in constraint space       (njmax,)
     Jaref: Jac*qacc - aref                            (njmax,)
+    Jaref_warmstart: Jac*qacc_warmstart - aref        (njmax,)
     Ma: M*qacc                                        (nworld, nv)
+    Ma_warmstart: M*qacc_warmstart                    (nworld, nv)
     grad: gradient of master cost                     (nworld, nv)
     grad_dot: dot(grad, grad)                         (nworld,)
     Mgrad: M / grad                                   (nworld, nv)
@@ -282,6 +285,7 @@ class Constraint:
     search_dot: dot(search, search)                   (nworld,)
     gauss: gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
+    cost_warmstart: constraint + Gauss cost           (nworld,)
     prev_cost: cost from previous iter                (nworld,)
     solver_niter: number of solver iterations         (nworld,)
     active: active (quadratic) constraints            (njmax,)
@@ -322,7 +326,9 @@ class Constraint:
   aref: wp.array(dtype=wp.float32, ndim=1)
   force: wp.array(dtype=wp.float32, ndim=1)
   Jaref: wp.array(dtype=wp.float32, ndim=1)
+  Jaref_warmstart: wp.array(dtype=wp.float32, ndim=1)
   Ma: wp.array(dtype=wp.float32, ndim=2)
+  Ma_warmstart: wp.array(dtype=wp.float32, ndim=2)
   grad: wp.array(dtype=wp.float32, ndim=2)
   grad_dot: wp.array(dtype=wp.float32, ndim=1)
   Mgrad: wp.array(dtype=wp.float32, ndim=2)
@@ -330,6 +336,7 @@ class Constraint:
   search_dot: wp.array(dtype=wp.float32, ndim=1)
   gauss: wp.array(dtype=wp.float32, ndim=1)
   cost: wp.array(dtype=wp.float32, ndim=1)
+  cost_warmstart: wp.array(dtype=wp.float32, ndim=1)
   prev_cost: wp.array(dtype=wp.float32, ndim=1)
   solver_niter: wp.array(dtype=wp.int32, ndim=1)
   active: wp.array(dtype=wp.int32, ndim=1)
