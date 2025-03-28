@@ -385,6 +385,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     or np.any(mjm.actuator_gaintype == types.GainType.AFFINE.value)
   )
 
+  m.condim_max = np.max(mjm.geom_condim)  # TODO(team): get max after filtering
+
   return m
 
 

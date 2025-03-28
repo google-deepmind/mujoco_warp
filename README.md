@@ -55,7 +55,7 @@ The following features are implemented:
 | Equality          | Not yet implemented                |
 | Integrator        | `EULER`, `IMPLICITFAST`            |
 | Cone              | `PYRAMIDAL`                        |
-| Condim            | 3                                  |
+| Condim            | 3, 4, 6                            |
 | Solver            | `CG`, `NEWTON`                     |
 | Fluid Model       | None                               |
 | Tendons           | Not yet implemented.               |

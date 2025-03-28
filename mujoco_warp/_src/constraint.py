@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Tuple
+
 import warp as wp
 
 from . import types
@@ -82,7 +84,7 @@ def _jac(
   bodyid: wp.int32,
   dofid: wp.int32,
   worldid: wp.int32,
-):
+) -> Tuple[wp.float32, wp.float32]:
   dof_bodyid = m.dof_bodyid[dofid]
   in_tree = int(dof_bodyid == 0)
   parentid = bodyid
@@ -94,11 +96,15 @@ def _jac(
 
   offset = point - wp.vec3(d.subtree_com[worldid, m.body_rootid[bodyid]])
 
-  jac = wp.spatial_bottom(d.cdof[worldid, dofid]) + wp.cross(
+  jacp = wp.spatial_bottom(d.cdof[worldid, dofid]) + wp.cross(
     wp.spatial_top(d.cdof[worldid, dofid]), offset
   )
+  jacp_xyz = jacp[xyz] * float(in_tree)
 
-  return jac[xyz] * float(in_tree)
+  jacr = d.cdof[worldid, dofid]
+  jacr_xyz = jacr[xyz] * float(in_tree)
+
+  return jacp_xyz, jacr_xyz
 
 
 @wp.kernel
@@ -152,7 +158,9 @@ def _efc_contact_pyramidal(
   if conid >= d.ncon[0]:
     return
 
-  if d.contact.dim[conid] != 3:
+  condim = d.contact.dim[conid]
+
+  if (dimid >= 2 * (condim - 1)) or condim == 1:
     return
 
   pos = d.contact.dist[conid] - d.contact.includemargin[conid]
@@ -181,11 +189,15 @@ def _efc_contact_pyramidal(
       diff_i = float(0.0)
       for xyz in range(3):
         con_pos = d.contact.pos[conid]
-        jac1p = _jac(m, d, con_pos, xyz, body1, i, worldid)
-        jac2p = _jac(m, d, con_pos, xyz, body2, i, worldid)
-        jac_dif = jac2p - jac1p
-        diff_0 += d.contact.frame[conid][0, xyz] * jac_dif
-        diff_i += d.contact.frame[conid][dimid2, xyz] * jac_dif
+        jac1p, jac1r = _jac(m, d, con_pos, xyz, body1, i, worldid)
+        jac2p, jac2r = _jac(m, d, con_pos, xyz, body2, i, worldid)
+        jacp_dif = jac2p - jac1p
+        diff_0 += d.contact.frame[conid][0, xyz] * jacp_dif
+        if dimid2 < 3:
+          diff_i += d.contact.frame[conid][dimid2, xyz] * jacp_dif
+        else:
+          jacr_dif = jac2r - jac1r
+          diff_i += d.contact.frame[conid][dimid2 - 3, xyz] * jacr_dif
       if dimid % 2 == 0:
         J = diff_0 + diff_i * d.contact.friction[conid][dimid2 - 1]
       else:
@@ -235,6 +247,6 @@ def make_constraint(m: types.Model, d: types.Data):
     ):
       wp.launch(
         _efc_contact_pyramidal,
-        dim=(d.nconmax, 4),
+        dim=(d.nconmax, 2 * (m.condim_max - 1)),
         inputs=[m, d, refsafe],
       )
