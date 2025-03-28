@@ -518,7 +518,7 @@ def make_data(
   d.contact.solimp = wp.zeros((nconmax,), dtype=types.vec5)
   d.contact.dim = wp.zeros((nconmax,), dtype=wp.int32)
   d.contact.geom = wp.zeros((nconmax,), dtype=wp.vec2i)
-  d.contact.efc_address = wp.zeros((nconmax,), dtype=wp.int32)
+  d.contact.efc_address = wp.zeros((nconmax, np.max(mjm.geom_condim)), dtype=wp.int32)
   d.contact.worldid = wp.zeros((nconmax,), dtype=wp.int32)
   d.efc = _constraint(mjm, d.nworld, d.njmax)
   d.qfrc_passive = wp.zeros((nworld, mjm.nv), dtype=wp.float32)

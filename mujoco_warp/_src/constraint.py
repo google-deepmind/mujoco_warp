@@ -210,6 +210,90 @@ def _efc_contact_pyramidal(
     )
 
 
+@wp.kernel
+def _efc_contact_elliptic(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  conid, dimid = wp.tid()
+
+  if conid >= d.ncon[0]:
+    return
+
+  if d.contact.dim[conid] != 3:
+    return
+
+  includemargin = d.contact.includemargin[conid]
+  pos = d.contact.dist[conid] - includemargin
+  active = pos < 0
+
+  if active:
+    efcid = wp.atomic_add(d.nefc, 0, 1)
+    worldid = d.contact.worldid[conid]
+    d.efc.worldid[efcid] = worldid
+    d.contact.efc_address[conid, dimid] = efcid
+
+    geom = d.contact.geom[conid]
+    body1 = m.geom_bodyid[geom[0]]
+    body2 = m.geom_bodyid[geom[1]]
+
+    cpos = d.contact.pos[conid]
+    frame = d.contact.frame[conid]
+    friction = d.contact.friction[conid]
+
+    Jqvel = float(0.0)
+    for i in range(m.nv):
+      J = float(0.0)
+      for xyz in range(3):
+        jac1p = _jac(m, d, cpos, xyz, body1, i, worldid)
+        jac2p = _jac(m, d, cpos, xyz, body2, i, worldid)
+        jac_dif = jac2p - jac1p
+        J += frame[dimid, xyz] * jac_dif
+
+      d.efc.J[efcid, i] = J
+      Jqvel += J * d.qvel[worldid, i]
+
+    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+
+    if dimid > 0:
+      solreffriction = d.contact.solreffriction[conid]
+
+      if not ((solreffriction[0] != 0.0) or (solreffriction[1] != 0.0)):
+        _solref = d.contact.solref[conid]
+        solreffriction[0] += _solref[0]
+        solreffriction[1] += _solref[1]
+
+      solref = solreffriction
+
+      invweight = invweight / m.opt.impratio
+      if dimid > 1:
+        fri0 = friction[0]
+        frii = friction[dimid - 1]
+        fri = fri0 * fri0 / (frii * frii)
+        invweight *= fri
+
+      pos_aref = 0.0
+    else:
+      solref = d.contact.solref[conid]
+      pos_aref = pos
+
+    _update_efc_row(
+      m,
+      d,
+      worldid,
+      efcid,
+      pos_aref,
+      pos,
+      invweight,
+      solref,
+      d.contact.solimp[conid],
+      includemargin,
+      refsafe,
+      Jqvel,
+    )
+
+
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
@@ -229,12 +313,17 @@ def make_constraint(m: types.Model, d: types.Data):
         inputs=[m, d, refsafe],
       )
 
-    if (
-      not (m.opt.disableflags & types.DisableBit.CONTACT.value)
-      and m.opt.cone == types.ConeType.PYRAMIDAL.value
-    ):
-      wp.launch(
-        _efc_contact_pyramidal,
-        dim=(d.nconmax, 4),
-        inputs=[m, d, refsafe],
-      )
+    # contact
+    if not (m.opt.disableflags & types.DisableBit.CONTACT.value):
+      if m.opt.cone == types.ConeType.PYRAMIDAL.value:
+        wp.launch(
+          _efc_contact_pyramidal,
+          dim=(d.nconmax, 4),
+          inputs=[m, d, refsafe],
+        )
+      elif m.opt.cone == types.ConeType.ELLIPTIC.value:
+        wp.launch(
+          _efc_contact_elliptic,
+          dim=(d.nconmax, 3),
+          inputs=[m, d, refsafe],
+        )

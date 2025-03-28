@@ -36,10 +36,13 @@ def _assert_eq(a, b, name):
 
 
 class ConstraintTest(parameterized.TestCase):
-  def test_constraints(self):
+  @parameterized.parameters(
+    mujoco.mjtCone.mjCONE_PYRAMIDAL,
+    mujoco.mjtCone.mjCONE_ELLIPTIC,
+  )
+  def test_constraints(self, cone):
     """Test constraints."""
-    mjm, mjd, _, _ = test_util.fixture("constraints.xml", sparse=False)
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+    mjm, mjd, _, _ = test_util.fixture("constraints.xml", sparse=False, cone=cone)
 
     for key in range(3):
       mujoco.mj_resetDataKeyframe(mjm, mjd, key)

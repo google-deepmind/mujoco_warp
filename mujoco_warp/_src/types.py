@@ -132,10 +132,11 @@ class ConeType(enum.IntEnum):
 
   Members:
     PYRAMIDAL: pyramidal
+    ELLIPTIC: elliptic
   """
 
   PYRAMIDAL = mujoco.mjtCone.mjCONE_PYRAMIDAL
-  # unsupported: ELLIPTIC
+  ELLIPTIC = mujoco.mjtCone.mjCONE_ELLIPTIC
 
 
 class IntegratorType(enum.IntEnum):
@@ -649,7 +650,7 @@ class Contact:
   solimp: wp.array(dtype=vec5, ndim=1)
   dim: wp.array(dtype=wp.int32, ndim=1)
   geom: wp.array(dtype=wp.vec2i, ndim=1)
-  efc_address: wp.array(dtype=wp.int32, ndim=1)
+  efc_address: wp.array(dtype=wp.int32, ndim=2)
   worldid: wp.array(dtype=wp.int32, ndim=1)
 
 
