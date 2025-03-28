@@ -37,27 +37,23 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  if mjm.nsensor > 0:
-    raise NotImplementedError("Sensors are unsupported.")
-
-  if mjm.ntendon > 0:
-    raise NotImplementedError("Tendons are unsupported.")
-
-  if mjm.nplugin > 0:
-    raise NotImplementedError("Plugins are unsupported.")
-
-  if mjm.nflex > 0:
-    raise NotImplementedError("Flexes are unsupported.")
+  for n, msg in (
+    (mjm.nsensor, "Sensors"),
+    (mjm.ntendon, "Tendons"),
+    (mjm.nplugin, "Plugins"),
+    (mjm.nflex, "Flexes"),
+  ):
+    if n > 0:
+      raise NotImplementedError(f"{msg} are unsupported.")
 
   # check options
-  if mjm.opt.integrator not in set(types.IntegratorType):
-    raise NotImplementedError(f"Integrator: {mjm.opt.integrator} is unsupported.")
-
-  if mjm.opt.cone not in set(types.ConeType):
-    raise NotImplementedError(f"Cone: {mjm.opt.cone} is unsupported.")
-
-  if mjm.opt.solver not in set(types.SolverType):
-    raise NotImplementedError(f"Solver: {mjm.opt.solver} is unsupported.")
+  for opt, opt_types, msg in (
+    (mjm.opt.integrator, types.IntegratorType, "Integrator"),
+    (mjm.opt.cone, types.ConeType, "Cone"),
+    (mjm.opt.solver, types.SolverType, "Solver"),
+  ):
+    if opt not in set(opt_types):
+      raise NotImplementedError(f"{msg} {opt} is unsupported.")
 
   if mjm.opt.wind.any():
     raise NotImplementedError("Wind is unsupported.")
