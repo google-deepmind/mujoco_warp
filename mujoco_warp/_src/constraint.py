@@ -142,6 +142,66 @@ def _efc_limit_slide_hinge(
 
 
 @wp.kernel
+def _efc_contact_frictionless(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  conid = wp.tid()
+
+  if conid >= d.ncon[0]:
+    return
+
+  if d.contact.dim[conid] != 1:
+    return
+
+  includemargin = d.contact.includemargin[conid]
+  pos = d.contact.dist[conid] - includemargin
+  active = pos < 0
+
+  if active:
+    efcid = wp.atomic_add(d.nefc, 0, 1)
+    worldid = d.contact.worldid[conid]
+    d.efc.worldid[efcid] = worldid
+
+    geom = d.contact.geom[conid]
+    body1 = m.geom_bodyid[geom[0]]
+    body2 = m.geom_bodyid[geom[1]]
+
+    cpos = d.contact.pos[conid]
+    frame = d.contact.frame[conid]
+
+    Jqvel = float(0.0)
+    for i in range(m.nv):
+      J = float(0.0)
+      for xyz in range(3):
+        jac1p = _jac(m, d, cpos, xyz, body1, i, worldid)
+        jac2p = _jac(m, d, cpos, xyz, body2, i, worldid)
+        jac_dif = jac2p - jac1p
+        J += frame[0, xyz] * jac_dif
+
+      d.efc.J[efcid, i] = J
+      Jqvel += J * d.qvel[worldid, i]
+
+    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+
+    _update_efc_row(
+      m,
+      d,
+      worldid,
+      efcid,
+      pos,
+      pos,
+      invweight,
+      d.contact.solref[conid],
+      d.contact.solimp[conid],
+      includemargin,
+      refsafe,
+      Jqvel,
+    )
+
+
+@wp.kernel
 def _efc_contact_pyramidal(
   m: types.Model,
   d: types.Data,
@@ -229,12 +289,22 @@ def make_constraint(m: types.Model, d: types.Data):
         inputs=[m, d, refsafe],
       )
 
-    if (
-      not (m.opt.disableflags & types.DisableBit.CONTACT.value)
-      and m.opt.cone == types.ConeType.PYRAMIDAL.value
-    ):
+    # contact
+    if not (m.opt.disableflags & types.DisableBit.CONTACT.value):
+      # condim=1
       wp.launch(
-        _efc_contact_pyramidal,
-        dim=(d.nconmax, 4),
+        _efc_contact_frictionless,
+        dim=(d.nconmax,),
         inputs=[m, d, refsafe],
       )
+
+      if m.opt.cone == types.ConeType.PYRAMIDAL.value:
+        # condim=3
+        wp.launch(
+          _efc_contact_pyramidal,
+          dim=(d.nconmax, 4),
+          inputs=[m, d, refsafe],
+        )
+
+        # TODO(team): condim=4
+        # TODO(team): condim=6
