@@ -251,10 +251,12 @@ def _update_gradient(m: types.Model, d: types.Data):
     # TODO(team): static m?
     efcid_temp, elementid = wp.tid()
 
+    nefc = d.nefc[0]
+
     for i in range(nblocks_perblock):
       efcid = efcid_temp + i * dim_x
 
-      if efcid >= d.nefc[0]:
+      if efcid >= nefc:
         return
 
       worldid = d.efc.worldid[efcid]
@@ -272,11 +274,13 @@ def _update_gradient(m: types.Model, d: types.Data):
         continue
 
       # TODO(team): sparse efc_J
-      wp.atomic_add(
-        d.efc.h[worldid, dofi],
-        dofj,
-        d.efc.J[efcid, dofi] * d.efc.J[efcid, dofj] * efc_D,
-      )
+      value = d.efc.J[efcid, dofi] * d.efc.J[efcid, dofj] * efc_D
+      if value != 0.0:
+        wp.atomic_add(
+          d.efc.h[worldid, dofi],
+          dofj,
+          value
+        )
 
   @kernel
   def _cholesky(d: types.Data):
