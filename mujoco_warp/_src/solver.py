@@ -265,13 +265,14 @@ def _update_gradient(m: types.Model, d: types.Data):
         if d.efc.done[worldid]:
           continue
 
-      dofi = m.dof_tri_row[elementid]
-      dofj = m.dof_tri_col[elementid]
-
       efc_D = d.efc.D[efcid]
       active = d.efc.active[efcid]
-      if efc_D == 0.0 or active == 0:
+
+      if efc_D * float(active) == 0.0:
         continue
+
+      dofi = m.dof_tri_row[elementid]
+      dofj = m.dof_tri_col[elementid]
 
       # TODO(team): sparse efc_J
       value = d.efc.J[efcid, dofi] * d.efc.J[efcid, dofj] * efc_D
