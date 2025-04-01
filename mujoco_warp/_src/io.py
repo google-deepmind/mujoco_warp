@@ -32,38 +32,39 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     (mjm.actuator_gaintype, types.GainType, "Gain type"),
     (mjm.actuator_biastype, types.BiasType, "Bias type"),
     (mjm.eq_type, types.EqType, "Equality constraint types"),
+    (mjm.sensor_type, types.SensorType, "Sensor types"),
   ):
     unsupported = ~np.isin(field, list(field_types))
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  if mjm.nsensor > 0:
-    raise NotImplementedError("Sensors are unsupported.")
-
-  if mjm.ntendon > 0:
-    raise NotImplementedError("Tendons are unsupported.")
-
-  if mjm.nplugin > 0:
-    raise NotImplementedError("Plugins are unsupported.")
-
-  if mjm.nflex > 0:
-    raise NotImplementedError("Flexes are unsupported.")
+  for n, msg in (
+    (mjm.ntendon, "Tendons"),
+    (mjm.nplugin, "Plugins"),
+    (mjm.nflex, "Flexes"),
+  ):
+    if n > 0:
+      raise NotImplementedError(f"{msg} are unsupported.")
 
   # check options
-  if mjm.opt.integrator not in set(types.IntegratorType):
-    raise NotImplementedError(f"Integrator: {mjm.opt.integrator} is unsupported.")
-
-  if mjm.opt.cone not in set(types.ConeType):
-    raise NotImplementedError(f"Cone: {mjm.opt.cone} is unsupported.")
-
-  if mjm.opt.solver not in set(types.SolverType):
-    raise NotImplementedError(f"Solver: {mjm.opt.solver} is unsupported.")
+  for opt, opt_types, msg in (
+    (mjm.opt.integrator, types.IntegratorType, "Integrator"),
+    (mjm.opt.cone, types.ConeType, "Cone"),
+    (mjm.opt.solver, types.SolverType, "Solver"),
+  ):
+    if opt not in set(opt_types):
+      raise NotImplementedError(f"{msg} {opt} is unsupported.")
 
   if mjm.opt.wind.any():
     raise NotImplementedError("Wind is unsupported.")
 
   if mjm.opt.density > 0 or mjm.opt.viscosity > 0:
     raise NotImplementedError("Fluid forces are unsupported.")
+
+  # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
+  nv_max = 60
+  if mjm.nv > nv_max and (not mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_SPARSE):
+    raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
   m = types.Model()
 
