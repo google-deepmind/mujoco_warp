@@ -78,10 +78,15 @@ class SmoothTest(parameterized.TestCase):
 
     d.cam_xpos.zero_()
     d.cam_xmat.zero_()
+    d.light_xpos.zero_()
+    d.light_xdir.zero_()
 
     mjwarp.camlight(m, d)
     _assert_eq(d.cam_xpos.numpy()[0], mjd.cam_xpos, "cam_xpos")
+    # import ipdb; ipdb.set_trace()
     _assert_eq(d.cam_xmat.numpy()[0], mjd.cam_xmat.reshape((-1, 3, 3)), "cam_xmat")
+    _assert_eq(d.light_xpos.numpy()[0], mjd.light_xpos, "light_xpos")
+    _assert_eq(d.light_xdir.numpy()[0], mjd.light_xdir, "light_xdir")
 
   @parameterized.parameters(True, False)
   def test_crb(self, sparse: bool):

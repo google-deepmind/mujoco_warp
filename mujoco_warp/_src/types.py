@@ -395,6 +395,7 @@ class Model:
     ngeom: number of geoms                                   ()
     nsite: number of sites                                   ()
     ncam: number of cameras                                  ()
+    nlight: number of lights                                 ()
     nexclude: number of excluded geom pairs                  ()
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
@@ -498,6 +499,14 @@ class Model:
     cam_poscom0: global position rel. to sub-com in qpos0    (ncam, 3)
     cam_pos0: Cartesian camera position                      (nworld, ncam, 3)
     cam_mat0: Cartesian camera orientation                   (nworld, ncam, 3, 3)
+    light_mode: light tracking mode (mjtCamLight)            (nlight,)
+    light_bodyid: id of light's body                         (nlight,)
+    light_targetbodyid: id of targeted body; -1: none        (nlight,)
+    light_pos: position rel. to body frame                   (nlight, 3)
+    light_dir: direction rel. to body frame                  (nlight, 3)
+    light_poscom0: global position rel. to sub-com in qpos0  (nlight, 3)
+    light_pos0: global position rel. to body in qpos0        (nworld, nlight, 3)
+    light_dir0: global direction in qpos0                    (nworld, nlight, 3)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -530,6 +539,7 @@ class Model:
   ngeom: int
   nsite: int
   ncam: int
+  nlight: int
   nexclude: int
   nmocap: int
   nM: int
@@ -633,6 +643,14 @@ class Model:
   cam_poscom0: wp.array(dtype=wp.vec3, ndim=1)
   cam_pos0: wp.array(dtype=wp.vec3, ndim=1)
   cam_mat0: wp.array(dtype=wp.mat33, ndim=1)
+  light_mode: wp.array(dtype=wp.int32, ndim=1)
+  light_bodyid: wp.array(dtype=wp.int32, ndim=1)
+  light_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
+  light_pos: wp.array(dtype=wp.vec3, ndim=1)
+  light_dir: wp.array(dtype=wp.vec3, ndim=1)
+  light_poscom0: wp.array(dtype=wp.vec3, ndim=1)
+  light_pos0: wp.array(dtype=wp.vec3, ndim=1)
+  light_dir0: wp.array(dtype=wp.vec3, ndim=1)
   mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
   mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
   mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
@@ -722,6 +740,8 @@ class Data:
     site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
     cam_xpos: Cartesian camera position                         (nworld, ncam, 3)
     cam_xmat: Cartesian camera orientation                      (nworld, ncam, 3, 3)
+    light_xpos: Cartesian light position                        (nworld, nlight, 3)
+    light_xdir: Cartesian light direction                       (nworld, nlight, 3)
     subtree_com: center of mass of each subtree                 (nworld, nbody, 3)
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
@@ -798,6 +818,8 @@ class Data:
   site_xmat: wp.array(dtype=wp.mat33, ndim=2)
   cam_xpos: wp.array(dtype=wp.vec3, ndim=2)
   cam_xmat: wp.array(dtype=wp.mat33, ndim=2)
+  light_xpos: wp.array(dtype=wp.vec3, ndim=2)
+  light_xdir: wp.array(dtype=wp.vec3, ndim=2)
   subtree_com: wp.array(dtype=wp.vec3, ndim=2)
   cdof: wp.array(dtype=wp.spatial_vector, ndim=2)
   cinert: wp.array(dtype=vec10, ndim=2)

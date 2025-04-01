@@ -77,6 +77,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.ngeom = mjm.ngeom
   m.nsite = mjm.nsite
   m.ncam = mjm.ncam
+  m.nlight = mjm.nlight
   m.nmocap = mjm.nmocap
   m.nM = mjm.nM
   m.nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
@@ -362,6 +363,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.cam_poscom0 = wp.array(mjm.cam_poscom0, dtype=wp.vec3, ndim=1)
   m.cam_pos0 = wp.array(mjm.cam_pos0, dtype=wp.vec3, ndim=1)
   m.cam_mat0 = wp.array(mjm.cam_mat0.reshape(-1, 3, 3), dtype=wp.mat33, ndim=1)
+  m.light_mode = wp.array(mjm.light_mode, dtype=wp.int32, ndim=1)
+  m.light_bodyid = wp.array(mjm.light_bodyid, dtype=wp.int32, ndim=1)
+  m.light_targetbodyid = wp.array(mjm.light_targetbodyid, dtype=wp.int32, ndim=1)
+  m.light_pos = wp.array(mjm.light_pos, dtype=wp.vec3, ndim=1)
+  m.light_dir = wp.array(mjm.light_dir, dtype=wp.vec3, ndim=1)
+  m.light_poscom0 = wp.array(mjm.light_poscom0, dtype=wp.vec3, ndim=1)
+  m.light_pos0 = wp.array(mjm.light_pos0, dtype=wp.vec3, ndim=1)
+  m.light_dir0 = wp.array(mjm.light_dir0, dtype=wp.vec3, ndim=1)
   m.dof_bodyid = wp.array(mjm.dof_bodyid, dtype=wp.int32, ndim=1)
   m.dof_jntid = wp.array(mjm.dof_jntid, dtype=wp.int32, ndim=1)
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32, ndim=1)
@@ -658,6 +667,8 @@ def put_data(
   d.site_xmat = wp.array(tile(mjd.site_xmat), dtype=wp.mat33, ndim=2)
   d.cam_xpos = wp.array(tile(mjd.cam_xpos), dtype=wp.vec3, ndim=2)
   d.cam_xmat = wp.array(tile(mjd.cam_xmat.reshape(-1, 3, 3)), dtype=wp.mat33, ndim=2)
+  d.light_xpos = wp.array(tile(mjd.light_xpos), dtype=wp.vec3, ndim=2)
+  d.light_xdir = wp.array(tile(mjd.light_xdir), dtype=wp.vec3, ndim=2)
   d.cinert = wp.array(tile(mjd.cinert), dtype=types.vec10, ndim=2)
   d.cdof = wp.array(tile(mjd.cdof), dtype=wp.spatial_vector, ndim=2)
   d.crb = wp.array(tile(mjd.crb), dtype=types.vec10, ndim=2)

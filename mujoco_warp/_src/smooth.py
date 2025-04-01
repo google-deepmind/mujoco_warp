@@ -267,7 +267,7 @@ def camlight(m: Model, d: Data):
   wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
 
   @kernel
-  def fn(m: Model, d: Data):
+  def cam_fn(m: Model, d: Data):
     worldid, camid = wp.tid()
     is_target_cam = (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)) or (
       m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value)
@@ -301,7 +301,48 @@ def camlight(m: Model, d: Data):
       )
       # fmt: on
 
-  wp.launch(fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+  wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+
+  @kernel
+  def light_local_to_global(m: Model, d: Data):
+    """Fixed lights."""
+    worldid, lightid = wp.tid()
+    bodyid = m.light_bodyid[lightid]
+    xpos = d.xpos[worldid, bodyid]
+    xquat = d.xquat[worldid, bodyid]
+    d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
+      m.light_pos[lightid], xquat
+    )
+    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
+
+  wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
+
+  @kernel
+  def light_fn(m: Model, d: Data):
+    worldid, lightid = wp.tid()
+    is_target_light = (
+      m.light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value)
+    ) or (m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value))
+    invalid_target = is_target_light and (m.light_targetbodyid[lightid] < 0)
+    if invalid_target:
+      return
+    elif m.light_mode[lightid] == wp.static(CamLightType.TRACK.value):
+      body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
+      d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[lightid]
+    elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
+      d.light_xpos[worldid, lightid] = (
+        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[lightid]
+      )
+    elif m.light_mode[lightid] == wp.static(
+      CamLightType.TARGETBODY.value
+    ) or m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
+      pos = d.xpos[worldid, m.light_targetbodyid[lightid]]
+      if m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
+        pos = d.subtree_com[worldid, m.light_targetbodyid[lightid]]
+      d.light_xdir[worldid, lightid] = pos - d.light_xpos[worldid, lightid]
+    d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
+
+  wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
 
 
 @event_scope
