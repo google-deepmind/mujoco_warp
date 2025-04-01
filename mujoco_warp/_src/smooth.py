@@ -18,6 +18,7 @@ import warp as wp
 from packaging import version
 
 from . import math
+from .types import CamLightType
 from .types import Data
 from .types import DisableBit
 from .types import JointType
@@ -245,6 +246,66 @@ def com_pos(m: Model, d: Data):
   wp.launch(subtree_div, dim=(d.nworld, m.nbody), inputs=[m, d])
   wp.launch(cinert, dim=(d.nworld, m.nbody), inputs=[m, d])
   wp.launch(cdof, dim=(d.nworld, m.njnt), inputs=[m, d])
+
+
+@event_scope
+def camlight(m: Model, d: Data):
+  """Computes camera and light positions and orientations."""
+
+  @kernel
+  def cam_local_to_global(m: Model, d: Data):
+    """Fixed cameras."""
+    worldid, camid = wp.tid()
+    bodyid = m.cam_bodyid[camid]
+    xpos = d.xpos[worldid, bodyid]
+    xquat = d.xquat[worldid, bodyid]
+    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[camid], xquat)
+    d.cam_xmat[worldid, camid] = math.quat_to_mat(
+      math.mul_quat(xquat, m.cam_quat[camid])
+    )
+
+  wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
+
+  @kernel
+  def fn(m: Model, d: Data):
+    worldid, camid = wp.tid()
+    is_target_cam = (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)) or (
+      m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value)
+    )
+    invalid_target = is_target_cam and (m.cam_targetbodyid[camid] < 0)
+    if invalid_target:
+      return
+    elif m.cam_mode[camid] == wp.static(CamLightType.TRACK.value):
+      body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
+      d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[camid]
+    elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
+      d.cam_xpos[worldid, camid] = (
+        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[camid]
+      )
+    elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
+      camid
+    ] == wp.static(CamLightType.TARGETBODYCOM.value):
+      pos = d.xpos[worldid, m.cam_targetbodyid[camid]]
+      if m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value):
+        pos = d.subtree_com[worldid, m.cam_targetbodyid[camid]]
+      # zaxis = -desired camera direction, in global frame
+      mat_3 = wp.normalize(d.cam_xpos[worldid, camid] - pos)
+      # xaxis: orthogonal to zaxis and to (0,0,1)
+      mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
+      mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+      d.cam_xmat[worldid, camid] = wp.mat33(
+        mat_1[0],
+        mat_2[0],
+        mat_3[0],
+        mat_1[1],
+        mat_2[1],
+        mat_3[1],
+        mat_1[2],
+        mat_2[2],
+        mat_3[2],
+      )
+
+  wp.launch(fn, dim=(d.nworld, m.ncam), inputs=[m, d])
 
 
 @event_scope

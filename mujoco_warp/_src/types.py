@@ -24,6 +24,24 @@ MJ_NREF = mujoco.mjNREF
 MJ_NIMP = mujoco.mjNIMP
 
 
+class CamLightType(enum.IntEnum):
+  """Type of camera light.
+
+  Members:
+    FIXED: pos and rot fixed in body
+    TRACK: pos tracks body, rot fixed in global
+    TRACKCOM: pos tracks subtree com, rot fixed in body
+    TARGETBODY: pos fixed in body, rot tracks target body
+    TARGETBODYCOM: pos fixed in body, rot tracks target subtree com
+  """
+
+  FIXED = mujoco.mjtCamLight.mjCAMLIGHT_FIXED
+  TRACK = mujoco.mjtCamLight.mjCAMLIGHT_TRACK
+  TRACKCOM = mujoco.mjtCamLight.mjCAMLIGHT_TRACKCOM
+  TARGETBODY = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY
+  TARGETBODYCOM = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODYCOM
+
+
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
@@ -376,6 +394,7 @@ class Model:
     njnt: number of joints                                   ()
     ngeom: number of geoms                                   ()
     nsite: number of sites                                   ()
+    ncam: number of cameras                                  ()
     nexclude: number of excluded geom pairs                  ()
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
@@ -471,6 +490,14 @@ class Model:
     site_bodyid: id of site's body                           (nsite,)
     site_pos: local position offset rel. to body             (nsite, 3)
     site_quat: local orientation offset rel. to body         (nsite, 4)
+    cam_mode: camera tracking mode (mjtCamLight)             (ncam,)
+    cam_bodyid: id of camera's body                          (ncam,)
+    cam_targetbodyid: id of targeted body; -1: none          (ncam,)
+    cam_pos: position rel. to body frame                     (ncam, 3)
+    cam_quat: orientation rel. to body frame                 (ncam, 4)
+    cam_poscom0: global position rel. to sub-com in qpos0    (ncam, 3)
+    cam_pos0: Cartesian camera position                      (nworld, ncam, 3)
+    cam_mat0: Cartesian camera orientation                   (nworld, ncam, 3, 3)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -502,6 +529,7 @@ class Model:
   njnt: int
   ngeom: int
   nsite: int
+  ncam: int
   nexclude: int
   nmocap: int
   nM: int
@@ -597,6 +625,14 @@ class Model:
   site_bodyid: wp.array(dtype=wp.int32, ndim=1)
   site_pos: wp.array(dtype=wp.vec3, ndim=1)
   site_quat: wp.array(dtype=wp.quat, ndim=1)
+  cam_mode: wp.array(dtype=wp.int32, ndim=1)
+  cam_bodyid: wp.array(dtype=wp.int32, ndim=1)
+  cam_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
+  cam_pos: wp.array(dtype=wp.vec3, ndim=1)
+  cam_quat: wp.array(dtype=wp.quat, ndim=1)
+  cam_poscom0: wp.array(dtype=wp.vec3, ndim=1)
+  cam_pos0: wp.array(dtype=wp.vec3, ndim=1)
+  cam_mat0: wp.array(dtype=wp.mat33, ndim=1)
   mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
   mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
   mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
@@ -684,6 +720,8 @@ class Data:
     geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
     site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
+    cam_xpos: Cartesian camera position                         (nworld, ncam, 3)
+    cam_xmat: Cartesian camera orientation                      (nworld, ncam, 3, 3)
     subtree_com: center of mass of each subtree                 (nworld, nbody, 3)
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
@@ -758,6 +796,8 @@ class Data:
   geom_xmat: wp.array(dtype=wp.mat33, ndim=2)
   site_xpos: wp.array(dtype=wp.vec3, ndim=2)
   site_xmat: wp.array(dtype=wp.mat33, ndim=2)
+  cam_xpos: wp.array(dtype=wp.vec3, ndim=2)
+  cam_xmat: wp.array(dtype=wp.mat33, ndim=2)
   subtree_com: wp.array(dtype=wp.vec3, ndim=2)
   cdof: wp.array(dtype=wp.spatial_vector, ndim=2)
   cinert: wp.array(dtype=vec10, ndim=2)

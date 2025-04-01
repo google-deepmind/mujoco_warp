@@ -72,8 +72,20 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cinert.numpy()[0], mjd.cinert, "cinert")
     _assert_eq(d.cdof.numpy()[0], mjd.cdof, "cdof")
 
+  def test_camlight(self):
+    """Tests camlight."""
+    _, mjd, m, d = test_util.fixture("pendula.xml")
+
+    d.cam_xpos.zero_()
+    d.cam_xmat.zero_()
+
+    mjwarp.camlight(m, d)
+    _assert_eq(d.cam_xpos.numpy()[0], mjd.cam_xpos, "cam_xpos")
+    _assert_eq(d.cam_xmat.numpy()[0], mjd.cam_xmat.reshape((-1, 3, 3)), "cam_xmat")
+
   @parameterized.parameters(True, False)
   def test_crb(self, sparse: bool):
+    """Tests crb."""
     """Tests crb."""
     mjm, mjd, m, d = test_util.fixture("pendula.xml", sparse=sparse)
 
