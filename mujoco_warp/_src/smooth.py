@@ -293,17 +293,13 @@ def camlight(m: Model, d: Data):
       # xaxis: orthogonal to zaxis and to (0,0,1)
       mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
       mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+      # fmt: off
       d.cam_xmat[worldid, camid] = wp.mat33(
-        mat_1[0],
-        mat_2[0],
-        mat_3[0],
-        mat_1[1],
-        mat_2[1],
-        mat_3[1],
-        mat_1[2],
-        mat_2[2],
-        mat_3[2],
+        mat_1[0], mat_2[0], mat_3[0],
+        mat_1[1], mat_2[1], mat_3[1],
+        mat_1[2], mat_2[2], mat_3[2]
       )
+      # fmt: on
 
   wp.launch(fn, dim=(d.nworld, m.ncam), inputs=[m, d])
 

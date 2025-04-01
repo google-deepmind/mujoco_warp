@@ -122,7 +122,7 @@ class IOTest(absltest.TestCase):
 
     with self.assertRaises(ValueError):
       mjwarp.put_model(mjm)
-      
+
   def test_actuator_trntype(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>

@@ -86,7 +86,6 @@ class SmoothTest(parameterized.TestCase):
   @parameterized.parameters(True, False)
   def test_crb(self, sparse: bool):
     """Tests crb."""
-    """Tests crb."""
     mjm, mjd, m, d = test_util.fixture("pendula.xml", sparse=sparse)
 
     d.crb.zero_()
