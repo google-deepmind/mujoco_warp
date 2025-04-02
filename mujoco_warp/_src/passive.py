@@ -104,5 +104,5 @@ def passive(m: Model, d: Data):
   # TODO(team): mj_inertiaBoxFluidModell
 
   d.qfrc_spring.zero_()
-  wp.launch(_spring, dim=(d.nworld, m.njnt), inputs=[m, d])
-  wp.launch(_damper_passive, dim=(d.nworld, m.nv), inputs=[m, d])
+  wp.launch(_spring, dim=(m.nworld, m.njnt), inputs=[m, d])
+  wp.launch(_damper_passive, dim=(m.nworld, m.nv), inputs=[m, d])

@@ -54,7 +54,7 @@ def _create_context(m: types.Model, d: types.Data, grad: bool = True):
     d.efc.search[worldid, dofid] = search
     wp.atomic_add(d.efc.search_dot, worldid, search * search)
 
-  wp.launch(_init_context, dim=(d.nworld), inputs=[d])
+  wp.launch(_init_context, dim=(m.nworld), inputs=[d])
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
   d.efc.Jaref.zero_()
@@ -69,7 +69,7 @@ def _create_context(m: types.Model, d: types.Data, grad: bool = True):
     _update_gradient(m, d)
 
     # search = -Mgrad
-    wp.launch(_search, dim=(d.nworld, m.nv), inputs=[d])
+    wp.launch(_search, dim=(m.nworld, m.nv), inputs=[d])
 
 
 def _update_constraint(m: types.Model, d: types.Data):
@@ -159,18 +159,18 @@ def _update_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(d.efc.gauss, worldid, gauss_cost)
     wp.atomic_add(d.efc.cost, worldid, gauss_cost)
 
-  wp.launch(_init_cost, dim=(d.nworld), inputs=[d])
+  wp.launch(_init_cost, dim=(m.nworld), inputs=[d])
 
   wp.launch(_efc_kernel, dim=(d.njmax,), inputs=[d])
 
   # qfrc_constraint = efc_J.T @ efc_force
-  wp.launch(_zero_qfrc_constraint, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_zero_qfrc_constraint, dim=(m.nworld, m.nv), inputs=[d])
 
   wp.launch(_qfrc_constraint, dim=(m.nv, d.njmax), inputs=[d])
 
   # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
 
-  wp.launch(_gauss, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_gauss, dim=(m.nworld, m.nv), inputs=[d])
 
 
 def _update_gradient(m: types.Model, d: types.Data):
@@ -293,22 +293,22 @@ def _update_gradient(m: types.Model, d: types.Data):
     wp.tile_store(d.efc.Mgrad[worldid], output_tile)
 
   # grad = Ma - qfrc_smooth - qfrc_constraint
-  wp.launch(_zero_grad_dot, dim=(d.nworld), inputs=[d])
+  wp.launch(_zero_grad_dot, dim=(m.nworld), inputs=[d])
 
-  wp.launch(_grad, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_grad, dim=(m.nworld, m.nv), inputs=[d])
 
   if m.opt.solver == types.SolverType.CG:
     smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      wp.launch(_zero_h_lower, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
+      wp.launch(_zero_h_lower, dim=(m.nworld, m.dof_tri_row.size), inputs=[m, d])
 
       wp.launch(
-        _set_h_qM_lower_sparse, dim=(d.nworld, m.qM_fullm_i.size), inputs=[m, d]
+        _set_h_qM_lower_sparse, dim=(m.nworld, m.qM_fullm_i.size), inputs=[m, d]
       )
     else:
-      wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
+      wp.launch(_copy_lower_triangle, dim=(m.nworld, m.dof_tri_row.size), inputs=[m, d])
 
     # Optimization: launching _JTDAJ with limited number of blocks on a GPU.
     # Profiling suggests that only a fraction of blocks out of the original
@@ -333,7 +333,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       inputs=[m, d, int((d.njmax + dim_x - 1) / dim_x), dim_x],
     )
 
-    wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32)
+    wp.launch_tiled(_cholesky, dim=(m.nworld,), inputs=[d], block_dim=32)
 
 
 @wp.func
@@ -640,7 +640,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     alpha = wp.where(improved and not plo_better, phi_alpha, alpha)
     d.efc.alpha[worldid] = alpha
 
-  wp.launch(_gtol, dim=(d.nworld,), inputs=[m, d])
+  wp.launch(_gtol, dim=(m.nworld,), inputs=[m, d])
 
   # linesearch points
   done = d.efc.ls_done
@@ -659,17 +659,17 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
   # initialize interval
 
-  wp.launch(_init_p0_gauss, dim=(d.nworld,), inputs=[p0, d])
+  wp.launch(_init_p0_gauss, dim=(m.nworld,), inputs=[p0, d])
 
   wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d])
 
-  wp.launch(_init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d])
+  wp.launch(_init_lo_gauss, dim=(m.nworld,), inputs=[p0, lo, lo_alpha, d])
 
   wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d])
 
   # set the lo/hi interval bounds
 
-  wp.launch(_init_bounds, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, hi, hi_alpha, d])
+  wp.launch(_init_bounds, dim=(m.nworld,), inputs=[p0, lo, lo_alpha, hi, hi_alpha, d])
 
   for _ in range(m.opt.ls_iterations):
     # note: we always launch ls_iterations kernels, but the kernels may early exit if done is true
@@ -677,7 +677,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     # of extra launches
     inputs = [done, lo, lo_alpha, hi, hi_alpha, lo_next, lo_next_alpha, hi_next]
     inputs += [hi_next_alpha, mid, mid_alpha, d]
-    wp.launch(_next_alpha_gauss, dim=(d.nworld,), inputs=inputs)
+    wp.launch(_next_alpha_gauss, dim=(m.nworld,), inputs=inputs)
 
     inputs = [done, lo_next, lo_next_alpha, hi_next, hi_next_alpha, mid, mid_alpha]
     inputs += [d]
@@ -685,7 +685,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
     inputs = [done, p0, lo, lo_alpha, hi, hi_alpha, lo_next, lo_next_alpha, hi_next]
     inputs += [hi_next_alpha, mid, mid_alpha, d]
-    wp.launch(_swap, dim=(d.nworld,), inputs=inputs)
+    wp.launch(_swap, dim=(m.nworld,), inputs=inputs)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
@@ -752,10 +752,10 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     bestid = wp.argmin(d.efc.cost_candidate[worldid])
     d.efc.alpha[worldid] = m.alpha_candidate[bestid]
 
-  wp.launch(_quad_total, dim=(d.nworld, m.nlsp), inputs=[m, d])
+  wp.launch(_quad_total, dim=(m.nworld, m.nlsp), inputs=[m, d])
   wp.launch(_quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d])
-  wp.launch(_cost_alpha, dim=(d.nworld, m.nlsp), inputs=[m, d])
-  wp.launch(_best_alpha, dim=(d.nworld), inputs=[d])
+  wp.launch(_cost_alpha, dim=(m.nworld, m.nlsp), inputs=[m, d])
+  wp.launch(_best_alpha, dim=(m.nworld), inputs=[d])
 
 
 @event_scope
@@ -878,9 +878,9 @@ def _linesearch(m: types.Model, d: types.Data):
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-  wp.launch(_zero_quad_gauss, dim=(d.nworld), inputs=[d])
+  wp.launch(_zero_quad_gauss, dim=(m.nworld), inputs=[d])
 
-  wp.launch(_init_quad_gauss, dim=(d.nworld, m.nv), inputs=[m, d])
+  wp.launch(_init_quad_gauss, dim=(m.nworld, m.nv), inputs=[m, d])
 
   # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
 
@@ -891,7 +891,7 @@ def _linesearch(m: types.Model, d: types.Data):
   else:
     _linesearch_iterative(m, d)
 
-  wp.launch(_qacc_ma, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_qacc_ma, dim=(m.nworld, m.nv), inputs=[d])
 
   wp.launch(_jaref, dim=(d.njmax,), inputs=[d])
 
@@ -1005,23 +1005,23 @@ def solve(m: types.Model, d: types.Data):
     _linesearch(m, d)
 
     if m.opt.solver == types.SolverType.CG:
-      wp.launch(_prev_grad_Mgrad, dim=(d.nworld, m.nv), inputs=[d])
+      wp.launch(_prev_grad_Mgrad, dim=(m.nworld, m.nv), inputs=[d])
 
     _update_constraint(m, d)
     _update_gradient(m, d)
 
     # polak-ribiere
     if m.opt.solver == types.SolverType.CG:
-      wp.launch(_zero_beta_num_den, dim=(d.nworld), inputs=[d])
+      wp.launch(_zero_beta_num_den, dim=(m.nworld), inputs=[d])
 
-      wp.launch(_beta_num_den, dim=(d.nworld, m.nv), inputs=[d])
+      wp.launch(_beta_num_den, dim=(m.nworld, m.nv), inputs=[d])
 
-      wp.launch(_beta, dim=(d.nworld,), inputs=[d])
+      wp.launch(_beta, dim=(m.nworld,), inputs=[d])
 
-    wp.launch(_zero_search_dot, dim=(d.nworld), inputs=[d])
+    wp.launch(_zero_search_dot, dim=(m.nworld), inputs=[d])
 
-    wp.launch(_search_update, dim=(d.nworld, m.nv), inputs=[d])
+    wp.launch(_search_update, dim=(m.nworld, m.nv), inputs=[d])
 
-    wp.launch(_done, dim=(d.nworld,), inputs=[m, d, i])
+    wp.launch(_done, dim=(m.nworld,), inputs=[m, d, i])
 
   kernel_copy(d.qacc_warmstart, d.qacc)

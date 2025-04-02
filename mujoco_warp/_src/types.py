@@ -380,6 +380,7 @@ class Model:
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
     nlsp: number of step sizes for parallel linsearch        ()
+    nworld: number of parallel worlds                        ()
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nq,)
@@ -506,6 +507,7 @@ class Model:
   nmocap: int
   nM: int
   nlsp: int  # warp only
+  nworld: int  # warp only
   opt: Option
   stat: Statistic
   qpos0: wp.array(dtype=wp.float32, ndim=1)
@@ -707,7 +709,6 @@ class Data:
     qfrc_constraint: constraint force                           (nworld, nv)
     contact: contact data
     efc: constraint data
-    nworld: number of worlds                                    ()
     nconmax: maximum number of contacts                         ()
     njmax: maximum number of constraints                        ()
     rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
@@ -781,7 +782,6 @@ class Data:
   qfrc_constraint: wp.array(dtype=wp.float32, ndim=2)
   contact: Contact
   efc: Constraint
-  nworld: int
   nconmax: int
   njmax: int
   rne_cacc: wp.array(dtype=wp.spatial_vector, ndim=2)

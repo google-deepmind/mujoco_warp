@@ -24,7 +24,7 @@ from . import support
 from . import types
 
 
-def put_model(mjm: mujoco.MjModel) -> types.Model:
+def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -94,6 +94,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt.is_sparse = support.is_sparse(mjm)
   m.opt.ls_parallel = False
   m.stat.meaninertia = mjm.stat.meaninertia
+  m.nworld = nworld
 
   m.qpos0 = wp.array(mjm.qpos0, dtype=wp.float32, ndim=1)
   m.qpos_spring = wp.array(mjm.qpos_spring, dtype=wp.float32, ndim=1)
@@ -451,7 +452,6 @@ def make_data(
   mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1
 ) -> types.Data:
   d = types.Data()
-  d.nworld = nworld
 
   # TODO(team): move to Model?
   if nconmax == -1:
@@ -462,7 +462,6 @@ def make_data(
     # TODO(team): heuristic for njmax
     njmax = 512
   d.njmax = njmax
-
   d.ncon = wp.zeros(1, dtype=wp.int32)
   d.nefc = wp.zeros(1, dtype=wp.int32, ndim=1)
   d.nl = 0
@@ -521,7 +520,7 @@ def make_data(
   d.contact.geom = wp.zeros((nconmax,), dtype=wp.vec2i)
   d.contact.efc_address = wp.zeros((nconmax,), dtype=wp.int32)
   d.contact.worldid = wp.zeros((nconmax,), dtype=wp.int32)
-  d.efc = _constraint(mjm, d.nworld, d.njmax)
+  d.efc = _constraint(mjm, nworld, d.njmax)
   d.qfrc_passive = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_spring = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_damper = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
@@ -530,8 +529,8 @@ def make_data(
   d.qfrc_constraint = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qacc_smooth = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
 
-  d.rne_cacc = wp.zeros(shape=(d.nworld, mjm.nbody), dtype=wp.spatial_vector)
-  d.rne_cfrc = wp.zeros(shape=(d.nworld, mjm.nbody), dtype=wp.spatial_vector)
+  d.rne_cacc = wp.zeros(shape=(nworld, mjm.nbody), dtype=wp.spatial_vector)
+  d.rne_cfrc = wp.zeros(shape=(nworld, mjm.nbody), dtype=wp.spatial_vector)
 
   d.xfrc_applied = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
 
@@ -591,7 +590,6 @@ def put_data(
   if nworld * mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {nworld * mjd.nefc})")
 
-  d.nworld = nworld
   # TODO(team): move nconmax and njmax to Model?
   d.nconmax = nconmax
   d.njmax = njmax
@@ -752,10 +750,10 @@ def put_data(
   d.contact.efc_address = wp.array(con_efc_address, dtype=wp.int32, ndim=1)
   d.contact.worldid = wp.array(con_worldid, dtype=wp.int32, ndim=1)
 
-  d.rne_cacc = wp.zeros(shape=(d.nworld, mjm.nbody), dtype=wp.spatial_vector)
-  d.rne_cfrc = wp.zeros(shape=(d.nworld, mjm.nbody), dtype=wp.spatial_vector)
+  d.rne_cacc = wp.zeros(shape=(nworld, mjm.nbody), dtype=wp.spatial_vector)
+  d.rne_cfrc = wp.zeros(shape=(nworld, mjm.nbody), dtype=wp.spatial_vector)
 
-  d.efc = _constraint(mjm, d.nworld, d.njmax)
+  d.efc = _constraint(mjm, nworld, d.njmax)
   d.efc.J = wp.array(efc_J_fill, dtype=wp.float32, ndim=2)
   d.efc.D = wp.array(efc_D_fill, dtype=wp.float32, ndim=1)
   d.efc.pos = wp.array(efc_pos_fill, dtype=wp.float32, ndim=1)
@@ -797,7 +795,7 @@ def get_data_into(
   d: types.Data,
 ):
   """Gets Data from a device into an existing mujoco.MjData."""
-  if d.nworld > 1:
+  if m.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 
   ncon = d.ncon.numpy()[0]

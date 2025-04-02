@@ -62,7 +62,7 @@ class SolverTest(parameterized.TestCase):
     mjd = mujoco.MjData(mjm)
     mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
     mujoco.mj_step(mjm, mjd)
-    m = mjwarp.put_model(mjm)
+    m = mjwarp.put_model(mjm, nworld=nworld)
     m.opt.ls_parallel = ls_parallel
     d = mjwarp.put_data(mjm, mjd, nworld=nworld, njmax=njmax)
     return mjm, mjd, m, d

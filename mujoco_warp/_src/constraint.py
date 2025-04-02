@@ -228,7 +228,7 @@ def make_constraint(m: types.Model, d: types.Data):
     ):
       wp.launch(
         _efc_limit_slide_hinge,
-        dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
+        dim=(m.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[m, d, refsafe],
       )
 

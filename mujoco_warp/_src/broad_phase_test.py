@@ -208,6 +208,7 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d2.collision_pair.numpy()[2][1], 2)
 
     # two worlds and four collisions
+    m3 = mjwarp.put_model(mjm, nworld=2)
     d3 = mjwarp.make_data(mjm, nworld=2)
     d3.geom_xpos = wp.array(
       np.vstack(
@@ -216,7 +217,7 @@ class BroadphaseTest(absltest.TestCase):
       dtype=wp.vec3,
     )
 
-    collision_driver.nxn_broadphase(m, d3)
+    collision_driver.nxn_broadphase(m3, d3)
     np.testing.assert_allclose(d3.ncollision.numpy()[0], 4)
     np.testing.assert_allclose(d3.collision_pair.numpy()[0][0], 0)
     np.testing.assert_allclose(d3.collision_pair.numpy()[0][1], 1)

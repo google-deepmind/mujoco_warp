@@ -147,9 +147,9 @@ def _advance(
 
   # skip if no stateful actuators.
   if m.na:
-    wp.launch(next_activation, dim=(d.nworld, m.nu), inputs=[m, d, act_dot])
+    wp.launch(next_activation, dim=(m.nworld, m.nu), inputs=[m, d, act_dot])
 
-  wp.launch(advance_velocities, dim=(d.nworld, m.nv), inputs=[m, d, qacc])
+  wp.launch(advance_velocities, dim=(m.nworld, m.nv), inputs=[m, d, qacc])
 
   # advance positions with qvel if given, d.qvel otherwise (semi-implicit)
   if qvel is not None:
@@ -157,7 +157,7 @@ def _advance(
   else:
     qvel_in = d.qvel
 
-  wp.launch(integrate_joint_positions, dim=(d.nworld, m.njnt), inputs=[m, d, qvel_in])
+  wp.launch(integrate_joint_positions, dim=(m.nworld, m.njnt), inputs=[m, d, qvel_in])
 
   d.time = d.time + m.opt.timestep
 
@@ -181,7 +181,7 @@ def euler(m: Model, d: Data):
       )
 
     kernel_copy(d.qM_integration, d.qM)
-    wp.launch(add_damping_sum_qfrc_kernel_sparse, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(add_damping_sum_qfrc_kernel_sparse, dim=(m.nworld, m.nv), inputs=[m, d])
     smooth.factor_solve_i(
       m,
       d,
@@ -221,7 +221,7 @@ def euler(m: Model, d: Data):
         wp.tile_store(d.qacc_integration[worldid], qacc_tile, offset=(dofid))
 
       wp.launch_tiled(
-        eulerdamp, dim=(d.nworld, size), inputs=[m, d, m.dof_damping, adr], block_dim=32
+        eulerdamp, dim=(m.nworld, size), inputs=[m, d, m.dof_damping, adr], block_dim=32
       )
 
     qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -367,7 +367,7 @@ def implicit(m: Model, d: Data):
 
       wp.launch_tiled(
         qderiv_actuator_fused_kernel,
-        dim=(d.nworld, size),
+        dim=(m.nworld, size),
         inputs=[m, d, damping, adr],
         block_dim=block_dim,
       )
@@ -390,7 +390,7 @@ def implicit(m: Model, d: Data):
     if actuation_enabled:
       wp.launch(
         actuator_bias_gain_vel,
-        dim=(d.nworld, m.nu),
+        dim=(m.nworld, m.nu),
         inputs=[m, d],
       )
 
@@ -435,7 +435,7 @@ def fwd_velocity(m: Model, d: Data):
       qvel = d.qvel[worldid]
       wp.atomic_add(d.actuator_velocity[worldid], actid, moment[dofid] * qvel[dofid])
 
-    wp.launch(_actuator_velocity, dim=(d.nworld, m.nu, m.nv), inputs=[d])
+    wp.launch(_actuator_velocity, dim=(m.nworld, m.nu, m.nv), inputs=[d])
   else:
 
     def actuator_velocity(
@@ -465,7 +465,7 @@ def fwd_velocity(m: Model, d: Data):
 
       wp.launch_tiled(
         _actuator_velocity,
-        dim=(d.nworld, size),
+        dim=(m.nworld, size),
         inputs=[
           m,
           d,
@@ -568,14 +568,14 @@ def fwd_actuation(m: Model, d: Data):
         s = wp.clamp(s, r[0], r[1])
       qfrc[worldid, vid] = s
 
-  wp.launch(_force, dim=[d.nworld, m.nu], inputs=[m, d], outputs=[d.actuator_force])
+  wp.launch(_force, dim=[m.nworld, m.nu], inputs=[m, d], outputs=[d.actuator_force])
 
   if m.opt.is_sparse:
     # TODO(team): sparse version
 
     wp.launch(
       _qfrc,
-      dim=(d.nworld, m.nv),
+      dim=(m.nworld, m.nv),
       inputs=[m, d.actuator_moment, d.actuator_force],
       outputs=[d.qfrc_actuator],
     )
@@ -610,7 +610,7 @@ def fwd_actuation(m: Model, d: Data):
 
       wp.launch_tiled(
         qfrc_actuator_kernel,
-        dim=(d.nworld, size),
+        dim=(m.nworld, size),
         inputs=[
           m,
           d,
@@ -635,7 +635,7 @@ def fwd_actuation(m: Model, d: Data):
           beg, end - beg, int(qderiv_tilesize_nu[i]), int(qderiv_tilesize_nv[i])
         )
 
-    wp.launch(_qfrc_limited, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(_qfrc_limited, dim=(m.nworld, m.nv), inputs=[m, d])
 
   # TODO actuator-level gravity compensation, skip if added as passive force
 
@@ -654,7 +654,7 @@ def fwd_acceleration(m: Model, d: Data):
       + d.qfrc_applied[worldid, dofid]
     )
 
-  wp.launch(_qfrc_smooth, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_qfrc_smooth, dim=(m.nworld, m.nv), inputs=[d])
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
   smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)

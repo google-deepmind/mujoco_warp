@@ -357,7 +357,7 @@ def sap_broadphase(m: Model, d: Data):
 
   wp.launch(
     kernel=broadphase_project_spheres_onto_sweep_direction_kernel,
-    dim=(d.nworld, m.ngeom),
+    dim=(m.nworld, m.ngeom),
     inputs=[m, d, direction],
   )
 
@@ -367,19 +367,19 @@ def sap_broadphase(m: Model, d: Data):
   if tile_sort_available:
     segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
     wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[m, d], block_dim=128
+      kernel=segmented_sort_kernel, dim=(m.nworld), inputs=[m, d], block_dim=128
     )
     print("tile sort available")
   elif segmented_sort_available:
     wp.utils.segmented_sort_pairs(
       d.sap_projection_lower,
       d.sap_sort_index,
-      m.ngeom * d.nworld,
+      m.ngeom * m.nworld,
       d.sap_segment_index,
     )
   else:
     # Sort each world's segment separately
-    for world_id in range(d.nworld):
+    for world_id in range(m.nworld):
       start_idx = world_id * m.ngeom
 
       # Create temporary arrays for sorting
@@ -431,13 +431,13 @@ def sap_broadphase(m: Model, d: Data):
 
   wp.launch(
     kernel=reorder_bounding_spheres_kernel,
-    dim=(d.nworld, m.ngeom),
+    dim=(m.nworld, m.ngeom),
     inputs=[m, d],
   )
 
   wp.launch(
     kernel=sap_broadphase_prepare_kernel,
-    dim=(d.nworld, m.ngeom),
+    dim=(m.nworld, m.ngeom),
     inputs=[m, d],
   )
 
@@ -445,7 +445,7 @@ def sap_broadphase(m: Model, d: Data):
   wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
 
   # Estimate how many overlap checks need to be done - assumes each box has to be compared to 5 other boxes (and batched over all worlds)
-  num_sweep_threads = 5 * d.nworld * m.ngeom
+  num_sweep_threads = 5 * m.nworld * m.ngeom
   filter_parent = not m.opt.disableflags & DisableBit.FILTERPARENT.value
   wp.launch(
     kernel=sap_broadphase_kernel,
@@ -509,7 +509,7 @@ def nxn_broadphase(m: Model, d: Data):
       _add_geom_pair(m, d, geom1, geom2, worldid)
 
   wp.launch(
-    _nxn_broadphase, dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d]
+    _nxn_broadphase, dim=(m.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d]
   )
 
 
