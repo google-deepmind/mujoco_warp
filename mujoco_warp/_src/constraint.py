@@ -111,7 +111,7 @@ def _efc_limit_slide_hinge(
   qpos = d.qpos[worldid, m.jnt_qposadr[jntid]]
   jnt_range = m.jnt_range[worldid, jntid]
   dist_min, dist_max = qpos - jnt_range[0], jnt_range[1] - qpos
-  pos = wp.min(dist_min, dist_max) - m.jnt_margin[jntid]
+  pos = wp.min(dist_min, dist_max) - m.jnt_margin[worldid, jntid]
   active = pos < 0
 
   if active:
@@ -133,7 +133,7 @@ def _efc_limit_slide_hinge(
       m.dof_invweight0[dofadr],
       m.jnt_solref[worldid, jntid],
       m.jnt_solimp[worldid, jntid],
-      m.jnt_margin[jntid],
+      m.jnt_margin[worldid, jntid],
       refsafe,
       Jqvel,
     )

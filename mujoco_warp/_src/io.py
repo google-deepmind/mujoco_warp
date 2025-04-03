@@ -336,10 +336,10 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.jnt_axis = wp.array(mjm.jnt_axis, dtype=wp.vec3) # should that be varying per-world?
   m.jnt_pos = wp.array(mjm.jnt_pos, dtype=wp.vec3) # should that be varying per-world?
   m.jnt_range = create_nworld_array(wp.array(mjm.jnt_range, dtype=wp.float32), False)
-  m.jnt_margin = wp.array(mjm.jnt_margin, dtype=wp.float32, ndim=1)
-  m.jnt_stiffness = wp.array(mjm.jnt_stiffness, dtype=wp.float32, ndim=1)
-  m.jnt_actfrclimited = wp.array(mjm.jnt_actfrclimited, dtype=wp.bool, ndim=1)
-  m.jnt_actfrcrange = wp.array(mjm.jnt_actfrcrange, dtype=wp.vec2, ndim=1)
+  m.jnt_margin = create_nworld_array(wp.array(mjm.jnt_margin, dtype=wp.float32), False)
+  m.jnt_stiffness = create_nworld_array(wp.array(mjm.jnt_stiffness, dtype=wp.float32), False)
+  m.jnt_actfrclimited = wp.array(mjm.jnt_actfrclimited, dtype=wp.bool)
+  m.jnt_actfrcrange = create_nworld_array(wp.array(mjm.jnt_actfrcrange, dtype=wp.vec2), False)
   m.geom_type = wp.array(mjm.geom_type, dtype=wp.int32, ndim=1)
   m.geom_bodyid = wp.array(mjm.geom_bodyid, dtype=wp.int32, ndim=1)
   m.geom_conaffinity = wp.array(mjm.geom_conaffinity, dtype=wp.int32, ndim=1)

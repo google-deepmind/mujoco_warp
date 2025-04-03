@@ -548,8 +548,8 @@ def fwd_actuation(m: Model, d: Data):
     if m.jnt_actfrclimited[jntid]:
       d.qfrc_actuator[worldid, dofid] = wp.clamp(
         d.qfrc_actuator[worldid, dofid],
-        m.jnt_actfrcrange[jntid][0],
-        m.jnt_actfrcrange[jntid][1],
+        m.jnt_actfrcrange[worldid, jntid][0],
+        m.jnt_actfrcrange[worldid, jntid][1],
       )
 
   if m.opt.is_sparse:
@@ -564,7 +564,7 @@ def fwd_actuation(m: Model, d: Data):
         s += moment[worldid, uid, vid] * force[worldid, uid]
       jntid = m.dof_jntid[vid]
       if m.jnt_actfrclimited[jntid]:
-        r = m.jnt_actfrcrange[jntid]
+        r = m.jnt_actfrcrange[worldid, jntid]
         s = wp.clamp(s, r[0], r[1])
       qfrc[worldid, vid] = s
 
