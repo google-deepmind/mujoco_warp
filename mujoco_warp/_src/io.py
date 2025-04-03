@@ -23,6 +23,9 @@ from packaging import version
 from . import support
 from . import types
 
+# TODO(erikfrey): would it be better to tile on the gpu?
+def tile(x, nworld):
+  return np.tile(x, (nworld,) + (1,) * len(x.shape))
 
 def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   # check supported features
@@ -97,9 +100,12 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.nworld = nworld
 
   def create_array(array, expand):
-    array.ndim += 1
-    array.shape = (nworld,) + array.shape
-    array.strides = (0,) + array.strides
+    if expand:
+      array = wp.array(tile(array.numpy(), nworld), dtype=array.dtype)
+    else:
+      array.ndim += 1
+      array.shape = (nworld,) + array.shape
+      array.strides = (0,) + array.strides
     return array
 
   m.qpos0 = create_array(wp.array(mjm.qpos0, dtype=wp.float32), False)
@@ -605,10 +611,6 @@ def put_data(
   d.nefc = wp.array([mjd.nefc * nworld], dtype=wp.int32, ndim=1)
   d.time = mjd.time
 
-  # TODO(erikfrey): would it be better to tile on the gpu?
-  def tile(x):
-    return np.tile(x, (nworld,) + (1,) * len(x.shape))
-
   if support.is_sparse(mjm):
     qM = np.expand_dims(mjd.qM, axis=0)
     qLD = np.expand_dims(mjd.qLD, axis=0)
@@ -632,48 +634,48 @@ def put_data(
     mjd.moment_colind,
   )
 
-  d.qpos = wp.array(tile(mjd.qpos), dtype=wp.float32, ndim=2)
-  d.qvel = wp.array(tile(mjd.qvel), dtype=wp.float32, ndim=2)
-  d.qacc_warmstart = wp.array(tile(mjd.qacc_warmstart), dtype=wp.float32, ndim=2)
-  d.qfrc_applied = wp.array(tile(mjd.qfrc_applied), dtype=wp.float32, ndim=2)
-  d.mocap_pos = wp.array(tile(mjd.mocap_pos), dtype=wp.vec3, ndim=2)
-  d.mocap_quat = wp.array(tile(mjd.mocap_quat), dtype=wp.quat, ndim=2)
-  d.qacc = wp.array(tile(mjd.qacc), dtype=wp.float32, ndim=2)
-  d.xanchor = wp.array(tile(mjd.xanchor), dtype=wp.vec3, ndim=2)
-  d.xaxis = wp.array(tile(mjd.xaxis), dtype=wp.vec3, ndim=2)
-  d.xmat = wp.array(tile(mjd.xmat), dtype=wp.mat33, ndim=2)
-  d.xpos = wp.array(tile(mjd.xpos), dtype=wp.vec3, ndim=2)
-  d.xquat = wp.array(tile(mjd.xquat), dtype=wp.quat, ndim=2)
-  d.xipos = wp.array(tile(mjd.xipos), dtype=wp.vec3, ndim=2)
-  d.ximat = wp.array(tile(mjd.ximat), dtype=wp.mat33, ndim=2)
-  d.subtree_com = wp.array(tile(mjd.subtree_com), dtype=wp.vec3, ndim=2)
-  d.geom_xpos = wp.array(tile(mjd.geom_xpos), dtype=wp.vec3, ndim=2)
-  d.geom_xmat = wp.array(tile(mjd.geom_xmat), dtype=wp.mat33, ndim=2)
-  d.site_xpos = wp.array(tile(mjd.site_xpos), dtype=wp.vec3, ndim=2)
-  d.site_xmat = wp.array(tile(mjd.site_xmat), dtype=wp.mat33, ndim=2)
-  d.cinert = wp.array(tile(mjd.cinert), dtype=types.vec10, ndim=2)
-  d.cdof = wp.array(tile(mjd.cdof), dtype=wp.spatial_vector, ndim=2)
-  d.crb = wp.array(tile(mjd.crb), dtype=types.vec10, ndim=2)
-  d.qM = wp.array(tile(qM), dtype=wp.float32, ndim=3)
-  d.qLD = wp.array(tile(qLD), dtype=wp.float32, ndim=3)
-  d.qLDiagInv = wp.array(tile(mjd.qLDiagInv), dtype=wp.float32, ndim=2)
-  d.ctrl = wp.array(tile(mjd.ctrl), dtype=wp.float32, ndim=2)
-  d.actuator_velocity = wp.array(tile(mjd.actuator_velocity), dtype=wp.float32, ndim=2)
-  d.actuator_force = wp.array(tile(mjd.actuator_force), dtype=wp.float32, ndim=2)
-  d.actuator_length = wp.array(tile(mjd.actuator_length), dtype=wp.float32, ndim=2)
-  d.actuator_moment = wp.array(tile(actuator_moment), dtype=wp.float32, ndim=3)
-  d.cvel = wp.array(tile(mjd.cvel), dtype=wp.spatial_vector, ndim=2)
-  d.cdof_dot = wp.array(tile(mjd.cdof_dot), dtype=wp.spatial_vector, ndim=2)
-  d.qfrc_bias = wp.array(tile(mjd.qfrc_bias), dtype=wp.float32, ndim=2)
-  d.qfrc_passive = wp.array(tile(mjd.qfrc_passive), dtype=wp.float32, ndim=2)
-  d.qfrc_spring = wp.array(tile(mjd.qfrc_spring), dtype=wp.float32, ndim=2)
-  d.qfrc_damper = wp.array(tile(mjd.qfrc_damper), dtype=wp.float32, ndim=2)
-  d.qfrc_actuator = wp.array(tile(mjd.qfrc_actuator), dtype=wp.float32, ndim=2)
-  d.qfrc_smooth = wp.array(tile(mjd.qfrc_smooth), dtype=wp.float32, ndim=2)
-  d.qfrc_constraint = wp.array(tile(mjd.qfrc_constraint), dtype=wp.float32, ndim=2)
-  d.qacc_smooth = wp.array(tile(mjd.qacc_smooth), dtype=wp.float32, ndim=2)
-  d.act = wp.array(tile(mjd.act), dtype=wp.float32, ndim=2)
-  d.act_dot = wp.array(tile(mjd.act_dot), dtype=wp.float32, ndim=2)
+  d.qpos = wp.array(tile(mjd.qpos, nworld), dtype=wp.float32, ndim=2)
+  d.qvel = wp.array(tile(mjd.qvel, nworld), dtype=wp.float32, ndim=2)
+  d.qacc_warmstart = wp.array(tile(mjd.qacc_warmstart, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_applied = wp.array(tile(mjd.qfrc_applied, nworld), dtype=wp.float32, ndim=2)
+  d.mocap_pos = wp.array(tile(mjd.mocap_pos, nworld), dtype=wp.vec3, ndim=2)
+  d.mocap_quat = wp.array(tile(mjd.mocap_quat, nworld), dtype=wp.quat, ndim=2)
+  d.qacc = wp.array(tile(mjd.qacc, nworld), dtype=wp.float32, ndim=2)
+  d.xanchor = wp.array(tile(mjd.xanchor, nworld), dtype=wp.vec3, ndim=2)
+  d.xaxis = wp.array(tile(mjd.xaxis, nworld), dtype=wp.vec3, ndim=2)
+  d.xmat = wp.array(tile(mjd.xmat, nworld), dtype=wp.mat33, ndim=2)
+  d.xpos = wp.array(tile(mjd.xpos, nworld), dtype=wp.vec3, ndim=2)
+  d.xquat = wp.array(tile(mjd.xquat, nworld), dtype=wp.quat, ndim=2)
+  d.xipos = wp.array(tile(mjd.xipos, nworld), dtype=wp.vec3, ndim=2)
+  d.ximat = wp.array(tile(mjd.ximat, nworld), dtype=wp.mat33, ndim=2)
+  d.subtree_com = wp.array(tile(mjd.subtree_com, nworld), dtype=wp.vec3, ndim=2)
+  d.geom_xpos = wp.array(tile(mjd.geom_xpos, nworld), dtype=wp.vec3, ndim=2)
+  d.geom_xmat = wp.array(tile(mjd.geom_xmat, nworld), dtype=wp.mat33, ndim=2)
+  d.site_xpos = wp.array(tile(mjd.site_xpos, nworld), dtype=wp.vec3, ndim=2)
+  d.site_xmat = wp.array(tile(mjd.site_xmat, nworld), dtype=wp.mat33, ndim=2)
+  d.cinert = wp.array(tile(mjd.cinert, nworld), dtype=types.vec10, ndim=2)
+  d.cdof = wp.array(tile(mjd.cdof, nworld), dtype=wp.spatial_vector, ndim=2)
+  d.crb = wp.array(tile(mjd.crb, nworld), dtype=types.vec10, ndim=2)
+  d.qM = wp.array(tile(qM, nworld), dtype=wp.float32, ndim=3)
+  d.qLD = wp.array(tile(qLD, nworld), dtype=wp.float32, ndim=3)
+  d.qLDiagInv = wp.array(tile(mjd.qLDiagInv, nworld), dtype=wp.float32, ndim=2)
+  d.ctrl = wp.array(tile(mjd.ctrl, nworld), dtype=wp.float32, ndim=2)
+  d.actuator_velocity = wp.array(tile(mjd.actuator_velocity, nworld), dtype=wp.float32, ndim=2)
+  d.actuator_force = wp.array(tile(mjd.actuator_force, nworld), dtype=wp.float32, ndim=2)
+  d.actuator_length = wp.array(tile(mjd.actuator_length, nworld), dtype=wp.float32, ndim=2)
+  d.actuator_moment = wp.array(tile(actuator_moment, nworld), dtype=wp.float32, ndim=3)
+  d.cvel = wp.array(tile(mjd.cvel, nworld), dtype=wp.spatial_vector, ndim=2)
+  d.cdof_dot = wp.array(tile(mjd.cdof_dot, nworld), dtype=wp.spatial_vector, ndim=2)
+  d.qfrc_bias = wp.array(tile(mjd.qfrc_bias, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_passive = wp.array(tile(mjd.qfrc_passive, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_spring = wp.array(tile(mjd.qfrc_spring, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_damper = wp.array(tile(mjd.qfrc_damper, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_actuator = wp.array(tile(mjd.qfrc_actuator, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_smooth = wp.array(tile(mjd.qfrc_smooth, nworld), dtype=wp.float32, ndim=2)
+  d.qfrc_constraint = wp.array(tile(mjd.qfrc_constraint, nworld), dtype=wp.float32, ndim=2)
+  d.qacc_smooth = wp.array(tile(mjd.qacc_smooth, nworld), dtype=wp.float32, ndim=2)
+  d.act = wp.array(tile(mjd.act, nworld), dtype=wp.float32, ndim=2)
+  d.act_dot = wp.array(tile(mjd.act_dot, nworld), dtype=wp.float32, ndim=2)
 
   nefc = mjd.nefc
   efc_worldid = np.zeros(njmax, dtype=int)
@@ -768,7 +770,7 @@ def put_data(
   d.efc.margin = wp.array(efc_margin_fill, dtype=wp.float32, ndim=1)
   d.efc.worldid = wp.from_numpy(efc_worldid, dtype=wp.int32)
 
-  d.xfrc_applied = wp.array(tile(mjd.xfrc_applied), dtype=wp.spatial_vector, ndim=2)
+  d.xfrc_applied = wp.array(tile(mjd.xfrc_applied, nworld), dtype=wp.spatial_vector, ndim=2)
 
   # internal tmp arrays
   d.qfrc_integration = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
