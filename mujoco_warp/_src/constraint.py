@@ -172,7 +172,7 @@ def _efc_contact_pyramidal(
     fri0 = friction[0]
 
     # pyramidal has common invweight across all edges
-    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+    invweight = m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
     invweight = invweight + fri0 * fri0 * invweight
     invweight = invweight * 2.0 * fri0 * fri0 / m.opt.impratio
 

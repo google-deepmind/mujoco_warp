@@ -551,7 +551,7 @@ class Model:
   body_mass: wp.array(dtype=wp.float32, ndim=2)
   subtree_mass: wp.array(dtype=wp.float32, ndim=2)
   body_inertia: wp.array(dtype=wp.vec3, ndim=2)
-  body_invweight0: wp.array(dtype=wp.float32, ndim=2)
+  body_invweight0: wp.array(dtype=wp.float32, ndim=3)
   body_contype: wp.array(dtype=wp.int32, ndim=1)
   body_conaffinity: wp.array(dtype=wp.int32, ndim=1)
   jnt_type: wp.array(dtype=wp.int32, ndim=1)
