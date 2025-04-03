@@ -96,7 +96,13 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.stat.meaninertia = mjm.stat.meaninertia
   m.nworld = nworld
 
-  m.qpos0 = wp.array(mjm.qpos0, dtype=wp.float32, ndim=1)
+  def create_array(array, expand):
+    array.ndim += 1
+    array.shape = (nworld,) + array.shape
+    array.strides = (0,) + array.strides
+    return array
+
+  m.qpos0 = create_array(wp.array(mjm.qpos0, dtype=wp.float32), False)
   m.qpos_spring = wp.array(mjm.qpos_spring, dtype=wp.float32, ndim=1)
 
   # dof lower triangle row and column indices

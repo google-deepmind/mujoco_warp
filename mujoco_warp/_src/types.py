@@ -510,7 +510,7 @@ class Model:
   nworld: int  # warp only
   opt: Option
   stat: Statistic
-  qpos0: wp.array(dtype=wp.float32, ndim=1)
+  qpos0: wp.array(dtype=wp.float32, ndim=2)
   qpos_spring: wp.array(dtype=wp.float32, ndim=1)
   body_tree: wp.array(dtype=wp.int32, ndim=1)  # warp only
   body_treeadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
