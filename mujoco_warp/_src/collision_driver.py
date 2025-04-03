@@ -326,8 +326,9 @@ def get_contact_solver_params_kernel(
   mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
   mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
 
-  p1 = m.geom_priority[g1]
-  p2 = m.geom_priority[g2]
+  worldid = d.contact.worldid[tid]
+  p1 = m.geom_priority[worldid, g1]
+  p2 = m.geom_priority[worldid, g2]
   mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
   condim1 = m.geom_condim[g1]

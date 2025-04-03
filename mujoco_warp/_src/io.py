@@ -344,11 +344,11 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.geom_bodyid = wp.array(mjm.geom_bodyid, dtype=wp.int32)
   m.geom_conaffinity = create_nworld_array(wp.array(mjm.geom_conaffinity, dtype=wp.int32), False)
   m.geom_contype = create_nworld_array(wp.array(mjm.geom_contype, dtype=wp.int32), False)
-  m.geom_condim = wp.array(mjm.geom_condim, dtype=wp.int32, ndim=1) # should that be varying per-world?
-  m.geom_pos = wp.array(mjm.geom_pos, dtype=wp.vec3, ndim=1)
-  m.geom_quat = wp.array(mjm.geom_quat, dtype=wp.quat, ndim=1)
-  m.geom_size = wp.array(mjm.geom_size, dtype=wp.vec3, ndim=1)
-  m.geom_priority = wp.array(mjm.geom_priority, dtype=wp.int32, ndim=1)
+  m.geom_condim = wp.array(mjm.geom_condim, dtype=wp.int32) # should that be varying per-world?
+  m.geom_pos = create_nworld_array(wp.array(mjm.geom_pos, dtype=wp.vec3), False)
+  m.geom_quat = create_nworld_array(wp.array(mjm.geom_quat, dtype=wp.quat), False)
+  m.geom_size = wp.array(mjm.geom_size, dtype=wp.vec3) # should that be varying per-world?
+  m.geom_priority = create_nworld_array(wp.array(mjm.geom_priority, dtype=wp.int32), False)
   m.geom_solmix = wp.array(mjm.geom_solmix, dtype=wp.float32, ndim=1)
   m.geom_solref = wp.array(mjm.geom_solref, dtype=wp.vec2, ndim=1)
   m.geom_solimp = wp.array(mjm.geom_solimp, dtype=types.vec5, ndim=1)

@@ -116,9 +116,9 @@ def kinematics(m: Model, d: Data):
     bodyid = m.geom_bodyid[geomid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.geom_xpos[worldid, geomid] = xpos + math.rot_vec_quat(m.geom_pos[geomid], xquat)
+    d.geom_xpos[worldid, geomid] = xpos + math.rot_vec_quat(m.geom_pos[worldid, geomid], xquat)
     d.geom_xmat[worldid, geomid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.geom_quat[geomid])
+      math.mul_quat(xquat, m.geom_quat[worldid, geomid])
     )
 
   @kernel
