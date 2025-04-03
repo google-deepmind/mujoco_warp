@@ -55,8 +55,8 @@ def kinematics(m: Model, d: Data):
     if jntnum == 0:
       # no joints - apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
-      xpos = (d.xmat[worldid, pid] * m.body_pos[bodyid]) + d.xpos[worldid, pid]
-      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[bodyid])
+      xpos = (d.xmat[worldid, pid] * m.body_pos[worldid, bodyid]) + d.xpos[worldid, pid]
+      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[worldid, bodyid])
     elif jntnum == 1 and m.jnt_type[jntadr] == wp.static(JointType.FREE.value):
       # free joint
       qadr = m.jnt_qposadr[jntadr]
@@ -68,8 +68,8 @@ def kinematics(m: Model, d: Data):
       # regular or no joints
       # apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
-      xpos = (d.xmat[worldid, pid] * m.body_pos[bodyid]) + d.xpos[worldid, pid]
-      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[bodyid])
+      xpos = (d.xmat[worldid, pid] * m.body_pos[worldid, bodyid]) + d.xpos[worldid, pid]
+      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[worldid, bodyid])
 
       for _ in range(jntnum):
         qadr = m.jnt_qposadr[jntadr]
@@ -105,9 +105,9 @@ def kinematics(m: Model, d: Data):
     xquat = wp.normalize(xquat)
     d.xquat[worldid, bodyid] = xquat
     d.xmat[worldid, bodyid] = math.quat_to_mat(xquat)
-    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(m.body_ipos[bodyid], xquat)
+    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(m.body_ipos[worldid, bodyid], xquat)
     d.ximat[worldid, bodyid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.body_iquat[bodyid])
+      math.mul_quat(xquat, m.body_iquat[worldid, bodyid])
     )
 
   @kernel
@@ -154,7 +154,7 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_com_init(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[bodyid]
+    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[worldid, bodyid]
 
   @kernel
   def subtree_com_acc(m: Model, d: Data, leveladr: int):
@@ -166,14 +166,14 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_div(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] /= m.subtree_mass[bodyid]
+    d.subtree_com[worldid, bodyid] /= m.subtree_mass[worldid,bodyid]
 
   @kernel
   def cinert(m: Model, d: Data):
     worldid, bodyid = wp.tid()
     mat = d.ximat[worldid, bodyid]
-    inert = m.body_inertia[bodyid]
-    mass = m.body_mass[bodyid]
+    inert = m.body_inertia[worldid, bodyid]
+    mass = m.body_mass[worldid, bodyid]
     dif = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
     # express inertia in com-based frame (mju_inertCom)
 
