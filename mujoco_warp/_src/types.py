@@ -577,8 +577,8 @@ class Model:
   dof_tri_row: wp.array(dtype=wp.int32, ndim=1)  # warp only
   dof_tri_col: wp.array(dtype=wp.int32, ndim=1)  # warp only
   geom_type: wp.array(dtype=wp.int32, ndim=1)
-  geom_contype: wp.array(dtype=wp.int32, ndim=1)
-  geom_conaffinity: wp.array(dtype=wp.int32, ndim=1)
+  geom_contype: wp.array(dtype=wp.int32, ndim=2)
+  geom_conaffinity: wp.array(dtype=wp.int32, ndim=2)
   geom_condim: wp.array(dtype=wp.int32, ndim=1)
   geom_bodyid: wp.array(dtype=wp.int32, ndim=1)
   geom_dataid: wp.array(dtype=wp.int32, ndim=1)

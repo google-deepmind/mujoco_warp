@@ -26,13 +26,13 @@ from .warp_util import event_scope
 
 
 @wp.func
-def _geom_filter(m: Model, geom1: int, geom2: int, filterparent: bool) -> bool:
+def _geom_filter(m: Model, geom1: int, geom2: int, filterparent: bool, worldid: int) -> bool:
   bodyid1 = m.geom_bodyid[geom1]
   bodyid2 = m.geom_bodyid[geom2]
-  contype1 = m.geom_contype[geom1]
-  contype2 = m.geom_contype[geom2]
-  conaffinity1 = m.geom_conaffinity[geom1]
-  conaffinity2 = m.geom_conaffinity[geom2]
+  contype1 = m.geom_contype[worldid, geom1]
+  contype2 = m.geom_contype[worldid, geom2]
+  conaffinity1 = m.geom_conaffinity[worldid, geom1]
+  conaffinity2 = m.geom_conaffinity[worldid, geom2]
   weldid1 = m.body_weldid[bodyid1]
   weldid2 = m.body_weldid[bodyid2]
   weld_parentid1 = m.body_weldid[m.body_parentid[weldid1]]
@@ -291,7 +291,7 @@ def sap_broadphase_kernel(m: Model, d: Data, num_threads: int, filter_parent: bo
     idx1 = d.sap_sort_index[worldId, i]
     idx2 = d.sap_sort_index[worldId, j]
 
-    if not _geom_filter(m, idx1, idx2, filter_parent):
+    if not _geom_filter(m, idx1, idx2, filter_parent, worldId):
       threadId += num_threads
       continue
 
@@ -503,7 +503,7 @@ def nxn_broadphase(m: Model, d: Data):
       dist = wp.dot(-dif, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
       bounds_filter = dist <= bound
 
-    geom_filter = _geom_filter(m, geom1, geom2, filterparent)
+    geom_filter = _geom_filter(m, geom1, geom2, filterparent, worldid)
 
     if bounds_filter and geom_filter:
       _add_geom_pair(m, d, geom1, geom2, worldid)
