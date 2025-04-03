@@ -109,7 +109,7 @@ def _efc_limit_slide_hinge(
   jntid = m.jnt_limited_slide_hinge_adr[jntlimitedid]
 
   qpos = d.qpos[worldid, m.jnt_qposadr[jntid]]
-  jnt_range = m.jnt_range[jntid]
+  jnt_range = m.jnt_range[worldid, jntid]
   dist_min, dist_max = qpos - jnt_range[0], jnt_range[1] - qpos
   pos = wp.min(dist_min, dist_max) - m.jnt_margin[jntid]
   active = pos < 0

@@ -563,7 +563,7 @@ class Model:
   jnt_pos: wp.array(dtype=wp.vec3, ndim=1)
   jnt_axis: wp.array(dtype=wp.vec3, ndim=1)
   jnt_stiffness: wp.array(dtype=wp.float32, ndim=1)
-  jnt_range: wp.array(dtype=wp.float32, ndim=2)
+  jnt_range: wp.array(dtype=wp.float32, ndim=3)
   jnt_actfrcrange: wp.array(dtype=wp.vec2, ndim=1)
   jnt_margin: wp.array(dtype=wp.float32, ndim=1)
   jnt_limited_slide_hinge_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only

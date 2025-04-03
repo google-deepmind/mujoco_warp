@@ -331,11 +331,11 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.jnt_type = wp.array(mjm.jnt_type, dtype=wp.int32)
   m.jnt_solref = create_nworld_array(wp.array(mjm.jnt_solref, dtype=wp.vec2f), False)
   m.jnt_solimp = create_nworld_array(wp.array(mjm.jnt_solimp, dtype=types.vec5), False)
-  m.jnt_qposadr = wp.array(mjm.jnt_qposadr, dtype=wp.int32, ndim=1)
-  m.jnt_dofadr = wp.array(mjm.jnt_dofadr, dtype=wp.int32, ndim=1)
-  m.jnt_axis = wp.array(mjm.jnt_axis, dtype=wp.vec3, ndim=1)
-  m.jnt_pos = wp.array(mjm.jnt_pos, dtype=wp.vec3, ndim=1)
-  m.jnt_range = wp.array(mjm.jnt_range, dtype=wp.float32, ndim=2)
+  m.jnt_qposadr = wp.array(mjm.jnt_qposadr, dtype=wp.int32)
+  m.jnt_dofadr = wp.array(mjm.jnt_dofadr, dtype=wp.int32)
+  m.jnt_axis = wp.array(mjm.jnt_axis, dtype=wp.vec3) # should that be varying per-world?
+  m.jnt_pos = wp.array(mjm.jnt_pos, dtype=wp.vec3) # should that be varying per-world?
+  m.jnt_range = create_nworld_array(wp.array(mjm.jnt_range, dtype=wp.float32), False)
   m.jnt_margin = wp.array(mjm.jnt_margin, dtype=wp.float32, ndim=1)
   m.jnt_stiffness = wp.array(mjm.jnt_stiffness, dtype=wp.float32, ndim=1)
   m.jnt_actfrclimited = wp.array(mjm.jnt_actfrclimited, dtype=wp.bool, ndim=1)
