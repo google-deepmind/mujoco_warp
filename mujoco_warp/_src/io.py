@@ -99,7 +99,7 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.stat.meaninertia = mjm.stat.meaninertia
   m.nworld = nworld
 
-  def create_array(array, expand):
+  def create_nworld_array(array, expand):
     if expand:
       array = wp.array(tile(array.numpy(), nworld), dtype=array.dtype)
     else:
@@ -108,8 +108,8 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
       array.strides = (0,) + array.strides
     return array
 
-  m.qpos0 = create_array(wp.array(mjm.qpos0, dtype=wp.float32), False)
-  m.qpos_spring = create_array(wp.array(mjm.qpos_spring, dtype=wp.float32), False)
+  m.qpos0 = create_nworld_array(wp.array(mjm.qpos0, dtype=wp.float32), False)
+  m.qpos_spring = create_nworld_array(wp.array(mjm.qpos_spring, dtype=wp.float32), False)
 
   # dof lower triangle row and column indices
   dof_tri_row, dof_tri_col = np.tril_indices(mjm.nv)
@@ -158,8 +158,8 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   tree_off = [0] + [len(bodies[i]) for i in range(len(bodies))]
   body_treeadr = np.cumsum(tree_off)[:-1]
 
-  m.body_tree = wp.array(body_tree, dtype=wp.int32, ndim=1)
-  m.body_treeadr = wp.array(body_treeadr, dtype=wp.int32, ndim=1, device="cpu")
+  m.body_tree = wp.array(body_tree, dtype=wp.int32)
+  m.body_treeadr = wp.array(body_treeadr, dtype=wp.int32, device="cpu")
 
   qLD_update_tree = np.empty(shape=(0, 3), dtype=int)
   qLD_update_treeadr = np.empty(shape=(0,), dtype=int)
