@@ -269,7 +269,7 @@ def crb(m: Model, d: Data):
     bodyid = m.dof_bodyid[dofid]
 
     # init M(i,i) with armature inertia
-    d.qM[worldid, 0, madr_ij] = m.dof_armature[dofid]
+    d.qM[worldid, 0, madr_ij] = m.dof_armature[worldid, dofid]
 
     # precompute buf = crb_body_i * cdof_i
     buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
@@ -286,7 +286,7 @@ def crb(m: Model, d: Data):
     bodyid = m.dof_bodyid[dofid]
 
     # init M(i,i) with armature inertia
-    M = m.dof_armature[dofid]
+    M = m.dof_armature[worldid, dofid]
 
     # precompute buf = crb_body_i * cdof_i
     buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])

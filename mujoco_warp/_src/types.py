@@ -571,7 +571,7 @@ class Model:
   dof_jntid: wp.array(dtype=wp.int32, ndim=1)
   dof_parentid: wp.array(dtype=wp.int32, ndim=1)
   dof_Madr: wp.array(dtype=wp.int32, ndim=1)
-  dof_armature: wp.array(dtype=wp.float32, ndim=1)
+  dof_armature: wp.array(dtype=wp.float32, ndim=2)
   dof_damping: wp.array(dtype=wp.float32, ndim=1)
   dof_invweight0: wp.array(dtype=wp.float32, ndim=1)
   dof_tri_row: wp.array(dtype=wp.int32, ndim=1)  # warp only
