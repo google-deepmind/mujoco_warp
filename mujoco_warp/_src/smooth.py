@@ -127,9 +127,9 @@ def kinematics(m: Model, d: Data):
     bodyid = m.site_bodyid[siteid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.site_xpos[worldid, siteid] = xpos + math.rot_vec_quat(m.site_pos[siteid], xquat)
+    d.site_xpos[worldid, siteid] = xpos + math.rot_vec_quat(m.site_pos[worldid, siteid], xquat)
     d.site_xmat[worldid, siteid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.site_quat[siteid])
+      math.mul_quat(xquat, m.site_quat[worldid, siteid])
     )
 
   wp.launch(_root, dim=(m.nworld), inputs=[m, d])
