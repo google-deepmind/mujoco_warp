@@ -369,7 +369,7 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32)
   m.dof_Madr = wp.array(mjm.dof_Madr, dtype=wp.int32)
   m.dof_armature = create_nworld_array(wp.array(mjm.dof_armature, dtype=wp.float32), False)
-  m.dof_damping = wp.array(mjm.dof_damping, dtype=wp.float32, ndim=1)
+  m.dof_damping = create_nworld_array(wp.array(mjm.dof_damping, dtype=wp.float32), False)
   m.dof_tri_row = wp.from_numpy(dof_tri_row, dtype=wp.int32)
   m.dof_tri_col = wp.from_numpy(dof_tri_col, dtype=wp.int32)
   m.dof_invweight0 = wp.array(mjm.dof_invweight0, dtype=wp.float32, ndim=1)

@@ -93,7 +93,7 @@ def passive(m: Model, d: Data):
   @kernel
   def _damper_passive(m: Model, d: Data):
     worldid, dofid = wp.tid()
-    damping = m.dof_damping[dofid]
+    damping = m.dof_damping[worldid, dofid]
     qfrc_damper = -damping * d.qvel[worldid, dofid]
 
     d.qfrc_damper[worldid, dofid] = qfrc_damper
