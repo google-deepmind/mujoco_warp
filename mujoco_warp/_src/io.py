@@ -99,17 +99,18 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.stat.meaninertia = mjm.stat.meaninertia
   m.nworld = nworld
 
-  def create_nworld_array(array, expand):
+  def create_nworld_array(mjm_array, dtype, expand):
     if expand:
-      array = wp.array(tile(array.numpy(), nworld), dtype=array.dtype)
+      array = wp.array(tile(mjm_array, nworld), dtype=dtype)
     else:
+      array = wp.array(mjm_array, dtype=dtype)
       array.ndim += 1
       array.shape = (nworld,) + array.shape
       array.strides = (0,) + array.strides
     return array
 
-  m.qpos0 = create_nworld_array(wp.array(mjm.qpos0, dtype=wp.float32), False)
-  m.qpos_spring = create_nworld_array(wp.array(mjm.qpos_spring, dtype=wp.float32), False)
+  m.qpos0 = create_nworld_array(mjm.qpos0, wp.float32, False)
+  m.qpos_spring = create_nworld_array(mjm.qpos_spring, wp.float32, False)
 
   # dof lower triangle row and column indices
   dof_tri_row, dof_tri_col = np.tril_indices(mjm.nv)
@@ -306,21 +307,21 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.body_parentid = wp.array(mjm.body_parentid, dtype=wp.int32)
   m.body_mocapid = wp.array(mjm.body_mocapid, dtype=wp.int32)
   m.body_weldid = wp.array(mjm.body_weldid, dtype=wp.int32)
-  m.body_pos = create_nworld_array(wp.array(mjm.body_pos, dtype=wp.vec3), False)
-  m.body_quat = create_nworld_array(wp.array(mjm.body_quat, dtype=wp.quat), False)
-  m.body_ipos = create_nworld_array(wp.array(mjm.body_ipos, dtype=wp.vec3), False)
-  m.body_iquat = create_nworld_array(wp.array(mjm.body_iquat, dtype=wp.quat), False)
+  m.body_pos = create_nworld_array(mjm.body_pos, wp.vec3, False)
+  m.body_quat = create_nworld_array(mjm.body_quat, wp.quat, False)
+  m.body_ipos = create_nworld_array(mjm.body_ipos, wp.vec3, False)
+  m.body_iquat = create_nworld_array(mjm.body_iquat, wp.quat, False)
   m.body_rootid = wp.array(mjm.body_rootid, dtype=wp.int32)
-  m.body_inertia = create_nworld_array(wp.array(mjm.body_inertia, dtype=wp.vec3), False)
-  m.body_mass = create_nworld_array(wp.array(mjm.body_mass, dtype=wp.float32), False)
+  m.body_inertia = create_nworld_array(mjm.body_inertia, wp.vec3, False)
+  m.body_mass = create_nworld_array(mjm.body_mass, wp.float32, False)
 
   subtree_mass = np.copy(mjm.body_mass)
   # TODO(team): should this be [mjm.nbody - 1, 0) ?
   for i in range(mjm.nbody - 1, -1, -1):
     subtree_mass[mjm.body_parentid[i]] += subtree_mass[i]
 
-  m.subtree_mass = create_nworld_array(wp.array(subtree_mass, dtype=wp.float32), False)
-  m.body_invweight0 = create_nworld_array(wp.array(mjm.body_invweight0, dtype=wp.float32), False)
+  m.subtree_mass = create_nworld_array(subtree_mass, wp.float32, False)
+  m.body_invweight0 = create_nworld_array(mjm.body_invweight0, wp.float32, False)
   m.body_geomnum = wp.array(mjm.body_geomnum, dtype=wp.int32)
   m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32)
   m.jnt_bodyid = wp.array(mjm.jnt_bodyid, dtype=wp.int32)
@@ -329,66 +330,66 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
     jnt_limited_slide_hinge_adr, dtype=wp.int32
   )
   m.jnt_type = wp.array(mjm.jnt_type, dtype=wp.int32)
-  m.jnt_solref = create_nworld_array(wp.array(mjm.jnt_solref, dtype=wp.vec2f), False)
-  m.jnt_solimp = create_nworld_array(wp.array(mjm.jnt_solimp, dtype=types.vec5), False)
+  m.jnt_solref = create_nworld_array(mjm.jnt_solref, wp.vec2f, False)
+  m.jnt_solimp = create_nworld_array(mjm.jnt_solimp, types.vec5, False)
   m.jnt_qposadr = wp.array(mjm.jnt_qposadr, dtype=wp.int32)
   m.jnt_dofadr = wp.array(mjm.jnt_dofadr, dtype=wp.int32)
   m.jnt_axis = wp.array(mjm.jnt_axis, dtype=wp.vec3) # should that be varying per-world?
   m.jnt_pos = wp.array(mjm.jnt_pos, dtype=wp.vec3) # should that be varying per-world?
-  m.jnt_range = create_nworld_array(wp.array(mjm.jnt_range, dtype=wp.float32), False)
-  m.jnt_margin = create_nworld_array(wp.array(mjm.jnt_margin, dtype=wp.float32), False)
-  m.jnt_stiffness = create_nworld_array(wp.array(mjm.jnt_stiffness, dtype=wp.float32), False)
+  m.jnt_range = create_nworld_array(mjm.jnt_range, wp.float32, False)
+  m.jnt_margin = create_nworld_array(mjm.jnt_margin, wp.float32, False)
+  m.jnt_stiffness = create_nworld_array(mjm.jnt_stiffness, wp.float32, False)
   m.jnt_actfrclimited = wp.array(mjm.jnt_actfrclimited, dtype=wp.bool)
-  m.jnt_actfrcrange = create_nworld_array(wp.array(mjm.jnt_actfrcrange, dtype=wp.vec2), False)
+  m.jnt_actfrcrange = create_nworld_array(mjm.jnt_actfrcrange, wp.vec2, False)
   m.geom_type = wp.array(mjm.geom_type, dtype=wp.int32)
   m.geom_bodyid = wp.array(mjm.geom_bodyid, dtype=wp.int32)
-  m.geom_conaffinity = create_nworld_array(wp.array(mjm.geom_conaffinity, dtype=wp.int32), False)
-  m.geom_contype = create_nworld_array(wp.array(mjm.geom_contype, dtype=wp.int32), False)
+  m.geom_conaffinity = create_nworld_array(mjm.geom_conaffinity, wp.int32, False)
+  m.geom_contype = create_nworld_array(mjm.geom_contype, wp.int32, False)
   m.geom_condim = wp.array(mjm.geom_condim, dtype=wp.int32) # should that be varying per-world?
-  m.geom_pos = create_nworld_array(wp.array(mjm.geom_pos, dtype=wp.vec3), False)
-  m.geom_quat = create_nworld_array(wp.array(mjm.geom_quat, dtype=wp.quat), False)
+  m.geom_pos = create_nworld_array(mjm.geom_pos, wp.vec3, False)
+  m.geom_quat = create_nworld_array(mjm.geom_quat, wp.quat, False)
   m.geom_size = wp.array(mjm.geom_size, dtype=wp.vec3) # should that be varying per-world?
-  m.geom_priority = create_nworld_array(wp.array(mjm.geom_priority, dtype=wp.int32), False)
-  m.geom_solmix = create_nworld_array(wp.array(mjm.geom_solmix, dtype=wp.float32), False)
-  m.geom_solref = create_nworld_array(wp.array(mjm.geom_solref, dtype=wp.vec2), False)
-  m.geom_solimp = create_nworld_array(wp.array(mjm.geom_solimp, dtype=types.vec5), False)
-  m.geom_friction = create_nworld_array(wp.array(mjm.geom_friction, dtype=wp.vec3), False)
-  m.geom_margin = create_nworld_array(wp.array(mjm.geom_margin, dtype=wp.float32), False)
-  m.geom_gap = create_nworld_array(wp.array(mjm.geom_gap, dtype=wp.float32), False)
+  m.geom_priority = create_nworld_array(mjm.geom_priority, wp.int32, False)
+  m.geom_solmix = create_nworld_array(mjm.geom_solmix, wp.float32, False)
+  m.geom_solref = create_nworld_array(mjm.geom_solref, wp.vec2, False)
+  m.geom_solimp = create_nworld_array(mjm.geom_solimp, types.vec5, False)
+  m.geom_friction = create_nworld_array(mjm.geom_friction, wp.vec3, False)
+  m.geom_margin = create_nworld_array(mjm.geom_margin, wp.float32, False)
+  m.geom_gap = create_nworld_array(mjm.geom_gap, wp.float32, False)
   m.geom_aabb = wp.array(mjm.geom_aabb, dtype=wp.vec3) # should that be varying per-world? 
   m.geom_rbound = wp.array(mjm.geom_rbound, dtype=wp.float32) # should that be varying per-world?
   m.geom_dataid = wp.array(mjm.geom_dataid, dtype=wp.int32)
   m.mesh_vertadr = wp.array(mjm.mesh_vertadr, dtype=wp.int32)
   m.mesh_vertnum = wp.array(mjm.mesh_vertnum, dtype=wp.int32)
   m.mesh_vert = wp.array(mjm.mesh_vert, dtype=wp.vec3)
-  m.site_pos = create_nworld_array(wp.array(mjm.site_pos, dtype=wp.vec3), False)
-  m.site_quat = create_nworld_array(wp.array(mjm.site_quat, dtype=wp.quat), False)
+  m.site_pos = create_nworld_array(mjm.site_pos, wp.vec3, False)
+  m.site_quat = create_nworld_array(mjm.site_quat, wp.quat, False)
   m.site_bodyid = wp.array(mjm.site_bodyid, dtype=wp.int32)
   m.dof_bodyid = wp.array(mjm.dof_bodyid, dtype=wp.int32)
   m.dof_jntid = wp.array(mjm.dof_jntid, dtype=wp.int32)
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32)
   m.dof_Madr = wp.array(mjm.dof_Madr, dtype=wp.int32)
-  m.dof_armature = create_nworld_array(wp.array(mjm.dof_armature, dtype=wp.float32), False)
-  m.dof_damping = create_nworld_array(wp.array(mjm.dof_damping, dtype=wp.float32), False)
+  m.dof_armature = create_nworld_array(mjm.dof_armature, wp.float32, False)
+  m.dof_damping = create_nworld_array(mjm.dof_damping, wp.float32, False)
   m.dof_tri_row = wp.from_numpy(dof_tri_row, dtype=wp.int32)
   m.dof_tri_col = wp.from_numpy(dof_tri_col, dtype=wp.int32)
-  m.dof_invweight0 = create_nworld_array(wp.array(mjm.dof_invweight0, dtype=wp.float32), False)
+  m.dof_invweight0 = create_nworld_array(mjm.dof_invweight0, wp.float32, False)
   m.actuator_trntype = wp.array(mjm.actuator_trntype, dtype=wp.int32)
   m.actuator_trnid = wp.array(mjm.actuator_trnid, dtype=wp.int32)
   m.actuator_ctrllimited = wp.array(mjm.actuator_ctrllimited, dtype=wp.bool)
-  m.actuator_ctrlrange = create_nworld_array(wp.array(mjm.actuator_ctrlrange, dtype=wp.vec2), False)
+  m.actuator_ctrlrange = create_nworld_array(mjm.actuator_ctrlrange, wp.vec2, False)
   m.actuator_forcelimited = wp.array(mjm.actuator_forcelimited, dtype=wp.bool)
-  m.actuator_forcerange = create_nworld_array(wp.array(mjm.actuator_forcerange, dtype=wp.vec2), False)
+  m.actuator_forcerange = create_nworld_array(mjm.actuator_forcerange, wp.vec2, False)
   m.actuator_gaintype = wp.array(mjm.actuator_gaintype, dtype=wp.int32)
-  m.actuator_gainprm = create_nworld_array(wp.array(mjm.actuator_gainprm, dtype=wp.float32), False)
+  m.actuator_gainprm = create_nworld_array(mjm.actuator_gainprm, wp.float32, False)
   m.actuator_biastype = wp.array(mjm.actuator_biastype, dtype=wp.int32)
-  m.actuator_biasprm = create_nworld_array(wp.array(mjm.actuator_biasprm, dtype=wp.float32), False)
-  m.actuator_gear = create_nworld_array(wp.array(mjm.actuator_gear, dtype=wp.spatial_vector), False)
+  m.actuator_biasprm = create_nworld_array(mjm.actuator_biasprm, wp.float32, False)
+  m.actuator_gear = create_nworld_array(mjm.actuator_gear, wp.spatial_vector, False)
   m.actuator_actlimited = wp.array(mjm.actuator_actlimited, dtype=wp.bool)
-  m.actuator_actrange = create_nworld_array(wp.array(mjm.actuator_actrange, dtype=wp.vec2), False)
+  m.actuator_actrange = create_nworld_array(mjm.actuator_actrange, wp.vec2, False)
   m.actuator_actadr = wp.array(mjm.actuator_actadr, dtype=wp.int32)
   m.actuator_dyntype = wp.array(mjm.actuator_dyntype, dtype=wp.int32)
-  m.actuator_dynprm = create_nworld_array(wp.array(mjm.actuator_dynprm, dtype=types.vec10), False)
+  m.actuator_dynprm = create_nworld_array(mjm.actuator_dynprm, types.vec10, False)
   m.exclude_signature = wp.array(mjm.exclude_signature, dtype=wp.int32)
 
   # short-circuiting here allows us to skip a lot of code in implicit integration
