@@ -264,8 +264,6 @@ def camlight(m: Model, d: Data):
       math.mul_quat(xquat, m.cam_quat[camid])
     )
 
-  wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
-
   @kernel
   def cam_fn(m: Model, d: Data):
     worldid, camid = wp.tid()
@@ -301,8 +299,6 @@ def camlight(m: Model, d: Data):
       )
       # fmt: on
 
-  wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
-
   @kernel
   def light_local_to_global(m: Model, d: Data):
     """Fixed lights."""
@@ -314,8 +310,6 @@ def camlight(m: Model, d: Data):
       m.light_pos[lightid], xquat
     )
     d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
-
-  wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
 
   @kernel
   def light_fn(m: Model, d: Data):
@@ -342,7 +336,12 @@ def camlight(m: Model, d: Data):
       d.light_xdir[worldid, lightid] = pos - d.light_xpos[worldid, lightid]
     d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
 
-  wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
+  if m.ncam > 0:
+    wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
+    wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+  if m.nlight > 0:
+    wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
+    wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
 
 
 @event_scope

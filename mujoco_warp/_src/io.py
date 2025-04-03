@@ -506,6 +506,10 @@ def make_data(
   d.geom_xmat = wp.zeros((nworld, mjm.ngeom), dtype=wp.mat33)
   d.site_xpos = wp.zeros((nworld, mjm.nsite), dtype=wp.vec3)
   d.site_xmat = wp.zeros((nworld, mjm.nsite), dtype=wp.mat33)
+  d.cam_xpos = wp.zeros((nworld, mjm.ncam), dtype=wp.vec3)
+  d.cam_xmat = wp.zeros((nworld, mjm.ncam), dtype=wp.mat33)
+  d.light_xpos = wp.zeros((nworld, mjm.nlight), dtype=wp.vec3)
+  d.light_xdir = wp.zeros((nworld, mjm.nlight), dtype=wp.vec3)
   d.cinert = wp.zeros((nworld, mjm.nbody), dtype=types.vec10)
   d.cdof = wp.zeros((nworld, mjm.nv), dtype=wp.spatial_vector)
   d.ctrl = wp.zeros((nworld, mjm.nu), dtype=wp.float32)
@@ -849,6 +853,10 @@ def get_data_into(
   result.geom_xmat = d.geom_xmat.numpy().reshape((-1, 9))
   result.site_xpos = d.site_xpos.numpy()[0]
   result.site_xmat = d.site_xmat.numpy().reshape((-1, 9))
+  result.cam_xpos = d.cam_xpos.numpy()[0]
+  result.cam_xmat = d.cam_xmat.numpy().reshape((-1, 9))
+  result.light_xpos = d.light_xpos.numpy()[0]
+  result.light_xdir = d.light_xdir.numpy()[0]
   result.cinert = d.cinert.numpy()[0]
   result.cdof = d.cdof.numpy()[0]
   result.crb = d.crb.numpy()[0]
