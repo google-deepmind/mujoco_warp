@@ -57,8 +57,8 @@ def _advance(
 
     # get the high/low range for each actuator state
     limited = m.actuator_actlimited[actid]
-    range_low = wp.where(limited, m.actuator_actrange[actid][0], -wp.inf)
-    range_high = wp.where(limited, m.actuator_actrange[actid][1], wp.inf)
+    range_low = wp.where(limited, m.actuator_actrange[worldId, actid][0], -wp.inf)
+    range_high = wp.where(limited, m.actuator_actrange[worldId, actid][1], wp.inf)
 
     # get the actual actuation - skip if -1 (means stateless actuator)
     act_adr = m.actuator_actadr[actid]
@@ -73,7 +73,7 @@ def _advance(
 
     # check dynType
     dyn_type = m.actuator_dyntype[actid]
-    dyn_prm = m.actuator_dynprm[actid][0]
+    dyn_prm = m.actuator_dynprm[worldId, actid][0]
 
     # advance the actuation
     if dyn_type == wp.static(DynType.FILTEREXACT.value):
@@ -286,10 +286,10 @@ def implicit(m: Model, d: Data):
     actuator_dyntype = m.actuator_dyntype[actid]
 
     if actuator_biastype == wp.static(BiasType.AFFINE.value):
-      bias_vel = m.actuator_biasprm[actid, 2]
+      bias_vel = m.actuator_biasprm[worldid, actid, 2]
 
     if actuator_gaintype == wp.static(GainType.AFFINE.value):
-      gain_vel = m.actuator_gainprm[actid, 2]
+      gain_vel = m.actuator_gainprm[worldid,actid, 2]
 
     ctrl = d.ctrl[worldid, actid]
 
@@ -522,22 +522,22 @@ def fwd_actuation(m: Model, d: Data):
     actuator_length = d.actuator_length[worldid, uid]
     actuator_velocity = d.actuator_velocity[worldid, uid]
 
-    gain = m.actuator_gainprm[uid, 0]
-    gain += m.actuator_gainprm[uid, 1] * actuator_length
-    gain += m.actuator_gainprm[uid, 2] * actuator_velocity
+    gain = m.actuator_gainprm[worldid, uid, 0]
+    gain += m.actuator_gainprm[worldid, uid, 1] * actuator_length
+    gain += m.actuator_gainprm[worldid, uid, 2] * actuator_velocity
 
-    bias = m.actuator_biasprm[uid, 0]
-    bias += m.actuator_biasprm[uid, 1] * actuator_length
-    bias += m.actuator_biasprm[uid, 2] * actuator_velocity
+    bias = m.actuator_biasprm[worldid, uid, 0]
+    bias += m.actuator_biasprm[worldid, uid, 1] * actuator_length
+    bias += m.actuator_biasprm[worldid, uid, 2] * actuator_velocity
 
     ctrl = d.ctrl[worldid, uid]
     disable_clampctrl = m.opt.disableflags & wp.static(DisableBit.CLAMPCTRL.value)
     if m.actuator_ctrllimited[uid] and not disable_clampctrl:
-      r = m.actuator_ctrlrange[uid]
+      r = m.actuator_ctrlrange[worldid, uid]
       ctrl = wp.clamp(ctrl, r[0], r[1])
     f = gain * ctrl + bias
     if m.actuator_forcelimited[uid]:
-      r = m.actuator_forcerange[uid]
+      r = m.actuator_forcerange[worldid,uid]
       f = wp.clamp(f, r[0], r[1])
     force[worldid, uid] = f
 

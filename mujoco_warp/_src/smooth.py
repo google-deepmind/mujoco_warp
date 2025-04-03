@@ -536,7 +536,7 @@ def transmission(m: Model, d: Data):
     qadr = m.jnt_qposadr[jntid]
     vadr = m.jnt_dofadr[jntid]
     trntype = m.actuator_trntype[actid]
-    gear = m.actuator_gear[actid]
+    gear = m.actuator_gear[worldid,actid]
     if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
       TrnType.JOINTINPARENT.value
     ):
