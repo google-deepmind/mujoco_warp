@@ -322,15 +322,15 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.subtree_mass = create_nworld_array(wp.array(subtree_mass, dtype=wp.float32), False)
   m.body_invweight0 = create_nworld_array(wp.array(mjm.body_invweight0, dtype=wp.float32), False)
   m.body_geomnum = wp.array(mjm.body_geomnum, dtype=wp.int32)
-  m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32, ndim=1)
-  m.jnt_bodyid = wp.array(mjm.jnt_bodyid, dtype=wp.int32, ndim=1)
-  m.jnt_limited = wp.array(mjm.jnt_limited, dtype=wp.int32, ndim=1)
+  m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32)
+  m.jnt_bodyid = wp.array(mjm.jnt_bodyid, dtype=wp.int32)
+  m.jnt_limited = wp.array(mjm.jnt_limited, dtype=wp.int32) # should that be varying per-world?
   m.jnt_limited_slide_hinge_adr = wp.array(
-    jnt_limited_slide_hinge_adr, dtype=wp.int32, ndim=1
+    jnt_limited_slide_hinge_adr, dtype=wp.int32
   )
-  m.jnt_type = wp.array(mjm.jnt_type, dtype=wp.int32, ndim=1)
-  m.jnt_solref = wp.array(mjm.jnt_solref, dtype=wp.vec2f, ndim=1)
-  m.jnt_solimp = wp.array(mjm.jnt_solimp, dtype=types.vec5, ndim=1)
+  m.jnt_type = wp.array(mjm.jnt_type, dtype=wp.int32)
+  m.jnt_solref = create_nworld_array(wp.array(mjm.jnt_solref, dtype=wp.vec2f), False)
+  m.jnt_solimp = create_nworld_array(wp.array(mjm.jnt_solimp, dtype=types.vec5), False)
   m.jnt_qposadr = wp.array(mjm.jnt_qposadr, dtype=wp.int32, ndim=1)
   m.jnt_dofadr = wp.array(mjm.jnt_dofadr, dtype=wp.int32, ndim=1)
   m.jnt_axis = wp.array(mjm.jnt_axis, dtype=wp.vec3, ndim=1)
