@@ -17,6 +17,7 @@
 
 import mujoco
 import numpy as np
+from . import test_util
 import warp as wp
 from absl.testing import absltest
 from etils import epath
@@ -240,6 +241,26 @@ class IOTest(absltest.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
+  def test_model_batching(self):
+    mjm, mjd, _, _ = test_util.fixture("humanoid/humanoid.xml")
+
+    m = mjwarp.put_model(mjm, nworld=2, expand_fields={"qpos0"})
+
+    # AD - let's continue here, but do another field.
+    # then just run the forward pass on two separate mjmodel/data pairs and 
+    # check that the results line up.
+
+    # expanded fields has extra dimension
+    self.assertEqual(m.nworld, 2)
+    self.assertEqual(m.qpos0.shape, (2, mjm.nq))
+
+    qpos0 = m.qpos0.numpy()
+    qpos0[1, :] += 10.0
+    m.qpos0 = wp.from_numpy(qpos0, dtype=wp.float32)
+
+    d = mjwarp.put_data(mjm, mjd)
+
+    mjwarp.forward(m, d)
 
 if __name__ == "__main__":
   wp.init()
