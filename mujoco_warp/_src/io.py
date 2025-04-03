@@ -323,8 +323,6 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
   m.body_invweight0 = create_nworld_array(wp.array(mjm.body_invweight0, dtype=wp.float32), False)
   m.body_geomnum = wp.array(mjm.body_geomnum, dtype=wp.int32)
   m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32, ndim=1)
-  m.body_contype = wp.array(mjm.body_contype, dtype=wp.int32, ndim=1)
-  m.body_conaffinity = wp.array(mjm.body_conaffinity, dtype=wp.int32, ndim=1)
   m.jnt_bodyid = wp.array(mjm.jnt_bodyid, dtype=wp.int32, ndim=1)
   m.jnt_limited = wp.array(mjm.jnt_limited, dtype=wp.int32, ndim=1)
   m.jnt_limited_slide_hinge_adr = wp.array(
