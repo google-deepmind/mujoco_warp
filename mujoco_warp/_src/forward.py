@@ -196,14 +196,14 @@ def euler(m: Model, d: Data):
     def tile_eulerdamp(adr: int, size: int, tilesize: int):
       @kernel
       def eulerdamp(
-        m: Model, d: Data, damping: wp.array(dtype=wp.float32), leveladr: int
+        m: Model, d: Data, damping: array2df, leveladr: int
       ):
         worldid, nodeid = wp.tid()
         dofid = m.qLD_tile[leveladr + nodeid]
         M_tile = wp.tile_load(
           d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
         )
-        damping_tile = wp.tile_load(damping, shape=(tilesize,), offset=(dofid,))
+        damping_tile = wp.tile_load(damping[worldid], shape=(tilesize,), offset=(dofid,))
         damping_scaled = damping_tile * m.opt.timestep
         qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
@@ -299,7 +299,7 @@ def implicit(m: Model, d: Data):
     d.act_vel_integration[worldid, actid] = bias_vel + gain_vel * ctrl
 
   def qderiv_actuator_damping_fused(
-    m: Model, d: Data, damping: wp.array(dtype=wp.float32)
+    m: Model, d: Data, damping: array2df
   ):
     if actuation_enabled:
       block_dim = 64
@@ -315,7 +315,7 @@ def implicit(m: Model, d: Data):
     ):
       @kernel
       def qderiv_actuator_fused_kernel(
-        m: Model, d: Data, damping: wp.array(dtype=wp.float32), leveladr: int
+        m: Model, d: Data, damping: array2df, leveladr: int
       ):
         worldid, nodeid = wp.tid()
         offset_nv = m.actuator_moment_offset_nv[leveladr + nodeid]
@@ -342,7 +342,7 @@ def implicit(m: Model, d: Data):
           )
 
         if wp.static(passive_enabled):
-          dof_damping = wp.tile_load(damping, shape=tilesize_nv, offset=offset_nv)
+          dof_damping = wp.tile_load(damping[worldid], shape=tilesize_nv, offset=offset_nv)
           negative = wp.neg(dof_damping)
           qderiv_tile = wp.tile_diag_add(qderiv_tile, negative)
 

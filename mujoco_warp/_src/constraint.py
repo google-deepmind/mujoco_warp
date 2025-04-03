@@ -130,7 +130,7 @@ def _efc_limit_slide_hinge(
       efcid,
       pos,
       pos,
-      m.dof_invweight0[dofadr],
+      m.dof_invweight0[worldid, dofadr],
       m.jnt_solref[worldid, jntid],
       m.jnt_solimp[worldid, jntid],
       m.jnt_margin[worldid, jntid],
