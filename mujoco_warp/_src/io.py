@@ -109,7 +109,7 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1) -> types.Model:
     return array
 
   m.qpos0 = create_array(wp.array(mjm.qpos0, dtype=wp.float32), False)
-  m.qpos_spring = wp.array(mjm.qpos_spring, dtype=wp.float32, ndim=1)
+  m.qpos_spring = create_array(wp.array(mjm.qpos_spring, dtype=wp.float32), False)
 
   # dof lower triangle row and column indices
   dof_tri_row, dof_tri_col = np.tril_indices(mjm.nv)
