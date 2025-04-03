@@ -306,7 +306,7 @@ def box_box_kernel(
       for i in range(4):
         pos[i] = pos[idx]
 
-    margin = wp.max(m.geom_margin[ga], m.geom_margin[gb])
+    margin = wp.max(m.geom_margin[worldid, ga], m.geom_margin[worldid, gb])
     for i in range(4):
       pos_glob = b_mat @ pos[i] + b_pos
       n_glob = b_mat @ sep_axis
