@@ -323,7 +323,7 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1, expand_fields: set[str] = se
   for i in range(mjm.nbody - 1, -1, -1):
     subtree_mass[mjm.body_parentid[i]] += subtree_mass[i]
 
-  m.subtree_mass = create_nworld_array(subtree_mass, wp.float32, "subtree_mass" in expand_fields)
+  m.subtree_mass = create_nworld_array(subtree_mass, wp.float32, "subtree_mass" in expand_fields) # how should we hande this dependency on body_mass being potentially expanded?
   m.body_invweight0 = create_nworld_array(mjm.body_invweight0, wp.float32, "body_invweight0" in expand_fields)
   m.body_geomnum = wp.array(mjm.body_geomnum, dtype=wp.int32)
   m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32)
