@@ -510,7 +510,7 @@ def make_data(
   d.nconmax = nconmax
   if njmax == -1:
     # TODO(team): heuristic for njmax
-    njmax = nworld * 10
+    njmax = nworld * 10 * 6
   d.njmax = njmax
 
   d.ncon = wp.zeros(1, dtype=wp.int32)
