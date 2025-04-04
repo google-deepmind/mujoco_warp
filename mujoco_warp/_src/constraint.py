@@ -285,7 +285,7 @@ def _efc_contact_elliptic(
       d.efc.J[efcid, i] = J
       Jqvel += J * d.qvel[worldid, i]
 
-    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+    invweight = m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
 
     ref = d.contact.solref[conid]
     pos_aref = pos

@@ -259,9 +259,9 @@ def camlight(m: Model, d: Data):
     bodyid = m.cam_bodyid[camid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[camid], xquat)
+    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[worldid, camid], xquat)
     d.cam_xmat[worldid, camid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.cam_quat[camid])
+      math.mul_quat(xquat, m.cam_quat[worldid, camid])
     )
 
   @kernel
@@ -275,10 +275,10 @@ def camlight(m: Model, d: Data):
       return
     elif m.cam_mode[camid] == wp.static(CamLightType.TRACK.value):
       body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
-      d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[camid]
+      d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[worldid, camid]
     elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
       d.cam_xpos[worldid, camid] = (
-        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[camid]
+        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[worldid, camid]
       )
     elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
       camid
@@ -307,9 +307,9 @@ def camlight(m: Model, d: Data):
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
     d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
-      m.light_pos[lightid], xquat
+      m.light_pos[worldid, lightid], xquat
     )
-    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
+    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[worldid, lightid], xquat)
 
   @kernel
   def light_fn(m: Model, d: Data):
@@ -322,10 +322,10 @@ def camlight(m: Model, d: Data):
       return
     elif m.light_mode[lightid] == wp.static(CamLightType.TRACK.value):
       body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
-      d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[lightid]
+      d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[worldid, lightid]
     elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
       d.light_xpos[worldid, lightid] = (
-        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[lightid]
+        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[worldid, lightid]
       )
     elif m.light_mode[lightid] == wp.static(
       CamLightType.TARGETBODY.value
@@ -337,11 +337,11 @@ def camlight(m: Model, d: Data):
     d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
 
   if m.ncam > 0:
-    wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
-    wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+    wp.launch(cam_local_to_global, dim=(m.nworld, m.ncam), inputs=[m, d])
+    wp.launch(cam_fn, dim=(m.nworld, m.ncam), inputs=[m, d])
   if m.nlight > 0:
-    wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
-    wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
+    wp.launch(light_local_to_global, dim=(m.nworld, m.nlight), inputs=[m, d])
+    wp.launch(light_fn, dim=(m.nworld, m.nlight), inputs=[m, d])
 
 
 @event_scope
