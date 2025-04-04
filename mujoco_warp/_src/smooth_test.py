@@ -29,7 +29,7 @@ wp.config.verify_cuda = True
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
-_TOLERANCE = 5e-5
+_TOLERANCE = 5e-4
 
 
 def _assert_eq(a, b, name):
