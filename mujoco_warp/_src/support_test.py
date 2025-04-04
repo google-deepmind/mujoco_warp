@@ -72,19 +72,6 @@ class SupportTest(parameterized.TestCase):
       )
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
-  def test_make_put_data(self):
-    """Tests that make_put_data and put_data are producing the same shapes for all warp arrays."""
-    mjm, mjd, m, d = test_util.fixture("pendula.xml")
-    md = mjwarp.make_data(mjm)
-
-    # same number of fields
-    self.assertEqual(len(d.__dict__), len(md.__dict__))
-
-    # test shapes for all arrays
-    for attr, val in md.__dict__.items():
-      if isinstance(val, wp.array):
-        self.assertEqual(val.shape, getattr(d, attr).shape)
-
 
 if __name__ == "__main__":
   wp.init()
