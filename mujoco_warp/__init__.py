@@ -40,6 +40,7 @@ from ._src.smooth import factor_m as factor_m
 from ._src.smooth import kinematics as kinematics
 from ._src.smooth import rne as rne
 from ._src.smooth import solve_m as solve_m
+from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
 from ._src.solver import solve as solve
 from ._src.support import is_sparse as is_sparse

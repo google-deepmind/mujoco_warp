@@ -412,7 +412,7 @@ def fwd_position(m: Model, d: Data):
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
   # TODO(team): smooth.camlight
-  # TODO(team): smooth.tendon
+  smooth.tendon(m, d)
   smooth.crb(m, d)
   smooth.factor_m(m, d)
   collision_driver.collision(m, d)

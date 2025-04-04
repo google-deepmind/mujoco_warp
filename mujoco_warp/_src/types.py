@@ -202,6 +202,17 @@ class EqType(enum.IntEnum):
   # unsupported: CONNECT, WELD, JOINT, TENDON, FLEX, DISTANCE
 
 
+class WrapType(enum.IntEnum):
+  """Type of tendon wrapping object.
+
+  Members:
+    JOINT: constant moment arm
+  """
+
+  JOINT = mujoco.mjtWrap.mjWRAP_JOINT
+  # unsupported: PULLEY, SITE, SPHERE, CYLINDER
+
+
 class vec5f(wp.types.vector(length=5, dtype=wp.float32)):
   pass
 
@@ -380,6 +391,8 @@ class Model:
     nexclude: number of excluded geom pairs                  ()
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
+    ntendon: number of tendons                               ()
+    nwrap: number of wrap objects in all tendon paths        ()
     nlsp: number of step sizes for parallel linsearch        ()
     opt: physics options
     stat: model statistics
@@ -493,6 +506,13 @@ class Model:
     actuator_gear: scale length and transmitted force        (nu, 6)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     actuator_affine_bias_gain: affine bias/gain present
+    tendon_adr: address of first object in tendon's path     (ntendon,)
+    tendon_jnt_adr: joint tendon address                     (<=ntendon,)
+    tendon_num: number of objects in tendon's path           (ntendon,)
+    wrap_objid: object id: geom, site, joint                 (nwrap,)
+    wrap_prm: divisor, joint coef, or site id                (nwrap,)
+    wrap_type: wrap object type (mjtWrap)                    (nwrap,)
+    wrap_jnt_adr: addresses for joint tendon wrap object     (<=nwrap,)
   """
 
   nq: int
@@ -506,6 +526,8 @@ class Model:
   nexclude: int
   nmocap: int
   nM: int
+  ntendon: int
+  nwrap: int
   nlsp: int  # warp only
   opt: Option
   stat: Statistic
@@ -619,6 +641,13 @@ class Model:
   actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
   exclude_signature: wp.array(dtype=wp.int32, ndim=1)
   actuator_affine_bias_gain: bool  # warp only
+  tendon_adr: wp.array(dtype=wp.int32, ndim=1)
+  tendon_num: wp.array(dtype=wp.int32, ndim=1)
+  wrap_objid: wp.array(dtype=wp.int32, ndim=1)
+  wrap_prm: wp.array(dtype=wp.float32, ndim=1)
+  wrap_type: wp.array(dtype=wp.int32, ndim=1)
+  tendon_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  wrap_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
 
 
 @wp.struct
@@ -807,3 +836,7 @@ class Data:
   collision_pair: wp.array(dtype=wp.vec2i, ndim=1)
   collision_worldid: wp.array(dtype=wp.int32, ndim=1)
   ncollision: wp.array(dtype=wp.int32, ndim=1)
+
+  # tendon
+  ten_length: wp.array(dtype=wp.float32, ndim=2)
+  ten_J: wp.array(dtype=wp.float32, ndim=3)

@@ -781,3 +781,37 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _factor_solve_i_dense(m, d, M, x, y)
+
+
+def tendon(m: Model, d: Data):
+  """Computes tendon lengths and moments."""
+
+  if not m.ntendon:
+    return
+
+  d.ten_length.zero_()
+  d.ten_J.zero_()
+
+  # process joint tendons
+  if m.wrap_jnt_adr.size:
+
+    @kernel
+    def _joint_tendon(m: Model, d: Data):
+      worldid, wrapid = wp.tid()
+
+      tendon_jnt_adr = m.tendon_jnt_adr[wrapid]
+      wrap_jnt_adr = m.wrap_jnt_adr[wrapid]
+
+      wrap_objid = m.wrap_objid[wrap_jnt_adr]
+      prm = m.wrap_prm[wrap_jnt_adr]
+
+      # add to length
+      L = prm * d.qpos[worldid, m.jnt_qposadr[wrap_objid]]
+      wp.atomic_add(d.ten_length[worldid], tendon_jnt_adr, L)
+
+      # add to moment
+      d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_jnt_adr]] = prm
+
+    wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
+
+  # TODO(team): spatial
