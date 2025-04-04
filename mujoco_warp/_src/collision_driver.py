@@ -26,13 +26,15 @@ from .warp_util import event_scope
 
 
 @wp.func
-def _geom_filter(m: Model, geom1: int, geom2: int, filterparent: bool) -> bool:
+def _geom_filter(
+  m: Model, geom1: int, geom2: int, filterparent: bool, worldid: int
+) -> bool:
   bodyid1 = m.geom_bodyid[geom1]
   bodyid2 = m.geom_bodyid[geom2]
-  contype1 = m.geom_contype[geom1]
-  contype2 = m.geom_contype[geom2]
-  conaffinity1 = m.geom_conaffinity[geom1]
-  conaffinity2 = m.geom_conaffinity[geom2]
+  contype1 = m.geom_contype[worldid, geom1]
+  contype2 = m.geom_contype[worldid, geom2]
+  conaffinity1 = m.geom_conaffinity[worldid, geom1]
+  conaffinity2 = m.geom_conaffinity[worldid, geom2]
   weldid1 = m.body_weldid[bodyid1]
   weldid2 = m.body_weldid[bodyid2]
   weld_parentid1 = m.body_weldid[m.body_parentid[weldid1]]
@@ -82,7 +84,7 @@ def broadphase_project_spheres_onto_sweep_direction_kernel(
   if r == 0.0:
     # current geom is a plane
     r = 1000000000.0
-  sphere_radius = r + m.geom_margin[i]
+  sphere_radius = r + m.geom_margin[worldId, i]
 
   center = wp.dot(direction, c)
   f = center - sphere_radius
@@ -146,7 +148,7 @@ def reorder_bounding_spheres_kernel(
   # Get the bounding volume
   c = d.geom_xpos[worldId, mapped]
   r = m.geom_rbound[mapped]
-  margin = m.geom_margin[mapped]
+  margin = m.geom_margin[worldId, mapped]
 
   # Reorder the box into the sorted array
   if r == 0.0:
@@ -291,7 +293,7 @@ def sap_broadphase_kernel(m: Model, d: Data, num_threads: int, filter_parent: bo
     idx1 = d.sap_sort_index[worldId, i]
     idx2 = d.sap_sort_index[worldId, j]
 
-    if not _geom_filter(m, idx1, idx2, filter_parent):
+    if not _geom_filter(m, idx1, idx2, filter_parent, worldId):
       threadId += num_threads
       continue
 
@@ -317,17 +319,19 @@ def get_contact_solver_params_kernel(
   g1 = geoms.x
   g2 = geoms.y
 
-  margin = wp.max(m.geom_margin[g1], m.geom_margin[g2])
-  gap = wp.max(m.geom_gap[g1], m.geom_gap[g2])
-  solmix1 = m.geom_solmix[g1]
-  solmix2 = m.geom_solmix[g2]
+  worldid = d.contact.worldid[tid]
+
+  margin = wp.max(m.geom_margin[worldid, g1], m.geom_margin[worldid, g2])
+  gap = wp.max(m.geom_gap[worldid, g1], m.geom_gap[worldid, g2])
+  solmix1 = m.geom_solmix[worldid, g1]
+  solmix2 = m.geom_solmix[worldid, g2]
   mix = solmix1 / (solmix1 + solmix2)
   mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
   mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
   mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
 
-  p1 = m.geom_priority[g1]
-  p2 = m.geom_priority[g2]
+  p1 = m.geom_priority[worldid, g1]
+  p2 = m.geom_priority[worldid, g2]
   mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
   condim1 = m.geom_condim[g1]
@@ -337,15 +341,21 @@ def get_contact_solver_params_kernel(
   )
   d.contact.dim[tid] = condim
 
-  if m.geom_solref[g1].x > 0.0 and m.geom_solref[g2].x > 0.0:
-    d.contact.solref[tid] = mix * m.geom_solref[g1] + (1.0 - mix) * m.geom_solref[g2]
+  if m.geom_solref[worldid, g1].x > 0.0 and m.geom_solref[worldid, g2].x > 0.0:
+    d.contact.solref[tid] = (
+      mix * m.geom_solref[worldid, g1] + (1.0 - mix) * m.geom_solref[worldid, g2]
+    )
   else:
-    d.contact.solref[tid] = wp.min(m.geom_solref[g1], m.geom_solref[g2])
+    d.contact.solref[tid] = wp.min(
+      m.geom_solref[worldid, g1], m.geom_solref[worldid, g2]
+    )
   d.contact.includemargin[tid] = margin - gap
-  friction_ = wp.max(m.geom_friction[g1], m.geom_friction[g2])
+  friction_ = wp.max(m.geom_friction[worldid, g1], m.geom_friction[worldid, g2])
   friction5 = vec5(friction_[0], friction_[0], friction_[1], friction_[2], friction_[2])
   d.contact.friction[tid] = friction5
-  d.contact.solimp[tid] = mix * m.geom_solimp[g1] + (1.0 - mix) * m.geom_solimp[g2]
+  d.contact.solimp[tid] = (
+    mix * m.geom_solimp[worldid, g1] + (1.0 - mix) * m.geom_solimp[worldid, g2]
+  )
 
 
 def sap_broadphase(m: Model, d: Data):
@@ -357,7 +367,7 @@ def sap_broadphase(m: Model, d: Data):
 
   wp.launch(
     kernel=broadphase_project_spheres_onto_sweep_direction_kernel,
-    dim=(d.nworld, m.ngeom),
+    dim=(m.nworld, m.ngeom),
     inputs=[m, d, direction],
   )
 
@@ -367,19 +377,19 @@ def sap_broadphase(m: Model, d: Data):
   if tile_sort_available:
     segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
     wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[m, d], block_dim=128
+      kernel=segmented_sort_kernel, dim=(m.nworld), inputs=[m, d], block_dim=128
     )
     print("tile sort available")
   elif segmented_sort_available:
     wp.utils.segmented_sort_pairs(
       d.sap_projection_lower,
       d.sap_sort_index,
-      m.ngeom * d.nworld,
+      m.ngeom * m.nworld,
       d.sap_segment_index,
     )
   else:
     # Sort each world's segment separately
-    for world_id in range(d.nworld):
+    for world_id in range(m.nworld):
       start_idx = world_id * m.ngeom
 
       # Create temporary arrays for sorting
@@ -431,13 +441,13 @@ def sap_broadphase(m: Model, d: Data):
 
   wp.launch(
     kernel=reorder_bounding_spheres_kernel,
-    dim=(d.nworld, m.ngeom),
+    dim=(m.nworld, m.ngeom),
     inputs=[m, d],
   )
 
   wp.launch(
     kernel=sap_broadphase_prepare_kernel,
-    dim=(d.nworld, m.ngeom),
+    dim=(m.nworld, m.ngeom),
     inputs=[m, d],
   )
 
@@ -445,7 +455,7 @@ def sap_broadphase(m: Model, d: Data):
   wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
 
   # Estimate how many overlap checks need to be done - assumes each box has to be compared to 5 other boxes (and batched over all worlds)
-  num_sweep_threads = 5 * d.nworld * m.ngeom
+  num_sweep_threads = 5 * m.nworld * m.ngeom
   filter_parent = not m.opt.disableflags & DisableBit.FILTERPARENT.value
   wp.launch(
     kernel=sap_broadphase_kernel,
@@ -478,8 +488,8 @@ def nxn_broadphase(m: Model, d: Data):
       + (m.ngeom - geom1) * ((m.ngeom - geom1) - 1) // 2
     )
 
-    margin1 = m.geom_margin[geom1]
-    margin2 = m.geom_margin[geom2]
+    margin1 = m.geom_margin[worldid, geom1]
+    margin2 = m.geom_margin[worldid, geom2]
     pos1 = d.geom_xpos[worldid, geom1]
     pos2 = d.geom_xpos[worldid, geom2]
     size1 = m.geom_rbound[geom1]
@@ -503,13 +513,13 @@ def nxn_broadphase(m: Model, d: Data):
       dist = wp.dot(-dif, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
       bounds_filter = dist <= bound
 
-    geom_filter = _geom_filter(m, geom1, geom2, filterparent)
+    geom_filter = _geom_filter(m, geom1, geom2, filterparent, worldid)
 
     if bounds_filter and geom_filter:
       _add_geom_pair(m, d, geom1, geom2, worldid)
 
   wp.launch(
-    _nxn_broadphase, dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d]
+    _nxn_broadphase, dim=(m.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d]
   )
 
 

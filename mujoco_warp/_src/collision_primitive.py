@@ -253,7 +253,7 @@ def _primitive_narrowphase(
   geom1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
   geom2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
 
-  margin = wp.max(m.geom_margin[g1], m.geom_margin[g2])
+  margin = wp.max(m.geom_margin[worldid, g1], m.geom_margin[worldid, g2])
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.SPHERE.value):

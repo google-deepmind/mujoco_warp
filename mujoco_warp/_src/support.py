@@ -71,7 +71,7 @@ def mul_m(
 
       wp.launch_tiled(
         mul,
-        dim=(d.nworld, size),
+        dim=(m.nworld, size),
         inputs=[
           m,
           d,
@@ -130,10 +130,10 @@ def mul_m(
       wp.atomic_add(res[worldid], i, qM * vec[worldid, j])
       wp.atomic_add(res[worldid], j, qM * vec[worldid, i])
 
-    wp.launch(_mul_m_sparse_diag, dim=(d.nworld, m.nv), inputs=[m, d, res, vec, skip])
+    wp.launch(_mul_m_sparse_diag, dim=(m.nworld, m.nv), inputs=[m, d, res, vec, skip])
 
     wp.launch(
-      _mul_m_sparse_ij, dim=(d.nworld, m.qM_madr_ij.size), inputs=[m, d, res, vec, skip]
+      _mul_m_sparse_ij, dim=(m.nworld, m.qM_madr_ij.size), inputs=[m, d, res, vec, skip]
     )
 
 
@@ -169,7 +169,7 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: array2df):
 
     qfrc[worldid, dofid] += accumul
 
-  wp.launch(kernel=_accumulate, dim=(d.nworld, m.nv), inputs=[m, d, qfrc])
+  wp.launch(kernel=_accumulate, dim=(m.nworld, m.nv), inputs=[m, d, qfrc])
 
 
 @wp.func

@@ -109,9 +109,9 @@ def _efc_limit_slide_hinge(
   jntid = m.jnt_limited_slide_hinge_adr[jntlimitedid]
 
   qpos = d.qpos[worldid, m.jnt_qposadr[jntid]]
-  jnt_range = m.jnt_range[jntid]
+  jnt_range = m.jnt_range[worldid, jntid]
   dist_min, dist_max = qpos - jnt_range[0], jnt_range[1] - qpos
-  pos = wp.min(dist_min, dist_max) - m.jnt_margin[jntid]
+  pos = wp.min(dist_min, dist_max) - m.jnt_margin[worldid, jntid]
   active = pos < 0
 
   if active:
@@ -130,10 +130,10 @@ def _efc_limit_slide_hinge(
       efcid,
       pos,
       pos,
-      m.dof_invweight0[dofadr],
-      m.jnt_solref[jntid],
-      m.jnt_solimp[jntid],
-      m.jnt_margin[jntid],
+      m.dof_invweight0[worldid, dofadr],
+      m.jnt_solref[worldid, jntid],
+      m.jnt_solimp[worldid, jntid],
+      m.jnt_margin[worldid, jntid],
       refsafe,
       Jqvel,
     )
@@ -179,7 +179,9 @@ def _efc_contact_pyramidal(
     frame = d.contact.frame[conid]
 
     # pyramidal has common invweight across all edges
-    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+    invweight = (
+      m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
+    )
 
     if condim > 1:
       dimid2 = dimid / 2 + 1
@@ -285,7 +287,9 @@ def _efc_contact_elliptic(
       d.efc.J[efcid, i] = J
       Jqvel += J * d.qvel[worldid, i]
 
-    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+    invweight = (
+      m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
+    )
 
     ref = d.contact.solref[conid]
     pos_aref = pos
@@ -340,7 +344,7 @@ def make_constraint(m: types.Model, d: types.Data):
     ):
       wp.launch(
         _efc_limit_slide_hinge,
-        dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
+        dim=(m.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[m, d, refsafe],
       )
 
