@@ -26,7 +26,9 @@ from .warp_util import event_scope
 
 
 @wp.func
-def _geom_filter(m: Model, geom1: int, geom2: int, filterparent: bool, worldid: int) -> bool:
+def _geom_filter(
+  m: Model, geom1: int, geom2: int, filterparent: bool, worldid: int
+) -> bool:
   bodyid1 = m.geom_bodyid[geom1]
   bodyid2 = m.geom_bodyid[geom2]
   contype1 = m.geom_contype[worldid, geom1]
@@ -340,14 +342,20 @@ def get_contact_solver_params_kernel(
   d.contact.dim[tid] = condim
 
   if m.geom_solref[worldid, g1].x > 0.0 and m.geom_solref[worldid, g2].x > 0.0:
-    d.contact.solref[tid] = mix * m.geom_solref[worldid, g1] + (1.0 - mix) * m.geom_solref[worldid, g2]
+    d.contact.solref[tid] = (
+      mix * m.geom_solref[worldid, g1] + (1.0 - mix) * m.geom_solref[worldid, g2]
+    )
   else:
-    d.contact.solref[tid] = wp.min(m.geom_solref[worldid, g1], m.geom_solref[worldid, g2])
+    d.contact.solref[tid] = wp.min(
+      m.geom_solref[worldid, g1], m.geom_solref[worldid, g2]
+    )
   d.contact.includemargin[tid] = margin - gap
   friction_ = wp.max(m.geom_friction[worldid, g1], m.geom_friction[worldid, g2])
   friction5 = vec5(friction_[0], friction_[0], friction_[1], friction_[2], friction_[2])
   d.contact.friction[tid] = friction5
-  d.contact.solimp[tid] = mix * m.geom_solimp[worldid, g1] + (1.0 - mix) * m.geom_solimp[worldid, g2]
+  d.contact.solimp[tid] = (
+    mix * m.geom_solimp[worldid, g1] + (1.0 - mix) * m.geom_solimp[worldid, g2]
+  )
 
 
 def sap_broadphase(m: Model, d: Data):

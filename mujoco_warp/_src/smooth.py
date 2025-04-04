@@ -92,7 +92,7 @@ def kinematics(m: Model, d: Data):
         elif jnt_type == wp.static(JointType.SLIDE.value):
           xpos += xaxis * (qpos[qadr] - m.qpos0[worldid, qadr])
         elif jnt_type == wp.static(JointType.HINGE.value):
-          qpos0 = m.qpos0[worldid,qadr]
+          qpos0 = m.qpos0[worldid, qadr]
           qloc = math.axis_angle_to_quat(jnt_axis, qpos[qadr] - qpos0)
           xquat = math.mul_quat(xquat, qloc)
           # correct for off-center rotation
@@ -106,7 +106,9 @@ def kinematics(m: Model, d: Data):
     xquat = wp.normalize(xquat)
     d.xquat[worldid, bodyid] = xquat
     d.xmat[worldid, bodyid] = math.quat_to_mat(xquat)
-    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(m.body_ipos[worldid, bodyid], xquat)
+    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(
+      m.body_ipos[worldid, bodyid], xquat
+    )
     d.ximat[worldid, bodyid] = math.quat_to_mat(
       math.mul_quat(xquat, m.body_iquat[worldid, bodyid])
     )
@@ -117,7 +119,9 @@ def kinematics(m: Model, d: Data):
     bodyid = m.geom_bodyid[geomid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.geom_xpos[worldid, geomid] = xpos + math.rot_vec_quat(m.geom_pos[worldid, geomid], xquat)
+    d.geom_xpos[worldid, geomid] = xpos + math.rot_vec_quat(
+      m.geom_pos[worldid, geomid], xquat
+    )
     d.geom_xmat[worldid, geomid] = math.quat_to_mat(
       math.mul_quat(xquat, m.geom_quat[worldid, geomid])
     )
@@ -128,7 +132,9 @@ def kinematics(m: Model, d: Data):
     bodyid = m.site_bodyid[siteid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.site_xpos[worldid, siteid] = xpos + math.rot_vec_quat(m.site_pos[worldid, siteid], xquat)
+    d.site_xpos[worldid, siteid] = xpos + math.rot_vec_quat(
+      m.site_pos[worldid, siteid], xquat
+    )
     d.site_xmat[worldid, siteid] = math.quat_to_mat(
       math.mul_quat(xquat, m.site_quat[worldid, siteid])
     )
@@ -155,7 +161,9 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_com_init(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[worldid, bodyid]
+    d.subtree_com[worldid, bodyid] = (
+      d.xipos[worldid, bodyid] * m.body_mass[worldid, bodyid]
+    )
 
   @kernel
   def subtree_com_acc(m: Model, d: Data, leveladr: int):
@@ -167,7 +175,7 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_div(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] /= m.subtree_mass[worldid,bodyid]
+    d.subtree_com[worldid, bodyid] /= m.subtree_mass[worldid, bodyid]
 
   @kernel
   def cinert(m: Model, d: Data):
@@ -259,7 +267,9 @@ def camlight(m: Model, d: Data):
     bodyid = m.cam_bodyid[camid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[worldid, camid], xquat)
+    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(
+      m.cam_pos[worldid, camid], xquat
+    )
     d.cam_xmat[worldid, camid] = math.quat_to_mat(
       math.mul_quat(xquat, m.cam_quat[worldid, camid])
     )
@@ -309,7 +319,9 @@ def camlight(m: Model, d: Data):
     d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
       m.light_pos[worldid, lightid], xquat
     )
-    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[worldid, lightid], xquat)
+    d.light_xdir[worldid, lightid] = math.rot_vec_quat(
+      m.light_dir[worldid, lightid], xquat
+    )
 
   @kernel
   def light_fn(m: Model, d: Data):
@@ -325,7 +337,8 @@ def camlight(m: Model, d: Data):
       d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[worldid, lightid]
     elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
       d.light_xpos[worldid, lightid] = (
-        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[worldid, lightid]
+        d.subtree_com[worldid, m.light_bodyid[lightid]]
+        + m.light_poscom0[worldid, lightid]
       )
     elif m.light_mode[lightid] == wp.static(
       CamLightType.TARGETBODY.value
@@ -633,7 +646,7 @@ def transmission(m: Model, d: Data):
     qadr = m.jnt_qposadr[jntid]
     vadr = m.jnt_dofadr[jntid]
     trntype = m.actuator_trntype[actid]
-    gear = m.actuator_gear[worldid,actid]
+    gear = m.actuator_gear[worldid, actid]
     if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
       TrnType.JOINTINPARENT.value
     ):

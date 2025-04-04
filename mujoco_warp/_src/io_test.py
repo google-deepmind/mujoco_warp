@@ -28,10 +28,12 @@ import mujoco_warp as mjwarp
 # due to float precision
 _TOLERANCE = 5e-5
 
+
 def _assert_eq(a, b, name):
   tol = _TOLERANCE * 10  # avoid test noise
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
 
 class IOTest(absltest.TestCase):
   def test_equality(self):
@@ -289,7 +291,7 @@ class IOTest(absltest.TestCase):
     mujoco.mj_passive(mjm, mjd)
 
     m2, d2, _, _ = test_util.fixture("humanoid/humanoid.xml")
-    d2.qvel = mjd.qvel # need to copy qvel because of randomization
+    d2.qvel = mjd.qvel  # need to copy qvel because of randomization
     m2.dof_damping *= 0.5
 
     mujoco.mj_passive(m2, d2)
