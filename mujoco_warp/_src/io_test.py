@@ -17,12 +17,13 @@
 
 import mujoco
 import numpy as np
-from . import test_util
 import warp as wp
 from absl.testing import absltest
 from etils import epath
 
 import mujoco_warp as mjwarp
+
+from . import test_util
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
