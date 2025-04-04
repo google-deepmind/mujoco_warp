@@ -117,13 +117,34 @@ class IOTest(absltest.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
+  def test_geom_type(self):
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="1" ncol="1" size="1 1 1 1"/>
+          <mesh name="mesh" vertex="1 0 0  0 1 0  0 0 1  1 1 0  1 0 1  0 1 1  1 1 1  0 0 0"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="hfield"/>             
+          <geom type="ellipsoid" size="1 1 1"/>
+          <geom type="cylinder" size="1 1"/>
+          <geom type="mesh" mesh="mesh"/>
+        </worldbody>          
+      </mujoco>
+    """)
+
+    # TODO(team): sdf
+
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
   def test_dense(self):
     path = epath.resource_path("mujoco_warp") / "test_data/humanoid/n_humanoids.xml"
     mjm = mujoco.MjModel.from_xml_path(path.as_posix())
 
     with self.assertRaises(ValueError):
       mjwarp.put_model(mjm)
-      
+
   def test_actuator_trntype(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>

@@ -24,6 +24,24 @@ MJ_NREF = mujoco.mjNREF
 MJ_NIMP = mujoco.mjNIMP
 
 
+class CamLightType(enum.IntEnum):
+  """Type of camera light.
+
+  Members:
+    FIXED: pos and rot fixed in body
+    TRACK: pos tracks body, rot fixed in global
+    TRACKCOM: pos tracks subtree com, rot fixed in body
+    TARGETBODY: pos fixed in body, rot tracks target body
+    TARGETBODYCOM: pos fixed in body, rot tracks target subtree com
+  """
+
+  FIXED = mujoco.mjtCamLight.mjCAMLIGHT_FIXED
+  TRACK = mujoco.mjtCamLight.mjCAMLIGHT_TRACK
+  TRACKCOM = mujoco.mjtCamLight.mjCAMLIGHT_TRACKCOM
+  TARGETBODY = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY
+  TARGETBODYCOM = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODYCOM
+
+
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
@@ -132,10 +150,11 @@ class ConeType(enum.IntEnum):
 
   Members:
     PYRAMIDAL: pyramidal
+    ELLIPTIC: elliptic
   """
 
   PYRAMIDAL = mujoco.mjtCone.mjCONE_PYRAMIDAL
-  # unsupported: ELLIPTIC
+  ELLIPTIC = mujoco.mjtCone.mjCONE_ELLIPTIC
 
 
 class IntegratorType(enum.IntEnum):
@@ -165,8 +184,8 @@ class GeomType(enum.IntEnum):
   SPHERE = mujoco.mjtGeom.mjGEOM_SPHERE
   CAPSULE = mujoco.mjtGeom.mjGEOM_CAPSULE
   BOX = mujoco.mjtGeom.mjGEOM_BOX
-  # unsupported: HFIELD, ELLIPSOID, CYLINDER, MESH,
-  # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
+  # unsupported: HFIELD, ELLIPSOID, CYLINDER, MESH, SDF
+  # ARROW*, LINE, LINEBOX, FLEX, SKIN, LABEL, TRIANGLE
 
 
 class SolverType(enum.IntEnum):
@@ -376,6 +395,8 @@ class Model:
     njnt: number of joints                                   ()
     ngeom: number of geoms                                   ()
     nsite: number of sites                                   ()
+    ncam: number of cameras                                  ()
+    nlight: number of lights                                 ()
     nexclude: number of excluded geom pairs                  ()
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
@@ -470,6 +491,22 @@ class Model:
     site_bodyid: id of site's body                           (nsite,)
     site_pos: local position offset rel. to body             (nworld, nsite, 3)
     site_quat: local orientation offset rel. to body         (nworld, nsite, 4)
+    cam_mode: camera tracking mode (mjtCamLight)             (ncam,)
+    cam_bodyid: id of camera's body                          (ncam,)
+    cam_targetbodyid: id of targeted body; -1: none          (ncam,)
+    cam_pos: position rel. to body frame                     (ncam, 3)
+    cam_quat: orientation rel. to body frame                 (ncam, 4)
+    cam_poscom0: global position rel. to sub-com in qpos0    (ncam, 3)
+    cam_pos0: Cartesian camera position                      (nworld, ncam, 3)
+    cam_mat0: Cartesian camera orientation                   (nworld, ncam, 3, 3)
+    light_mode: light tracking mode (mjtCamLight)            (nlight,)
+    light_bodyid: id of light's body                         (nlight,)
+    light_targetbodyid: id of targeted body; -1: none        (nlight,)
+    light_pos: position rel. to body frame                   (nlight, 3)
+    light_dir: direction rel. to body frame                  (nlight, 3)
+    light_poscom0: global position rel. to sub-com in qpos0  (nlight, 3)
+    light_pos0: global position rel. to body in qpos0        (nworld, nlight, 3)
+    light_dir0: global direction in qpos0                    (nworld, nlight, 3)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -501,6 +538,8 @@ class Model:
   njnt: int
   ngeom: int
   nsite: int
+  ncam: int
+  nlight: int
   nexclude: int
   nmocap: int
   nM: int
@@ -597,6 +636,22 @@ class Model:
   site_bodyid: wp.array(dtype=wp.int32, ndim=1)
   site_pos: wp.array(dtype=wp.vec3, ndim=2)
   site_quat: wp.array(dtype=wp.quat, ndim=2)
+  cam_mode: wp.array(dtype=wp.int32, ndim=1)
+  cam_bodyid: wp.array(dtype=wp.int32, ndim=1)
+  cam_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
+  cam_pos: wp.array(dtype=wp.vec3, ndim=1)
+  cam_quat: wp.array(dtype=wp.quat, ndim=1)
+  cam_poscom0: wp.array(dtype=wp.vec3, ndim=1)
+  cam_pos0: wp.array(dtype=wp.vec3, ndim=1)
+  cam_mat0: wp.array(dtype=wp.mat33, ndim=1)
+  light_mode: wp.array(dtype=wp.int32, ndim=1)
+  light_bodyid: wp.array(dtype=wp.int32, ndim=1)
+  light_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
+  light_pos: wp.array(dtype=wp.vec3, ndim=1)
+  light_dir: wp.array(dtype=wp.vec3, ndim=1)
+  light_poscom0: wp.array(dtype=wp.vec3, ndim=1)
+  light_pos0: wp.array(dtype=wp.vec3, ndim=1)
+  light_dir0: wp.array(dtype=wp.vec3, ndim=1)
   mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
   mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
   mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
@@ -649,7 +704,7 @@ class Contact:
   solimp: wp.array(dtype=vec5, ndim=1)
   dim: wp.array(dtype=wp.int32, ndim=1)
   geom: wp.array(dtype=wp.vec2i, ndim=1)
-  efc_address: wp.array(dtype=wp.int32, ndim=1)
+  efc_address: wp.array(dtype=wp.int32, ndim=2)
   worldid: wp.array(dtype=wp.int32, ndim=1)
 
 
@@ -684,6 +739,10 @@ class Data:
     geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
     site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
+    cam_xpos: Cartesian camera position                         (nworld, ncam, 3)
+    cam_xmat: Cartesian camera orientation                      (nworld, ncam, 3, 3)
+    light_xpos: Cartesian light position                        (nworld, nlight, 3)
+    light_xdir: Cartesian light direction                       (nworld, nlight, 3)
     subtree_com: center of mass of each subtree                 (nworld, nbody, 3)
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
@@ -757,6 +816,10 @@ class Data:
   geom_xmat: wp.array(dtype=wp.mat33, ndim=2)
   site_xpos: wp.array(dtype=wp.vec3, ndim=2)
   site_xmat: wp.array(dtype=wp.mat33, ndim=2)
+  cam_xpos: wp.array(dtype=wp.vec3, ndim=2)
+  cam_xmat: wp.array(dtype=wp.mat33, ndim=2)
+  light_xpos: wp.array(dtype=wp.vec3, ndim=2)
+  light_xdir: wp.array(dtype=wp.vec3, ndim=2)
   subtree_com: wp.array(dtype=wp.vec3, ndim=2)
   cdof: wp.array(dtype=wp.spatial_vector, ndim=2)
   cinert: wp.array(dtype=vec10, ndim=2)

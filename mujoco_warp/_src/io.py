@@ -35,6 +35,7 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1, expand_fields: set[str] = se
     (mjm.actuator_gaintype, types.GainType, "Gain type"),
     (mjm.actuator_biastype, types.BiasType, "Bias type"),
     (mjm.eq_type, types.EqType, "Equality constraint types"),
+    (mjm.geom_type, types.GeomType, "Geom type"),
     (mjm.sensor_type, types.SensorType, "Sensor types"),
   ):
     unsupported = ~np.isin(field, list(field_types))
@@ -79,6 +80,8 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1, expand_fields: set[str] = se
   m.njnt = mjm.njnt
   m.ngeom = mjm.ngeom
   m.nsite = mjm.nsite
+  m.ncam = mjm.ncam
+  m.nlight = mjm.nlight
   m.nmocap = mjm.nmocap
   m.nM = mjm.nM
   m.nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
@@ -365,6 +368,22 @@ def put_model(mjm: mujoco.MjModel, nworld: int = 1, expand_fields: set[str] = se
   m.site_pos = create_nworld_array(mjm.site_pos, wp.vec3, "site_pos" in expand_fields)
   m.site_quat = create_nworld_array(mjm.site_quat, wp.quat, "site_quat" in expand_fields)
   m.site_bodyid = wp.array(mjm.site_bodyid, dtype=wp.int32)
+  m.cam_mode = wp.array(mjm.cam_mode, dtype=wp.int32)
+  m.cam_bodyid = wp.array(mjm.cam_bodyid, dtype=wp.int32)
+  m.cam_targetbodyid = wp.array(mjm.cam_targetbodyid, dtype=wp.int32)
+  m.cam_pos = create_nworld_array(mjm.cam_pos, wp.vec3, "cam_pos" in expand_fields)
+  m.cam_quat = create_nworld_array(mjm.cam_quat, wp.quat, "cam_quat" in expand_fields)
+  m.cam_poscom0 = create_nworld_array(mjm.cam_poscom0, wp.vec3, "cam_poscom0" in expand_fields)
+  m.cam_pos0 = create_nworld_array(mjm.cam_pos0, wp.vec3, "cam_pos0" in expand_fields)
+  m.cam_mat0 = create_nworld_array(mjm.cam_mat0.reshape(-1, 3, 3), wp.mat33, "cam_mat0" in expand_fields)
+  m.light_mode = wp.array(mjm.light_mode, dtype=wp.int32)
+  m.light_bodyid = wp.array(mjm.light_bodyid, dtype=wp.int32)
+  m.light_targetbodyid = wp.array(mjm.light_targetbodyid, dtype=wp.int32)
+  m.light_pos = create_nworld_array(mjm.light_pos, wp.vec3, "light_pos" in expand_fields)
+  m.light_dir = create_nworld_array(mjm.light_dir, wp.vec3, "light_dir" in expand_fields)
+  m.light_poscom0 = create_nworld_array(mjm.light_poscom0, wp.vec3, "light_poscom0" in expand_fields)
+  m.light_pos0 = create_nworld_array(mjm.light_pos0, wp.vec3, "light_pos0" in expand_fields)
+  m.light_dir0 = create_nworld_array(mjm.light_dir0, wp.vec3, "light_dir0" in expand_fields)
   m.dof_bodyid = wp.array(mjm.dof_bodyid, dtype=wp.int32)
   m.dof_jntid = wp.array(mjm.dof_jntid, dtype=wp.int32)
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32)
@@ -498,6 +517,10 @@ def make_data(
   d.geom_xmat = wp.zeros((nworld, mjm.ngeom), dtype=wp.mat33)
   d.site_xpos = wp.zeros((nworld, mjm.nsite), dtype=wp.vec3)
   d.site_xmat = wp.zeros((nworld, mjm.nsite), dtype=wp.mat33)
+  d.cam_xpos = wp.zeros((nworld, mjm.ncam), dtype=wp.vec3)
+  d.cam_xmat = wp.zeros((nworld, mjm.ncam), dtype=wp.mat33)
+  d.light_xpos = wp.zeros((nworld, mjm.nlight), dtype=wp.vec3)
+  d.light_xdir = wp.zeros((nworld, mjm.nlight), dtype=wp.vec3)
   d.cinert = wp.zeros((nworld, mjm.nbody), dtype=types.vec10)
   d.cdof = wp.zeros((nworld, mjm.nv), dtype=wp.spatial_vector)
   d.ctrl = wp.zeros((nworld, mjm.nu), dtype=wp.float32)
@@ -529,7 +552,7 @@ def make_data(
   d.contact.solimp = wp.zeros((nconmax,), dtype=types.vec5)
   d.contact.dim = wp.zeros((nconmax,), dtype=wp.int32)
   d.contact.geom = wp.zeros((nconmax,), dtype=wp.vec2i)
-  d.contact.efc_address = wp.zeros((nconmax,), dtype=wp.int32)
+  d.contact.efc_address = wp.zeros((nconmax, np.max(mjm.geom_condim)), dtype=wp.int32)
   d.contact.worldid = wp.zeros((nconmax,), dtype=wp.int32)
   d.efc = _constraint(mjm, nworld, d.njmax)
   d.qfrc_passive = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
@@ -704,11 +727,16 @@ def put_data(
   )
 
   ncon = mjd.ncon
-  con_efc_address = np.zeros(nconmax, dtype=int)
-  con_worldid = np.zeros(nconmax, dtype=int)
-
+  condim_max = np.max(mjm.geom_condim)
+  con_efc_address = np.zeros((nconmax, condim_max), dtype=int)
   for i in range(nworld):
-    con_efc_address[i * ncon : (i + 1) * ncon] = mjd.contact.efc_address + i * ncon
+    for j in range(ncon):
+      condim = mjd.contact.dim[j]
+      for k in range(condim):
+        con_efc_address[i * ncon + j, k] = mjd.nefc * i + mjd.contact.efc_address[j] + k
+
+  con_worldid = np.zeros(nconmax, dtype=int)
+  for i in range(nworld):
     con_worldid[i * ncon : (i + 1) * ncon] = i
 
   ncon_fill = nconmax - nworld * ncon
@@ -743,6 +771,7 @@ def put_data(
   con_geom_fill = np.vstack(
     [np.repeat(mjd.contact.geom, nworld, axis=0), np.zeros((ncon_fill, 2))]
   )
+  con_efc_address_fill = np.vstack([con_efc_address, np.zeros((ncon_fill, condim_max))])
 
   d.contact.dist = wp.array(con_dist_fill, dtype=wp.float32, ndim=1)
   d.contact.pos = wp.array(con_pos_fill, dtype=wp.vec3f, ndim=1)
@@ -754,7 +783,7 @@ def put_data(
   d.contact.solimp = wp.array(con_solimp_fill, dtype=types.vec5, ndim=1)
   d.contact.dim = wp.array(con_dim_fill, dtype=wp.int32, ndim=1)
   d.contact.geom = wp.array(con_geom_fill, dtype=wp.vec2i, ndim=1)
-  d.contact.efc_address = wp.array(con_efc_address, dtype=wp.int32, ndim=1)
+  d.contact.efc_address = wp.array(con_efc_address_fill, dtype=wp.int32, ndim=2)
   d.contact.worldid = wp.array(con_worldid, dtype=wp.int32, ndim=1)
 
   d.rne_cacc = wp.zeros(shape=(nworld, mjm.nbody), dtype=wp.spatial_vector)
@@ -832,6 +861,10 @@ def get_data_into(
   result.geom_xmat = d.geom_xmat.numpy().reshape((-1, 9))
   result.site_xpos = d.site_xpos.numpy()[0]
   result.site_xmat = d.site_xmat.numpy().reshape((-1, 9))
+  result.cam_xpos = d.cam_xpos.numpy()[0]
+  result.cam_xmat = d.cam_xmat.numpy().reshape((-1, 9))
+  result.light_xpos = d.light_xpos.numpy()[0]
+  result.light_xdir = d.light_xdir.numpy()[0]
   result.cinert = d.cinert.numpy()[0]
   result.cdof = d.cdof.numpy()[0]
   result.crb = d.crb.numpy()[0]
@@ -869,7 +902,7 @@ def get_data_into(
   result.contact.solreffriction[:] = d.contact.solreffriction.numpy()[:ncon]
   result.contact.solimp[:] = d.contact.solimp.numpy()[:ncon]
   result.contact.dim[:] = d.contact.dim.numpy()[:ncon]
-  result.contact.efc_address[:] = d.contact.efc_address.numpy()[:ncon]
+  result.contact.efc_address[:] = d.contact.efc_address.numpy()[:ncon, 0]
 
   if support.is_sparse(mjm):
     result.qM[:] = d.qM.numpy()[0, 0]
