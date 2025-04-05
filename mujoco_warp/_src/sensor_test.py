@@ -44,9 +44,28 @@ class SensorTest(parameterized.TestCase):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
-          <body>
+          <body name="body0" pos="0.1 0.2 0.3" quat=".05 .1 .15 .2">
             <joint name="slide" type="slide"/>
+            <geom name="geom0" type="sphere" size="0.1"/>
+            <site name="site0"/>
+          </body>
+          <body name="body1" pos=".5 .6 .7">
+            <joint name="ballquat" type="ball"/>
             <geom type="sphere" size="0.1"/>
+            <site name="site1" pos=".1 .2 .3"/>                         
+          </body>
+          <body name="body2" pos="1 1 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+            <site name="site2"/>                         
+          </body>
+          <body name="body3" pos="2 2 2">
+            <joint name="hinge0" type="hinge" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            <body pos="2 2 2">
+              <joint name="hinge1" type="hinge" axis="1 0 0"/>
+              <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            </body>
           </body>
         </worldbody>
         <actuator>
@@ -54,11 +73,44 @@ class SensorTest(parameterized.TestCase):
         </actuator>
         <sensor>
           <jointpos joint="slide"/>
+          <actuatorpos actuator="slide"/>
+          <ballquat joint="ballquat"/>
+          <framepos objtype="body" objname="body1"/>      
+          <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>    
+          <framepos objtype="xbody" objname="body1"/> 
+          <framepos objtype="geom" objname="geom0"/>    
+          <framepos objtype="site" objname="site0"/>
+          <framexaxis objtype="body" objname="body1"/>      
+          <framexaxis objtype="body" objname="body1" reftype="body" refname="body0"/>    
+          <framexaxis objtype="xbody" objname="body1"/> 
+          <framexaxis objtype="geom" objname="geom0"/>    
+          <framexaxis objtype="site" objname="site0"/>
+          <frameyaxis objtype="body" objname="body1"/>      
+          <frameyaxis objtype="body" objname="body1" reftype="body" refname="body0"/>    
+          <frameyaxis objtype="xbody" objname="body1"/> 
+          <frameyaxis objtype="geom" objname="geom0"/>    
+          <frameyaxis objtype="site" objname="site0"/> 
+          <framezaxis objtype="body" objname="body1"/>      
+          <framezaxis objtype="body" objname="body1" reftype="body" refname="body0"/>    
+          <framezaxis objtype="xbody" objname="body1"/> 
+          <framezaxis objtype="geom" objname="geom0"/>    
+          <framezaxis objtype="site" objname="site0"/>  
+          <framequat objtype="body" objname="body1"/>      
+          <framequat objtype="body" objname="body1" reftype="body" refname="body0"/>    
+          <framequat objtype="xbody" objname="body1"/> 
+          <framequat objtype="geom" objname="geom0"/>    
+          <framequat objtype="site" objname="site0"/>
+          <subtreecom body="body3"/>
+          <velocimeter site="site2"/>                           
+          <gyro site="site2"/>       
           <jointvel joint="slide"/>
+          <actuatorvel actuator="slide"/>
+          <ballangvel joint="ballquat"/>
           <actuatorfrc actuator="slide"/>
+          <jointactuatorfrc joint="slide"/>                      
         </sensor>
         <keyframe>
-          <key qpos="1" qvel="2" ctrl="3"/>
+          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2" ctrl="3"/>
         </keyframe>
       </mujoco>
     """)
