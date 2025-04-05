@@ -144,6 +144,43 @@ class ForwardTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qvel.numpy()[0], 1 + mjm.opt.timestep)
 
+  def test_rungekutta4(self):
+    # slower than other tests because `forward` compilation
+    mjm = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+          <option integrator="RK4">
+            <flag constraint="disable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="1 1 .01" pos="0 0 -1"/>
+            <body pos="0.15 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="capsule" size="0.02" fromto="0 0 0 .1 0 0"/>
+              <body pos="0.1 0 0">
+                <joint type="slide" axis="1 0 0" stiffness="200"/>
+                <geom type="capsule" size="0.015" fromto="-.1 0 0 .1 0 0"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>
+        """)
+
+    mjd = mujoco.MjData(mjm)
+    mjd.qvel[:] = np.array([0.2, -0.1])
+    mujoco.mj_step(mjm, mjd, 10)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+    mjwarp.rungekutta4(m, d)
+    mujoco.mj_RungeKutta(mjm, mjd, 4)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.time, mjd.time, "time")
+    _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
+
 
 class ImplicitIntegratorTest(parameterized.TestCase):
   def _load(self, fname: str, disableFlags: int):

@@ -21,6 +21,7 @@ from ._src.collision_driver import sap_broadphase as sap_broadphase
 from ._src.collision_primitive import primitive_narrowphase as primitive_narrowphase
 from ._src.constraint import make_constraint as make_constraint
 from ._src.forward import euler as euler
+from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import forward as forward
 from ._src.forward import fwd_acceleration as fwd_acceleration
 from ._src.forward import fwd_actuation as fwd_actuation
