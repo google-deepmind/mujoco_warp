@@ -410,6 +410,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     or np.any(mjm.actuator_gaintype == types.GainType.AFFINE.value)
   )
 
+  m.condim_max = np.max(mjm.geom_condim)  # TODO(team): get max after filtering
+
   # sensors
   m.sensor_type = wp.array(mjm.sensor_type, dtype=wp.int32, ndim=1)
   m.sensor_datatype = wp.array(mjm.sensor_datatype, dtype=wp.int32, ndim=1)
