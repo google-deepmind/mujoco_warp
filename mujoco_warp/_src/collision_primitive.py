@@ -232,6 +232,44 @@ def plane_box(
       break
 
 
+@wp.func
+def sphere_cylinder(
+  sphere: Geom,
+  cylinder: Geom,
+  worldid: int,
+  d: Data,
+  margin: float,
+  geom_indices: wp.vec2i,
+):
+  """Calculates contact between a sphere and a cylinder."""
+
+  axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
+  delta = sphere.pos - cylinder.pos
+
+  # Project and clamp to cylinder length
+  proj = wp.clamp(wp.dot(delta, axis), -cylinder.size[1], cylinder.size[1])
+  closest = cylinder.pos + axis * proj
+
+  radial = sphere.pos - closest
+  radial_len = wp.length(radial)
+
+  # Handle degenerate case when sphere center is on cylinder axis
+  if radial_len < 1e-6:
+    if wp.abs(axis[1]) < 0.7:
+      radial = wp.normalize(wp.cross(axis, wp.vec3(0.0, 1.0, 0.0))) * cylinder.size[0]
+    else:
+      radial = wp.normalize(wp.cross(axis, wp.vec3(1.0, 0.0, 0.0))) * cylinder.size[0]
+  else:
+    radial = radial / radial_len * cylinder.size[0]
+
+  pos = closest + radial
+  normal = wp.normalize(sphere.pos - pos)
+  dist = wp.length(sphere.pos - pos) - sphere.size[0]
+
+  frame = make_frame(normal)
+  write_contact(d, dist, pos, frame, margin, geom_indices, worldid)
+
+
 @wp.kernel
 def _primitive_narrowphase(
   m: Model,
@@ -266,6 +304,8 @@ def _primitive_narrowphase(
     plane_box(geom1, geom2, worldid, d, margin, geoms)
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.CAPSULE.value):
     capsule_capsule(geom1, geom2, worldid, d, margin, geoms)
+  elif type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.CYLINDER.value):
+    sphere_cylinder(geom1, geom2, worldid, d, margin, geoms)
 
 
 def primitive_narrowphase(m: Model, d: Data):
