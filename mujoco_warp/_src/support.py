@@ -24,6 +24,7 @@ from .types import array2df
 from .types import array3df
 from .warp_util import event_scope
 from .warp_util import kernel
+from .types import vec5
 
 
 def is_sparse(m: mujoco.MjModel):
@@ -133,7 +134,9 @@ def mul_m(
     wp.launch(_mul_m_sparse_diag, dim=(d.nworld, m.nv), inputs=[m, d, res, vec, skip])
 
     wp.launch(
-      _mul_m_sparse_ij, dim=(d.nworld, m.qM_madr_ij.size), inputs=[m, d, res, vec, skip]
+      _mul_m_sparse_ij,
+      dim=(d.nworld, m.qM_madr_ij.size),
+      inputs=[m, d, res, vec, skip],
     )
 
 
@@ -200,3 +203,81 @@ def mat33_from_rows(a: wp.vec3, b: wp.vec3, c: wp.vec3):
 @wp.func
 def mat33_from_cols(a: wp.vec3, b: wp.vec3, c: wp.vec3):
   return wp.mat33(a.x, b.x, c.x, a.y, b.y, c.y, a.z, b.z, c.z)
+
+
+@wp.func
+def _decode_pyramid(
+  pyramid: wp.array(dtype=wp.float32), efc_address: int, mu: vec5, condim: int
+) -> wp.spatial_vector:
+  """Converts pyramid representation to contact force."""
+  force = wp.spatial_vector()
+
+  if condim == 1:
+    force[0] = pyramid[efc_address]
+    return force
+
+  # force_normal = sum(pyramid0_i + pyramid1_i)
+  normal_force = float(0.0)
+  for i in range(condim - 1):
+    normal_force += pyramid[2 * i + efc_address] + pyramid[2 * i + 1 + efc_address]
+  force[0] = normal_force
+
+  # force_tangent_i = (pyramid0_i - pyramid1_i) * mu_i
+  for i in range(condim - 1):
+    force[i + 1] = (
+      pyramid[2 * i + efc_address] - pyramid[2 * i + 1 + efc_address]
+    ) * mu[i]
+
+  return force
+
+
+@wp.func
+def contact_force(
+  m: Model, d: Data, contact_id: int, to_world_frame: bool = False
+) -> wp.spatial_vector:
+  """Extract 6D force:torque for one contact, in contact frame by default."""
+  efc_address = d.contact.efc_address[contact_id]
+  force = wp.spatial_vector()
+
+  if efc_address >= 0:
+    condim = d.contact.dim[contact_id]
+
+    # TODO: add support for elliptical cone type
+    if m.opt.cone == int(mujoco.mjtCone.mjCONE_PYRAMIDAL.value):
+      force = _decode_pyramid(
+        d.efc.force, efc_address, d.contact.friction[contact_id], condim
+      )
+    # elif m.opt.cone == ConeType.ELLIPTIC.value:
+    #   for i in range(condim):
+    #     force[i] = d.efc_force[efc_address + i]
+    # else:
+    #  wp.printf(f'Unknown cone type: {m.opt.cone}')
+
+    if to_world_frame:
+      # Transform both top and bottom parts of spatial vector by the full contact frame matrix
+      t = wp.spatial_top(force) @ d.contact.frame[contact_id]
+      b = wp.spatial_bottom(force) @ d.contact.frame[contact_id]
+      force = wp.spatial_vector(t, b)
+
+    valid_contact = 1.0
+  else:
+    valid_contact = 0.0
+  return force * valid_contact
+
+
+@wp.kernel
+def contact_force_kernel(
+  m: Model,
+  d: Data,
+  force: wp.array(dtype=wp.spatial_vector),
+  contact_ids: wp.array(dtype=int),
+  to_world_frame: bool,
+):
+  tid = wp.tid()
+
+  contact_id = contact_ids[tid]
+
+  if contact_id >= d.ncon[0]:
+    return
+
+  force[tid] = contact_force(m, d, contact_id, to_world_frame)
