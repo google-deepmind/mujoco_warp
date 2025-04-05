@@ -232,6 +232,77 @@ def plane_box(
       break
 
 
+@wp.func
+def plane_cylinder(
+  plane: Geom,
+  cylinder: Geom,
+  worldid: int,
+  d: Data,
+  margin: float,
+  geom_indices: wp.vec2i,
+):
+  """Calculates contacts between a cylinder and a plane."""
+  n = plane.normal
+  axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
+
+  # make sure axis points towards plane
+  prjaxis = wp.dot(n, axis)
+  sign = -wp.sign(prjaxis)
+  axis = axis * sign
+  prjaxis = prjaxis * sign
+
+  # compute normal distance to cylinder center
+  dist0 = wp.dot(cylinder.pos - plane.pos, n)
+
+  # remove component of -normal along axis, compute length
+  vec = axis * prjaxis - n
+  len_ = wp.length(vec)
+
+  # disk parallel to plane: pick x-axis of cylinder, scale by radius
+  # general configuration: normalize vector, scale by radius
+  vec = wp.where(
+    len_ < 1.0e-12,
+    wp.vec3(cylinder.rot[0, 0], cylinder.rot[1, 0], cylinder.rot[2, 0])
+    * cylinder.size[0],
+    vec / len_ * cylinder.size[0],
+  )
+
+  # project vector on normal
+  prjvec = wp.dot(vec, n)
+
+  # scale axis by half-length
+  axis = axis * cylinder.size[1]
+  prjaxis = prjaxis * cylinder.size[1]
+
+  # compute sideways vector: vec1
+  prjvec1 = -prjvec * 0.5
+  vec1 = wp.normalize(wp.cross(vec, axis)) * cylinder.size[0]
+  vec1 = vec1 * wp.sqrt(3.0) * 0.5
+
+  # disk parallel to plane
+  d1 = dist0 + prjaxis + prjvec
+  d2 = dist0 + prjaxis + prjvec1
+
+  dist = wp.vec3(d1, d2, d2)
+  pos0 = cylinder.pos + axis + vec - n * d1 * 0.5
+  pos1 = cylinder.pos + axis + vec1 + vec * -0.5 - n * d2 * 0.5
+  pos2 = cylinder.pos + axis - vec1 + vec * -0.5 - n * d2 * 0.5
+
+  # cylinder parallel to plane
+  cond = wp.abs(prjaxis) < 1e-3
+  d3 = dist0 - prjaxis + prjvec
+
+  if cond:
+    dist.y = d3
+    pos1 = cylinder.pos + vec - axis - n * d3 * 0.5
+
+  frame = make_frame(n)
+
+  write_contact(d, dist[0], pos0, frame, margin, geom_indices, worldid)
+  write_contact(d, dist[1], pos1, frame, margin, geom_indices, worldid)
+  write_contact(d, dist[2], pos2, frame, margin, geom_indices, worldid)
+
+
 @wp.kernel
 def _primitive_narrowphase(
   m: Model,
@@ -266,6 +337,8 @@ def _primitive_narrowphase(
     plane_box(geom1, geom2, worldid, d, margin, geoms)
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.CAPSULE.value):
     capsule_capsule(geom1, geom2, worldid, d, margin, geoms)
+  elif type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.CYLINDER.value):
+    plane_cylinder(geom1, geom2, worldid, d, margin, geoms)
 
 
 def primitive_narrowphase(m: Model, d: Data):
