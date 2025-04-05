@@ -88,6 +88,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nsensordata = mjm.nsensordata
   m.nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
   m.nexclude = mjm.nexclude
+  m.neq = mjm.neq
   m.opt.timestep = mjm.opt.timestep
   m.opt.tolerance = mjm.opt.tolerance
   m.opt.ls_tolerance = mjm.opt.ls_tolerance
@@ -358,6 +359,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.mesh_vertadr = wp.array(mjm.mesh_vertadr, dtype=wp.int32, ndim=1)
   m.mesh_vertnum = wp.array(mjm.mesh_vertnum, dtype=wp.int32, ndim=1)
   m.mesh_vert = wp.array(mjm.mesh_vert, dtype=wp.vec3, ndim=1)
+  m.eq_type = wp.array(mjm.eq_type, dtype=wp.int32, ndim=1)
+  m.eq_obj1id = wp.array(mjm.eq_obj1id, dtype=wp.int32, ndim=1)
+  m.eq_obj2id = wp.array(mjm.eq_obj2id, dtype=wp.int32, ndim=1)
+  m.eq_objtype = wp.array(mjm.eq_objtype, dtype=wp.int32, ndim=1)
+  m.eq_active0 = wp.array(mjm.eq_active0, dtype=wp.bool, ndim=1)
+  m.eq_solref = wp.array(mjm.eq_solref, dtype=wp.vec2, ndim=1)
+  m.eq_solimp = wp.array(mjm.eq_solimp, dtype=types.vec5, ndim=1)
+  m.eq_data = wp.array(mjm.eq_data, dtype=types.vec11, ndim=1)
   m.site_pos = wp.array(mjm.site_pos, dtype=wp.vec3, ndim=1)
   m.site_quat = wp.array(mjm.site_quat, dtype=wp.quat, ndim=1)
   m.site_bodyid = wp.array(mjm.site_bodyid, dtype=wp.int32, ndim=1)
@@ -403,6 +412,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.actuator_dyntype = wp.array(mjm.actuator_dyntype, dtype=wp.int32, ndim=1)
   m.actuator_dynprm = wp.array(mjm.actuator_dynprm, dtype=types.vec10f, ndim=1)
   m.exclude_signature = wp.array(mjm.exclude_signature, dtype=wp.int32, ndim=1)
+
+  # pre-compute indices of joint equalities
+  m.eq_i_joint = wp.array(
+    np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=wp.int32, ndim=1
+  )
 
   # short-circuiting here allows us to skip a lot of code in implicit integration
   m.actuator_affine_bias_gain = bool(

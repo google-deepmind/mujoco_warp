@@ -47,6 +47,7 @@ class DisableBit(enum.IntFlag):
 
   Members:
     CONSTRAINT:   entire constraint solver
+    EQUALITY:     equality constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
     PASSIVE:      passive forces
@@ -60,6 +61,7 @@ class DisableBit(enum.IntFlag):
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
+  EQUALITY = mujoco.mjtDisableBit.mjDSBL_EQUALITY
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
   PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
@@ -70,7 +72,7 @@ class DisableBit(enum.IntFlag):
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
-  # unsupported: EQUALITY, FRICTIONLOSS, MIDPHASE, WARMSTART
+  # unsupported: FRICTIONLOSS, MIDPHASE, WARMSTART
 
 
 class TrnType(enum.IntEnum):
@@ -221,10 +223,11 @@ class EqType(enum.IntEnum):
   """Type of equality constraint.
 
   Members:
+    JOINT: couple the values of two scalar joints with cubic
   """
 
-  pass
-  # unsupported: CONNECT, WELD, JOINT, TENDON, FLEX, DISTANCE
+  JOINT = mujoco.mjtEq.mjEQ_JOINT
+  # unsupported: CONNECT, WELD, TENDON, FLEX, DISTANCE
 
 
 class vec5f(wp.types.vector(length=5, dtype=wp.float32)):
@@ -235,8 +238,13 @@ class vec10f(wp.types.vector(length=10, dtype=wp.float32)):
   pass
 
 
+class vec11f(wp.types.vector(length=11, dtype=wp.float32)):
+  pass
+
+
 vec5 = vec5f
 vec10 = vec10f
+vec11 = vec11f
 array2df = wp.array2d(dtype=wp.float32)
 array3df = wp.array3d(dtype=wp.float32)
 
@@ -405,6 +413,7 @@ class Model:
     ncam: number of cameras                                  ()
     nlight: number of lights                                 ()
     nexclude: number of excluded geom pairs                  ()
+    neq: number of equality constraints                      ()
     nmocap: number of mocap bodies                           ()
     nM: number of non-zeros in sparse inertia matrix         ()
     nsensor: number of sensors                               ()
@@ -520,6 +529,15 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
+    eq_type: constraint type (mjtEq)                         (neq,)
+    eq_obj1id: id of object 1                                (neq,)
+    eq_obj2id: id of object 2                                (neq,)
+    eq_objtype: type of both objects (mjtObj)                (neq,)
+    eq_active0: initial enable/disable constraint state      (neq,)
+    eq_solref: constraint solver reference                   (neq, mjNREF)
+    eq_solimp: constraint solver impedance                   (neq, mjNIMP)
+    eq_data: numeric data for constraint                     (neq, mjNEQDATA)
+    eq_i_joint: which indices of eq_* are joint equalities
     actuator_trntype: transmission type (mjtTrn)             (nu,)
     actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
     actuator_gaintype: gain type (mjtGain)                   (nu,)
@@ -563,6 +581,7 @@ class Model:
   ncam: int
   nlight: int
   nexclude: int
+  neq: int
   nmocap: int
   nM: int
   nsensor: int
@@ -678,6 +697,15 @@ class Model:
   mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
   mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
   mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
+  eq_type: wp.array(dtype=wp.int32, ndim=1)
+  eq_obj1id: wp.array(dtype=wp.int32, ndim=1)
+  eq_obj2id: wp.array(dtype=wp.int32, ndim=1)
+  eq_objtype: wp.array(dtype=wp.int32, ndim=1)
+  eq_active0: wp.array(dtype=wp.bool, ndim=1)
+  eq_solref: wp.array(dtype=wp.vec2, ndim=1)
+  eq_solimp: wp.array(dtype=vec5, ndim=1)
+  eq_data: wp.array(dtype=vec11, ndim=1)
+  eq_i_joint: wp.array(dtype=wp.int32, ndim=1)
   actuator_trntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_dyntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_gaintype: wp.array(dtype=wp.int32, ndim=1)
