@@ -101,6 +101,20 @@ class PrimitiveTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "mesh_plane": """
+        <mujoco>
+          <asset>
+            <mesh name="cube" vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 1" euler="45 0 0">
+              <freejoint/>
+              <geom type="mesh" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
 
   @parameterized.parameters(
@@ -109,6 +123,7 @@ class PrimitiveTest(parameterized.TestCase):
     "sphere_sphere",
     "plane_capsule",
     "capsule_capsule",
+    "mesh_plane",
   )
   def test_primitives(self, name):
     """Tests collision primitive functions."""

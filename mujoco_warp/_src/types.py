@@ -186,7 +186,8 @@ class GeomType(enum.IntEnum):
   SPHERE = mujoco.mjtGeom.mjGEOM_SPHERE
   CAPSULE = mujoco.mjtGeom.mjGEOM_CAPSULE
   BOX = mujoco.mjtGeom.mjGEOM_BOX
-  # unsupported: HFIELD, ELLIPSOID, CYLINDER, MESH, SDF
+  MESH = mujoco.mjtGeom.mjGEOM_MESH
+  # unsupported: HFIELD, ELLIPSOID, CYLINDER, SDF
   # ARROW*, LINE, LINEBOX, FLEX, SKIN, LABEL, TRIANGLE
 
 

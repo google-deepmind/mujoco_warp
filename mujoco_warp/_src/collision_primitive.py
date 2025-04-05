@@ -29,6 +29,10 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+
+  mesh_vertadr: int
+  mesh_vertnum: int
+  mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
   # TODO(team): mesh fields: vertadr, vertnum
 
 
@@ -45,6 +49,12 @@ def _geom(
   geom.rot = rot
   geom.size = m.geom_size[gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
+
+  if m.geom_type[gid] == int(GeomType.MESH.value):
+    data_id = m.geom_dataid[gid]
+    geom.mesh_vertadr = m.mesh_vertadr[data_id]
+    geom.mesh_vertnum = m.mesh_vertnum[data_id]
+    geom.mesh_vert = m.mesh_vert
 
   return geom
 
@@ -232,6 +242,104 @@ def plane_box(
       break
 
 
+_HUGE_VAL = 1e6
+
+
+@wp.func
+def plane_convex(
+  plane: Geom,
+  convex: Geom,
+  worldid: int,
+  d: Data,
+  margin: float,
+  geom_indices: wp.vec2i,
+):
+  """Calculates contacts between a plane and a convex object."""
+
+  # get points in the convex frame
+  plane_pos = wp.transpose(convex.rot) @ (plane.pos - convex.pos)
+  n = wp.transpose(convex.rot) @ plane.normal
+
+  # Find support points
+  max_support = wp.float32(-_HUGE_VAL)
+  for i in range(convex.mesh_vertnum):
+    support = wp.dot(plane_pos - convex.mesh_vert[convex.mesh_vertadr + i], n)
+
+    max_support = wp.max(support, max_support)
+
+  threshold = wp.max(0.0, max_support - 1e-3)
+
+  # Store indices in vec4
+  indices = wp.vec4i(-1, -1, -1, -1)
+
+  # Find point a (first support point)
+  a_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.mesh_vertnum):
+    support = wp.dot(plane_pos - convex.mesh_vert[convex.mesh_vertadr + i], n)
+    dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    if dist > a_dist:
+      indices[0] = i
+      a_dist = dist
+  a = convex.mesh_vert[convex.mesh_vertadr + indices[0]]
+
+  # Find point b (furthest from a)
+  b_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.mesh_vertnum):
+    support = wp.dot(plane_pos - convex.mesh_vert[convex.mesh_vertadr + i], n)
+    dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    dist = wp.length_sq(a - convex.mesh_vert[convex.mesh_vertadr + i]) + dist_mask
+    if dist > b_dist:
+      indices[1] = i
+      b_dist = dist
+  b = convex.mesh_vert[convex.mesh_vertadr + indices[1]]
+
+  # Find point c (furthest along axis orthogonal to a-b)
+  ab = wp.cross(n, a - b)
+  c_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.mesh_vertnum):
+    support = wp.dot(plane_pos - convex.mesh_vert[convex.mesh_vertadr + i], n)
+    dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    ap = a - convex.mesh_vert[convex.mesh_vertadr + i]
+    dist = wp.abs(wp.dot(ap, ab)) + dist_mask
+    if dist > c_dist:
+      indices[2] = i
+      c_dist = dist
+  c = convex.mesh_vert[convex.mesh_vertadr + indices[2]]
+
+  # Find point d (furthest from other triangle edges)
+  ac = wp.cross(n, a - c)
+  bc = wp.cross(n, b - c)
+  d_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.mesh_vertnum):
+    support = wp.dot(plane_pos - convex.mesh_vert[convex.mesh_vertadr + i], n)
+    dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    ap = a - convex.mesh_vert[convex.mesh_vertadr + i]
+    bp = b - convex.mesh_vert[convex.mesh_vertadr + i]
+    dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
+    dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
+    if dist_ap + dist_bp > d_dist:
+      indices[3] = i
+      d_dist = dist_ap + dist_bp
+
+  # Write contacts
+  frame = make_frame(plane.normal)
+  for i in range(3, -1, -1):
+    idx = indices[i]
+    count = int(0)
+    for j in range(i + 1):
+      if indices[j] == idx:
+        count = count + 1
+
+    # Check if the index is unique (appears exactly once)
+    if count == 1:
+      pos = convex.mesh_vert[convex.mesh_vertadr + idx]
+      pos = convex.pos + convex.rot @ pos
+      support = wp.dot(plane_pos - convex.mesh_vert[convex.mesh_vertadr + idx], n)
+      dist = -support
+      pos = pos - 0.5 * dist * plane.normal
+      write_contact(d, dist, pos, frame, margin, geom_indices, worldid)
+
+
 @wp.kernel
 def _primitive_narrowphase(
   m: Model,
@@ -266,6 +374,8 @@ def _primitive_narrowphase(
     plane_box(geom1, geom2, worldid, d, margin, geoms)
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.CAPSULE.value):
     capsule_capsule(geom1, geom2, worldid, d, margin, geoms)
+  elif type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.MESH.value):
+    plane_convex(geom1, geom2, worldid, d, margin, geoms)
 
 
 def primitive_narrowphase(m: Model, d: Data):
