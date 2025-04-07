@@ -179,7 +179,10 @@ class GeomType(enum.IntEnum):
     PLANE: plane
     SPHERE: sphere
     CAPSULE: capsule
+    ELLIPSOID: ellipsoid
+    CYLINDER: cylinder
     BOX: box
+    MESH: mesh
   """
 
   PLANE = mujoco.mjtGeom.mjGEOM_PLANE
@@ -275,6 +278,10 @@ class Option:
     ls_iterations: maximum number of CG/Newton linesearch iterations
     disableflags: bit flags for disabling standard features
     is_sparse: whether to use sparse representations
+    gjk_iteration_count: number of Gjk iterations in the convex narrowphase
+    epa_iteration_count: number of Epa iterations in the convex narrowphase
+    epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
+    depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
   """
 
