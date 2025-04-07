@@ -43,10 +43,20 @@ class SensorTest(parameterized.TestCase):
     """Test sensors."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
+        <option gravity="1 2 3"/>
         <worldbody>
-          <body>
+          <body name="body0">
             <joint name="slide" type="slide"/>
             <geom type="sphere" size="0.1"/>
+          </body>
+          <body name="body1">
+            <joint type="hinge"/>
+            <geom type="sphere" size="0.1" pos="1 2 3"/>
+            <body name="body2">
+              <joint type="hinge"/>
+              <geom name="geom2" type="sphere" size="0.1" pos="1 2 3"/>
+              <site name="site2" pos=".2 .4 .6"/>        
+            </body>
           </body>
         </worldbody>
         <actuator>
@@ -56,9 +66,17 @@ class SensorTest(parameterized.TestCase):
           <jointpos joint="slide"/>
           <jointvel joint="slide"/>
           <actuatorfrc actuator="slide"/>
+          <framelinacc objtype="body" objname="body2"/>
+          <frameangacc objtype="body" objname="body2"/>
+          <framelinacc objtype="xbody" objname="body2"/>
+          <frameangacc objtype="xbody" objname="body2"/>
+          <framelinacc objtype="geom" objname="geom2"/>
+          <frameangacc objtype="geom" objname="geom2"/>
+          <framelinacc objtype="site" objname="site2"/>
+          <frameangacc objtype="site" objname="site2"/>
         </sensor>
         <keyframe>
-          <key qpos="1" qvel="2" ctrl="3"/>
+          <key qpos="1 1 1" qvel="2 2 2" ctrl="3"/>
         </keyframe>
       </mujoco>
     """)

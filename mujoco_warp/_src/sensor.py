@@ -15,6 +15,8 @@
 
 import warp as wp
 
+import mujoco
+
 from .types import Data
 from .types import DisableBit
 from .types import Model
@@ -80,6 +82,57 @@ def _actuator_force(m: Model, d: Data, worldid: int, objid: int) -> wp.float32:
   return d.actuator_force[worldid, objid]
 
 
+@wp.func
+def _framelinacc(m: Model, d: Data, worldid: int, objid: int, objtype: int) -> wp.vec3:
+  # TODO(team): replace with types.ObjType
+
+  if objtype == int(mujoco.mjtObj.mjOBJ_BODY.value):
+    bodyid = objid
+    pos = d.xipos[worldid, objid]
+  elif objtype == int(mujoco.mjtObj.mjOBJ_XBODY.value):
+    bodyid = objid
+    pos = d.xpos[worldid, objid]
+  elif objtype == int(mujoco.mjtObj.mjOBJ_GEOM.value):
+    bodyid = m.geom_bodyid[objid]
+    pos = d.geom_xpos[worldid, objid]
+  elif objtype == int(mujoco.mjtObj.mjOBJ_SITE.value):
+    bodyid = m.site_bodyid[objid]
+    pos = d.site_xpos[worldid, objid]
+  # TODO(team): camera
+  else:  # UNKNOWN
+    bodyid = 0
+    pos = wp.vec3(0.0)
+
+  cacc = d.cacc[worldid, bodyid]
+  cvel = d.cvel[worldid, bodyid]
+  offset = pos - d.subtree_com[worldid, m.body_rootid[bodyid]]
+  ang = wp.spatial_top(cvel)
+  lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
+  acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
+  correction = wp.cross(ang, lin)
+
+  return acc + correction
+
+
+@wp.func
+def _frameangacc(m: Model, d: Data, worldid: int, objid: int, objtype: int) -> wp.vec3:
+  # TODO(team): replace with types.ObjType
+
+  if objtype == int(mujoco.mjtObj.mjOBJ_BODY.value) or objtype == int(
+    mujoco.mjtObj.mjOBJ_XBODY.value
+  ):
+    bodyid = objid
+  elif objtype == int(mujoco.mjtObj.mjOBJ_GEOM.value):
+    bodyid = m.geom_bodyid[objid]
+  elif objtype == int(mujoco.mjtObj.mjOBJ_SITE.value):
+    bodyid = m.site_bodyid[objid]
+  # TODO(team): camera
+  else:  # UNKNOWN
+    bodyid = 0
+
+  return wp.spatial_top(d.cacc[worldid, bodyid])
+
+
 @event_scope
 def sensor_acc(m: Model, d: Data):
   """Compute acceleration-dependent sensor values."""
@@ -94,6 +147,18 @@ def sensor_acc(m: Model, d: Data):
 
     if sensortype == int(SensorType.ACTUATORFRC.value):
       d.sensordata[worldid, adr] = _actuator_force(m, d, worldid, objid)
+    elif sensortype == int(SensorType.FRAMELINACC.value):
+      objtype = m.sensor_objtype[accadr]
+      framelinacc = _framelinacc(m, d, worldid, objid, objtype)
+      d.sensordata[worldid, adr + 0] = framelinacc[0]
+      d.sensordata[worldid, adr + 1] = framelinacc[1]
+      d.sensordata[worldid, adr + 2] = framelinacc[2]
+    elif sensortype == int(SensorType.FRAMEANGACC.value):
+      objtype = m.sensor_objtype[accadr]
+      frameangacc = _frameangacc(m, d, worldid, objid, objtype)
+      d.sensordata[worldid, adr + 0] = frameangacc[0]
+      d.sensordata[worldid, adr + 1] = frameangacc[1]
+      d.sensordata[worldid, adr + 2] = frameangacc[2]
 
   if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return

@@ -210,11 +210,15 @@ class SensorType(enum.IntEnum):
     JOINTPOS: joint position
     JOINTVEL: joint velocity
     ACTUATORFRC: scalar actuator force
+    FRAMELINACC: 3D linear acceleration
+    FRAMEANGACC: 3D angular acceleration
   """
 
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   JOINTVEL = mujoco.mjtSensor.mjSENS_JOINTVEL
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
+  FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
+  FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
 
 
 class EqType(enum.IntEnum):
