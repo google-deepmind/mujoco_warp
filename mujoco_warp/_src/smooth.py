@@ -557,11 +557,17 @@ def factor_m(m: Model, d: Data):
 @event_scope
 def rne(m: Model, d: Data):
   """Computes inverse dynamics using Newton-Euler algorithm."""
+  DSBL_GRAVITY = m.opt.disableflags & DisableBit.GRAVITY.value
 
   @kernel
-  def cacc_gravity(m: Model, d: Data):
+  def cacc_world(m: Model, d: Data):
     worldid = wp.tid()
-    d.rne_cacc[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -m.opt.gravity)
+    if not DSBL_GRAVITY:
+      frc = -m.opt.gravity
+    else:
+      frc = wp.vec3(0.0)
+
+    d.rne_cacc[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), frc)
 
   @kernel
   def cacc_level(
@@ -604,10 +610,7 @@ def rne(m: Model, d: Data):
       d.cdof[worldid, dofid], d.rne_cfrc[worldid, bodyid]
     )
 
-  if m.opt.disableflags & DisableBit.GRAVITY:
-    d.rne_cacc.zero_()
-  else:
-    wp.launch(cacc_gravity, dim=[m.nworld], inputs=[m, d])
+  wp.launch(cacc_world, dim=[m.nworld], inputs=[m, d])
 
   body_treeadr = m.body_treeadr.numpy()
   for i in range(len(body_treeadr)):
@@ -891,3 +894,38 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _factor_solve_i_dense(m, d, M, x, y)
+
+
+def tendon(m: Model, d: Data):
+  """Computes tendon lengths and moments."""
+
+  if not m.ntendon:
+    return
+
+  d.ten_length.zero_()
+  d.ten_J.zero_()
+
+  # process joint tendons
+  if m.wrap_jnt_adr.size:
+
+    @kernel
+    def _joint_tendon(m: Model, d: Data):
+      worldid, wrapid = wp.tid()
+
+      tendon_jnt_adr = m.tendon_jnt_adr[wrapid]
+      wrap_jnt_adr = m.wrap_jnt_adr[wrapid]
+
+      wrap_objid = m.wrap_objid[wrap_jnt_adr]
+      prm = m.wrap_prm[wrap_jnt_adr]
+
+      # add to length
+      L = prm * d.qpos[worldid, m.jnt_qposadr[wrap_objid]]
+      # TODO(team): compare atomic_add and for loop
+      wp.atomic_add(d.ten_length[worldid], tendon_jnt_adr, L)
+
+      # add to moment
+      d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_jnt_adr]] = prm
+
+    wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
+
+  # TODO(team): spatial

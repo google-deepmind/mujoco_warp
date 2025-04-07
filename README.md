@@ -60,7 +60,8 @@ The following features are implemented:
 | Solver            | `CG`, `NEWTON`                     |
 | Fluid Model       | None                               |
 | Tendons           | Not yet implemented.               |
-| Sensors           | Not yet implemented.               |
+| Sensors           | `JOINTPOS`, `JOINTVEL`,            |
+|                   | `ACTUATORFRC`                      |
 
 # Benchmarking
 
