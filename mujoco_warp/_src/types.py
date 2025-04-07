@@ -553,7 +553,7 @@ class Model:
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
-    wrap_prm: divisor, joint coef, or site id                (nwrap,)
+    wrap_prm: divisor, joint coef, or site id                (nworld, nwrap)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
     wrap_jnt_adr: addresses for joint tendon wrap object     (<=nwrap,)
@@ -721,7 +721,7 @@ class Model:
   tendon_adr: wp.array(dtype=wp.int32, ndim=1)
   tendon_num: wp.array(dtype=wp.int32, ndim=1)
   wrap_objid: wp.array(dtype=wp.int32, ndim=1)
-  wrap_prm: wp.array(dtype=wp.float32, ndim=1)
+  wrap_prm: wp.array(dtype=wp.float32, ndim=2)
   wrap_type: wp.array(dtype=wp.int32, ndim=1)
   tendon_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   wrap_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only

@@ -916,7 +916,7 @@ def tendon(m: Model, d: Data):
       wrap_jnt_adr = m.wrap_jnt_adr[wrapid]
 
       wrap_objid = m.wrap_objid[wrap_jnt_adr]
-      prm = m.wrap_prm[wrap_jnt_adr]
+      prm = m.wrap_prm[worldid, wrap_jnt_adr]
 
       # add to length
       L = prm * d.qpos[worldid, m.jnt_qposadr[wrap_objid]]
