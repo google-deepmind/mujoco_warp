@@ -13,20 +13,20 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Any
+
 import warp as wp
 
-from .types import Model
-from .types import Data
-from .types import GeomType
-from .types import MJ_MINVAL
-from .types import NUM_GEOM_TYPES
+from .collision_primitive import Geom
+from .collision_primitive import _geom
+from .math import make_frame
 from .support import all_same
 from .support import any_different
-from .math import make_frame
-from .collision_primitive import _geom
-from .collision_primitive import Geom
-
-from typing import Any
+from .types import MJ_MINVAL
+from .types import NUM_GEOM_TYPES
+from .types import Data
+from .types import GeomType
+from .types import Model
 
 # XXX disable backward pass codegen globally for now
 #     enabling backward pass leads to 10min compile time

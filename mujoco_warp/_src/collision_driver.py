@@ -15,8 +15,8 @@
 
 import warp as wp
 
-from .collision_convex import gjk_narrowphase
 from .collision_box import box_box_narrowphase
+from .collision_convex import gjk_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MINVAL
 from .types import Data
