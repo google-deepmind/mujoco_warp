@@ -27,7 +27,7 @@ from . import test_util
 class CollisionTest(parameterized.TestCase):
   """Tests the collision contact functions."""
 
-  _BOX_PLANE =  """
+  _BOX_PLANE = """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
