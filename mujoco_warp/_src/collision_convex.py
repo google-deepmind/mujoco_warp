@@ -451,10 +451,10 @@ def gjk_epa_pipeline(
     dir = orthonormal(normal)
     dir2 = wp.cross(normal, dir)
 
-    angle = MULTI_TILT_ANGLE * wp.pi / 180.0
-    c = wp.cos(angle)
-    s = wp.sin(angle)
-    t = 1.0 - c
+    angle = wp.static(MULTI_TILT_ANGLE * wp.pi / 180.0)
+    c = wp.static(wp.cos(angle))
+    s = wp.static(wp.sin(angle))
+    tc = wp.static(1.0 - c)
 
     v1 = mat3p()
     v2 = mat3p()
@@ -465,25 +465,26 @@ def gjk_epa_pipeline(
     # in the basis of the contact frame.
     v1count = int(0)
     v2count = int(0)
+    angle_ratio = wp.static(2.0 * wp.pi / float(MULTI_POLYGON_COUNT))
     # return 0, contact_points
     for i in range(wp.static(MULTI_POLYGON_COUNT)):
-      angle = 2.0 * float(i) * wp.pi / float(MULTI_POLYGON_COUNT)
+      angle = angle_ratio * float(i)
       axis = wp.cos(angle) * dir + wp.sin(angle) * dir2
 
       # Axis-angle rotation matrix. See
       # https://en.wikipedia.org/wiki/Rotation_matrix#Rotation_matrix_from_axis_and_angle
-      mat0 = c + axis[0] * axis[0] * t
-      mat5 = c + axis[1] * axis[1] * t
-      mat10 = c + axis[2] * axis[2] * t
-      t1 = axis[0] * axis[1] * t
+      mat0 = c + axis[0] * axis[0] * tc
+      mat5 = c + axis[1] * axis[1] * tc
+      mat10 = c + axis[2] * axis[2] * tc
+      t1 = axis[0] * axis[1] * tc
       t2 = axis[2] * s
       mat4 = t1 + t2
       mat1 = t1 - t2
-      t1 = axis[0] * axis[2] * t
+      t1 = axis[0] * axis[2] * tc
       t2 = axis[1] * s
       mat8 = t1 - t2
       mat2 = t1 + t2
-      t1 = axis[1] * axis[2] * t
+      t1 = axis[1] * axis[2] * tc
       t2 = axis[0] * s
       mat9 = t1 + t2
       mat6 = t1 - t2
@@ -712,18 +713,18 @@ def gjk_epa_pipeline(
     m: Model,
     d: Data,
   ):
-    tid = wp.tid()
-    worldid = d.collision_worldid[tid]
-    geoms = d.collision_pair[tid]
-
-    if tid >= d.ncollision[0]:
-      return
-
     # Check if we generated max contacts for this env.
     # TODO(btaba): move max_contact_points_per_env culling to a point later
     # in the pipline, where we can do a sort on penetration depth per env.
     if d.ncon[0] > d.nconmax:
       return
+
+    tid = wp.tid()
+    if tid >= d.ncollision[0]:
+      return
+
+    worldid = d.collision_worldid[tid]
+    geoms = d.collision_pair[tid]
 
     g1 = geoms[0]
     g2 = geoms[1]
