@@ -658,7 +658,6 @@ def put_data(
   device: Optional[wp.context.Device] = None,
 ) -> types.Data:
   d = types.Data()
-  d.device = device  # warp only
 
   nworld = nworld or 1
   # TODO(team): better heuristic for nconmax
