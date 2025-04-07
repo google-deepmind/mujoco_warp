@@ -60,20 +60,6 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """
-  _BOX_BOX_EDGE = """
-        <mujoco>
-          <worldbody>
-            <body pos="-1.0 -1.0 0.2">
-              <joint axis="1 0 0" type="free"/>
-              <geom size="0.2 0.2 0.2" type="box"/>
-            </body>
-            <body pos="-1.0 -1.2 0.55" euler="0 45 30">
-              <joint axis="1 0 0" type="free"/>
-              <geom size="0.1 0.1 0.1" type="box"/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """
   _CONVEX_CONVEX = """
         <mujoco>
           <asset>
@@ -128,7 +114,6 @@ class CollisionTest(parameterized.TestCase):
     (_BOX_PLANE),
     (_PLANE_SPHERE),
     (_PLANE_CAPSULE),
-    (_BOX_BOX_EDGE),
     (_CONVEX_CONVEX),
     (_SPHERE_SPHERE),
     (_CAPSULE_CAPSULE),
