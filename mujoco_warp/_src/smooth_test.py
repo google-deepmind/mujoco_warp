@@ -142,16 +142,15 @@ class SmoothTest(parameterized.TestCase):
     mjwarp.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
     _assert_eq(d.qacc_smooth.numpy()[0], qacc_smooth[0], "qacc_smooth")
 
-  def test_rne(self):
+  @parameterized.parameters(True, False)
+  def test_rne(self, gravity):
     """Tests rne."""
-    _, mjd, m, d = test_util.fixture("pendula.xml")
+    _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity)
 
     d.qfrc_bias.zero_()
 
     mjwarp.rne(m, d)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
-
-    # TODO(team): test DisableBit.GRAVITY
 
   def test_com_vel(self):
     """Tests com_vel."""
@@ -183,6 +182,53 @@ class SmoothTest(parameterized.TestCase):
     mjwarp._src.smooth.transmission(m, d)
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+
+  def test_fixed_tendon(self):
+    """Tests fixed tendon."""
+    _FIXED_TENDON = """
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="joint0" type="hinge"/>
+            <geom type="sphere" size="0.1"/>
+            <body>
+              <joint name="joint1" type="hinge"/>
+              <geom type="sphere" size="0.1"/>
+              <body>
+                <joint name="joint2" type="hinge"/>
+                <geom type="sphere" size="0.1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed>
+            <joint joint="joint0" coef=".25"/>
+            <joint joint="joint1" coef=".5"/>
+            <joint joint="joint2" coef=".75"/>
+          </fixed>
+        </tendon>
+        <keyframe>
+          <key qpos=".2 .4 .6"/>
+        </keyframe>
+      </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_FIXED_TENDON)
+    mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    for arr in (d.ten_length, d.ten_J):
+      arr.zero_()
+
+    mjwarp.tendon(m, d)
+
+    _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
+    _assert_eq(d.ten_J.numpy()[0], mjd.ten_J.reshape((mjm.ntendon, mjm.nv)), "ten_J")
 
 
 if __name__ == "__main__":

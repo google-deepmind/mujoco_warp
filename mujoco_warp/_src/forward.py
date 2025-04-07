@@ -22,6 +22,7 @@ from . import collision_driver
 from . import constraint
 from . import math
 from . import passive
+from . import sensor
 from . import smooth
 from . import solver
 from .support import xfrc_accumulate
@@ -412,7 +413,7 @@ def fwd_position(m: Model, d: Data):
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
   smooth.camlight(m, d)
-  # TODO(team): smooth.tendon
+  smooth.tendon(m, d)
   smooth.crb(m, d)
   smooth.factor_m(m, d)
   collision_driver.collision(m, d)
@@ -665,12 +666,12 @@ def forward(m: Model, d: Data):
   """Forward dynamics."""
 
   fwd_position(m, d)
-  # TODO(team): sensor.sensor_pos
+  sensor.sensor_pos(m, d)
   fwd_velocity(m, d)
-  # TODO(team): sensor.sensor_vel
+  sensor.sensor_vel(m, d)
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
-  # TODO(team): sensor.sensor_acc
+  sensor.sensor_acc(m, d)
 
   if d.njmax == 0:
     kernel_copy(d.qacc, d.qacc_smooth)
