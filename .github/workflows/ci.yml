@@ -32,12 +32,9 @@ jobs:
       - name: Format with Ruff
         run: |
           ruff format --check .
-        condition: always()
       - name: Lint with Ruff
         run: |
           ruff check --output-format=github .
-        condition: always()
       - name: Test with pytest
         run: |
           pytest
-        condition: always()
