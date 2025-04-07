@@ -18,6 +18,7 @@ import warp as wp
 from packaging import version
 
 from . import math
+from .types import CamLightType
 from .types import Data
 from .types import DisableBit
 from .types import JointType
@@ -248,6 +249,102 @@ def com_pos(m: Model, d: Data):
 
 
 @event_scope
+def camlight(m: Model, d: Data):
+  """Computes camera and light positions and orientations."""
+
+  @kernel
+  def cam_local_to_global(m: Model, d: Data):
+    """Fixed cameras."""
+    worldid, camid = wp.tid()
+    bodyid = m.cam_bodyid[camid]
+    xpos = d.xpos[worldid, bodyid]
+    xquat = d.xquat[worldid, bodyid]
+    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[camid], xquat)
+    d.cam_xmat[worldid, camid] = math.quat_to_mat(
+      math.mul_quat(xquat, m.cam_quat[camid])
+    )
+
+  @kernel
+  def cam_fn(m: Model, d: Data):
+    worldid, camid = wp.tid()
+    is_target_cam = (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)) or (
+      m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value)
+    )
+    invalid_target = is_target_cam and (m.cam_targetbodyid[camid] < 0)
+    if invalid_target:
+      return
+    elif m.cam_mode[camid] == wp.static(CamLightType.TRACK.value):
+      body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
+      d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[camid]
+    elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
+      d.cam_xpos[worldid, camid] = (
+        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[camid]
+      )
+    elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
+      camid
+    ] == wp.static(CamLightType.TARGETBODYCOM.value):
+      pos = d.xpos[worldid, m.cam_targetbodyid[camid]]
+      if m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value):
+        pos = d.subtree_com[worldid, m.cam_targetbodyid[camid]]
+      # zaxis = -desired camera direction, in global frame
+      mat_3 = wp.normalize(d.cam_xpos[worldid, camid] - pos)
+      # xaxis: orthogonal to zaxis and to (0,0,1)
+      mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
+      mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+      # fmt: off
+      d.cam_xmat[worldid, camid] = wp.mat33(
+        mat_1[0], mat_2[0], mat_3[0],
+        mat_1[1], mat_2[1], mat_3[1],
+        mat_1[2], mat_2[2], mat_3[2]
+      )
+      # fmt: on
+
+  @kernel
+  def light_local_to_global(m: Model, d: Data):
+    """Fixed lights."""
+    worldid, lightid = wp.tid()
+    bodyid = m.light_bodyid[lightid]
+    xpos = d.xpos[worldid, bodyid]
+    xquat = d.xquat[worldid, bodyid]
+    d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
+      m.light_pos[lightid], xquat
+    )
+    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
+
+  @kernel
+  def light_fn(m: Model, d: Data):
+    worldid, lightid = wp.tid()
+    is_target_light = (
+      m.light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value)
+    ) or (m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value))
+    invalid_target = is_target_light and (m.light_targetbodyid[lightid] < 0)
+    if invalid_target:
+      return
+    elif m.light_mode[lightid] == wp.static(CamLightType.TRACK.value):
+      body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
+      d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[lightid]
+    elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
+      d.light_xpos[worldid, lightid] = (
+        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[lightid]
+      )
+    elif m.light_mode[lightid] == wp.static(
+      CamLightType.TARGETBODY.value
+    ) or m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
+      pos = d.xpos[worldid, m.light_targetbodyid[lightid]]
+      if m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
+        pos = d.subtree_com[worldid, m.light_targetbodyid[lightid]]
+      d.light_xdir[worldid, lightid] = pos - d.light_xpos[worldid, lightid]
+    d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
+
+  if m.ncam > 0:
+    wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
+    wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+  if m.nlight > 0:
+    wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
+    wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
+
+
+@event_scope
 def crb(m: Model, d: Data):
   """Composite rigid body inertia algorithm."""
 
@@ -447,11 +544,17 @@ def factor_m(m: Model, d: Data):
 @event_scope
 def rne(m: Model, d: Data):
   """Computes inverse dynamics using Newton-Euler algorithm."""
+  DSBL_GRAVITY = m.opt.disableflags & DisableBit.GRAVITY.value
 
   @kernel
-  def cacc_gravity(m: Model, d: Data):
+  def cacc_world(m: Model, d: Data):
     worldid = wp.tid()
-    d.rne_cacc[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -m.opt.gravity)
+    if not DSBL_GRAVITY:
+      frc = -m.opt.gravity
+    else:
+      frc = wp.vec3(0.0)
+
+    d.rne_cacc[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), frc)
 
   @kernel
   def cacc_level(
@@ -494,10 +597,7 @@ def rne(m: Model, d: Data):
       d.cdof[worldid, dofid], d.rne_cfrc[worldid, bodyid]
     )
 
-  if m.opt.disableflags & DisableBit.GRAVITY:
-    d.rne_cacc.zero_()
-  else:
-    wp.launch(cacc_gravity, dim=[d.nworld], inputs=[m, d])
+  wp.launch(cacc_world, dim=[d.nworld], inputs=[m, d])
 
   body_treeadr = m.body_treeadr.numpy()
   for i in range(len(body_treeadr)):
@@ -781,3 +881,38 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _factor_solve_i_dense(m, d, M, x, y)
+
+
+def tendon(m: Model, d: Data):
+  """Computes tendon lengths and moments."""
+
+  if not m.ntendon:
+    return
+
+  d.ten_length.zero_()
+  d.ten_J.zero_()
+
+  # process joint tendons
+  if m.wrap_jnt_adr.size:
+
+    @kernel
+    def _joint_tendon(m: Model, d: Data):
+      worldid, wrapid = wp.tid()
+
+      tendon_jnt_adr = m.tendon_jnt_adr[wrapid]
+      wrap_jnt_adr = m.wrap_jnt_adr[wrapid]
+
+      wrap_objid = m.wrap_objid[wrap_jnt_adr]
+      prm = m.wrap_prm[wrap_jnt_adr]
+
+      # add to length
+      L = prm * d.qpos[worldid, m.jnt_qposadr[wrap_objid]]
+      # TODO(team): compare atomic_add and for loop
+      wp.atomic_add(d.ten_length[worldid], tendon_jnt_adr, L)
+
+      # add to moment
+      d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_jnt_adr]] = prm
+
+    wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
+
+  # TODO(team): spatial

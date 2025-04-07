@@ -22,6 +22,7 @@ from . import collision_driver
 from . import constraint
 from . import math
 from . import passive
+from . import sensor
 from . import smooth
 from . import solver
 from .support import xfrc_accumulate
@@ -53,7 +54,7 @@ def _advance(
     d: Data,
     act_dot_in: array2df,
   ):
-    worldId, actid = wp.tid()
+    worldid, actid = wp.tid()
 
     # get the high/low range for each actuator state
     limited = m.actuator_actlimited[actid]
@@ -65,8 +66,8 @@ def _advance(
     if act_adr == -1:
       return
 
-    acts = d.act[worldId]
-    acts_dot = act_dot_in[worldId]
+    acts = d.act[worldid]
+    acts_dot = act_dot_in[worldid]
 
     act = acts[act_adr]
     act_dot = acts_dot[act_adr]
@@ -89,18 +90,18 @@ def _advance(
 
   @kernel
   def advance_velocities(m: Model, d: Data, qacc: array2df):
-    worldId, tid = wp.tid()
-    d.qvel[worldId, tid] = d.qvel[worldId, tid] + qacc[worldId, tid] * m.opt.timestep
+    worldid, tid = wp.tid()
+    d.qvel[worldid, tid] = d.qvel[worldid, tid] + qacc[worldid, tid] * m.opt.timestep
 
   @kernel
   def integrate_joint_positions(m: Model, d: Data, qvel_in: array2df):
-    worldId, jntid = wp.tid()
+    worldid, jntid = wp.tid()
 
     jnt_type = m.jnt_type[jntid]
     qpos_adr = m.jnt_qposadr[jntid]
     dof_adr = m.jnt_dofadr[jntid]
-    qpos = d.qpos[worldId]
-    qvel = qvel_in[worldId]
+    qpos = d.qpos[worldid]
+    qvel = qvel_in[worldid]
 
     if jnt_type == wp.static(JointType.FREE.value):
       qpos_pos = wp.vec3(qpos[qpos_adr], qpos[qpos_adr + 1], qpos[qpos_adr + 2])
@@ -171,13 +172,13 @@ def euler(m: Model, d: Data):
   def eulerdamp_sparse(m: Model, d: Data):
     @kernel
     def add_damping_sum_qfrc_kernel_sparse(m: Model, d: Data):
-      worldId, tid = wp.tid()
+      worldid, tid = wp.tid()
 
       dof_Madr = m.dof_Madr[tid]
-      d.qM_integration[worldId, 0, dof_Madr] += m.opt.timestep * m.dof_damping[tid]
+      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * m.dof_damping[tid]
 
-      d.qfrc_integration[worldId, tid] = (
-        d.qfrc_smooth[worldId, tid] + d.qfrc_constraint[worldId, tid]
+      d.qfrc_integration[worldid, tid] = (
+        d.qfrc_smooth[worldid, tid] + d.qfrc_constraint[worldid, tid]
       )
 
     kernel_copy(d.qM_integration, d.qM)
@@ -411,8 +412,8 @@ def fwd_position(m: Model, d: Data):
 
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
-  # TODO(team): smooth.camlight
-  # TODO(team): smooth.tendon
+  smooth.camlight(m, d)
+  smooth.tendon(m, d)
   smooth.crb(m, d)
   smooth.factor_m(m, d)
   collision_driver.collision(m, d)
@@ -665,12 +666,12 @@ def forward(m: Model, d: Data):
   """Forward dynamics."""
 
   fwd_position(m, d)
-  # TODO(team): sensor.sensor_pos
+  sensor.sensor_pos(m, d)
   fwd_velocity(m, d)
-  # TODO(team): sensor.sensor_vel
+  sensor.sensor_vel(m, d)
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
-  # TODO(team): sensor.sensor_acc
+  sensor.sensor_acc(m, d)
 
   if d.njmax == 0:
     kernel_copy(d.qacc, d.qacc_smooth)

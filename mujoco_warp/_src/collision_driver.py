@@ -15,8 +15,8 @@
 
 import warp as wp
 
-from .collision_primitive import primitive_narrowphase
 from .collision_box import box_box_narrowphase
+from .collision_primitive import primitive_narrowphase
 from .types import MJ_MINVAL
 from .types import Data
 from .types import DisableBit
@@ -75,9 +75,9 @@ def broadphase_project_spheres_onto_sweep_direction_kernel(
   d: Data,
   direction: wp.vec3,
 ):
-  worldId, i = wp.tid()
+  worldid, i = wp.tid()
 
-  c = d.geom_xpos[worldId, i]
+  c = d.geom_xpos[worldid, i]
   r = m.geom_rbound[i]
   if r == 0.0:
     # current geom is a plane
@@ -88,9 +88,9 @@ def broadphase_project_spheres_onto_sweep_direction_kernel(
   f = center - sphere_radius
 
   # Store results in the data arrays
-  d.sap_projection_lower[worldId, i] = f
-  d.sap_projection_upper[worldId, i] = center + sphere_radius
-  d.sap_sort_index[worldId, i] = i
+  d.sap_projection_lower[worldid, i] = f
+  d.sap_projection_upper[worldid, i] = center + sphere_radius
+  d.sap_sort_index[worldid, i] = i
 
 
 # Define constants for plane types
@@ -138,26 +138,26 @@ def reorder_bounding_spheres_kernel(
   m: Model,
   d: Data,
 ):
-  worldId, i = wp.tid()
+  worldid, i = wp.tid()
 
   # Get the index from the data indexer
-  mapped = d.sap_sort_index[worldId, i]
+  mapped = d.sap_sort_index[worldid, i]
 
   # Get the bounding volume
-  c = d.geom_xpos[worldId, mapped]
+  c = d.geom_xpos[worldid, mapped]
   r = m.geom_rbound[mapped]
   margin = m.geom_margin[mapped]
 
   # Reorder the box into the sorted array
   if r == 0.0:
     # store the plane equation
-    xmat = d.geom_xmat[worldId, mapped]
+    xmat = d.geom_xmat[worldid, mapped]
     plane_normal = wp.vec3(xmat[0, 2], xmat[1, 2], xmat[2, 2])
-    d.sap_geom_sort[worldId, i] = encode_plane(
+    d.sap_geom_sort[worldid, i] = encode_plane(
       plane_normal, c, margin
     )  # negative w component is used to disginguish planes from spheres
   else:
-    d.sap_geom_sort[worldId, i] = wp.vec4(c.x, c.y, c.z, r + margin)
+    d.sap_geom_sort[worldid, i] = wp.vec4(c.x, c.y, c.z, r + margin)
 
 
 @wp.func
@@ -202,7 +202,7 @@ def overlap(
 
 @wp.func
 def find_first_greater_than(
-  worldId: int,
+  worldid: int,
   starts: wp.array(dtype=wp.float32, ndim=2),
   value: wp.float32,
   low: int,
@@ -210,7 +210,7 @@ def find_first_greater_than(
 ) -> int:
   while low < high:
     mid = (low + high) >> 1
-    if starts[worldId, mid] > value:
+    if starts[worldid, mid] > value:
       high = mid
     else:
       low = mid + 1
@@ -222,20 +222,20 @@ def sap_broadphase_prepare_kernel(
   m: Model,
   d: Data,
 ):
-  worldId, i = wp.tid()  # Get the thread ID
+  worldid, i = wp.tid()  # Get the thread ID
 
   # Get the index of the current bounding box
-  idx1 = d.sap_sort_index[worldId, i]
+  idx1 = d.sap_sort_index[worldid, i]
 
-  end = d.sap_projection_upper[worldId, idx1]
-  limit = find_first_greater_than(worldId, d.sap_projection_lower, end, i + 1, m.ngeom)
+  end = d.sap_projection_upper[worldid, idx1]
+  limit = find_first_greater_than(worldid, d.sap_projection_lower, end, i + 1, m.ngeom)
   limit = wp.min(m.ngeom - 1, limit)
 
   # Calculate the range of boxes for the sweep and prune process
   count = limit - i
 
   # Store the cumulative sum for the current box
-  d.sap_range[worldId, i] = count
+  d.sap_range[worldid, i] = count
 
 
 @wp.func
@@ -283,21 +283,21 @@ def sap_broadphase_kernel(m: Model, d: Data, num_threads: int, filter_parent: bo
     i = ij.x
     j = ij.y
 
-    worldId = i // m.ngeom
+    worldid = i // m.ngeom
     i = i % m.ngeom
     j = j % m.ngeom
 
     # geom index
-    idx1 = d.sap_sort_index[worldId, i]
-    idx2 = d.sap_sort_index[worldId, j]
+    idx1 = d.sap_sort_index[worldid, i]
+    idx2 = d.sap_sort_index[worldid, j]
 
     if not _geom_filter(m, idx1, idx2, filter_parent):
       threadId += num_threads
       continue
 
     # Check if the boxes overlap
-    if overlap(worldId, i, j, d.sap_geom_sort):
-      _add_geom_pair(m, d, idx1, idx2, worldId)
+    if overlap(worldid, i, j, d.sap_geom_sort):
+      _add_geom_pair(m, d, idx1, idx2, worldid)
 
     threadId += num_threads
 

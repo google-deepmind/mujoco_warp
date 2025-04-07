@@ -52,14 +52,16 @@ The following features are implemented:
 | Actuator Bias     | `NONE`, `AFFINE`                   |
 | Geom              | `PLANE`, `SPHERE`, `CAPSULE`       |
 | Constraint        | `LIMIT_JOINT`, `CONTACT_PYRAMIDAL` |
+|                   | `CONTACT_ELLIPTIC`                 |
 | Equality          | Not yet implemented                |
 | Integrator        | `EULER`, `IMPLICITFAST`            |
-| Cone              | `PYRAMIDAL`                        |
-| Condim            | 3                                  |
+| Cone              | `PYRAMIDAL`, `ELLIPTIC`            |
+| Condim            | (1, 3), (1, 3)                     |
 | Solver            | `CG`, `NEWTON`                     |
 | Fluid Model       | None                               |
 | Tendons           | Not yet implemented.               |
-| Sensors           | Not yet implemented.               |
+| Sensors           | `JOINTPOS`, `JOINTVEL`,            |
+|                   | `ACTUATORFRC`                      |
 
 # Benchmarking
 

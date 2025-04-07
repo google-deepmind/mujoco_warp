@@ -19,11 +19,11 @@ from typing import Any
 
 import warp as wp
 
+from .collision_primitive import write_contact
 from .math import make_frame
 from .types import Data
 from .types import GeomType
 from .types import Model
-from .collision_primitive import write_contact
 
 BOX_BOX_BLOCK_DIM = 32
 
