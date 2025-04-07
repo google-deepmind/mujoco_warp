@@ -167,6 +167,32 @@ def orthogonals(a: wp.vec3):
 
 
 @wp.func
+def orthonormal(normal: wp.vec3) -> wp.vec3:
+  if wp.abs(normal[0]) < wp.abs(normal[1]) and wp.abs(normal[0]) < wp.abs(normal[2]):
+    dir = wp.vec3(
+      1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2]
+    )
+  elif wp.abs(normal[1]) < wp.abs(normal[2]):
+    dir = wp.vec3(
+      -normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2]
+    )
+  else:
+    dir = wp.vec3(
+      -normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2]
+    )
+  dir, _ = gjk_normalize(dir)
+  return dir
+
+
+@wp.func
+def gjk_normalize(a: wp.vec3):
+  norm = wp.length(a)
+  if norm > 1e-8 and norm < 1e12:
+    return a / norm, True
+  return a, False
+
+
+@wp.func
 def make_frame(a: wp.vec3):
   a = wp.normalize(a)
   b, c = orthogonals(a)

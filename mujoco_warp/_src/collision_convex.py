@@ -19,7 +19,9 @@ import warp as wp
 
 from .collision_primitive import Geom
 from .collision_primitive import _geom
+from .math import gjk_normalize
 from .math import make_frame
+from .math import orthonormal
 from .support import all_same
 from .support import any_different
 from .types import MJ_MINVAL
@@ -60,17 +62,6 @@ VECI2 = vec6(1, 2, 3, 2, 3, 3)
 
 
 @wp.func
-def sign(x: float):
-  # XXX we have to match the sign function from CUDA here
-  return wp.where(x < 0.0, -1.0, 1.0)
-
-
-@wp.func
-def sign(x: wp.vec3):
-  return wp.vec3(sign(x[0]), sign(x[1]), sign(x[2]))
-
-
-@wp.func
 def gjk_support_geom(
   info: Geom,
   typeGeom: int,
@@ -94,12 +85,12 @@ def gjk_support_geom(
   elif typeGeom == int(GeomType.SPHERE.value):
     support_pt = info.pos + info.size[0] * dir
   elif typeGeom == int(GeomType.BOX.value):
-    res = wp.cw_mul(sign(local_dir), info.size)
+    res = wp.cw_mul(wp.sign(local_dir), info.size)
     support_pt = info.rot @ res + info.pos
   elif typeGeom == int(GeomType.CAPSULE.value):
     res = local_dir * info.size[0]
     # add cylinder contribution
-    res[2] += sign(local_dir[2]) * info.size[1]
+    res[2] += wp.sign(local_dir[2]) * info.size[1]
     support_pt = info.rot @ res + info.pos
   elif typeGeom == int(GeomType.ELLIPSOID.value):
     res = wp.cw_mul(local_dir, info.size)
@@ -115,7 +106,7 @@ def gjk_support_geom(
       res[0] = local_dir[0] / d * info.size[0]
       res[1] = local_dir[1] / d * info.size[0]
     # set result in Z direction
-    res[2] = sign(local_dir[2]) * info.size[1]
+    res[2] = wp.sign(local_dir[2]) * info.size[1]
     support_pt = info.rot @ res + info.pos
   elif typeGeom == int(GeomType.MESH.value):
     max_dist = float(FLOAT_MIN)
@@ -164,32 +155,6 @@ supported_geoms = {
 
 
 @wp.func
-def gjk_normalize(a: wp.vec3):
-  norm = wp.length(a)
-  if norm > 1e-8 and norm < 1e12:
-    return a / norm, True
-  return a, False
-
-
-@wp.func
-def orthonormal(normal: wp.vec3) -> wp.vec3:
-  if wp.abs(normal[0]) < wp.abs(normal[1]) and wp.abs(normal[0]) < wp.abs(normal[2]):
-    dir = wp.vec3(
-      1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2]
-    )
-  elif wp.abs(normal[1]) < wp.abs(normal[2]):
-    dir = wp.vec3(
-      -normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2]
-    )
-  else:
-    dir = wp.vec3(
-      -normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2]
-    )
-  dir, _ = gjk_normalize(dir)
-  return dir
-
-
-@wp.func
 def _expand_polytope(
   count: int,
   prevCount: int,
@@ -200,7 +165,7 @@ def _expand_polytope(
   # Expand the polytope greedily.
   for j in range(count):
     bestIndex = int(0)
-    dd = float(dists[0])
+    dd = dists[0]
     for i in range(1, 3 * prevCount):
       if dists[i] < dd:
         dd = dists[i]
@@ -215,7 +180,7 @@ def _expand_polytope(
     tris[TRIS_DIM + j * 3 + 1] = tris[parentIndex * 3 + ((childIndex + 1) % 3)]
     tris[TRIS_DIM + j * 3 + 2] = p[parentIndex]
 
-  for r in range(EPS_BEST_COUNT * 3):
+  for r in range(wp.static(EPS_BEST_COUNT * 3)):
     # swap triangles
     swap = tris[TRIS_DIM + r]
     tris[TRIS_DIM + r] = tris[r]

@@ -51,8 +51,8 @@ def _geom(
     geom.vertadr = m.mesh_vertadr[dataid]
     geom.vertnum = m.mesh_vertnum[dataid]
   else:
-    geom.vertadr = 0
-    geom.vertnum = 0
+    geom.vertadr = -1
+    geom.vertnum = -1
 
   return geom
 
