@@ -37,7 +37,7 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
-class ForwardTest(absltest.TestCase):
+class ForwardTest(parameterized.TestCase):
   def _load(self, fname: str, is_sparse: bool = True):
     path = epath.resource_path("mujoco_warp") / "test_data" / fname
     mjm = mujoco.MjModel.from_xml_path(path.as_posix())
@@ -62,8 +62,9 @@ class ForwardTest(absltest.TestCase):
     )
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
-  def test_fwd_actuation(self):
-    mjm, mjd, m, d = self._load("humanoid/humanoid.xml", is_sparse=False)
+  @parameterized.parameters(True, False)
+  def test_fwd_actuation(self, is_sparse):
+    mjm, mjd, m, d = self._load("actuation.xml", is_sparse=is_sparse)
 
     mujoco.mj_fwdActuation(mjm, mjd)
 

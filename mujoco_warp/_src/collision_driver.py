@@ -16,6 +16,7 @@
 import warp as wp
 
 from .collision_convex import gjk_narrowphase
+from .collision_box import box_box_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MINVAL
 from .types import Data
@@ -553,5 +554,6 @@ def collision(m: Model, d: Data):
     gjk_narrowphase(m, d)
   else:
     primitive_narrowphase(m, d)
+    box_box_narrowphase(m, d)
 
   get_contact_solver_params(m, d)

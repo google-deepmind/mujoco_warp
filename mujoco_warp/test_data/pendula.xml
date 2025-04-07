@@ -20,15 +20,22 @@
   <worldbody>
     <site name="origin"/>
     <camera pos="0 1.5 0.8" xyaxes="-1 0 0 0 -0.2 .8"/>
+    <light pos="0 1.5 0.8" dir="0.1 -0.9 0"/>
     <camera mode="targetbodycom" pos="1 -1 2"/>
+    <light mode="targetbodycom" pos="1 -1 2"/>
     <camera mode="targetbodycom" target="body" pos="0 -1 2"/>
+    <light mode="targetbodycom" target="body" pos="0 -1 2"/>
     <camera mode="targetbody" target="body" pos="0 -1 -2"/>
+    <light mode="targetbody" target="body" pos="0 -1 -2"/>
 
     <!-- a single free body -->
     <body pos="0 0 0">
       <camera mode="fixed" pos="0 0.1 0.1" euler="2.7 0 0"/>
+      <light mode="fixed" pos="0 0.1 0.1" dir="0 0.02 -0.98"/>
       <camera pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+      <light pos="-3 0 1" dir="0 -1 0" mode="trackcom"/>
       <camera pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="track"/>
+      <light pos="-3 0 1" dir="0 -1 0" mode="track"/>
       <freejoint/>
       <geom/>
     </body>

@@ -247,33 +247,36 @@ def _update_gradient(m: types.Model, d: types.Data):
       d.efc.h[worldid, rowid, colid] = d.qM[worldid, rowid, colid]
 
   @kernel
-  def _JTDAJ(m: types.Model, d: types.Data):
+  def _JTDAJ(m: types.Model, d: types.Data, nblocks_perblock: int, dim_x: int):
     # TODO(team): static m?
-    efcid, elementid = wp.tid()
+    efcid_temp, elementid = wp.tid()
 
-    if efcid >= d.nefc[0]:
-      return
+    for i in range(nblocks_perblock):
+      efcid = efcid_temp + i * dim_x
 
-    worldid = d.efc.worldid[efcid]
-
-    if ITERATIONS > 1:
-      if d.efc.done[worldid]:
+      if efcid >= d.nefc[0]:
         return
 
-    dofi = m.dof_tri_row[elementid]
-    dofj = m.dof_tri_col[elementid]
+      worldid = d.efc.worldid[efcid]
 
-    efc_D = d.efc.D[efcid]
-    active = d.efc.active[efcid]
-    if efc_D == 0.0 or active == 0:
-      return
+      if ITERATIONS > 1:
+        if d.efc.done[worldid]:
+          continue
 
-    # TODO(team): sparse efc_J
-    wp.atomic_add(
-      d.efc.h[worldid, dofi],
-      dofj,
-      d.efc.J[efcid, dofi] * d.efc.J[efcid, dofj] * efc_D,
-    )
+      dofi = m.dof_tri_row[elementid]
+      dofj = m.dof_tri_col[elementid]
+
+      efc_D = d.efc.D[efcid]
+      active = d.efc.active[efcid]
+      if efc_D == 0.0 or active == 0:
+        continue
+
+      # TODO(team): sparse efc_J
+      wp.atomic_add(
+        d.efc.h[worldid, dofi],
+        dofj,
+        d.efc.J[efcid, dofi] * d.efc.J[efcid, dofj] * efc_D,
+      )
 
   @kernel
   def _cholesky(d: types.Data):
@@ -307,7 +310,28 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
 
-    wp.launch(_JTDAJ, dim=(d.njmax, m.dof_tri_row.size), inputs=[m, d])
+    # Optimization: launching _JTDAJ with limited number of blocks on a GPU.
+    # Profiling suggests that only a fraction of blocks out of the original
+    # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
+    # effective work. It launches with #blocks that's proportional to the number
+    # of SMs on the GPU. We can now query the SM count:
+    # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
+    if wp.get_device().is_cuda:
+      sm_count = wp.get_device().sm_count
+
+      # Here we assume one block has 256 threads. We use a factor of 6, which
+      # can be change in future to fine-tune the perf. The optimal factor will
+      # depend on the kernel's occupancy, which determines how many blocks can
+      # simultaneously run on the SM. TODO: This factor can be tuned further.
+      dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+    else:
+      dim_x = d.njmax  # fall back
+
+    wp.launch(
+      _JTDAJ,
+      dim=(dim_x, m.dof_tri_row.size),
+      inputs=[m, d, int((d.njmax + dim_x - 1) / dim_x), dim_x],
+    )
 
     wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32)
 
