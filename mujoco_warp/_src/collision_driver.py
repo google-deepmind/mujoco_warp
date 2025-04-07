@@ -18,10 +18,9 @@ import warp as wp
 from .collision_box import box_box_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MINVAL
-from .types import Model
-
 from .types import Data
 from .types import DisableBit
+from .types import Model
 from .types import vec5
 from .warp_util import event_scope
 
