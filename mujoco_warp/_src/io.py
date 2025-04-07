@@ -24,8 +24,9 @@ from . import support
 from . import types
 
 
-def put_model(mjm: mujoco.MjModel, device: Optional[wp.context.Device] = None) -> types.Model:
-
+def put_model(
+  mjm: mujoco.MjModel, device: Optional[wp.context.Device] = None
+) -> types.Model:
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -74,7 +75,6 @@ def put_model(mjm: mujoco.MjModel, device: Optional[wp.context.Device] = None) -
   m = types.Model()
 
   with wp.ScopedDevice(device):
-
     m.nq = mjm.nq
     m.nv = mjm.nv
     m.na = mjm.na
@@ -107,7 +107,7 @@ def put_model(mjm: mujoco.MjModel, device: Optional[wp.context.Device] = None) -
     m.opt.is_sparse = support.is_sparse(mjm)
     m.opt.ls_parallel = False
     m.stat.meaninertia = mjm.stat.meaninertia
-    m.device = device # warp only
+    m.device = device  # warp only
 
     m.qpos0 = wp.array(mjm.qpos0, dtype=wp.float32, ndim=1)
     m.qpos_spring = wp.array(mjm.qpos_spring, dtype=wp.float32, ndim=1)
@@ -524,7 +524,11 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
 
 
 def make_data(
-  mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1, device: Optional[wp.context.Device] = None
+  mjm: mujoco.MjModel,
+  nworld: int = 1,
+  nconmax: int = -1,
+  njmax: int = -1,
+  device: Optional[wp.context.Device] = None,
 ) -> types.Data:
   d = types.Data()
   d.nworld = nworld
@@ -748,7 +752,9 @@ def put_data(
     d.qLD = wp.array(tile(qLD), dtype=wp.float32, ndim=3)
     d.qLDiagInv = wp.array(tile(mjd.qLDiagInv), dtype=wp.float32, ndim=2)
     d.ctrl = wp.array(tile(mjd.ctrl), dtype=wp.float32, ndim=2)
-    d.actuator_velocity = wp.array(tile(mjd.actuator_velocity), dtype=wp.float32, ndim=2)
+    d.actuator_velocity = wp.array(
+      tile(mjd.actuator_velocity), dtype=wp.float32, ndim=2
+    )
     d.actuator_force = wp.array(tile(mjd.actuator_force), dtype=wp.float32, ndim=2)
     d.actuator_length = wp.array(tile(mjd.actuator_length), dtype=wp.float32, ndim=2)
     d.actuator_moment = wp.array(tile(actuator_moment), dtype=wp.float32, ndim=3)
@@ -799,7 +805,9 @@ def put_data(
       for j in range(ncon):
         condim = mjd.contact.dim[j]
         for k in range(condim):
-          con_efc_address[i * ncon + j, k] = mjd.nefc * i + mjd.contact.efc_address[j] + k
+          con_efc_address[i * ncon + j, k] = (
+            mjd.nefc * i + mjd.contact.efc_address[j] + k
+          )
 
     con_worldid = np.zeros(nconmax, dtype=int)
     for i in range(nworld):
@@ -837,7 +845,9 @@ def put_data(
     con_geom_fill = np.vstack(
       [np.repeat(mjd.contact.geom, nworld, axis=0), np.zeros((ncon_fill, 2))]
     )
-    con_efc_address_fill = np.vstack([con_efc_address, np.zeros((ncon_fill, condim_max))])
+    con_efc_address_fill = np.vstack(
+      [con_efc_address, np.zeros((ncon_fill, condim_max))]
+    )
 
     d.contact.dist = wp.array(con_dist_fill, dtype=wp.float32, ndim=1)
     d.contact.pos = wp.array(con_pos_fill, dtype=wp.vec3f, ndim=1)

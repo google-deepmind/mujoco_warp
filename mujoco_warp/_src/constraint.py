@@ -355,7 +355,12 @@ def make_constraint(m: types.Model, d: types.Data):
           device=m.device,
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC.value:
-        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, 3), inputs=[m, d, refsafe], device=m.device)
+        wp.launch(
+          _efc_contact_elliptic,
+          dim=(d.nconmax, 3),
+          inputs=[m, d, refsafe],
+          device=m.device,
+        )
 
         # TODO(team): condim=4
         # TODO(team): condim=6

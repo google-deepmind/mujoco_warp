@@ -592,7 +592,7 @@ class Model:
   nlsp: int  # warp only
   opt: Option
   stat: Statistic
-  device: wp.context.Device # warp only
+  device: wp.context.Device  # warp only
   qpos0: wp.array(dtype=wp.float32, ndim=1)
   qpos_spring: wp.array(dtype=wp.float32, ndim=1)
   body_tree: wp.array(dtype=wp.int32, ndim=1)  # warp only

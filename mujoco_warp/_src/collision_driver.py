@@ -368,7 +368,11 @@ def sap_broadphase(m: Model, d: Data):
   if tile_sort_available:
     segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
     wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[m, d], block_dim=128, device=m.device
+      kernel=segmented_sort_kernel,
+      dim=(d.nworld),
+      inputs=[m, d],
+      block_dim=128,
+      device=m.device,
     )
     print("tile sort available")
   elif segmented_sort_available:
@@ -385,14 +389,10 @@ def sap_broadphase(m: Model, d: Data):
 
       # Create temporary arrays for sorting
       temp_box_projections_lower = wp.zeros(
-        m.ngeom * 2,
-        dtype=d.sap_projection_lower.dtype,
-        device=m.device
+        m.ngeom * 2, dtype=d.sap_projection_lower.dtype, device=m.device
       )
       temp_box_sorting_indexer = wp.zeros(
-        m.ngeom * 2,
-        dtype=d.sap_sort_index.dtype,
-        device=m.device
+        m.ngeom * 2, dtype=d.sap_sort_index.dtype, device=m.device
       )
 
       # Copy data to temporary arrays
@@ -515,7 +515,10 @@ def nxn_broadphase(m: Model, d: Data):
       _add_geom_pair(m, d, geom1, geom2, worldid)
 
   wp.launch(
-    _nxn_broadphase, dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d], device=m.device
+    _nxn_broadphase,
+    dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2),
+    inputs=[m, d],
+    device=m.device,
   )
 
 

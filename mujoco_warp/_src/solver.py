@@ -324,13 +324,26 @@ def _update_gradient(m: types.Model, d: types.Data, device=None):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      wp.launch(_zero_h_lower, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d], device=m.device)
+      wp.launch(
+        _zero_h_lower,
+        dim=(d.nworld, m.dof_tri_row.size),
+        inputs=[m, d],
+        device=m.device,
+      )
 
       wp.launch(
-        _set_h_qM_lower_sparse, dim=(d.nworld, m.qM_fullm_i.size), inputs=[m, d], device=m.device
+        _set_h_qM_lower_sparse,
+        dim=(d.nworld, m.qM_fullm_i.size),
+        inputs=[m, d],
+        device=m.device,
       )
     else:
-      wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d], device=m.device)
+      wp.launch(
+        _copy_lower_triangle,
+        dim=(d.nworld, m.dof_tri_row.size),
+        inputs=[m, d],
+        device=m.device,
+      )
 
     wp.launch(
       _JTDAJ,
@@ -339,7 +352,9 @@ def _update_gradient(m: types.Model, d: types.Data, device=None):
       device=m.device,
     )
 
-    wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32, device=m.device)
+    wp.launch_tiled(
+      _cholesky, dim=(d.nworld,), inputs=[d], block_dim=32, device=m.device
+    )
 
 
 @wp.func
@@ -669,13 +684,20 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
   wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d], device=m.device)
 
-  wp.launch(_init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d], device=m.device)
+  wp.launch(
+    _init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d], device=m.device
+  )
 
   wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d], device=m.device)
 
   # set the lo/hi interval bounds
 
-  wp.launch(_init_bounds, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, hi, hi_alpha, d], device=m.device)
+  wp.launch(
+    _init_bounds,
+    dim=(d.nworld,),
+    inputs=[p0, lo, lo_alpha, hi, hi_alpha, d],
+    device=m.device,
+  )
 
   for _ in range(m.opt.ls_iterations):
     # note: we always launch ls_iterations kernels, but the kernels may early exit if done is true
@@ -759,7 +781,9 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     d.efc.alpha[worldid] = m.alpha_candidate[bestid]
 
   wp.launch(_quad_total, dim=(d.nworld, m.nlsp), inputs=[m, d], device=m.device)
-  wp.launch(_quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d], device=m.device)
+  wp.launch(
+    _quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d], device=m.device
+  )
   wp.launch(_cost_alpha, dim=(d.nworld, m.nlsp), inputs=[m, d], device=m.device)
   wp.launch(_best_alpha, dim=(d.nworld), inputs=[d], device=m.device)
 

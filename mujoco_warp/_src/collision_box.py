@@ -565,5 +565,5 @@ def box_box_narrowphase(
     dim=num_threads,
     inputs=[m, d, num_threads],
     block_dim=BOX_BOX_BLOCK_DIM,
-    device=m.device
+    device=m.device,
   )

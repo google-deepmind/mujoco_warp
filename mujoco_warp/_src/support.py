@@ -82,7 +82,7 @@ def mul_m(
         ],
         # TODO(team): develop heuristic for block dim, or make configurable
         block_dim=32,
-        device=m.device
+        device=m.device,
       )
 
     qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -131,10 +131,18 @@ def mul_m(
       wp.atomic_add(res[worldid], i, qM * vec[worldid, j])
       wp.atomic_add(res[worldid], j, qM * vec[worldid, i])
 
-    wp.launch(_mul_m_sparse_diag, dim=(d.nworld, m.nv), inputs=[m, d, res, vec, skip], device=m.device)
+    wp.launch(
+      _mul_m_sparse_diag,
+      dim=(d.nworld, m.nv),
+      inputs=[m, d, res, vec, skip],
+      device=m.device,
+    )
 
     wp.launch(
-      _mul_m_sparse_ij, dim=(d.nworld, m.qM_madr_ij.size), inputs=[m, d, res, vec, skip], device=m.device
+      _mul_m_sparse_ij,
+      dim=(d.nworld, m.qM_madr_ij.size),
+      inputs=[m, d, res, vec, skip],
+      device=m.device,
     )
 
 
@@ -170,7 +178,9 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: array2df):
 
     qfrc[worldid, dofid] += accumul
 
-  wp.launch(kernel=_accumulate, dim=(d.nworld, m.nv), inputs=[m, d, qfrc], device=m.device)
+  wp.launch(
+    kernel=_accumulate, dim=(d.nworld, m.nv), inputs=[m, d, qfrc], device=m.device
+  )
 
 
 @wp.func

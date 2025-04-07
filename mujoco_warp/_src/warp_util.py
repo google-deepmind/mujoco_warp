@@ -215,7 +215,9 @@ def _copy_2dspatialf(
 # TODO(team): remove kernel_copy once wp.copy is supported in cuda subgraphs
 
 
-def kernel_copy(dest: wp.array, src: wp.array, device: Optional[wp.context.Device] = None):
+def kernel_copy(
+  dest: wp.array, src: wp.array, device: Optional[wp.context.Device] = None
+):
   if src.shape != dest.shape:
     raise ValueError("only same shape copying allowed")
 
