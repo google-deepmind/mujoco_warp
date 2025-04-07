@@ -23,22 +23,11 @@ import mujoco_warp as mjwarp
 
 from . import test_util
 
-# tolerance for difference between MuJoCo and MJWarp calculations - mostly
-# due to float precision
-_TOLERANCE = 5e-5
 
+class CollisionTest(parameterized.TestCase):
+  """Tests the collision contact functions."""
 
-def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
-  err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
-
-
-class PrimitiveTest(parameterized.TestCase):
-  """Tests the collision primitive functions."""
-
-  _MJCFS = {
-    "box_plane": """
+  _BOX_PLANE =  """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -48,8 +37,8 @@ class PrimitiveTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-      """,
-    "plane_sphere": """
+      """
+  _PLANE_SPHERE = """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -59,38 +48,8 @@ class PrimitiveTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """,
-    "sphere_sphere": """
-        <mujoco>
-          <worldbody>
-            <body>
-              <joint type="free"/>
-              <geom pos="0 0 0" size="0.2" type="sphere"/>
-            </body>
-            <body >
-              <joint type="free"/>
-              <geom pos="0 0.3 0" size="0.11" type="sphere"/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """,
-    "capsule_capsule": """
-        <mujoco model="two_capsules">
-          <worldbody>
-            <body>
-              <joint type="free"/>
-              <geom fromto="0.62235904  0.58846647 0.651046 1.5330081 0.33564585 0.977849"
-               size="0.05" type="capsule"/>
-            </body>
-            <body>
-              <joint type="free"/>
-              <geom fromto="0.5505271 0.60345304 0.476661 1.3900293 0.30709633 0.932082"
-               size="0.05" type="capsule"/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """,
-    "plane_capsule": """
+        """
+  _PLANE_CAPSULE = """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -98,88 +57,6 @@ class PrimitiveTest(parameterized.TestCase):
               <freejoint/>
               <geom size="0.05 0.05" type="capsule"/>
             </body>
-          </worldbody>
-        </mujoco>
-        """,
-  }
-
-  @parameterized.parameters(
-    "box_plane",
-    "plane_sphere",
-    "sphere_sphere",
-    "plane_capsule",
-    "capsule_capsule",
-  )
-  def test_primitives(self, name):
-    """Tests collision primitive functions."""
-    mjm = mujoco.MjModel.from_xml_string(self._MJCFS[name])
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-
-    mujoco.mj_collision(mjm, mjd)
-    mjwarp.collision(m, d)
-
-    ncon = d.ncon.numpy()[0]
-    np.testing.assert_equal(ncon, mjd.ncon)
-
-    for i in range(ncon):
-      _assert_eq(d.contact.dist.numpy()[i], mjd.contact.dist[i], "dist")
-      _assert_eq(d.contact.pos.numpy()[i], mjd.contact.pos[i], "pos")
-      _assert_eq(d.contact.frame.numpy()[i].flatten(), mjd.contact.frame[i], "frame")
-
-  # TODO(team): test primitive_narrowphase
-
-  @parameterized.parameters(
-    (True, True),
-    (True, False),
-    (False, True),
-    (False, False),
-  )
-  def test_collision_disableflags(self, dsbl_constraint, dsbl_contact):
-    """Tests collision disableflags."""
-    mjm, mjd, _, _ = test_util.fixture("humanoid/humanoid.xml")
-
-    if dsbl_constraint:
-      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
-    if dsbl_contact:
-      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
-
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-
-    mujoco.mj_collision(mjm, mjd)
-    mjwarp.collision(m, d)
-
-    self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
-
-
-class ConvexTest(parameterized.TestCase):
-  """Tests the convex contact functions."""
-
-  _BOX_PLANE = """
-        <mujoco>
-          <worldbody>
-            <geom size="40 40 40" type="plane"/>
-            <body pos="0 0 0.7" euler="45 0 0">
-              <freejoint/>
-              <geom size="0.5 0.5 0.5" type="box"/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """
-  _FLAT_BOX_PLANE = """
-        <mujoco>
-          <worldbody>
-            <body pos="0 0 0.49">
-              <freejoint/>
-              <geom size="0.5 0.1 0.2" type="box"/>
-            </body>
-            <geom size="40 40 40" type="plane"/>
           </worldbody>
         </mujoco>
         """
@@ -232,7 +109,6 @@ class ConvexTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """
-
   _SPHERE_SPHERE = """
         <mujoco>
           <worldbody>
@@ -250,13 +126,14 @@ class ConvexTest(parameterized.TestCase):
 
   @parameterized.parameters(
     (_BOX_PLANE),
-    (_FLAT_BOX_PLANE),
+    (_PLANE_SPHERE),
+    (_PLANE_CAPSULE),
     (_BOX_BOX_EDGE),
     (_CONVEX_CONVEX),
     (_SPHERE_SPHERE),
     (_CAPSULE_CAPSULE),
   )
-  def test_convex_collision(self, xml_string):
+  def test_collision(self, xml_string):
     """Tests convex collision with different geometries."""
     m = mujoco.MjModel.from_xml_string(xml_string)
     d = mujoco.MjData(m)
@@ -283,6 +160,32 @@ class ConvexTest(parameterized.TestCase):
           result = True
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+
+  @parameterized.parameters(
+    (True, True),
+    (True, False),
+    (False, True),
+    (False, False),
+  )
+  def test_collision_disableflags(self, dsbl_constraint, dsbl_contact):
+    """Tests collision disableflags."""
+    mjm, mjd, _, _ = test_util.fixture("humanoid/humanoid.xml")
+
+    if dsbl_constraint:
+      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
+    if dsbl_contact:
+      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mujoco.mj_collision(mjm, mjd)
+    mjwarp.collision(m, d)
+
+    self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
 
 if __name__ == "__main__":
