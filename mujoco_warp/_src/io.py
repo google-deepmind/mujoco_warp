@@ -993,7 +993,7 @@ def put_data(
   d.ncollision = wp.zeros(1, dtype=wp.int32, ndim=1)
 
   # tendon
-  d.ten_length = wp.array(tile(mjd.ten_length), dtype=wp.float32, ndim=2)
+  d.ten_length = wp.array(tile(mjd.ten_length, nworld), dtype=wp.float32, ndim=2)
 
   if support.is_sparse(mjm) and mjm.ntendon:
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -1003,10 +1003,10 @@ def put_data(
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
 
-  d.ten_J = wp.array(tile(ten_J), dtype=wp.float32, ndim=3)
+  d.ten_J = wp.array(tile(ten_J, nworld), dtype=wp.float32, ndim=3)
 
   # sensors
-  d.sensordata = wp.array(tile(mjd.sensordata), dtype=wp.float32, ndim=2)
+  d.sensordata = wp.array(tile(mjd.sensordata, nworld), dtype=wp.float32, ndim=2)
 
   return d
 
@@ -1015,9 +1015,10 @@ def get_data_into(
   result: mujoco.MjData,
   mjm: mujoco.MjModel,
   d: types.Data,
+  nworld: int = 1,
 ):
   """Gets Data from a device into an existing mujoco.MjData."""
-  if m.nworld > 1:
+  if nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 
   ncon = d.ncon.numpy()[0]

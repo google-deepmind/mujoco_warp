@@ -84,7 +84,7 @@ def broadphase_project_spheres_onto_sweep_direction_kernel(
   if r == 0.0:
     # current geom is a plane
     r = 1000000000.0
-  sphere_radius = r + m.geom_margin[worldId, i]
+  sphere_radius = r + m.geom_margin[worldid, i]
 
   center = wp.dot(direction, c)
   f = center - sphere_radius
@@ -148,7 +148,7 @@ def reorder_bounding_spheres_kernel(
   # Get the bounding volume
   c = d.geom_xpos[worldid, mapped]
   r = m.geom_rbound[mapped]
-  margin = m.geom_margin[worldId, mapped]
+  margin = m.geom_margin[worldid, mapped]
 
   # Reorder the box into the sorted array
   if r == 0.0:
@@ -293,7 +293,7 @@ def sap_broadphase_kernel(m: Model, d: Data, num_threads: int, filter_parent: bo
     idx1 = d.sap_sort_index[worldid, i]
     idx2 = d.sap_sort_index[worldid, j]
 
-    if not _geom_filter(m, idx1, idx2, filter_parent, worldId):
+    if not _geom_filter(m, idx1, idx2, filter_parent, worldid):
       threadId += num_threads
       continue
 

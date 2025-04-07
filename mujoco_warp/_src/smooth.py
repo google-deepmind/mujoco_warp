@@ -926,6 +926,6 @@ def tendon(m: Model, d: Data):
       # add to moment
       d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_jnt_adr]] = prm
 
-    wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
+    wp.launch(_joint_tendon, dim=(m.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
 
   # TODO(team): spatial
