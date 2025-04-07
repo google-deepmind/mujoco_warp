@@ -69,20 +69,7 @@ def gjk_support_geom(
   convex_vert: wp.array(dtype=wp.vec3),
 ):
   local_dir = wp.transpose(info.rot) @ dir
-  if typeGeom == int(GeomType.PLANE.value):
-    norm = wp.sqrt(local_dir[0] * local_dir[0] + local_dir[1] * local_dir[1])
-    if norm > 0.0:
-      nx = local_dir[0] / norm
-      ny = local_dir[1] / norm
-    else:
-      nx = 1.0
-      ny = 0.0
-    nz = -float(int(local_dir[2] < 0))
-    # XXX This hardcoded value is suspicious
-    largeSize = 5.0
-    res = wp.vec3(nx * largeSize, ny * largeSize, nz * largeSize)
-    support_pt = info.rot @ res + info.pos
-  elif typeGeom == int(GeomType.SPHERE.value):
+  if typeGeom == int(GeomType.SPHERE.value):
     support_pt = info.pos + info.size[0] * dir
   elif typeGeom == int(GeomType.BOX.value):
     res = wp.cw_mul(wp.sign(local_dir), info.size)
@@ -143,14 +130,21 @@ def _gjk_support(
   return dist1 + dist2, support_pt
 
 
-supported_geoms = {
-  GeomType.PLANE.value,
-  GeomType.SPHERE.value,
-  GeomType.BOX.value,
-  GeomType.CAPSULE.value,
-  GeomType.ELLIPSOID.value,
-  GeomType.CYLINDER.value,
-  GeomType.MESH.value,
+convex_collision_functions = {
+  (GeomType.ELLIPSOID.value, GeomType.SPHERE.value),
+  (GeomType.ELLIPSOID.value, GeomType.BOX.value),
+  (GeomType.ELLIPSOID.value, GeomType.MESH.value),
+  (GeomType.ELLIPSOID.value, GeomType.ELLIPSOID.value),
+  (GeomType.ELLIPSOID.value, GeomType.CYLINDER.value),
+  (GeomType.ELLIPSOID.value, GeomType.CAPSULE.value),
+  (GeomType.MESH.value, GeomType.SPHERE.value),
+  (GeomType.MESH.value, GeomType.BOX.value),
+  (GeomType.MESH.value, GeomType.CAPSULE.value),
+  (GeomType.MESH.value, GeomType.CYLINDER.value),
+  (GeomType.MESH.value, GeomType.MESH.value),
+  (GeomType.CYLINDER.value, GeomType.BOX.value),
+  (GeomType.CYLINDER.value, GeomType.CYLINDER.value),
+  (GeomType.CYLINDER.value, GeomType.CAPSULE.value),
 }
 
 
@@ -769,17 +763,17 @@ _collision_kernels = {}
 
 def gjk_narrowphase(m: Model, d: Data):
   if len(_collision_kernels) == 0:
-    for t2 in range(NUM_GEOM_TYPES):
-      for t1 in range(t2 + 1):
-        if t1 in supported_geoms and t2 in supported_geoms:
-          _collision_kernels[(t1, t2)] = gjk_epa_pipeline(
-            t1,
-            t2,
-            m.opt.gjk_iteration_count,
-            m.opt.epa_iteration_count,
-            m.opt.epa_exact_neg_distance,
-            m.opt.depth_extension,
-          )
+    for types in convex_collision_functions:
+      t1 = types[0]
+      t2 = types[1]
+      _collision_kernels[(t1, t2)] = gjk_epa_pipeline(
+        t1,
+        t2,
+        m.opt.gjk_iteration_count,
+        m.opt.epa_iteration_count,
+        m.opt.epa_exact_neg_distance,
+        m.opt.depth_extension,
+      )
 
   for collision_kernel in _collision_kernels.values():
     wp.launch(collision_kernel, dim=d.nconmax, inputs=[m, d])

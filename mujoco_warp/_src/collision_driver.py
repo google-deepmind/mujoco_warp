@@ -550,10 +550,8 @@ def collision(m: Model, d: Data):
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
-  if m.opt.enableGjk:
-    gjk_narrowphase(m, d)
-  else:
-    primitive_narrowphase(m, d)
-    box_box_narrowphase(m, d)
+  gjk_narrowphase(m, d)
+  primitive_narrowphase(m, d)
+  box_box_narrowphase(m, d)
 
   get_contact_solver_params(m, d)

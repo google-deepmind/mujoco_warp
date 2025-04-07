@@ -290,7 +290,6 @@ class Option:
   ls_iterations: int
   disableflags: int
   is_sparse: bool
-  enableGjk: bool  # warp only
   gjk_iteration_count: int  # warp only
   epa_iteration_count: int  # warp only
   epa_exact_neg_distance: bool  # warp only

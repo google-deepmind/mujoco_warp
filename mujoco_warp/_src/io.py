@@ -104,7 +104,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt.is_sparse = support.is_sparse(mjm)
   m.opt.ls_parallel = False
   # TODO(team) Figure out good default parameters
-  m.opt.enableGjk = False
   m.opt.gjk_iteration_count = wp.int32(1)  # warp only
   m.opt.epa_iteration_count = wp.int32(12)  # warp only
   m.opt.epa_exact_neg_distance = wp.bool(False)  # warp only
