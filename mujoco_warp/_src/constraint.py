@@ -342,6 +342,7 @@ def make_constraint(m: types.Model, d: types.Data):
         _efc_limit_slide_hinge,
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[m, d, refsafe],
+        device=m.device,
       )
 
     # contact
@@ -351,9 +352,10 @@ def make_constraint(m: types.Model, d: types.Data):
           _efc_contact_pyramidal,
           dim=(d.nconmax, 4),
           inputs=[m, d, refsafe],
+          device=m.device,
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC.value:
-        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, 3), inputs=[m, d, refsafe])
+        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, 3), inputs=[m, d, refsafe], device=m.device)
 
         # TODO(team): condim=4
         # TODO(team): condim=6

@@ -271,4 +271,4 @@ def _primitive_narrowphase(
 def primitive_narrowphase(m: Model, d: Data):
   # we need to figure out how to keep the overhead of this small - not launching anything
   # for pair types without collisions, as well as updating the launch dimensions.
-  wp.launch(_primitive_narrowphase, dim=d.nconmax, inputs=[m, d])
+  wp.launch(_primitive_narrowphase, dim=d.nconmax, inputs=[m, d], device=m.device)

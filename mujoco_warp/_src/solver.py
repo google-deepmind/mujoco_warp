@@ -54,22 +54,22 @@ def _create_context(m: types.Model, d: types.Data, grad: bool = True):
     d.efc.search[worldid, dofid] = search
     wp.atomic_add(d.efc.search_dot, worldid, search * search)
 
-  wp.launch(_init_context, dim=(d.nworld), inputs=[d])
+  wp.launch(_init_context, dim=(d.nworld), inputs=[d], device=m.device)
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
-  d.efc.Jaref.zero_()
+  d.efc.Jaref.zero_(device=m.device)
 
-  wp.launch(_jaref, dim=(d.njmax, m.nv), inputs=[m, d])
+  wp.launch(_jaref, dim=(d.njmax, m.nv), inputs=[m, d], device=m.device)
 
   # Ma = qM @ qacc
-  support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
+  support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done, device=m.device)
 
-  _update_constraint(m, d)
+  _update_constraint(m, d, device=m.device)
   if grad:
     _update_gradient(m, d)
 
     # search = -Mgrad
-    wp.launch(_search, dim=(d.nworld, m.nv), inputs=[d])
+    wp.launch(_search, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
 
 def _update_constraint(m: types.Model, d: types.Data):
@@ -159,21 +159,21 @@ def _update_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(d.efc.gauss, worldid, gauss_cost)
     wp.atomic_add(d.efc.cost, worldid, gauss_cost)
 
-  wp.launch(_init_cost, dim=(d.nworld), inputs=[d])
+  wp.launch(_init_cost, dim=(d.nworld), inputs=[d], device=m.device)
 
-  wp.launch(_efc_kernel, dim=(d.njmax,), inputs=[d])
+  wp.launch(_efc_kernel, dim=(d.njmax,), inputs=[d], device=m.device)
 
   # qfrc_constraint = efc_J.T @ efc_force
-  wp.launch(_zero_qfrc_constraint, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_zero_qfrc_constraint, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
-  wp.launch(_qfrc_constraint, dim=(m.nv, d.njmax), inputs=[d])
+  wp.launch(_qfrc_constraint, dim=(m.nv, d.njmax), inputs=[d], device=m.device)
 
   # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
 
-  wp.launch(_gauss, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_gauss, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
 
-def _update_gradient(m: types.Model, d: types.Data):
+def _update_gradient(m: types.Model, d: types.Data, device=None):
   TILE = m.nv
   ITERATIONS = m.opt.iterations
 
@@ -293,22 +293,22 @@ def _update_gradient(m: types.Model, d: types.Data):
     wp.tile_store(d.efc.Mgrad[worldid], output_tile)
 
   # grad = Ma - qfrc_smooth - qfrc_constraint
-  wp.launch(_zero_grad_dot, dim=(d.nworld), inputs=[d])
+  wp.launch(_zero_grad_dot, dim=(d.nworld), inputs=[d], device=m.device)
 
-  wp.launch(_grad, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_grad, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
   if m.opt.solver == types.SolverType.CG:
-    smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
+    smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad, device=m.device)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      wp.launch(_zero_h_lower, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
+      wp.launch(_zero_h_lower, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d], device=m.device)
 
       wp.launch(
-        _set_h_qM_lower_sparse, dim=(d.nworld, m.qM_fullm_i.size), inputs=[m, d]
+        _set_h_qM_lower_sparse, dim=(d.nworld, m.qM_fullm_i.size), inputs=[m, d], device=m.device
       )
     else:
-      wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d])
+      wp.launch(_copy_lower_triangle, dim=(d.nworld, m.dof_tri_row.size), inputs=[m, d], device=m.device)
 
     # Optimization: launching _JTDAJ with limited number of blocks on a GPU.
     # Profiling suggests that only a fraction of blocks out of the original
@@ -331,9 +331,10 @@ def _update_gradient(m: types.Model, d: types.Data):
       _JTDAJ,
       dim=(dim_x, m.dof_tri_row.size),
       inputs=[m, d, int((d.njmax + dim_x - 1) / dim_x), dim_x],
+      device=m.device,
     )
 
-    wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32)
+    wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32, device=m.device)
 
 
 @wp.func
@@ -640,11 +641,11 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     alpha = wp.where(improved and not plo_better, phi_alpha, alpha)
     d.efc.alpha[worldid] = alpha
 
-  wp.launch(_gtol, dim=(d.nworld,), inputs=[m, d])
+  wp.launch(_gtol, dim=(d.nworld,), inputs=[m, d], device=m.device)
 
   # linesearch points
   done = d.efc.ls_done
-  done.zero_()
+  done.zero_(device=m.device)
   p0 = d.efc.p0
   lo = d.efc.lo
   lo_alpha = d.efc.lo_alpha
@@ -659,17 +660,17 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
   # initialize interval
 
-  wp.launch(_init_p0_gauss, dim=(d.nworld,), inputs=[p0, d])
+  wp.launch(_init_p0_gauss, dim=(d.nworld,), inputs=[p0, d], device=m.device)
 
-  wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d])
+  wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d], device=m.device)
 
-  wp.launch(_init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d])
+  wp.launch(_init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d], device=m.device)
 
-  wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d])
+  wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d], device=m.device)
 
   # set the lo/hi interval bounds
 
-  wp.launch(_init_bounds, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, hi, hi_alpha, d])
+  wp.launch(_init_bounds, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, hi, hi_alpha, d], device=m.device)
 
   for _ in range(m.opt.ls_iterations):
     # note: we always launch ls_iterations kernels, but the kernels may early exit if done is true
@@ -677,15 +678,15 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     # of extra launches
     inputs = [done, lo, lo_alpha, hi, hi_alpha, lo_next, lo_next_alpha, hi_next]
     inputs += [hi_next_alpha, mid, mid_alpha, d]
-    wp.launch(_next_alpha_gauss, dim=(d.nworld,), inputs=inputs)
+    wp.launch(_next_alpha_gauss, dim=(d.nworld,), inputs=inputs, device=m.device)
 
     inputs = [done, lo_next, lo_next_alpha, hi_next, hi_next_alpha, mid, mid_alpha]
     inputs += [d]
-    wp.launch(_next_quad, dim=(d.njmax,), inputs=inputs)
+    wp.launch(_next_quad, dim=(d.njmax,), inputs=inputs, device=m.device)
 
     inputs = [done, p0, lo, lo_alpha, hi, hi_alpha, lo_next, lo_next_alpha, hi_next]
     inputs += [hi_next_alpha, mid, mid_alpha, d]
-    wp.launch(_swap, dim=(d.nworld,), inputs=inputs)
+    wp.launch(_swap, dim=(d.nworld,), inputs=inputs, device=m.device)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
@@ -752,10 +753,10 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     bestid = wp.argmin(d.efc.cost_candidate[worldid])
     d.efc.alpha[worldid] = m.alpha_candidate[bestid]
 
-  wp.launch(_quad_total, dim=(d.nworld, m.nlsp), inputs=[m, d])
-  wp.launch(_quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d])
-  wp.launch(_cost_alpha, dim=(d.nworld, m.nlsp), inputs=[m, d])
-  wp.launch(_best_alpha, dim=(d.nworld), inputs=[d])
+  wp.launch(_quad_total, dim=(d.nworld, m.nlsp), inputs=[m, d], device=m.device)
+  wp.launch(_quad_total_candidate, dim=(d.njmax, m.nlsp), inputs=[m, d], device=m.device)
+  wp.launch(_cost_alpha, dim=(d.nworld, m.nlsp), inputs=[m, d], device=m.device)
+  wp.launch(_best_alpha, dim=(d.nworld), inputs=[d], device=m.device)
 
 
 @event_scope
@@ -868,32 +869,32 @@ def _linesearch(m: types.Model, d: types.Data):
     d.efc.Jaref[efcid] += d.efc.alpha[worldid] * d.efc.jv[efcid]
 
   # mv = qM @ search
-  support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
+  support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done, device=m.device)
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
-  wp.launch(_zero_jv, dim=(d.njmax), inputs=[d])
+  wp.launch(_zero_jv, dim=(d.njmax), inputs=[d], device=m.device)
 
-  wp.launch(_jv, dim=(d.njmax, m.nv), inputs=[d])
+  wp.launch(_jv, dim=(d.njmax, m.nv), inputs=[d], device=m.device)
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-  wp.launch(_zero_quad_gauss, dim=(d.nworld), inputs=[d])
+  wp.launch(_zero_quad_gauss, dim=(d.nworld), inputs=[d], device=m.device)
 
-  wp.launch(_init_quad_gauss, dim=(d.nworld, m.nv), inputs=[m, d])
+  wp.launch(_init_quad_gauss, dim=(d.nworld, m.nv), inputs=[m, d], device=m.device)
 
   # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
 
-  wp.launch(_init_quad, dim=(d.njmax), inputs=[d])
+  wp.launch(_init_quad, dim=(d.njmax), inputs=[d], device=m.device)
 
   if m.opt.ls_parallel:
     _linesearch_parallel(m, d)
   else:
     _linesearch_iterative(m, d)
 
-  wp.launch(_qacc_ma, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_qacc_ma, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
-  wp.launch(_jaref, dim=(d.njmax,), inputs=[d])
+  wp.launch(_jaref, dim=(d.njmax,), inputs=[d], device=m.device)
 
 
 @event_scope
@@ -997,7 +998,7 @@ def solve(m: types.Model, d: types.Data):
       )
 
   # warmstart
-  kernel_copy(d.qacc, d.qacc_warmstart)
+  kernel_copy(d.qacc, d.qacc_warmstart, m.device)
 
   _create_context(m, d, grad=True)
 
@@ -1005,23 +1006,23 @@ def solve(m: types.Model, d: types.Data):
     _linesearch(m, d)
 
     if m.opt.solver == types.SolverType.CG:
-      wp.launch(_prev_grad_Mgrad, dim=(d.nworld, m.nv), inputs=[d])
+      wp.launch(_prev_grad_Mgrad, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
-    _update_constraint(m, d)
-    _update_gradient(m, d)
+    _update_constraint(m, d, device=m.device)
+    _update_gradient(m, d, device=m.device)
 
     # polak-ribiere
     if m.opt.solver == types.SolverType.CG:
-      wp.launch(_zero_beta_num_den, dim=(d.nworld), inputs=[d])
+      wp.launch(_zero_beta_num_den, dim=(d.nworld), inputs=[d], device=m.device)
 
-      wp.launch(_beta_num_den, dim=(d.nworld, m.nv), inputs=[d])
+      wp.launch(_beta_num_den, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
-      wp.launch(_beta, dim=(d.nworld,), inputs=[d])
+      wp.launch(_beta, dim=(d.nworld,), inputs=[d], device=m.device)
 
-    wp.launch(_zero_search_dot, dim=(d.nworld), inputs=[d])
+    wp.launch(_zero_search_dot, dim=(d.nworld), inputs=[d], device=m.device)
 
-    wp.launch(_search_update, dim=(d.nworld, m.nv), inputs=[d])
+    wp.launch(_search_update, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
 
-    wp.launch(_done, dim=(d.nworld,), inputs=[m, d, i])
+    wp.launch(_done, dim=(d.nworld,), inputs=[m, d, i], device=m.device)
 
-  kernel_copy(d.qacc_warmstart, d.qacc)
+  kernel_copy(d.qacc_warmstart, d.qacc, m.device)
