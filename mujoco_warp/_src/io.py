@@ -519,11 +519,11 @@ def put_model(
   )
 
   # tendon
-  m.tendon_adr = wp.array(mjm.tendon_adr, dtype=wp.int32, ndim=1)
-  m.tendon_num = wp.array(mjm.tendon_num, dtype=wp.int32, ndim=1)
-  m.wrap_objid = wp.array(mjm.wrap_objid, dtype=wp.int32, ndim=1)
-  m.wrap_prm = wp.array(mjm.wrap_prm, dtype=wp.float32, ndim=1)
-  m.wrap_type = wp.array(mjm.wrap_type, dtype=wp.int32, ndim=1)
+  m.tendon_adr = wp.array(mjm.tendon_adr, dtype=wp.int32)
+  m.tendon_num = wp.array(mjm.tendon_num, dtype=wp.int32)
+  m.wrap_objid = wp.array(mjm.wrap_objid, dtype=wp.int32)
+  m.wrap_prm = create_nworld_array(mjm.wrap_prm, wp.float32, "wrap_prm" in expand_fields)
+  m.wrap_type = wp.array(mjm.wrap_type, dtype=wp.int32)
 
   tendon_jnt_adr = []
   wrap_jnt_adr = []
@@ -535,33 +535,30 @@ def put_model(
         tendon_jnt_adr.append(i)
         wrap_jnt_adr.append(adr + j)
 
-  m.tendon_jnt_adr = wp.array(tendon_jnt_adr, dtype=wp.int32, ndim=1)
-  m.wrap_jnt_adr = wp.array(wrap_jnt_adr, dtype=wp.int32, ndim=1)
+  m.tendon_jnt_adr = wp.array(tendon_jnt_adr, dtype=wp.int32)
+  m.wrap_jnt_adr = wp.array(wrap_jnt_adr, dtype=wp.int32)
 
   # sensors
-  m.sensor_type = wp.array(mjm.sensor_type, dtype=wp.int32, ndim=1)
-  m.sensor_datatype = wp.array(mjm.sensor_datatype, dtype=wp.int32, ndim=1)
-  m.sensor_objtype = wp.array(mjm.sensor_objtype, dtype=wp.int32, ndim=1)
-  m.sensor_objid = wp.array(mjm.sensor_objid, dtype=wp.int32, ndim=1)
-  m.sensor_reftype = wp.array(mjm.sensor_reftype, dtype=wp.int32, ndim=1)
-  m.sensor_refid = wp.array(mjm.sensor_refid, dtype=wp.int32, ndim=1)
-  m.sensor_dim = wp.array(mjm.sensor_dim, dtype=wp.int32, ndim=1)
-  m.sensor_adr = wp.array(mjm.sensor_adr, dtype=wp.int32, ndim=1)
-  m.sensor_cutoff = wp.array(mjm.sensor_cutoff, dtype=wp.float32, ndim=1)
+  m.sensor_type = wp.array(mjm.sensor_type, dtype=wp.int32)
+  m.sensor_datatype = wp.array(mjm.sensor_datatype, dtype=wp.int32)
+  m.sensor_objtype = wp.array(mjm.sensor_objtype, dtype=wp.int32)
+  m.sensor_objid = wp.array(mjm.sensor_objid, dtype=wp.int32)
+  m.sensor_reftype = wp.array(mjm.sensor_reftype, dtype=wp.int32)
+  m.sensor_refid = wp.array(mjm.sensor_refid, dtype=wp.int32)
+  m.sensor_dim = wp.array(mjm.sensor_dim, dtype=wp.int32)
+  m.sensor_adr = wp.array(mjm.sensor_adr, dtype=wp.int32)
+  m.sensor_cutoff = wp.array(mjm.sensor_cutoff, dtype=wp.float32)
   m.sensor_pos_adr = wp.array(
     np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0],
-    dtype=wp.int32,
-    ndim=1,
+    dtype=wp.int32
   )
   m.sensor_vel_adr = wp.array(
     np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0],
-    dtype=wp.int32,
-    ndim=1,
+    dtype=wp.int32
   )
   m.sensor_acc_adr = wp.array(
     np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0],
-    dtype=wp.int32,
-    ndim=1,
+    dtype=wp.int32
   )
 
   return m
