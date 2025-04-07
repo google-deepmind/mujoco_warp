@@ -458,6 +458,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ndim=1,
   )
 
+  m.sensor_rne_postconstraint = np.isin(
+    mjm.sensor_type,
+    [types.SensorType.ACCELEROMETER, types.SensorType.FORCE, types.SensorType.TORQUE],
+  ).any()
+
   return m
 
 

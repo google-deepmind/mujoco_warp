@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from . import smooth
 from .types import Data
 from .types import DisableBit
 from .types import Model
@@ -76,6 +77,44 @@ def sensor_vel(m: Model, d: Data):
 
 
 @wp.func
+def _accelerometer(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
+  bodyid = m.site_bodyid[objid]
+  rot = d.site_xmat[worldid, objid]
+  rotT = wp.transpose(rot)
+  cvel = d.cvel[worldid, bodyid]
+  cvel_top = wp.spatial_top(cvel)
+  cvel_bottom = wp.spatial_bottom(cvel)
+  cacc = d.cacc[worldid, bodyid]
+  cacc_top = wp.spatial_top(cacc)
+  cacc_bottom = wp.spatial_bottom(cacc)
+  dif = d.site_xpos[worldid, objid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
+  ang = rotT @ cvel_top
+  lin = rotT @ (cvel_bottom - wp.cross(dif, cvel_top))
+  acc = rotT @ (cacc_bottom - wp.cross(dif, cacc_top))
+  correction = wp.cross(ang, lin)
+  return acc + correction
+
+
+@wp.func
+def _force(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
+  bodyid = m.site_bodyid[objid]
+  cfrc_int = d.cfrc_int[worldid, bodyid]
+  site_xmat = d.site_xmat[worldid, objid]
+  return wp.transpose(site_xmat) @ wp.spatial_bottom(cfrc_int)
+
+
+@wp.func
+def _torque(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
+  bodyid = m.site_bodyid[objid]
+  cfrc_int = d.cfrc_int[worldid, bodyid]
+  site_xmat = d.site_xmat[worldid, objid]
+  dif = d.site_xpos[worldid, objid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
+  return wp.transpose(site_xmat) @ (
+    wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int))
+  )
+
+
+@wp.func
 def _actuator_force(m: Model, d: Data, worldid: int, objid: int) -> wp.float32:
   return d.actuator_force[worldid, objid]
 
@@ -92,10 +131,28 @@ def sensor_acc(m: Model, d: Data):
     objid = m.sensor_objid[accadr]
     adr = m.sensor_adr[accadr]
 
-    if sensortype == int(SensorType.ACTUATORFRC.value):
+    if sensortype == int(SensorType.ACCELEROMETER.value):
+      accelerometer = _accelerometer(m, d, worldid, objid)
+      d.sensordata[worldid, adr + 0] = accelerometer[0]
+      d.sensordata[worldid, adr + 1] = accelerometer[1]
+      d.sensordata[worldid, adr + 2] = accelerometer[2]
+    elif sensortype == int(SensorType.FORCE.value):
+      force = _force(m, d, worldid, objid)
+      d.sensordata[worldid, adr + 0] = force[0]
+      d.sensordata[worldid, adr + 1] = force[1]
+      d.sensordata[worldid, adr + 2] = force[2]
+    elif sensortype == int(SensorType.TORQUE.value):
+      torque = _torque(m, d, worldid, objid)
+      d.sensordata[worldid, adr + 0] = torque[0]
+      d.sensordata[worldid, adr + 1] = torque[1]
+      d.sensordata[worldid, adr + 2] = torque[2]
+    elif sensortype == int(SensorType.ACTUATORFRC.value):
       d.sensordata[worldid, adr] = _actuator_force(m, d, worldid, objid)
 
   if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
+
+  if m.sensor_rne_postconstraint:
+    smooth.rne_postconstraint(m, d)
 
   wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])

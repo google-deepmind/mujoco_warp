@@ -615,6 +615,11 @@ def rne(m: Model, d: Data):
   wp.launch(qfrc_bias, dim=[d.nworld, m.nv], inputs=[m, d])
 
 
+def rne_postconstraint(m: Model, d: Data):
+  # TODO(team):
+  pass
+
+
 @event_scope
 def transmission(m: Model, d: Data):
   """Computes actuator/transmission lengths and moments."""

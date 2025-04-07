@@ -43,10 +43,21 @@ class SensorTest(parameterized.TestCase):
     """Test sensors."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
+        <option gravity="-1 -1 -1"/>
         <worldbody>
-          <body>
+          <body pos="0 0 0">
             <joint name="slide" type="slide"/>
             <geom type="sphere" size="0.1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="hinge" axis="1 2 3"/>
+            <geom type="sphere" size="0.1"/>
+            <site name="force_site" pos="1 2 3"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="slide" axis="1 2 3"/>
+            <geom type="sphere" size="0.1"/>
+            <site name="torque_site" pos="1 2 3"/>
           </body>
         </worldbody>
         <actuator>
@@ -55,10 +66,13 @@ class SensorTest(parameterized.TestCase):
         <sensor>
           <jointpos joint="slide"/>
           <jointvel joint="slide"/>
+          <accelerometer site="force_site"/>
+          <force site="force_site"/>
+          <torque site="torque_site"/>
           <actuatorfrc actuator="slide"/>
         </sensor>
         <keyframe>
-          <key qpos="1" qvel="2" ctrl="3"/>
+          <key qpos="1 0 0" qvel="2 0 0" ctrl="3"/>
         </keyframe>
       </mujoco>
     """)
