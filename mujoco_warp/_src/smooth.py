@@ -916,3 +916,8 @@ def tendon(m: Model, d: Data):
     wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
 
   # TODO(team): spatial
+
+
+def subtree_vel(m: Model, d: Data):
+  # TODO(team)
+  pass

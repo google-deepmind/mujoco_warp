@@ -458,6 +458,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ndim=1,
   )
 
+  m.sensor_subtreevel = np.isin(
+    mjm.sensor_type, [types.SensorType.SUBTREELINVEL, types.SensorType.SUBTREEANGMOM]
+  ).any()
+
   return m
 
 

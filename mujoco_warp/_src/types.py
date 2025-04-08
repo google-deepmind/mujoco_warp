@@ -211,11 +211,15 @@ class SensorType(enum.IntEnum):
   Members:
     JOINTPOS: joint position
     JOINTVEL: joint velocity
+    SUBTREELINVEL: subtree linear velocity
+    SUBTREEANGMOM: subtree angular momentum
     ACTUATORFRC: scalar actuator force
   """
 
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   JOINTVEL = mujoco.mjtSensor.mjSENS_JOINTVEL
+  SUBTREELINVEL = mujoco.mjtSensor.mjSENS_SUBTREELINVEL
+  SUBTREEANGMOM = mujoco.mjtSensor.mjSENS_SUBTREEANGMOM
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
 
 
@@ -572,6 +576,7 @@ class Model:
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+    sensor_subtree_vel: subtree{linvel,angmom} sensor flag
   """
 
   nq: int
@@ -739,6 +744,7 @@ class Model:
   sensor_pos_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_vel_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  sensor_subtreevel: bool  # warp only
 
 
 @wp.struct
