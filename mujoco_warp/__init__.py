@@ -27,6 +27,7 @@ from ._src.forward import fwd_actuation as fwd_actuation
 from ._src.forward import fwd_position as fwd_position
 from ._src.forward import fwd_velocity as fwd_velocity
 from ._src.forward import implicit as implicit
+from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import step as step
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data

@@ -623,6 +623,12 @@ def make_data(
   d.qLD_integration = wp.zeros_like(d.qLD)
   d.qLDiagInv_integration = wp.zeros_like(d.qLDiagInv)
   d.act_vel_integration = wp.zeros_like(d.ctrl)
+  d.qpos_t0 = wp.zeros((nworld, mjm.nq), dtype=wp.float32)
+  d.qvel_t0 = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.act_t0 = wp.zeros((nworld, mjm.na), dtype=wp.float32)
+  d.qvel_rk = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.qacc_rk = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.act_dot_rk = wp.zeros((nworld, mjm.na), dtype=wp.float32)
 
   # sweep-and-prune broadphase
   d.sap_geom_sort = wp.zeros((nworld, mjm.ngeom), dtype=wp.vec4)
@@ -871,6 +877,12 @@ def put_data(
   d.qLD_integration = wp.zeros_like(d.qLD)
   d.qLDiagInv_integration = wp.zeros_like(d.qLDiagInv)
   d.act_vel_integration = wp.zeros_like(d.ctrl)
+  d.qpos_t0 = wp.zeros((nworld, mjm.nq), dtype=wp.float32)
+  d.qvel_t0 = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.act_t0 = wp.zeros((nworld, mjm.na), dtype=wp.float32)
+  d.qvel_rk = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.qacc_rk = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.act_dot_rk = wp.zeros((nworld, mjm.na), dtype=wp.float32)
 
   # broadphase sweep and prune
   d.sap_geom_sort = wp.zeros((nworld, mjm.ngeom), dtype=wp.vec4)

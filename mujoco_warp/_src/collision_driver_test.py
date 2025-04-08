@@ -109,6 +109,20 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """
+  _SPHERE_CAPSULE = """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="free"/>
+              <geom pos="0 0 0" size="0.2" type="sphere"/>
+            </body>
+            <body>
+              <joint type="free"/>
+              <geom fromto="0.3 0 0 0.7 0 0" size="0.1" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
 
   @parameterized.parameters(
     (_BOX_PLANE),
@@ -116,6 +130,7 @@ class CollisionTest(parameterized.TestCase):
     (_PLANE_CAPSULE),
     (_CONVEX_CONVEX),
     (_SPHERE_SPHERE),
+    (_SPHERE_CAPSULE),
     (_CAPSULE_CAPSULE),
   )
   def test_collision(self, xml_string):

@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
 from .math import normalize_with_norm
@@ -142,6 +143,29 @@ def sphere_sphere(
     d,
     margin,
     geom_indices,
+  )
+
+
+@wp.func
+def sphere_capsule(
+  sphere: Geom,
+  cap: Geom,
+  worldid: int,
+  d: Data,
+  margin: float,
+  geom_indices: wp.vec2i,
+):
+  """Calculates one contact between a sphere and a capsule."""
+  axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
+  length = cap.size[1]
+  segment = axis * length
+
+  # Find closest point on capsule centerline to sphere center
+  pt = closest_segment_point(cap.pos - segment, cap.pos + segment, sphere.pos)
+
+  # Treat as sphere-sphere collision between sphere and closest point
+  _sphere_sphere(
+    sphere.pos, sphere.size[0], pt, cap.size[0], worldid, d, margin, geom_indices
   )
 
 
@@ -274,6 +298,8 @@ def _primitive_narrowphase(
     plane_box(geom1, geom2, worldid, d, margin, geoms)
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.CAPSULE.value):
     capsule_capsule(geom1, geom2, worldid, d, margin, geoms)
+  elif type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.CAPSULE.value):
+    sphere_capsule(geom1, geom2, worldid, d, margin, geoms)
 
 
 def primitive_narrowphase(m: Model, d: Data):
