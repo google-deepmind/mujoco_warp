@@ -33,7 +33,7 @@ mjd = mujoco.MjData(mjm)
 mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
 mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
 mujoco.mj_forward(mjm, mjd)
-m = mjwarp.put_model(mjm)
+m = mjwarp.put_model(mjm, nworld=NWORLDS)
 d = mjwarp.put_data(mjm, mjd, nworld=NWORLDS, nconmax=131012, njmax=131012 * 4)
 
 

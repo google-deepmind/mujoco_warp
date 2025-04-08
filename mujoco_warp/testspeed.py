@@ -108,7 +108,7 @@ def _main(argv: Sequence[str]):
   # populate some constraints
   mujoco.mj_forward(mjm, mjd)
 
-  m = mjwarp.put_model(mjm)
+  m = mjwarp.put_model(mjm, nworld=_BATCH_SIZE.value)
   m.opt.ls_parallel = _LS_PARALLEL.value
   d = mjwarp.put_data(
     mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value
@@ -125,7 +125,7 @@ def _main(argv: Sequence[str]):
     f"iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations} "
     f"linesearch: {linesearch_name}"
   )
-  print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
+  print(f"Data nworld: {m.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
   print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...")
   jit_time, run_time, trace, ncon, nefc = mjwarp.benchmark(
     mjwarp.__dict__[_FUNCTION.value],
