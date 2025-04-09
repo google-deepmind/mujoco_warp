@@ -74,6 +74,7 @@ def put_model(
 
   m = types.Model()
 
+  with wp.ScopedDevice(device):
     m.nq = mjm.nq
     m.nv = mjm.nv
     m.na = mjm.na
