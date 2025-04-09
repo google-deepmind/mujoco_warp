@@ -171,6 +171,21 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """
+  _CAPSULE_BOX = """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
+            <body pos="0.4 0.2 0.8" euler="0 -45 0" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+            <body pos="0 0 1.5" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
 
   @parameterized.parameters(
     (_BOX_PLANE),
@@ -181,6 +196,7 @@ class CollisionTest(parameterized.TestCase):
     (_SPHERE_CAPSULE),
     (_SPHERE_BOX),
     (_CAPSULE_CAPSULE),
+    (_CAPSULE_BOX),
     (_PLANE_CYLINDER_1),
     (_PLANE_CYLINDER_2),
     (_PLANE_CYLINDER_3),
