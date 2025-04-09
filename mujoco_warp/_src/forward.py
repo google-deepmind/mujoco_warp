@@ -40,6 +40,77 @@ from .warp_util import event_scope
 from .warp_util import kernel
 from .warp_util import kernel_copy
 
+# RK4 tableau
+_RK4_A = [
+  [0.5, 0.0, 0.0],
+  [0.0, 0.5, 0.0],
+  [0.0, 0.0, 1.0],
+]
+_RK4_B = [1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0]
+
+
+@wp.func
+def _integrate_pos(
+  worldId: int,
+  jntid: int,
+  m: Model,
+  qpos_out: array2df,
+  qpos_in: array2df,
+  qvel_in: array2df,
+  qvel_scale: float = 1.0,
+):
+  jnt_type = m.jnt_type[jntid]
+  qpos_adr = m.jnt_qposadr[jntid]
+  dof_adr = m.jnt_dofadr[jntid]
+  qpos = qpos_in[worldId]
+  qpos_o = qpos_out[worldId]
+  qvel = qvel_in[worldId]
+
+  if jnt_type == wp.static(JointType.FREE.value):
+    qpos_pos = wp.vec3(qpos[qpos_adr], qpos[qpos_adr + 1], qpos[qpos_adr + 2])
+    qvel_lin = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale
+
+    qpos_new = qpos_pos + m.opt.timestep * qvel_lin
+
+    qpos_quat = wp.quat(
+      qpos[qpos_adr + 3],
+      qpos[qpos_adr + 4],
+      qpos[qpos_adr + 5],
+      qpos[qpos_adr + 6],
+    )
+    qvel_ang = (
+      wp.vec3(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]) * qvel_scale
+    )
+
+    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, m.opt.timestep)
+
+    qpos_o[qpos_adr] = qpos_new[0]
+    qpos_o[qpos_adr + 1] = qpos_new[1]
+    qpos_o[qpos_adr + 2] = qpos_new[2]
+    qpos_o[qpos_adr + 3] = qpos_quat_new[0]
+    qpos_o[qpos_adr + 4] = qpos_quat_new[1]
+    qpos_o[qpos_adr + 5] = qpos_quat_new[2]
+    qpos_o[qpos_adr + 6] = qpos_quat_new[3]
+
+  elif jnt_type == wp.static(JointType.BALL.value):
+    qpos_quat = wp.quat(
+      qpos[qpos_adr],
+      qpos[qpos_adr + 1],
+      qpos[qpos_adr + 2],
+      qpos[qpos_adr + 3],
+    )
+    qvel_ang = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale
+
+    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, m.opt.timestep)
+
+    qpos_o[qpos_adr] = qpos_quat_new[0]
+    qpos_o[qpos_adr + 1] = qpos_quat_new[1]
+    qpos_o[qpos_adr + 2] = qpos_quat_new[2]
+    qpos_o[qpos_adr + 3] = qpos_quat_new[3]
+
+  else:  # if jnt_type in (JointType.HINGE, JointType.SLIDE):
+    qpos_o[qpos_adr] = qpos[qpos_adr] + m.opt.timestep * qvel[dof_adr] * qvel_scale
+
 
 def _advance(
   m: Model, d: Data, act_dot: wp.array, qacc: wp.array, qvel: Optional[wp.array] = None
@@ -96,55 +167,7 @@ def _advance(
   @kernel
   def integrate_joint_positions(m: Model, d: Data, qvel_in: array2df):
     worldid, jntid = wp.tid()
-
-    jnt_type = m.jnt_type[jntid]
-    qpos_adr = m.jnt_qposadr[jntid]
-    dof_adr = m.jnt_dofadr[jntid]
-    qpos = d.qpos[worldid]
-    qvel = qvel_in[worldid]
-
-    if jnt_type == wp.static(JointType.FREE.value):
-      qpos_pos = wp.vec3(qpos[qpos_adr], qpos[qpos_adr + 1], qpos[qpos_adr + 2])
-      qvel_lin = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2])
-
-      qpos_new = qpos_pos + m.opt.timestep * qvel_lin
-
-      qpos_quat = wp.quat(
-        qpos[qpos_adr + 3],
-        qpos[qpos_adr + 4],
-        qpos[qpos_adr + 5],
-        qpos[qpos_adr + 6],
-      )
-      qvel_ang = wp.vec3(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5])
-
-      qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, m.opt.timestep)
-
-      qpos[qpos_adr] = qpos_new[0]
-      qpos[qpos_adr + 1] = qpos_new[1]
-      qpos[qpos_adr + 2] = qpos_new[2]
-      qpos[qpos_adr + 3] = qpos_quat_new[0]
-      qpos[qpos_adr + 4] = qpos_quat_new[1]
-      qpos[qpos_adr + 5] = qpos_quat_new[2]
-      qpos[qpos_adr + 6] = qpos_quat_new[3]
-
-    elif jnt_type == wp.static(JointType.BALL.value):  # ball joint
-      qpos_quat = wp.quat(
-        qpos[qpos_adr],
-        qpos[qpos_adr + 1],
-        qpos[qpos_adr + 2],
-        qpos[qpos_adr + 3],
-      )
-      qvel_ang = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2])
-
-      qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, m.opt.timestep)
-
-      qpos[qpos_adr] = qpos_quat_new[0]
-      qpos[qpos_adr + 1] = qpos_quat_new[1]
-      qpos[qpos_adr + 2] = qpos_quat_new[2]
-      qpos[qpos_adr + 3] = qpos_quat_new[3]
-
-    else:  # if jnt_type in (JointType.HINGE, JointType.SLIDE):
-      qpos[qpos_adr] = qpos[qpos_adr] + m.opt.timestep * qvel[dof_adr]
+    _integrate_pos(worldid, jntid, m, d.qpos, d.qpos, qvel_in)
 
   # skip if no stateful actuators.
   if m.na:
@@ -259,6 +282,69 @@ def euler(m: Model, d: Data):
     _advance(m, d, d.act_dot, d.qacc_integration)
   else:
     _advance(m, d, d.act_dot, d.qacc)
+
+
+@event_scope
+def rungekutta4(m: Model, d: Data):
+  """Runge-Kutta explicit order 4 integrator."""
+
+  kernel_copy(d.qpos_t0, d.qpos)
+  kernel_copy(d.qvel_t0, d.qvel)
+  kernel_copy(d.act_t0, d.act)
+
+  A, B = _RK4_A, _RK4_B
+
+  def rk_accumulate(d: Data, b: float):
+    """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4"""
+
+    @kernel
+    def _qvel_acc(d: Data, b: float):
+      worldId, tid = wp.tid()
+      d.qvel_rk[worldId, tid] += b * d.qvel[worldId, tid]
+      d.qacc_rk[worldId, tid] += b * d.qacc[worldId, tid]
+
+    @kernel
+    def _act_dot(d: Data, b: float):
+      worldId, tid = wp.tid()
+      d.act_dot_rk[worldId, tid] += b * d.act_dot[worldId, tid]
+
+    wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b])
+    wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b])
+
+  def perturb_state(m: Model, d: Data, a: float):
+    @kernel
+    def _qpos(m: Model, d: Data):
+      """Integrate joint positions"""
+      worldId, jntId = wp.tid()
+      _integrate_pos(worldId, jntId, m, d.qpos, d.qpos_t0, d.qvel, qvel_scale=a)
+
+    @kernel
+    def _act(m: Model, d: Data):
+      worldId, tid = wp.tid()
+      dact_dot = a * d.act_dot[worldId, tid]
+      d.act[worldId, tid] = d.act_t0[worldId, tid] + dact_dot * m.opt.timestep
+
+    @kernel
+    def _qvel(m: Model, d: Data):
+      worldId, tid = wp.tid()
+      dqacc = a * d.qacc[worldId, tid]
+      d.qvel[worldId, tid] = d.qvel_t0[worldId, tid] + dqacc * m.opt.timestep
+
+    wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d])
+    wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d])
+    wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d])
+
+  rk_accumulate(d, B[0])
+  for i in range(3):
+    a, b = float(A[i][i]), B[i + 1]
+    perturb_state(m, d, a)
+    forward(m, d)
+    rk_accumulate(d, b)
+
+  kernel_copy(d.qpos, d.qpos_t0)
+  kernel_copy(d.qvel, d.qvel_t0)
+  kernel_copy(d.act, d.act_t0)
+  _advance(m, d, d.act_dot_rk, d.qacc_rk, d.qvel_rk)
 
 
 @event_scope
@@ -718,8 +804,7 @@ def step(m: Model, d: Data):
   if m.opt.integrator == mujoco.mjtIntegrator.mjINT_EULER:
     euler(m, d)
   elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4:
-    # TODO(team): rungekutta4
-    raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+    rungekutta4(m, d)
   elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
     implicit(m, d)
   else:

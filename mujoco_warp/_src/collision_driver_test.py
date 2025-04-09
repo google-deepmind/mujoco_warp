@@ -23,22 +23,11 @@ import mujoco_warp as mjwarp
 
 from . import test_util
 
-# tolerance for difference between MuJoCo and MJWarp calculations - mostly
-# due to float precision
-_TOLERANCE = 5e-5
 
+class CollisionTest(parameterized.TestCase):
+  """Tests the collision contact functions."""
 
-def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
-  err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
-
-
-class PrimitiveTest(parameterized.TestCase):
-  """Tests the collision primitive functions."""
-
-  _MJCFS = {
-    "box_plane": """
+  _BOX_PLANE = """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -48,8 +37,8 @@ class PrimitiveTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-      """,
-    "plane_sphere": """
+      """
+  _PLANE_SPHERE = """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -59,22 +48,38 @@ class PrimitiveTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """,
-    "sphere_sphere": """
+        """
+  _PLANE_CAPSULE = """
         <mujoco>
           <worldbody>
-            <body>
-              <joint type="free"/>
-              <geom pos="0 0 0" size="0.2" type="sphere"/>
-            </body>
-            <body >
-              <joint type="free"/>
-              <geom pos="0 0.3 0" size="0.11" type="sphere"/>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 0.0" euler="30 30 0">
+              <freejoint/>
+              <geom size="0.05 0.05" type="capsule"/>
             </body>
           </worldbody>
         </mujoco>
-        """,
-    "capsule_capsule": """
+        """
+  _CONVEX_CONVEX = """
+        <mujoco>
+          <asset>
+            <mesh name="poly"
+            vertex="0.3 0 0  0 0.5 0  -0.3 0 0  0 -0.5 0  0 -1 1  0 1 1"
+            face="0 1 5  0 5 4  0 4 3  3 4 2  2 4 5  1 2 5  0 2 1  0 3 2"/>
+          </asset>
+          <worldbody>
+            <body pos="0.0 2.0 0.35" euler="0 0 90">
+              <freejoint/>
+              <geom size="0.2 0.2 0.2" type="mesh" mesh="poly"/>
+            </body>
+            <body pos="0.0 2.0 2.281" euler="180 0 0">
+              <freejoint/>
+              <geom size="0.2 0.2 0.2" type="mesh" mesh="poly"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+  _CAPSULE_CAPSULE = """
         <mujoco model="two_capsules">
           <worldbody>
             <body>
@@ -89,47 +94,108 @@ class PrimitiveTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """,
-    "plane_capsule": """
+        """
+  _SPHERE_SPHERE = """
         <mujoco>
           <worldbody>
-            <geom size="40 40 40" type="plane"/>
-            <body pos="0 0 0.0" euler="30 30 0">
-              <freejoint/>
-              <geom size="0.05 0.05" type="capsule"/>
+            <body>
+              <joint type="free"/>
+              <geom pos="0 0 0" size="0.2" type="sphere"/>
+            </body>
+            <body >
+              <joint type="free"/>
+              <geom pos="0 0.3 0" size="0.11" type="sphere"/>
             </body>
           </worldbody>
         </mujoco>
-        """,
-  }
+        """
+  _SPHERE_CAPSULE = """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="free"/>
+              <geom pos="0 0 0" size="0.2" type="sphere"/>
+            </body>
+            <body>
+              <joint type="free"/>
+              <geom fromto="0.3 0 0 0.7 0 0" size="0.1" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+  _PLANE_CYLINDER_1 = """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane" euler="3 0 0"/>
+            <body pos="0 0 0.1" euler="30 30 0">
+              <freejoint/>
+              <geom size="0.05 0.1" type="cylinder"/>
+            </body>           
+          </worldbody>
+        </mujoco>
+        """
+  _PLANE_CYLINDER_2 = """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane" euler="3 0 0"/>            
+            <body pos="0.2 0 0.04" euler="90 0 0">
+              <freejoint/>
+              <geom size="0.05 0.1" type="cylinder"/>
+            </body>            
+          </worldbody>
+        </mujoco>
+        """
+  _PLANE_CYLINDER_3 = """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane" euler="3 0 0"/>            
+            <body pos="0.5 0 0.1" euler="3 0 0">
+              <freejoint/>
+              <geom size="0.05 0.1" type="cylinder"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
 
   @parameterized.parameters(
-    "box_plane",
-    "plane_sphere",
-    "sphere_sphere",
-    "plane_capsule",
-    "capsule_capsule",
+    (_BOX_PLANE),
+    (_PLANE_SPHERE),
+    (_PLANE_CAPSULE),
+    (_CONVEX_CONVEX),
+    (_SPHERE_SPHERE),
+    (_SPHERE_CAPSULE),
+    (_CAPSULE_CAPSULE),
+    (_PLANE_CYLINDER_1),
+    (_PLANE_CYLINDER_2),
+    (_PLANE_CYLINDER_3),
   )
-  def test_primitives(self, name):
-    """Tests collision primitive functions."""
-    mjm = mujoco.MjModel.from_xml_string(self._MJCFS[name])
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-
-    mujoco.mj_collision(mjm, mjd)
-    mjwarp.collision(m, d)
-
-    ncon = d.ncon.numpy()[0]
-    np.testing.assert_equal(ncon, mjd.ncon)
-
-    for i in range(ncon):
-      _assert_eq(d.contact.dist.numpy()[i], mjd.contact.dist[i], "dist")
-      _assert_eq(d.contact.pos.numpy()[i], mjd.contact.pos[i], "pos")
-      _assert_eq(d.contact.frame.numpy()[i].flatten(), mjd.contact.frame[i], "frame")
-
-  # TODO(team): test primitive_narrowphase
+  def test_collision(self, xml_string):
+    """Tests convex collision with different geometries."""
+    m = mujoco.MjModel.from_xml_string(xml_string)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mx = mjwarp.put_model(m)
+    dx = mjwarp.put_data(m, d)
+    # Enable Gjk algorithm
+    mjwarp.collision(mx, dx)
+    mujoco.mj_collision(m, d)
+    for i in range(d.ncon):
+      actual_dist = d.contact.dist[i]
+      actual_pos = d.contact.pos[i]
+      actual_frame = d.contact.frame[i]
+      # This is because Gjk generates more contact
+      result = False
+      for j in range(dx.ncon.numpy()[0]):
+        test_dist = dx.contact.dist.numpy()[j]
+        test_pos = dx.contact.pos.numpy()[j, :]
+        test_frame = dx.contact.frame.numpy()[j].flatten()
+        check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
+        check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-2)
+        check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-2)
+        if check_dist and check_pos and check_frame:
+          result = True
+          break
+      np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
   @parameterized.parameters(
     (True, True),

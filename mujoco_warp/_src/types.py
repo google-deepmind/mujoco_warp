@@ -164,12 +164,14 @@ class IntegratorType(enum.IntEnum):
 
   Members:
     EULER: semi-implicit Euler
+    RK4: 4th-order Runge Kutta
     IMPLICITFAST: implicit in velocity, no rne derivative
   """
 
   EULER = mujoco.mjtIntegrator.mjINT_EULER
+  RK4 = mujoco.mjtIntegrator.mjINT_RK4
   IMPLICITFAST = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-  # unsupported: RK4, IMPLICIT
+  # unsupported: IMPLICIT
 
 
 class GeomType(enum.IntEnum):
@@ -179,15 +181,24 @@ class GeomType(enum.IntEnum):
     PLANE: plane
     SPHERE: sphere
     CAPSULE: capsule
+    ELLIPSOID: ellipsoid
+    CYLINDER: cylinder
     BOX: box
+    MESH: mesh
   """
 
   PLANE = mujoco.mjtGeom.mjGEOM_PLANE
   SPHERE = mujoco.mjtGeom.mjGEOM_SPHERE
   CAPSULE = mujoco.mjtGeom.mjGEOM_CAPSULE
+  ELLIPSOID = mujoco.mjtGeom.mjGEOM_ELLIPSOID
+  CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
   BOX = mujoco.mjtGeom.mjGEOM_BOX
-  # unsupported: HFIELD, ELLIPSOID, CYLINDER, MESH, SDF
-  # ARROW*, LINE, LINEBOX, FLEX, SKIN, LABEL, TRIANGLE
+  MESH = mujoco.mjtGeom.mjGEOM_MESH
+  # unsupported: HFIELD,
+  # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
+
+
+NUM_GEOM_TYPES = 8
 
 
 class SolverType(enum.IntEnum):
@@ -269,6 +280,10 @@ class Option:
     ls_iterations: maximum number of CG/Newton linesearch iterations
     disableflags: bit flags for disabling standard features
     is_sparse: whether to use sparse representations
+    gjk_iteration_count: number of Gjk iterations in the convex narrowphase
+    epa_iteration_count: number of Epa iterations in the convex narrowphase
+    epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
+    depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
   """
 
@@ -284,6 +299,10 @@ class Option:
   ls_iterations: int
   disableflags: int
   is_sparse: bool
+  gjk_iteration_count: int  # warp only
+  epa_iteration_count: int  # warp only
+  epa_exact_neg_distance: bool  # warp only
+  depth_extension: float  # warp only
   ls_parallel: bool
 
 
@@ -551,6 +570,7 @@ class Model:
     actuator_gear: scale length and transmitted force        (nu, 6)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     actuator_affine_bias_gain: affine bias/gain present
+    condim_max: maximum condim for geoms
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
@@ -719,6 +739,7 @@ class Model:
   actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
   exclude_signature: wp.array(dtype=wp.int32, ndim=1)
   actuator_affine_bias_gain: bool  # warp only
+  condim_max: int  # warp only
   tendon_adr: wp.array(dtype=wp.int32, ndim=1)
   tendon_num: wp.array(dtype=wp.int32, ndim=1)
   wrap_objid: wp.array(dtype=wp.int32, ndim=1)
@@ -836,6 +857,12 @@ class Data:
     njmax: maximum number of constraints                        ()
     rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
     rne_cfrc: arrays used for smooth.rne                        (nworld, nbody, 6)
+    qpos_t0: temporary array for rk4                            (nworld, nq)
+    qvel_t0: temporary array for rk4                            (nworld, nv)
+    act_t0: temporary array for rk4                             (nworld, na)
+    qvel_rk: temporary array for rk4                            (nworld, nv)
+    qacc_rk: temporary array for rk4                            (nworld, nv)
+    act_dot_rk: temporary array for rk4                         (nworld, na)
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
@@ -851,9 +878,11 @@ class Data:
     segment_indices: broadphase context                         (nworld+1,)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (nconmax,)
-    collision_type: collision types from broadphase             (nconmax,)
     collision_worldid: collision world ids from broadphase      (nconmax,)
     ncollision: collision count from broadphase                 ()
+    cacc: com-based acceleration                                (nworld, nbody, 6)
+    cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
+    cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
     ten_length: tendon lengths                                  (ntendon,)
     ten_J: tendon Jacobian                                      (ntendon, nv)
     sensordata: sensor data array                               (nsensordata,)
@@ -917,6 +946,12 @@ class Data:
   njmax: int
   rne_cacc: wp.array(dtype=wp.spatial_vector, ndim=2)
   rne_cfrc: wp.array(dtype=wp.spatial_vector, ndim=2)
+  qpos_t0: wp.array(dtype=wp.float32, ndim=2)
+  qvel_t0: wp.array(dtype=wp.float32, ndim=2)
+  act_t0: wp.array(dtype=wp.float32, ndim=2)
+  qvel_rk: wp.array(dtype=wp.float32, ndim=2)
+  qacc_rk: wp.array(dtype=wp.float32, ndim=2)
+  act_dot_rk: wp.array(dtype=wp.float32, ndim=2)
   qfrc_integration: wp.array(dtype=wp.float32, ndim=2)
   qacc_integration: wp.array(dtype=wp.float32, ndim=2)
   act_vel_integration: wp.array(dtype=wp.float32, ndim=2)
@@ -937,6 +972,11 @@ class Data:
   collision_pair: wp.array(dtype=wp.vec2i, ndim=1)
   collision_worldid: wp.array(dtype=wp.int32, ndim=1)
   ncollision: wp.array(dtype=wp.int32, ndim=1)
+
+  # rne_postconstraint
+  cacc: wp.array(dtype=wp.spatial_vector, ndim=2)
+  cfrc_int: wp.array(dtype=wp.spatial_vector, ndim=2)
+  cfrc_ext: wp.array(dtype=wp.spatial_vector, ndim=2)
 
   # tendon
   ten_length: wp.array(dtype=wp.float32, ndim=2)

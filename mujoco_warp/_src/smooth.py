@@ -18,6 +18,7 @@ import warp as wp
 from packaging import version
 
 from . import math
+from . import support
 from .types import CamLightType
 from .types import Data
 from .types import DisableBit
@@ -557,23 +558,21 @@ def factor_m(m: Model, d: Data):
   factor_i(m, d, d.qM, d.qLD, d.qLDiagInv)
 
 
-@event_scope
-def rne(m: Model, d: Data):
-  """Computes inverse dynamics using Newton-Euler algorithm."""
-  DSBL_GRAVITY = m.opt.disableflags & DisableBit.GRAVITY.value
-
+def _rne_cacc_world(m: Model, d: Data):
   @kernel
-  def cacc_world(m: Model, d: Data):
+  def _cacc_world(m: Model, d: Data):
     worldid = wp.tid()
-    if not DSBL_GRAVITY:
-      frc = -m.opt.gravity
-    else:
-      frc = wp.vec3(0.0)
+    d.cacc[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -m.opt.gravity)
 
-    d.rne_cacc[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), frc)
+  if m.opt.disableflags & DisableBit.GRAVITY:
+    d.cacc.zero_()
+  else:
+    wp.launch(_cacc_world, dim=[d.nworld], inputs=[m, d])
 
+
+def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
   @kernel
-  def cacc_level(
+  def _cacc(
     m: Model,
     d: Data,
     leveladr: int,
@@ -583,54 +582,108 @@ def rne(m: Model, d: Data):
     dofnum = m.body_dofnum[bodyid]
     pid = m.body_parentid[bodyid]
     dofadr = m.body_dofadr[bodyid]
-    local_cacc = d.rne_cacc[worldid, pid]
+    local_cacc = d.cacc[worldid, pid]
     for i in range(dofnum):
       local_cacc += d.cdof_dot[worldid, dofadr + i] * d.qvel[worldid, dofadr + i]
-    d.rne_cacc[worldid, bodyid] = local_cacc
+      if flg_acc:
+        local_cacc += d.cdof[worldid, dofadr + i] * d.qacc[worldid, dofadr + i]
+    d.cacc[worldid, bodyid] = local_cacc
 
+  body_treeadr = m.body_treeadr.numpy()
+  for i in range(len(body_treeadr)):
+    beg = body_treeadr[i]
+    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+    wp.launch(_cacc, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+
+
+def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
   @kernel
-  def frc_fn(d: Data):
+  def _cfrc(d: Data):
     worldid, bodyid = wp.tid()
-    frc = math.inert_vec(d.cinert[worldid, bodyid], d.rne_cacc[worldid, bodyid])
-    frc += math.motion_cross_force(
-      d.cvel[worldid, bodyid],
-      math.inert_vec(d.cinert[worldid, bodyid], d.cvel[worldid, bodyid]),
-    )
-    d.rne_cfrc[worldid, bodyid] = frc
+    bodyid += 1  # skip world body
+    cacc = d.cacc[worldid, bodyid]
+    cinert = d.cinert[worldid, bodyid]
+    cvel = d.cvel[worldid, bodyid]
+    frc = math.inert_vec(cinert, cacc)
+    frc += math.motion_cross_force(cvel, math.inert_vec(cinert, cvel))
 
+    if flg_cfrc_ext:
+      frc -= d.cfrc_ext[worldid, bodyid]
+
+    d.cfrc_int[worldid, bodyid] = frc
+
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d])
+
+
+def _rne_cfrc_backward(m: Model, d: Data):
   @kernel
-  def cfrc_fn(m: Model, d: Data, leveladr: int):
+  def _cfrc(m: Model, d: Data, leveladr: int):
     worldid, nodeid = wp.tid()
     bodyid = m.body_tree[leveladr + nodeid]
     pid = m.body_parentid[bodyid]
-    wp.atomic_add(d.rne_cfrc[worldid], pid, d.rne_cfrc[worldid, bodyid])
+    if bodyid != 0:
+      wp.atomic_add(d.cfrc_int[worldid], pid, d.cfrc_int[worldid, bodyid])
+
+  body_treeadr = m.body_treeadr.numpy()
+  for i in reversed(range(len(body_treeadr))):
+    beg = body_treeadr[i]
+    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+    wp.launch(_cfrc, dim=[d.nworld, end - beg], inputs=[m, d, beg])
+
+
+@event_scope
+def rne(m: Model, d: Data, flg_acc: bool = False):
+  """Computes inverse dynamics using Newton-Euler algorithm."""
 
   @kernel
   def qfrc_bias(m: Model, d: Data):
     worldid, dofid = wp.tid()
     bodyid = m.dof_bodyid[dofid]
     d.qfrc_bias[worldid, dofid] = wp.dot(
-      d.cdof[worldid, dofid], d.rne_cfrc[worldid, bodyid]
+      d.cdof[worldid, dofid], d.cfrc_int[worldid, bodyid]
     )
 
-  wp.launch(cacc_world, dim=[d.nworld], inputs=[m, d], device=m.device)
-
-  body_treeadr = m.body_treeadr.numpy()
-  for i in range(len(body_treeadr)):
-    beg = body_treeadr[i]
-    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(
-      cacc_level, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device
-    )
-
-  wp.launch(frc_fn, dim=[d.nworld, m.nbody], inputs=[d], device=m.device)
-
-  for i in reversed(range(len(body_treeadr))):
-    beg = body_treeadr[i]
-    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(cfrc_fn, dim=[d.nworld, end - beg], inputs=[m, d, beg], device=m.device)
+  _rne_cacc_world(m, d)
+  _rne_cacc_forward(m, d, flg_acc=flg_acc)
+  _rne_cfrc(m, d)
+  _rne_cfrc_backward(m, d)
 
   wp.launch(qfrc_bias, dim=[d.nworld, m.nv], inputs=[m, d], device=m.device)
+
+
+@event_scope
+def rne_postconstraint(m: Model, d: Data):
+  """RNE with complete data: compute cacc, cfrc_ext, cfrc_int."""
+
+  # cfrc_ext = perturb
+  @kernel
+  def _cfrc_ext(m: Model, d: Data):
+    worldid, bodyid = wp.tid()
+
+    if bodyid == 0:
+      d.cfrc_ext[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    else:
+      xfrc_applied = d.xfrc_applied[worldid, bodyid]
+      subtree_com = d.subtree_com[worldid, m.body_rootid[bodyid]]
+      xipos = d.xipos[worldid, bodyid]
+      d.cfrc_ext[worldid, bodyid] = support.transform_force(
+        xfrc_applied, subtree_com - xipos
+      )
+
+  wp.launch(_cfrc_ext, dim=(d.nworld, m.nbody), inputs=[m, d])
+
+  # TODO(team): cfrc_ext += contacts
+  # TODO(team): cfrc_ext += equality
+
+  # forward pass over bodies: compute cacc, cfrc_int
+  _rne_cacc_world(m, d)
+  _rne_cacc_forward(m, d, flg_acc=True)
+
+  # cfrc_body = cinert * cacc + cvel x (cinert * cvel)
+  _rne_cfrc(m, d, flg_cfrc_ext=True)
+
+  # backward pass over bodies: accumulate cfrc_int from children
+  _rne_cfrc_backward(m, d)
 
 
 @event_scope

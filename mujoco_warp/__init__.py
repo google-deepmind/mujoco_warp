@@ -27,6 +27,7 @@ from ._src.forward import fwd_actuation as fwd_actuation
 from ._src.forward import fwd_position as fwd_position
 from ._src.forward import fwd_velocity as fwd_velocity
 from ._src.forward import implicit as implicit
+from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import step as step
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
@@ -43,6 +44,7 @@ from ._src.smooth import crb as crb
 from ._src.smooth import factor_m as factor_m
 from ._src.smooth import kinematics as kinematics
 from ._src.smooth import rne as rne
+from ._src.smooth import rne_postconstraint as rne_postconstraint
 from ._src.smooth import solve_m as solve_m
 from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
