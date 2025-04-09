@@ -308,8 +308,8 @@ def rungekutta4(m: Model, d: Data):
       worldId, tid = wp.tid()
       d.act_dot_rk[worldId, tid] += b * d.act_dot[worldId, tid]
 
-    wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b])
-    wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b])
+    wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b], device=m.device)
+    wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b], device=m.device)
 
   def perturb_state(m: Model, d: Data, a: float):
     @kernel
@@ -330,9 +330,9 @@ def rungekutta4(m: Model, d: Data):
       dqacc = a * d.qacc[worldId, tid]
       d.qvel[worldId, tid] = d.qvel_t0[worldId, tid] + dqacc * m.opt.timestep
 
-    wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d])
-    wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d])
-    wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d], device=m.device)
+    wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d], device=m.device)
+    wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d], device=m.device)
 
   rk_accumulate(d, B[0])
   for i in range(3):

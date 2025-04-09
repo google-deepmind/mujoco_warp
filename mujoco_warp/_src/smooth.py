@@ -567,7 +567,7 @@ def _rne_cacc_world(m: Model, d: Data):
   if m.opt.disableflags & DisableBit.GRAVITY:
     d.cacc.zero_()
   else:
-    wp.launch(_cacc_world, dim=[d.nworld], inputs=[m, d])
+    wp.launch(_cacc_world, dim=[d.nworld], inputs=[m, d], device=m.device)
 
 
 def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
@@ -593,7 +593,7 @@ def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
   for i in range(len(body_treeadr)):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_cacc, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(_cacc, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device)
 
 
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
@@ -612,7 +612,7 @@ def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
 
     d.cfrc_int[worldid, bodyid] = frc
 
-  wp.launch(_cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d])
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d], device=m.device)
 
 
 def _rne_cfrc_backward(m: Model, d: Data):
@@ -628,7 +628,7 @@ def _rne_cfrc_backward(m: Model, d: Data):
   for i in reversed(range(len(body_treeadr))):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_cfrc, dim=[d.nworld, end - beg], inputs=[m, d, beg])
+    wp.launch(_cfrc, dim=[d.nworld, end - beg], inputs=[m, d, beg], device=m.device)
 
 
 @event_scope
@@ -670,7 +670,7 @@ def rne_postconstraint(m: Model, d: Data):
         xfrc_applied, subtree_com - xipos
       )
 
-  wp.launch(_cfrc_ext, dim=(d.nworld, m.nbody), inputs=[m, d])
+  wp.launch(_cfrc_ext, dim=(d.nworld, m.nbody), inputs=[m, d], device=m.device)
 
   # TODO(team): cfrc_ext += contacts
   # TODO(team): cfrc_ext += equality
