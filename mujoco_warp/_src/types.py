@@ -368,6 +368,10 @@ class Constraint:
     mid_alpha: midpoint between lo_alpha and hi_alpha (nworld,)
     cost_candidate: costs associated with step sizes  (nworld, nlsp)
     quad_total_candidate: quad_total for step sizes   (nworld, nlsp, 3)
+    fri: friction of regularized cone                 (nconmax, 6)
+    dm: regularized constraint mass                   (nconmax,)
+    u: friction cone (normal and tangents)            (nconmax, 6)
+    hcone: cone Hessian                               (nconmax, 6, 6)
   """
 
   worldid: wp.array(dtype=wp.int32, ndim=1)
@@ -417,6 +421,16 @@ class Constraint:
   mid_alpha: wp.array(dtype=wp.float32, ndim=1)
   cost_candidate: wp.array(dtype=wp.float32, ndim=2)
   quad_total_candidate: wp.array(dtype=wp.vec3f, ndim=2)
+  # elliptic cone
+  fri: wp.array(dtype=wp.float32, ndim=2)
+  dm: wp.array(dtype=wp.float32, ndim=1)
+  u: wp.array(dtype=wp.float32, ndim=2)
+  hcone: wp.array(dtype=wp.float32, ndim=3)
+  middle_zone: wp.array(dtype=bool, ndim=1)
+  uu: wp.array(dtype=wp.float32, ndim=1)
+  v0: wp.array(dtype=wp.float32, ndim=1)
+  uv: wp.array(dtype=wp.float32, ndim=1)
+  vv: wp.array(dtype=wp.float32, ndim=1)
 
 
 @wp.struct
@@ -570,6 +584,7 @@ class Model:
     actuator_gear: scale length and transmitted force        (nu, 6)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     actuator_affine_bias_gain: affine bias/gain present
+    condim_max: maximum condim
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
@@ -737,6 +752,7 @@ class Model:
   actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
   exclude_signature: wp.array(dtype=wp.int32, ndim=1)
   actuator_affine_bias_gain: bool  # warp only
+  condim_max: int  # warp only
   tendon_adr: wp.array(dtype=wp.int32, ndim=1)
   tendon_num: wp.array(dtype=wp.int32, ndim=1)
   wrap_objid: wp.array(dtype=wp.int32, ndim=1)
@@ -797,6 +813,8 @@ class Data:
 
   Attributes:
     ncon: number of detected contacts                           ()
+    ne: number of equality constraints                          ()
+    nf: number of friction constraints                          ()
     nl: number of limit constraints                             ()
     nefc: number of constraints                                 (nworld,)
     time: simulation time                                       ()
@@ -883,7 +901,9 @@ class Data:
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
-  nl: int
+  ne: int
+  nf: int
+  nl: wp.array(dtype=wp.int32, ndim=1)
   nefc: wp.array(dtype=wp.int32, ndim=1)
   time: float
   qpos: wp.array(dtype=wp.float32, ndim=2)

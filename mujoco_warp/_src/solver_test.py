@@ -69,8 +69,17 @@ class SolverTest(parameterized.TestCase):
 
   @parameterized.parameters(
     (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtSolver.mjSOL_CG, 25, 5, False, False),
+    (mujoco.mjtCone.mjCONE_ELLIPTIC, mujoco.mjtSolver.mjSOL_CG, 25, 5, False, False),
     (
       mujoco.mjtCone.mjCONE_PYRAMIDAL,
+      mujoco.mjtSolver.mjSOL_NEWTON,
+      2,
+      4,
+      False,
+      False,
+    ),
+    (
+      mujoco.mjtCone.mjCONE_ELLIPTIC,
       mujoco.mjtSolver.mjSOL_NEWTON,
       2,
       4,
@@ -137,6 +146,9 @@ class SolverTest(parameterized.TestCase):
   )
   def test_solve_batch(self, cone, solver_, iterations, ls_iterations):
     """Tests solve (batch)."""
+
+    # TODO(team): elliptic
+
     mjm0, mjd0, _, _ = self._load(
       "humanoid/humanoid.xml",
       is_sparse=False,
