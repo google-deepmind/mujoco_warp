@@ -171,9 +171,13 @@ def _advance(
 
   # skip if no stateful actuators.
   if m.na:
-    wp.launch(next_activation, dim=(d.nworld, m.nu), inputs=[m, d, act_dot])
+    wp.launch(
+      next_activation, dim=(d.nworld, m.nu), inputs=[m, d, act_dot], device=m.device
+    )
 
-  wp.launch(advance_velocities, dim=(d.nworld, m.nv), inputs=[m, d, qacc])
+  wp.launch(
+    advance_velocities, dim=(d.nworld, m.nv), inputs=[m, d, qacc], device=m.device
+  )
 
   # advance positions with qvel if given, d.qvel otherwise (semi-implicit)
   if qvel is not None:
@@ -181,7 +185,12 @@ def _advance(
   else:
     qvel_in = d.qvel
 
-  wp.launch(integrate_joint_positions, dim=(d.nworld, m.njnt), inputs=[m, d, qvel_in])
+  wp.launch(
+    integrate_joint_positions,
+    dim=(d.nworld, m.njnt),
+    inputs=[m, d, qvel_in],
+    device=m.device,
+  )
 
   d.time = d.time + m.opt.timestep
 
@@ -204,8 +213,13 @@ def euler(m: Model, d: Data):
         d.qfrc_smooth[worldid, tid] + d.qfrc_constraint[worldid, tid]
       )
 
-    kernel_copy(d.qM_integration, d.qM)
-    wp.launch(add_damping_sum_qfrc_kernel_sparse, dim=(d.nworld, m.nv), inputs=[m, d])
+    kernel_copy(d.qM_integration, d.qM, m.device)
+    wp.launch(
+      add_damping_sum_qfrc_kernel_sparse,
+      dim=(d.nworld, m.nv),
+      inputs=[m, d],
+      device=m.device,
+    )
     smooth.factor_solve_i(
       m,
       d,
@@ -245,7 +259,11 @@ def euler(m: Model, d: Data):
         wp.tile_store(d.qacc_integration[worldid], qacc_tile, offset=(dofid))
 
       wp.launch_tiled(
-        eulerdamp, dim=(d.nworld, size), inputs=[m, d, m.dof_damping, adr], block_dim=32
+        eulerdamp,
+        dim=(d.nworld, size),
+        inputs=[m, d, m.dof_damping, adr],
+        block_dim=32,
+        device=m.device,
       )
 
     qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -290,8 +308,8 @@ def rungekutta4(m: Model, d: Data):
       worldId, tid = wp.tid()
       d.act_dot_rk[worldId, tid] += b * d.act_dot[worldId, tid]
 
-    wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b])
-    wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b])
+    wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b], device=m.device)
+    wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b], device=m.device)
 
   def perturb_state(m: Model, d: Data, a: float):
     @kernel
@@ -312,9 +330,9 @@ def rungekutta4(m: Model, d: Data):
       dqacc = a * d.qacc[worldId, tid]
       d.qvel[worldId, tid] = d.qvel_t0[worldId, tid] + dqacc * m.opt.timestep
 
-    wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d])
-    wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d])
-    wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d], device=m.device)
+    wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d], device=m.device)
+    wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d], device=m.device)
 
   rk_accumulate(d, B[0])
   for i in range(3):
@@ -457,6 +475,7 @@ def implicit(m: Model, d: Data):
         dim=(d.nworld, size),
         inputs=[m, d, damping, adr],
         block_dim=block_dim,
+        device=m.device,
       )
 
     qderiv_tilesize_nv = m.actuator_moment_tilesize_nv.numpy()
@@ -479,6 +498,7 @@ def implicit(m: Model, d: Data):
         actuator_bias_gain_vel,
         dim=(d.nworld, m.nu),
         inputs=[m, d],
+        device=m.device,
       )
 
     qderiv_actuator_damping_fused(m, d, m.dof_damping)
@@ -522,7 +542,9 @@ def fwd_velocity(m: Model, d: Data):
       qvel = d.qvel[worldid]
       wp.atomic_add(d.actuator_velocity[worldid], actid, moment[dofid] * qvel[dofid])
 
-    wp.launch(_actuator_velocity, dim=(d.nworld, m.nu, m.nv), inputs=[d])
+    wp.launch(
+      _actuator_velocity, dim=(d.nworld, m.nu, m.nv), inputs=[d], device=m.device
+    )
   else:
 
     def actuator_velocity(
@@ -561,6 +583,7 @@ def fwd_velocity(m: Model, d: Data):
           d.qvel.reshape(d.qvel.shape + (1,)),
         ],
         block_dim=32,
+        device=m.device,
       )
 
     actuator_moment_tilesize_nu = m.actuator_moment_tilesize_nu.numpy()
@@ -655,7 +678,13 @@ def fwd_actuation(m: Model, d: Data):
         s = wp.clamp(s, r[0], r[1])
       qfrc[worldid, vid] = s
 
-  wp.launch(_force, dim=[d.nworld, m.nu], inputs=[m, d], outputs=[d.actuator_force])
+  wp.launch(
+    _force,
+    dim=[d.nworld, m.nu],
+    inputs=[m, d],
+    outputs=[d.actuator_force],
+    device=m.device,
+  )
 
   if m.opt.is_sparse:
     # TODO(team): sparse version
@@ -665,6 +694,7 @@ def fwd_actuation(m: Model, d: Data):
       dim=(d.nworld, m.nv),
       inputs=[m, d.actuator_moment, d.actuator_force],
       outputs=[d.qfrc_actuator],
+      device=m.device,
     )
 
   else:
@@ -706,6 +736,7 @@ def fwd_actuation(m: Model, d: Data):
           d.actuator_force.reshape(d.actuator_force.shape + (1,)),
         ],
         block_dim=32,
+        device=m.device,
       )
 
     qderiv_tilesize_nu = m.actuator_moment_tilesize_nu.numpy()
@@ -722,7 +753,7 @@ def fwd_actuation(m: Model, d: Data):
           beg, end - beg, int(qderiv_tilesize_nu[i]), int(qderiv_tilesize_nv[i])
         )
 
-    wp.launch(_qfrc_limited, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(_qfrc_limited, dim=(d.nworld, m.nv), inputs=[m, d], device=m.device)
 
   # TODO actuator-level gravity compensation, skip if added as passive force
 
@@ -741,7 +772,7 @@ def fwd_acceleration(m: Model, d: Data):
       + d.qfrc_applied[worldid, dofid]
     )
 
-  wp.launch(_qfrc_smooth, dim=(d.nworld, m.nv), inputs=[d])
+  wp.launch(_qfrc_smooth, dim=(d.nworld, m.nv), inputs=[d], device=m.device)
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
   smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
@@ -760,7 +791,7 @@ def forward(m: Model, d: Data):
   sensor.sensor_acc(m, d)
 
   if d.njmax == 0:
-    kernel_copy(d.qacc, d.qacc_smooth)
+    kernel_copy(d.qacc, d.qacc_smooth, m.device)
   else:
     solver.solve(m, d)
 

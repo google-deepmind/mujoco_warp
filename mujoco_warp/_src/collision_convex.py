@@ -777,4 +777,4 @@ def gjk_narrowphase(m: Model, d: Data):
       )
 
   for collision_kernel in _collision_kernels.values():
-    wp.launch(collision_kernel, dim=d.nconmax, inputs=[m, d])
+    wp.launch(collision_kernel, dim=d.nconmax, inputs=[m, d], device=m.device)

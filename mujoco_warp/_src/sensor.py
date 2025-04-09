@@ -223,7 +223,9 @@ def sensor_pos(m: Model, d: Data):
   if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
-  wp.launch(_sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), inputs=[m, d])
+  wp.launch(
+    _sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), inputs=[m, d], device=m.device
+  )
 
 
 @wp.func
@@ -303,7 +305,9 @@ def sensor_vel(m: Model, d: Data):
   if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
-  wp.launch(_sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size), inputs=[m, d])
+  wp.launch(
+    _sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size), inputs=[m, d], device=m.device
+  )
 
 
 @wp.func
@@ -336,4 +340,6 @@ def sensor_acc(m: Model, d: Data):
   if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
-  wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])
+  wp.launch(
+    _sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d], device=m.device
+  )

@@ -657,6 +657,7 @@ class Model:
   nlsp: int  # warp only
   opt: Option
   stat: Statistic
+  device: wp.context.Device  # warp only
   qpos0: wp.array(dtype=wp.float32, ndim=1)
   qpos_spring: wp.array(dtype=wp.float32, ndim=1)
   body_tree: wp.array(dtype=wp.int32, ndim=1)  # warp only
@@ -899,8 +900,6 @@ class Data:
     nworld: number of worlds                                    ()
     nconmax: maximum number of contacts                         ()
     njmax: maximum number of constraints                        ()
-    rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
-    rne_cfrc: arrays used for smooth.rne                        (nworld, nbody, 6)
     qpos_t0: temporary array for rk4                            (nworld, nq)
     qvel_t0: temporary array for rk4                            (nworld, nv)
     act_t0: temporary array for rk4                             (nworld, na)

@@ -134,19 +134,23 @@ def kinematics(m: Model, d: Data):
       math.mul_quat(xquat, m.site_quat[siteid])
     )
 
-  wp.launch(_root, dim=(d.nworld), inputs=[m, d])
+  wp.launch(_root, dim=(d.nworld), inputs=[m, d], device=m.device)
 
   body_treeadr = m.body_treeadr.numpy()
   for i in range(1, len(body_treeadr)):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device)
 
   if m.ngeom:
-    wp.launch(geom_local_to_global, dim=(d.nworld, m.ngeom), inputs=[m, d])
+    wp.launch(
+      geom_local_to_global, dim=(d.nworld, m.ngeom), inputs=[m, d], device=m.device
+    )
 
   if m.nsite:
-    wp.launch(site_local_to_global, dim=(d.nworld, m.nsite), inputs=[m, d])
+    wp.launch(
+      site_local_to_global, dim=(d.nworld, m.nsite), inputs=[m, d], device=m.device
+    )
 
 
 @event_scope
@@ -235,18 +239,20 @@ def com_pos(m: Model, d: Data):
     elif jnt_type == wp.static(JointType.HINGE.value):  # hinge
       res[dofid] = wp.spatial_vector(xaxis, wp.cross(xaxis, offset))
 
-  wp.launch(subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m, d])
+  wp.launch(subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m, d], device=m.device)
 
   body_treeadr = m.body_treeadr.numpy()
 
   for i in reversed(range(len(body_treeadr))):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(subtree_com_acc, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(
+      subtree_com_acc, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device
+    )
 
-  wp.launch(subtree_div, dim=(d.nworld, m.nbody), inputs=[m, d])
-  wp.launch(cinert, dim=(d.nworld, m.nbody), inputs=[m, d])
-  wp.launch(cdof, dim=(d.nworld, m.njnt), inputs=[m, d])
+  wp.launch(subtree_div, dim=(d.nworld, m.nbody), inputs=[m, d], device=m.device)
+  wp.launch(cinert, dim=(d.nworld, m.nbody), inputs=[m, d], device=m.device)
+  wp.launch(cdof, dim=(d.nworld, m.njnt), inputs=[m, d], device=m.device)
 
 
 @event_scope
@@ -338,18 +344,22 @@ def camlight(m: Model, d: Data):
     d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
 
   if m.ncam > 0:
-    wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
-    wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+    wp.launch(
+      cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d], device=m.device
+    )
+    wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d], device=m.device)
   if m.nlight > 0:
-    wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
-    wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
+    wp.launch(
+      light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d], device=m.device
+    )
+    wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d], device=m.device)
 
 
 @event_scope
 def crb(m: Model, d: Data):
   """Composite rigid body inertia algorithm."""
 
-  kernel_copy(d.crb, d.cinert)
+  kernel_copy(d.crb, d.cinert, m.device)
 
   @kernel
   def crb_accumulate(m: Model, d: Data, leveladr: int):
@@ -405,13 +415,15 @@ def crb(m: Model, d: Data):
   for i in reversed(range(len(body_treeadr))):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(crb_accumulate, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(
+      crb_accumulate, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device
+    )
 
   d.qM.zero_()
   if m.opt.is_sparse:
-    wp.launch(qM_sparse, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(qM_sparse, dim=(d.nworld, m.nv), inputs=[m, d], device=m.device)
   else:
-    wp.launch(qM_dense, dim=(d.nworld, m.nv), inputs=[m, d])
+    wp.launch(qM_dense, dim=(d.nworld, m.nv), inputs=[m, d], device=m.device)
 
 
 def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
@@ -436,7 +448,7 @@ def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: arra
     worldid, dofid = wp.tid()
     D[worldid, dofid] = 1.0 / L[worldid, 0, m.dof_Madr[dofid]]
 
-  kernel_copy(L, M)
+  kernel_copy(L, M, m.device)
 
   qLD_update_treeadr = m.qLD_update_treeadr.numpy()
 
@@ -445,9 +457,9 @@ def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: arra
       beg, end = qLD_update_treeadr[i], m.qLD_update_tree.shape[0]
     else:
       beg, end = qLD_update_treeadr[i], qLD_update_treeadr[i + 1]
-    wp.launch(qLD_acc, dim=(d.nworld, end - beg), inputs=[m, beg, L])
+    wp.launch(qLD_acc, dim=(d.nworld, end - beg), inputs=[m, beg, L], device=m.device)
 
-  wp.launch(qLDiag_div, dim=(d.nworld, m.nv), inputs=[m, L, D])
+  wp.launch(qLDiag_div, dim=(d.nworld, m.nv), inputs=[m, L, D], device=m.device)
 
 
 def _factor_i_sparse(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
@@ -483,7 +495,7 @@ def _factor_i_sparse(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
     worldid, ind = wp.tid()
     L[worldid, 0, ind] = M[worldid, 0, mapM2M[ind]]
 
-  wp.launch(copy_CSR, dim=(d.nworld, m.nM), inputs=[L, M, m.mapM2M])
+  wp.launch(copy_CSR, dim=(d.nworld, m.nM), inputs=[L, M, m.mapM2M], device=m.device)
 
   qLD_update_treeadr = m.qLD_update_treeadr.numpy()
 
@@ -492,9 +504,9 @@ def _factor_i_sparse(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
       beg, end = qLD_update_treeadr[i], m.qLD_update_tree.shape[0]
     else:
       beg, end = qLD_update_treeadr[i], qLD_update_treeadr[i + 1]
-    wp.launch(qLD_acc, dim=(d.nworld, end - beg), inputs=[m, beg, L])
+    wp.launch(qLD_acc, dim=(d.nworld, end - beg), inputs=[m, beg, L], device=m.device)
 
-  wp.launch(qLDiag_div, dim=(d.nworld, m.nv), inputs=[m, L, D])
+  wp.launch(qLDiag_div, dim=(d.nworld, m.nv), inputs=[m, L, D], device=m.device)
 
 
 def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
@@ -512,10 +524,14 @@ def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
         M[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
       )
       L_tile = wp.tile_cholesky(M_tile)
-      wp.tile_store(L[worldid], L_tile, offset=(dofid, dofid))
+      wp.tile_store(L[worldid], L_tile, offset=(dofid, dofid), device=m.device)
 
     wp.launch_tiled(
-      cholesky, dim=(d.nworld, size), inputs=[m, adr, M, L], block_dim=block_dim
+      cholesky,
+      dim=(d.nworld, size),
+      inputs=[m, adr, M, L],
+      block_dim=block_dim,
+      device=m.device,
     )
 
   qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -551,7 +567,7 @@ def _rne_cacc_world(m: Model, d: Data):
   if m.opt.disableflags & DisableBit.GRAVITY:
     d.cacc.zero_()
   else:
-    wp.launch(_cacc_world, dim=[d.nworld], inputs=[m, d])
+    wp.launch(_cacc_world, dim=[d.nworld], inputs=[m, d], device=m.device)
 
 
 def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
@@ -577,7 +593,7 @@ def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
   for i in range(len(body_treeadr)):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_cacc, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(_cacc, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device)
 
 
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
@@ -596,7 +612,7 @@ def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
 
     d.cfrc_int[worldid, bodyid] = frc
 
-  wp.launch(_cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d])
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d], device=m.device)
 
 
 def _rne_cfrc_backward(m: Model, d: Data):
@@ -612,7 +628,7 @@ def _rne_cfrc_backward(m: Model, d: Data):
   for i in reversed(range(len(body_treeadr))):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_cfrc, dim=[d.nworld, end - beg], inputs=[m, d, beg])
+    wp.launch(_cfrc, dim=[d.nworld, end - beg], inputs=[m, d, beg], device=m.device)
 
 
 @event_scope
@@ -632,7 +648,7 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   _rne_cfrc(m, d)
   _rne_cfrc_backward(m, d)
 
-  wp.launch(qfrc_bias, dim=[d.nworld, m.nv], inputs=[m, d])
+  wp.launch(qfrc_bias, dim=[d.nworld, m.nv], inputs=[m, d], device=m.device)
 
 
 @event_scope
@@ -654,7 +670,7 @@ def rne_postconstraint(m: Model, d: Data):
         xfrc_applied, subtree_com - xipos
       )
 
-  wp.launch(_cfrc_ext, dim=(d.nworld, m.nbody), inputs=[m, d])
+  wp.launch(_cfrc_ext, dim=(d.nworld, m.nbody), inputs=[m, d], device=m.device)
 
   # TODO(team): cfrc_ext += contacts
   # TODO(team): cfrc_ext += equality
@@ -737,6 +753,7 @@ def transmission(m: Model, d: Data):
     dim=[d.nworld, m.nu],
     inputs=[m, d],
     outputs=[d.actuator_length, d.actuator_moment],
+    device=m.device,
   )
 
 
@@ -801,13 +818,13 @@ def com_vel(m: Model, d: Data):
 
     d.cvel[worldid, bodyid] = cvel
 
-  wp.launch(_root, dim=(d.nworld, 6), inputs=[d])
+  wp.launch(_root, dim=(d.nworld, 6), inputs=[d], device=m.device)
 
   body_treeadr = m.body_treeadr.numpy()
   for i in range(1, len(body_treeadr)):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg], device=m.device)
 
 
 def _solve_LD_sparse(
@@ -834,7 +851,7 @@ def _solve_LD_sparse(
     i, k, Madr_ki = update[0], update[1], update[2]
     wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
 
-  kernel_copy(x, y)
+  kernel_copy(x, y, m.device)
 
   qLD_update_treeadr = m.qLD_update_treeadr.numpy()
 
@@ -843,16 +860,20 @@ def _solve_LD_sparse(
       beg, end = qLD_update_treeadr[i], m.qLD_update_tree.shape[0]
     else:
       beg, end = qLD_update_treeadr[i], qLD_update_treeadr[i + 1]
-    wp.launch(x_acc_up, dim=(d.nworld, end - beg), inputs=[m, L, x, beg])
+    wp.launch(
+      x_acc_up, dim=(d.nworld, end - beg), inputs=[m, L, x, beg], device=m.device
+    )
 
-  wp.launch(qLDiag_mul, dim=(d.nworld, m.nv), inputs=[D, x])
+  wp.launch(qLDiag_mul, dim=(d.nworld, m.nv), inputs=[D, x], device=m.device)
 
   for i in range(len(qLD_update_treeadr)):
     if i == len(qLD_update_treeadr) - 1:
       beg, end = qLD_update_treeadr[i], m.qLD_update_tree.shape[0]
     else:
       beg, end = qLD_update_treeadr[i], qLD_update_treeadr[i + 1]
-    wp.launch(x_acc_down, dim=(d.nworld, end - beg), inputs=[m, L, x, beg])
+    wp.launch(
+      x_acc_down, dim=(d.nworld, end - beg), inputs=[m, L, x, beg], device=m.device
+    )
 
 
 def _solve_LD_dense(m: Model, d: Data, L: array3df, x: array2df, y: array2df):
@@ -874,7 +895,11 @@ def _solve_LD_dense(m: Model, d: Data, L: array3df, x: array2df, y: array2df):
       wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
     wp.launch_tiled(
-      cho_solve, dim=(d.nworld, size), inputs=[m, L, x, y, adr], block_dim=block_dim
+      cho_solve,
+      dim=(d.nworld, size),
+      inputs=[m, L, x, y, adr],
+      block_dim=block_dim,
+      device=m.device,
     )
 
   qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -919,7 +944,11 @@ def _factor_solve_i_dense(m: Model, d: Data, M: array3df, x: array2df, y: array2
       wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
     wp.launch_tiled(
-      cholesky, dim=(d.nworld, size), inputs=[m, adr, M, x, y], block_dim=block_dim
+      cholesky,
+      dim=(d.nworld, size),
+      inputs=[m, adr, M, x, y],
+      block_dim=block_dim,
+      device=m.device,
     )
 
   qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -968,6 +997,8 @@ def tendon(m: Model, d: Data):
       # add to moment
       d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_jnt_adr]] = prm
 
-    wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
+    wp.launch(
+      _joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d], device=m.device
+    )
 
   # TODO(team): spatial

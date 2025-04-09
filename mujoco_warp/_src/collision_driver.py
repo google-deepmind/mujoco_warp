@@ -360,6 +360,7 @@ def sap_broadphase(m: Model, d: Data):
     kernel=broadphase_project_spheres_onto_sweep_direction_kernel,
     dim=(d.nworld, m.ngeom),
     inputs=[m, d, direction],
+    device=m.device,
   )
 
   tile_sort_available = False
@@ -368,7 +369,11 @@ def sap_broadphase(m: Model, d: Data):
   if tile_sort_available:
     segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
     wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[m, d], block_dim=128
+      kernel=segmented_sort_kernel,
+      dim=(d.nworld),
+      inputs=[m, d],
+      block_dim=128,
+      device=m.device,
     )
     print("tile sort available")
   elif segmented_sort_available:
@@ -385,12 +390,10 @@ def sap_broadphase(m: Model, d: Data):
 
       # Create temporary arrays for sorting
       temp_box_projections_lower = wp.zeros(
-        m.ngeom * 2,
-        dtype=d.sap_projection_lower.dtype,
+        m.ngeom * 2, dtype=d.sap_projection_lower.dtype, device=m.device
       )
       temp_box_sorting_indexer = wp.zeros(
-        m.ngeom * 2,
-        dtype=d.sap_sort_index.dtype,
+        m.ngeom * 2, dtype=d.sap_sort_index.dtype, device=m.device
       )
 
       # Copy data to temporary arrays
@@ -434,12 +437,14 @@ def sap_broadphase(m: Model, d: Data):
     kernel=reorder_bounding_spheres_kernel,
     dim=(d.nworld, m.ngeom),
     inputs=[m, d],
+    device=m.device,
   )
 
   wp.launch(
     kernel=sap_broadphase_prepare_kernel,
     dim=(d.nworld, m.ngeom),
     inputs=[m, d],
+    device=m.device,
   )
 
   # The scan (scan = cumulative sum, either inclusive or exclusive depending on the last argument) is used for load balancing among the threads
@@ -452,6 +457,7 @@ def sap_broadphase(m: Model, d: Data):
     kernel=sap_broadphase_kernel,
     dim=num_sweep_threads,
     inputs=[m, d, num_sweep_threads, filter_parent],
+    device=m.device,
   )
 
   return d
@@ -510,7 +516,10 @@ def nxn_broadphase(m: Model, d: Data):
       _add_geom_pair(m, d, geom1, geom2, worldid)
 
   wp.launch(
-    _nxn_broadphase, dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2), inputs=[m, d]
+    _nxn_broadphase,
+    dim=(d.nworld, m.ngeom * (m.ngeom - 1) // 2),
+    inputs=[m, d],
+    device=m.device,
   )
 
 
@@ -519,6 +528,7 @@ def get_contact_solver_params(m: Model, d: Data):
     get_contact_solver_params_kernel,
     dim=[d.nconmax],
     inputs=[m, d],
+    device=m.device,
   )
 
   # TODO(team): do we need condim sorting, deepest penetrating contact here?
