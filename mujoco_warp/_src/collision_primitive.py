@@ -641,14 +641,13 @@ def capsule_box(
         ax1 = 0
         ax2 = 1
 
-      if axis[ax]*axis[ax] > 0.5:  # second point along the edge of the box
+      if axis[ax] * axis[ax] > 0.5:  # second point along the edge of the box
         m = 2.0 * box.size[ax] / wp.abs(halfaxis[ax])
         secondpos = min(1.0 - wp.float32(mul) * bestsegmentpos, m)
       else:  # second point along a face of the box
         # check for overshoot again
         m = 2.0 * min(
-          box.size[ax1] / wp.abs(halfaxis[ax1]),
-          box.size[ax2] / wp.abs(halfaxis[ax2])
+          box.size[ax1] / wp.abs(halfaxis[ax1]), box.size[ax2] / wp.abs(halfaxis[ax2])
         )
         secondpos = -min(1.0 + wp.float32(mul) * bestsegmentpos, m)
       secondpos *= wp.float32(mul)
@@ -745,7 +744,15 @@ def capsule_box(
     s2_pos_l = pos + halfaxis * (secondpos + bestsegmentpos)
     s2_pos_g = box.rot @ s2_pos_l + box.pos
     _sphere_box_raw(
-      s2_pos_g, cap.size[0], box.pos, box.rot, box.size, margin, geom_indices, worldid, d
+      s2_pos_g,
+      cap.size[0],
+      box.pos,
+      box.rot,
+      box.size,
+      margin,
+      geom_indices,
+      worldid,
+      d,
     )
 
 
