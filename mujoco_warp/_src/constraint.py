@@ -17,8 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
+from . import math
 from . import types
 from .warp_util import event_scope
+from .warp_util import kernel_copy
 
 
 @wp.func
@@ -124,7 +126,8 @@ def _efc_limit_slide_hinge(
   active = pos < 0
 
   if active:
-    efcid = wp.atomic_add(d.nefc, 0, 1)
+    lid = wp.atomic_add(d.nl, 0, 1)
+    efcid = lid + d.nefc[0]
     d.efc.worldid[efcid] = worldid
 
     dofadr = m.jnt_dofadr[jntid]
@@ -143,6 +146,58 @@ def _efc_limit_slide_hinge(
       m.jnt_solref[jntid],
       m.jnt_solimp[jntid],
       m.jnt_margin[jntid],
+      refsafe,
+      Jqvel,
+    )
+
+
+@wp.kernel
+def _efc_limit_ball(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  worldid, jntlimitedid = wp.tid()
+  jntid = m.jnt_limited_ball_adr[jntlimitedid]
+  qposadr = m.jnt_qposadr[jntid]
+
+  qpos = d.qpos[worldid]
+  jnt_quat = wp.quat(
+    qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3]
+  )
+  axis_angle = math.quat_to_vel(jnt_quat)
+  axis, angle = math.normalize_with_norm(axis_angle)
+  jnt_margin = m.jnt_margin[jntid]
+  jnt_range = m.jnt_range[jntid]
+
+  pos = wp.max(jnt_range[0], jnt_range[1]) - angle - jnt_margin
+  active = pos < 0
+
+  if active:
+    lid = wp.atomic_add(d.nl, 0, 1)
+    efcid = lid + d.nefc[0]
+    d.efc.worldid[efcid] = worldid
+
+    dofadr = m.jnt_dofadr[jntid]
+
+    d.efc.J[efcid, dofadr + 0] = -axis[0]
+    d.efc.J[efcid, dofadr + 1] = -axis[1]
+    d.efc.J[efcid, dofadr + 2] = -axis[2]
+
+    Jqvel = -axis[0] * d.qvel[worldid, dofadr + 0]
+    Jqvel -= axis[1] * d.qvel[worldid, dofadr + 1]
+    Jqvel -= axis[2] * d.qvel[worldid, dofadr + 2]
+
+    _update_efc_row(
+      m,
+      d,
+      efcid,
+      pos,
+      pos,
+      m.dof_invweight0[dofadr],
+      m.jnt_solref[jntid],
+      m.jnt_solimp[jntid],
+      jnt_margin,
       refsafe,
       Jqvel,
     )
@@ -337,20 +392,38 @@ def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
   d.nefc.zero_()
+  d.nl.zero_()
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
     d.efc.J.zero_()
 
     refsafe = not m.opt.disableflags & types.DisableBit.REFSAFE.value
 
-    if not (m.opt.disableflags & types.DisableBit.LIMIT.value) and (
-      m.jnt_limited_slide_hinge_adr.size != 0
-    ):
-      wp.launch(
-        _efc_limit_slide_hinge,
-        dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
-        inputs=[m, d, refsafe],
-      )
+    # limit
+    if not (m.opt.disableflags & types.DisableBit.LIMIT.value):
+      limit_slide_hinge = m.jnt_limited_slide_hinge_adr.size > 0
+      if limit_slide_hinge:
+        wp.launch(
+          _efc_limit_slide_hinge,
+          dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
+          inputs=[m, d, refsafe],
+        )
+
+      limit_ball = m.jnt_limited_ball_adr.size > 0
+      if limit_ball:
+        wp.launch(
+          _efc_limit_ball,
+          dim=(d.nworld, m.jnt_limited_ball_adr.size),
+          inputs=[m, d, refsafe],
+        )
+
+      if limit_slide_hinge or limit_ball:
+
+        @wp.kernel
+        def _update_nefc(d: types.Data):
+          d.nefc[0] += d.nl[0]
+
+        wp.launch(_update_nefc, dim=(1,), inputs=[d])
 
     # contact
     if not (m.opt.disableflags & types.DisableBit.CONTACT.value):

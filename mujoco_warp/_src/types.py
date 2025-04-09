@@ -503,6 +503,7 @@ class Model:
     jnt_actfrcrange: range of total actuator force           (njnt, 2)
     jnt_margin: min distance for limit detection             (njnt,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
+    jnt_limited_ball_adr: limited/ball jntadr
     dof_bodyid: id of dof's body                             (nv,)
     dof_jntid: id of dof's joint                             (nv,)
     dof_parentid: id of dof's parent; -1: none               (nv,)
@@ -671,6 +672,7 @@ class Model:
   jnt_actfrcrange: wp.array(dtype=wp.vec2, ndim=1)
   jnt_margin: wp.array(dtype=wp.float32, ndim=1)
   jnt_limited_slide_hinge_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  jnt_limited_ball_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   dof_bodyid: wp.array(dtype=wp.int32, ndim=1)
   dof_jntid: wp.array(dtype=wp.int32, ndim=1)
   dof_parentid: wp.array(dtype=wp.int32, ndim=1)
@@ -888,7 +890,7 @@ class Data:
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
-  nl: int
+  nl: wp.array(dtype=wp.int32, ndim=1)
   nefc: wp.array(dtype=wp.int32, ndim=1)
   time: float
   qpos: wp.array(dtype=wp.float32, ndim=2)
