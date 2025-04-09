@@ -927,9 +927,6 @@ def put_data(
     d.cfrc_int = wp.array(tile(mjd.cfrc_int), dtype=wp.spatial_vector, ndim=2)
     d.cfrc_ext = wp.array(tile(mjd.cfrc_ext), dtype=wp.spatial_vector, ndim=2)
 
-    d.rne_cacc = wp.zeros(shape=(d.nworld, mjm.nbody), dtype=wp.spatial_vector)
-    d.rne_cfrc = wp.zeros(shape=(d.nworld, mjm.nbody), dtype=wp.spatial_vector)
-
     # tendon
     d.ten_length = wp.array(tile(mjd.ten_length), dtype=wp.float32, ndim=2)
 

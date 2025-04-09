@@ -855,8 +855,6 @@ class Data:
     nworld: number of worlds                                    ()
     nconmax: maximum number of contacts                         ()
     njmax: maximum number of constraints                        ()
-    rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
-    rne_cfrc: arrays used for smooth.rne                        (nworld, nbody, 6)
     qpos_t0: temporary array for rk4                            (nworld, nq)
     qvel_t0: temporary array for rk4                            (nworld, nv)
     act_t0: temporary array for rk4                             (nworld, na)
