@@ -211,7 +211,8 @@ class SmoothTest(parameterized.TestCase):
 
   def test_fixed_tendon(self):
     """Tests fixed tendon."""
-    _FIXED_TENDON = """
+    mjm, mjd, m, d = test_util.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <body>
@@ -238,15 +239,9 @@ class SmoothTest(parameterized.TestCase):
           <key qpos=".2 .4 .6"/>
         </keyframe>
       </mujoco>
-    """
-    mjm = mujoco.MjModel.from_xml_string(_FIXED_TENDON)
-    mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
+    """,
+      keyframe=0,
+    )
 
     for arr in (d.ten_length, d.ten_J):
       arr.zero_()

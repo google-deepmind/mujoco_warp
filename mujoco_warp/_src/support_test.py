@@ -74,7 +74,7 @@ class SupportTest(parameterized.TestCase):
 
   def test_make_put_data(self):
     """Tests that make_put_data and put_data are producing the same shapes for all warp arrays."""
-    mjm, mjd, m, d = test_util.fixture("pendula.xml")
+    mjm, _, _, d = test_util.fixture("pendula.xml")
     md = mjwarp.make_data(mjm)
 
     # same number of fields

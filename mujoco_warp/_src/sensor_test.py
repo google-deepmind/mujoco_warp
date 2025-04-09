@@ -41,7 +41,8 @@ def _assert_eq(a, b, name):
 class SensorTest(parameterized.TestCase):
   def test_sensor(self):
     """Test sensors."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_util.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <body name="body0" pos="0.1 0.2 0.3" quat=".05 .1 .15 .2">
@@ -113,14 +114,8 @@ class SensorTest(parameterized.TestCase):
           <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2" ctrl="3"/>
         </keyframe>
       </mujoco>
-    """)
-
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
+    """
+    )
 
     d.sensordata.zero_()
 

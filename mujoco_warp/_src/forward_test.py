@@ -24,6 +24,8 @@ from etils import epath
 
 import mujoco_warp as mjwarp
 
+from . import test_util
+
 wp.config.verify_cuda = True
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
@@ -38,21 +40,8 @@ def _assert_eq(a, b, name):
 
 
 class ForwardTest(parameterized.TestCase):
-  def _load(self, fname: str, is_sparse: bool = True):
-    path = epath.resource_path("mujoco_warp") / "test_data" / fname
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
-    mjm.opt.jacobian = is_sparse
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 1)  # reset to stand_on_left_leg
-    mjd.qvel = np.random.uniform(low=-0.01, high=0.01, size=mjd.qvel.shape)
-    mjd.ctrl = np.random.normal(scale=1, size=mjd.ctrl.shape)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-    return mjm, mjd, m, d
-
   def test_fwd_velocity(self):
-    _, mjd, m, d = self._load("humanoid/humanoid.xml", is_sparse=False)
+    _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
 
     d.actuator_velocity.zero_()
     mjwarp.fwd_velocity(m, d)
@@ -64,7 +53,7 @@ class ForwardTest(parameterized.TestCase):
 
   @parameterized.parameters(True, False)
   def test_fwd_actuation(self, is_sparse):
-    mjm, mjd, m, d = self._load("actuation.xml", is_sparse=is_sparse)
+    mjm, mjd, m, d = test_util.fixture("actuation.xml", kick=True)
 
     mujoco.mj_fwdActuation(mjm, mjd)
 
@@ -82,7 +71,7 @@ class ForwardTest(parameterized.TestCase):
     # TODO(team): test actuator gain/bias (e.g. position control)
 
   def test_fwd_acceleration(self):
-    _, mjd, m, d = self._load("humanoid/humanoid.xml", is_sparse=False)
+    _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
 
     for arr in (d.qfrc_smooth, d.qacc_smooth):
       arr.zero_()
@@ -93,11 +82,9 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
   def test_eulerdamp(self):
-    path = epath.resource_path("mujoco_warp") / "test_data/pendula.xml"
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+    mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True)
     self.assertTrue((mjm.dof_damping > 0).any())
 
-    mjd = mujoco.MjData(mjm)
     mjd.qvel[:] = 1.0
     mjd.qacc[:] = 1.0
     mujoco.mj_forward(mjm, mjd)
@@ -128,11 +115,9 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
   def test_disable_eulerdamp(self):
-    path = epath.resource_path("mujoco_warp") / "test_data/pendula.xml"
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+    mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True)
     mjm.opt.disableflags = mjm.opt.disableflags | mujoco.mjtDisableBit.mjDSBL_EULERDAMP
 
-    mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     mjd.qvel[:] = 1.0
     mjd.qacc[:] = 1.0
@@ -146,7 +131,8 @@ class ForwardTest(parameterized.TestCase):
 
   def test_rungekutta4(self):
     # slower than other tests because `forward` compilation
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_util.fixture(
+      xml="""
         <mujoco>
           <option integrator="RK4">
             <flag constraint="disable"/>
@@ -163,15 +149,9 @@ class ForwardTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """)
+        """
+    )
 
-    mjd = mujoco.MjData(mjm)
-    mjd.qvel[:] = np.array([0.2, -0.1])
-    mujoco.mj_step(mjm, mjd, 10)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
     mjwarp.rungekutta4(m, d)
     mujoco.mj_RungeKutta(mjm, mjd, 4)
 
@@ -183,10 +163,15 @@ class ForwardTest(parameterized.TestCase):
 
 
 class ImplicitIntegratorTest(parameterized.TestCase):
-  def _load(self, fname: str, disableFlags: int):
-    path = epath.resource_path("mujoco_warp") / "test_data" / fname
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
-    mjm.opt.jacobian = 0
+  @parameterized.parameters(
+    0,
+    mjwarp.DisableBit.PASSIVE.value,
+    mjwarp.DisableBit.ACTUATION.value,
+    mjwarp.DisableBit.PASSIVE.value & mjwarp.DisableBit.ACTUATION.value,
+  )
+  def test_implicit(self, disableFlags):
+    mjm, _, _, _ = test_util.fixture("pendula.xml")
+
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     mjm.opt.disableflags = mjm.opt.disableflags | disableFlags
     mjm.actuator_gainprm[:, 2] = np.random.normal(
@@ -214,17 +199,6 @@ class ImplicitIntegratorTest(parameterized.TestCase):
     mjd.act = np.random.normal(scale=10, size=mjd.act.shape)
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
-    return mjm, mjd, m, d
-
-  @parameterized.parameters(
-    0,
-    mjwarp.DisableBit.PASSIVE.value,
-    mjwarp.DisableBit.ACTUATION.value,
-    mjwarp.DisableBit.PASSIVE.value & mjwarp.DisableBit.ACTUATION.value,
-  )
-  def test_implicit(self, disableFlags):
-    np.random.seed(0)
-    mjm, mjd, m, d = self._load("pendula.xml", disableFlags)
 
     mjwarp.implicit(m, d)
     mujoco.mj_implicit(mjm, mjd)

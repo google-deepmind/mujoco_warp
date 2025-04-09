@@ -20,11 +20,13 @@ import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
-from etils import epath
 
 import mujoco_warp as mjwarp
 
 from . import solver
+from . import test_util
+from .types import ConeType
+from .types import SolverType
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -38,58 +40,22 @@ def _assert_eq(a, b, name):
 
 
 class SolverTest(parameterized.TestCase):
-  def _load(
-    self,
-    fname: str,
-    is_sparse: bool = True,
-    cone: int = mujoco.mjtCone.mjCONE_PYRAMIDAL,
-    solver_: int = mujoco.mjtSolver.mjSOL_NEWTON,
-    iterations: int = 2,
-    ls_iterations: int = 4,
-    nworld: int = 1,
-    njmax: int = 512,
-    keyframe: int = 0,
-    ls_parallel: bool = False,
-  ):
-    path = epath.resource_path("mujoco_warp") / "test_data" / fname
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
-    mjm.opt.jacobian = is_sparse
-    mjm.opt.iterations = iterations
-    mjm.opt.ls_iterations = ls_iterations
-    mjm.opt.cone = cone
-    mjm.opt.solver = solver_
-    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
-    mujoco.mj_step(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    m.opt.ls_parallel = ls_parallel
-    d = mjwarp.put_data(mjm, mjd, nworld=nworld, njmax=njmax)
-    return mjm, mjd, m, d
-
   @parameterized.parameters(
-    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtSolver.mjSOL_CG, 25, 5, False, False),
-    (
-      mujoco.mjtCone.mjCONE_PYRAMIDAL,
-      mujoco.mjtSolver.mjSOL_NEWTON,
-      2,
-      4,
-      False,
-      False,
-    ),
-    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtSolver.mjSOL_NEWTON, 2, 4, True, True),
+    (ConeType.PYRAMIDAL, SolverType.CG, 25, 5, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, True, True),
   )
   def test_solve(self, cone, solver_, iterations, ls_iterations, sparse, ls_parallel):
     """Tests solve."""
     for keyframe in range(3):
-      mjm, mjd, m, d = self._load(
+      mjm, mjd, m, d = test_util.fixture(
         "humanoid/humanoid.xml",
-        is_sparse=sparse,
+        keyframe=keyframe,
+        sparse=sparse,
         cone=cone,
-        solver_=solver_,
+        solver=solver_,
         iterations=iterations,
         ls_iterations=ls_iterations,
-        keyframe=keyframe,
         ls_parallel=ls_parallel,
       )
 
@@ -132,45 +98,45 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
 
   @parameterized.parameters(
-    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtSolver.mjSOL_CG, 25, 5),
-    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtSolver.mjSOL_NEWTON, 2, 4),
+    (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4),
   )
   def test_solve_batch(self, cone, solver_, iterations, ls_iterations):
     """Tests solve (batch)."""
-    mjm0, mjd0, _, _ = self._load(
+    mjm0, mjd0, _, _ = test_util.fixture(
       "humanoid/humanoid.xml",
-      is_sparse=False,
+      keyframe=0,
+      sparse=False,
       cone=cone,
-      solver_=solver_,
+      solver=solver_,
       iterations=iterations,
       ls_iterations=ls_iterations,
-      keyframe=0,
     )
     qacc_warmstart0 = mjd0.qacc_warmstart.copy()
     mujoco.mj_forward(mjm0, mjd0)
     mjd0.qacc_warmstart = qacc_warmstart0
 
-    mjm1, mjd1, _, _ = self._load(
+    mjm1, mjd1, _, _ = test_util.fixture(
       "humanoid/humanoid.xml",
-      is_sparse=False,
+      keyframe=2,
+      sparse=False,
       cone=cone,
-      solver_=solver_,
+      solver=solver_,
       iterations=iterations,
       ls_iterations=ls_iterations,
-      keyframe=2,
     )
     qacc_warmstart1 = mjd1.qacc_warmstart.copy()
     mujoco.mj_forward(mjm1, mjd1)
     mjd1.qacc_warmstart = qacc_warmstart1
 
-    mjm2, mjd2, _, _ = self._load(
+    mjm2, mjd2, _, _ = test_util.fixture(
       "humanoid/humanoid.xml",
-      is_sparse=False,
+      keyframe=1,
+      sparse=False,
       cone=cone,
-      solver_=solver_,
+      solver=solver_,
       iterations=iterations,
       ls_iterations=ls_iterations,
-      keyframe=1,
     )
     qacc_warmstart2 = mjd2.qacc_warmstart.copy()
     mujoco.mj_forward(mjm2, mjd2)
@@ -178,16 +144,15 @@ class SolverTest(parameterized.TestCase):
 
     nefc_active = mjd0.nefc + mjd1.nefc + mjd2.nefc
 
-    mjm, _, m, d = self._load(
+    mjm, mjd, m, _ = test_util.fixture(
       "humanoid/humanoid.xml",
-      is_sparse=False,
+      sparse=False,
       cone=cone,
-      solver_=solver_,
+      solver=solver_,
       iterations=iterations,
       ls_iterations=ls_iterations,
-      nworld=3,
-      njmax=2 * nefc_active,
     )
+    d = mjwarp.put_data(mjm, mjd, nworld=3, njmax=2 * nefc_active)
 
     d.nefc = wp.array([nefc_active], dtype=wp.int32, ndim=1)
 
@@ -257,7 +222,7 @@ class SolverTest(parameterized.TestCase):
     d.efc.aref = wp.from_numpy(efc_aref_fill, dtype=wp.float32)
     d.efc.worldid = wp.from_numpy(efc_worldid, dtype=wp.int32)
 
-    if solver_ == mujoco.mjtSolver.mjSOL_CG:
+    if solver_ == SolverType.CG:
       m0 = mjwarp.put_model(mjm0)
       d0 = mjwarp.put_data(mjm0, mjd0)
       mjwarp.factor_m(m0, d0)
@@ -300,7 +265,7 @@ class SolverTest(parameterized.TestCase):
     mjwarp_cost2 = cost(mjm2, mjd2, d.qacc.numpy()[2])
     self.assertLessEqual(mjwarp_cost2, mj_cost2 * 1.025)
 
-    if m.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+    if m.opt.solver == SolverType.NEWTON:
       _assert_eq(d.qacc.numpy()[0], mjd0.qacc, "qacc0")
       _assert_eq(d.qacc.numpy()[1], mjd1.qacc, "qacc1")
       _assert_eq(d.qacc.numpy()[2], mjd2.qacc, "qacc2")
