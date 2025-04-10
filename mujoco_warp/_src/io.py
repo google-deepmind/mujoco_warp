@@ -316,6 +316,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.body_rootid = wp.array(mjm.body_rootid, dtype=wp.int32, ndim=1)
   m.body_inertia = wp.array(mjm.body_inertia, dtype=wp.vec3, ndim=1)
   m.body_mass = wp.array(mjm.body_mass, dtype=wp.float32, ndim=1)
+  m.body_subtreemass = wp.array(mjm.body_subtreemass, dtype=wp.float32, ndim=1)
 
   subtree_mass = np.copy(mjm.body_mass)
   # TODO(team): should this be [mjm.nbody - 1, 0) ?
@@ -622,6 +623,9 @@ def make_data(
   d.contact.worldid = wp.zeros((nconmax,), dtype=wp.int32)
   d.efc = _constraint(mjm, d.nworld, d.njmax)
   d.qfrc_passive = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.subtree_linvel = wp.zeros((nworld, mjm.nbody), dtype=wp.vec3)
+  d.subtree_angmom = wp.zeros((nworld, mjm.nbody), dtype=wp.vec3)
+  d.subtree_bodyvel = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
   d.qfrc_spring = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_damper = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_actuator = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
@@ -782,6 +786,9 @@ def put_data(
   d.cdof_dot = wp.array(tile(mjd.cdof_dot), dtype=wp.spatial_vector, ndim=2)
   d.qfrc_bias = wp.array(tile(mjd.qfrc_bias), dtype=wp.float32, ndim=2)
   d.qfrc_passive = wp.array(tile(mjd.qfrc_passive), dtype=wp.float32, ndim=2)
+  d.subtree_linvel = wp.array(tile(mjd.subtree_linvel), dtype=wp.vec3, ndim=2)
+  d.subtree_angmom = wp.array(tile(mjd.subtree_angmom), dtype=wp.vec3, ndim=2)
+  d.subtree_bodyvel = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
   d.qfrc_spring = wp.array(tile(mjd.qfrc_spring), dtype=wp.float32, ndim=2)
   d.qfrc_damper = wp.array(tile(mjd.qfrc_damper), dtype=wp.float32, ndim=2)
   d.qfrc_actuator = wp.array(tile(mjd.qfrc_actuator), dtype=wp.float32, ndim=2)
@@ -1003,6 +1010,8 @@ def get_data_into(
   result.cdof_dot = d.cdof_dot.numpy()[0]
   result.qfrc_bias = d.qfrc_bias.numpy()[0]
   result.qfrc_passive = d.qfrc_passive.numpy()[0]
+  result.subtree_linvel = d.subtree_linvel.numpy()[0]
+  result.subtree_angmom = d.subtree_angmom.numpy()[0]
   result.qfrc_spring = d.qfrc_spring.numpy()[0]
   result.qfrc_damper = d.qfrc_damper.numpy()[0]
   result.qfrc_actuator = d.qfrc_actuator.numpy()[0]

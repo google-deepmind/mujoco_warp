@@ -209,6 +209,19 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
+  def test_subtree_vel(self):
+    """Tests subtree_vel."""
+    mjm, mjd, m, d = test_util.fixture("pendula.xml")
+
+    for arr in (d.subtree_linvel, d.subtree_angmom):
+      arr.zero_()
+
+    mujoco.mj_subtreeVel(mjm, mjd)
+    mjwarp.subtree_vel(m, d)
+
+    _assert_eq(d.subtree_linvel.numpy()[0], mjd.subtree_linvel, "subtree_linvel")
+    _assert_eq(d.subtree_angmom.numpy()[0], mjd.subtree_angmom, "subtree_angmom")
+
   def test_fixed_tendon(self):
     """Tests fixed tendon."""
     mjm, mjd, m, d = test_util.fixture("tendon.xml", keyframe=0)
