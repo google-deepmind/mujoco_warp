@@ -229,14 +229,17 @@ class SmoothTest(parameterized.TestCase):
           </body>
         </worldbody>
         <tendon>
-          <fixed>
+          <fixed name="fixed">
             <joint joint="joint0" coef=".25"/>
             <joint joint="joint1" coef=".5"/>
             <joint joint="joint2" coef=".75"/>
           </fixed>
         </tendon>
+        <actuator>
+          <motor tendon="fixed"/>
+        </actuator>
         <keyframe>
-          <key qpos=".2 .4 .6"/>
+          <key qpos=".2 .4 .6" ctrl="1"/>
         </keyframe>
       </mujoco>
     """,
@@ -248,8 +251,21 @@ class SmoothTest(parameterized.TestCase):
 
     mjwarp.tendon(m, d)
 
+    # tendon
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
     _assert_eq(d.ten_J.numpy()[0], mjd.ten_J.reshape((mjm.ntendon, mjm.nv)), "ten_J")
+
+    # actuator
+    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      actuator_moment,
+      mjd.actuator_moment,
+      mjd.moment_rownnz,
+      mjd.moment_rowadr,
+      mjd.moment_colind,
+    )
+    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
 
 if __name__ == "__main__":

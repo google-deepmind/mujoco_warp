@@ -685,16 +685,16 @@ def transmission(m: Model, d: Data):
     moment: array3df,
   ):
     worldid, actid = wp.tid()
-    qpos = d.qpos[worldid]
-    jntid = m.actuator_trnid[actid, 0]
-    jnt_typ = m.jnt_type[jntid]
-    qadr = m.jnt_qposadr[jntid]
-    vadr = m.jnt_dofadr[jntid]
     trntype = m.actuator_trntype[actid]
     gear = m.actuator_gear[actid]
     if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
       TrnType.JOINTINPARENT.value
     ):
+      qpos = d.qpos[worldid]
+      jntid = m.actuator_trnid[actid, 0]
+      jnt_typ = m.jnt_type[jntid]
+      qadr = m.jnt_qposadr[jntid]
+      vadr = m.jnt_dofadr[jntid]
       if jnt_typ == wp.static(JointType.FREE.value):
         length[worldid, actid] = 0.0
         if trntype == wp.static(TrnType.JOINTINPARENT.value):
@@ -728,8 +728,14 @@ def transmission(m: Model, d: Data):
         moment[worldid, actid, vadr] = gear[0]
       else:
         wp.printf("unrecognized joint type")
+    elif trntype == wp.static(TrnType.TENDON.value):
+      trnid = m.actuator_trnid[actid, 0]
+      gear0 = gear[0]
+      length[worldid, actid] = d.ten_length[worldid, trnid] * gear0
+      for i in range(m.nv):
+        moment[worldid, actid, i] = d.ten_J[worldid, trnid, i] * gear0
     else:
-      # TODO handle site, tendon transmission types
+      # TODO(team): site, slidercrank, body
       wp.printf("unhandled transmission type %d\n", trntype)
 
   wp.launch(
