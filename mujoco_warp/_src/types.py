@@ -618,6 +618,14 @@ class Model:
     condim_max: maximum condim for geoms
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
+    tendon_limited: does tendon have length limits           (ntendon,)
+    tendon_limited_adr: addresses for limited tendons        (<=ntendon,)
+    tendon_solref_lim: constraint solver reference: limit    (ntendon, mjNREF)
+    tendon_solimp_lim: constraint solver impedance: limit    (ntendon, mjNIMP)
+    tendon_range: tendon length limits                       (ntendon, 2)
+    tendon_margin: min distance for limit detection          (ntendon,)
+    tendon_length0: tendon length in qpos0                   (ntendon,)
+    tendon_invweight0: inv. weight in qpos0                  (ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
@@ -786,6 +794,14 @@ class Model:
   condim_max: int  # warp only
   tendon_adr: wp.array(dtype=wp.int32, ndim=1)
   tendon_num: wp.array(dtype=wp.int32, ndim=1)
+  tendon_limited: wp.array(dtype=wp.int32, ndim=1)
+  tendon_limited_adr: wp.array(dtype=wp.int32, ndim=1)
+  tendon_solref_lim: wp.array(dtype=wp.vec2f, ndim=1)
+  tendon_solimp_lim: wp.array(dtype=vec5, ndim=1)
+  tendon_range: wp.array(dtype=wp.vec2f, ndim=1)
+  tendon_margin: wp.array(dtype=wp.float32, ndim=1)
+  tendon_length0: wp.array(dtype=wp.float32, ndim=1)
+  tendon_invweight0: wp.array(dtype=wp.float32, ndim=1)
   wrap_objid: wp.array(dtype=wp.int32, ndim=1)
   wrap_prm: wp.array(dtype=wp.float32, ndim=1)
   wrap_type: wp.array(dtype=wp.int32, ndim=1)
@@ -933,7 +949,7 @@ class Data:
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
-  nl: int
+  nl: wp.array(dtype=wp.int32, ndim=1)
   nefc: wp.array(dtype=wp.int32, ndim=1)
   time: float
   qpos: wp.array(dtype=wp.float32, ndim=2)

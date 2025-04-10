@@ -124,6 +124,7 @@ def _efc_limit_slide_hinge(
   active = pos < 0
 
   if active:
+    wp.atomic_add(d.nl, 0, 1)
     efcid = wp.atomic_add(d.nefc, 0, 1)
     d.efc.worldid[efcid] = worldid
 
@@ -143,6 +144,49 @@ def _efc_limit_slide_hinge(
       m.jnt_solref[jntid],
       m.jnt_solimp[jntid],
       m.jnt_margin[jntid],
+      refsafe,
+      Jqvel,
+    )
+
+
+@wp.kernel
+def _efc_limit_tendon(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  worldid, tenlimitedid = wp.tid()
+  tenid = m.tendon_limited_adr[tenlimitedid]
+
+  ten_range = m.tendon_range[tenid]
+  length = d.ten_length[worldid, tenid]
+  dist_min, dist_max = length - ten_range[0], ten_range[1] - length
+  ten_margin = m.tendon_margin[tenid]
+  pos = wp.min(dist_min, dist_max) - ten_margin
+  active = pos < 0
+
+  if active:
+    wp.atomic_add(d.nl, 0, 1)
+    efcid = wp.atomic_add(d.nefc, 0, 1)
+    d.efc.worldid[efcid] = worldid
+
+    Jqvel = float(0.0)
+    scl = float(dist_min < dist_max) * 2.0 - 1.0
+    for i in range(m.nv):
+      J = scl * d.ten_J[worldid, tenid, i]
+      d.efc.J[efcid, i] = J
+      Jqvel += J * d.qvel[worldid, i]
+
+    _update_efc_row(
+      m,
+      d,
+      efcid,
+      pos,
+      pos,
+      m.tendon_invweight0[tenid],
+      m.tendon_solref_lim[tenid],
+      m.tendon_solimp_lim[tenid],
+      ten_margin,
       refsafe,
       Jqvel,
     )
@@ -337,20 +381,28 @@ def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
   d.nefc.zero_()
+  d.nl.zero_()
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
     d.efc.J.zero_()
 
     refsafe = not m.opt.disableflags & types.DisableBit.REFSAFE.value
 
-    if not (m.opt.disableflags & types.DisableBit.LIMIT.value) and (
-      m.jnt_limited_slide_hinge_adr.size != 0
-    ):
-      wp.launch(
-        _efc_limit_slide_hinge,
-        dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
-        inputs=[m, d, refsafe],
-      )
+    # limit
+    if not (m.opt.disableflags & types.DisableBit.LIMIT.value):
+      if m.jnt_limited_slide_hinge_adr.size != 0:
+        wp.launch(
+          _efc_limit_slide_hinge,
+          dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
+          inputs=[m, d, refsafe],
+        )
+
+      if m.tendon_limited_adr.size != 0:
+        wp.launch(
+          _efc_limit_tendon,
+          dim=(d.nworld, m.tendon_limited_adr.size),
+          inputs=[m, d, refsafe],
+        )
 
     # contact
     if not (m.opt.disableflags & types.DisableBit.CONTACT.value):
