@@ -1132,6 +1132,7 @@ class Data:
   # sensors
   sensordata: wp.array(dtype=wp.float32, ndim=2)
 
+
 @dataclasses.dataclass
 class NewData:
   """Dynamic state that updates each step.
@@ -1151,6 +1152,7 @@ class NewData:
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
     site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
   """
+
   nworld: int
 
   qpos: wp.array2d(dtype=float)
