@@ -19,11 +19,11 @@ from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
 from .math import normalize_with_norm
+from .types import MJ_MINVAL
 from .types import Data
 from .types import GeomType
 from .types import Model
 
-_MINVAL = 1e-15
 _TINY_VAL = 1e-6
 
 
@@ -643,7 +643,7 @@ def capsule_box(
       mb = -box.size[j] * halfaxis[j]
       mc = cap.size[1] * cap.size[1]
       det = ma * mc - mb * mb
-      if wp.abs(det) < _MINVAL:
+      if wp.abs(det) < MJ_MINVAL:
         continue
 
       idet = 1.0 / det
@@ -688,7 +688,7 @@ def capsule_box(
       ct = s1 * 3 + s2
 
       dif_sq = wp.length_sq(dif)
-      if dif_sq < bestdist - _MINVAL:
+      if dif_sq < bestdist - MJ_MINVAL:
         bestdist = dif_sq
         bestsegmentpos = x2
         bestboxpos = x1
