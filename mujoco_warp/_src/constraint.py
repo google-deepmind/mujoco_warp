@@ -13,10 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
-
 import warp as wp
 
+from . import support
 from . import types
 from .warp_util import event_scope
 
@@ -72,40 +71,6 @@ def _update_efc_row(
   d.efc.aref[efcid] = -k * imp * pos_aref - b * Jqvel
   d.efc.pos[efcid] = pos_aref + margin
   d.efc.margin[efcid] = margin
-
-
-@wp.func
-def _jac(
-  m: types.Model,
-  d: types.Data,
-  point: wp.vec3,
-  xyz: wp.int32,
-  bodyid: wp.int32,
-  dofid: wp.int32,
-  worldid: wp.int32,
-) -> Tuple[wp.float32, wp.float32]:
-  dof_bodyid = m.dof_bodyid[dofid]
-  in_tree = int(dof_bodyid == 0)
-  parentid = bodyid
-  while parentid != 0:
-    if parentid == dof_bodyid:
-      in_tree = 1
-      break
-    parentid = m.body_parentid[parentid]
-
-  if not in_tree:
-    return 0.0, 0.0
-
-  offset = point - wp.vec3(d.subtree_com[worldid, m.body_rootid[bodyid]])
-
-  cdof = d.cdof[worldid, dofid]
-  cdof_ang = wp.spatial_top(cdof)
-  cdof_lin = wp.spatial_bottom(cdof)
-
-  jacp_xyz = (cdof_lin + wp.cross(cdof_ang, offset))[xyz]
-  jacr_xyz = cdof_ang[xyz]
-
-  return jacp_xyz, jacr_xyz
 
 
 @wp.kernel
@@ -260,8 +225,8 @@ def _efc_contact_pyramidal(
       J = float(0.0)
       Ji = float(0.0)
       for xyz in range(3):
-        jac1p, jac1r = _jac(m, d, con_pos, xyz, body1, i, worldid)
-        jac2p, jac2r = _jac(m, d, con_pos, xyz, body2, i, worldid)
+        jac1p, jac1r = support.jac(m, d, con_pos, xyz, body1, i, worldid)
+        jac2p, jac2r = support.jac(m, d, con_pos, xyz, body2, i, worldid)
         jacp_dif = jac2p - jac1p
 
         J += frame[0, xyz] * jacp_dif
@@ -346,8 +311,8 @@ def _efc_contact_elliptic(
     for i in range(m.nv):
       J = float(0.0)
       for xyz in range(3):
-        jac1p, _ = _jac(m, d, cpos, xyz, body1, i, worldid)
-        jac2p, _ = _jac(m, d, cpos, xyz, body2, i, worldid)
+        jac1p, _ = support.jac(m, d, cpos, xyz, body1, i, worldid)
+        jac2p, _ = support.jac(m, d, cpos, xyz, body2, i, worldid)
         jac_dif = jac2p - jac1p
         J += frame[dimid, xyz] * jac_dif
 

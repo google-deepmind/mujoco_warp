@@ -295,10 +295,12 @@ class WrapType(enum.IntEnum):
 
   Members:
     JOINT: constant moment arm
+    SITE: pass through site
   """
 
   JOINT = mujoco.mjtWrap.mjWRAP_JOINT
-  # unsupported: PULLEY, SITE, SPHERE, CYLINDER
+  SITE = mujoco.mjtWrap.mjWRAP_SITE
+  # unsupported: PULLEY, SPHERE, CYLINDER
 
 
 class vec5f(wp.types.vector(length=5, dtype=wp.float32)):
@@ -644,7 +646,13 @@ class Model:
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
+    tendon_site_adr: site tendon address                     (<=nwrap,)
+    tendon_site_pair_adr: site pair tendon address           (<=nwrap,)
+    ten_wrapadr_site: wrap object starting address for sites (ntendon,)
+    ten_wrapnum_site: number of site wrap objects per tendon (ntendon,)
     wrap_jnt_adr: addresses for joint tendon wrap object     (<=nwrap,)
+    wrap_site_adr: addresses for site tendon wrap object     (<=nwrap,)
+    wrap_site_pair_adr: first address for site wrap pair     (<=nwrap,)
     sensor_type: sensor type (mjtSensor)                     (nsensor,)
     sensor_datatype: numeric data type (mjtDataType)         (nsensor,)
     sensor_objtype: type of sensorized object (mjtObj)       (nsensor,)
@@ -822,7 +830,13 @@ class Model:
   wrap_prm: wp.array(dtype=wp.float32, ndim=1)
   wrap_type: wp.array(dtype=wp.int32, ndim=1)
   tendon_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  tendon_site_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  tendon_site_pair_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  ten_wrapadr_site: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  ten_wrapnum_site: wp.array(dtype=wp.int32, ndim=1)  # warp only
   wrap_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  wrap_site_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  wrap_site_pair_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_type: wp.array(dtype=wp.int32, ndim=1)
   sensor_datatype: wp.array(dtype=wp.int32, ndim=1)
   sensor_objtype: wp.array(dtype=wp.int32, ndim=1)
@@ -962,8 +976,12 @@ class Data:
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
-    ten_length: tendon lengths                                  (ntendon,)
-    ten_J: tendon Jacobian                                      (ntendon, nv)
+    ten_length: tendon lengths                                  (nworld, ntendon)
+    ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
+    ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
+    ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
+    wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
+    wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     sensordata: sensor data array                               (nsensordata,)
   """
 
@@ -1063,6 +1081,10 @@ class Data:
   # tendon
   ten_length: wp.array(dtype=wp.float32, ndim=2)
   ten_J: wp.array(dtype=wp.float32, ndim=3)
+  ten_wrapadr: wp.array(dtype=wp.int32, ndim=2)
+  ten_wrapnum: wp.array(dtype=wp.int32, ndim=2)
+  wrap_obj: wp.array(dtype=wp.vec2i, ndim=2)
+  wrap_xpos: wp.array(dtype=wp.spatial_vector, ndim=2)
 
   # sensors
   sensordata: wp.array(dtype=wp.float32, ndim=2)

@@ -4,7 +4,7 @@
       <joint name="joint0" type="hinge"/>
       <geom type="sphere" size="0.1"/>
       <body>
-      <joint name="joint1" type="hinge"/>
+        <joint name="joint1" type="hinge"/>
         <geom type="sphere" size="0.1"/>
         <body>
           <joint name="joint2" type="hinge"/>

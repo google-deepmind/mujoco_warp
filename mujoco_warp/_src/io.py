@@ -440,6 +440,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.wrap_prm = wp.array(mjm.wrap_prm, dtype=wp.float32, ndim=1)
   m.wrap_type = wp.array(mjm.wrap_type, dtype=wp.int32, ndim=1)
 
+  # fixed tendon
   tendon_jnt_adr = []
   wrap_jnt_adr = []
   for i in range(mjm.ntendon):
@@ -452,6 +453,40 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   m.tendon_jnt_adr = wp.array(tendon_jnt_adr, dtype=wp.int32, ndim=1)
   m.wrap_jnt_adr = wp.array(wrap_jnt_adr, dtype=wp.int32, ndim=1)
+
+  # spatial tendon
+  tendon_site_adr = []
+  tendon_site_pair_adr = []
+  ten_wrapadr_site = [0]
+  ten_wrapnum_site = []
+  for i, tendon_num in enumerate(mjm.tendon_num):
+    adr = mjm.tendon_adr[i]
+    if (mjm.wrap_type[adr : adr + tendon_num] == mujoco.mjtWrap.mjWRAP_SITE).all():
+      if i < mjm.ntendon:
+        ten_wrapadr_site.append(ten_wrapadr_site[-1] + tendon_num)
+      ten_wrapnum_site.append(tendon_num)
+      for j in range(tendon_num):
+        if j < tendon_num - 1:
+          tendon_site_pair_adr.append(i)
+        tendon_site_adr.append(i)
+    else:
+      if i < mjm.ntendon:
+        ten_wrapadr_site.append(ten_wrapadr_site[-1])
+      ten_wrapnum_site.append(0)
+
+  tendon_site_adr = np.array(tendon_site_adr)
+  tendon_site_pair_adr = np.array(tendon_site_pair_adr)
+  wrap_site_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)[0]
+  wrap_site_pair_adr = np.setdiff1d(
+    wrap_site_adr[np.nonzero(np.diff(wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1
+  )
+
+  m.tendon_site_adr = wp.array(tendon_site_adr, dtype=wp.int32, ndim=1)
+  m.tendon_site_pair_adr = wp.array(tendon_site_pair_adr, dtype=wp.int32, ndim=1)
+  m.ten_wrapadr_site = wp.array(ten_wrapadr_site, dtype=wp.int32, ndim=1)
+  m.ten_wrapnum_site = wp.array(ten_wrapnum_site, dtype=wp.int32, ndim=1)
+  m.wrap_site_adr = wp.array(wrap_site_adr, dtype=wp.int32, ndim=1)
+  m.wrap_site_pair_adr = wp.array(wrap_site_pair_adr, dtype=wp.int32, ndim=1)
 
   # sensors
   m.sensor_type = wp.array(mjm.sensor_type, dtype=wp.int32, ndim=1)
@@ -668,6 +703,12 @@ def make_data(
   # tendon
   d.ten_length = wp.zeros((nworld, mjm.ntendon), dtype=wp.float32, ndim=2)
   d.ten_J = wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=wp.float32, ndim=3)
+  d.ten_wrapadr = wp.zeros((nworld, mjm.ntendon), dtype=wp.int32, ndim=2)
+  d.ten_wrapnum = wp.zeros((nworld, mjm.ntendon), dtype=wp.int32, ndim=2)
+  d.wrap_obj = wp.zeros((nworld, mjm.nwrap), dtype=wp.vec2i, ndim=2)
+  d.wrap_xpos = wp.zeros(
+    (nworld, mjm.nwrap), dtype=wp.spatial_vector, ndim=2
+  )  # TODO(team): vec6?
 
   # sensors
   d.sensordata = wp.zeros((nworld, mjm.nsensordata), dtype=wp.float32)
@@ -937,6 +978,13 @@ def put_data(
 
   d.ten_J = wp.array(tile(ten_J), dtype=wp.float32, ndim=3)
 
+  d.ten_wrapadr = wp.array(tile(mjd.ten_wrapadr), dtype=wp.int32, ndim=2)
+  d.ten_wrapnum = wp.array(tile(mjd.ten_wrapnum), dtype=wp.int32, ndim=2)
+  d.wrap_obj = wp.array(tile(mjd.wrap_obj), dtype=wp.vec2i, ndim=2)
+  d.wrap_xpos = wp.array(
+    tile(mjd.wrap_xpos), dtype=wp.spatial_vector, ndim=2
+  )  # TODO(team): vec6?
+
   # sensors
   d.sensordata = wp.array(tile(mjd.sensordata), dtype=wp.float32, ndim=2)
 
@@ -1058,6 +1106,14 @@ def get_data_into(
   result.cfrc_ext[:] = d.cfrc_ext.numpy()[0]
 
   # TODO: other efc_ fields, anything else missing
+
+  # tendon
+  result.ten_length[:] = d.ten_length.numpy()[0]
+  result.ten_J[:] = d.ten_J.numpy()[0]
+  result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[0]
+  result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[0]
+  result.wrap_obj[:] = d.wrap_obj.numpy()[0]
+  result.wrap_xpos[:] = d.wrap_xpos.numpy()[0]
 
   # sensors
   result.sensordata[:] = d.sensordata.numpy()

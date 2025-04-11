@@ -209,9 +209,15 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
-  def test_fixed_tendon(self):
-    """Tests fixed tendon."""
-    mjm, mjd, m, d = test_util.fixture("tendon.xml", keyframe=0)
+  @parameterized.parameters(
+    ("tendon/fixed.xml"),
+    ("tendon/site.xml"),
+    ("tendon/fixed_site.xml"),
+    ("tendon/site_fixed.xml"),
+  )
+  def test_tendon(self, xml):
+    """Tests tendon."""
+    mjm, mjd, m, d = test_util.fixture(xml, keyframe=0)
 
     for arr in (d.ten_length, d.ten_J):
       arr.zero_()
@@ -220,6 +226,10 @@ class SmoothTest(parameterized.TestCase):
 
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
     _assert_eq(d.ten_J.numpy()[0], mjd.ten_J.reshape((mjm.ntendon, mjm.nv)), "ten_J")
+    _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
+    _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
+    _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
+    _assert_eq(d.ten_wrapadr.numpy()[0], mjd.ten_wrapadr, "ten_wrapadr")
 
 
 if __name__ == "__main__":

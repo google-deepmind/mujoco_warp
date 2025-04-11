@@ -84,7 +84,7 @@ class IOTest(absltest.TestCase):
             <site name="site0"/>
             <joint name="slide" type="slide"/>
             <body pos="0 0 .1">
-              <geom type="sphere" size=".1"/>
+              <geom name="sphere1" type="sphere" size=".1"/>
               <site name="site1"/>
             </body>
           </body>
@@ -92,6 +92,7 @@ class IOTest(absltest.TestCase):
         <tendon>
           <spatial>
             <site site="site0"/>
+            <geom geom="sphere1"/>
             <site site="site1"/>
           </spatial>                      
         </tendon>              

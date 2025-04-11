@@ -19,6 +19,7 @@ from packaging import version
 
 from . import math
 from . import support
+from .types import MJ_MINVAL
 from .types import CamLightType
 from .types import Data
 from .types import DisableBit
@@ -966,8 +967,78 @@ def tendon(m: Model, d: Data):
       wp.atomic_add(d.ten_length[worldid], tendon_jnt_adr, L)
 
       # add to moment
-      d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_jnt_adr]] = prm
+      d.ten_J[worldid, tendon_jnt_adr, m.jnt_dofadr[wrap_objid]] = prm
 
     wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
 
-  # TODO(team): spatial
+  # process spatial site tendons
+  if m.wrap_site_adr.size:
+    d.wrap_xpos.zero_()
+    d.wrap_obj.zero_()
+
+    N_SITE_PAIR = m.wrap_site_pair_adr.size
+
+    @kernel
+    def _spatial_site_tendon(m: Model, d: Data):
+      worldid, elementid = wp.tid()
+      site_adr = m.wrap_site_adr[elementid]
+
+      site_xpos = d.site_xpos[worldid, m.wrap_objid[site_adr]]
+
+      rowid = elementid // 2
+      colid = elementid % 2
+      if colid == 0:
+        d.wrap_xpos[worldid, rowid][0] = site_xpos[0]
+        d.wrap_xpos[worldid, rowid][1] = site_xpos[1]
+        d.wrap_xpos[worldid, rowid][2] = site_xpos[2]
+      else:
+        d.wrap_xpos[worldid, rowid][3] = site_xpos[0]
+        d.wrap_xpos[worldid, rowid][4] = site_xpos[1]
+        d.wrap_xpos[worldid, rowid][5] = site_xpos[2]
+
+      d.wrap_obj[worldid, rowid][colid] = -1
+
+      if elementid < N_SITE_PAIR:
+        # site pairs
+        site_pair_adr = m.wrap_site_pair_adr[elementid]
+        ten_adr = m.tendon_site_pair_adr[elementid]
+
+        id0 = m.wrap_objid[site_pair_adr + 0]
+        id1 = m.wrap_objid[site_pair_adr + 1]
+
+        pnt0 = d.site_xpos[worldid, id0]
+        pnt1 = d.site_xpos[worldid, id1]
+        dif = pnt1 - pnt0
+        vec, length = math.normalize_with_norm(dif)
+        wp.atomic_add(d.ten_length[worldid], ten_adr, length)
+
+        if length < MJ_MINVAL:
+          vec = wp.vec3(1.0, 0.0, 0.0)
+
+        body0 = m.site_bodyid[id0]
+        body1 = m.site_bodyid[id1]
+        if body0 != body1:
+          for i in range(m.nv):
+            J = float(0.0)
+            for xyz in range(3):
+              jacp1, _ = support.jac(m, d, pnt0, xyz, body0, i, worldid)
+              jacp2, _ = support.jac(m, d, pnt1, xyz, body1, i, worldid)
+              J += vec[xyz] * (jacp2 - jacp1)
+            if J:
+              wp.atomic_add(d.ten_J[worldid, ten_adr], i, J)
+
+    wp.launch(_spatial_site_tendon, dim=(d.nworld, m.wrap_site_adr.size), inputs=[m, d])
+
+    @kernel
+    def _spatial_tendon(m: Model, d: Data):
+      worldid, tenid = wp.tid()
+
+      d.ten_wrapnum[worldid, tenid] = m.ten_wrapnum_site[tenid]
+      # TODO(team): geom wrap
+
+      d.ten_wrapadr[worldid, tenid] = m.ten_wrapadr_site[tenid]
+      # TODO(team): geom wrap
+
+    wp.launch(_spatial_tendon, dim=(d.nworld, m.ntendon), inputs=[m, d])
+
+  # TODO(team): geom wrap, pulleys
