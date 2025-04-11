@@ -31,8 +31,11 @@ from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import step as step
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
+from ._src.io import make_data_new as make_data_new
 from ._src.io import put_data as put_data
+from ._src.io import put_data_new as put_data_new
 from ._src.io import put_model as put_model
+from ._src.io import put_model_new as put_model_new
 from ._src.passive import passive as passive
 from ._src.sensor import sensor_acc as sensor_acc
 from ._src.sensor import sensor_pos as sensor_pos
@@ -43,6 +46,7 @@ from ._src.smooth import com_vel as com_vel
 from ._src.smooth import crb as crb
 from ._src.smooth import factor_m as factor_m
 from ._src.smooth import kinematics as kinematics
+from ._src.smooth import kinematics_new as kinematics_new
 from ._src.smooth import rne as rne
 from ._src.smooth import rne_postconstraint as rne_postconstraint
 from ._src.smooth import solve_m as solve_m

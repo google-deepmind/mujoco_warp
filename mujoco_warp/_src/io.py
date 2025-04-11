@@ -482,6 +482,43 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
+def put_model_new(mjm: mujoco.MjModel) -> types.NewModel:
+  bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
+  for i in range(mjm.nbody):
+    body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
+    bodies.setdefault(body_depth[i], []).append(i)
+  tree_bodyids = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
+
+  return types.NewModel(
+    nq=mjm.nq,
+    nv=mjm.nv,
+    nbody=mjm.nbody,
+    njnt=mjm.njnt,
+    ngeom=mjm.ngeom,
+    nsite=mjm.nsite,
+    qpos0=wp.array(mjm.qpos0, dtype=float),
+    tree_bodyids=tree_bodyids,
+    body_parentid=wp.array(mjm.body_parentid, dtype=int),
+    body_jntnum=wp.array(mjm.body_jntnum, dtype=int),
+    body_jntadr=wp.array(mjm.body_jntadr, dtype=int),
+    body_pos=wp.array(mjm.body_pos, dtype=wp.vec3),
+    body_quat=wp.array(mjm.body_quat, dtype=wp.quat),
+    body_ipos=wp.array(mjm.body_ipos, dtype=wp.vec3),
+    body_iquat=wp.array(mjm.body_iquat, dtype=wp.quat),
+    jnt_type=wp.array(mjm.jnt_type, dtype=int),
+    jnt_qposadr=wp.array(mjm.jnt_qposadr, dtype=int),
+    jnt_bodyid=wp.array(mjm.jnt_bodyid, dtype=int),
+    jnt_pos=wp.array(mjm.jnt_pos, dtype=wp.vec3),
+    jnt_axis=wp.array(mjm.jnt_axis, dtype=wp.vec3),
+    geom_bodyid=wp.array(mjm.geom_bodyid, dtype=int),
+    geom_pos=wp.array(mjm.geom_pos, dtype=wp.vec3),
+    geom_quat=wp.array(mjm.geom_quat, dtype=wp.quat),
+    site_bodyid=wp.array(mjm.site_bodyid, dtype=int),
+    site_pos=wp.array(mjm.site_pos, dtype=wp.vec3),
+    site_quat=wp.array(mjm.site_quat, dtype=wp.quat),
+  )
+
+
 def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constraint:
   efc = types.Constraint()
 
@@ -673,6 +710,56 @@ def make_data(
   d.sensordata = wp.zeros((nworld, mjm.nsensordata), dtype=wp.float32)
 
   return d
+
+
+def make_data_new(
+  mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1
+) -> types.NewData:
+  return types.NewData(
+    nworld=nworld,
+    qpos=wp.zeros((nworld, mjm.nq), dtype=float),
+    xpos=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
+    xquat=wp.zeros((nworld, mjm.nbody), dtype=wp.quat),
+    xmat=wp.zeros((nworld, mjm.nbody), dtype=wp.mat33),
+    xipos=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
+    ximat=wp.zeros((nworld, mjm.nbody), dtype=wp.mat33),
+    xanchor=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
+    xaxis=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
+    geom_xpos=wp.zeros((nworld, mjm.ngeom), dtype=wp.vec3),
+    geom_xmat=wp.zeros((nworld, mjm.ngeom), dtype=wp.mat33),
+    site_xpos=wp.zeros((nworld, mjm.nsite), dtype=wp.vec3),
+    site_xmat=wp.zeros((nworld, mjm.nsite), dtype=wp.mat33),
+  )
+
+
+def put_data_new(
+  mjm: mujoco.MjModel,
+  mjd: mujoco.MjData,
+  nworld: Optional[int] = None,
+  nconmax: Optional[int] = None,
+  njmax: Optional[int] = None,
+) -> types.NewData:
+  nworld = nworld or 1
+
+  # TODO(erikfrey): would it be better to tile on the gpu?
+  def tile(x):
+    return np.tile(x, (nworld,) + (1,) * len(x.shape))
+
+  return types.NewData(
+    nworld=nworld,
+    qpos=wp.array2d(tile(mjd.qpos), dtype=float),
+    xpos=wp.array2d(tile(mjd.xpos), dtype=wp.vec3),
+    xquat=wp.array2d(tile(mjd.xquat), dtype=wp.quat),
+    xmat=wp.array2d(tile(mjd.xmat), dtype=wp.mat33),
+    xipos=wp.array2d(tile(mjd.xipos), dtype=wp.vec3),
+    ximat=wp.array2d(tile(mjd.ximat), dtype=wp.mat33),
+    xanchor=wp.array2d(tile(mjd.xanchor), dtype=wp.vec3),
+    xaxis=wp.array2d(tile(mjd.xaxis), dtype=wp.vec3),
+    geom_xpos=wp.array2d(tile(mjd.geom_xpos), dtype=wp.vec3),
+    geom_xmat=wp.array2d(tile(mjd.geom_xmat), dtype=wp.mat33),
+    site_xpos=wp.array2d(tile(mjd.site_xpos), dtype=wp.vec3),
+    site_xmat=wp.array2d(tile(mjd.site_xmat), dtype=wp.mat33),
+  )
 
 
 def put_data(

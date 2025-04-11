@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+import dataclasses
 import enum
 
 import mujoco
@@ -837,6 +838,70 @@ class Model:
   sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
 
 
+@dataclasses.dataclass
+class NewModel:
+  """Model definition and parameters.
+
+  Attributes:
+    nq: number of generalized coordinates = dim              ()
+    nv: number of degrees of freedom = dim                   ()
+    nbody: number of bodies                                  ()
+    njnt: number of joints                                   ()
+    ngeom: number of geoms                                   ()
+    nsite: number of sites                                   ()
+    qpos0: qpos values at default pose                       (nq,)
+
+    tree_bodyids: bodyids grouped by tree level
+    body_parentid: id of body's parent                       (nbody,)
+    body_rootid: id of root above body                       (nbody,)
+    body_jntnum: number of joints for this body              (nbody,)
+    body_jntadr: start addr of joints; -1: no joints         (nbody,)
+    body_pos: position offset rel. to parent body            (nbody, 3)
+    body_quat: orientation offset rel. to parent body        (nbody, 4)
+    body_ipos: local position of center of mass              (nbody, 3)
+    body_iquat: local orientation of inertia ellipsoid       (nbody, 4)
+    jnt_type: type of joint (mjtJoint)                       (njnt,)
+    jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
+    jnt_bodyid: id of joint's body                           (njnt,)
+    jnt_pos: local anchor position                           (njnt, 3)
+    jnt_axis: local joint axis                               (njnt, 3)
+    geom_bodyid: id of geom's body                           (ngeom,)
+    geom_pos: local position offset rel. to body             (ngeom, 3)
+    geom_quat: local orientation offset rel. to body         (ngeom, 4)
+    site_bodyid: id of site's body                           (nsite,)
+    site_pos: local position offset rel. to body             (nsite, 3)
+    site_quat: local orientation offset rel. to body         (nsite, 4)
+  """
+
+  nq: int
+  nv: int
+  nbody: int
+  njnt: int
+  ngeom: int
+  nsite: int
+  qpos0: wp.array(dtype=float)
+
+  tree_bodyids: tuple[wp.array(dtype=int), ...]
+  body_parentid: wp.array(dtype=int)
+  body_jntnum: wp.array(dtype=int)
+  body_jntadr: wp.array(dtype=int)
+  body_pos: wp.array(dtype=wp.vec3)
+  body_quat: wp.array(dtype=wp.quat)
+  body_ipos: wp.array(dtype=wp.vec3)
+  body_iquat: wp.array(dtype=wp.quat)
+  jnt_type: wp.array(dtype=int)
+  jnt_qposadr: wp.array(dtype=int)
+  jnt_bodyid: wp.array(dtype=int)
+  jnt_pos: wp.array(dtype=wp.vec3)
+  jnt_axis: wp.array(dtype=wp.vec3)
+  geom_bodyid: wp.array(dtype=int)
+  geom_pos: wp.array(dtype=wp.vec3)
+  geom_quat: wp.array(dtype=wp.quat)
+  site_bodyid: wp.array(dtype=int)
+  site_pos: wp.array(dtype=wp.vec3)
+  site_quat: wp.array(dtype=wp.quat)
+
+
 @wp.struct
 class Contact:
   """Contact data.
@@ -1066,3 +1131,37 @@ class Data:
 
   # sensors
   sensordata: wp.array(dtype=wp.float32, ndim=2)
+
+@dataclasses.dataclass
+class NewData:
+  """Dynamic state that updates each step.
+
+  Attributes:
+    nworld: number of worlds                                    ()
+    qpos: position                                              (nworld, nq)
+    xpos: Cartesian position of body frame                      (nworld, nbody, 3)
+    xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
+    xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
+    xipos: Cartesian position of body com                       (nworld, nbody, 3)
+    ximat: Cartesian orientation of body inertia                (nworld, nbody, 3, 3)
+    xanchor: Cartesian position of joint anchor                 (nworld, njnt, 3)
+    xaxis: Cartesian joint axis                                 (nworld, njnt, 3)
+    geom_xpos: Cartesian geom position                          (nworld, ngeom, 3)
+    geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
+    site_xpos: Cartesian site position                          (nworld, nsite, 3)
+    site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
+  """
+  nworld: int
+
+  qpos: wp.array2d(dtype=float)
+  xpos: wp.array2d(dtype=wp.vec3)
+  xquat: wp.array2d(dtype=wp.quat)
+  xmat: wp.array2d(dtype=wp.mat33)
+  xipos: wp.array2d(dtype=wp.vec3)
+  ximat: wp.array2d(dtype=wp.mat33)
+  xanchor: wp.array2d(dtype=wp.vec3)
+  xaxis: wp.array2d(dtype=wp.vec3)
+  geom_xpos: wp.array2d(dtype=wp.vec3)
+  geom_xmat: wp.array2d(dtype=wp.mat33)
+  site_xpos: wp.array2d(dtype=wp.vec3)
+  site_xmat: wp.array2d(dtype=wp.mat33)
