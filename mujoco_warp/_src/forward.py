@@ -40,6 +40,8 @@ from .warp_util import event_scope
 from .warp_util import kernel
 from .warp_util import kernel_copy
 
+wp.set_module_options({"enable_backward": False})
+
 # RK4 tableau
 _RK4_A = [
   [0.5, 0.0, 0.0],

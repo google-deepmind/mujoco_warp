@@ -279,15 +279,37 @@ class ObjType(enum.IntEnum):
   # unsupported: CAMERA
 
 
+class ObjType(enum.IntEnum):
+  """Type of object.
+
+  Members:
+    UNKNOWN: unknown object type
+    BODY: body
+    XBODY: body, used to access regular frame instead of i-frame
+    GEOM: geom
+    SITE: site
+    CAMERA: camera
+  """
+
+  UNKNOWN = mujoco.mjtObj.mjOBJ_UNKNOWN
+  BODY = mujoco.mjtObj.mjOBJ_BODY
+  XBODY = mujoco.mjtObj.mjOBJ_XBODY
+  GEOM = mujoco.mjtObj.mjOBJ_GEOM
+  SITE = mujoco.mjtObj.mjOBJ_SITE
+  CAMERA = mujoco.mjtObj.mjOBJ_CAMERA
+
+
 class EqType(enum.IntEnum):
   """Type of equality constraint.
 
   Members:
+    CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
   """
 
+  CONNECT = mujoco.mjtEq.mjEQ_CONNECT
   JOINT = mujoco.mjtEq.mjEQ_JOINT
-  # unsupported: CONNECT, WELD, TENDON, FLEX, DISTANCE
+  # unsupported: WELD, TENDON, FLEX, DISTANCE
 
 
 class WrapType(enum.IntEnum):
@@ -598,7 +620,6 @@ class Model:
     cam_quat: orientation rel. to body frame                 (ncam, 4)
     cam_poscom0: global position rel. to sub-com in qpos0    (ncam, 3)
     cam_pos0: Cartesian camera position                      (nworld, ncam, 3)
-    cam_mat0: Cartesian camera orientation                   (nworld, ncam, 3, 3)
     light_mode: light tracking mode (mjtCamLight)            (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
@@ -606,7 +627,6 @@ class Model:
     light_dir: direction rel. to body frame                  (nlight, 3)
     light_poscom0: global position rel. to sub-com in qpos0  (nlight, 3)
     light_pos0: global position rel. to body in qpos0        (nworld, nlight, 3)
-    light_dir0: global direction in qpos0                    (nworld, nlight, 3)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -618,7 +638,8 @@ class Model:
     eq_solref: constraint solver reference                   (neq, mjNREF)
     eq_solimp: constraint solver impedance                   (neq, mjNIMP)
     eq_data: numeric data for constraint                     (neq, mjNEQDATA)
-    eq_jnt_adr: which addresses of eq_* are type `JOINT`
+    eq_jnt_adr: eq_* addresses of type `JOINT`
+    eq_connect_adr: eq_* addresses of type `CONNECT`
     actuator_trntype: transmission type (mjtTrn)             (nu,)
     actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
     actuator_gaintype: gain type (mjtGain)                   (nu,)
@@ -776,7 +797,6 @@ class Model:
   cam_quat: wp.array(dtype=wp.quat, ndim=1)
   cam_poscom0: wp.array(dtype=wp.vec3, ndim=1)
   cam_pos0: wp.array(dtype=wp.vec3, ndim=1)
-  cam_mat0: wp.array(dtype=wp.mat33, ndim=1)
   light_mode: wp.array(dtype=wp.int32, ndim=1)
   light_bodyid: wp.array(dtype=wp.int32, ndim=1)
   light_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
@@ -784,7 +804,6 @@ class Model:
   light_dir: wp.array(dtype=wp.vec3, ndim=1)
   light_poscom0: wp.array(dtype=wp.vec3, ndim=1)
   light_pos0: wp.array(dtype=wp.vec3, ndim=1)
-  light_dir0: wp.array(dtype=wp.vec3, ndim=1)
   mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
   mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
   mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
@@ -797,6 +816,7 @@ class Model:
   eq_solimp: wp.array(dtype=vec5, ndim=1)
   eq_data: wp.array(dtype=vec11, ndim=1)
   eq_jnt_adr: wp.array(dtype=wp.int32, ndim=1)
+  eq_connect_adr: wp.array(dtype=wp.int32, ndim=1)
   actuator_trntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_dyntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_gaintype: wp.array(dtype=wp.int32, ndim=1)

@@ -384,7 +384,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.cam_quat = wp.array(mjm.cam_quat, dtype=wp.quat, ndim=1)
   m.cam_poscom0 = wp.array(mjm.cam_poscom0, dtype=wp.vec3, ndim=1)
   m.cam_pos0 = wp.array(mjm.cam_pos0, dtype=wp.vec3, ndim=1)
-  m.cam_mat0 = wp.array(mjm.cam_mat0.reshape(-1, 3, 3), dtype=wp.mat33, ndim=1)
   m.light_mode = wp.array(mjm.light_mode, dtype=wp.int32, ndim=1)
   m.light_bodyid = wp.array(mjm.light_bodyid, dtype=wp.int32, ndim=1)
   m.light_targetbodyid = wp.array(mjm.light_targetbodyid, dtype=wp.int32, ndim=1)
@@ -392,7 +391,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.light_dir = wp.array(mjm.light_dir, dtype=wp.vec3, ndim=1)
   m.light_poscom0 = wp.array(mjm.light_poscom0, dtype=wp.vec3, ndim=1)
   m.light_pos0 = wp.array(mjm.light_pos0, dtype=wp.vec3, ndim=1)
-  m.light_dir0 = wp.array(mjm.light_dir0, dtype=wp.vec3, ndim=1)
   m.dof_bodyid = wp.array(mjm.dof_bodyid, dtype=wp.int32, ndim=1)
   m.dof_jntid = wp.array(mjm.dof_jntid, dtype=wp.int32, ndim=1)
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32, ndim=1)
@@ -423,6 +421,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # pre-compute indices of joint equalities
   m.eq_jnt_adr = wp.array(
     np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=wp.int32, ndim=1
+  )
+  m.eq_connect_adr = wp.array(
+    np.nonzero(mjm.eq_type == types.EqType.CONNECT.value)[0], dtype=wp.int32, ndim=1
   )
 
   # short-circuiting here allows us to skip a lot of code in implicit integration
