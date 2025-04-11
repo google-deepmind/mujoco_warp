@@ -88,6 +88,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nwrap = mjm.nwrap
   m.nsensor = mjm.nsensor
   m.nsensordata = mjm.nsensordata
+  m.nmeshvert = mjm.nmeshvert
+  m.nmeshface = mjm.nmeshface
   m.nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
   m.nexclude = mjm.nexclude
   m.neq = mjm.neq
@@ -227,10 +229,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       tile_beg = tile_corners[i]
       tile_end = mjm.nv if i == len(tile_corners) - 1 else tile_corners[i + 1]
       tiles.setdefault(tile_end - tile_beg, []).append(tile_beg)
-    qLD_tile = np.concatenate([tiles[sz] for sz in sorted(tiles.keys())])
-    tile_off = [0] + [len(tiles[sz]) for sz in sorted(tiles.keys())]
-    qLD_tileadr = np.cumsum(tile_off)[:-1]
-    qLD_tilesize = np.array(sorted(tiles.keys()))
+    if tiles:
+      qLD_tile = np.concatenate([tiles[sz] for sz in sorted(tiles.keys())])
+      tile_off = [0] + [len(tiles[sz]) for sz in sorted(tiles.keys())]
+      qLD_tileadr = np.cumsum(tile_off)[:-1]
+      qLD_tilesize = np.array(sorted(tiles.keys()))
+    else:
+      qLD_tile = np.array([], dtype=int)
+      qLD_tileadr = np.array([], dtype=int)
+      qLD_tilesize = np.array([], dtype=int)
 
   # tiles for actuator_moment - needs nu + nv tile size and offset
   actuator_moment_offset_nv = np.empty(shape=(0,), dtype=int)
@@ -243,7 +250,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     # how many actuators for each tree
     tile_corners = [i for i in range(mjm.nv) if mjm.dof_parentid[i] == -1]
     tree_id = mjm.dof_treeid[tile_corners]
-    num_trees = int(np.max(tree_id))
+    num_trees = int(np.max(tree_id)) if len(tree_id) > 0 else 0
     tree = mjm.body_treeid[mjm.jnt_bodyid[mjm.actuator_trnid[:, 0]]]
     counts, ids = np.histogram(tree, bins=np.arange(0, num_trees + 2))
     acts_per_tree = dict(zip([int(i) for i in ids], [int(i) for i in counts]))
@@ -363,9 +370,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.geom_aabb = wp.array(mjm.geom_aabb, dtype=wp.vec3, ndim=3)
   m.geom_rbound = wp.array(mjm.geom_rbound, dtype=wp.float32, ndim=1)
   m.geom_dataid = wp.array(mjm.geom_dataid, dtype=wp.int32, ndim=1)
+  m.geom_group = wp.array(mjm.geom_group, dtype=wp.int32, ndim=1)
   m.mesh_vertadr = wp.array(mjm.mesh_vertadr, dtype=wp.int32, ndim=1)
   m.mesh_vertnum = wp.array(mjm.mesh_vertnum, dtype=wp.int32, ndim=1)
   m.mesh_vert = wp.array(mjm.mesh_vert, dtype=wp.vec3, ndim=1)
+  m.mesh_faceadr = wp.array(mjm.mesh_faceadr, dtype=wp.int32, ndim=1)
+  m.mesh_face = wp.array(mjm.mesh_face, dtype=wp.int32, ndim=2)
   m.eq_type = wp.array(mjm.eq_type, dtype=wp.int32, ndim=1)
   m.eq_obj1id = wp.array(mjm.eq_obj1id, dtype=wp.int32, ndim=1)
   m.eq_obj2id = wp.array(mjm.eq_obj2id, dtype=wp.int32, ndim=1)
