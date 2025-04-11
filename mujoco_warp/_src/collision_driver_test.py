@@ -202,6 +202,50 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "sphere_box_shallow": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .5 .5" />
+            <body pos="-0.6 -0.6 0.7">
+              <geom type="sphere" size="0.5"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "sphere_box_deep": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .5 .5" />
+            <body pos="-0.6 -0.6 0.7">
+              <geom type="sphere" size="0.5"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_cap": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
+            <body pos="0 0 1.5" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_edge": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
+            <body pos="0.4 0.2 0.8" euler="0 -40 0" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
 
   @parameterized.parameters(_FIXTURES.keys())
