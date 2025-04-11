@@ -211,42 +211,7 @@ class SmoothTest(parameterized.TestCase):
 
   def test_fixed_tendon(self):
     """Tests fixed tendon."""
-    _FIXED_TENDON = """
-      <mujoco>
-        <worldbody>
-          <body>
-            <joint name="joint0" type="hinge"/>
-            <geom type="sphere" size="0.1"/>
-            <body>
-              <joint name="joint1" type="hinge"/>
-              <geom type="sphere" size="0.1"/>
-              <body>
-                <joint name="joint2" type="hinge"/>
-                <geom type="sphere" size="0.1"/>
-              </body>
-            </body>
-          </body>
-        </worldbody>
-        <tendon>
-          <fixed>
-            <joint joint="joint0" coef=".25"/>
-            <joint joint="joint1" coef=".5"/>
-            <joint joint="joint2" coef=".75"/>
-          </fixed>
-        </tendon>
-        <keyframe>
-          <key qpos=".2 .4 .6"/>
-        </keyframe>
-      </mujoco>
-    """
-    mjm = mujoco.MjModel.from_xml_string(_FIXED_TENDON)
-    mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
+    mjm, mjd, m, d = test_util.fixture("tendon.xml", keyframe=0)
 
     for arr in (d.ten_length, d.ten_J):
       arr.zero_()

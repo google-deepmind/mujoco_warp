@@ -513,16 +513,18 @@ def fwd_velocity(m: Model, d: Data):
 
   if m.opt.is_sparse:
     # TODO(team): sparse version
-    d.actuator_velocity.zero_()
+    NV = m.nv
 
     @kernel
     def _actuator_velocity(d: Data):
-      worldid, actid, dofid = wp.tid()
-      moment = d.actuator_moment[worldid, actid]
-      qvel = d.qvel[worldid]
-      wp.atomic_add(d.actuator_velocity[worldid], actid, moment[dofid] * qvel[dofid])
+      worldid, actid = wp.tid()
+      moment_tile = wp.tile_load(d.actuator_moment[worldid, actid], shape=NV)
+      qvel_tile = wp.tile_load(d.qvel[worldid], shape=NV)
+      moment_qvel_tile = wp.tile_map(wp.mul, moment_tile, qvel_tile)
+      actuator_velocity_tile = wp.tile_reduce(wp.add, moment_qvel_tile)
+      wp.tile_store(d.actuator_velocity[worldid], actuator_velocity_tile)
 
-    wp.launch(_actuator_velocity, dim=(d.nworld, m.nu, m.nv), inputs=[d])
+    wp.launch_tiled(_actuator_velocity, dim=(d.nworld, m.nu), inputs=[d], block_dim=32)
   else:
 
     def actuator_velocity(
@@ -581,6 +583,23 @@ def fwd_velocity(m: Model, d: Data):
           int(actuator_moment_tilesize_nu[i]),
           int(actuator_moment_tilesize_nv[i]),
         )
+
+  if m.ntendon > 0:
+    # TODO(team): sparse version
+    NV = m.nv
+
+    @kernel
+    def _tendon_velocity(d: Data):
+      worldid, tenid = wp.tid()
+      ten_J_tile = wp.tile_load(d.ten_J[worldid, tenid], shape=NV)
+      qvel_tile = wp.tile_load(d.qvel[worldid], shape=NV)
+      ten_J_qvel_tile = wp.tile_map(wp.mul, ten_J_tile, qvel_tile)
+      ten_velocity_tile = wp.tile_reduce(wp.add, ten_J_qvel_tile)
+      wp.tile_store(d.ten_velocity[worldid], ten_velocity_tile)
+
+    wp.launch_tiled(
+      _tendon_velocity, dim=(d.nworld, m.ntendon), inputs=[d], block_dim=32
+    )
 
   smooth.com_vel(m, d)
   passive.passive(m, d)

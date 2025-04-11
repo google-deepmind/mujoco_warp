@@ -16,7 +16,7 @@
 """Utilities for testing."""
 
 import time
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import mujoco
 import numpy as np
@@ -25,36 +25,66 @@ from etils import epath
 
 from . import io
 from . import warp_util
+from .types import ConeType
 from .types import Data
+from .types import DisableBit
 from .types import Model
+from .types import SolverType
 
 
 def fixture(
-  fname: str,
+  fname: Optional[str] = None,
+  xml: Optional[str] = None,
   keyframe: int = -1,
-  sparse: bool = True,
   contact: bool = True,
-  cone: int = mujoco.mjtCone.mjCONE_PYRAMIDAL,
+  constraint: bool = True,
   gravity: bool = True,
+  cone: Optional[ConeType] = None,
+  solver: Optional[SolverType] = None,
+  iterations: Optional[int] = None,
+  ls_iterations: Optional[int] = None,
+  ls_parallel: Optional[bool] = None,
+  sparse: Optional[bool] = None,
+  kick: bool = False,
 ):
-  path = epath.resource_path("mujoco_warp") / "test_data" / fname
-  mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+  if fname is not None:
+    path = epath.resource_path("mujoco_warp") / "test_data" / fname
+    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+  elif xml is not None:
+    mjm = mujoco.MjModel.from_xml_string(xml)
+  else:
+    raise ValueError("either fname or xml must be provided")
   if not contact:
-    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+    mjm.opt.disableflags |= DisableBit.CONTACT
+  if not constraint:
+    mjm.opt.disableflags |= DisableBit.CONSTRAINT
   if not gravity:
-    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_GRAVITY
-  mjm.opt.cone = cone
-  mjm.opt.jacobian = sparse
-  if not gravity:
-    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_GRAVITY
+    mjm.opt.disableflags |= DisableBit.GRAVITY
+  if cone is not None:
+    mjm.opt.cone = cone
+  if solver is not None:
+    mjm.opt.solver = solver
+  if iterations is not None:
+    mjm.opt.iterations = iterations
+  if ls_iterations is not None:
+    mjm.opt.ls_iterations = ls_iterations
+  if sparse is not None:
+    if sparse:
+      mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
+    else:
+      mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
   mjd = mujoco.MjData(mjm)
   if keyframe > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
-  # give the system a little kick to ensure we have non-identity rotations
-  mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
-  mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
+  if kick:
+    # give the system a little kick to ensure we have non-identity rotations
+    mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
+    mjd.ctrl = np.random.normal(scale=0.01, size=mjm.nu)
+    mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
   mujoco.mj_forward(mjm, mjd)
   m = io.put_model(mjm)
+  if ls_parallel is not None:
+    m.opt.ls_parallel = ls_parallel
   d = io.put_data(mjm, mjd)
   return mjm, mjd, m, d
 

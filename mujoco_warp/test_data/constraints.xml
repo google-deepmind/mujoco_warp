@@ -77,6 +77,10 @@
     </body>
   </worldbody>
 
+  <equality>
+    <joint   name="joint"    joint1="joint3"    joint2="joint4" polycoef="0.5 -1 0.1 0.15 0.2" />
+  </equality>
+
   <actuator>
     <position ctrlrange="-20 20" gear="500" joint="joint1" kv="0.5" name="act1"/>
     <motor gear="50000" joint="joint3" name="act2"/>

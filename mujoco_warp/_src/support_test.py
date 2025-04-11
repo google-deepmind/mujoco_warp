@@ -24,12 +24,26 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 
 from . import test_util
+from .support import contact_force_kernel
 
 wp.config.verify_cuda = True
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-5
+
+
+def _load_from_string(xml: str, keyframe: int = -1):
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  mjd = mujoco.MjData(mjm)
+  if keyframe > -1:
+    mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
+  mujoco.mj_forward(mjm, mjd)
+
+  m = mjwarp.put_model(mjm)
+  d = mjwarp.put_data(mjm, mjd)
+
+  return mjm, mjd, m, d
 
 
 def _assert_eq(a, b, name):
@@ -74,7 +88,7 @@ class SupportTest(parameterized.TestCase):
 
   def test_make_put_data(self):
     """Tests that make_put_data and put_data are producing the same shapes for all warp arrays."""
-    mjm, mjd, m, d = test_util.fixture("pendula.xml")
+    mjm, _, _, d = test_util.fixture("pendula.xml")
     md = mjwarp.make_data(mjm)
 
     # same number of fields
@@ -84,6 +98,89 @@ class SupportTest(parameterized.TestCase):
     for attr, val in md.__dict__.items():
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape)
+
+  _CONTACTS = """
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 0.55" euler="1 0 0">
+          <joint axis="1 0 0" type="free"/>
+          <geom fromto="-0.4 0 0 0.4 0 0" size="0.05" type="capsule" condim="6"/>
+        </body>
+        <body pos="0 0 0.5" euler="0 1 0">
+          <joint axis="1 0 0" type="free"/>
+          <geom fromto="-0.4 0 0 0.4 0 0" size="0.05" type="capsule" condim="3"/>
+        </body>
+        <body pos="0 0 0.445" euler="0 90 0">
+          <joint axis="1 0 0" type="free"/>
+          <geom fromto="-0.4 0 0 0.4 0 0" size="0.05" type="capsule" condim="1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+  """
+
+  def test_contact_force(self):
+    mjm, mjd, m, d = _load_from_string(self._CONTACTS)
+
+    # map MJX contacts to MJ ones
+    def _find(g):
+      val = (g == mjd.contact.geom).sum(axis=1)
+      return np.where(val == 2)[0][0]
+
+    for i in range(mjd.ncon):
+      result = np.zeros(6, dtype=float)
+      mujoco.mj_contactForce(mjm, mjd, i, result)
+
+      j = i
+      force = wp.zeros(1, dtype=wp.spatial_vector)
+      wp.launch(
+        kernel=contact_force_kernel,
+        dim=1,
+        inputs=[
+          m,
+          d,
+          force,
+          wp.array(
+            [
+              j,
+            ],
+            dtype=int,
+          ),
+          False,
+        ],
+      )
+      force = force.numpy()[0]
+      np.testing.assert_allclose(result, force, rtol=1e-5, atol=2)
+
+      # check for zeros after first condim elements
+      condim = mjd.contact.dim[j]
+      if condim < 6:
+        np.testing.assert_allclose(force[condim:], 0, rtol=1e-5, atol=1e-5)
+
+      # test world conversion
+      force = wp.zeros(1, dtype=wp.spatial_vector)
+      wp.launch(
+        kernel=contact_force_kernel,
+        dim=1,
+        inputs=[
+          m,
+          d,
+          force,
+          wp.array(
+            [
+              j,
+            ],
+            dtype=int,
+          ),
+          True,
+        ],
+      )
+      force = force.numpy()[0]
+
+      # back to contact frame
+      t = mjd.contact.frame[j].reshape(3, 3) @ force[:3]
+      b = mjd.contact.frame[j].reshape(3, 3) @ force[3:]
+      force = np.concatenate([t, b])
+      np.testing.assert_allclose(result, force, rtol=1e-5, atol=2)
 
 
 if __name__ == "__main__":

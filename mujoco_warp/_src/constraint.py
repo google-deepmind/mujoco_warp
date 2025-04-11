@@ -109,6 +109,67 @@ def _jac(
 
 
 @wp.kernel
+def _efc_equality_joint(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  worldid, i_eq_joint_adr = wp.tid()
+  i_eq = m.eq_jnt_adr[i_eq_joint_adr]
+  if not d.eq_active[worldid, i_eq]:
+    return
+
+  efcid = wp.atomic_add(d.nefc, 0, 1)
+  wp.atomic_add(d.ne, 0, 1)
+  d.efc.worldid[efcid] = worldid
+
+  jntid_1 = m.eq_obj1id[i_eq]
+  jntid_2 = m.eq_obj2id[i_eq]
+  data = m.eq_data[i_eq]
+  dofadr1 = m.jnt_dofadr[jntid_1]
+  qposadr1 = m.jnt_qposadr[jntid_1]
+  d.efc.J[efcid, dofadr1] = 1.0
+
+  if jntid_2 > -1:
+    # Two joint constraint
+    qposadr2 = m.jnt_qposadr[jntid_2]
+    dofadr2 = m.jnt_dofadr[jntid_2]
+    dif = d.qpos[worldid, qposadr2] - m.qpos0[qposadr2]
+
+    # Horner's method for polynomials
+    rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
+    deriv_2 = data[1] + dif * (
+      2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4])
+    )
+
+    pos = d.qpos[worldid, qposadr1] - m.qpos0[qposadr1] - rhs
+    Jqvel = d.qvel[worldid, dofadr1] - d.qvel[worldid, dofadr2] * deriv_2
+    invweight = m.dof_invweight0[dofadr1] + m.dof_invweight0[dofadr2]
+
+    d.efc.J[efcid, dofadr2] = -deriv_2
+  else:
+    # Single joint constraint
+    pos = d.qpos[worldid, qposadr1] - m.qpos0[qposadr1] - data[0]
+    Jqvel = d.qvel[worldid, dofadr1]
+    invweight = m.dof_invweight0[dofadr1]
+
+  # Update constraint parameters
+  _update_efc_row(
+    m,
+    d,
+    efcid,
+    pos,
+    pos,
+    invweight,
+    m.eq_solref[i_eq],
+    m.eq_solimp[i_eq],
+    wp.float32(0.0),
+    refsafe,
+    Jqvel,
+  )
+
+
+@wp.kernel
 def _efc_limit_slide_hinge(
   m: types.Model,
   d: types.Data,
@@ -340,8 +401,16 @@ def make_constraint(m: types.Model, d: types.Data):
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
     d.efc.J.zero_()
+    d.ne.zero_()
 
     refsafe = not m.opt.disableflags & types.DisableBit.REFSAFE.value
+
+    if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):
+      wp.launch(
+        _efc_equality_joint,
+        dim=(d.nworld, m.eq_jnt_adr.size),
+        inputs=[m, d, refsafe],
+      )
 
     if not (m.opt.disableflags & types.DisableBit.LIMIT.value) and (
       m.jnt_limited_slide_hinge_adr.size != 0

@@ -38,7 +38,7 @@ def _assert_eq(a, b, name):
 class ConstraintTest(parameterized.TestCase):
   def test_condim(self):
     """Test condim."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    xml = """
       <mujoco>
         <worldbody>
           <body pos="0 0 0">
@@ -83,20 +83,12 @@ class ConstraintTest(parameterized.TestCase):
           <key qpos='1 2 3 4 5 6 0 0'/>
         </keyframe>
       </mujoco>
-    """)
-
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+    """
 
     # TODO(team): test elliptic friction cone
 
-    mjd = mujoco.MjData(mjm)
-
-    for keyframe in range(mjm.nkey):
-      mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
-      mujoco.mj_forward(mjm, mjd)
-
-      m = mjwarp.put_model(mjm)
-      d = mjwarp.put_data(mjm, mjd)
+    for keyframe in range(6):
+      _, mjd, m, d = test_util.fixture(xml=xml, keyframe=keyframe)
       mjwarp.make_constraint(m, d)
 
       _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
@@ -111,7 +103,7 @@ class ConstraintTest(parameterized.TestCase):
   )
   def test_constraints(self, cone):
     """Test constraints."""
-    mjm, mjd, _, _ = test_util.fixture("constraints.xml", sparse=False, cone=cone)
+    mjm, mjd, _, _ = test_util.fixture("constraints.xml", cone=cone)
 
     for key in range(3):
       mujoco.mj_resetDataKeyframe(mjm, mjd, key)
@@ -126,6 +118,7 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
       _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
       _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
 
 
 if __name__ == "__main__":

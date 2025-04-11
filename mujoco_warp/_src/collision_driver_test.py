@@ -27,7 +27,8 @@ from . import test_util
 class CollisionTest(parameterized.TestCase):
   """Tests the collision contact functions."""
 
-  _BOX_PLANE = """
+  _FIXTURES = {
+    "box_plane": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -37,8 +38,8 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-      """
-  _PLANE_SPHERE = """
+      """,
+    "plane_sphere": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -48,8 +49,8 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _PLANE_CAPSULE = """
+        """,
+    "plane_capsule": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
@@ -59,8 +60,8 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _CONVEX_CONVEX = """
+        """,
+    "convex_convex": """
         <mujoco>
           <asset>
             <mesh name="poly"
@@ -78,8 +79,8 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _CAPSULE_CAPSULE = """
+        """,
+    "capsule_capsule": """
         <mujoco model="two_capsules">
           <worldbody>
             <body>
@@ -94,8 +95,8 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _SPHERE_SPHERE = """
+        """,
+    "sphere_sphere": """
         <mujoco>
           <worldbody>
             <body>
@@ -108,8 +109,8 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _SPHERE_CAPSULE = """
+        """,
+    "sphere_capsule": """
         <mujoco>
           <worldbody>
             <body>
@@ -122,8 +123,53 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _PLANE_CYLINDER_1 = """
+        """,
+    "sphere_cylinder_corner": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+              <geom size="0.1" type="sphere" pos=".33 0 0"/>
+            </body>
+            <body>
+              <geom size="0.15 0.2" type="cylinder" euler="30 45 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "sphere_cylinder_cap": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+              <geom size="0.1" type="sphere" pos=".26 -.14 .1"/>
+            </body>
+            <body>
+              <geom size="0.15 0.2" type="cylinder" euler="30 45 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "sphere_cylinder_side": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+              <geom size="0.1" type="sphere" pos="0 -.26 0"/>
+            </body>
+            <body>
+              <geom size="0.15 0.2" type="cylinder" euler="30 45 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "plane_cylinder_1": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane" euler="3 0 0"/>
@@ -133,8 +179,8 @@ class CollisionTest(parameterized.TestCase):
             </body>           
           </worldbody>
         </mujoco>
-        """
-  _PLANE_CYLINDER_2 = """
+        """,
+    "plane_cylinder_2": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane" euler="3 0 0"/>            
@@ -144,8 +190,8 @@ class CollisionTest(parameterized.TestCase):
             </body>            
           </worldbody>
         </mujoco>
-        """
-  _PLANE_CYLINDER_3 = """
+        """,
+    "plane_cylinder_3": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane" euler="3 0 0"/>            
@@ -155,72 +201,46 @@ class CollisionTest(parameterized.TestCase):
             </body>
           </worldbody>
         </mujoco>
-        """
-  _SPHERE_BOX = """
+        """,
+    "sphere_box_shallow": """
         <mujoco>
           <worldbody>
             <geom type="box" pos="0 0 0" size=".5 .5 .5" />
-            <body pos="0.2 0.2 0.4">
+            <body pos="-0.6 -0.6 0.7">
               <geom type="sphere" size="0.5"/>
               <freejoint/>
             </body>
-            <body pos="-0.6 -0.6 0.7">
-              <geom type="sphere" size="0.5 0.8"/>
-              <freejoint/>
-            </body>
           </worldbody>
         </mujoco>
-        """
-  _CAPSULE_BOX = """
+        """,
+    "sphere_box_deep": """
         <mujoco>
           <worldbody>
-            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
-            <body pos="0.4 0.2 0.8" euler="0 -40 0" >
-              <geom type="capsule" size="0.5 0.8"/>
-              <freejoint/>
-            </body>
-            <body pos="0 0 1.5" >
-              <geom type="capsule" size="0.5 0.8"/>
+            <geom type="box" pos="0 0 0" size=".5 .5 .5" />
+            <body pos="-0.6 -0.6 0.7">
+              <geom type="sphere" size="0.5"/>
               <freejoint/>
             </body>
           </worldbody>
         </mujoco>
-        """
+        """,
+  }
 
-  @parameterized.parameters(
-    (_BOX_PLANE),
-    (_PLANE_SPHERE),
-    (_PLANE_CAPSULE),
-    (_CONVEX_CONVEX),
-    (_SPHERE_SPHERE),
-    (_SPHERE_CAPSULE),
-    (_SPHERE_BOX),
-    (_CAPSULE_CAPSULE),
-    (_CAPSULE_BOX),
-    (_PLANE_CYLINDER_1),
-    (_PLANE_CYLINDER_2),
-    (_PLANE_CYLINDER_3),
-  )
-  def test_collision(self, xml_string):
+  @parameterized.parameters(_FIXTURES.keys())
+  def test_collision(self, fixture):
     """Tests convex collision with different geometries."""
-    m = mujoco.MjModel.from_xml_string(xml_string)
-    d = mujoco.MjData(m)
-    mujoco.mj_forward(m, d)
-    mx = mjwarp.put_model(m)
-    dx = mjwarp.put_data(m, d)
-    # Enable Gjk algorithm
-    mjwarp.collision(mx, dx)
-    mujoco.mj_collision(m, d)
-    for i in range(d.ncon):
-      actual_dist = d.contact.dist[i]
-      actual_pos = d.contact.pos[i]
-      actual_frame = d.contact.frame[i]
+    _, mjd, _, d = test_util.fixture(xml=self._FIXTURES[fixture])
+
+    for i in range(mjd.ncon):
+      actual_dist = mjd.contact.dist[i]
+      actual_pos = mjd.contact.pos[i]
+      actual_frame = mjd.contact.frame[i]
       # This is because Gjk generates more contact
       result = False
-      for j in range(dx.ncon.numpy()[0]):
-        test_dist = dx.contact.dist.numpy()[j]
-        test_pos = dx.contact.pos.numpy()[j, :]
-        test_frame = dx.contact.frame.numpy()[j].flatten()
+      for j in range(d.ncon.numpy()[0]):
+        test_dist = d.contact.dist.numpy()[j]
+        test_pos = d.contact.pos.numpy()[j, :]
+        test_frame = d.contact.frame.numpy()[j].flatten()
         check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
         check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-2)
         check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-2)
@@ -235,20 +255,15 @@ class CollisionTest(parameterized.TestCase):
     (False, True),
     (False, False),
   )
-  def test_collision_disableflags(self, dsbl_constraint, dsbl_contact):
+  def test_collision_disableflags(self, constraint, contact):
     """Tests collision disableflags."""
-    mjm, mjd, _, _ = test_util.fixture("humanoid/humanoid.xml")
-
-    if dsbl_constraint:
-      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
-    if dsbl_contact:
-      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
-
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
+    mjm, mjd, m, d = test_util.fixture(
+      "humanoid/humanoid.xml",
+      keyframe=0,
+      constraint=constraint,
+      contact=contact,
+      kick=False,
+    )
 
     mujoco.mj_collision(mjm, mjd)
     mjwarp.collision(m, d)
