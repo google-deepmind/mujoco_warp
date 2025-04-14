@@ -25,6 +25,8 @@ from .types import Model
 from .types import vec5
 from .warp_util import event_scope
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def _geom_filter(m: Model, geom1: int, geom2: int, filterparent: bool) -> bool:

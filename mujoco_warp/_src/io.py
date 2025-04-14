@@ -50,6 +50,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if n > 0:
       raise NotImplementedError(f"{msg} are unsupported.")
 
+  if mjm.tendon_frictionloss.any():
+    raise NotImplementedError("Tendon frictionloss is unsupported.")
+
   # check options
   for opt, opt_types, msg in (
     (mjm.opt.integrator, types.IntegratorType, "Integrator"),
@@ -316,6 +319,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.body_rootid = wp.array(mjm.body_rootid, dtype=wp.int32, ndim=1)
   m.body_inertia = wp.array(mjm.body_inertia, dtype=wp.vec3, ndim=1)
   m.body_mass = wp.array(mjm.body_mass, dtype=wp.float32, ndim=1)
+  m.body_subtreemass = wp.array(mjm.body_subtreemass, dtype=wp.float32, ndim=1)
 
   subtree_mass = np.copy(mjm.body_mass)
   # TODO(team): should this be [mjm.nbody - 1, 0) ?
@@ -384,7 +388,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.cam_quat = wp.array(mjm.cam_quat, dtype=wp.quat, ndim=1)
   m.cam_poscom0 = wp.array(mjm.cam_poscom0, dtype=wp.vec3, ndim=1)
   m.cam_pos0 = wp.array(mjm.cam_pos0, dtype=wp.vec3, ndim=1)
-  m.cam_mat0 = wp.array(mjm.cam_mat0.reshape(-1, 3, 3), dtype=wp.mat33, ndim=1)
   m.light_mode = wp.array(mjm.light_mode, dtype=wp.int32, ndim=1)
   m.light_bodyid = wp.array(mjm.light_bodyid, dtype=wp.int32, ndim=1)
   m.light_targetbodyid = wp.array(mjm.light_targetbodyid, dtype=wp.int32, ndim=1)
@@ -392,13 +395,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.light_dir = wp.array(mjm.light_dir, dtype=wp.vec3, ndim=1)
   m.light_poscom0 = wp.array(mjm.light_poscom0, dtype=wp.vec3, ndim=1)
   m.light_pos0 = wp.array(mjm.light_pos0, dtype=wp.vec3, ndim=1)
-  m.light_dir0 = wp.array(mjm.light_dir0, dtype=wp.vec3, ndim=1)
   m.dof_bodyid = wp.array(mjm.dof_bodyid, dtype=wp.int32, ndim=1)
   m.dof_jntid = wp.array(mjm.dof_jntid, dtype=wp.int32, ndim=1)
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32, ndim=1)
   m.dof_Madr = wp.array(mjm.dof_Madr, dtype=wp.int32, ndim=1)
   m.dof_armature = wp.array(mjm.dof_armature, dtype=wp.float32, ndim=1)
   m.dof_damping = wp.array(mjm.dof_damping, dtype=wp.float32, ndim=1)
+  m.dof_frictionloss = wp.array(mjm.dof_frictionloss, dtype=wp.float32, ndim=1)
+  m.dof_solimp = wp.array(mjm.dof_solimp, dtype=types.vec5, ndim=1)
+  m.dof_solref = wp.array(mjm.dof_solref, dtype=wp.vec2, ndim=1)
   m.dof_tri_row = wp.from_numpy(dof_tri_row, dtype=wp.int32)
   m.dof_tri_col = wp.from_numpy(dof_tri_col, dtype=wp.int32)
   m.dof_invweight0 = wp.array(mjm.dof_invweight0, dtype=wp.float32, ndim=1)
@@ -423,6 +428,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # pre-compute indices of joint equalities
   m.eq_jnt_adr = wp.array(
     np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=wp.int32, ndim=1
+  )
+  m.eq_connect_adr = wp.array(
+    np.nonzero(mjm.eq_type == types.EqType.CONNECT.value)[0], dtype=wp.int32, ndim=1
   )
 
   # short-circuiting here allows us to skip a lot of code in implicit integration
@@ -489,6 +497,7 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
   efc.D = wp.zeros((njmax,), dtype=wp.float32)
   efc.pos = wp.zeros((njmax,), dtype=wp.float32)
   efc.aref = wp.zeros((njmax,), dtype=wp.float32)
+  efc.frictionloss = wp.zeros((njmax,), dtype=wp.float32)
   efc.force = wp.zeros((njmax,), dtype=wp.float32)
   efc.margin = wp.zeros((njmax,), dtype=wp.float32)
   efc.worldid = wp.zeros((njmax,), dtype=wp.int32)
@@ -504,7 +513,7 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
   efc.cost = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.prev_cost = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.solver_niter = wp.empty(shape=(nworld,), dtype=wp.int32)
-  efc.active = wp.empty(shape=(njmax,), dtype=wp.int32)
+  efc.active = wp.empty(shape=(njmax,), dtype=bool)
   efc.gtol = wp.empty(shape=(nworld,), dtype=wp.float32)
   efc.mv = wp.empty(shape=(nworld, mjm.nv), dtype=wp.float32)
   efc.jv = wp.empty(shape=(njmax,), dtype=wp.float32)
@@ -559,7 +568,10 @@ def make_data(
   d.ncon = wp.zeros(1, dtype=wp.int32)
   d.ne = wp.zeros(1, dtype=wp.int32, ndim=1)
   d.nefc = wp.zeros(1, dtype=wp.int32, ndim=1)
-  d.nl = 0
+  d.ne = wp.zeros(1, dtype=wp.int32)
+  d.nf = wp.zeros(1, dtype=wp.int32)
+  d.nl = wp.zeros(1, dtype=wp.int32)
+
   d.time = 0.0
 
   qpos0 = np.tile(mjm.qpos0, (nworld, 1))
@@ -622,6 +634,9 @@ def make_data(
   d.contact.worldid = wp.zeros((nconmax,), dtype=wp.int32)
   d.efc = _constraint(mjm, d.nworld, d.njmax)
   d.qfrc_passive = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.subtree_linvel = wp.zeros((nworld, mjm.nbody), dtype=wp.vec3)
+  d.subtree_angmom = wp.zeros((nworld, mjm.nbody), dtype=wp.vec3)
+  d.subtree_bodyvel = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
   d.qfrc_spring = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_damper = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_actuator = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
@@ -712,7 +727,8 @@ def put_data(
 
   d.ncon = wp.array([mjd.ncon * nworld], dtype=wp.int32, ndim=1)
   d.ne = wp.array([mjd.ne * nworld], dtype=wp.int32, ndim=1)
-  d.nl = mjd.nl
+  d.nf = wp.array([mjd.nf * nworld], dtype=wp.int32, ndim=1)
+  d.nl = wp.array([mjd.nl * nworld], dtype=wp.int32, ndim=1)
   d.nefc = wp.array([mjd.nefc * nworld], dtype=wp.int32, ndim=1)
   d.time = mjd.time
 
@@ -782,6 +798,9 @@ def put_data(
   d.cdof_dot = wp.array(tile(mjd.cdof_dot), dtype=wp.spatial_vector, ndim=2)
   d.qfrc_bias = wp.array(tile(mjd.qfrc_bias), dtype=wp.float32, ndim=2)
   d.qfrc_passive = wp.array(tile(mjd.qfrc_passive), dtype=wp.float32, ndim=2)
+  d.subtree_linvel = wp.array(tile(mjd.subtree_linvel), dtype=wp.vec3, ndim=2)
+  d.subtree_angmom = wp.array(tile(mjd.subtree_angmom), dtype=wp.vec3, ndim=2)
+  d.subtree_bodyvel = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
   d.qfrc_spring = wp.array(tile(mjd.qfrc_spring), dtype=wp.float32, ndim=2)
   d.qfrc_damper = wp.array(tile(mjd.qfrc_damper), dtype=wp.float32, ndim=2)
   d.qfrc_actuator = wp.array(tile(mjd.qfrc_actuator), dtype=wp.float32, ndim=2)
@@ -810,6 +829,9 @@ def put_data(
   )
   efc_aref_fill = np.concatenate(
     [np.repeat(mjd.efc_aref, nworld, axis=0), np.zeros(nefc_fill)]
+  )
+  efc_frictionloss_fill = np.concatenate(
+    [np.repeat(mjd.efc_frictionloss, nworld, axis=0), np.zeros(nefc_fill)]
   )
   efc_force_fill = np.concatenate(
     [np.repeat(mjd.efc_force, nworld, axis=0), np.zeros(nefc_fill)]
@@ -883,6 +905,7 @@ def put_data(
   d.efc.D = wp.array(efc_D_fill, dtype=wp.float32, ndim=1)
   d.efc.pos = wp.array(efc_pos_fill, dtype=wp.float32, ndim=1)
   d.efc.aref = wp.array(efc_aref_fill, dtype=wp.float32, ndim=1)
+  d.efc.frictionloss = wp.array(efc_frictionloss_fill, dtype=wp.float32, ndim=1)
   d.efc.force = wp.array(efc_force_fill, dtype=wp.float32, ndim=1)
   d.efc.margin = wp.array(efc_margin_fill, dtype=wp.float32, ndim=1)
   d.efc.worldid = wp.from_numpy(efc_worldid, dtype=wp.int32)
@@ -1003,6 +1026,8 @@ def get_data_into(
   result.cdof_dot = d.cdof_dot.numpy()[0]
   result.qfrc_bias = d.qfrc_bias.numpy()[0]
   result.qfrc_passive = d.qfrc_passive.numpy()[0]
+  result.subtree_linvel = d.subtree_linvel.numpy()[0]
+  result.subtree_angmom = d.subtree_angmom.numpy()[0]
   result.qfrc_spring = d.qfrc_spring.numpy()[0]
   result.qfrc_damper = d.qfrc_damper.numpy()[0]
   result.qfrc_actuator = d.qfrc_actuator.numpy()[0]

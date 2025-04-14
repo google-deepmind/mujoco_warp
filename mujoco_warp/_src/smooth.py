@@ -19,6 +19,7 @@ from packaging import version
 
 from . import math
 from . import support
+from .types import MJ_MINVAL
 from .types import CamLightType
 from .types import Data
 from .types import DisableBit
@@ -699,7 +700,12 @@ def transmission(m: Model, d: Data):
         length[worldid, actid] = 0.0
         if trntype == wp.static(TrnType.JOINTINPARENT.value):
           quat_neg = math.quat_inv(
-            wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
+            wp.quat(
+              qpos[qadr + 3],
+              qpos[qadr + 4],
+              qpos[qadr + 5],
+              qpos[qadr + 6],
+            )
           )
           gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
           moment[worldid, actid, vadr + 0] = gear[0]
@@ -874,7 +880,10 @@ def _solve_LD_dense(m: Model, d: Data, L: array3df, x: array2df, y: array2df):
       wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
     wp.launch_tiled(
-      cho_solve, dim=(d.nworld, size), inputs=[m, L, x, y, adr], block_dim=block_dim
+      cho_solve,
+      dim=(d.nworld, size),
+      inputs=[m, L, x, y, adr],
+      block_dim=block_dim,
     )
 
   qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -919,7 +928,10 @@ def _factor_solve_i_dense(m: Model, d: Data, M: array3df, x: array2df, y: array2
       wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
     wp.launch_tiled(
-      cholesky, dim=(d.nworld, size), inputs=[m, adr, M, x, y], block_dim=block_dim
+      cholesky,
+      dim=(d.nworld, size),
+      inputs=[m, adr, M, x, y],
+      block_dim=block_dim,
     )
 
   qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -936,6 +948,95 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _factor_solve_i_dense(m, d, M, x, y)
+
+
+def subtree_vel(m: Model, d: Data):
+  """Subtree linear velocity and angular momentum."""
+
+  # bodywise quantities
+  @kernel
+  def _forward(m: Model, d: Data):
+    worldid, bodyid = wp.tid()
+
+    cvel = d.cvel[worldid, bodyid]
+    ang = wp.spatial_top(cvel)
+    lin = wp.spatial_bottom(cvel)
+    xipos = d.xipos[worldid, bodyid]
+    ximat = d.ximat[worldid, bodyid]
+    subtree_com_root = d.subtree_com[worldid, m.body_rootid[bodyid]]
+
+    # update linear velocity
+    lin -= wp.cross(xipos - subtree_com_root, ang)
+
+    d.subtree_linvel[worldid, bodyid] = m.body_mass[bodyid] * lin
+    dv = wp.transpose(ximat) @ ang
+    dv[0] *= m.body_inertia[bodyid][0]
+    dv[1] *= m.body_inertia[bodyid][1]
+    dv[2] *= m.body_inertia[bodyid][2]
+    d.subtree_angmom[worldid, bodyid] = ximat @ dv
+    d.subtree_bodyvel[worldid, bodyid] = wp.spatial_vector(ang, lin)
+
+  wp.launch(_forward, dim=(d.nworld, m.nbody), inputs=[m, d])
+
+  # sum body linear momentum recursively up the kinematic tree
+  @kernel
+  def _linear_momentum(m: Model, d: Data, leveladr: int):
+    worldid, nodeid = wp.tid()
+    bodyid = m.body_tree[leveladr + nodeid]
+    if bodyid:
+      pid = m.body_parentid[bodyid]
+      wp.atomic_add(d.subtree_linvel[worldid], pid, d.subtree_linvel[worldid, bodyid])
+    d.subtree_linvel[worldid, bodyid] /= wp.max(MJ_MINVAL, m.body_subtreemass[bodyid])
+
+  body_treeadr = m.body_treeadr.numpy()
+  for i in reversed(range(len(body_treeadr))):
+    beg = body_treeadr[i]
+    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+    wp.launch(_linear_momentum, dim=[d.nworld, end - beg], inputs=[m, d, beg])
+
+  @kernel
+  def _angular_momentum(m: Model, d: Data, leveladr: int):
+    worldid, nodeid = wp.tid()
+    bodyid = m.body_tree[leveladr + nodeid]
+
+    if bodyid == 0:
+      return
+
+    pid = m.body_parentid[bodyid]
+
+    xipos = d.xipos[worldid, bodyid]
+    com = d.subtree_com[worldid, bodyid]
+    com_parent = d.subtree_com[worldid, pid]
+    vel = d.subtree_bodyvel[worldid, bodyid]
+    linvel = d.subtree_linvel[worldid, bodyid]
+    linvel_parent = d.subtree_linvel[worldid, pid]
+    mass = m.body_mass[bodyid]
+    subtreemass = m.body_subtreemass[bodyid]
+
+    # momentum wrt body i
+    dx = xipos - com
+    dv = wp.spatial_bottom(vel) - linvel
+    dp = dv * mass
+    dL = wp.cross(dx, dp)
+
+    # add to subtree i
+    d.subtree_angmom[worldid, bodyid] += dL
+
+    # add to parent
+    wp.atomic_add(d.subtree_angmom[worldid], pid, d.subtree_angmom[worldid, bodyid])
+
+    # momentum wrt parent
+    dx = com - com_parent
+    dv = linvel - linvel_parent
+    dv *= subtreemass
+    dL = wp.cross(dx, dv)
+    wp.atomic_add(d.subtree_angmom[worldid], pid, dL)
+
+  body_treeadr = m.body_treeadr.numpy()
+  for i in reversed(range(len(body_treeadr))):
+    beg = body_treeadr[i]
+    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+    wp.launch(_angular_momentum, dim=[d.nworld, end - beg], inputs=[m, d, beg])
 
 
 def tendon(m: Model, d: Data):

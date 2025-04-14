@@ -25,6 +25,7 @@ from .types import GeomType
 from .types import Model
 
 _TINY_VAL = 1e-6
+wp.set_module_options({"enable_backward": False})
 
 
 @wp.struct

@@ -46,6 +46,7 @@ from ._src.smooth import kinematics as kinematics
 from ._src.smooth import rne as rne
 from ._src.smooth import rne_postconstraint as rne_postconstraint
 from ._src.smooth import solve_m as solve_m
+from ._src.smooth import subtree_vel as subtree_vel
 from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
 from ._src.solver import solve as solve

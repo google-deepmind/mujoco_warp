@@ -26,6 +26,8 @@ from .types import vec5
 from .warp_util import event_scope
 from .warp_util import kernel
 
+wp.set_module_options({"enable_backward": False})
+
 
 def is_sparse(m: mujoco.MjModel):
   if m.opt.jacobian == mujoco.mjtJacobian.mjJAC_AUTO:

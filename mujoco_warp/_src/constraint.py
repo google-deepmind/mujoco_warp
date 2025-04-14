@@ -34,6 +34,7 @@ def _update_efc_row(
   margin: wp.float32,
   refsafe: bool,
   Jqvel: float,
+  frictionloss: float,
 ):
   # Calculate kbi
   timeconst = solref[0]
@@ -72,6 +73,7 @@ def _update_efc_row(
   d.efc.aref[efcid] = -k * imp * pos_aref - b * Jqvel
   d.efc.pos[efcid] = pos_aref + margin
   d.efc.margin[efcid] = margin
+  d.efc.frictionloss[efcid] = frictionloss
 
 
 @wp.func
@@ -79,11 +81,10 @@ def _jac(
   m: types.Model,
   d: types.Data,
   point: wp.vec3,
-  xyz: wp.int32,
   bodyid: wp.int32,
   dofid: wp.int32,
   worldid: wp.int32,
-) -> Tuple[wp.float32, wp.float32]:
+) -> Tuple[wp.vec3f, wp.vec3f]:
   dof_bodyid = m.dof_bodyid[dofid]
   in_tree = int(dof_bodyid == 0)
   parentid = bodyid
@@ -94,7 +95,7 @@ def _jac(
     parentid = m.body_parentid[parentid]
 
   if not in_tree:
-    return 0.0, 0.0
+    return wp.vec3f(0.0, 0.0, 0.0), wp.vec3f(0.0, 0.0, 0.0)
 
   offset = point - wp.vec3(d.subtree_com[worldid, m.body_rootid[bodyid]])
 
@@ -102,10 +103,77 @@ def _jac(
   cdof_ang = wp.spatial_top(cdof)
   cdof_lin = wp.spatial_bottom(cdof)
 
-  jacp_xyz = (cdof_lin + wp.cross(cdof_ang, offset))[xyz]
-  jacr_xyz = cdof_ang[xyz]
+  jacp = cdof_lin + wp.cross(cdof_ang, offset)
+  jacr = cdof_ang
 
-  return jacp_xyz, jacr_xyz
+  return jacp, jacr
+
+
+@wp.kernel
+def _efc_equality_connect(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  """Calculates constraint rows for connect equality constraints."""
+
+  worldid, i_eq_connect_adr = wp.tid()
+  i_eq = m.eq_connect_adr[i_eq_connect_adr]
+  if not d.eq_active[worldid, i_eq]:
+    return
+
+  efcid = wp.atomic_add(d.nefc, 0, 3)
+  wp.atomic_add(d.ne, 0, 3)
+  d.efc.worldid[efcid] = worldid
+
+  data = m.eq_data[i_eq]
+  anchor1 = wp.vec3f(data[0], data[1], data[2])
+  anchor2 = wp.vec3f(data[3], data[4], data[5])
+
+  if m.nsite and m.eq_objtype[i_eq] == wp.static(types.ObjType.SITE.value):
+    # body1id stores the index of site_bodyid.
+    body1id = m.site_bodyid[m.eq_obj1id[i_eq]]
+    body2id = m.site_bodyid[m.eq_obj2id[i_eq]]
+    pos1 = d.site_xpos[worldid, m.eq_obj1id[i_eq]]
+    pos2 = d.site_xpos[worldid, m.eq_obj2id[i_eq]]
+  else:
+    body1id = m.eq_obj1id[i_eq]
+    body2id = m.eq_obj2id[i_eq]
+    pos1 = d.xpos[worldid, body1id] + d.xmat[worldid, body1id] @ anchor1
+    pos2 = d.xpos[worldid, body2id] + d.xmat[worldid, body2id] @ anchor2
+
+  # error is difference in global positions
+  pos = pos1 - pos2
+
+  # compute Jacobian difference (opposite of contact: 0 - 1)
+  Jqvel = wp.vec3f(0.0, 0.0, 0.0)
+  for dofid in range(m.nv):  # TODO: parallelize
+    jacp1, _ = _jac(m, d, pos1, body1id, dofid, worldid)
+    jacp2, _ = _jac(m, d, pos2, body2id, dofid, worldid)
+    j1mj2 = jacp1 - jacp2
+    d.efc.J[efcid, dofid] = j1mj2[0]
+    d.efc.J[efcid + 1, dofid] = j1mj2[1]
+    d.efc.J[efcid + 2, dofid] = j1mj2[2]
+    Jqvel += j1mj2 * d.qvel[worldid, dofid]
+
+  invweight = m.body_invweight0[body1id, 0] + m.body_invweight0[body2id, 0]
+  pos_imp = wp.length(pos)
+
+  for i in range(3):
+    _update_efc_row(
+      m,
+      d,
+      efcid + i,
+      pos[i],
+      pos_imp,
+      invweight,
+      m.eq_solref[i_eq],
+      m.eq_solimp[i_eq],
+      wp.float32(0.0),
+      refsafe,
+      Jqvel[i],
+      0.0,
+    )
 
 
 @wp.kernel
@@ -166,6 +234,42 @@ def _efc_equality_joint(
     wp.float32(0.0),
     refsafe,
     Jqvel,
+    0.0,
+  )
+
+
+@wp.kernel
+def _efc_friction(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  # TODO(team): tendon
+  worldid, dofid = wp.tid()
+
+  if m.dof_frictionloss[dofid] <= 0.0:
+    return
+
+  efcid = wp.atomic_add(d.nefc, 0, 1)
+  wp.atomic_add(d.nf, 0, 1)
+  d.efc.worldid[efcid] = worldid
+
+  d.efc.J[efcid, dofid] = 1.0
+  Jqvel = d.qvel[worldid, dofid]
+
+  _update_efc_row(
+    m,
+    d,
+    efcid,
+    0.0,
+    0.0,
+    m.dof_invweight0[dofid],
+    m.dof_solref[dofid],
+    m.dof_solimp[dofid],
+    0.0,
+    refsafe,
+    Jqvel,
+    m.dof_frictionloss[dofid],
   )
 
 
@@ -206,6 +310,7 @@ def _efc_limit_slide_hinge(
       m.jnt_margin[jntid],
       refsafe,
       Jqvel,
+      0.0,
     )
 
 
@@ -259,19 +364,17 @@ def _efc_contact_pyramidal(
     for i in range(m.nv):
       J = float(0.0)
       Ji = float(0.0)
+      jac1p, jac1r = _jac(m, d, con_pos, body1, i, worldid)
+      jac2p, jac2r = _jac(m, d, con_pos, body2, i, worldid)
+      jacp_dif = jac2p - jac1p
       for xyz in range(3):
-        jac1p, jac1r = _jac(m, d, con_pos, xyz, body1, i, worldid)
-        jac2p, jac2r = _jac(m, d, con_pos, xyz, body2, i, worldid)
-        jacp_dif = jac2p - jac1p
-
-        J += frame[0, xyz] * jacp_dif
+        J += frame[0, xyz] * jacp_dif[xyz]
 
         if condim > 1:
           if dimid2 < 3:
-            Ji += frame[dimid2, xyz] * jacp_dif
+            Ji += frame[dimid2, xyz] * jacp_dif[xyz]
           else:
-            jacr_dif = jac2r - jac1r
-            Ji += frame[dimid2 - 3, xyz] * jacr_dif
+            Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
 
       if condim > 1:
         if dimid % 2 == 0:
@@ -294,6 +397,7 @@ def _efc_contact_pyramidal(
       includemargin,
       refsafe,
       Jqvel,
+      0.0,
     )
 
 
@@ -345,11 +449,11 @@ def _efc_contact_elliptic(
     Jqvel = float(0.0)
     for i in range(m.nv):
       J = float(0.0)
+      jac1p, _ = _jac(m, d, cpos, body1, i, worldid)
+      jac2p, _ = _jac(m, d, cpos, body2, i, worldid)
+      jac_dif = jac2p - jac1p
       for xyz in range(3):
-        jac1p, _ = _jac(m, d, cpos, xyz, body1, i, worldid)
-        jac2p, _ = _jac(m, d, cpos, xyz, body2, i, worldid)
-        jac_dif = jac2p - jac1p
-        J += frame[dimid, xyz] * jac_dif
+        J += frame[dimid, xyz] * jac_dif[xyz]
 
       d.efc.J[efcid, i] = J
       Jqvel += J * d.qvel[worldid, i]
@@ -390,6 +494,7 @@ def _efc_contact_elliptic(
       includemargin,
       refsafe,
       Jqvel,
+      0.0,
     )
 
 
@@ -397,18 +502,31 @@ def _efc_contact_elliptic(
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
+  d.ne.zero_()
+  d.nf.zero_()
   d.nefc.zero_()
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
     d.efc.J.zero_()
-    d.ne.zero_()
 
     refsafe = not m.opt.disableflags & types.DisableBit.REFSAFE.value
 
     if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):
       wp.launch(
+        _efc_equality_connect,
+        dim=(d.nworld, m.eq_connect_adr.size),
+        inputs=[m, d, refsafe],
+      )
+      wp.launch(
         _efc_equality_joint,
         dim=(d.nworld, m.eq_jnt_adr.size),
+        inputs=[m, d, refsafe],
+      )
+
+    if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS.value):
+      wp.launch(
+        _efc_friction,
+        dim=(d.nworld, m.nv),
         inputs=[m, d, refsafe],
       )
 
