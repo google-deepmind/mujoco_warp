@@ -18,6 +18,7 @@ import mujoco
 import warp as wp
 
 MJ_MINVAL = mujoco.mjMINVAL
+MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_NREF = mujoco.mjNREF
@@ -1088,7 +1089,6 @@ class Data:
   qLDiagInv_integration: wp.array(dtype=wp.float32, ndim=2)
 
   # sweep-and-prune broadphase
-  sap_geom_sort: wp.array(dtype=wp.vec4, ndim=2)
   sap_projection_lower: wp.array(dtype=wp.float32, ndim=2)
   sap_projection_upper: wp.array(dtype=wp.float32, ndim=2)
   sap_sort_index: wp.array(dtype=wp.int32, ndim=2)
