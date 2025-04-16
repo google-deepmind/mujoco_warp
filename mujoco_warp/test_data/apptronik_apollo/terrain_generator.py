@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 from ml_collections import config_dict
 
-OFFSET_Z = 0.0  # Objects won't fall under z=0.
 OUTPUT_SCENE_PATH = Path(__file__).parent / "scene_terrain.xml"
 INPUT_SCENE_XML = """ 
 <mujoco model="apptronik_apollo scene">
@@ -39,19 +38,19 @@ INPUT_SCENE_XML = """
 
 ROUGH_TERRAINS_CFG = config_dict.create(
   size=(8.0, 8.0),
-  border_width=20.0,
+  border_width=1.0,
   num_rows=10,
   num_cols=20,
   sub_terrains=config_dict.create(
     pyramid_stairs=config_dict.create(
-      proportion=0.4,
+      proportion=0.45,
       step_height_range=(0.05, 0.23),
       step_width=0.3,
       platform_width=3.0,
       border_width=1.0,
     ),
     pyramid_stairs_inv=config_dict.create(
-      proportion=0.4,
+      proportion=0.45,
       step_height_range=(0.05, 0.23),
       step_width=0.3,
       platform_width=3.0,
@@ -179,7 +178,6 @@ class TerrainGenerator:
     """
     Generate a pyramid stair terrain without holes.
     """
-    position[2] += OFFSET_Z
     # Determine the step height based on difficulty.
     step_height = step_height_range[0] + difficulty * (
       step_height_range[1] - step_height_range[0]
@@ -317,7 +315,6 @@ class TerrainGenerator:
     Generate an inverted pyramid stair terrain pattern.
     The steps are arranged in the negative z-direction with a flat central platform at the bottom.
     """
-    position[2] += OFFSET_Z
     # Determine step height based on difficulty.
     step_height = step_height_range[0] + difficulty * (
       step_height_range[1] - step_height_range[0]
@@ -434,34 +431,34 @@ class TerrainGenerator:
 
   def AddFlatGround(self, position=[0.0, 0.0, 0.0], size=[5.0, 5.0]):
     """
-    Add a flat ground plane to the scene.
+    Add a flat ground to the scene.
 
     Args:
         position: The [x, y, z] position of the center of the ground patch.
-        size: The [x_size, y_size] half-extent of the plane (controls visual clipping).
+        size: The [x_size, y_size] half-extent of the ground patch.
     """
     # The position is of the bottom left corner.
-    position[2] += OFFSET_Z
-    self.AddGeometry(
-      position=[position[0] + size[0] / 2, position[1] + size[1] / 2, position[2]],
+    self.AddBox(
+      position=[
+        position[0] + size[0] / 2,
+        position[1] + size[1] / 2,
+        position[2] - 0.5,
+      ],
       euler=[0.0, 0.0, 0.0],
-      size=size + [0.05 * 2],
-      geo_type="plane",
+      size=size + [1.0],
     )
 
   def Save(self):
     # Create an ElementTree from our root element and write it to file
     tree = xml_et.ElementTree(self.scene)
-    tree.write(OUTPUT_SCENE_PATH)
-
-
-import numpy as np
+    xml_et.indent(tree, space="  ")
+    tree.write(OUTPUT_SCENE_PATH, encoding="unicode")
 
 
 class TerrainConfigCompiler:
   """
   Compiles a terrain configuration by generating a grid of sub-terrains
-  and border planes using a provided TerrainGenerator. The grid is
+  and flat border regions using a provided TerrainGenerator. The grid is
   centered at the origin. If the sum of sub-terrain proportions is less than 1,
   the remaining probability is used for flat ground tiles.
 
@@ -496,10 +493,10 @@ class TerrainConfigCompiler:
   def compile(self):
     """
     Compiles the terrain configuration by generating a grid of sub-terrains,
-    sampling tile types (including flat ground if needed), and adding border planes.
+    sampling tile types (including flat ground if needed), and adding a flat border.
     """
     self._generate_sub_terrains()
-    self._add_border_planes()
+    self._add_border()
 
   def _generate_sub_terrains(self):
     """
@@ -579,9 +576,9 @@ class TerrainConfigCompiler:
             # For any unspecified sub-terrain types, default to flat ground.
             self.tg.AddFlatGround(position=pos, size=[tile_width, tile_height])
 
-  def _add_border_planes(self):
+  def _add_border(self):
     """
-    Adds border planes as flat geometries around the complete grid of sub-terrains.
+    Adds border boxes around the complete grid of sub-terrains.
     The borders extend beyond the grid by the configured border_width on every side.
     The positions are computed based on the grid being centered at the origin.
     """
@@ -596,35 +593,27 @@ class TerrainConfigCompiler:
     # With the grid centered at the origin, the grid spans:
     # x from -grid_width/2 to grid_width/2, and y from -grid_height/2 to grid_height/2
 
-    thickness = 0.1  # a small thickness for the border geometry
+    thickness = 1.0  # 1m thick border, going underground
 
     # --- Bottom Border ---
-    bottom_center = [0.0, -grid_height / 2 - b / 2, 0.0]
+    bottom_center = [0.0, -grid_height / 2 - b / 2, -thickness / 2]
     bottom_size = [grid_width + 2 * b, b, thickness]
-    self.tg.AddGeometry(
-      position=bottom_center, euler=[0.0, 0.0, 0.0], size=bottom_size, geo_type="plane"
-    )
+    self.tg.AddBox(position=bottom_center, euler=[0.0, 0.0, 0.0], size=bottom_size)
 
     # --- Top Border ---
-    top_center = [0.0, grid_height / 2 + b / 2, 0.0]
+    top_center = [0.0, grid_height / 2 + b / 2, -thickness / 2]
     top_size = [grid_width + 2 * b, b, thickness]
-    self.tg.AddGeometry(
-      position=top_center, euler=[0.0, 0.0, 0.0], size=top_size, geo_type="plane"
-    )
+    self.tg.AddBox(position=top_center, euler=[0.0, 0.0, 0.0], size=top_size)
 
     # --- Left Border ---
-    left_center = [-grid_width / 2 - b / 2, 0.0, 0.0]
+    left_center = [-grid_width / 2 - b / 2, 0.0, -thickness / 2]
     left_size = [b, grid_height, thickness]
-    self.tg.AddGeometry(
-      position=left_center, euler=[0.0, 0.0, 0.0], size=left_size, geo_type="plane"
-    )
+    self.tg.AddBox(position=left_center, euler=[0.0, 0.0, 0.0], size=left_size)
 
     # --- Right Border ---
-    right_center = [grid_width / 2 + b / 2, 0.0, 0.0]
+    right_center = [grid_width / 2 + b / 2, 0.0, -thickness / 2]
     right_size = [b, grid_height, thickness]
-    self.tg.AddGeometry(
-      position=right_center, euler=[0.0, 0.0, 0.0], size=right_size, geo_type="plane"
-    )
+    self.tg.AddBox(position=right_center, euler=[0.0, 0.0, 0.0], size=right_size)
 
 
 if __name__ == "__main__":
