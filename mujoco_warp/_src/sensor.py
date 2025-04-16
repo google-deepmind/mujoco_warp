@@ -13,9 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
+import numpy as np
 import warp as wp
 
 from . import math
+from . import smooth
 from .types import Data
 from .types import DisableBit
 from .types import Model
@@ -280,6 +282,16 @@ def _ball_ang_vel(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
   )
 
 
+@wp.func
+def _subtree_linvel(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
+  return d.subtree_linvel[worldid, objid]
+
+
+@wp.func
+def _subtree_angmom(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
+  return d.subtree_angmom[worldid, objid]
+
+
 @event_scope
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
@@ -313,9 +325,26 @@ def sensor_vel(m: Model, d: Data):
       d.sensordata[worldid, adr + 0] = angvel[0]
       d.sensordata[worldid, adr + 1] = angvel[1]
       d.sensordata[worldid, adr + 2] = angvel[2]
+    elif sensortype == int(SensorType.SUBTREELINVEL.value):
+      subtree_linvel = _subtree_linvel(m, d, worldid, objid)
+      d.sensordata[worldid, adr + 0] = subtree_linvel[0]
+      d.sensordata[worldid, adr + 1] = subtree_linvel[1]
+      d.sensordata[worldid, adr + 2] = subtree_linvel[2]
+    elif sensortype == int(SensorType.SUBTREEANGMOM.value):
+      subtree_angmom = _subtree_angmom(m, d, worldid, objid)
+      d.sensordata[worldid, adr + 0] = subtree_angmom[0]
+      d.sensordata[worldid, adr + 1] = subtree_angmom[1]
+      d.sensordata[worldid, adr + 2] = subtree_angmom[2]
 
   if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
+
+  if wp.static(
+    np.isin(
+      m.sensor_type.numpy(), [SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM]
+    ).any()
+  ):
+    smooth.subtree_vel(m, d)
 
   wp.launch(_sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size), inputs=[m, d])
 

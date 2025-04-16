@@ -68,6 +68,14 @@ class SensorTest(parameterized.TestCase):
               <geom type="sphere" size="0.1" pos=".1 0 0"/>
             </body>
           </body>
+          <body name="body4" pos="1 0 0">
+            <joint type="ball"/>
+            <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            <body>
+              <joint type="ball"/>
+              <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            </body>
+          </body>
         </worldbody>
         <actuator>
           <motor name="slide" joint="slide"/>
@@ -107,11 +115,13 @@ class SensorTest(parameterized.TestCase):
           <jointvel joint="slide"/>
           <actuatorvel actuator="slide"/>
           <ballangvel joint="ballquat"/>
+          <subtreelinvel body="body4"/>
+          <subtreeangmom body="body4"/>
           <actuatorfrc actuator="slide"/>
           <jointactuatorfrc joint="slide"/>                      
         </sensor>
         <keyframe>
-          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2" ctrl="3"/>
+          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3" ctrl="3"/>
         </keyframe>
       </mujoco>
     """

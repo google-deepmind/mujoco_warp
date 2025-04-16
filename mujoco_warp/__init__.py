@@ -29,6 +29,7 @@ from ._src.forward import fwd_velocity as fwd_velocity
 from ._src.forward import implicit as implicit
 from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import step as step
+from ._src.io import geom_pair as geom_pair
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
 from ._src.io import put_data as put_data
@@ -46,6 +47,7 @@ from ._src.smooth import kinematics as kinematics
 from ._src.smooth import rne as rne
 from ._src.smooth import rne_postconstraint as rne_postconstraint
 from ._src.smooth import solve_m as solve_m
+from ._src.smooth import subtree_vel as subtree_vel
 from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
 from ._src.solver import solve as solve

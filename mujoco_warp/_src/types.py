@@ -48,6 +48,7 @@ class DisableBit(enum.IntFlag):
   Members:
     CONSTRAINT:   entire constraint solver
     EQUALITY:     equality constraints
+    FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
     PASSIVE:      passive forces
@@ -62,6 +63,7 @@ class DisableBit(enum.IntFlag):
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
   EQUALITY = mujoco.mjtDisableBit.mjDSBL_EQUALITY
+  FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
   PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
@@ -72,7 +74,7 @@ class DisableBit(enum.IntFlag):
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
-  # unsupported: FRICTIONLOSS, MIDPHASE, WARMSTART
+  # unsupported: MIDPHASE, WARMSTART
 
 
 class TrnType(enum.IntEnum):
@@ -81,11 +83,13 @@ class TrnType(enum.IntEnum):
   Members:
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
+    TENDON: force on tendon
   """
 
   JOINT = mujoco.mjtTrn.mjTRN_JOINT
   JOINTINPARENT = mujoco.mjtTrn.mjTRN_JOINTINPARENT
-  # unsupported: SITE, TENDON, SLIDERCRANK, BODY
+  TENDON = mujoco.mjtTrn.mjTRN_TENDON
+  # unsupported: SITE, SLIDERCRANK, BODY
 
 
 class DynType(enum.IntEnum):
@@ -236,6 +240,8 @@ class SensorType(enum.IntEnum):
     TENDONVEL: scalar tendon velocity
     ACTUATORVEL: actuator velocity
     BALLANGVEL: ball joint angular velocity
+    SUBTREELINVEL: subtree linear velocity
+    SUBTREEANGMOM: subtree angular momentum
     ACTUATORFRC: scalar actuator force
     JOINTACTFRC: scalar actuator force, measured at the joint
   """
@@ -256,6 +262,8 @@ class SensorType(enum.IntEnum):
   TENDONVEL = mujoco.mjtSensor.mjSENS_TENDONVEL
   ACTUATORVEL = mujoco.mjtSensor.mjSENS_ACTUATORVEL
   BALLANGVEL = mujoco.mjtSensor.mjSENS_BALLANGVEL
+  SUBTREELINVEL = mujoco.mjtSensor.mjSENS_SUBTREELINVEL
+  SUBTREEANGMOM = mujoco.mjtSensor.mjSENS_SUBTREEANGMOM
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
   JOINTACTFRC = mujoco.mjtSensor.mjSENS_JOINTACTFRC
 
@@ -279,15 +287,37 @@ class ObjType(enum.IntEnum):
   # unsupported: CAMERA
 
 
+class ObjType(enum.IntEnum):
+  """Type of object.
+
+  Members:
+    UNKNOWN: unknown object type
+    BODY: body
+    XBODY: body, used to access regular frame instead of i-frame
+    GEOM: geom
+    SITE: site
+    CAMERA: camera
+  """
+
+  UNKNOWN = mujoco.mjtObj.mjOBJ_UNKNOWN
+  BODY = mujoco.mjtObj.mjOBJ_BODY
+  XBODY = mujoco.mjtObj.mjOBJ_XBODY
+  GEOM = mujoco.mjtObj.mjOBJ_GEOM
+  SITE = mujoco.mjtObj.mjOBJ_SITE
+  CAMERA = mujoco.mjtObj.mjOBJ_CAMERA
+
+
 class EqType(enum.IntEnum):
   """Type of equality constraint.
 
   Members:
+    CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
   """
 
+  CONNECT = mujoco.mjtEq.mjEQ_CONNECT
   JOINT = mujoco.mjtEq.mjEQ_JOINT
-  # unsupported: CONNECT, WELD, TENDON, FLEX, DISTANCE
+  # unsupported: WELD, TENDON, FLEX, DISTANCE
 
 
 class WrapType(enum.IntEnum):
@@ -385,6 +415,7 @@ class Constraint:
     margin: inclusion margin (contact)                (njmax,)
     D: constraint mass                                (njmax,)
     aref: reference pseudo-acceleration               (njmax,)
+    frictionloss: frictionloss (friction)             (njmax,)
     force: constraint force in constraint space       (njmax,)
     Jaref: Jac*qacc - aref                            (njmax,)
     Ma: M*qacc                                        (nworld, nv)
@@ -433,6 +464,7 @@ class Constraint:
   margin: wp.array(dtype=wp.float32, ndim=1)
   D: wp.array(dtype=wp.float32, ndim=1)
   aref: wp.array(dtype=wp.float32, ndim=1)
+  frictionloss: wp.array(dtype=wp.float32, ndim=1)
   force: wp.array(dtype=wp.float32, ndim=1)
   Jaref: wp.array(dtype=wp.float32, ndim=1)
   Ma: wp.array(dtype=wp.float32, ndim=2)
@@ -445,7 +477,7 @@ class Constraint:
   cost: wp.array(dtype=wp.float32, ndim=1)
   prev_cost: wp.array(dtype=wp.float32, ndim=1)
   solver_niter: wp.array(dtype=wp.int32, ndim=1)
-  active: wp.array(dtype=wp.int32, ndim=1)
+  active: wp.array(dtype=bool, ndim=1)
   gtol: wp.array(dtype=wp.float32, ndim=1)
   mv: wp.array(dtype=wp.float32, ndim=2)
   jv: wp.array(dtype=wp.float32, ndim=1)
@@ -500,6 +532,7 @@ class Model:
     nsensor: number of sensors                               ()
     nsensordata: number of elements in sensor data vector    ()
     nlsp: number of step sizes for parallel linsearch        ()
+    npair: number of predefined geom pairs                   ()
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nq,)
@@ -541,6 +574,7 @@ class Model:
     body_ipos: local position of center of mass              (nbody, 3)
     body_iquat: local orientation of inertia ellipsoid       (nbody, 4)
     body_mass: mass                                          (nbody,)
+    body_subtreemass: mass of subtree starting at this body  (nbody,)
     subtree_mass: mass of subtree                            (nbody,)
     body_inertia: diagonal inertia in ipos/iquat frame       (nbody, 3)
     body_invweight0: mean inv inert in qpos0 (trn, rot)      (nbody, 2)
@@ -568,6 +602,9 @@ class Model:
     dof_armature: dof armature inertia/mass                  (nv,)
     dof_damping: damping coefficient                         (nv,)
     dof_invweight0: diag. inverse inertia in qpos0           (nv,)
+    dof_frictionloss: dof friction loss                      (nv,)
+    dof_solimp: constraint solver impedance: frictionloss    (nv, NIMP)
+    dof_solref: constraint solver reference: frictionloss    (nv, NREF)
     dof_tri_row: np.tril_indices                             (mjm.nv)[0]
     dof_tri_col: np.tril_indices                             (mjm.nv)[1]
     geom_type: geometric type (mjtGeom)                      (ngeom,)
@@ -598,7 +635,6 @@ class Model:
     cam_quat: orientation rel. to body frame                 (ncam, 4)
     cam_poscom0: global position rel. to sub-com in qpos0    (ncam, 3)
     cam_pos0: Cartesian camera position                      (nworld, ncam, 3)
-    cam_mat0: Cartesian camera orientation                   (nworld, ncam, 3, 3)
     light_mode: light tracking mode (mjtCamLight)            (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
@@ -606,7 +642,6 @@ class Model:
     light_dir: direction rel. to body frame                  (nlight, 3)
     light_poscom0: global position rel. to sub-com in qpos0  (nlight, 3)
     light_pos0: global position rel. to body in qpos0        (nworld, nlight, 3)
-    light_dir0: global direction in qpos0                    (nworld, nlight, 3)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -618,7 +653,8 @@ class Model:
     eq_solref: constraint solver reference                   (neq, mjNREF)
     eq_solimp: constraint solver impedance                   (neq, mjNIMP)
     eq_data: numeric data for constraint                     (neq, mjNEQDATA)
-    eq_jnt_adr: which addresses of eq_* are type `JOINT`
+    eq_jnt_adr: eq_* addresses of type `JOINT`
+    eq_connect_adr: eq_* addresses of type `CONNECT`
     actuator_trntype: transmission type (mjtTrn)             (nu,)
     actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
     actuator_gaintype: gain type (mjtGain)                   (nu,)
@@ -637,6 +673,17 @@ class Model:
     actuator_gear: scale length and transmitted force        (nu, 6)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     actuator_affine_bias_gain: affine bias/gain present
+    nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
+    nxn_pairid: predefined pair id, -1 if not predefined     (<= ngeom * (ngeom - 1) // 2,)
+    pair_dim: contact dimensionality                         (npair,)
+    pair_geom1: id of geom1                                  (npair,)
+    pair_geom2: id of geom2                                  (npair,)
+    pair_solref: solver reference: contact normal            (npair, mjNREF)
+    pair_solreffriction: solver reference: contact friction  (npair, mjNREF)
+    pair_solimp: solver impedance: contact                   (npair, mjNIMP)
+    pair_margin: detect contact if dist<margin               (npair,)
+    pair_gap: include in solver if dist<margin-gap           (npair,)
+    pair_friction: tangent1, 2, spin, roll1, 2               (npair, 5)
     condim_max: maximum condim for geoms
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
@@ -678,6 +725,7 @@ class Model:
   nsensor: int
   nsensordata: int
   nlsp: int  # warp only
+  npair: int
   opt: Option
   stat: Statistic
   qpos0: wp.array(dtype=wp.float32, ndim=1)
@@ -719,6 +767,7 @@ class Model:
   body_ipos: wp.array(dtype=wp.vec3, ndim=1)
   body_iquat: wp.array(dtype=wp.quat, ndim=1)
   body_mass: wp.array(dtype=wp.float32, ndim=1)
+  body_subtreemass: wp.array(dtype=wp.float32, ndim=1)
   subtree_mass: wp.array(dtype=wp.float32, ndim=1)
   body_inertia: wp.array(dtype=wp.vec3, ndim=1)
   body_invweight0: wp.array(dtype=wp.float32, ndim=2)
@@ -746,6 +795,9 @@ class Model:
   dof_armature: wp.array(dtype=wp.float32, ndim=1)
   dof_damping: wp.array(dtype=wp.float32, ndim=1)
   dof_invweight0: wp.array(dtype=wp.float32, ndim=1)
+  dof_frictionloss: wp.array(dtype=wp.float32, ndim=1)
+  dof_solimp: wp.array(dtype=vec5, ndim=1)
+  dof_solref: wp.array(dtype=wp.vec2, ndim=1)
   dof_tri_row: wp.array(dtype=wp.int32, ndim=1)  # warp only
   dof_tri_col: wp.array(dtype=wp.int32, ndim=1)  # warp only
   geom_type: wp.array(dtype=wp.int32, ndim=1)
@@ -776,7 +828,6 @@ class Model:
   cam_quat: wp.array(dtype=wp.quat, ndim=1)
   cam_poscom0: wp.array(dtype=wp.vec3, ndim=1)
   cam_pos0: wp.array(dtype=wp.vec3, ndim=1)
-  cam_mat0: wp.array(dtype=wp.mat33, ndim=1)
   light_mode: wp.array(dtype=wp.int32, ndim=1)
   light_bodyid: wp.array(dtype=wp.int32, ndim=1)
   light_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
@@ -784,7 +835,6 @@ class Model:
   light_dir: wp.array(dtype=wp.vec3, ndim=1)
   light_poscom0: wp.array(dtype=wp.vec3, ndim=1)
   light_pos0: wp.array(dtype=wp.vec3, ndim=1)
-  light_dir0: wp.array(dtype=wp.vec3, ndim=1)
   mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
   mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
   mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
@@ -797,6 +847,7 @@ class Model:
   eq_solimp: wp.array(dtype=vec5, ndim=1)
   eq_data: wp.array(dtype=vec11, ndim=1)
   eq_jnt_adr: wp.array(dtype=wp.int32, ndim=1)
+  eq_connect_adr: wp.array(dtype=wp.int32, ndim=1)
   actuator_trntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_dyntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_gaintype: wp.array(dtype=wp.int32, ndim=1)
@@ -815,6 +866,19 @@ class Model:
   actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
   exclude_signature: wp.array(dtype=wp.int32, ndim=1)
   actuator_affine_bias_gain: bool  # warp only
+  nxn_geom_pair: wp.array(dtype=wp.vec2i, ndim=1)  # warp only
+  nxn_pairid: wp.array(dtype=wp.int32, ndim=1)  # warp only
+
+  # predefined geom pairs for collision detection
+  pair_dim: wp.array(dtype=wp.int32, ndim=1)
+  pair_geom1: wp.array(dtype=wp.int32, ndim=1)
+  pair_geom2: wp.array(dtype=wp.int32, ndim=1)
+  pair_solref: wp.array(dtype=wp.vec2, ndim=1)
+  pair_solreffriction: wp.array(dtype=wp.vec2, ndim=1)
+  pair_solimp: wp.array(dtype=vec5, ndim=1)
+  pair_margin: wp.array(dtype=wp.float32, ndim=1)
+  pair_gap: wp.array(dtype=wp.float32, ndim=1)
+  pair_friction: wp.array(dtype=vec5, ndim=1)
   condim_max: int  # warp only
   tendon_adr: wp.array(dtype=wp.int32, ndim=1)
   tendon_num: wp.array(dtype=wp.int32, ndim=1)
@@ -876,7 +940,8 @@ class Data:
 
   Attributes:
     ncon: number of detected contacts                           ()
-    ne: number of equality constraints                          (1,)
+    ne: number of equality constraints                          ()
+    nf: number of friction constraints                          ()
     nl: number of limit constraints                             ()
     nefc: number of constraints                                 (1,)
     time: simulation time                                       ()
@@ -924,6 +989,9 @@ class Data:
     qfrc_spring: passive spring force                           (nworld, nv)
     qfrc_damper: passive damper force                           (nworld, nv)
     qfrc_passive: total passive force                           (nworld, nv)
+    subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
+    subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
+    subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     actuator_force: actuator force in actuation space           (nworld, nu)
     qfrc_actuator: actuator force                               (nworld, nv)
     qfrc_smooth: net unconstrained force                        (nworld, nv)
@@ -969,7 +1037,8 @@ class Data:
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
   ne: wp.array(dtype=wp.int32, ndim=1)
-  nl: int
+  nf: wp.array(dtype=wp.int32, ndim=1)
+  nl: wp.array(dtype=wp.int32, ndim=1)
   nefc: wp.array(dtype=wp.int32, ndim=1)
   time: float
   qpos: wp.array(dtype=wp.float32, ndim=2)
@@ -1016,6 +1085,9 @@ class Data:
   qfrc_spring: wp.array(dtype=wp.float32, ndim=2)
   qfrc_damper: wp.array(dtype=wp.float32, ndim=2)
   qfrc_passive: wp.array(dtype=wp.float32, ndim=2)
+  subtree_linvel: wp.array(dtype=wp.vec3, ndim=2)
+  subtree_angmom: wp.array(dtype=wp.vec3, ndim=2)
+  subtree_bodyvel: wp.array(dtype=wp.spatial_vector, ndim=2)  # warp only
   actuator_force: wp.array(dtype=wp.float32, ndim=2)
   qfrc_actuator: wp.array(dtype=wp.float32, ndim=2)
   qfrc_smooth: wp.array(dtype=wp.float32, ndim=2)
@@ -1052,6 +1124,7 @@ class Data:
 
   # collision driver
   collision_pair: wp.array(dtype=wp.vec2i, ndim=1)
+  collision_pairid: wp.array(dtype=wp.int32, ndim=1)
   collision_worldid: wp.array(dtype=wp.int32, ndim=1)
   ncollision: wp.array(dtype=wp.int32, ndim=1)
 

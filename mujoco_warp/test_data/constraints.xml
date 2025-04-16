@@ -31,7 +31,7 @@
 
     <body name="anchor1" pos="-3 0 0"/>
     <body name="beam1" pos="-3 0 0">
-      <joint name="joint1" type="ball"solreflimit="0.03 0.9" solimplimit="0.89 0.9 0.01 2.1"/>
+      <joint name="joint1" type="ball" solreflimit="0.03 0.9" solimplimit="0.89 0.9 0.01 2.1"/>
       <geom class="box"/>
     </body>
 
@@ -42,7 +42,7 @@
     </body>
 
     <body name="beam3" pos="1 0 0">
-      <joint name="joint3" axis="1 0 0" type="hinge" range="-20 20"/>
+      <joint name="joint3" axis="1 0 0" type="hinge" range="-20 20" frictionloss=".1"/>
       <geom class="box"/>
     </body>
 
@@ -78,6 +78,8 @@
   </worldbody>
 
   <equality>
+    <connect name="c_site"   site1="site0"      site2="site1"/>
+    <connect name="connect"  body1="anchor1"    body2="beam1"   anchor="1 0 -1" />
     <joint   name="joint"    joint1="joint3"    joint2="joint4" polycoef="0.5 -1 0.1 0.15 0.2" />
   </equality>
 

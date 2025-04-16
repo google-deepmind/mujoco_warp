@@ -22,6 +22,7 @@ from absl.testing import absltest
 import mujoco_warp as mjwarp
 
 from . import collision_driver
+from . import io
 from . import test_util
 
 
@@ -215,13 +216,12 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d3.collision_pair.numpy()[3][1], 2)
 
     # one world and zero collisions: contype and conaffinity incompatibility
-    _, _, m4, d4 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
-    m4.geom_contype = wp.array(
-      np.array(np.repeat(0, m.geom_type.shape)), dtype=wp.int32
-    )
-    m4.geom_conaffinity = wp.array(
-      np.array(np.repeat(1, m.geom_type.shape)), dtype=wp.int32
-    )
+    mjm4, mjd4, m4, d4 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
+    mjm4.geom_contype[:3] = 0
+    m4.geom_contype = wp.array(mjm4.geom_contype, dtype=wp.int32)
+    geompair, pairid = io.geom_pair(mjm4)
+    m4.nxn_geom_pair = wp.array(geompair, dtype=wp.vec2i)
+    m4.nxn_pairid = wp.array(pairid, dtype=wp.int32)
 
     collision_driver.nxn_broadphase(m4, d4)
     np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)

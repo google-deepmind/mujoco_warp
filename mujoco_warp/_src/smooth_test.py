@@ -209,17 +209,42 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
+  def test_subtree_vel(self):
+    """Tests subtree_vel."""
+    mjm, mjd, m, d = test_util.fixture("pendula.xml")
+
+    for arr in (d.subtree_linvel, d.subtree_angmom):
+      arr.zero_()
+
+    mujoco.mj_subtreeVel(mjm, mjd)
+    mjwarp.subtree_vel(m, d)
+
+    _assert_eq(d.subtree_linvel.numpy()[0], mjd.subtree_linvel, "subtree_linvel")
+    _assert_eq(d.subtree_angmom.numpy()[0], mjd.subtree_angmom, "subtree_angmom")
+
   def test_fixed_tendon(self):
     """Tests fixed tendon."""
     mjm, mjd, m, d = test_util.fixture("tendon.xml", keyframe=0)
 
-    for arr in (d.ten_length, d.ten_J):
+    # tendon
+    for arr in (d.ten_length, d.ten_J, d.actuator_length, d.actuator_moment):
       arr.zero_()
 
     mjwarp.tendon(m, d)
+    mjwarp.transmission(m, d)
 
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
     _assert_eq(d.ten_J.numpy()[0], mjd.ten_J.reshape((mjm.ntendon, mjm.nv)), "ten_J")
+    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      actuator_moment,
+      mjd.actuator_moment,
+      mjd.moment_rownnz,
+      mjd.moment_rowadr,
+      mjd.moment_colind,
+    )
+    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
 
 if __name__ == "__main__":
