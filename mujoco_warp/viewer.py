@@ -35,6 +35,9 @@ _CLEAR_KERNEL_CACHE = flags.DEFINE_bool(
   "clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)"
 )
 _ENGINE = flags.DEFINE_enum("engine", "mjwarp", ["mjwarp", "mjc"], "Simulation engine")
+_CONE = flags.DEFINE_enum(
+  "cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type"
+)
 _LS_PARALLEL = flags.DEFINE_bool(
   "ls_parallel", False, "Engine solver with parallel linesearch"
 )
@@ -62,6 +65,10 @@ def _main(argv: Sequence[str]) -> None:
     mjm = mujoco.MjModel.from_binary_path(_MODEL_PATH.value)
   else:
     mjm = mujoco.MjModel.from_xml_path(_MODEL_PATH.value)
+  if _CONE.value == "pyramidal":
+    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+  elif _CONE.value == "elliptic":
+    mjm.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 

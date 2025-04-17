@@ -49,6 +49,9 @@ _LS_ITERATIONS = flags.DEFINE_integer(
 )
 _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "solve with parallel linesearch")
 _IS_SPARSE = flags.DEFINE_bool("is_sparse", None, "Override model sparse config")
+_CONE = flags.DEFINE_enum(
+  "cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type"
+)
 _NCONMAX = flags.DEFINE_integer(
   "nconmax",
   None,
@@ -85,6 +88,11 @@ def _main(argv: Sequence[str]):
     mjm = mujoco.MjModel.from_binary_path(path.as_posix())
   else:
     mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+
+  if _CONE.value == "pyramidal":
+    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+  elif _CONE.value == "elliptic":
+    mjm.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
 
   if _IS_SPARSE.value == True:
     mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE

@@ -87,56 +87,214 @@ def _update_constraint(m: types.Model, d: types.Data):
     d.efc.cost[worldid] = 0.0
     d.efc.gauss[worldid] = 0.0
 
-  @kernel
-  def _efc(d: types.Data):
-    efcid = wp.tid()
+  if m.opt.cone == types.ConeType.PYRAMIDAL:
 
-    if efcid >= d.nefc[0]:
-      return
+    @kernel
+    def _efc_pyramidal(d: types.Data):
+      efcid = wp.tid()
 
-    worldid = d.efc.worldid[efcid]
-
-    if wp.static(m.opt.iterations) > 1:
-      if d.efc.done[worldid]:
+      if efcid >= d.nefc[0]:
         return
 
-    Jaref = d.efc.Jaref[efcid]
-    efc_D = d.efc.D[efcid]
+      worldid = d.efc.worldid[efcid]
+      efc_D = d.efc.D[efcid]
+      Jaref = d.efc.Jaref[efcid]
 
-    cost = 0.5 * efc_D * Jaref * Jaref
-    efc_force = -efc_D * Jaref
+      cost = 0.5 * efc_D * Jaref * Jaref
+      efc_force = -efc_D * Jaref
 
-    ne = d.ne[0]
-    nf = d.nf[0]
+      ne = d.ne[0]
+      nf = d.nf[0]
 
-    if efcid < ne:
-      # equality
-      pass
-    elif efcid < ne + nf and wp.static(not DSBL_FLOSS):
-      # friction
-      f = d.efc.frictionloss[efcid]
-      if f > 0.0:
-        rf = _safe_div(f, efc_D)
-        if Jaref <= -rf:
-          d.efc.force[efcid] = f
+      if efcid < ne:
+        # equality
+        pass
+      elif efcid < ne + nf and wp.static(not DSBL_FLOSS):
+        # friction
+        f = d.efc.frictionloss[efcid]
+        if f > 0.0:
+          rf = _safe_div(f, efc_D)
+          if Jaref <= -rf:
+            d.efc.force[efcid] = f
+            d.efc.active[efcid] = False
+            wp.atomic_add(d.efc.cost, worldid, -0.5 * rf - Jaref)
+            return
+          elif Jaref >= rf:
+            d.efc.force[efcid] = -f
+            d.efc.active[efcid] = False
+            wp.atomic_add(d.efc.cost, worldid, -0.5 * rf + Jaref)
+            return
+      else:
+        # limit, contact
+        if Jaref >= 0.0:
+          d.efc.force[efcid] = 0.0
           d.efc.active[efcid] = False
-          wp.atomic_add(d.efc.cost, worldid, -0.5 * rf - Jaref)
           return
-        elif Jaref >= rf:
-          d.efc.force[efcid] = -f
-          d.efc.active[efcid] = False
-          wp.atomic_add(d.efc.cost, worldid, -0.5 * rf + Jaref)
-          return
-    else:
-      # limit, contact
-      if Jaref >= 0.0:
-        d.efc.force[efcid] = 0.0
-        d.efc.active[efcid] = False
+
+      d.efc.force[efcid] = efc_force
+      d.efc.active[efcid] = True
+      wp.atomic_add(d.efc.cost, worldid, cost)
+
+  elif m.opt.cone == types.ConeType.ELLIPTIC:
+
+    @kernel
+    def _u_elliptic(d: types.Data):
+      conid, dimid = wp.tid()
+
+      if conid >= d.ncon[0]:
         return
 
-    d.efc.force[efcid] = efc_force
-    d.efc.active[efcid] = True
-    wp.atomic_add(d.efc.cost, worldid, cost)
+      if d.efc.done[d.contact.worldid[conid]]:
+        return
+
+      efcid = d.contact.efc_address[conid, dimid]
+
+      condim = d.contact.dim[conid]
+      d.efc.condim[efcid] = condim
+
+      if condim == 1:
+        return
+
+      if dimid < condim:
+        if dimid == 0:
+          fri = d.contact.friction[conid][0] * wp.static(1.0 / m.opt.impratio)
+        else:
+          fri = d.contact.friction[conid][dimid - 1]
+        u = d.efc.Jaref[efcid] * fri
+        d.efc.u[conid, dimid] = u
+        if dimid > 0:
+          wp.atomic_add(d.efc.uu, conid, u * u)
+
+    @kernel
+    def _active_bottom_zone(d: types.Data):
+      conid, dimid = wp.tid()
+
+      if conid >= d.ncon[0]:
+        return
+
+      if d.efc.done[d.contact.worldid[conid]]:
+        return
+
+      condim = d.contact.dim[conid]
+      if condim == 1:
+        return
+
+      mu = d.contact.friction[conid][0] * wp.static(1.0 / m.opt.impratio)
+      n = d.efc.u[conid, 0]
+      tt = d.efc.uu[conid]
+      if tt <= 0.0:
+        t = 0.0
+      else:
+        t = wp.sqrt(tt)
+
+      # bottom zone: quadratic
+      bottom_zone = ((t <= 0.0) and (n < 0.0)) or ((t > 0.0) and ((mu * n + t) <= 0.0))
+
+      # update active
+      efcid = d.contact.efc_address[conid, dimid]
+      d.efc.active[efcid] = bottom_zone
+
+    @kernel
+    def _efc_elliptic0(d: types.Data):
+      efcid = wp.tid()
+
+      if efcid >= d.nefc[0]:
+        return
+
+      if d.efc.done[d.efc.worldid[efcid]]:
+        return
+
+      worldid = d.efc.worldid[efcid]
+      efc_D = d.efc.D[efcid]
+      Jaref = d.efc.Jaref[efcid]
+
+      ne = d.ne[0]
+      nf = d.nf[0]
+      nl = d.nl[0]
+
+      if efcid < ne:
+        # equality
+        d.efc.active[efcid] = True
+      elif efcid < ne + nf and wp.static(not DSBL_FLOSS):
+        # friction
+        f = d.efc.frictionloss[efcid]
+        if f > 0.0:
+          rf = _safe_div(f, efc_D)
+          if Jaref <= -rf:
+            d.efc.force[efcid] = f
+            d.efc.active[efcid] = False
+            wp.atomic_add(d.efc.cost, worldid, -0.5 * rf - Jaref)
+            return
+          elif Jaref >= rf:
+            d.efc.force[efcid] = -f
+            d.efc.active[efcid] = False
+            wp.atomic_add(d.efc.cost, worldid, -0.5 * rf + Jaref)
+            return
+      elif efcid < ne + nf + nl:
+        # limits
+        if Jaref < 0.0:
+          d.efc.active[efcid] = True
+        else:
+          d.efc.force[efcid] = 0.0
+          d.efc.active[efcid] = False
+          return
+      else:
+        # contact
+        if not d.efc.active[efcid]:  # calculated by _active_bottom_zone
+          d.efc.force[efcid] = 0.0
+          return
+
+      d.efc.force[efcid] = -efc_D * Jaref
+      wp.atomic_add(d.efc.cost, worldid, 0.5 * efc_D * Jaref * Jaref)
+
+    @kernel
+    def _efc_elliptic1(d: types.Data):
+      conid, dimid = wp.tid()
+
+      if conid >= d.ncon[0]:
+        return
+
+      if d.efc.done[d.contact.worldid[conid]]:
+        return
+
+      condim = d.contact.dim[conid]
+
+      if condim == 1 or dimid >= condim:
+        return
+
+      friction = d.contact.friction[conid]
+      efcid = d.contact.efc_address[conid, dimid]
+
+      mu = d.contact.friction[conid][0] * wp.static(1.0 / m.opt.impratio)
+      n = d.efc.u[conid, 0]
+      tt = d.efc.uu[conid]
+      if tt <= 0.0:
+        t = 0.0
+      else:
+        t = wp.sqrt(tt)
+
+      # middle zone: cone
+      middle_zone = (t > 0.0) and (n < (mu * t)) and ((mu * n + t) > 0.0)
+
+      # tangent and friction for middle zone:
+      if middle_zone:
+        mu2 = mu * mu
+        dm = d.efc.D[d.contact.efc_address[conid, 0]] / wp.max(
+          mu2 * float(1.0 + mu2), types.MJ_MINVAL
+        )
+
+        nmt = n - mu * t
+
+        force = -dm * nmt * mu
+        if dimid > 0:
+          force_fri = -force / t
+          force_fri *= d.efc.u[conid, dimid] * friction[dimid - 1]
+          d.efc.force[efcid] += force_fri
+        else:
+          d.efc.force[efcid] += force
+
+          worldid = d.contact.worldid[conid]
+          wp.atomic_add(d.efc.cost, worldid, 0.5 * dm * nmt * nmt)
 
   @kernel
   def _zero_qfrc_constraint(d: types.Data):
@@ -185,7 +343,16 @@ def _update_constraint(m: types.Model, d: types.Data):
 
   wp.launch(_init_cost, dim=(d.nworld), inputs=[d])
 
-  wp.launch(_efc, dim=(d.njmax,), inputs=[d])
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    d.efc.uu.zero_()
+    d.efc.active.zero_()
+    d.efc.condim.fill_(-1)
+    wp.launch(_u_elliptic, dim=(d.nconmax, m.condim_max), inputs=[d])
+    wp.launch(_active_bottom_zone, dim=(d.nconmax, m.condim_max), inputs=[d])
+    wp.launch(_efc_elliptic0, dim=(d.njmax), inputs=[d])
+    wp.launch(_efc_elliptic1, dim=(d.nconmax, m.condim_max), inputs=[d])
+  else:
+    wp.launch(_efc_pyramidal, dim=(d.njmax,), inputs=[d])
 
   # qfrc_constraint = efc_J.T @ efc_force
   wp.launch(_zero_qfrc_constraint, dim=(d.nworld, m.nv), inputs=[d])
@@ -286,8 +453,11 @@ def _update_gradient(m: types.Model, d: types.Data):
     # depend on the kernel's occupancy, which determines how many blocks can
     # simultaneously run on the SM. TODO: This factor can be tuned further.
     dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+    dim_y = dim_x
   else:
-    dim_x = d.njmax  # fall back for CPU
+    # fall back for CPU
+    dim_x = d.njmax
+    dim_y = d.nconmax
 
   nblocks_perblock = int((d.njmax + dim_x - 1) / dim_x)
 
@@ -324,6 +494,102 @@ def _update_gradient(m: types.Model, d: types.Data):
     value = d.efc.J[efcid, dofi] * d.efc.J[efcid, dofj] * efc_D
     if value != 0.0:
       wp.atomic_add(d.efc.h[worldid, dofi], dofj, value)
+
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    # TODO(team): combine with _JTDAJ
+    @kernel
+    def _JTCJ(
+      m: types.Model,
+      d: types.Data,
+      nblocks_perblock: int,
+      dim_y: int,
+      impratio: wp.float32,
+    ):
+      conid_tmp, elementid, dim1id, dim2id = wp.tid()
+
+      # TODO(team): cone hessian upper/lower triangle
+      for i in range(nblocks_perblock):
+        conid = conid_tmp + i * dim_y
+
+        if conid >= d.ncon[0]:
+          return
+
+        if d.efc.done[d.contact.worldid[conid]]:
+          return
+
+        condim = d.contact.dim[conid]
+
+        if condim == 1:
+          return
+
+        if (dim1id >= condim) or (dim2id >= condim):
+          return
+
+        mu = d.contact.friction[conid][0] / impratio
+        n = d.efc.u[conid, 0]
+        tt = d.efc.uu[conid]
+        if tt <= 0.0:
+          t = 0.0
+        else:
+          t = wp.sqrt(tt)
+
+        middle_zone = (t > 0) and (n < (mu * t)) and ((mu * n + t) > 0.0)
+
+        if not middle_zone:
+          return
+
+        worldid = d.contact.worldid[conid]
+
+        dof1id = m.dof_tri_row[elementid]
+        dof2id = m.dof_tri_col[elementid]
+
+        efc1id = d.contact.efc_address[conid, dim1id]
+        efc2id = d.contact.efc_address[conid, dim2id]
+
+        t = wp.max(t, types.MJ_MINVAL)
+        ttt = wp.max(t * t * t, types.MJ_MINVAL)
+
+        ui = d.efc.u[conid, dim1id]
+        uj = d.efc.u[conid, dim2id]
+
+        # set first row/column: (1, -mu/t * u)
+        if dim1id == 0 and dim2id == 0:
+          hcone = 1.0
+        elif dim1id == 0:
+          hcone = -mu / t * uj
+        elif dim2id == 0:
+          hcone = -mu / t * ui
+        else:
+          hcone = mu * n / ttt * ui * uj
+
+          # add to diagonal: mu^2 - mu * n / t
+          if dim1id == dim2id:
+            hcone += mu * mu - mu * n / t
+
+        # pre and post multiply by diag(mu, friction) scale by dm
+        if dim1id == 0:
+          fri1 = mu
+        else:
+          fri1 = d.contact.friction[conid][dim1id - 1]
+
+        if dim2id == 0:
+          fri2 = mu
+        else:
+          fri2 = d.contact.friction[conid][dim2id - 1]
+
+        mu2 = mu * mu
+        dm = d.efc.D[d.contact.efc_address[conid, 0]] / wp.max(
+          mu2 * (1.0 + mu2), types.MJ_MINVAL
+        )
+
+        hcone *= dm * fri1 * fri2
+
+        if hcone:
+          wp.atomic_add(
+            d.efc.h[worldid, dof1id],
+            dof2id,
+            d.efc.J[efc1id, dof1id] * d.efc.J[efc2id, dof2id] * hcone,
+          )
 
   @kernel
   def _cholesky(d: types.Data):
@@ -363,6 +629,14 @@ def _update_gradient(m: types.Model, d: types.Data):
       inputs=[m, d],
     )
 
+    if m.opt.cone == types.ConeType.ELLIPTIC:
+      # TODO(team): optimize launch
+      wp.launch(
+        _JTCJ,
+        dim=(dim_y, m.dof_tri_row.size, m.condim_max, m.condim_max),
+        inputs=[m, d, int((d.nconmax + dim_y - 1) / dim_y), dim_y, m.opt.impratio],
+      )
+
     wp.launch_tiled(_cholesky, dim=(d.nworld,), inputs=[d], block_dim=32)
 
 
@@ -383,6 +657,57 @@ def _eval_pt(quad: wp.vec3, alpha: wp.float32) -> wp.vec3:
     2.0 * alpha * quad[2] + quad[1],
     2.0 * quad[2],
   )
+
+
+@wp.func
+def _eval_pt_elliptic(
+  d: types.Data, alpha: wp.float32, conid: int, efcid: int, impratio: wp.float32
+) -> wp.vec3:
+  uu = d.efc.uu[conid]
+  mu = d.contact.friction[conid][0] / impratio
+  u0 = d.efc.u[conid, 0]
+  v0 = d.efc.jv[efcid] * mu
+  uv = d.efc.uv[conid]
+  vv = d.efc.vv[conid]
+  n = u0 + alpha * v0
+  tsqr = uu + alpha * (2.0 * uv + alpha * vv)
+  t = wp.sqrt(tsqr)  # tangential force
+
+  bottom_zone = ((tsqr <= 0.0) and (n < 0)) or ((tsqr > 0.0) and ((mu * n + t) <= 0.0))
+  middle_zone = (tsqr > 0) and (n < (mu * t)) and ((mu * n + t) > 0.0)
+
+  # elliptic bottom zone: quadratic cose
+  if bottom_zone:
+    pt = _eval_pt(d.efc.quad[efcid], alpha)
+  else:
+    pt = wp.vec3(0.0)
+
+  # elliptic middle zone
+  if t == 0.0:
+    t += types.MJ_MINVAL
+
+  if tsqr == 0.0:
+    tsqr += types.MJ_MINVAL
+
+  n1 = v0
+  t1 = (uv + alpha * vv) / t
+  t2 = vv / t - (uv + alpha * vv) * t1 / tsqr
+
+  if middle_zone:
+    mu2 = mu * mu
+    dm = d.efc.D[d.contact.efc_address[conid, 0]] / wp.max(
+      mu2 * (1.0 + mu2), types.MJ_MINVAL
+    )
+    nmt = n - mu * t
+    n1mut1 = n1 - mu * t1
+
+    pt += wp.vec3(
+      0.5 * dm * nmt * nmt,
+      dm * nmt * n1mut1,
+      dm * (n1mut1 * n1mut1 - nmt * mu * t2),
+    )
+
+  return pt
 
 
 @wp.func
@@ -417,27 +742,73 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     quad = d.efc.quad_gauss[worldid]
     p0[worldid] = wp.vec3(quad[0], quad[1], 2.0 * quad[2])
 
-  @kernel
-  def _init_p0(p0: wp.array(dtype=wp.vec3), d: types.Data):
-    efcid = wp.tid()
+  if m.opt.cone == types.ConeType.ELLIPTIC:
 
-    if efcid >= d.nefc[0]:
-      return
+    @kernel
+    def _init_p0_elliptic0(p0: wp.array(dtype=wp.vec3), d: types.Data):
+      efcid = wp.tid()
 
-    worldid = d.efc.worldid[efcid]
-
-    if wp.static(m.opt.iterations) > 1:
-      if d.efc.done[worldid]:
+      if efcid >= d.nefc[0]:
         return
 
-    Jaref = d.efc.Jaref[efcid]
-    if (Jaref >= 0.0) and (efcid >= d.ne[0] + d.nf[0]):
-      return
+      worldid = d.efc.worldid[efcid]
 
-    quad = d.efc.quad[efcid]
-    jv = d.efc.jv[efcid]
+      if wp.static(m.opt.iterations) > 1:
+        if d.efc.done[worldid]:
+          return
 
-    wp.atomic_add(p0, worldid, wp.vec3(quad[0], quad[1], 2.0 * quad[2]))
+      active = d.efc.Jaref[efcid] < 0.0
+
+      nef = d.ne[0] + d.nf[0]
+      nefl = nef + d.nl[0]
+      if efcid < nef:
+        active = True
+      elif efcid >= nefl and d.efc.condim[efcid] > 1:
+        active = False
+
+      if active:
+        quad = d.efc.quad[efcid]
+        wp.atomic_add(p0, worldid, wp.vec3(quad[0], quad[1], 2.0 * quad[2]))
+
+    @kernel
+    def _init_p0_elliptic1(p0: wp.array(dtype=wp.vec3), d: types.Data):
+      conid = wp.tid()
+
+      if conid >= d.ncon[0]:
+        return
+
+      if d.efc.done[d.contact.worldid[conid]]:
+        return
+
+      if d.contact.dim[conid] > 1:
+        efcid = d.contact.efc_address[conid, 0]
+        worldid = d.contact.worldid[conid]
+        wp.atomic_add(
+          p0,
+          worldid,
+          _eval_pt_elliptic(d, 0.0, conid, efcid, wp.static(m.opt.impratio)),
+        )
+
+  else:
+
+    @kernel
+    def _init_p0_pyramidal(p0: wp.array(dtype=wp.vec3), d: types.Data):
+      efcid = wp.tid()
+
+      if efcid >= d.nefc[0]:
+        return
+
+      worldid = d.efc.worldid[efcid]
+
+      if wp.static(m.opt.iterations) > 1:
+        if d.efc.done[worldid]:
+          return
+
+      if d.efc.Jaref[efcid] >= 0.0 and efcid >= d.ne[0] + d.nf[0]:
+        return
+
+      quad = d.efc.quad[efcid]
+      wp.atomic_add(p0, worldid, wp.vec3(quad[0], quad[1], 2.0 * quad[2]))
 
   @kernel
   def _init_lo_gauss(
@@ -457,31 +828,85 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     lo[worldid] = _eval_pt(d.efc.quad_gauss[worldid], alpha)
     lo_alpha[worldid] = alpha
 
-  @kernel
-  def _init_lo(
-    lo: wp.array(dtype=wp.vec3),
-    lo_alpha: wp.array(dtype=wp.float32),
-    d: types.Data,
-  ):
-    efcid = wp.tid()
+  if m.opt.cone == types.ConeType.ELLIPTIC:
 
-    if efcid >= d.nefc[0]:
-      return
+    @kernel
+    def _init_lo_elliptic0(
+      lo: wp.array(dtype=wp.vec3),
+      lo_alpha: wp.array(dtype=wp.float32),
+      d: types.Data,
+    ):
+      efcid = wp.tid()
 
-    worldid = d.efc.worldid[efcid]
-
-    if wp.static(m.opt.iterations) > 1:
-      if d.efc.done[worldid]:
+      if efcid >= d.nefc[0]:
         return
 
-    alpha = lo_alpha[worldid]
+      worldid = d.efc.worldid[efcid]
 
-    quad = d.efc.quad[efcid]
-    Jaref = d.efc.Jaref[efcid]
-    jv = d.efc.jv[efcid]
+      if wp.static(m.opt.iterations) > 1:
+        if d.efc.done[worldid]:
+          return
 
-    if (Jaref + alpha * jv < 0.0) or (efcid < d.ne[0] + d.nf[0]):
-      wp.atomic_add(lo, worldid, _eval_pt(quad, alpha))
+      alpha = lo_alpha[worldid]
+
+      active = d.efc.Jaref[efcid] + alpha * d.efc.jv[efcid] < 0.0
+
+      nef = d.ne[0] + d.nf[0]
+      nefl = nef + d.nl[0]
+      if efcid < nef:
+        active = True
+      elif efcid >= nefl and d.efc.condim[efcid] > 1:
+        active = False
+
+      if active:
+        wp.atomic_add(lo, worldid, _eval_pt(d.efc.quad[efcid], alpha))
+
+    @kernel
+    def _init_lo_elliptic1(
+      lo: wp.array(dtype=wp.vec3), lo_alpha: wp.array(dtype=wp.float32), d: types.Data
+    ):
+      conid = wp.tid()
+
+      if conid >= d.ncon[0]:
+        return
+
+      if d.efc.done[d.contact.worldid[conid]]:
+        return
+
+      if d.contact.dim[conid] > 1:
+        efcid = d.contact.efc_address[conid, 0]
+        worldid = d.contact.worldid[conid]
+        alpha = lo_alpha[worldid]
+        wp.atomic_add(
+          lo,
+          worldid,
+          _eval_pt_elliptic(d, alpha, conid, efcid, wp.static(m.opt.impratio)),
+        )
+  else:
+
+    @kernel
+    def _init_lo_pyramidal(
+      lo: wp.array(dtype=wp.vec3),
+      lo_alpha: wp.array(dtype=wp.float32),
+      d: types.Data,
+    ):
+      efcid = wp.tid()
+
+      if efcid >= d.nefc[0]:
+        return
+
+      worldid = d.efc.worldid[efcid]
+
+      if wp.static(m.opt.iterations) > 1:
+        if d.efc.done[worldid]:
+          return
+
+      alpha = lo_alpha[worldid]
+
+      if d.efc.Jaref[efcid] + alpha * d.efc.jv[efcid] < 0.0 or (
+        efcid < d.ne[0] + d.nf[0]
+      ):
+        wp.atomic_add(lo, worldid, _eval_pt(d.efc.quad[efcid], alpha))
 
   @kernel
   def _init_bounds(
@@ -549,48 +974,161 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     mid[worldid] = _eval_pt(quad, pmid_alpha)
     mid_alpha[worldid] = pmid_alpha
 
-  @kernel
-  def _next_quad(
-    done: wp.array(dtype=bool),
-    lo_next: wp.array(dtype=wp.vec3),
-    lo_next_alpha: wp.array(dtype=wp.float32),
-    hi_next: wp.array(dtype=wp.vec3),
-    hi_next_alpha: wp.array(dtype=wp.float32),
-    mid: wp.array(dtype=wp.vec3),
-    mid_alpha: wp.array(dtype=wp.float32),
-    d: types.Data,
-  ):
-    efcid = wp.tid()
+  if m.opt.cone == types.ConeType.ELLIPTIC:
 
-    if efcid >= d.nefc[0]:
-      return
+    @kernel
+    def _next_quad_elliptic0(
+      done: wp.array(dtype=bool),
+      lo_next: wp.array(dtype=wp.vec3),
+      lo_next_alpha: wp.array(dtype=wp.float32),
+      hi_next: wp.array(dtype=wp.vec3),
+      hi_next_alpha: wp.array(dtype=wp.float32),
+      mid: wp.array(dtype=wp.vec3),
+      mid_alpha: wp.array(dtype=wp.float32),
+      d: types.Data,
+    ):
+      efcid = wp.tid()
 
-    worldid = d.efc.worldid[efcid]
-
-    if wp.static(m.opt.iterations) > 1:
-      if d.efc.done[worldid]:
+      if efcid >= d.nefc[0]:
         return
 
-    if done[worldid]:
-      return
+      worldid = d.efc.worldid[efcid]
 
-    quad = d.efc.quad[efcid]
-    jaref = d.efc.Jaref[efcid]
-    jv = d.efc.jv[efcid]
+      if wp.static(m.opt.iterations) > 1:
+        if d.efc.done[worldid]:
+          return
 
-    nef_active = efcid < d.ne[0] + d.nf[0]
+      if done[worldid]:
+        return
 
-    alpha = lo_next_alpha[worldid]
-    if (jaref + alpha * jv < 0.0) or nef_active:
-      wp.atomic_add(lo_next, worldid, _eval_pt(quad, alpha))
+      nef = d.ne[0] + d.nf[0]
+      nefl = nef + d.nl[0]
 
-    alpha = hi_next_alpha[worldid]
-    if (jaref + alpha * jv < 0.0) or nef_active:
-      wp.atomic_add(hi_next, worldid, _eval_pt(quad, alpha))
+      quad = d.efc.quad[efcid]
+      jaref = d.efc.Jaref[efcid]
+      jv = d.efc.jv[efcid]
 
-    alpha = mid_alpha[worldid]
-    if (jaref + alpha * jv < 0.0) or nef_active:
-      wp.atomic_add(mid, worldid, _eval_pt(quad, alpha))
+      alpha = lo_next_alpha[worldid]
+
+      active = jaref + alpha * jv < 0.0
+      if efcid < nef:
+        active = True
+      elif efcid >= nefl and d.efc.condim[efcid] > 1:
+        active = False
+
+      if active:
+        wp.atomic_add(lo_next, worldid, _eval_pt(quad, alpha))
+
+      alpha = hi_next_alpha[worldid]
+
+      active = jaref + alpha * jv < 0.0
+      if efcid < nef:
+        active = True
+      elif efcid >= nefl and d.efc.condim[efcid] > 1:
+        active = False
+
+      if active:
+        wp.atomic_add(hi_next, worldid, _eval_pt(quad, alpha))
+
+      alpha = mid_alpha[worldid]
+
+      active = jaref + alpha * jv < 0.0
+      if efcid < nef:
+        active = True
+      elif efcid >= nefl and d.efc.condim[efcid] > 1:
+        active = False
+
+      if active:
+        wp.atomic_add(mid, worldid, _eval_pt(quad, alpha))
+
+    @kernel
+    def _next_quad_elliptic1(
+      done: wp.array(dtype=bool),
+      lo_next: wp.array(dtype=wp.vec3),
+      lo_next_alpha: wp.array(dtype=wp.float32),
+      hi_next: wp.array(dtype=wp.vec3),
+      hi_next_alpha: wp.array(dtype=wp.float32),
+      mid: wp.array(dtype=wp.vec3),
+      mid_alpha: wp.array(dtype=wp.float32),
+      d: types.Data,
+    ):
+      conid = wp.tid()
+
+      if conid >= d.ncon[0]:
+        return
+
+      if done[d.contact.worldid[conid]]:
+        return
+
+      if d.contact.dim[conid] > 1:
+        efcid = d.contact.efc_address[conid, 0]
+        worldid = d.contact.worldid[conid]
+
+        alpha = lo_next_alpha[worldid]
+        wp.atomic_add(
+          lo_next,
+          worldid,
+          _eval_pt_elliptic(d, alpha, conid, efcid, wp.static(m.opt.impratio)),
+        )
+
+        alpha = hi_next_alpha[worldid]
+        wp.atomic_add(
+          hi_next,
+          worldid,
+          _eval_pt_elliptic(d, alpha, conid, efcid, wp.static(m.opt.impratio)),
+        )
+
+        alpha = mid_alpha[worldid]
+        wp.atomic_add(
+          mid,
+          worldid,
+          _eval_pt_elliptic(d, alpha, conid, efcid, wp.static(m.opt.impratio)),
+        )
+
+  else:
+
+    @kernel
+    def _next_quad_pyramidal(
+      done: wp.array(dtype=bool),
+      lo_next: wp.array(dtype=wp.vec3),
+      lo_next_alpha: wp.array(dtype=wp.float32),
+      hi_next: wp.array(dtype=wp.vec3),
+      hi_next_alpha: wp.array(dtype=wp.float32),
+      mid: wp.array(dtype=wp.vec3),
+      mid_alpha: wp.array(dtype=wp.float32),
+      d: types.Data,
+    ):
+      efcid = wp.tid()
+
+      if efcid >= d.nefc[0]:
+        return
+
+      worldid = d.efc.worldid[efcid]
+
+      if wp.static(m.opt.iterations) > 1:
+        if d.efc.done[worldid]:
+          return
+
+      if done[worldid]:
+        return
+
+      nef_active = efcid < d.ne[0] + d.nf[0]
+
+      quad = d.efc.quad[efcid]
+      jaref = d.efc.Jaref[efcid]
+      jv = d.efc.jv[efcid]
+
+      alpha = lo_next_alpha[worldid]
+      if jaref + alpha * jv < 0.0 or nef_active:
+        wp.atomic_add(lo_next, worldid, _eval_pt(quad, alpha))
+
+      alpha = hi_next_alpha[worldid]
+      if jaref + alpha * jv < 0.0 or nef_active:
+        wp.atomic_add(hi_next, worldid, _eval_pt(quad, alpha))
+
+      alpha = mid_alpha[worldid]
+      if jaref + alpha * jv < 0.0 or nef_active:
+        wp.atomic_add(mid, worldid, _eval_pt(quad, alpha))
 
   @kernel
   def _swap(
@@ -695,11 +1233,19 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
   wp.launch(_init_p0_gauss, dim=(d.nworld,), inputs=[p0, d])
 
-  wp.launch(_init_p0, dim=(d.njmax,), inputs=[p0, d])
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    wp.launch(_init_p0_elliptic0, dim=(d.njmax,), inputs=[p0, d])
+    wp.launch(_init_p0_elliptic1, dim=(d.nconmax), inputs=[p0, d])
+  else:
+    wp.launch(_init_p0_pyramidal, dim=(d.njmax,), inputs=[p0, d])
 
   wp.launch(_init_lo_gauss, dim=(d.nworld,), inputs=[p0, lo, lo_alpha, d])
 
-  wp.launch(_init_lo, dim=(d.njmax,), inputs=[lo, lo_alpha, d])
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    wp.launch(_init_lo_elliptic0, dim=(d.njmax,), inputs=[lo, lo_alpha, d])
+    wp.launch(_init_lo_elliptic1, dim=(d.nconmax), inputs=[lo, lo_alpha, d])
+  else:
+    wp.launch(_init_lo_pyramidal, dim=(d.njmax,), inputs=[lo, lo_alpha, d])
 
   # set the lo/hi interval bounds
 
@@ -715,7 +1261,12 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
     inputs = [done, lo_next, lo_next_alpha, hi_next, hi_next_alpha, mid, mid_alpha]
     inputs += [d]
-    wp.launch(_next_quad, dim=(d.njmax,), inputs=inputs)
+
+    if m.opt.cone == types.ConeType.ELLIPTIC:
+      wp.launch(_next_quad_elliptic0, dim=(d.njmax,), inputs=inputs)
+      wp.launch(_next_quad_elliptic1, dim=(d.nconmax), inputs=inputs)
+    else:
+      wp.launch(_next_quad_pyramidal, dim=(d.njmax,), inputs=inputs)
 
     inputs = [done, p0, lo, lo_alpha, hi, hi_alpha, lo_next, lo_next_alpha, hi_next]
     inputs += [hi_next_alpha, mid, mid_alpha, d]
@@ -890,6 +1441,36 @@ def _linesearch(m: types.Model, d: types.Data):
       0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D
     )
 
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+
+    @kernel
+    def _quad_elliptic(d: types.Data):
+      conid, dimid = wp.tid()
+      dimid += 1
+
+      if conid >= d.ncon[0]:
+        return
+
+      if d.efc.done[d.contact.worldid[conid]]:
+        return
+
+      condim = d.contact.dim[conid]
+
+      if condim == 1 or (dimid >= condim):
+        return
+
+      efcid0 = d.contact.efc_address[conid, 0]
+      efcid = d.contact.efc_address[conid, dimid]
+
+      # complete vector quadratic (for bottom zone)
+      wp.atomic_add(d.efc.quad, efcid0, d.efc.quad[efcid])
+
+      # rescale to make primal cone circular
+      u = d.efc.u[conid, dimid]
+      v = d.efc.jv[efcid] * d.contact.friction[conid][dimid - 1]
+      wp.atomic_add(d.efc.uv, conid, u * v)
+      wp.atomic_add(d.efc.vv, conid, v * v)
+
   @kernel
   def _qacc_ma(d: types.Data):
     worldid, dofid = wp.tid()
@@ -936,6 +1517,10 @@ def _linesearch(m: types.Model, d: types.Data):
 
   wp.launch(_init_quad, dim=(d.njmax), inputs=[d])
 
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    d.efc.uv.zero_()
+    d.efc.vv.zero_()
+    wp.launch(_quad_elliptic, dim=(d.nconmax, m.condim_max - 1), inputs=[d])
   if m.opt.ls_parallel:
     _linesearch_parallel(m, d)
   else:

@@ -556,7 +556,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constraint:
+def _constraint(
+  mjm: mujoco.MjModel, nworld: int, nconmax: int, njmax: int
+) -> types.Constraint:
   efc = types.Constraint()
 
   efc.J = wp.zeros((njmax, mjm.nv), dtype=wp.float32)
@@ -611,6 +613,13 @@ def _constraint(mjm: mujoco.MjModel, nworld: int, njmax: int) -> types.Constrain
   efc.quad_total_candidate = wp.empty(
     shape=(nworld, mjm.opt.ls_iterations), dtype=wp.vec3f
   )
+
+  # TODO(team): skip allocation if not elliptic?
+  efc.u = wp.empty((nconmax, 6), dtype=wp.float32)
+  efc.uu = wp.empty((nconmax,), dtype=wp.float32)
+  efc.uv = wp.empty((nconmax,), dtype=wp.float32)
+  efc.vv = wp.empty((nconmax,), dtype=wp.float32)
+  efc.condim = wp.empty((njmax,), dtype=wp.int32)
 
   return efc
 
@@ -698,7 +707,7 @@ def make_data(
   d.contact.geom = wp.zeros((nconmax,), dtype=wp.vec2i)
   d.contact.efc_address = wp.zeros((nconmax, np.max(mjm.geom_condim)), dtype=wp.int32)
   d.contact.worldid = wp.zeros((nconmax,), dtype=wp.int32)
-  d.efc = _constraint(mjm, d.nworld, d.njmax)
+  d.efc = _constraint(mjm, d.nworld, d.nconmax, d.njmax)
   d.qfrc_passive = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.subtree_linvel = wp.zeros((nworld, mjm.nbody), dtype=wp.vec3)
   d.subtree_angmom = wp.zeros((nworld, mjm.nbody), dtype=wp.vec3)
@@ -954,6 +963,8 @@ def put_data(
   )
   con_efc_address_fill = np.vstack([con_efc_address, np.zeros((ncon_fill, condim_max))])
 
+  con_efc_address_fill = np.vstack([con_efc_address, np.zeros((ncon_fill, condim_max))])
+
   d.contact.dist = wp.array(con_dist_fill, dtype=wp.float32, ndim=1)
   d.contact.pos = wp.array(con_pos_fill, dtype=wp.vec3f, ndim=1)
   d.contact.frame = wp.array(con_frame_fill, dtype=wp.mat33f, ndim=1)
@@ -967,7 +978,7 @@ def put_data(
   d.contact.efc_address = wp.array(con_efc_address_fill, dtype=wp.int32, ndim=2)
   d.contact.worldid = wp.array(con_worldid, dtype=wp.int32, ndim=1)
 
-  d.efc = _constraint(mjm, d.nworld, d.njmax)
+  d.efc = _constraint(mjm, d.nworld, d.nconmax, d.njmax)
   d.efc.J = wp.array(efc_J_fill, dtype=wp.float32, ndim=2)
   d.efc.D = wp.array(efc_D_fill, dtype=wp.float32, ndim=1)
   d.efc.pos = wp.array(efc_pos_fill, dtype=wp.float32, ndim=1)
