@@ -103,16 +103,18 @@ class ConstraintTest(parameterized.TestCase):
   )
   def test_constraints(self, cone):
     """Test constraints."""
-    mjm, mjd, _, _ = test_util.fixture("constraints.xml", cone=cone)
-
     for key in range(3):
-      mujoco.mj_resetDataKeyframe(mjm, mjd, key)
+      mjm, mjd, _, _ = test_util.fixture(
+        "constraints.xml", sparse=False, cone=cone, keyframe=key
+      )
 
       mujoco.mj_forward(mjm, mjd)
       m = mjwarp.put_model(mjm)
       d = mjwarp.put_data(mjm, mjd)
       mjwarp.make_constraint(m, d)
 
+      _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+      _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
       _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")

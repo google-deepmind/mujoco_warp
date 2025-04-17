@@ -46,7 +46,9 @@ def fixture(
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
   kick: bool = False,
+  seed: int = 42,
 ):
+  np.random.seed(seed)
   if fname is not None:
     path = epath.resource_path("mujoco_warp") / "test_data" / fname
     mjm = mujoco.MjModel.from_xml_path(path.as_posix())

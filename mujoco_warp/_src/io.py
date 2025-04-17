@@ -201,6 +201,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
   )[0]
 
+  jnt_limited_ball_adr = np.nonzero(
+    mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL)
+  )[0]
+
   # body_tree is BFS ordering of body ids
   # body_treeadr contains starting index of each body tree level
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -384,6 +388,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.jnt_limited_slide_hinge_adr = wp.array(
     jnt_limited_slide_hinge_adr, dtype=wp.int32, ndim=1
   )
+  m.jnt_limited_ball_adr = wp.array(jnt_limited_ball_adr, dtype=wp.int32, ndim=1)
   m.jnt_type = wp.array(mjm.jnt_type, dtype=wp.int32, ndim=1)
   m.jnt_solref = wp.array(mjm.jnt_solref, dtype=wp.vec2f, ndim=1)
   m.jnt_solimp = wp.array(mjm.jnt_solimp, dtype=types.vec5, ndim=1)

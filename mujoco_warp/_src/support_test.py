@@ -71,7 +71,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_xfrc_accumulated(self):
     """Tests that xfrc_accumulate ouput matches mj_xfrcAccumulate."""
-    np.random.seed(0)
     mjm, mjd, m, d = test_util.fixture("pendula.xml")
     xfrc = np.random.randn(*d.xfrc_applied.numpy().shape)
     d.xfrc_applied = wp.from_numpy(xfrc, dtype=wp.spatial_vector)

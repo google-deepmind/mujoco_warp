@@ -17,8 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
+from . import math
 from . import types
 from .warp_util import event_scope
+from .warp_util import kernel_copy
 
 
 @wp.func
@@ -32,7 +34,6 @@ def _update_efc_row(
   solref: wp.vec2f,
   solimp: types.vec5,
   margin: wp.float32,
-  refsafe: bool,
   Jqvel: float,
   frictionloss: float,
 ):
@@ -45,7 +46,8 @@ def _update_efc_row(
   mid = solimp[3]
   power = solimp[4]
 
-  if refsafe:
+  # TODO(team): wp.static?
+  if not (m.opt.disableflags & types.DisableBit.REFSAFE.value):
     timeconst = wp.max(timeconst, 2.0 * m.opt.timestep)
 
   dmin = wp.clamp(dmin, types.MJ_MINIMP, types.MJ_MAXIMP)
@@ -113,7 +115,6 @@ def _jac(
 def _efc_equality_connect(
   m: types.Model,
   d: types.Data,
-  refsafe: bool,
 ):
   """Calculates constraint rows for connect equality constraints."""
 
@@ -170,7 +171,6 @@ def _efc_equality_connect(
       m.eq_solref[i_eq],
       m.eq_solimp[i_eq],
       wp.float32(0.0),
-      refsafe,
       Jqvel[i],
       0.0,
     )
@@ -180,7 +180,6 @@ def _efc_equality_connect(
 def _efc_equality_joint(
   m: types.Model,
   d: types.Data,
-  refsafe: bool,
 ):
   worldid, i_eq_joint_adr = wp.tid()
   i_eq = m.eq_jnt_adr[i_eq_joint_adr]
@@ -232,7 +231,6 @@ def _efc_equality_joint(
     m.eq_solref[i_eq],
     m.eq_solimp[i_eq],
     wp.float32(0.0),
-    refsafe,
     Jqvel,
     0.0,
   )
@@ -242,7 +240,6 @@ def _efc_equality_joint(
 def _efc_friction(
   m: types.Model,
   d: types.Data,
-  refsafe: bool,
 ):
   # TODO(team): tendon
   worldid, dofid = wp.tid()
@@ -267,7 +264,6 @@ def _efc_friction(
     m.dof_solref[dofid],
     m.dof_solimp[dofid],
     0.0,
-    refsafe,
     Jqvel,
     m.dof_frictionloss[dofid],
   )
@@ -277,7 +273,6 @@ def _efc_friction(
 def _efc_limit_slide_hinge(
   m: types.Model,
   d: types.Data,
-  refsafe: bool,
 ):
   worldid, jntlimitedid = wp.tid()
   jntid = m.jnt_limited_slide_hinge_adr[jntlimitedid]
@@ -289,7 +284,8 @@ def _efc_limit_slide_hinge(
   active = pos < 0
 
   if active:
-    efcid = wp.atomic_add(d.nefc, 0, 1)
+    lid = wp.atomic_add(d.nl, 0, 1)
+    efcid = lid + d.nefc[0]
     d.efc.worldid[efcid] = worldid
 
     dofadr = m.jnt_dofadr[jntid]
@@ -308,7 +304,57 @@ def _efc_limit_slide_hinge(
       m.jnt_solref[jntid],
       m.jnt_solimp[jntid],
       m.jnt_margin[jntid],
-      refsafe,
+      Jqvel,
+      0.0,
+    )
+
+
+@wp.kernel
+def _efc_limit_ball(
+  m: types.Model,
+  d: types.Data,
+):
+  worldid, jntlimitedid = wp.tid()
+  jntid = m.jnt_limited_ball_adr[jntlimitedid]
+  qposadr = m.jnt_qposadr[jntid]
+
+  qpos = d.qpos[worldid]
+  jnt_quat = wp.quat(
+    qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3]
+  )
+  axis_angle = math.quat_to_vel(jnt_quat)
+  axis, angle = math.normalize_with_norm(axis_angle)
+  jnt_margin = m.jnt_margin[jntid]
+  jnt_range = m.jnt_range[jntid]
+
+  pos = wp.max(jnt_range[0], jnt_range[1]) - angle - jnt_margin
+  active = pos < 0
+
+  if active:
+    lid = wp.atomic_add(d.nl, 0, 1)
+    efcid = lid + d.nefc[0]
+    d.efc.worldid[efcid] = worldid
+
+    dofadr = m.jnt_dofadr[jntid]
+
+    d.efc.J[efcid, dofadr + 0] = -axis[0]
+    d.efc.J[efcid, dofadr + 1] = -axis[1]
+    d.efc.J[efcid, dofadr + 2] = -axis[2]
+
+    Jqvel = -axis[0] * d.qvel[worldid, dofadr + 0]
+    Jqvel -= axis[1] * d.qvel[worldid, dofadr + 1]
+    Jqvel -= axis[2] * d.qvel[worldid, dofadr + 2]
+
+    _update_efc_row(
+      m,
+      d,
+      efcid,
+      pos,
+      pos,
+      m.dof_invweight0[dofadr],
+      m.jnt_solref[jntid],
+      m.jnt_solimp[jntid],
+      jnt_margin,
       Jqvel,
       0.0,
     )
@@ -318,7 +364,6 @@ def _efc_limit_slide_hinge(
 def _efc_contact_pyramidal(
   m: types.Model,
   d: types.Data,
-  refsafe: bool,
 ):
   conid, dimid = wp.tid()
 
@@ -395,7 +440,6 @@ def _efc_contact_pyramidal(
       d.contact.solref[conid],
       d.contact.solimp[conid],
       includemargin,
-      refsafe,
       Jqvel,
       0.0,
     )
@@ -405,7 +449,6 @@ def _efc_contact_pyramidal(
 def _efc_contact_elliptic(
   m: types.Model,
   d: types.Data,
-  refsafe: bool,
 ):
   conid, dimid = wp.tid()
 
@@ -492,7 +535,6 @@ def _efc_contact_elliptic(
       ref,
       d.contact.solimp[conid],
       includemargin,
-      refsafe,
       Jqvel,
       0.0,
     )
@@ -503,41 +545,57 @@ def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
   d.ne.zero_()
-  d.nf.zero_()
   d.nefc.zero_()
+  d.nf.zero_()
+  d.nl.zero_()
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
     d.efc.J.zero_()
-
-    refsafe = not m.opt.disableflags & types.DisableBit.REFSAFE.value
 
     if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):
       wp.launch(
         _efc_equality_connect,
         dim=(d.nworld, m.eq_connect_adr.size),
-        inputs=[m, d, refsafe],
+        inputs=[m, d],
       )
       wp.launch(
         _efc_equality_joint,
         dim=(d.nworld, m.eq_jnt_adr.size),
-        inputs=[m, d, refsafe],
+        inputs=[m, d],
       )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS.value):
       wp.launch(
         _efc_friction,
         dim=(d.nworld, m.nv),
-        inputs=[m, d, refsafe],
+        inputs=[m, d],
       )
 
-    if not (m.opt.disableflags & types.DisableBit.LIMIT.value) and (
-      m.jnt_limited_slide_hinge_adr.size != 0
-    ):
-      wp.launch(
-        _efc_limit_slide_hinge,
-        dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
-        inputs=[m, d, refsafe],
-      )
+    # limit
+    if not (m.opt.disableflags & types.DisableBit.LIMIT.value):
+      limit_slide_hinge = m.jnt_limited_slide_hinge_adr.size > 0
+      if limit_slide_hinge:
+        wp.launch(
+          _efc_limit_slide_hinge,
+          dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
+          inputs=[m, d],
+        )
+
+      limit_ball = m.jnt_limited_ball_adr.size > 0
+      if limit_ball:
+        wp.launch(
+          _efc_limit_ball,
+          dim=(d.nworld, m.jnt_limited_ball_adr.size),
+          inputs=[m, d],
+        )
+
+      if limit_slide_hinge or limit_ball:
+
+        @wp.kernel
+        def _update_nefc(d: types.Data):
+          d.nefc[0] += d.nl[0]
+
+        wp.launch(_update_nefc, dim=(1,), inputs=[d])
 
     # contact
     if not (m.opt.disableflags & types.DisableBit.CONTACT.value):
@@ -545,10 +603,10 @@ def make_constraint(m: types.Model, d: types.Data):
         wp.launch(
           _efc_contact_pyramidal,
           dim=(d.nconmax, 2 * (m.condim_max - 1)),
-          inputs=[m, d, refsafe],
+          inputs=[m, d],
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC.value:
-        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, 3), inputs=[m, d, refsafe])
+        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, 3), inputs=[m, d])
 
         # TODO(team): condim=4
         # TODO(team): condim=6
