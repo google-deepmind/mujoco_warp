@@ -339,7 +339,8 @@ class CollisionTest(parameterized.TestCase):
     # generate contact
     m = mjwarp.put_model(mjm)
     d = mjwarp.make_data(mjm)
-    mjwarp.forward(m, d)
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
 
     self.assertEqual(d.ncon.numpy()[0], 1)
     self.assertEqual(d.contact.includemargin.numpy()[0], -1)
@@ -377,7 +378,8 @@ class CollisionTest(parameterized.TestCase):
     # generate contact
     m = mjwarp.put_model(mjm)
     d = mjwarp.make_data(mjm)
-    mjwarp.forward(m, d)
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
 
     self.assertEqual(d.ncon.numpy()[0], 1)
     self.assertEqual(d.contact.includemargin.numpy()[0], -1)
@@ -416,7 +418,8 @@ class CollisionTest(parameterized.TestCase):
     # generate contact
     m = mjwarp.put_model(mjm)
     d = mjwarp.make_data(mjm)
-    mjwarp.forward(m, d)
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
 
     self.assertEqual(d.ncon.numpy()[0], 1)
     self.assertEqual(d.contact.includemargin.numpy()[0], -1)
@@ -459,7 +462,8 @@ class CollisionTest(parameterized.TestCase):
     # generate contact
     m = mjwarp.put_model(mjm)
     d = mjwarp.make_data(mjm)
-    mjwarp.forward(m, d)
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
 
     self.assertEqual(d.ncon.numpy()[0], 2)
     self.assertEqual(d.contact.includemargin.numpy()[1], -1)

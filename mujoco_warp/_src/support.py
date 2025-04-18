@@ -13,11 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Any
-
 import mujoco
 import warp as wp
 
+from .types import ConeType
 from .types import Data
 from .types import Model
 from .types import array2df
@@ -259,25 +258,27 @@ def contact_force(
   m: Model, d: Data, contact_id: int, to_world_frame: bool = False
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
-  efc_address = d.contact.efc_address[
-    contact_id, 0
-  ]  # 0 in second dimension to get the normal force
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  condim = d.contact.dim[contact_id]
+  efc_address = d.contact.efc_address[contact_id, 0]
 
-  if efc_address >= 0:
-    condim = d.contact.dim[contact_id]
-
-    # TODO(team): add support for elliptical cone type
-    if m.opt.cone == int(mujoco.mjtCone.mjCONE_PYRAMIDAL.value):
+  if contact_id >= 0 and contact_id <= d.ncon[0] and efc_address >= 0:
+    if m.opt.cone == int(ConeType.PYRAMIDAL.value):
       force = _decode_pyramid(
-        d.efc.force, efc_address, d.contact.friction[contact_id], condim
+        d.efc.force,
+        efc_address,
+        d.contact.friction[contact_id],
+        condim,
       )
+    else:
+      for i in range(condim):
+        force[i] = d.efc.force[d.contact.efc_address[contact_id, i]]
 
-    if to_world_frame:
-      # Transform both top and bottom parts of spatial vector by the full contact frame matrix
-      t = wp.spatial_top(force) @ d.contact.frame[contact_id]
-      b = wp.spatial_bottom(force) @ d.contact.frame[contact_id]
-      force = wp.spatial_vector(t, b)
+  if to_world_frame:
+    # Transform both top and bottom parts of spatial vector by the full contact frame matrix
+    t = wp.spatial_top(force) @ d.contact.frame[contact_id]
+    b = wp.spatial_bottom(force) @ d.contact.frame[contact_id]
+    force = wp.spatial_vector(t, b)
 
   return force
 

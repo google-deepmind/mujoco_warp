@@ -34,6 +34,8 @@ from .warp_util import event_scope
 from .warp_util import kernel
 from .warp_util import kernel_copy
 
+wp.set_module_options({"enable_backward": False})
+
 
 @event_scope
 def kinematics(m: Model, d: Data):
@@ -658,7 +660,38 @@ def rne_postconstraint(m: Model, d: Data):
 
   wp.launch(_cfrc_ext, dim=(d.nworld, m.nbody), inputs=[m, d])
 
-  # TODO(team): cfrc_ext += contacts
+  # cfrc_ext += contacts
+  @kernel
+  def _contact_force_to_cfrc_ext(m: Model, d: Data):
+    conid = wp.tid()
+
+    if conid >= d.ncon[0]:
+      return
+
+    geom = d.contact.geom[conid]
+    id1 = m.geom_bodyid[geom[0]]
+    id2 = m.geom_bodyid[geom[1]]
+
+    if id1 == 0 and id2 == 0:
+      return
+
+    # contact force in world frame
+    force = support.contact_force(m, d, conid, to_world_frame=True)
+
+    worldid = d.contact.worldid[conid]
+    pos = d.contact.pos[conid]
+
+    # contact force on bodies
+    if id1:
+      com1 = d.subtree_com[worldid, m.body_rootid[id1]]
+      d.cfrc_ext[worldid, id1] -= support.transform_force(force, com1 - pos)
+
+    if id2:
+      com2 = d.subtree_com[worldid, m.body_rootid[id2]]
+      d.cfrc_ext[worldid, id2] += support.transform_force(force, com2 - pos)
+
+  wp.launch(_contact_force_to_cfrc_ext, dim=(d.nconmax,), inputs=[m, d])
+
   # TODO(team): cfrc_ext += equality
 
   # forward pass over bodies: compute cacc, cfrc_int
@@ -1087,8 +1120,3 @@ def tendon(m: Model, d: Data):
     wp.launch(_joint_tendon, dim=(d.nworld, m.wrap_jnt_adr.size), inputs=[m, d])
 
   # TODO(team): spatial
-
-
-def subtree_vel(m: Model, d: Data):
-  # TODO(team)
-  pass

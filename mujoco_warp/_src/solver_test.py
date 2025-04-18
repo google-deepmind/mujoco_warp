@@ -41,7 +41,7 @@ def _assert_eq(a, b, name):
 
 class SolverTest(parameterized.TestCase):
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, SolverType.CG, 25, 5, False, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 5, 5, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, True, True),
   )
@@ -355,18 +355,18 @@ class SolverTest(parameterized.TestCase):
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
-  def test_frictionloss(self):
+  @parameterized.parameters(1, 2)
+  def test_frictionloss(self, keyframe):
     """Tests solver with frictionloss."""
     # TODO(team): test tendon frictionloss
     # TODO(team): test keyframe 2
-    for keyframe in range(2):
-      _, mjd, m, d = test_util.fixture("constraints.xml", keyframe=keyframe)
-      mjwarp.solve(m, d)
+    _, mjd, m, d = test_util.fixture("constraints.xml", keyframe=keyframe)
+    mjwarp.solve(m, d)
 
-      _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
-      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
-      _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
-      _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
+    _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
+    _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
 
 
 if __name__ == "__main__":

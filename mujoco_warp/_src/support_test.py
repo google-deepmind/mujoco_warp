@@ -25,25 +25,13 @@ import mujoco_warp as mjwarp
 
 from . import test_util
 from .support import contact_force_kernel
+from .types import ConeType
 
 wp.config.verify_cuda = True
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-5
-
-
-def _load_from_string(xml: str, keyframe: int = -1):
-  mjm = mujoco.MjModel.from_xml_string(xml)
-  mjd = mujoco.MjData(mjm)
-  if keyframe > -1:
-    mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
-  mujoco.mj_forward(mjm, mjd)
-
-  m = mjwarp.put_model(mjm)
-  d = mjwarp.put_data(mjm, mjd)
-
-  return mjm, mjd, m, d
 
 
 def _assert_eq(a, b, name):
@@ -98,88 +86,56 @@ class SupportTest(parameterized.TestCase):
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape)
 
-  _CONTACTS = """
-    <mujoco>
-      <worldbody>
-        <body pos="0 0 0.55" euler="1 0 0">
-          <joint axis="1 0 0" type="free"/>
-          <geom fromto="-0.4 0 0 0.4 0 0" size="0.05" type="capsule" condim="6"/>
-        </body>
-        <body pos="0 0 0.5" euler="0 1 0">
-          <joint axis="1 0 0" type="free"/>
-          <geom fromto="-0.4 0 0 0.4 0 0" size="0.05" type="capsule" condim="3"/>
-        </body>
-        <body pos="0 0 0.445" euler="0 90 0">
-          <joint axis="1 0 0" type="free"/>
-          <geom fromto="-0.4 0 0 0.4 0 0" size="0.05" type="capsule" condim="1"/>
-        </body>
-      </worldbody>
-    </mujoco>
-  """
+  @parameterized.parameters(
+    (ConeType.PYRAMIDAL, 1, False),
+    (ConeType.PYRAMIDAL, 3, False),
+    (ConeType.PYRAMIDAL, 4, False),
+    (ConeType.PYRAMIDAL, 6, False),
+    (ConeType.PYRAMIDAL, 1, True),
+    (ConeType.PYRAMIDAL, 3, True),
+    (ConeType.PYRAMIDAL, 4, True),
+    (ConeType.PYRAMIDAL, 6, True),
+    (ConeType.ELLIPTIC, 1, False),
+    (ConeType.ELLIPTIC, 3, False),
+    (ConeType.ELLIPTIC, 4, False),
+    (ConeType.ELLIPTIC, 6, False),
+    (ConeType.ELLIPTIC, 1, True),
+    (ConeType.ELLIPTIC, 3, True),
+    (ConeType.ELLIPTIC, 4, True),
+    (ConeType.ELLIPTIC, 6, True),
+  )
+  def test_contact_force(self, cone, condim, to_world_frame):
+    _CONTACT = f"""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="10 10 .001"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom fromto="-.4 0 0 .4 0 0" size=".05 .1" type="capsule" condim="{condim}" friction="1 1 1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0.04 1 0 0 0" qvel="-1 -1 -1 .1 .1 .1"/>
+        </keyframe>
+      </mujoco>
+    """
+    mjm, mjd, m, d = test_util.fixture(xml=_CONTACT, cone=cone, keyframe=0)
 
-  def test_contact_force(self):
-    mjm, mjd, m, d = _load_from_string(self._CONTACTS)
+    mj_force = np.zeros(6, dtype=float)
+    mujoco.mj_contactForce(mjm, mjd, 0, mj_force)
 
-    # map MJX contacts to MJ ones
-    def _find(g):
-      val = (g == mjd.contact.geom).sum(axis=1)
-      return np.where(val == 2)[0][0]
+    force = wp.zeros(1, dtype=wp.spatial_vector)
+    wp.launch(
+      kernel=contact_force_kernel,
+      dim=1,
+      inputs=[m, d, force, wp.array([0], dtype=int), to_world_frame],
+    )
 
-    for i in range(mjd.ncon):
-      result = np.zeros(6, dtype=float)
-      mujoco.mj_contactForce(mjm, mjd, i, result)
+    if to_world_frame:
+      frame = mjd.contact.frame[0].reshape((3, 3))
+      mj_force = np.concatenate([frame.T @ mj_force[:3], frame.T @ mj_force[3:]])
 
-      j = i
-      force = wp.zeros(1, dtype=wp.spatial_vector)
-      wp.launch(
-        kernel=contact_force_kernel,
-        dim=1,
-        inputs=[
-          m,
-          d,
-          force,
-          wp.array(
-            [
-              j,
-            ],
-            dtype=int,
-          ),
-          False,
-        ],
-      )
-      force = force.numpy()[0]
-      np.testing.assert_allclose(result, force, rtol=1e-5, atol=2)
-
-      # check for zeros after first condim elements
-      condim = mjd.contact.dim[j]
-      if condim < 6:
-        np.testing.assert_allclose(force[condim:], 0, rtol=1e-5, atol=1e-5)
-
-      # test world conversion
-      force = wp.zeros(1, dtype=wp.spatial_vector)
-      wp.launch(
-        kernel=contact_force_kernel,
-        dim=1,
-        inputs=[
-          m,
-          d,
-          force,
-          wp.array(
-            [
-              j,
-            ],
-            dtype=int,
-          ),
-          True,
-        ],
-      )
-      force = force.numpy()[0]
-
-      # back to contact frame
-      t = mjd.contact.frame[j].reshape(3, 3) @ force[:3]
-      b = mjd.contact.frame[j].reshape(3, 3) @ force[3:]
-      force = np.concatenate([t, b])
-      np.testing.assert_allclose(result, force, rtol=1e-5, atol=2)
+    _assert_eq(force.numpy()[0], mj_force, "contact force")
 
 
 if __name__ == "__main__":

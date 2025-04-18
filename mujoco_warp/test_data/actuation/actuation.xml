@@ -1,4 +1,5 @@
 <mujoco>
+  <option iterations="4" ls_iterations="4"/>
   <worldbody>
     <body pos="0 0 0">
       <joint name="hinge0" type="hinge" axis="1 0 0"/>

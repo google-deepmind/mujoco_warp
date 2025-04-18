@@ -38,6 +38,7 @@ def fixture(
   keyframe: int = -1,
   contact: bool = True,
   constraint: bool = True,
+  equality: bool = True,
   gravity: bool = True,
   cone: Optional[ConeType] = None,
   solver: Optional[SolverType] = None,
@@ -60,6 +61,8 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.CONTACT
   if not constraint:
     mjm.opt.disableflags |= DisableBit.CONSTRAINT
+  if not equality:
+    mjm.opt.disableflags |= DisableBit.EQUALITY
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
   if cone is not None:

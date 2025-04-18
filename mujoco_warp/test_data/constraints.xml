@@ -4,7 +4,7 @@
 * solref, solimp
 -->
 <mujoco>
-  <option timestep="0.015" impratio="1.5"/>
+  <option timestep="0.015" impratio="1.5" iterations="4" ls_iterations="4"/>
 
   <default>
     <default class="box">

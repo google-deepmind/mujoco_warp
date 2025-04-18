@@ -47,7 +47,8 @@ The following features are implemented:
 | ----------------- | ---------------------------------- |
 | Dynamics          | Forward only                       |
 | Transmission      | `JOINT`, `JOINTINPARENT`           |
-| Actuator Dynamics | `NONE`                             |
+| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`     |
+|                   | `FILTEREXACT`                      |
 | Actuator Gain     | `FIXED`, `AFFINE`                  |
 | Actuator Bias     | `NONE`, `AFFINE`                   |
 | Geom              | `PLANE`, `SPHERE`, `CAPSULE`       |

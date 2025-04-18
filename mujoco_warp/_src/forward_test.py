@@ -58,24 +58,31 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(d.ten_velocity.numpy()[0], mjd.ten_velocity, "ten_velocity")
 
-  @parameterized.parameters(True, False)
-  def test_fwd_actuation(self, sparse):
-    mjm, mjd, m, d = test_util.fixture("actuation.xml", kick=True, sparse=sparse)
-
-    mujoco.mj_fwdActuation(mjm, mjd)
-
-    for arr in (d.actuator_force, d.qfrc_actuator):
-      arr.zero_()
+  @parameterized.parameters(
+    "actuation/actuation.xml",
+    "actuation/actuators.xml",
+  )
+  def test_actuation(self, xml):
+    mjm, mjd, m, d = test_util.fixture(xml, keyframe=0)
 
     mjwarp.fwd_actuation(m, d)
 
-    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
-    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
     _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
+    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+
+    if mjm.na:
+      _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
+
+      # next activations
+      mujoco.mj_step(mjm, mjd)
+      mjwarp.step(m, d)
+
+      _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
     # TODO(team): test DisableBit.CLAMPCTRL
     # TODO(team): test DisableBit.ACTUATION
-    # TODO(team): test actuator gain/bias (e.g. position control)
+    # TODO(team): test muscle
+    # TODO(team): test actearly
 
   def test_fwd_acceleration(self):
     _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
@@ -141,7 +148,7 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, m, d = test_util.fixture(
       xml="""
         <mujoco>
-          <option integrator="RK4">
+          <option integrator="RK4" iterations="4" ls_iterations="4">
             <flag constraint="disable"/>
           </option>
           <worldbody>
@@ -180,9 +187,9 @@ class ImplicitIntegratorTest(parameterized.TestCase):
     mjm, _, _, _ = test_util.fixture("pendula.xml")
 
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-    mjm.opt.disableflags = mjm.opt.disableflags | disableFlags
-    mjm.actuator_gainprm[:, 2] = np.random.normal(
-      scale=10, size=mjm.actuator_gainprm[:, 2].shape
+    mjm.opt.disableflags |= disableFlags
+    mjm.actuator_gainprm[:, 2] = np.random.uniform(
+      low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape
     )
 
     # change actuators to velocity/damper to cover all codepaths
@@ -190,20 +197,18 @@ class ImplicitIntegratorTest(parameterized.TestCase):
     mjm.actuator_gaintype[6] = mujoco.mjtGain.mjGAIN_AFFINE
     mjm.actuator_biastype[0:3] = mujoco.mjtBias.mjBIAS_AFFINE
     mjm.actuator_biastype[4:6] = mujoco.mjtBias.mjBIAS_AFFINE
-    mjm.actuator_biasprm[0:3, 2] = -1
-    mjm.actuator_biasprm[4:6, 2] = -1
+    mjm.actuator_biasprm[0:3, 2] = -1.0
+    mjm.actuator_biasprm[4:6, 2] = -1.0
     mjm.actuator_ctrlrange[3:7] = 10.0
     mjm.actuator_gear[:] = 1.0
 
     mjd = mujoco.MjData(mjm)
 
     mjd.qvel = np.random.uniform(low=-0.01, high=0.01, size=mjd.qvel.shape)
-    mjd.ctrl = np.random.normal(scale=10, size=mjd.ctrl.shape)
-    mjd.act = np.random.normal(scale=10, size=mjd.act.shape)
+    mjd.ctrl = np.random.uniform(low=-0.1, high=0.1, size=mjd.ctrl.shape)
+    mjd.act = np.random.uniform(low=-0.1, high=0.1, size=mjd.act.shape)
     mujoco.mj_forward(mjm, mjd)
 
-    mjd.ctrl = np.random.normal(scale=10, size=mjd.ctrl.shape)
-    mjd.act = np.random.normal(scale=10, size=mjd.act.shape)
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 

@@ -20,7 +20,6 @@ import warp as wp
 from . import math
 from . import types
 from .warp_util import event_scope
-from .warp_util import kernel_copy
 
 
 @wp.func
@@ -374,7 +373,7 @@ def _efc_contact_pyramidal(
 
   if condim == 1 and dimid > 0:
     return
-  elif dimid >= 2 * (condim - 1):
+  elif condim > 1 and dimid >= 2 * (condim - 1):
     return
 
   includemargin = d.contact.includemargin[conid]
@@ -457,18 +456,7 @@ def _efc_contact_elliptic(
 
   condim = d.contact.dim[conid]
 
-  if condim == 1 and dimid > 0:
-    return
-
-  if condim == 3 and dimid > 2:
-    return
-
-  # TODO(team): condim=4
-  if condim == 4:
-    return
-
-  # TODO(team): condim=6
-  if condim == 6:
+  if dimid > condim - 1:
     return
 
   includemargin = d.contact.includemargin[conid]
@@ -492,11 +480,15 @@ def _efc_contact_elliptic(
     Jqvel = float(0.0)
     for i in range(m.nv):
       J = float(0.0)
-      jac1p, _ = _jac(m, d, cpos, body1, i, worldid)
-      jac2p, _ = _jac(m, d, cpos, body2, i, worldid)
-      jac_dif = jac2p - jac1p
+      jac1p, jac1r = _jac(m, d, cpos, body1, i, worldid)
+      jac2p, jac2r = _jac(m, d, cpos, body2, i, worldid)
       for xyz in range(3):
-        J += frame[dimid, xyz] * jac_dif[xyz]
+        if dimid < 3:
+          jac_dif = jac2p[xyz] - jac1p[xyz]
+          J += frame[dimid, xyz] * jac_dif
+        else:
+          jac_dif = jac2r[xyz] - jac1r[xyz]
+          J += frame[dimid - 3, xyz] * jac_dif
 
       d.efc.J[efcid, i] = J
       Jqvel += J * d.qvel[worldid, i]
@@ -602,11 +594,8 @@ def make_constraint(m: types.Model, d: types.Data):
       if m.opt.cone == types.ConeType.PYRAMIDAL.value:
         wp.launch(
           _efc_contact_pyramidal,
-          dim=(d.nconmax, 2 * (m.condim_max - 1)),
+          dim=(d.nconmax, 2 * (m.condim_max - 1) if m.condim_max > 1 else 1),
           inputs=[m, d],
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC.value:
-        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, 3), inputs=[m, d])
-
-        # TODO(team): condim=4
-        # TODO(team): condim=6
+        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, m.condim_max), inputs=[m, d])

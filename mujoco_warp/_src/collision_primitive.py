@@ -25,7 +25,6 @@ from .types import GeomType
 from .types import Model
 from .types import vec5
 
-_TINY_VAL = 1e-6
 wp.set_module_options({"enable_backward": False})
 
 
@@ -823,7 +822,7 @@ def _sphere_box(
     return
 
   # sphere center inside box
-  if dist <= _TINY_VAL:
+  if dist <= MJ_MINVAL:
     closest = 2.0 * (box_size[0] + box_size[1] + box_size[2])
     k = wp.int32(0)
     for i in range(6):
