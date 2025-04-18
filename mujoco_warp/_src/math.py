@@ -31,6 +31,17 @@ def mul_quat(u: wp.quat, v: wp.quat) -> wp.quat:
 
 
 @wp.func
+def quat_mul_axis(q: wp.quat, axis: wp.vec3f) -> wp.quat:
+  """Multiplies a quaternion and an axis."""
+  return wp.quat(
+    -q[1] * axis[0] - q[2] * axis[1] - q[3] * axis[2],
+    q[0] * axis[0] + q[2] * axis[2] - q[3] * axis[1],
+    q[0] * axis[1] + q[3] * axis[0] - q[1] * axis[2],
+    q[0] * axis[2] + q[1] * axis[1] - q[2] * axis[0],
+  )
+
+
+@wp.func
 def rot_vec_quat(vec: wp.vec3, quat: wp.quat) -> wp.vec3:
   s, u = quat[0], wp.vec3(quat[1], quat[2], quat[3])
   r = 2.0 * (wp.dot(u, vec) * u) + (s * s - wp.dot(u, u)) * vec

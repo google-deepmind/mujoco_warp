@@ -112,6 +112,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     raise NotImplementedError("Wind is unsupported.")
 
   if mjm.opt.density > 0 or mjm.opt.viscosity > 0:
+    breakpoint()
     raise NotImplementedError("Fluid forces are unsupported.")
 
   # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
@@ -478,12 +479,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.actuator_dynprm = wp.array(mjm.actuator_dynprm, dtype=types.vec10f, ndim=1)
   m.exclude_signature = wp.array(mjm.exclude_signature, dtype=wp.int32, ndim=1)
 
-  # pre-compute indices of joint equalities
-  m.eq_jnt_adr = wp.array(
-    np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=wp.int32, ndim=1
-  )
+  # pre-compute indices of equality constraints
   m.eq_connect_adr = wp.array(
     np.nonzero(mjm.eq_type == types.EqType.CONNECT.value)[0], dtype=wp.int32, ndim=1
+  )
+  m.eq_wld_adr = wp.array(
+    np.nonzero(mjm.eq_type == types.EqType.WELD.value)[0], dtype=wp.int32, ndim=1
+  )
+  m.eq_jnt_adr = wp.array(
+    np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=wp.int32, ndim=1
   )
 
   # short-circuiting here allows us to skip a lot of code in implicit integration

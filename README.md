@@ -54,7 +54,7 @@ The following features are implemented:
 | Geom              | `PLANE`, `SPHERE`, `CAPSULE`       |
 | Constraint        | `LIMIT_JOINT`, `CONTACT_PYRAMIDAL` |
 |                   | `CONTACT_ELLIPTIC`                 |
-| Equality          | `CONNECT`, `JOINT`                 |
+| Equality          | `CONNECT`, `WELD`, `JOINT`         |
 | Integrator        | `EULER`, `IMPLICITFAST`, `RK4`     |
 | Cone              | `PYRAMIDAL`, `ELLIPTIC`            |
 | Condim            | (1, 3, 4, 6), (1, 3)               |

@@ -21,6 +21,8 @@ from . import math
 from . import types
 from .warp_util import event_scope
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def _update_efc_row(
@@ -266,6 +268,116 @@ def _efc_friction(
     Jqvel,
     m.dof_frictionloss[dofid],
   )
+
+
+@wp.kernel
+def _efc_equality_weld(
+  m: types.Model,
+  d: types.Data,
+  refsafe: bool,
+):
+  worldid, i_eq_weld_adr = wp.tid()
+  i_eq = m.eq_wld_adr[i_eq_weld_adr]
+  if not d.eq_active[worldid, i_eq]:
+    return
+
+  efcid = wp.atomic_add(d.nefc, 0, 6)
+  wp.atomic_add(d.ne, 0, 6)
+  for i in range(wp.static(6)):
+    d.efc.worldid[efcid + i] = worldid
+
+  is_site = m.eq_objtype[i_eq] == wp.static(types.ObjType.SITE.value) and m.nsite > 0
+
+  obj1id = m.eq_obj1id[i_eq]
+  obj2id = m.eq_obj2id[i_eq]
+
+  data = m.eq_data[i_eq]
+  anchor1 = wp.vec3(data[0], data[1], data[2])
+  anchor2 = wp.vec3(data[3], data[4], data[5])
+  relpose = wp.quat(data[6], data[7], data[8], data[9])
+  torquescale = data[10]
+
+  if is_site:
+    # body1id stores the index of site_bodyid.
+    body1id = m.site_bodyid[m.eq_obj1id[i_eq]]
+    body2id = m.site_bodyid[m.eq_obj2id[i_eq]]
+    pos1 = d.site_xpos[worldid, m.eq_obj1id[i_eq]]
+    pos2 = d.site_xpos[worldid, m.eq_obj2id[i_eq]]
+
+    quat = math.mul_quat(d.xquat[worldid, body1id], m.site_quat[obj1id])
+    quat1 = math.quat_inv(math.mul_quat(d.xquat[worldid, body2id], m.site_quat[obj2id]))
+
+  else:
+    body1id = m.eq_obj1id[i_eq]
+    body2id = m.eq_obj2id[i_eq]
+    pos1 = d.xpos[worldid, body1id] + d.xmat[worldid, body1id] @ anchor2
+    pos2 = d.xpos[worldid, body2id] + d.xmat[worldid, body2id] @ anchor1
+
+    quat = math.mul_quat(d.xquat[worldid, body1id], relpose)
+    quat1 = math.quat_inv(d.xquat[worldid, body2id])
+
+  # compute Jacobian difference (opposite of contact: 0 - 1)
+  Jqvelp = wp.vec3f(0.0, 0.0, 0.0)
+  Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
+
+  for dofid in range(m.nv):  # TODO: parallelize
+    jacp1, jacr1 = _jac(m, d, pos1, body1id, dofid, worldid)
+    jacp2, jacr2 = _jac(m, d, pos2, body2id, dofid, worldid)
+
+    jacdifp = jacp1 - jacp2
+    for i in range(wp.static(3)):
+      d.efc.J[efcid + i, dofid] = jacdifp[i]
+
+    jacdifr = (jacr1 - jacr2) * torquescale
+    jacdifrq = math.mul_quat(math.quat_mul_axis(quat1, jacdifr), quat)
+    jacdifr = 0.5 * wp.vec3(jacdifrq[1], jacdifrq[2], jacdifrq[3])
+
+    for i in range(wp.static(3)):
+      d.efc.J[efcid + 3 + i, dofid] = jacdifr[i]
+
+    Jqvelp += jacdifp * d.qvel[worldid, dofid]
+    Jqvelr += jacdifr * d.qvel[worldid, dofid]
+
+  # error is difference in global position and orientation
+  cpos = pos1 - pos2
+
+  crotq = math.mul_quat(quat1, quat)  # copy axis components
+  crot = wp.vec3(crotq[1], crotq[2], crotq[3]) * torquescale
+
+  invweight = m.body_invweight0[body1id, 0] + m.body_invweight0[body2id, 0]
+  pos_imp = wp.sqrt(wp.length_sq(cpos) + wp.length_sq(crot))
+
+  for i in range(3):
+    _update_efc_row(
+      m,
+      d,
+      efcid + i,
+      cpos[i],
+      pos_imp,
+      invweight,
+      m.eq_solref[i_eq],
+      m.eq_solimp[i_eq],
+      wp.float32(0.0),
+      refsafe,
+      Jqvelp[i],
+      0.0,
+    )
+
+  for i in range(3):
+    _update_efc_row(
+      m,
+      d,
+      efcid + 3 + i,
+      crot[i],
+      pos_imp,
+      invweight,
+      m.eq_solref[i_eq],
+      m.eq_solimp[i_eq],
+      wp.float32(0.0),
+      refsafe,
+      Jqvelr[i],
+      0.0,
+    )
 
 
 @wp.kernel
@@ -554,6 +666,11 @@ def make_constraint(m: types.Model, d: types.Data):
         _efc_equality_joint,
         dim=(d.nworld, m.eq_jnt_adr.size),
         inputs=[m, d],
+      )
+      wp.launch(
+        _efc_equality_weld,
+        dim=(d.nworld, m.eq_wld_adr.size),
+        inputs=[m, d, refsafe],
       )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS.value):
