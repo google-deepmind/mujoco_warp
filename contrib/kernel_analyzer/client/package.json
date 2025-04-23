@@ -1,0 +1,22 @@
+{
+  "name": "kernel-analyzer-client",
+  "description": "Client-side code (TypeScript) for the Kernel Analyzer VS Code extension",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1" 
+  },
+  "devDependencies": {
+    "@types/node": "^18.17.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.3.3"
+  },
+  "scripts": {
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json"
+  }
+}
