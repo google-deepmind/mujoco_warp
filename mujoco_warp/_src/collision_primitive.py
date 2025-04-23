@@ -27,9 +27,6 @@ from .types import vec5
 
 wp.set_module_options({"enable_backward": False})
 
-wp.set_module_options({"enable_backward": False})
-
-
 @wp.struct
 class Geom:
   pos: wp.vec3
