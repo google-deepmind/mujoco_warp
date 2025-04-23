@@ -674,11 +674,11 @@ def make_data(
   # TODO(team): move to Model?
   if nconmax == -1:
     # TODO(team): heuristic for nconmax
-    nconmax = nworld * 10
+    nconmax = nworld * 20
   d.nconmax = nconmax
   if njmax == -1:
     # TODO(team): heuristic for njmax
-    njmax = nworld * 10 * 6
+    njmax = nworld * 20 * 6
   d.njmax = njmax
 
   d.ncon = wp.zeros(1, dtype=wp.int32)
