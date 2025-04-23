@@ -268,7 +268,10 @@ class CollisionTest(parameterized.TestCase):
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
     """Tests convex collision with different geometries."""
-    _, mjd, _, d = test_util.fixture(xml=self._FIXTURES[fixture])
+    mjm, mjd, m, d = test_util.fixture(xml=self._FIXTURES[fixture])
+
+    mujoco.mj_collision(mjm, mjd)
+    mjwarp.collision(m, d)
 
     for i in range(mjd.ncon):
       actual_dist = mjd.contact.dist[i]
