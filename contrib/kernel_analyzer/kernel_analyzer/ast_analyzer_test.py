@@ -18,7 +18,7 @@ import os
 import pathlib
 from typing import Any, List, Type
 
-import ast_analyzer
+from . import ast_analyzer
 from absl.testing import absltest
 
 # Test code snippets
