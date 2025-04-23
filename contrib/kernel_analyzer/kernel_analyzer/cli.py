@@ -21,8 +21,6 @@ from absl import app
 from absl import flags
 from absl import logging
 
-FLAGS = flags.FLAGS
-
 _VERBOSE = flags.DEFINE_bool("verbose", False, "Enable debug logging.")
 _FILES = flags.DEFINE_multi_string("files", [], "Python files to check.")
 _OUTPUT = flags.DEFINE_enum(
