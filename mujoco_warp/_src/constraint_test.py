@@ -23,6 +23,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 
 from . import test_util
+from .types import ConeType
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -36,43 +37,48 @@ def _assert_eq(a, b, name):
 
 
 class ConstraintTest(parameterized.TestCase):
-  def test_contact_frictionless(self):
-    """Test frictionless contact (condim=1)."""
-    mjm = mujoco.MjModel.from_xml_string("""
+  @parameterized.parameters(
+    (ConeType.PYRAMIDAL, 1, 1),
+    (ConeType.PYRAMIDAL, 1, 3),
+    (ConeType.PYRAMIDAL, 1, 4),
+    (ConeType.PYRAMIDAL, 1, 6),
+    (ConeType.PYRAMIDAL, 3, 3),
+    (ConeType.PYRAMIDAL, 3, 4),
+    (ConeType.PYRAMIDAL, 3, 6),
+    (ConeType.PYRAMIDAL, 4, 4),
+    (ConeType.PYRAMIDAL, 4, 6),
+    (ConeType.PYRAMIDAL, 6, 6),
+    (ConeType.ELLIPTIC, 1, 1),
+    (ConeType.ELLIPTIC, 1, 3),
+    (ConeType.ELLIPTIC, 1, 4),
+    (ConeType.ELLIPTIC, 1, 6),
+    (ConeType.ELLIPTIC, 3, 3),
+    (ConeType.ELLIPTIC, 3, 4),
+    (ConeType.ELLIPTIC, 3, 6),
+    (ConeType.ELLIPTIC, 4, 4),
+    (ConeType.ELLIPTIC, 4, 6),
+    (ConeType.ELLIPTIC, 6, 6),
+  )
+  def test_condim(self, cone, condim1, condim2):
+    """Test condim."""
+    xml = f"""
       <mujoco>
         <worldbody>
-          <body pos="0 0 0">
+          <body pos="0.0 0 0">
             <freejoint/>
-            <geom type="sphere" size="0.1" condim="1"/>
+            <geom type="sphere" size=".1" condim="{condim1}"/>
           </body>
-          <body pos="1 0 0">
+          <body pos="0.05 0 0">
             <freejoint/>
-            <geom type="sphere" size="0.1" condim="1"/>
-          </body>
-          <body pos="2 0 0">
-            <freejoint/>
-            <geom type="sphere" size="0.1" condim="3"/>
+            <geom type="sphere" size=".1" condim="{condim2}"/>
           </body>
         </worldbody>
-        <keyframe>
-          <key qpos='0 0 0 1 0 0 0
-                     0 0 0 1 0 0 0
-                     0 0 0 1 0 0 0'/>
-        </keyframe>
       </mujoco>
-    """)
+    """
 
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-
+    _, mjd, m, d = test_util.fixture(xml=xml, cone=cone)
     mjwarp.make_constraint(m, d)
 
-    _assert_eq(d.ncon.numpy()[0], 3, "ncon")
-    _assert_eq(d.nefc.numpy()[0], 9, "nefc")
     _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
     _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
     _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
@@ -85,16 +91,51 @@ class ConstraintTest(parameterized.TestCase):
   )
   def test_constraints(self, cone):
     """Test constraints."""
-    mjm, mjd, _, _ = test_util.fixture("constraints.xml", sparse=False, cone=cone)
-
     for key in range(3):
-      mujoco.mj_resetDataKeyframe(mjm, mjd, key)
+      mjm, mjd, _, _ = test_util.fixture(
+        "constraints.xml", sparse=False, cone=cone, keyframe=key
+      )
 
       mujoco.mj_forward(mjm, mjd)
       m = mjwarp.put_model(mjm)
       d = mjwarp.put_data(mjm, mjd)
+
+      for arr in (
+        d.efc.J,
+        d.efc.D,
+        d.efc.aref,
+        d.efc.pos,
+        d.efc.margin,
+        d.ne,
+        d.nefc,
+        d.nf,
+        d.nl,
+      ):
+        arr.zero_()
+
       mjwarp.make_constraint(m, d)
 
+      _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
+      _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+      _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
+      _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+      _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+      _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
+      _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
+      _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
+      _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+
+  def test_limit_tendon(self):
+    """Test limit tendon constraints."""
+    for keyframe in range(-1, 1):
+      _, mjd, m, d = test_util.fixture(
+        "tendon/tendon_limit.xml", sparse=False, keyframe=keyframe
+      )
+
+      mjwarp.make_constraint(m, d)
+
+      _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+      _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
       _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")

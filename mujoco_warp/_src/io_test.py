@@ -19,10 +19,9 @@ import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
-from etils import epath
-from . import test_util
-
 import mujoco_warp as mjwarp
+
+from . import test_util
 
 
 class IOTest(absltest.TestCase):
@@ -97,7 +96,7 @@ class IOTest(absltest.TestCase):
             <site name="site0"/>
             <joint name="slide" type="slide"/>
             <body pos="0 0 .1">
-              <geom type="sphere" size=".1"/>
+              <geom name="sphere1" type="sphere" size=".1"/>
               <site name="site1"/>
             </body>
           </body>
@@ -105,6 +104,7 @@ class IOTest(absltest.TestCase):
         <tendon>
           <spatial>
             <site site="site0"/>
+            <geom geom="sphere1"/>
             <site site="site1"/>
           </spatial>                      
         </tendon>              
@@ -136,11 +136,9 @@ class IOTest(absltest.TestCase):
       mjwarp.put_model(mjm)
 
   def test_dense(self):
-    path = epath.resource_path("mujoco_warp") / "test_data/humanoid/n_humanoids.xml"
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
-
     with self.assertRaises(ValueError):
-      mjwarp.put_model(mjm)
+      # dense not supported yet for large nv
+      test_util.fixture("humanoid/n_humanoids.xml")
 
   def test_actuator_trntype(self):
     mjm = mujoco.MjModel.from_xml_string("""

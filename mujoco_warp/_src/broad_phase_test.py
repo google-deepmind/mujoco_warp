@@ -15,7 +15,6 @@
 
 """Tests for broadphase functions."""
 
-import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -23,19 +22,8 @@ from absl.testing import absltest
 import mujoco_warp as mjwarp
 
 from . import collision_driver
-
-
-def _load_from_string(xml: str, keyframe: int = -1):
-  mjm = mujoco.MjModel.from_xml_string(xml)
-  mjd = mujoco.MjData(mjm)
-  if keyframe > -1:
-    mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
-  mujoco.mj_forward(mjm, mjd)
-
-  m = mjwarp.put_model(mjm)
-  d = mjwarp.put_data(mjm, mjd)
-
-  return mjm, mjd, m, d
+from . import io
+from . import test_util
 
 
 class BroadphaseTest(absltest.TestCase):
@@ -97,7 +85,7 @@ class BroadphaseTest(absltest.TestCase):
       (6, 7),
     ]
 
-    _, _, m, d = _load_from_string(_SAP_MODEL)
+    _, _, m, d = test_util.fixture(xml=_SAP_MODEL)
 
     mjwarp.sap_broadphase(m, d)
 
@@ -184,12 +172,12 @@ class BroadphaseTest(absltest.TestCase):
       </mujoco>
     """
     # one world and zero collisions
-    mjm, _, m, d0 = _load_from_string(_NXN_MODEL, keyframe=0)
+    mjm, _, m, d0 = test_util.fixture(xml=_NXN_MODEL, keyframe=0)
     collision_driver.nxn_broadphase(m, d0)
     np.testing.assert_allclose(d0.ncollision.numpy()[0], 0)
 
     # one world and one collision
-    _, mjd1, _, d1 = _load_from_string(_NXN_MODEL, keyframe=1)
+    _, mjd1, _, d1 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
     collision_driver.nxn_broadphase(m, d1)
 
     np.testing.assert_allclose(d1.ncollision.numpy()[0], 1)
@@ -197,7 +185,7 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d1.collision_pair.numpy()[0][1], 1)
 
     # one world and three collisions
-    _, mjd2, _, d2 = _load_from_string(_NXN_MODEL, keyframe=2)
+    _, mjd2, _, d2 = test_util.fixture(xml=_NXN_MODEL, keyframe=2)
     collision_driver.nxn_broadphase(m, d2)
     np.testing.assert_allclose(d2.ncollision.numpy()[0], 3)
     np.testing.assert_allclose(d2.collision_pair.numpy()[0][0], 0)
@@ -228,19 +216,18 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d3.collision_pair.numpy()[3][1], 2)
 
     # one world and zero collisions: contype and conaffinity incompatibility
-    _, _, m4, d4 = _load_from_string(_NXN_MODEL, keyframe=1)
-    m4.geom_contype = wp.array(
-      np.array(np.repeat(0, m.geom_type.shape)), dtype=wp.int32
-    )
-    m4.geom_conaffinity = wp.array(
-      np.array(np.repeat(1, m.geom_type.shape)), dtype=wp.int32
-    )
+    mjm4, mjd4, m4, d4 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
+    mjm4.geom_contype[:3] = 0
+    m4.geom_contype = wp.array(mjm4.geom_contype, dtype=wp.int32)
+    geompair, pairid = io.geom_pair(mjm4)
+    m4.nxn_geom_pair = wp.array(geompair, dtype=wp.vec2i)
+    m4.nxn_pairid = wp.array(pairid, dtype=wp.int32)
 
     collision_driver.nxn_broadphase(m4, d4)
     np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)
 
     # one world and one collision: geomtype ordering
-    _, _, _, d5 = _load_from_string(_NXN_MODEL, keyframe=3)
+    _, _, _, d5 = test_util.fixture(xml=_NXN_MODEL, keyframe=3)
     collision_driver.nxn_broadphase(m, d5)
     np.testing.assert_allclose(d5.ncollision.numpy()[0], 1)
     np.testing.assert_allclose(d5.collision_pair.numpy()[0][0], 3)

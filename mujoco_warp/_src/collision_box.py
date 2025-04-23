@@ -19,6 +19,7 @@ from typing import Any
 
 import warp as wp
 
+from .collision_primitive import contact_params
 from .collision_primitive import write_contact
 from .math import make_frame
 from .types import Data
@@ -207,6 +208,11 @@ def box_box_kernel(
       continue
 
     worldid = d.collision_worldid[bp_idx]
+
+    geoms, margin, gap, condim, friction, solref, solreffriction, solimp = (
+      contact_params(m, d, tid)
+    )
+
     # transformations
     a_pos, b_pos = d.geom_xpos[worldid, ga], d.geom_xpos[worldid, gb]
     a_mat, b_mat = d.geom_xmat[worldid, ga], d.geom_xmat[worldid, gb]
@@ -311,7 +317,19 @@ def box_box_kernel(
       pos_glob = b_mat @ pos[i] + b_pos
       n_glob = b_mat @ sep_axis
       write_contact(
-        d, dist[i], pos_glob, make_frame(n_glob), margin, wp.vec2i(ga, gb), worldid
+        d,
+        dist[i],
+        pos_glob,
+        make_frame(n_glob),
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        worldid,
       )
 
 
