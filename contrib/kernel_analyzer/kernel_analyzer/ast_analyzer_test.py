@@ -18,8 +18,9 @@ import os
 import pathlib
 from typing import Any, List, Type
 
-from . import ast_analyzer
 from absl.testing import absltest
+
+from . import ast_analyzer
 
 # Test code snippets
 _DEFAULT_PARAMS_CODE = """
