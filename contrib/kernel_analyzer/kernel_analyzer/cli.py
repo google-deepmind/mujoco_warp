@@ -61,8 +61,8 @@ def main(argv):
 
     if _TYPES_PATH.value:
       types_path = Path(_TYPES_PATH.value)
-    elif Path('mujoco_warp/_src/types.py').exists():
-      types_path = Path('mujoco_warp/_src/types.py')
+    elif Path("mujoco_warp/_src/types.py").exists():
+      types_path = Path("mujoco_warp/_src/types.py")
     elif (filepath.parent / "types.py").exists():
       types_path = filepath.parent / "types.py"
     else:
@@ -73,7 +73,7 @@ def main(argv):
     try:
       types_source = types_path.read_text(encoding="utf-8")
       content = filepath.read_text(encoding="utf-8")
-      
+
       file_issues = ast_analyzer.analyze(content, str(filepath), types_source)
       issues.extend(file_issues)
 

@@ -159,7 +159,7 @@ def test_non_kernel(qpos0: int = 0, *args, **kwargs):
 
 def _analyze_str(code_str: str) -> List[Any]:
   full_path = os.path.realpath(__file__)
-  path = pathlib.Path(full_path).parent / '../../../mujoco_warp/_src/types.py'
+  path = pathlib.Path(full_path).parent / "../../../mujoco_warp/_src/types.py"
   return ast_analyzer.analyze(code_str, "somefile.py", path.read_text())
 
 
