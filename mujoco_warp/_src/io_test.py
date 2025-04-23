@@ -19,6 +19,7 @@ import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+
 import mujoco_warp as mjwarp
 
 from . import test_util
