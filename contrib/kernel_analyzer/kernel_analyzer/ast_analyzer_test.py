@@ -153,6 +153,10 @@ def test_no_issues(
 _NON_KERNEL_CODE = """
 import warp as wp
 
+@wp.func
+def foo(x: wp.array(int)) -> wp.array(int):
+  return x + 1
+
 def test_non_kernel(qpos0: int = 0, *args, **kwargs):
     qpos0 = 1
 """

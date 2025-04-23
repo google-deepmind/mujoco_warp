@@ -150,8 +150,8 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
 
     is_kernel = False
     for d in node.decorator_list:
-      decorator_name = d.func.id if isinstance(d, ast.Call) else d.id
-      if decorator_name == "kernel":
+      decorator_name = ast.get_source_segment(source, d)
+      if decorator_name in ("kernel", "warp_util.kernel", "wp.kernel"):
         is_kernel = True
         break
 

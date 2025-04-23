@@ -78,7 +78,7 @@ def main(argv):
       for issue in file_issues:
         err(issue)
     except Exception as e:
-      err(f"Error processing file {filepath}: {e}")
+      logging.error(f"Error processing file {filepath}: {e}")
       sys.exit(1)
 
   if issues:
