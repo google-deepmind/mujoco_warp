@@ -271,7 +271,6 @@ class CollisionTest(parameterized.TestCase):
         """,
   }
 
-
   # Temporarily disabled
   #  "box_mesh": """
   #      <mujoco>
@@ -295,6 +294,10 @@ class CollisionTest(parameterized.TestCase):
     """Tests convex collision with different geometries."""
     mjm, mjd, m, d = test_util.fixture(xml=self._FIXTURES[fixture])
 
+    # Exempt GJK collisions from exact contact count check
+    # because GJK generates more contacts
+    allow_different_contact_count = False
+
     mujoco.mj_collision(mjm, mjd)
     mjwarp.collision(m, d)
 
@@ -302,7 +305,6 @@ class CollisionTest(parameterized.TestCase):
       actual_dist = mjd.contact.dist[i]
       actual_pos = mjd.contact.pos[i]
       actual_frame = mjd.contact.frame[i]
-      # This is because Gjk generates more contact
       result = False
       for j in range(d.ncon.numpy()[0]):
         test_dist = d.contact.dist.numpy()[j]
@@ -315,6 +317,9 @@ class CollisionTest(parameterized.TestCase):
           result = True
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+
+    if not allow_different_contact_count:
+      self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
   def test_contact_exclude(self):
     """Tests contact exclude."""
