@@ -167,46 +167,48 @@ def _sap_broadphase(m: Model, d: Data, nsweep: int, filterparent: bool):
 def sap_broadphase(m: Model, d: Data):
   """Broadphase collision detection via sweep-and-prune."""
 
-  nworldgeom = d.nworld * m.ngeom
+  with wp.ScopedDevice(m.qpos0.device):
 
-  # TODO(team): direction
+    nworldgeom = d.nworld * m.ngeom
 
-  # random fixed direction
-  direction = wp.vec3(0.5935, 0.7790, 0.1235)
-  direction = wp.normalize(direction)
+    # TODO(team): direction
 
-  wp.launch(
-    kernel=_sap_project,
-    dim=(d.nworld, m.ngeom),
-    inputs=[m, d, direction],
-  )
+    # random fixed direction
+    direction = wp.vec3(0.5935, 0.7790, 0.1235)
+    direction = wp.normalize(direction)
 
-  # TODO(team): tile sort
+    wp.launch(
+      kernel=_sap_project,
+      dim=(d.nworld, m.ngeom),
+      inputs=[m, d, direction],
+    )
 
-  wp.utils.segmented_sort_pairs(
-    d.sap_projection_lower,
-    d.sap_sort_index,
-    nworldgeom,
-    d.sap_segment_index,
-  )
+    # TODO(team): tile sort
 
-  wp.launch(
-    kernel=_sap_range,
-    dim=(d.nworld, m.ngeom),
-    inputs=[m, d],
-  )
+    wp.utils.segmented_sort_pairs(
+      d.sap_projection_lower,
+      d.sap_sort_index,
+      nworldgeom,
+      d.sap_segment_index,
+    )
 
-  # scan is used for load balancing among the threads
-  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
+    wp.launch(
+      kernel=_sap_range,
+      dim=(d.nworld, m.ngeom),
+      inputs=[m, d],
+    )
 
-  # estimate number of overlap checks - assumes each geom has 5 other geoms (batched over all worlds)
-  nsweep = 5 * nworldgeom
-  filterparent = not m.opt.disableflags & DisableBit.FILTERPARENT.value
-  wp.launch(
-    kernel=_sap_broadphase,
-    dim=nsweep,
-    inputs=[m, d, nsweep, filterparent],
-  )
+    # scan is used for load balancing among the threads
+    wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
+
+    # estimate number of overlap checks - assumes each geom has 5 other geoms (batched over all worlds)
+    nsweep = 5 * nworldgeom
+    filterparent = not m.opt.disableflags & DisableBit.FILTERPARENT.value
+    wp.launch(
+      kernel=_sap_broadphase,
+      dim=nsweep,
+      inputs=[m, d, nsweep, filterparent],
+    )
 
 
 def nxn_broadphase(m: Model, d: Data):
