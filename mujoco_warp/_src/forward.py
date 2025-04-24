@@ -259,7 +259,9 @@ def euler(m: Model, d: Data):
       else:
         eulerdamp_fused_dense(m, d)
 
-    _advance(m, d, d.qacc_integration)
+      _advance(m, d, d.qacc_integration)
+    else:
+      _advance(m, d, d.qacc)
 
 
 
