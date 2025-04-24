@@ -267,73 +267,75 @@ def euler(m: Model, d: Data):
 def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
 
-  kernel_copy(d.qpos_t0, d.qpos)
-  kernel_copy(d.qvel_t0, d.qvel)
-  if m.na:
-    kernel_copy(d.act_t0, d.act)
+  with wp.ScopedDevice(m.qpos0.device):
 
-  A, B = _RK4_A, _RK4_B
-
-  def rk_accumulate(d: Data, b: float):
-    """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4"""
-
-    @kernel
-    def _qvel_acc(d: Data, b: float):
-      worldid, tid = wp.tid()
-      d.qvel_rk[worldid, tid] += b * d.qvel[worldid, tid]
-      d.qacc_rk[worldid, tid] += b * d.qacc[worldid, tid]
-
+    kernel_copy(d.qpos_t0, d.qpos)
+    kernel_copy(d.qvel_t0, d.qvel)
     if m.na:
+      kernel_copy(d.act_t0, d.act)
+
+    A, B = _RK4_A, _RK4_B
+
+    def rk_accumulate(d: Data, b: float):
+      """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4"""
 
       @kernel
-      def _act_dot(d: Data, b: float):
+      def _qvel_acc(d: Data, b: float):
         worldid, tid = wp.tid()
-        d.act_dot_rk[worldid, tid] += b * d.act_dot[worldid, tid]
+        d.qvel_rk[worldid, tid] += b * d.qvel[worldid, tid]
+        d.qacc_rk[worldid, tid] += b * d.qacc[worldid, tid]
 
-    wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b])
+      if m.na:
 
-    if m.na:
-      wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b])
+        @kernel
+        def _act_dot(d: Data, b: float):
+          worldid, tid = wp.tid()
+          d.act_dot_rk[worldid, tid] += b * d.act_dot[worldid, tid]
 
-  def perturb_state(m: Model, d: Data, a: float):
-    @kernel
-    def _qpos(m: Model, d: Data):
-      """Integrate joint positions"""
-      worldid, jntId = wp.tid()
-      _integrate_pos(worldid, jntId, m, d.qpos, d.qpos_t0, d.qvel, qvel_scale=a)
+      wp.launch(_qvel_acc, dim=(d.nworld, m.nv), inputs=[d, b])
 
-    if m.na:
+      if m.na:
+        wp.launch(_act_dot, dim=(d.nworld, m.na), inputs=[d, b])
+
+    def perturb_state(m: Model, d: Data, a: float):
+      @kernel
+      def _qpos(m: Model, d: Data):
+        """Integrate joint positions"""
+        worldid, jntId = wp.tid()
+        _integrate_pos(worldid, jntId, m, d.qpos, d.qpos_t0, d.qvel, qvel_scale=a)
+
+      if m.na:
+
+        @kernel
+        def _act(m: Model, d: Data):
+          worldid, tid = wp.tid()
+          dact_dot = a * d.act_dot[worldid, tid]
+          d.act[worldid, tid] = d.act_t0[worldid, tid] + dact_dot * m.opt.timestep
 
       @kernel
-      def _act(m: Model, d: Data):
+      def _qvel(m: Model, d: Data):
         worldid, tid = wp.tid()
-        dact_dot = a * d.act_dot[worldid, tid]
-        d.act[worldid, tid] = d.act_t0[worldid, tid] + dact_dot * m.opt.timestep
+        dqacc = a * d.qacc[worldid, tid]
+        d.qvel[worldid, tid] = d.qvel_t0[worldid, tid] + dqacc * m.opt.timestep
 
-    @kernel
-    def _qvel(m: Model, d: Data):
-      worldid, tid = wp.tid()
-      dqacc = a * d.qacc[worldid, tid]
-      d.qvel[worldid, tid] = d.qvel_t0[worldid, tid] + dqacc * m.opt.timestep
+      wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d])
+      if m.na:
+        wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d])
+      wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d])
 
-    wp.launch(_qpos, dim=(d.nworld, m.njnt), inputs=[m, d])
+    rk_accumulate(d, B[0])
+    for i in range(3):
+      a, b = float(A[i][i]), B[i + 1]
+      perturb_state(m, d, a)
+      forward(m, d)
+      rk_accumulate(d, b)
+
+    kernel_copy(d.qpos, d.qpos_t0)
+    kernel_copy(d.qvel, d.qvel_t0)
     if m.na:
-      wp.launch(_act, dim=(d.nworld, m.na), inputs=[m, d])
-    wp.launch(_qvel, dim=(d.nworld, m.nv), inputs=[m, d])
-
-  rk_accumulate(d, B[0])
-  for i in range(3):
-    a, b = float(A[i][i]), B[i + 1]
-    perturb_state(m, d, a)
-    forward(m, d)
-    rk_accumulate(d, b)
-
-  kernel_copy(d.qpos, d.qpos_t0)
-  kernel_copy(d.qvel, d.qvel_t0)
-  if m.na:
-    kernel_copy(d.act, d.act_t0)
-    kernel_copy(d.act_dot, d.act_dot_rk)
-  _advance(m, d, d.qacc_rk, d.qvel_rk)
+      kernel_copy(d.act, d.act_t0)
+      kernel_copy(d.act_dot, d.act_dot_rk)
+    _advance(m, d, d.qacc_rk, d.qvel_rk)
 
 
 @event_scope
