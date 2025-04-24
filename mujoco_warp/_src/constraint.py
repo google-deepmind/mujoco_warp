@@ -690,84 +690,86 @@ def _num_equality(d: types.Data):
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
-  d.ne.zero_()
-  d.ne_connect.zero_()
-  d.ne_weld.zero_()
-  d.ne_jnt.zero_()
-  d.nefc.zero_()
-  d.nf.zero_()
-  d.nl.zero_()
+  with wp.ScopedDevice(m.qpos0.device):
 
-  if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
-    d.efc.J.zero_()
+    d.ne.zero_()
+    d.ne_connect.zero_()
+    d.ne_weld.zero_()
+    d.ne_jnt.zero_()
+    d.nefc.zero_()
+    d.nf.zero_()
+    d.nl.zero_()
 
-    if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):
-      wp.launch(
-        _efc_equality_connect,
-        dim=(d.nworld, m.eq_connect_adr.size),
-        inputs=[m, d],
-      )
-      wp.launch(
-        _efc_equality_weld,
-        dim=(d.nworld, m.eq_wld_adr.size),
-        inputs=[m, d],
-      )
-      wp.launch(
-        _efc_equality_joint,
-        dim=(d.nworld, m.eq_jnt_adr.size),
-        inputs=[m, d],
-      )
+    if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
+      d.efc.J.zero_()
+
+      if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):
+        wp.launch(
+          _efc_equality_connect,
+          dim=(d.nworld, m.eq_connect_adr.size),
+          inputs=[m, d],
+        )
+        wp.launch(
+          _efc_equality_weld,
+          dim=(d.nworld, m.eq_wld_adr.size),
+          inputs=[m, d],
+        )
+        wp.launch(
+          _efc_equality_joint,
+          dim=(d.nworld, m.eq_jnt_adr.size),
+          inputs=[m, d],
+        )
 
       wp.launch(_num_equality, dim=(1,), inputs=[d])
 
-    if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS.value):
-      wp.launch(
-        _efc_friction,
-        dim=(d.nworld, m.nv),
-        inputs=[m, d],
-      )
-
-    # limit
-    if not (m.opt.disableflags & types.DisableBit.LIMIT.value):
-      limit_ball = m.jnt_limited_ball_adr.size > 0
-      if limit_ball:
+      if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS.value):
         wp.launch(
-          _efc_limit_ball,
-          dim=(d.nworld, m.jnt_limited_ball_adr.size),
+          _efc_friction,
+          dim=(d.nworld, m.nv),
           inputs=[m, d],
         )
 
-      limit_slide_hinge = m.jnt_limited_slide_hinge_adr.size > 0
-      if limit_slide_hinge:
-        wp.launch(
-          _efc_limit_slide_hinge,
-          dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
-          inputs=[m, d],
-        )
+      # limit
+      if not (m.opt.disableflags & types.DisableBit.LIMIT.value):
+        limit_ball = m.jnt_limited_ball_adr.size > 0
+        if limit_ball:
+          wp.launch(
+            _efc_limit_ball,
+            dim=(d.nworld, m.jnt_limited_ball_adr.size),
+            inputs=[m, d],
+          )
 
-      limit_tendon = m.tendon_limited_adr.size > 0
-      if limit_tendon:
-        wp.launch(
-          _efc_limit_tendon,
-          dim=(d.nworld, m.tendon_limited_adr.size),
-          inputs=[m, d],
-        )
+        limit_slide_hinge = m.jnt_limited_slide_hinge_adr.size > 0
+        if limit_slide_hinge:
+          wp.launch(
+            _efc_limit_slide_hinge,
+            dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
+            inputs=[m, d],
+          )
 
-      if limit_ball or limit_slide_hinge or limit_tendon:
+        limit_tendon = m.tendon_limited_adr.size > 0
+        if limit_tendon:
+          wp.launch(
+            _efc_limit_tendon,
+            dim=(d.nworld, m.tendon_limited_adr.size),
+            inputs=[m, d],
+          )
 
-        @wp.kernel
-        def _update_nefc(d: types.Data):
-          d.nefc[0] += d.nl[0]
+        if limit_ball or limit_slide_hinge or limit_tendon:
 
-        wp.launch(_update_nefc, dim=(1,), inputs=[d])
+          @wp.kernel
+          def _update_nefc(d: types.Data):
+            d.nefc[0] += d.nl[0]
 
-    # contact
-    if not (m.opt.disableflags & types.DisableBit.CONTACT.value):
-      if m.opt.cone == types.ConeType.PYRAMIDAL.value:
-        wp.launch(
-          _efc_contact_pyramidal,
-          dim=(d.nconmax, 2 * (m.condim_max - 1) if m.condim_max > 1 else 1),
-          inputs=[m, d],
-        )
-      elif m.opt.cone == types.ConeType.ELLIPTIC.value:
-        wp.launch(_efc_contact_elliptic, dim=(d.nconmax, m.condim_max), inputs=[m, d])
+          wp.launch(_update_nefc, dim=(1,), inputs=[d])
+
+      # contact
+      if not (m.opt.disableflags & types.DisableBit.CONTACT.value):
+        if m.opt.cone == types.ConeType.PYRAMIDAL.value:
+          wp.launch(
+            _efc_contact_pyramidal,
+            dim=(d.nconmax, 2 * (m.condim_max - 1) if m.condim_max > 1 else 1),
+            inputs=[m, d],
+          )
+        elif m.opt.cone == types.ConeType.ELLIPTIC.value:
+          wp.launch(_efc_contact_elliptic, dim=(d.nconmax, m.condim_max), inputs=[m, d])
