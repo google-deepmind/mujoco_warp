@@ -634,20 +634,22 @@ def _rne_cfrc_backward(m: Model, d: Data):
 def rne(m: Model, d: Data, flg_acc: bool = False):
   """Computes inverse dynamics using Newton-Euler algorithm."""
 
-  @kernel
-  def qfrc_bias(m: Model, d: Data):
-    worldid, dofid = wp.tid()
-    bodyid = m.dof_bodyid[dofid]
-    d.qfrc_bias[worldid, dofid] = wp.dot(
-      d.cdof[worldid, dofid], d.cfrc_int[worldid, bodyid]
-    )
+  with wp.ScopedDevice(m.qpos0.device):
 
-  _rne_cacc_world(m, d)
-  _rne_cacc_forward(m, d, flg_acc=flg_acc)
-  _rne_cfrc(m, d)
-  _rne_cfrc_backward(m, d)
+    @kernel
+    def qfrc_bias(m: Model, d: Data):
+      worldid, dofid = wp.tid()
+      bodyid = m.dof_bodyid[dofid]
+      d.qfrc_bias[worldid, dofid] = wp.dot(
+        d.cdof[worldid, dofid], d.cfrc_int[worldid, bodyid]
+      )
 
-  wp.launch(qfrc_bias, dim=[d.nworld, m.nv], inputs=[m, d])
+    _rne_cacc_world(m, d)
+    _rne_cacc_forward(m, d, flg_acc=flg_acc)
+    _rne_cfrc(m, d)
+    _rne_cfrc_backward(m, d)
+
+    wp.launch(qfrc_bias, dim=[d.nworld, m.nv], inputs=[m, d])
 
 
 @event_scope
