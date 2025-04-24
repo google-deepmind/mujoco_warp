@@ -843,13 +843,16 @@ def forward(m: Model, d: Data):
 @event_scope
 def step(m: Model, d: Data):
   """Advance simulation."""
-  forward(m, d)
 
-  if m.opt.integrator == mujoco.mjtIntegrator.mjINT_EULER:
-    euler(m, d)
-  elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4:
-    rungekutta4(m, d)
-  elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
-    implicit(m, d)
-  else:
-    raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+  with wp.ScopedDevice(m.qpos0.device):
+
+    forward(m, d)
+
+    if m.opt.integrator == mujoco.mjtIntegrator.mjINT_EULER:
+      euler(m, d)
+    elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4:
+      rungekutta4(m, d)
+    elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+      implicit(m, d)
+    else:
+      raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
