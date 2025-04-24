@@ -1061,7 +1061,9 @@ def solve_LD(m: Model, d: Data, L: array3df, D: array2df, x: array2df, y: array2
 @event_scope
 def solve_m(m: Model, d: Data, x: array2df, y: array2df):
   """Computes backsubstitution: x = qLD * y."""
-  solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
+
+  with wp.ScopedDevice(m.qpos0.device):
+    solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
 
 
 def _factor_solve_i_dense(m: Model, d: Data, M: array3df, x: array2df, y: array2df):
