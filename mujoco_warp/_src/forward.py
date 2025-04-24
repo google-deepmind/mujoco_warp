@@ -791,38 +791,42 @@ def fwd_actuation(m: Model, d: Data):
 def fwd_acceleration(m: Model, d: Data):
   """Add up all non-constraint forces, compute qacc_smooth."""
 
-  @kernel
-  def _qfrc_smooth(d: Data):
-    worldid, dofid = wp.tid()
-    d.qfrc_smooth[worldid, dofid] = (
-      d.qfrc_passive[worldid, dofid]
-      - d.qfrc_bias[worldid, dofid]
-      + d.qfrc_actuator[worldid, dofid]
-      + d.qfrc_applied[worldid, dofid]
-    )
+  with wp.ScopedDevice(m.qpos0.device):
 
-  wp.launch(_qfrc_smooth, dim=(d.nworld, m.nv), inputs=[d])
-  xfrc_accumulate(m, d, d.qfrc_smooth)
+    @kernel
+    def _qfrc_smooth(d: Data):
+      worldid, dofid = wp.tid()
+      d.qfrc_smooth[worldid, dofid] = (
+        d.qfrc_passive[worldid, dofid]
+        - d.qfrc_bias[worldid, dofid]
+        + d.qfrc_actuator[worldid, dofid]
+        + d.qfrc_applied[worldid, dofid]
+      )
 
-  smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
+    wp.launch(_qfrc_smooth, dim=(d.nworld, m.nv), inputs=[d])
+    xfrc_accumulate(m, d, d.qfrc_smooth)
+
+    smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
 
-  fwd_position(m, d)
-  sensor.sensor_pos(m, d)
-  fwd_velocity(m, d)
-  sensor.sensor_vel(m, d)
-  fwd_actuation(m, d)
-  fwd_acceleration(m, d)
-  sensor.sensor_acc(m, d)
+  with wp.ScopedDevice(m.qpos0.device):
 
-  if d.njmax == 0:
-    kernel_copy(d.qacc, d.qacc_smooth)
-  else:
-    solver.solve(m, d)
+    fwd_position(m, d)
+    sensor.sensor_pos(m, d)
+    fwd_velocity(m, d)
+    sensor.sensor_vel(m, d)
+    fwd_actuation(m, d)
+    fwd_acceleration(m, d)
+    sensor.sensor_acc(m, d)
+
+    if d.njmax == 0:
+      kernel_copy(d.qacc, d.qacc_smooth)
+    else:
+      solver.solve(m, d)
 
 
 @event_scope
