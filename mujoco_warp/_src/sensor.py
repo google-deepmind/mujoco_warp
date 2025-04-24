@@ -298,57 +298,59 @@ def _subtree_angmom(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
 
-  @kernel
-  def _sensor_vel(m: Model, d: Data):
-    worldid, velid = wp.tid()
-    veladr = m.sensor_vel_adr[velid]
-    sensortype = m.sensor_type[veladr]
-    objid = m.sensor_objid[veladr]
-    adr = m.sensor_adr[veladr]
+  with wp.ScopedDevice(m.qpos0.device):
 
-    if sensortype == int(SensorType.VELOCIMETER.value):
-      vel = _velocimeter(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = vel[0]
-      d.sensordata[worldid, adr + 1] = vel[1]
-      d.sensordata[worldid, adr + 2] = vel[2]
-    elif sensortype == int(SensorType.GYRO.value):
-      gyro = _gyro(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = gyro[0]
-      d.sensordata[worldid, adr + 1] = gyro[1]
-      d.sensordata[worldid, adr + 2] = gyro[2]
-    elif sensortype == int(SensorType.JOINTVEL.value):
-      d.sensordata[worldid, adr] = _joint_vel(m, d, worldid, objid)
-    elif sensortype == int(SensorType.TENDONVEL.value):
-      d.sensordata[worldid, adr] = _tendon_vel(m, d, worldid, objid)
-    elif sensortype == int(SensorType.ACTUATORVEL.value):
-      d.sensordata[worldid, adr] = _actuator_vel(m, d, worldid, objid)
-    elif sensortype == int(SensorType.BALLANGVEL.value):
-      angvel = _ball_ang_vel(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = angvel[0]
-      d.sensordata[worldid, adr + 1] = angvel[1]
-      d.sensordata[worldid, adr + 2] = angvel[2]
-    elif sensortype == int(SensorType.SUBTREELINVEL.value):
-      subtree_linvel = _subtree_linvel(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = subtree_linvel[0]
-      d.sensordata[worldid, adr + 1] = subtree_linvel[1]
-      d.sensordata[worldid, adr + 2] = subtree_linvel[2]
-    elif sensortype == int(SensorType.SUBTREEANGMOM.value):
-      subtree_angmom = _subtree_angmom(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = subtree_angmom[0]
-      d.sensordata[worldid, adr + 1] = subtree_angmom[1]
-      d.sensordata[worldid, adr + 2] = subtree_angmom[2]
+    @kernel
+    def _sensor_vel(m: Model, d: Data):
+      worldid, velid = wp.tid()
+      veladr = m.sensor_vel_adr[velid]
+      sensortype = m.sensor_type[veladr]
+      objid = m.sensor_objid[veladr]
+      adr = m.sensor_adr[veladr]
 
-  if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
-    return
+      if sensortype == int(SensorType.VELOCIMETER.value):
+        vel = _velocimeter(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = vel[0]
+        d.sensordata[worldid, adr + 1] = vel[1]
+        d.sensordata[worldid, adr + 2] = vel[2]
+      elif sensortype == int(SensorType.GYRO.value):
+        gyro = _gyro(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = gyro[0]
+        d.sensordata[worldid, adr + 1] = gyro[1]
+        d.sensordata[worldid, adr + 2] = gyro[2]
+      elif sensortype == int(SensorType.JOINTVEL.value):
+        d.sensordata[worldid, adr] = _joint_vel(m, d, worldid, objid)
+      elif sensortype == int(SensorType.TENDONVEL.value):
+        d.sensordata[worldid, adr] = _tendon_vel(m, d, worldid, objid)
+      elif sensortype == int(SensorType.ACTUATORVEL.value):
+        d.sensordata[worldid, adr] = _actuator_vel(m, d, worldid, objid)
+      elif sensortype == int(SensorType.BALLANGVEL.value):
+        angvel = _ball_ang_vel(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = angvel[0]
+        d.sensordata[worldid, adr + 1] = angvel[1]
+        d.sensordata[worldid, adr + 2] = angvel[2]
+      elif sensortype == int(SensorType.SUBTREELINVEL.value):
+        subtree_linvel = _subtree_linvel(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = subtree_linvel[0]
+        d.sensordata[worldid, adr + 1] = subtree_linvel[1]
+        d.sensordata[worldid, adr + 2] = subtree_linvel[2]
+      elif sensortype == int(SensorType.SUBTREEANGMOM.value):
+        subtree_angmom = _subtree_angmom(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = subtree_angmom[0]
+        d.sensordata[worldid, adr + 1] = subtree_angmom[1]
+        d.sensordata[worldid, adr + 2] = subtree_angmom[2]
 
-  if wp.static(
-    np.isin(
-      m.sensor_type.numpy(), [SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM]
-    ).any()
-  ):
-    smooth.subtree_vel(m, d)
+    if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+      return
 
-  wp.launch(_sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size), inputs=[m, d])
+    if wp.static(
+      np.isin(
+        m.sensor_type.numpy(), [SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM]
+      ).any()
+    ):
+      smooth.subtree_vel(m, d)
+
+    wp.launch(_sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size), inputs=[m, d])
 
 
 @wp.func
