@@ -212,23 +212,25 @@ def sap_broadphase(m: Model, d: Data):
 def nxn_broadphase(m: Model, d: Data):
   """Broadphase collision detective via brute-force search."""
 
-  @wp.kernel
-  def _nxn_broadphase(m: Model, d: Data):
-    worldid, elementid = wp.tid()
+  with wp.ScopedDevice(m.qpos0.device):
 
-    # check for valid geom pair
-    if m.nxn_pairid[elementid] < -1:
-      return
+    @wp.kernel
+    def _nxn_broadphase(m: Model, d: Data):
+      worldid, elementid = wp.tid()
 
-    geom = m.nxn_geom_pair[elementid]
-    geom1 = geom[0]
-    geom2 = geom[1]
+      # check for valid geom pair
+      if m.nxn_pairid[elementid] < -1:
+        return
 
-    if _sphere_filter(m, d, geom1, geom2, worldid):
-      _add_geom_pair(m, d, geom1, geom2, worldid, elementid)
+      geom = m.nxn_geom_pair[elementid]
+      geom1 = geom[0]
+      geom2 = geom[1]
 
-  if m.nxn_geom_pair.shape[0]:
-    wp.launch(_nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d])
+      if _sphere_filter(m, d, geom1, geom2, worldid):
+        _add_geom_pair(m, d, geom1, geom2, worldid, elementid)
+
+    if m.nxn_geom_pair.shape[0]:
+      wp.launch(_nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d])
 
 
 @event_scope
