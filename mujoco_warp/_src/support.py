@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Tuple
+
 import mujoco
 import warp as wp
 
@@ -314,3 +316,36 @@ def transform_force(frc: wp.spatial_vector, offset: wp.vec3) -> wp.spatial_vecto
   force = wp.spatial_top(frc)
   torque = wp.spatial_bottom(frc)
   return transform_force(force, torque, offset)
+
+
+@wp.func
+def jac(
+  m: Model,
+  d: Data,
+  point: wp.vec3,
+  bodyid: wp.int32,
+  dofid: wp.int32,
+  worldid: wp.int32,
+) -> Tuple[wp.vec3, wp.vec3]:
+  dof_bodyid = m.dof_bodyid[dofid]
+  in_tree = int(dof_bodyid == 0)
+  parentid = bodyid
+  while parentid != 0:
+    if parentid == dof_bodyid:
+      in_tree = 1
+      break
+    parentid = m.body_parentid[parentid]
+
+  if not in_tree:
+    return wp.vec3(0.0), wp.vec3(0.0)
+
+  offset = point - wp.vec3(d.subtree_com[worldid, m.body_rootid[bodyid]])
+
+  cdof = d.cdof[worldid, dofid]
+  cdof_ang = wp.spatial_top(cdof)
+  cdof_lin = wp.spatial_bottom(cdof)
+
+  jacp = cdof_lin + wp.cross(cdof_ang, offset)
+  jacr = cdof_ang
+
+  return jacp, jacr

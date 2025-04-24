@@ -43,26 +43,26 @@ Should print out something like `XX passed in XX.XXs` at the end!
 
 The following features are implemented:
 
-| Category          | Feature                            |
-| ----------------- | ---------------------------------- |
-| Dynamics          | Forward only                       |
-| Transmission      | `JOINT`, `JOINTINPARENT`           |
-| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`     |
-|                   | `FILTEREXACT`                      |
-| Actuator Gain     | `FIXED`, `AFFINE`                  |
-| Actuator Bias     | `NONE`, `AFFINE`                   |
-| Geom              | `PLANE`, `SPHERE`, `CAPSULE`       |
-| Constraint        | `LIMIT_JOINT`, `CONTACT_PYRAMIDAL` |
-|                   | `CONTACT_ELLIPTIC`                 |
-| Equality          | `CONNECT`, `JOINT`                 |
-| Integrator        | `EULER`, `IMPLICITFAST`, `RK4`     |
-| Cone              | `PYRAMIDAL`, `ELLIPTIC`            |
-| Condim            | (1, 3, 4, 6), (1, 3)               |
-| Solver            | `CG`, `NEWTON`                     |
-| Fluid Model       | None                               |
-| Tendons           | Not yet implemented.               |
-| Sensors           | `JOINTPOS`, `JOINTVEL`,            |
-|                   | `ACTUATORFRC`                      |
+| Category          | Feature                                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------------------------|
+| Dynamics          | Forward only                                                                                             |
+| Transmission      | `JOINT`, `JOINTINPARENT`                                                                                 |
+| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`                                                            |
+| Actuator Gain     | `FIXED`, `AFFINE`                                                                                        |
+| Actuator Bias     | `NONE`, `AFFINE`                                                                                         |
+| Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `MESH`                                     |
+| Constraint        | `FRICTION (JOINT)`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`, `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC` |
+| Equality          | `CONNECT`, `WELD`, `JOINT`                                                                               |
+| Integrator        | `EULER`, `IMPLICITFAST`, `RK4`                                                                           |
+| Cone              | `PYRAMIDAL`, `ELLIPTIC`                                                                                  |
+| Condim            | 1, 3, 4, 6                                                                                               |
+| Solver            | `CG`, `NEWTON`                                                                                           |
+| Fluid Model       | None                                                                                                     |
+| Tendons           | `FIXED`, `SITE`                                                                                          |
+| Sensors           | `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`, `FRAMEPOS`, `FRAMEXAXIS`, `FRAMEYAXIS`, `FRAMEZAXIS` |
+|                   | `FRAMEQUAT`, `SUBTREECOM`, `VELOCIMETER`, `GYRO`, `JOINTVEL`, `TENDONVEL`, `ACTUATORVEL`, `BALLANGVEL`,  |
+|                   | `SUBTREELINVEL`, `SUBTREEANGMOM`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`, `JOINTACTFRC`,      |
+|                   | `FRAMELINACC`, `FRAMEANGACC`                                                                             |
 
 # Benchmarking
 

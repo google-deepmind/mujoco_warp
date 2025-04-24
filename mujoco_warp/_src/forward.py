@@ -160,6 +160,11 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     worldid, jntid = wp.tid()
     _integrate_pos(worldid, jntid, m, d.qpos, d.qpos, qvel_in)
 
+  @kernel
+  def _time(m: Model, d: Data):
+    worldid = wp.tid()
+    d.time[worldid] += m.opt.timestep
+
   # advance activations
   if m.na:
     _next_activation(m, d)
@@ -174,7 +179,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 
   wp.launch(integrate_joint_positions, dim=(d.nworld, m.njnt), inputs=[m, d, qvel_in])
 
-  d.time = d.time + m.opt.timestep
+  wp.launch(_time, dim=(d.nworld,), inputs=[m, d])
 
 
 @event_scope

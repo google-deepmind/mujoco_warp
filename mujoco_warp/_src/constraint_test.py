@@ -125,6 +125,23 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
       _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
 
+  def test_limit_tendon(self):
+    """Test limit tendon constraints."""
+    for keyframe in range(-1, 1):
+      _, mjd, m, d = test_util.fixture(
+        "tendon/tendon_limit.xml", sparse=False, keyframe=keyframe
+      )
+
+      mjwarp.make_constraint(m, d)
+
+      _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+      _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+      _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+      _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
+      _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
+      _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
+      _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -26,6 +26,19 @@ from . import test_util
 
 
 class IOTest(absltest.TestCase):
+  def test_make_put_data(self):
+    """Tests that make_data and put_data are producing the same shapes for all warp arrays."""
+    mjm, _, _, d = test_util.fixture("pendula.xml")
+    md = mjwarp.make_data(mjm, nconmax=512, njmax=512)
+
+    # same number of fields
+    self.assertEqual(len(d.__dict__), len(md.__dict__))
+
+    # test shapes for all arrays
+    for attr, val in md.__dict__.items():
+      if isinstance(val, wp.array):
+        self.assertEqual(val.shape, getattr(d, attr).shape)
+
   def test_equality(self):
     mjm = mujoco.MjModel.from_xml_string("""
     <mujoco>
@@ -84,7 +97,7 @@ class IOTest(absltest.TestCase):
             <site name="site0"/>
             <joint name="slide" type="slide"/>
             <body pos="0 0 .1">
-              <geom type="sphere" size=".1"/>
+              <geom name="sphere1" type="sphere" size=".1"/>
               <site name="site1"/>
             </body>
           </body>
@@ -92,6 +105,7 @@ class IOTest(absltest.TestCase):
         <tendon>
           <spatial>
             <site site="site0"/>
+            <geom geom="sphere1"/>
             <site site="site1"/>
           </spatial>                      
         </tendon>              

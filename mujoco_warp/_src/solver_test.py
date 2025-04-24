@@ -42,8 +42,11 @@ def _assert_eq(a, b, name):
 class SolverTest(parameterized.TestCase):
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 5, 5, False, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 5, 5, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, False, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 4, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, True, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 4, True, True),
   )
   def test_solve(self, cone, solver_, iterations, ls_iterations, sparse, ls_parallel):
     """Tests solve."""
@@ -103,6 +106,9 @@ class SolverTest(parameterized.TestCase):
   )
   def test_solve_batch(self, cone, solver_, iterations, ls_iterations):
     """Tests solve (batch)."""
+
+    # TODO(team): elliptic
+
     mjm0, mjd0, _, _ = test_util.fixture(
       "humanoid/humanoid.xml",
       keyframe=0,

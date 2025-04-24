@@ -1,0 +1,60 @@
+{
+  "name": "kernel-analyzer",
+  "displayName": "Kernel Analyzer",
+  "description": "VS Code extension to detect issues with MJWarp kernels.",
+  "version": "0.1.0",
+  "publisher": "Newton",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile --prefix client",
+    "compile": "npm run compile --prefix client",
+    "watch": "npm run watch --prefix client",
+    "package": "npm run compile && npx vsce package"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Kernel Analyzer",
+      "type": "object",
+      "properties": {
+        "kernelAnalyzer.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python path with kernel analyzer deps installed"
+        },
+        "kernelAnalyzer.typesPath": {
+          "type": "string",
+          "default": "types.py",
+          "description": "Path for finding types.py"
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://http://github.com/google-deepmind/mujoco_warp.git"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.3.2",
+    "@types/node": "^18.17.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.3.3"
+  },
+  "vsce": {
+    "ignore": ["__pycache__", "client/node_modules"]
+  }
+}

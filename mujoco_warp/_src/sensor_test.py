@@ -168,7 +168,7 @@ class SensorTest(parameterized.TestCase):
 
   def test_tendon_sensor(self):
     """Test tendon sensors."""
-    _, mjd, m, d = test_util.fixture("tendon.xml", keyframe=0, sparse=False)
+    _, mjd, m, d = test_util.fixture("tendon/fixed.xml", keyframe=0, sparse=False)
 
     d.sensordata.zero_()
 

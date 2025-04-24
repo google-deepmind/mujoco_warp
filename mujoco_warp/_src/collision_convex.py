@@ -131,20 +131,20 @@ def _gjk_support(
 
 
 convex_collision_functions = {
-  (GeomType.ELLIPSOID.value, GeomType.SPHERE.value),
-  (GeomType.ELLIPSOID.value, GeomType.BOX.value),
-  (GeomType.ELLIPSOID.value, GeomType.MESH.value),
+  (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
+  (GeomType.SPHERE.value, GeomType.MESH.value),
+  (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
+  (GeomType.CAPSULE.value, GeomType.ELLIPSOID.value),
+  (GeomType.CAPSULE.value, GeomType.MESH.value),
   (GeomType.ELLIPSOID.value, GeomType.ELLIPSOID.value),
   (GeomType.ELLIPSOID.value, GeomType.CYLINDER.value),
-  (GeomType.ELLIPSOID.value, GeomType.CAPSULE.value),
-  (GeomType.MESH.value, GeomType.SPHERE.value),
-  (GeomType.MESH.value, GeomType.BOX.value),
-  (GeomType.MESH.value, GeomType.CAPSULE.value),
-  (GeomType.MESH.value, GeomType.CYLINDER.value),
-  (GeomType.MESH.value, GeomType.MESH.value),
-  (GeomType.CYLINDER.value, GeomType.BOX.value),
+  (GeomType.ELLIPSOID.value, GeomType.BOX.value),
+  (GeomType.ELLIPSOID.value, GeomType.MESH.value),
   (GeomType.CYLINDER.value, GeomType.CYLINDER.value),
-  (GeomType.CYLINDER.value, GeomType.CAPSULE.value),
+  (GeomType.CYLINDER.value, GeomType.BOX.value),
+  (GeomType.CYLINDER.value, GeomType.MESH.value),
+  (GeomType.BOX.value, GeomType.MESH.value),
+  (GeomType.MESH.value, GeomType.MESH.value),
 }
 
 

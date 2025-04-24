@@ -18,6 +18,7 @@ import mujoco
 import warp as wp
 
 MJ_MINVAL = mujoco.mjMINVAL
+MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_NREF = mujoco.mjNREF
@@ -308,11 +309,13 @@ class EqType(enum.IntEnum):
   Members:
     CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
+    WELD: fix relative position and orientation of two bodies
   """
 
   CONNECT = mujoco.mjtEq.mjEQ_CONNECT
+  WELD = mujoco.mjtEq.mjEQ_WELD
   JOINT = mujoco.mjtEq.mjEQ_JOINT
-  # unsupported: WELD, TENDON, FLEX, DISTANCE
+  # unsupported: TENDON, FLEX, DISTANCE
 
 
 class WrapType(enum.IntEnum):
@@ -320,10 +323,12 @@ class WrapType(enum.IntEnum):
 
   Members:
     JOINT: constant moment arm
+    SITE: pass through site
   """
 
   JOINT = mujoco.mjtWrap.mjWRAP_JOINT
-  # unsupported: PULLEY, SITE, SPHERE, CYLINDER
+  SITE = mujoco.mjtWrap.mjWRAP_SITE
+  # unsupported: PULLEY, SPHERE, CYLINDER
 
 
 class vec5f(wp.types.vector(length=5, dtype=wp.float32)):
@@ -405,6 +410,7 @@ class Constraint:
 
   Attributes:
     worldid: world id                                 (njmax,)
+    id: id of object of specific type                 (njmax,)
     J: constraint Jacobian                            (njmax, nv)
     pos: constraint position (equality, contact)      (njmax,)
     margin: inclusion margin (contact)                (njmax,)
@@ -451,9 +457,15 @@ class Constraint:
     mid_alpha: midpoint between lo_alpha and hi_alpha (nworld,)
     cost_candidate: costs associated with step sizes  (nworld, nlsp)
     quad_total_candidate: quad_total for step sizes   (nworld, nlsp, 3)
+    u: friction cone (normal and tangents)            (nconmax, 6)
+    uu: elliptic cone variables                       (nconmax,)
+    uv: elliptic cone variables                       (nconmax,)
+    vv: elliptic cone variables                       (nconmax,)
+    condim: if contact: condim, else: -1              (njmax,)
   """
 
   worldid: wp.array(dtype=wp.int32, ndim=1)
+  id: wp.array(dtype=wp.int32, ndim=1)
   J: wp.array(dtype=wp.float32, ndim=2)
   pos: wp.array(dtype=wp.float32, ndim=1)
   margin: wp.array(dtype=wp.float32, ndim=1)
@@ -501,6 +513,12 @@ class Constraint:
   mid_alpha: wp.array(dtype=wp.float32, ndim=1)
   cost_candidate: wp.array(dtype=wp.float32, ndim=2)
   quad_total_candidate: wp.array(dtype=wp.vec3f, ndim=2)
+  # elliptic cone
+  u: wp.array(dtype=wp.float32, ndim=2)
+  uu: wp.array(dtype=wp.float32, ndim=1)
+  uv: wp.array(dtype=wp.float32, ndim=1)
+  vv: wp.array(dtype=wp.float32, ndim=1)
+  condim: wp.array(dtype=wp.int32, ndim=1)
 
 
 @wp.struct
@@ -649,8 +667,9 @@ class Model:
     eq_solref: constraint solver reference                   (neq, mjNREF)
     eq_solimp: constraint solver impedance                   (neq, mjNIMP)
     eq_data: numeric data for constraint                     (neq, mjNEQDATA)
-    eq_jnt_adr: eq_* addresses of type `JOINT`
     eq_connect_adr: eq_* addresses of type `CONNECT`
+    eq_wld_adr: eq_* addresses of type `WELD`
+    eq_jnt_adr: eq_* addresses of type `JOINT`
     actuator_trntype: transmission type (mjtTrn)             (nu,)
     actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
     actuator_gaintype: gain type (mjtGain)                   (nu,)
@@ -684,11 +703,25 @@ class Model:
     condim_max: maximum condim for geoms
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
+    tendon_limited: does tendon have length limits           (ntendon,)
+    tendon_limited_adr: addresses for limited tendons        (<=ntendon,)
+    tendon_solref_lim: constraint solver reference: limit    (ntendon, mjNREF)
+    tendon_solimp_lim: constraint solver impedance: limit    (ntendon, mjNIMP)
+    tendon_range: tendon length limits                       (ntendon, 2)
+    tendon_margin: min distance for limit detection          (ntendon,)
+    tendon_length0: tendon length in qpos0                   (ntendon,)
+    tendon_invweight0: inv. weight in qpos0                  (ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
+    tendon_site_adr: site tendon address                     (<=nwrap,)
+    tendon_site_pair_adr: site pair tendon address           (<=nwrap,)
+    ten_wrapadr_site: wrap object starting address for sites (ntendon,)
+    ten_wrapnum_site: number of site wrap objects per tendon (ntendon,)
     wrap_jnt_adr: addresses for joint tendon wrap object     (<=nwrap,)
+    wrap_site_adr: addresses for site tendon wrap object     (<=nwrap,)
+    wrap_site_pair_adr: first address for site wrap pair     (<=nwrap,)
     sensor_type: sensor type (mjtSensor)                     (nsensor,)
     sensor_datatype: numeric data type (mjtDataType)         (nsensor,)
     sensor_objtype: type of sensorized object (mjtObj)       (nsensor,)
@@ -844,8 +877,9 @@ class Model:
   eq_solref: wp.array(dtype=wp.vec2, ndim=1)
   eq_solimp: wp.array(dtype=vec5, ndim=1)
   eq_data: wp.array(dtype=vec11, ndim=1)
-  eq_jnt_adr: wp.array(dtype=wp.int32, ndim=1)
   eq_connect_adr: wp.array(dtype=wp.int32, ndim=1)
+  eq_wld_adr: wp.array(dtype=wp.int32, ndim=1)
+  eq_jnt_adr: wp.array(dtype=wp.int32, ndim=1)
   actuator_trntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_dyntype: wp.array(dtype=wp.int32, ndim=1)
   actuator_gaintype: wp.array(dtype=wp.int32, ndim=1)
@@ -881,11 +915,25 @@ class Model:
   condim_max: int  # warp only
   tendon_adr: wp.array(dtype=wp.int32, ndim=1)
   tendon_num: wp.array(dtype=wp.int32, ndim=1)
+  tendon_limited: wp.array(dtype=wp.int32, ndim=1)
+  tendon_limited_adr: wp.array(dtype=wp.int32, ndim=1)
+  tendon_solref_lim: wp.array(dtype=wp.vec2f, ndim=1)
+  tendon_solimp_lim: wp.array(dtype=vec5, ndim=1)
+  tendon_range: wp.array(dtype=wp.vec2f, ndim=1)
+  tendon_margin: wp.array(dtype=wp.float32, ndim=1)
+  tendon_length0: wp.array(dtype=wp.float32, ndim=1)
+  tendon_invweight0: wp.array(dtype=wp.float32, ndim=1)
   wrap_objid: wp.array(dtype=wp.int32, ndim=1)
   wrap_prm: wp.array(dtype=wp.float32, ndim=1)
   wrap_type: wp.array(dtype=wp.int32, ndim=1)
   tendon_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  tendon_site_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  tendon_site_pair_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  ten_wrapadr_site: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  ten_wrapnum_site: wp.array(dtype=wp.int32, ndim=1)  # warp only
   wrap_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  wrap_site_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  wrap_site_pair_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_type: wp.array(dtype=wp.int32, ndim=1)
   sensor_datatype: wp.array(dtype=wp.int32, ndim=1)
   sensor_objtype: wp.array(dtype=wp.int32, ndim=1)
@@ -940,10 +988,13 @@ class Data:
   Attributes:
     ncon: number of detected contacts                           ()
     ne: number of equality constraints                          ()
+    ne_connect: number of equality connect constraints          ()
+    ne_weld: number of equality weld constraints                ()
+    ne_jnt: number of equality joint constraints                ()
     nf: number of friction constraints                          ()
     nl: number of limit constraints                             ()
     nefc: number of constraints                                 (1,)
-    time: simulation time                                       ()
+    time: simulation time                                       (nworld,)
     qpos: position                                              (nworld, nq)
     qvel: velocity                                              (nworld, nv)
     act: actuator activation                                    (nworld, na)
@@ -1029,17 +1080,24 @@ class Data:
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
-    ten_length: tendon lengths                                  (ntendon,)
-    ten_J: tendon Jacobian                                      (ntendon, nv)
+    ten_length: tendon lengths                                  (nworld, ntendon)
+    ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
+    ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
+    ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
+    wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
+    wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     sensordata: sensor data array                               (nsensordata,)
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
   ne: wp.array(dtype=wp.int32, ndim=1)
+  ne_connect: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  ne_weld: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  ne_jnt: wp.array(dtype=wp.int32, ndim=1)  # warp only
   nf: wp.array(dtype=wp.int32, ndim=1)
   nl: wp.array(dtype=wp.int32, ndim=1)
   nefc: wp.array(dtype=wp.int32, ndim=1)
-  time: float
+  time: wp.array(dtype=wp.float32, ndim=1)
   qpos: wp.array(dtype=wp.float32, ndim=2)
   qvel: wp.array(dtype=wp.float32, ndim=2)
   act: wp.array(dtype=wp.float32, ndim=2)
@@ -1113,7 +1171,6 @@ class Data:
   qLDiagInv_integration: wp.array(dtype=wp.float32, ndim=2)
 
   # sweep-and-prune broadphase
-  sap_geom_sort: wp.array(dtype=wp.vec4, ndim=2)
   sap_projection_lower: wp.array(dtype=wp.float32, ndim=2)
   sap_projection_upper: wp.array(dtype=wp.float32, ndim=2)
   sap_sort_index: wp.array(dtype=wp.int32, ndim=2)
@@ -1135,6 +1192,10 @@ class Data:
   # tendon
   ten_length: wp.array(dtype=wp.float32, ndim=2)
   ten_J: wp.array(dtype=wp.float32, ndim=3)
+  ten_wrapadr: wp.array(dtype=wp.int32, ndim=2)
+  ten_wrapnum: wp.array(dtype=wp.int32, ndim=2)
+  wrap_obj: wp.array(dtype=wp.vec2i, ndim=2)
+  wrap_xpos: wp.array(dtype=wp.spatial_vector, ndim=2)
 
   # sensors
   sensordata: wp.array(dtype=wp.float32, ndim=2)
