@@ -911,10 +911,10 @@ def capsule_box(
   geoms: wp.vec2i,
 ):
   """Calculates contacts between a capsule and a box."""
-  # Ported from the mjc implementation
+  # Based on the mjc implementation
   pos = wp.transpose(box.rot) @ (cap.pos - box.pos)
   axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
-  halfaxis = axis * cap.size[1]
+  halfaxis = axis * cap.size[1]  # halfaxis is the capsule direction
   axisdir = (
     wp.int32(axis[0] > 0.0) + 2 * wp.int32(axis[1] > 0.0) + 4 * wp.int32(axis[2] > 0.0)
   )
@@ -926,10 +926,22 @@ def capsule_box(
   # keep track of closest point
   bestdist = wp.float32(bestdistmax)
   bestsegmentpos = wp.float32(-12)
+
+  # cltype: encoded collision configuration
+  # cltype / 3 == 0 : lower corner is closest to the capsule
+  #            == 2 : upper corner is closest to the capsule
+  #            == 1 : middle of the edge is closest to the capsule
+  # cltype % 3 == 0 : lower corner is closest to the box
+  #            == 2 : upper corner is closest to the box
+  #            == 1 : middle of the capsule is closest to the box
   cltype = wp.int32(-4)
+
+  # clface: index of the closest face of the box to the capsule
+  # -1: no face is closest (edge or corner is closest)
+  # 0, 1, 2: index of the axis perpendicular to the closest face
   clface = wp.int32(-12)
 
-  # check if face closest
+  # first: consider cases where a face of the box is closest
   for i in range(-1, 2, 2):
     axisTip = pos + wp.float32(i) * halfaxis
     boxPoint = wp.vec3(axisTip)
@@ -958,8 +970,7 @@ def capsule_box(
       cltype = -2 + i
       clface = ax_out
 
-  # check edge edge
-
+  # second: consider cases where an edge of the box is closest
   clcorner = wp.int32(-123)  # which corner is the closest
   cledge = wp.int32(-123)  # which axis
   bestboxpos = wp.float32(0.0)
@@ -969,10 +980,9 @@ def capsule_box(
       if i & (1 << j) != 0:
         continue
 
-      # c1<6 means that closest point on the box is at the lower end or in the middle of the edge
-
       c2 = wp.int32(-123)
-      # trick to get a corner
+
+      # box_pt is the starting point (corner) on the box
       box_pt = wp.cw_mul(
         wp.vec3(
           wp.where(i & 1, 1.0, -1.0),
@@ -982,11 +992,6 @@ def capsule_box(
         box.size,
       )
       box_pt[j] = 0.0
-
-      # box_pt is the starting point on the box
-      # box_dir is the direction along the "j"-th axis
-      # pos is the capsule's center
-      # halfaxis is the capsule direction
 
       # find closest point between capsule and the edge
       dif = box_pt - pos
@@ -1039,6 +1044,7 @@ def capsule_box(
       dif -= halfaxis * x2
       dif[j] += box.size[j] * x1
 
+      # encode relative positions of the closest points
       ct = s1 * 3 + s2
 
       dif_sq = wp.length_sq(dif)
@@ -1046,19 +1052,12 @@ def capsule_box(
         bestdist = dif_sq
         bestsegmentpos = x2
         bestboxpos = x1
-        # ct<6 means that closest point on the box is at the lower end or in the middle of the edge
+        # ct<6 means closest point on box is at lower end or middle of edge
         c2 = ct / 6
-        # cltype /3 == 0 means the lower corner is closest to the capsule
-        # cltype /3 == 2 means the upper corner is closest to the capsule
-        # cltype /3 == 1 means the middle of the edge is closest to the capsule
-        # cltype %3 == 0 means the lower corner is closest to the box
-        # cltype %3 == 2 means the upper corner is closest to the box
-        # cltype %3 == 1 means the middle of the capsule is closest to the box
-        # note that edges include corners
 
-        clcorner = i + (1 << j) * c2  # which corner is the closest
-        cledge = j  # which axis
-        cltype = ct  # save clamped info
+        clcorner = i + (1 << j) * c2  # index of closest box corner
+        cledge = j  # axis index of closest box edge
+        cltype = ct  # encoded collision configuration
 
   best = wp.float32(0.0)
   l = wp.float32(0.0)
@@ -1072,7 +1071,6 @@ def capsule_box(
 
   uu = dd.x * s.y
   vv = dd.y * s.x
-  # w = dd.x * p.y - dd.y * p.x
   w_neg = dd.x * p.y - dd.y * p.x < 0
 
   best = wp.float32(-1.0)
@@ -1093,13 +1091,11 @@ def capsule_box(
 
   if cltype >= 0 and cltype / 3 != 1:  # closest to a corner of the box
     c1 = axisdir ^ clcorner
-    # hack to find the relative orientation of capsule and corner
-    # there are 2 cases:
-    #    1: pointing to or away from the corner
-    #    2: oriented along a face or an edge
-
-    # case 1: no chance of additional contact
-    if c1 != 0 and c1 != 7:
+    # Calculate relative orientation between capsule and corner
+    # There are two possible configurations:
+    # 1. Capsule axis points toward/away from corner
+    # 2. Capsule axis aligns with a face or edge
+    if c1 != 0 and c1 != 7:  # create second contact point
       if c1 == 1 or c1 == 2 or c1 == 4:
         mul = 1
       else:
@@ -1134,15 +1130,14 @@ def capsule_box(
       secondpos *= wp.float32(mul)
 
   elif cltype >= 0 and cltype / 3 == 1:  # we are on box's edge
-    # hacks to find the relative orientation of capsule and edge
-    # there are 2 cases:
-    #    c1= 2^n: edge and capsule are oriented in a T configuration (no more contacts
-    #    c1!=2^n: oriented in a cross X configuration
-    c1 = axisdir ^ clcorner  # same trick
+    # Calculate relative orientation between capsule and edge
+    # Two possible configurations:
+    # - T configuration: c1 = 2^n (no additional contacts)
+    # - X configuration: c1 != 2^n (potential additional contacts)
+    c1 = axisdir ^ clcorner
+    c1 &= 7 - (1 << cledge)  # mask out edge axis to determine configuration
 
-    c1 &= 7 - (1 << cledge)  # even more hacks
-
-    if c1 == 1 or c1 == 2 or c1 == 4:
+    if c1 == 1 or c1 == 2 or c1 == 4:  # create second contact point
       if cledge == 0:
         ax1 = 1
         ax2 = 2
@@ -1159,10 +1154,7 @@ def capsule_box(
         ax1 = ax2
       ax2 = 3 - ax - ax1
 
-      # keep track of the axis orientation (mul will tell us which direction along the capsule to
-      # find the second point) you can notice all other references to the axis "halfaxis" are with
-      # absolute value
-
+      # mul determines direction along capsule axis for second contact point
       if c1 & (1 << ax2):
         mul = 1
         secondpos = 1.0 - bestsegmentpos
@@ -1176,7 +1168,7 @@ def capsule_box(
       e1 = 2.0 * box.size[ax2] / wp.abs(halfaxis[ax2])
       secondpos = min(e1, secondpos)
 
-      if ((axisdir & (1 << ax)) != 0) == ((c1 & (1 << ax2)) != 0):  # that is insane
+      if ((axisdir & (1 << ax)) != 0) == ((c1 & (1 << ax2)) != 0):
         e2 = 1.0 - bestboxpos
       else:
         e2 = 1.0 + bestboxpos
@@ -1192,7 +1184,7 @@ def capsule_box(
     # of the capsule that's above the box
     # if the closest point is inside the box there's no need for a second point
 
-    if clface != -1:
+    if clface != -1:  # create second contact point
       mul = wp.where(cltype == -3, 1, -1)
       secondpos = 2.0
 
@@ -1211,7 +1203,6 @@ def capsule_box(
 
       secondpos *= wp.float32(mul)
 
-  # skip:
   # create sphere in original orientation at first contact point
   s1_pos_l = pos + halfaxis * bestsegmentpos
   s1_pos_g = box.rot @ s1_pos_l + box.pos
