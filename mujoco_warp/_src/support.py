@@ -147,37 +147,39 @@ def mul_m(
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: array2df):
-  @wp.kernel
-  def _accumulate(m: Model, d: Data, qfrc: array2df):
-    worldid, dofid = wp.tid()
-    cdof = d.cdof[worldid, dofid]
-    rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
-    jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
 
-    dof_bodyid = m.dof_bodyid[dofid]
-    accumul = float(0.0)
+  with wp.ScopedDevice(m.qpos0.device):
+    @wp.kernel
+    def _accumulate(m: Model, d: Data, qfrc: array2df):
+      worldid, dofid = wp.tid()
+      cdof = d.cdof[worldid, dofid]
+      rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
+      jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
 
-    for bodyid in range(dof_bodyid, m.nbody):
-      # any body that is in the subtree of dof_bodyid is part of the jacobian
-      parentid = bodyid
-      while parentid != 0 and parentid != dof_bodyid:
-        parentid = m.body_parentid[parentid]
-      if parentid == 0:
-        continue  # body is not part of the subtree
-      offset = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
-      cross_term = wp.cross(rotational_cdof, offset)
-      accumul += wp.dot(jac, d.xfrc_applied[worldid, bodyid]) + wp.dot(
-        cross_term,
-        wp.vec3(
-          d.xfrc_applied[worldid, bodyid][0],
-          d.xfrc_applied[worldid, bodyid][1],
-          d.xfrc_applied[worldid, bodyid][2],
-        ),
-      )
+      dof_bodyid = m.dof_bodyid[dofid]
+      accumul = float(0.0)
 
-    qfrc[worldid, dofid] += accumul
+      for bodyid in range(dof_bodyid, m.nbody):
+        # any body that is in the subtree of dof_bodyid is part of the jacobian
+        parentid = bodyid
+        while parentid != 0 and parentid != dof_bodyid:
+          parentid = m.body_parentid[parentid]
+        if parentid == 0:
+          continue  # body is not part of the subtree
+        offset = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
+        cross_term = wp.cross(rotational_cdof, offset)
+        accumul += wp.dot(jac, d.xfrc_applied[worldid, bodyid]) + wp.dot(
+          cross_term,
+          wp.vec3(
+            d.xfrc_applied[worldid, bodyid][0],
+            d.xfrc_applied[worldid, bodyid][1],
+            d.xfrc_applied[worldid, bodyid][2],
+          ),
+        )
 
-  wp.launch(kernel=_accumulate, dim=(d.nworld, m.nv), inputs=[m, d, qfrc])
+      qfrc[worldid, dofid] += accumul
+
+    wp.launch(kernel=_accumulate, dim=(d.nworld, m.nv), inputs=[m, d, qfrc])
 
 
 @wp.func
