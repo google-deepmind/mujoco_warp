@@ -503,15 +503,17 @@ def implicit(m: Model, d: Data):
 def fwd_position(m: Model, d: Data):
   """Position-dependent computations."""
 
-  smooth.kinematics(m, d)
-  smooth.com_pos(m, d)
-  smooth.camlight(m, d)
-  smooth.tendon(m, d)
-  smooth.crb(m, d)
-  smooth.factor_m(m, d)
-  collision_driver.collision(m, d)
-  constraint.make_constraint(m, d)
-  smooth.transmission(m, d)
+  with wp.scopedDevice(m.qpos0.device):
+
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.tendon(m, d)
+    smooth.crb(m, d)
+    smooth.factor_m(m, d)
+    collision_driver.collision(m, d)
+    constraint.make_constraint(m, d)
+    smooth.transmission(m, d)
 
 
 @event_scope
