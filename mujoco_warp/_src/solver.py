@@ -1534,129 +1534,132 @@ def _linesearch(m: types.Model, d: types.Data):
 @event_scope
 def solve(m: types.Model, d: types.Data):
   """Finds forces that satisfy constraints."""
-  ITERATIONS = m.opt.iterations
 
-  @kernel
-  def _zero_search_dot(d: types.Data):
-    worldid = wp.tid()
+  with wp.ScopedDevice(m.qpos0.device):
 
-    if wp.static(m.opt.iterations) > 1:
-      if d.efc.done[worldid]:
-        return
-
-    d.efc.search_dot[worldid] = 0.0
-
-  @kernel
-  def _search_update(d: types.Data):
-    worldid, dofid = wp.tid()
-
-    if wp.static(m.opt.iterations) > 1:
-      if d.efc.done[worldid]:
-        return
-
-    search = -1.0 * d.efc.Mgrad[worldid, dofid]
-
-    if wp.static(m.opt.solver == types.SolverType.CG):
-      search += d.efc.beta[worldid] * d.efc.search[worldid, dofid]
-
-    d.efc.search[worldid, dofid] = search
-    wp.atomic_add(d.efc.search_dot, worldid, search * search)
-
-  @kernel
-  def _done(m: types.Model, d: types.Data, solver_niter: int):
-    # TODO(team): static m?
-    worldid = wp.tid()
-
-    if ITERATIONS > 1:
-      if d.efc.done[worldid]:
-        return
-
-    improvement = _rescale(m, d.efc.prev_cost[worldid] - d.efc.cost[worldid])
-    gradient = _rescale(m, wp.math.sqrt(d.efc.grad_dot[worldid]))
-    d.efc.done[worldid] = (improvement < m.opt.tolerance) or (
-      gradient < m.opt.tolerance
-    )
-
-  if m.opt.solver == types.SolverType.CG:
+    ITERATIONS = m.opt.iterations
 
     @kernel
-    def _prev_grad_Mgrad(d: types.Data):
-      worldid, dofid = wp.tid()
-
-      if wp.static(m.opt.iterations) > 1:
-        if d.efc.done[worldid]:
-          return
-
-      d.efc.prev_grad[worldid, dofid] = d.efc.grad[worldid, dofid]
-      d.efc.prev_Mgrad[worldid, dofid] = d.efc.Mgrad[worldid, dofid]
-
-    @kernel
-    def _zero_beta_num_den(d: types.Data):
+    def _zero_search_dot(d: types.Data):
       worldid = wp.tid()
 
       if wp.static(m.opt.iterations) > 1:
         if d.efc.done[worldid]:
           return
 
-      d.efc.beta_num[worldid] = 0.0
-      d.efc.beta_den[worldid] = 0.0
+      d.efc.search_dot[worldid] = 0.0
 
     @kernel
-    def _beta_num_den(d: types.Data):
+    def _search_update(d: types.Data):
       worldid, dofid = wp.tid()
 
       if wp.static(m.opt.iterations) > 1:
         if d.efc.done[worldid]:
           return
 
-      prev_Mgrad = d.efc.prev_Mgrad[worldid][dofid]
-      wp.atomic_add(
-        d.efc.beta_num,
-        worldid,
-        d.efc.grad[worldid, dofid] * (d.efc.Mgrad[worldid, dofid] - prev_Mgrad),
-      )
-      wp.atomic_add(
-        d.efc.beta_den, worldid, d.efc.prev_grad[worldid, dofid] * prev_Mgrad
-      )
+      search = -1.0 * d.efc.Mgrad[worldid, dofid]
+
+      if wp.static(m.opt.solver == types.SolverType.CG):
+        search += d.efc.beta[worldid] * d.efc.search[worldid, dofid]
+
+      d.efc.search[worldid, dofid] = search
+      wp.atomic_add(d.efc.search_dot, worldid, search * search)
 
     @kernel
-    def _beta(d: types.Data):
+    def _done(m: types.Model, d: types.Data, solver_niter: int):
+      # TODO(team): static m?
       worldid = wp.tid()
 
-      if wp.static(m.opt.iterations) > 1:
+      if ITERATIONS > 1:
         if d.efc.done[worldid]:
           return
 
-      d.efc.beta[worldid] = wp.max(
-        0.0, d.efc.beta_num[worldid] / wp.max(types.MJ_MINVAL, d.efc.beta_den[worldid])
+      improvement = _rescale(m, d.efc.prev_cost[worldid] - d.efc.cost[worldid])
+      gradient = _rescale(m, wp.math.sqrt(d.efc.grad_dot[worldid]))
+      d.efc.done[worldid] = (improvement < m.opt.tolerance) or (
+        gradient < m.opt.tolerance
       )
 
-  # warmstart
-  kernel_copy(d.qacc, d.qacc_warmstart)
-
-  _create_context(m, d, grad=True)
-
-  for i in range(m.opt.iterations):
-    _linesearch(m, d)
-
     if m.opt.solver == types.SolverType.CG:
-      wp.launch(_prev_grad_Mgrad, dim=(d.nworld, m.nv), inputs=[d])
 
-    _update_constraint(m, d)
-    _update_gradient(m, d)
+      @kernel
+      def _prev_grad_Mgrad(d: types.Data):
+        worldid, dofid = wp.tid()
 
-    # polak-ribiere
-    if m.opt.solver == types.SolverType.CG:
-      wp.launch(_zero_beta_num_den, dim=(d.nworld), inputs=[d])
+        if wp.static(m.opt.iterations) > 1:
+          if d.efc.done[worldid]:
+            return
 
-      wp.launch(_beta_num_den, dim=(d.nworld, m.nv), inputs=[d])
+        d.efc.prev_grad[worldid, dofid] = d.efc.grad[worldid, dofid]
+        d.efc.prev_Mgrad[worldid, dofid] = d.efc.Mgrad[worldid, dofid]
 
-      wp.launch(_beta, dim=(d.nworld,), inputs=[d])
+      @kernel
+      def _zero_beta_num_den(d: types.Data):
+        worldid = wp.tid()
 
-    wp.launch(_zero_search_dot, dim=(d.nworld), inputs=[d])
+        if wp.static(m.opt.iterations) > 1:
+          if d.efc.done[worldid]:
+            return
 
-    wp.launch(_search_update, dim=(d.nworld, m.nv), inputs=[d])
+        d.efc.beta_num[worldid] = 0.0
+        d.efc.beta_den[worldid] = 0.0
 
-    wp.launch(_done, dim=(d.nworld,), inputs=[m, d, i])
+      @kernel
+      def _beta_num_den(d: types.Data):
+        worldid, dofid = wp.tid()
 
-  kernel_copy(d.qacc_warmstart, d.qacc)
+        if wp.static(m.opt.iterations) > 1:
+          if d.efc.done[worldid]:
+            return
+
+        prev_Mgrad = d.efc.prev_Mgrad[worldid][dofid]
+        wp.atomic_add(
+          d.efc.beta_num,
+          worldid,
+          d.efc.grad[worldid, dofid] * (d.efc.Mgrad[worldid, dofid] - prev_Mgrad),
+        )
+        wp.atomic_add(
+          d.efc.beta_den, worldid, d.efc.prev_grad[worldid, dofid] * prev_Mgrad
+        )
+
+      @kernel
+      def _beta(d: types.Data):
+        worldid = wp.tid()
+
+        if wp.static(m.opt.iterations) > 1:
+          if d.efc.done[worldid]:
+            return
+
+        d.efc.beta[worldid] = wp.max(
+          0.0, d.efc.beta_num[worldid] / wp.max(types.MJ_MINVAL, d.efc.beta_den[worldid])
+        )
+
+    # warmstart
+    kernel_copy(d.qacc, d.qacc_warmstart)
+
+    _create_context(m, d, grad=True)
+
+    for i in range(m.opt.iterations):
+      _linesearch(m, d)
+
+      if m.opt.solver == types.SolverType.CG:
+        wp.launch(_prev_grad_Mgrad, dim=(d.nworld, m.nv), inputs=[d])
+
+      _update_constraint(m, d)
+      _update_gradient(m, d)
+
+      # polak-ribiere
+      if m.opt.solver == types.SolverType.CG:
+        wp.launch(_zero_beta_num_den, dim=(d.nworld), inputs=[d])
+
+        wp.launch(_beta_num_den, dim=(d.nworld, m.nv), inputs=[d])
+
+        wp.launch(_beta, dim=(d.nworld,), inputs=[d])
+
+      wp.launch(_zero_search_dot, dim=(d.nworld), inputs=[d])
+
+      wp.launch(_search_update, dim=(d.nworld, m.nv), inputs=[d])
+
+      wp.launch(_done, dim=(d.nworld,), inputs=[m, d, i])
+
+    kernel_copy(d.qacc_warmstart, d.qacc)
