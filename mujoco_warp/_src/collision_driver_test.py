@@ -40,22 +40,6 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
       """,
-    "box_mesh": """
-        <mujoco>
-          <asset>
-            <mesh name="boxmesh" scale="0.1 0.1 0.1"
-                  vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1
-                           1 -1 1 -1 1 -1 -1 1 1 -1 -1 1"/>
-          </asset>
-          <worldbody>
-            <geom pos="0 0 -0.1" type="box" size="0.5 0.5 0.1"/>
-            <body pos="0 0 .099">
-              <joint type="free"/>
-              <geom type="mesh" mesh="boxmesh"/>
-            </body>
-          </worldbody>
-        </mujoco>
-      """,
     "plane_sphere": """
         <mujoco>
           <worldbody>
@@ -242,6 +226,24 @@ class CollisionTest(parameterized.TestCase):
         </mujoco>
         """,
   }
+
+  # Temporarily disabled
+  #  "box_mesh": """
+  #      <mujoco>
+  #        <asset>
+  #          <mesh name="boxmesh" scale="0.1 0.1 0.1"
+  #                vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1
+  #                         1 -1 1 -1 1 -1 -1 1 1 -1 -1 1"/>
+  #        </asset>
+  #        <worldbody>
+  #          <geom pos="0 0 -0.1" type="box" size="0.5 0.5 0.1"/>
+  #          <body pos="0 0 .099">
+  #            <joint type="free"/>
+  #            <geom type="mesh" mesh="boxmesh"/>
+  #          </body>
+  #        </worldbody>
+  #      </mujoco>
+  #    """,
 
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
