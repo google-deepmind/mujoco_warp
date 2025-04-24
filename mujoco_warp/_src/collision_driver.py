@@ -235,29 +235,27 @@ def nxn_broadphase(m: Model, d: Data):
 def collision(m: Model, d: Data):
   """Collision detection."""
 
-  # AD: based on engine_collision_driver.py in Eric's warp fork/mjx-collisions-dev
-  # which is further based on the CUDA code here:
-  # https://github.com/btaba/mujoco/blob/warp-collisions/mjx/mujoco/mjx/_src/cuda/engine_collision_driver.cu.cc#L458-L583
+  with wp.ScopedDevice(m.qpos0.device):
 
-  d.ncollision.zero_()
-  d.ncon.zero_()
+    d.ncollision.zero_()
+    d.ncon.zero_()
 
-  if d.nconmax == 0:
-    return
+    if d.nconmax == 0:
+      return
 
-  dsbl_flgs = m.opt.disableflags
-  if (dsbl_flgs & DisableBit.CONSTRAINT) | (dsbl_flgs & DisableBit.CONTACT):
-    return
+    dsbl_flgs = m.opt.disableflags
+    if (dsbl_flgs & DisableBit.CONSTRAINT) | (dsbl_flgs & DisableBit.CONTACT):
+      return
 
-  # TODO(team): determine ngeom to switch from n^2 to sap
-  if m.ngeom <= 100:
-    nxn_broadphase(m, d)
-  else:
-    sap_broadphase(m, d)
+    # TODO(team): determine ngeom to switch from n^2 to sap
+    if m.ngeom <= 100:
+      nxn_broadphase(m, d)
+    else:
+      sap_broadphase(m, d)
 
-  # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
-  #             partitioning because we can move some pressure of the atomics
-  # TODO(team) switch between collision functions and GJK/EPA here
-  gjk_narrowphase(m, d)
-  primitive_narrowphase(m, d)
-  box_box_narrowphase(m, d)
+    # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
+    #             partitioning because we can move some pressure of the atomics
+    # TODO(team) switch between collision functions and GJK/EPA here
+    gjk_narrowphase(m, d)
+    primitive_narrowphase(m, d)
+    box_box_narrowphase(m, d)
