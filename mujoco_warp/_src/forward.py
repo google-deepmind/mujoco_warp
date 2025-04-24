@@ -270,7 +270,6 @@ def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
 
   with wp.ScopedDevice(m.qpos0.device):
-    
     wp.copy(d.qpos_t0, d.qpos)
     wp.copy(d.qvel_t0, d.qvel)
     if m.na:
