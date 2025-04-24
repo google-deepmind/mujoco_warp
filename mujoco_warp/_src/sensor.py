@@ -446,55 +446,57 @@ def _frameangacc(m: Model, d: Data, worldid: int, objid: int, objtype: int) -> w
 def sensor_acc(m: Model, d: Data):
   """Compute acceleration-dependent sensor values."""
 
-  @kernel
-  def _sensor_acc(m: Model, d: Data):
-    worldid, accid = wp.tid()
-    accadr = m.sensor_acc_adr[accid]
-    sensortype = m.sensor_type[accadr]
-    objid = m.sensor_objid[accadr]
-    adr = m.sensor_adr[accadr]
+  with wp.ScopedDevice(m.qpos0.device):
 
-    if sensortype == int(SensorType.ACCELEROMETER.value):
-      accelerometer = _accelerometer(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = accelerometer[0]
-      d.sensordata[worldid, adr + 1] = accelerometer[1]
-      d.sensordata[worldid, adr + 2] = accelerometer[2]
-    elif sensortype == int(SensorType.FORCE.value):
-      force = _force(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = force[0]
-      d.sensordata[worldid, adr + 1] = force[1]
-      d.sensordata[worldid, adr + 2] = force[2]
-    elif sensortype == int(SensorType.TORQUE.value):
-      torque = _torque(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = torque[0]
-      d.sensordata[worldid, adr + 1] = torque[1]
-      d.sensordata[worldid, adr + 2] = torque[2]
-    elif sensortype == int(SensorType.ACTUATORFRC.value):
-      d.sensordata[worldid, adr] = _actuator_force(m, d, worldid, objid)
-    elif sensortype == int(SensorType.JOINTACTFRC.value):
-      d.sensordata[worldid, adr] = _joint_actuator_force(m, d, worldid, objid)
-    elif sensortype == int(SensorType.FRAMELINACC.value):
-      objtype = m.sensor_objtype[accadr]
-      framelinacc = _framelinacc(m, d, worldid, objid, objtype)
-      d.sensordata[worldid, adr + 0] = framelinacc[0]
-      d.sensordata[worldid, adr + 1] = framelinacc[1]
-      d.sensordata[worldid, adr + 2] = framelinacc[2]
-    elif sensortype == int(SensorType.FRAMEANGACC.value):
-      objtype = m.sensor_objtype[accadr]
-      frameangacc = _frameangacc(m, d, worldid, objid, objtype)
-      d.sensordata[worldid, adr + 0] = frameangacc[0]
-      d.sensordata[worldid, adr + 1] = frameangacc[1]
-      d.sensordata[worldid, adr + 2] = frameangacc[2]
+    @kernel
+    def _sensor_acc(m: Model, d: Data):
+      worldid, accid = wp.tid()
+      accadr = m.sensor_acc_adr[accid]
+      sensortype = m.sensor_type[accadr]
+      objid = m.sensor_objid[accadr]
+      adr = m.sensor_adr[accadr]
 
-  if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
-    return
+      if sensortype == int(SensorType.ACCELEROMETER.value):
+        accelerometer = _accelerometer(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = accelerometer[0]
+        d.sensordata[worldid, adr + 1] = accelerometer[1]
+        d.sensordata[worldid, adr + 2] = accelerometer[2]
+      elif sensortype == int(SensorType.FORCE.value):
+        force = _force(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = force[0]
+        d.sensordata[worldid, adr + 1] = force[1]
+        d.sensordata[worldid, adr + 2] = force[2]
+      elif sensortype == int(SensorType.TORQUE.value):
+        torque = _torque(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = torque[0]
+        d.sensordata[worldid, adr + 1] = torque[1]
+        d.sensordata[worldid, adr + 2] = torque[2]
+      elif sensortype == int(SensorType.ACTUATORFRC.value):
+        d.sensordata[worldid, adr] = _actuator_force(m, d, worldid, objid)
+      elif sensortype == int(SensorType.JOINTACTFRC.value):
+        d.sensordata[worldid, adr] = _joint_actuator_force(m, d, worldid, objid)
+      elif sensortype == int(SensorType.FRAMELINACC.value):
+        objtype = m.sensor_objtype[accadr]
+        framelinacc = _framelinacc(m, d, worldid, objid, objtype)
+        d.sensordata[worldid, adr + 0] = framelinacc[0]
+        d.sensordata[worldid, adr + 1] = framelinacc[1]
+        d.sensordata[worldid, adr + 2] = framelinacc[2]
+      elif sensortype == int(SensorType.FRAMEANGACC.value):
+        objtype = m.sensor_objtype[accadr]
+        frameangacc = _frameangacc(m, d, worldid, objid, objtype)
+        d.sensordata[worldid, adr + 0] = frameangacc[0]
+        d.sensordata[worldid, adr + 1] = frameangacc[1]
+        d.sensordata[worldid, adr + 2] = frameangacc[2]
 
-  if wp.static(
-    np.isin(
-      m.sensor_type.numpy(),
-      [SensorType.ACCELEROMETER, SensorType.FORCE, SensorType.TORQUE],
-    ).any()
-  ):
-    smooth.rne_postconstraint(m, d)
+    if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+      return
 
-  wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])
+    if wp.static(
+      np.isin(
+        m.sensor_type.numpy(),
+        [SensorType.ACCELEROMETER, SensorType.FORCE, SensorType.TORQUE],
+      ).any()
+    ):
+      smooth.rne_postconstraint(m, d)
+
+    wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])
