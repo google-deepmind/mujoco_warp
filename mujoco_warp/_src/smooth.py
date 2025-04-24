@@ -813,90 +813,93 @@ def rne_postconstraint(m: Model, d: Data):
 @event_scope
 def transmission(m: Model, d: Data):
   """Computes actuator/transmission lengths and moments."""
-  if not m.nu:
-    return d
 
-  @kernel
-  def _transmission(
-    m: Model,
-    d: Data,
-    # outputs
-    length: array2df,
-    moment: array3df,
-  ):
-    worldid, actid = wp.tid()
-    trntype = m.actuator_trntype[actid]
-    gear = m.actuator_gear[actid]
-    if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
-      TrnType.JOINTINPARENT.value
+  with wp.ScopedDevice(m.qpos0.device):
+
+    if not m.nu:
+      return d
+
+    @kernel
+    def _transmission(
+      m: Model,
+      d: Data,
+      # outputs
+      length: array2df,
+      moment: array3df,
     ):
-      qpos = d.qpos[worldid]
-      jntid = m.actuator_trnid[actid, 0]
-      jnt_typ = m.jnt_type[jntid]
-      qadr = m.jnt_qposadr[jntid]
-      vadr = m.jnt_dofadr[jntid]
-      if jnt_typ == wp.static(JointType.FREE.value):
-        length[worldid, actid] = 0.0
-        if trntype == wp.static(TrnType.JOINTINPARENT.value):
-          quat_neg = math.quat_inv(
-            wp.quat(
-              qpos[qadr + 3],
-              qpos[qadr + 4],
-              qpos[qadr + 5],
-              qpos[qadr + 6],
-            )
-          )
-          gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
-          moment[worldid, actid, vadr + 0] = gear[0]
-          moment[worldid, actid, vadr + 1] = gear[1]
-          moment[worldid, actid, vadr + 2] = gear[2]
-          moment[worldid, actid, vadr + 3] = gearaxis[0]
-          moment[worldid, actid, vadr + 4] = gearaxis[1]
-          moment[worldid, actid, vadr + 5] = gearaxis[2]
-        else:
-          for i in range(6):
-            moment[worldid, actid, vadr + i] = gear[i]
-      elif jnt_typ == wp.static(JointType.BALL.value):
-        q = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
-        axis_angle = math.quat_to_vel(q)
-        gearaxis = wp.spatial_top(gear)  # [:3]
-        if trntype == wp.static(TrnType.JOINTINPARENT.value):
-          quat_neg = math.quat_inv(q)
-          gearaxis = math.rot_vec_quat(gearaxis, quat_neg)
-        length[worldid, actid] = wp.dot(axis_angle, gearaxis)
-        for i in range(3):
-          moment[worldid, actid, vadr + i] = gearaxis[i]
-      elif jnt_typ == wp.static(JointType.SLIDE.value) or jnt_typ == wp.static(
-        JointType.HINGE.value
+      worldid, actid = wp.tid()
+      trntype = m.actuator_trntype[actid]
+      gear = m.actuator_gear[actid]
+      if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
+        TrnType.JOINTINPARENT.value
       ):
-        length[worldid, actid] = qpos[qadr] * gear[0]
-        moment[worldid, actid, vadr] = gear[0]
+        qpos = d.qpos[worldid]
+        jntid = m.actuator_trnid[actid, 0]
+        jnt_typ = m.jnt_type[jntid]
+        qadr = m.jnt_qposadr[jntid]
+        vadr = m.jnt_dofadr[jntid]
+        if jnt_typ == wp.static(JointType.FREE.value):
+          length[worldid, actid] = 0.0
+          if trntype == wp.static(TrnType.JOINTINPARENT.value):
+            quat_neg = math.quat_inv(
+              wp.quat(
+                qpos[qadr + 3],
+                qpos[qadr + 4],
+                qpos[qadr + 5],
+                qpos[qadr + 6],
+              )
+            )
+            gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
+            moment[worldid, actid, vadr + 0] = gear[0]
+            moment[worldid, actid, vadr + 1] = gear[1]
+            moment[worldid, actid, vadr + 2] = gear[2]
+            moment[worldid, actid, vadr + 3] = gearaxis[0]
+            moment[worldid, actid, vadr + 4] = gearaxis[1]
+            moment[worldid, actid, vadr + 5] = gearaxis[2]
+          else:
+            for i in range(6):
+              moment[worldid, actid, vadr + i] = gear[i]
+        elif jnt_typ == wp.static(JointType.BALL.value):
+          q = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
+          axis_angle = math.quat_to_vel(q)
+          gearaxis = wp.spatial_top(gear)  # [:3]
+          if trntype == wp.static(TrnType.JOINTINPARENT.value):
+            quat_neg = math.quat_inv(q)
+            gearaxis = math.rot_vec_quat(gearaxis, quat_neg)
+          length[worldid, actid] = wp.dot(axis_angle, gearaxis)
+          for i in range(3):
+            moment[worldid, actid, vadr + i] = gearaxis[i]
+        elif jnt_typ == wp.static(JointType.SLIDE.value) or jnt_typ == wp.static(
+          JointType.HINGE.value
+        ):
+          length[worldid, actid] = qpos[qadr] * gear[0]
+          moment[worldid, actid, vadr] = gear[0]
+        else:
+          wp.printf("unrecognized joint type")
+      elif trntype == wp.static(TrnType.TENDON.value):
+        tenid = m.actuator_trnid[actid, 0]
+
+        gear0 = gear[0]
+        length[worldid, actid] = d.ten_length[worldid, tenid] * gear0
+
+        # fixed
+        adr = m.tendon_adr[tenid]
+        if m.wrap_type[adr] == wp.static(WrapType.JOINT.value):
+          ten_num = m.tendon_num[tenid]
+          for i in range(ten_num):
+            dofadr = m.jnt_dofadr[m.wrap_objid[adr + i]]
+            moment[worldid, actid, dofadr] = d.ten_J[worldid, tenid, dofadr] * gear0
+        # TODO(team): spatial
       else:
-        wp.printf("unrecognized joint type")
-    elif trntype == wp.static(TrnType.TENDON.value):
-      tenid = m.actuator_trnid[actid, 0]
+        # TODO(team): site, slidercrank, body
+        wp.printf("unhandled transmission type %d\n", trntype)
 
-      gear0 = gear[0]
-      length[worldid, actid] = d.ten_length[worldid, tenid] * gear0
-
-      # fixed
-      adr = m.tendon_adr[tenid]
-      if m.wrap_type[adr] == wp.static(WrapType.JOINT.value):
-        ten_num = m.tendon_num[tenid]
-        for i in range(ten_num):
-          dofadr = m.jnt_dofadr[m.wrap_objid[adr + i]]
-          moment[worldid, actid, dofadr] = d.ten_J[worldid, tenid, dofadr] * gear0
-      # TODO(team): spatial
-    else:
-      # TODO(team): site, slidercrank, body
-      wp.printf("unhandled transmission type %d\n", trntype)
-
-  wp.launch(
-    _transmission,
-    dim=[d.nworld, m.nu],
-    inputs=[m, d],
-    outputs=[d.actuator_length, d.actuator_moment],
-  )
+    wp.launch(
+      _transmission,
+      dim=[d.nworld, m.nu],
+      inputs=[m, d],
+      outputs=[d.actuator_length, d.actuator_moment],
+    )
 
 
 @event_scope
