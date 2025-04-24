@@ -171,68 +171,70 @@ def _subtree_com(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
 
-  @kernel
-  def _sensor_pos(m: Model, d: Data):
-    worldid, posid = wp.tid()
-    posadr = m.sensor_pos_adr[posid]
-    sensortype = m.sensor_type[posadr]
-    objid = m.sensor_objid[posadr]
-    adr = m.sensor_adr[posadr]
+  with wp.ScopedDevice(m.qpos0.device):
 
-    if sensortype == int(SensorType.JOINTPOS.value):
-      d.sensordata[worldid, adr] = _joint_pos(m, d, worldid, objid)
-    elif sensortype == int(SensorType.TENDONPOS.value):
-      d.sensordata[worldid, adr] = _tendon_pos(m, d, worldid, objid)
-    elif sensortype == int(SensorType.ACTUATORPOS.value):
-      d.sensordata[worldid, adr] = _actuator_length(m, d, worldid, objid)
-    elif sensortype == int(SensorType.BALLQUAT.value):
-      quat = _ball_quat(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = quat[0]
-      d.sensordata[worldid, adr + 1] = quat[1]
-      d.sensordata[worldid, adr + 2] = quat[2]
-      d.sensordata[worldid, adr + 3] = quat[3]
-    elif sensortype == int(SensorType.FRAMEPOS.value):
-      objtype = m.sensor_objtype[posadr]
-      refid = m.sensor_refid[posadr]
-      framepos = _frame_pos(m, d, worldid, objid, objtype, refid)
-      d.sensordata[worldid, adr + 0] = framepos[0]
-      d.sensordata[worldid, adr + 1] = framepos[1]
-      d.sensordata[worldid, adr + 2] = framepos[2]
-    elif (
-      sensortype == int(SensorType.FRAMEXAXIS.value)
-      or sensortype == int(SensorType.FRAMEYAXIS.value)
-      or sensortype == int(SensorType.FRAMEZAXIS.value)
-    ):
-      objtype = m.sensor_objtype[posadr]
-      refid = m.sensor_refid[posadr]
-      if sensortype == int(SensorType.FRAMEXAXIS.value):
-        axis = 0
-      elif sensortype == int(SensorType.FRAMEYAXIS.value):
-        axis = 1
-      elif sensortype == int(SensorType.FRAMEZAXIS.value):
-        axis = 2
-      frameaxis = _frame_axis(m, d, worldid, objid, objtype, refid, axis)
-      d.sensordata[worldid, adr + 0] = frameaxis[0]
-      d.sensordata[worldid, adr + 1] = frameaxis[1]
-      d.sensordata[worldid, adr + 2] = frameaxis[2]
-    elif sensortype == int(SensorType.FRAMEQUAT.value):
-      objtype = m.sensor_objtype[posadr]
-      refid = m.sensor_refid[posadr]
-      quat = _frame_quat(m, d, worldid, objid, objtype, refid)
-      d.sensordata[worldid, adr + 0] = quat[0]
-      d.sensordata[worldid, adr + 1] = quat[1]
-      d.sensordata[worldid, adr + 2] = quat[2]
-      d.sensordata[worldid, adr + 3] = quat[3]
-    elif sensortype == int(SensorType.SUBTREECOM.value):
-      subtree_com = _subtree_com(m, d, worldid, objid)
-      d.sensordata[worldid, adr + 0] = subtree_com[0]
-      d.sensordata[worldid, adr + 1] = subtree_com[1]
-      d.sensordata[worldid, adr + 2] = subtree_com[2]
+    @kernel
+    def _sensor_pos(m: Model, d: Data):
+      worldid, posid = wp.tid()
+      posadr = m.sensor_pos_adr[posid]
+      sensortype = m.sensor_type[posadr]
+      objid = m.sensor_objid[posadr]
+      adr = m.sensor_adr[posadr]
 
-  if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
-    return
+      if sensortype == int(SensorType.JOINTPOS.value):
+        d.sensordata[worldid, adr] = _joint_pos(m, d, worldid, objid)
+      elif sensortype == int(SensorType.TENDONPOS.value):
+        d.sensordata[worldid, adr] = _tendon_pos(m, d, worldid, objid)
+      elif sensortype == int(SensorType.ACTUATORPOS.value):
+        d.sensordata[worldid, adr] = _actuator_length(m, d, worldid, objid)
+      elif sensortype == int(SensorType.BALLQUAT.value):
+        quat = _ball_quat(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = quat[0]
+        d.sensordata[worldid, adr + 1] = quat[1]
+        d.sensordata[worldid, adr + 2] = quat[2]
+        d.sensordata[worldid, adr + 3] = quat[3]
+      elif sensortype == int(SensorType.FRAMEPOS.value):
+        objtype = m.sensor_objtype[posadr]
+        refid = m.sensor_refid[posadr]
+        framepos = _frame_pos(m, d, worldid, objid, objtype, refid)
+        d.sensordata[worldid, adr + 0] = framepos[0]
+        d.sensordata[worldid, adr + 1] = framepos[1]
+        d.sensordata[worldid, adr + 2] = framepos[2]
+      elif (
+        sensortype == int(SensorType.FRAMEXAXIS.value)
+        or sensortype == int(SensorType.FRAMEYAXIS.value)
+        or sensortype == int(SensorType.FRAMEZAXIS.value)
+      ):
+        objtype = m.sensor_objtype[posadr]
+        refid = m.sensor_refid[posadr]
+        if sensortype == int(SensorType.FRAMEXAXIS.value):
+          axis = 0
+        elif sensortype == int(SensorType.FRAMEYAXIS.value):
+          axis = 1
+        elif sensortype == int(SensorType.FRAMEZAXIS.value):
+          axis = 2
+        frameaxis = _frame_axis(m, d, worldid, objid, objtype, refid, axis)
+        d.sensordata[worldid, adr + 0] = frameaxis[0]
+        d.sensordata[worldid, adr + 1] = frameaxis[1]
+        d.sensordata[worldid, adr + 2] = frameaxis[2]
+      elif sensortype == int(SensorType.FRAMEQUAT.value):
+        objtype = m.sensor_objtype[posadr]
+        refid = m.sensor_refid[posadr]
+        quat = _frame_quat(m, d, worldid, objid, objtype, refid)
+        d.sensordata[worldid, adr + 0] = quat[0]
+        d.sensordata[worldid, adr + 1] = quat[1]
+        d.sensordata[worldid, adr + 2] = quat[2]
+        d.sensordata[worldid, adr + 3] = quat[3]
+      elif sensortype == int(SensorType.SUBTREECOM.value):
+        subtree_com = _subtree_com(m, d, worldid, objid)
+        d.sensordata[worldid, adr + 0] = subtree_com[0]
+        d.sensordata[worldid, adr + 1] = subtree_com[1]
+        d.sensordata[worldid, adr + 2] = subtree_com[2]
 
-  wp.launch(_sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), inputs=[m, d])
+    if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+      return
+
+    wp.launch(_sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), inputs=[m, d])
 
 
 @wp.func
