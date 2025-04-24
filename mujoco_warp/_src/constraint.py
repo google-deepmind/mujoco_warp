@@ -102,15 +102,18 @@ def _efc_equality_connect(
   anchor1 = wp.vec3f(data[0], data[1], data[2])
   anchor2 = wp.vec3f(data[3], data[4], data[5])
 
+  obj1id = m.eq_obj1id[i_eq]
+  obj2id = m.eq_obj2id[i_eq]
+
   if m.nsite and m.eq_objtype[i_eq] == wp.static(types.ObjType.SITE.value):
     # body1id stores the index of site_bodyid.
-    body1id = m.site_bodyid[m.eq_obj1id[i_eq]]
-    body2id = m.site_bodyid[m.eq_obj2id[i_eq]]
-    pos1 = d.site_xpos[worldid, m.eq_obj1id[i_eq]]
-    pos2 = d.site_xpos[worldid, m.eq_obj2id[i_eq]]
+    body1id = m.site_bodyid[obj1id]
+    body2id = m.site_bodyid[obj2id]
+    pos1 = d.site_xpos[worldid, obj1id]
+    pos2 = d.site_xpos[worldid, obj2id]
   else:
-    body1id = m.eq_obj1id[i_eq]
-    body2id = m.eq_obj2id[i_eq]
+    body1id = obj1id
+    body2id = obj2id
     pos1 = d.xpos[worldid, body1id] + d.xmat[worldid, body1id] @ anchor1
     pos2 = d.xpos[worldid, body2id] + d.xmat[worldid, body2id] @ anchor2
 
@@ -123,7 +126,7 @@ def _efc_equality_connect(
     jacp1, _ = support.jac(m, d, pos1, body1id, dofid, worldid)
     jacp2, _ = support.jac(m, d, pos2, body2id, dofid, worldid)
     j1mj2 = jacp1 - jacp2
-    d.efc.J[efcid, dofid] = j1mj2[0]
+    d.efc.J[efcid + 0, dofid] = j1mj2[0]
     d.efc.J[efcid + 1, dofid] = j1mj2[1]
     d.efc.J[efcid + 2, dofid] = j1mj2[2]
     Jqvel += j1mj2 * d.qvel[worldid, dofid]
@@ -131,16 +134,22 @@ def _efc_equality_connect(
   invweight = m.body_invweight0[body1id, 0] + m.body_invweight0[body2id, 0]
   pos_imp = wp.length(pos)
 
+  solref = m.eq_solref[i_eq]
+  solimp = m.eq_solimp[i_eq]
+
   for i in range(3):
+    efcidi = efcid + i
+    d.efc.worldid[efcidi] = worldid
+
     _update_efc_row(
       m,
       d,
-      efcid + i,
+      efcidi,
       pos[i],
       pos_imp,
       invweight,
-      m.eq_solref[i_eq],
-      m.eq_solimp[i_eq],
+      solref,
+      solimp,
       wp.float32(0.0),
       Jqvel[i],
       0.0,
