@@ -15,12 +15,13 @@
 
 """Tests for io functions."""
 
+import inspect
+import textwrap
+
 import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
-import inspect
-import textwrap
 
 import mujoco_warp as mjwarp
 
