@@ -893,70 +893,72 @@ def transmission(m: Model, d: Data):
 def com_vel(m: Model, d: Data):
   """Computes cvel, cdof_dot."""
 
-  @kernel
-  def _root(d: Data):
-    worldid, elementid = wp.tid()
-    d.cvel[worldid, 0][elementid] = 0.0
+  with wp.ScopedDevice(m.qpos0.device):
 
-  @kernel
-  def _level(m: Model, d: Data, leveladr: int):
-    worldid, nodeid = wp.tid()
-    bodyid = m.body_tree[leveladr + nodeid]
-    dofid = m.body_dofadr[bodyid]
-    jntid = m.body_jntadr[bodyid]
-    jntnum = m.body_jntnum[bodyid]
-    pid = m.body_parentid[bodyid]
+    @kernel
+    def _root(d: Data):
+      worldid, elementid = wp.tid()
+      d.cvel[worldid, 0][elementid] = 0.0
 
-    if jntnum == 0:
-      d.cvel[worldid, bodyid] = d.cvel[worldid, pid]
-      return
+    @kernel
+    def _level(m: Model, d: Data, leveladr: int):
+      worldid, nodeid = wp.tid()
+      bodyid = m.body_tree[leveladr + nodeid]
+      dofid = m.body_dofadr[bodyid]
+      jntid = m.body_jntadr[bodyid]
+      jntnum = m.body_jntnum[bodyid]
+      pid = m.body_parentid[bodyid]
 
-    cvel = d.cvel[worldid, pid]
-    qvel = d.qvel[worldid]
-    cdof = d.cdof[worldid]
+      if jntnum == 0:
+        d.cvel[worldid, bodyid] = d.cvel[worldid, pid]
+        return
 
-    for j in range(jntid, jntid + jntnum):
-      jnttype = m.jnt_type[j]
+      cvel = d.cvel[worldid, pid]
+      qvel = d.qvel[worldid]
+      cdof = d.cdof[worldid]
 
-      if jnttype == wp.static(JointType.FREE.value):
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
+      for j in range(jntid, jntid + jntnum):
+        jnttype = m.jnt_type[j]
 
-        d.cdof_dot[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
-        d.cdof_dot[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
-        d.cdof_dot[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
+        if jnttype == wp.static(JointType.FREE.value):
+          cvel += cdof[dofid + 0] * qvel[dofid + 0]
+          cvel += cdof[dofid + 1] * qvel[dofid + 1]
+          cvel += cdof[dofid + 2] * qvel[dofid + 2]
 
-        cvel += cdof[dofid + 3] * qvel[dofid + 3]
-        cvel += cdof[dofid + 4] * qvel[dofid + 4]
-        cvel += cdof[dofid + 5] * qvel[dofid + 5]
+          d.cdof_dot[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
+          d.cdof_dot[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
+          d.cdof_dot[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
 
-        dofid += 6
-      elif jnttype == wp.static(JointType.BALL.value):
-        d.cdof_dot[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
-        d.cdof_dot[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
-        d.cdof_dot[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
+          cvel += cdof[dofid + 3] * qvel[dofid + 3]
+          cvel += cdof[dofid + 4] * qvel[dofid + 4]
+          cvel += cdof[dofid + 5] * qvel[dofid + 5]
 
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
+          dofid += 6
+        elif jnttype == wp.static(JointType.BALL.value):
+          d.cdof_dot[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
+          d.cdof_dot[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
+          d.cdof_dot[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
 
-        dofid += 3
-      else:
-        d.cdof_dot[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
-        cvel += cdof[dofid] * qvel[dofid]
+          cvel += cdof[dofid + 0] * qvel[dofid + 0]
+          cvel += cdof[dofid + 1] * qvel[dofid + 1]
+          cvel += cdof[dofid + 2] * qvel[dofid + 2]
 
-        dofid += 1
+          dofid += 3
+        else:
+          d.cdof_dot[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
+          cvel += cdof[dofid] * qvel[dofid]
 
-    d.cvel[worldid, bodyid] = cvel
+          dofid += 1
 
-  wp.launch(_root, dim=(d.nworld, 6), inputs=[d])
+      d.cvel[worldid, bodyid] = cvel
 
-  body_treeadr = m.body_treeadr.numpy()
-  for i in range(1, len(body_treeadr)):
-    beg = body_treeadr[i]
-    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    wp.launch(_root, dim=(d.nworld, 6), inputs=[d])
+
+    body_treeadr = m.body_treeadr.numpy()
+    for i in range(1, len(body_treeadr)):
+      beg = body_treeadr[i]
+      end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+      wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg])
 
 
 def _solve_LD_sparse(
