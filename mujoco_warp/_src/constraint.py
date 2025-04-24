@@ -695,6 +695,11 @@ def _num_equality(d: types.Data):
   d.nefc[0] += ne
 
 
+@wp.kernel
+def _update_nefc(d: types.Data):
+  d.nefc[0] += d.nl[0]
+
+
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
@@ -764,11 +769,6 @@ def make_constraint(m: types.Model, d: types.Data):
           )
 
         if limit_ball or limit_slide_hinge or limit_tendon:
-
-          @wp.kernel
-          def _update_nefc(d: types.Data):
-            d.nefc[0] += d.nl[0]
-
           wp.launch(_update_nefc, dim=(1,), inputs=[d])
 
       # contact

@@ -15,7 +15,6 @@ from jax import numpy as jp
 from warp.jax_experimental.ffi import jax_callable
 
 import mujoco_warp as mjwarp
-from mujoco_warp._src.warp_util import kernel_copy
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
 
@@ -43,11 +42,11 @@ def warp_step(
   qpos_out: wp.array(dtype=wp.float32, ndim=2),
   qvel_out: wp.array(dtype=wp.float32, ndim=2),
 ):
-  kernel_copy(d.qpos, qpos_in)
-  kernel_copy(d.qvel, qvel_in)
+  wp.copy(d.qpos, qpos_in)
+  wp.copy(d.qvel, qvel_in)
   mjwarp.step(m, d)
-  kernel_copy(qpos_out, d.qpos)
-  kernel_copy(qvel_out, d.qvel)
+  wp.copy(qpos_out, d.qpos)
+  wp.copy(qvel_out, d.qvel)
 
 
 warp_step_fn = jax_callable(

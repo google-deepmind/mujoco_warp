@@ -20,7 +20,6 @@ from . import support
 from . import types
 from .warp_util import event_scope
 from .warp_util import kernel
-from .warp_util import kernel_copy
 
 
 def _create_context(m: types.Model, d: types.Data, grad: bool = True):
@@ -1635,7 +1634,7 @@ def solve(m: types.Model, d: types.Data):
         )
 
     # warmstart
-    kernel_copy(d.qacc, d.qacc_warmstart)
+    wp.copy(d.qacc, d.qacc_warmstart)
 
     _create_context(m, d, grad=True)
 
@@ -1662,4 +1661,4 @@ def solve(m: types.Model, d: types.Data):
 
       wp.launch(_done, dim=(d.nworld,), inputs=[m, d, i])
 
-    kernel_copy(d.qacc_warmstart, d.qacc)
+    wp.copy(d.qacc_warmstart, d.qacc)

@@ -167,6 +167,11 @@ def _subtree_com(m: Model, d: Data, worldid: int, objid: int) -> wp.vec3:
   return d.subtree_com[worldid, objid]
 
 
+@wp.func
+def _clock(m: Model, d: Data, worldid: int) -> wp.float32:
+  return d.time[worldid]
+
+
 @event_scope
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
@@ -230,6 +235,9 @@ def sensor_pos(m: Model, d: Data):
         d.sensordata[worldid, adr + 0] = subtree_com[0]
         d.sensordata[worldid, adr + 1] = subtree_com[1]
         d.sensordata[worldid, adr + 2] = subtree_com[2]
+      elif sensortype == int(SensorType.CLOCK.value):
+        clock = _clock(m, d, worldid)
+        d.sensordata[worldid, adr] = clock
 
     if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
       return
