@@ -46,101 +46,103 @@ def mul_m(
 ):
   """Multiply vector by inertia matrix."""
 
-  if not m.opt.is_sparse:
+  with wp.ScopedDevice(m.qpos0.device):
 
-    def tile_mul(adr: int, size: int, tilesize: int):
-      # TODO(team): speed up kernel compile time (14s on 2023 Macbook Pro)
+    if not m.opt.is_sparse:
+
+      def tile_mul(adr: int, size: int, tilesize: int):
+        # TODO(team): speed up kernel compile time (14s on 2023 Macbook Pro)
+        @kernel
+        def mul(
+          m: Model,
+          d: Data,
+          leveladr: int,
+          res: array3df,
+          vec: array3df,
+          skip: wp.array(ndim=1, dtype=bool),
+        ):
+          worldid, nodeid = wp.tid()
+
+          if skip[worldid]:
+            return
+
+          dofid = m.qLD_tile[leveladr + nodeid]
+          qM_tile = wp.tile_load(
+            d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
+          )
+          vec_tile = wp.tile_load(vec[worldid], shape=(tilesize, 1), offset=(dofid, 0))
+          res_tile = wp.tile_zeros(shape=(tilesize, 1), dtype=wp.float32)
+          wp.tile_matmul(qM_tile, vec_tile, res_tile)
+          wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
+
+        wp.launch_tiled(
+          mul,
+          dim=(d.nworld, size),
+          inputs=[
+            m,
+            d,
+            adr,
+            res.reshape(res.shape + (1,)),
+            vec.reshape(vec.shape + (1,)),
+            skip,
+          ],
+          # TODO(team): develop heuristic for block dim, or make configurable
+          block_dim=32,
+        )
+
+      qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
+
+      for i in range(len(qLD_tileadr)):
+        beg = qLD_tileadr[i]
+        end = m.qLD_tile.shape[0] if i == len(qLD_tileadr) - 1 else qLD_tileadr[i + 1]
+        tile_mul(beg, end - beg, int(qLD_tilesize[i]))
+
+    else:
+
       @kernel
-      def mul(
+      def _mul_m_sparse_diag(
         m: Model,
         d: Data,
-        leveladr: int,
-        res: array3df,
-        vec: array3df,
+        res: wp.array(ndim=2, dtype=wp.float32),
+        vec: wp.array(ndim=2, dtype=wp.float32),
         skip: wp.array(ndim=1, dtype=bool),
       ):
-        worldid, nodeid = wp.tid()
+        worldid, dofid = wp.tid()
 
         if skip[worldid]:
           return
 
-        dofid = m.qLD_tile[leveladr + nodeid]
-        qM_tile = wp.tile_load(
-          d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
-        )
-        vec_tile = wp.tile_load(vec[worldid], shape=(tilesize, 1), offset=(dofid, 0))
-        res_tile = wp.tile_zeros(shape=(tilesize, 1), dtype=wp.float32)
-        wp.tile_matmul(qM_tile, vec_tile, res_tile)
-        wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
+        res[worldid, dofid] = d.qM[worldid, 0, m.dof_Madr[dofid]] * vec[worldid, dofid]
 
-      wp.launch_tiled(
-        mul,
-        dim=(d.nworld, size),
-        inputs=[
-          m,
-          d,
-          adr,
-          res.reshape(res.shape + (1,)),
-          vec.reshape(vec.shape + (1,)),
-          skip,
-        ],
-        # TODO(team): develop heuristic for block dim, or make configurable
-        block_dim=32,
+      @kernel
+      def _mul_m_sparse_ij(
+        m: Model,
+        d: Data,
+        res: wp.array(ndim=2, dtype=wp.float32),
+        vec: wp.array(ndim=2, dtype=wp.float32),
+        skip: wp.array(ndim=1, dtype=bool),
+      ):
+        worldid, elementid = wp.tid()
+
+        if skip[worldid]:
+          return
+
+        i = m.qM_mulm_i[elementid]
+        j = m.qM_mulm_j[elementid]
+        madr_ij = m.qM_madr_ij[elementid]
+
+        qM = d.qM[worldid, 0, madr_ij]
+
+        wp.atomic_add(res[worldid], i, qM * vec[worldid, j])
+        wp.atomic_add(res[worldid], j, qM * vec[worldid, i])
+
+      wp.launch(_mul_m_sparse_diag, dim=(d.nworld, m.nv), inputs=[m, d, res, vec, skip])
+
+      wp.launch(
+        _mul_m_sparse_ij,
+        dim=(d.nworld, m.qM_madr_ij.size),
+        inputs=[m, d, res, vec, skip],
       )
-
-    qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
-
-    for i in range(len(qLD_tileadr)):
-      beg = qLD_tileadr[i]
-      end = m.qLD_tile.shape[0] if i == len(qLD_tileadr) - 1 else qLD_tileadr[i + 1]
-      tile_mul(beg, end - beg, int(qLD_tilesize[i]))
-
-  else:
-
-    @kernel
-    def _mul_m_sparse_diag(
-      m: Model,
-      d: Data,
-      res: wp.array(ndim=2, dtype=wp.float32),
-      vec: wp.array(ndim=2, dtype=wp.float32),
-      skip: wp.array(ndim=1, dtype=bool),
-    ):
-      worldid, dofid = wp.tid()
-
-      if skip[worldid]:
-        return
-
-      res[worldid, dofid] = d.qM[worldid, 0, m.dof_Madr[dofid]] * vec[worldid, dofid]
-
-    @kernel
-    def _mul_m_sparse_ij(
-      m: Model,
-      d: Data,
-      res: wp.array(ndim=2, dtype=wp.float32),
-      vec: wp.array(ndim=2, dtype=wp.float32),
-      skip: wp.array(ndim=1, dtype=bool),
-    ):
-      worldid, elementid = wp.tid()
-
-      if skip[worldid]:
-        return
-
-      i = m.qM_mulm_i[elementid]
-      j = m.qM_mulm_j[elementid]
-      madr_ij = m.qM_madr_ij[elementid]
-
-      qM = d.qM[worldid, 0, madr_ij]
-
-      wp.atomic_add(res[worldid], i, qM * vec[worldid, j])
-      wp.atomic_add(res[worldid], j, qM * vec[worldid, i])
-
-    wp.launch(_mul_m_sparse_diag, dim=(d.nworld, m.nv), inputs=[m, d, res, vec, skip])
-
-    wp.launch(
-      _mul_m_sparse_ij,
-      dim=(d.nworld, m.qM_madr_ij.size),
-      inputs=[m, d, res, vec, skip],
-    )
 
 
 @event_scope
