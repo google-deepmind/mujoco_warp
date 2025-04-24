@@ -158,196 +158,200 @@ def kinematics(m: Model, d: Data):
 def com_pos(m: Model, d: Data):
   """Map inertias and motion dofs to global frame centered at subtree-CoM."""
 
-  @kernel
-  def subtree_com_init(m: Model, d: Data):
-    worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[bodyid]
+  with wp.ScopedDevice(m.qpos0.device):
 
-  @kernel
-  def subtree_com_acc(m: Model, d: Data, leveladr: int):
-    worldid, nodeid = wp.tid()
-    bodyid = m.body_tree[leveladr + nodeid]
-    pid = m.body_parentid[bodyid]
-    wp.atomic_add(d.subtree_com, worldid, pid, d.subtree_com[worldid, bodyid])
+    @kernel
+    def subtree_com_init(m: Model, d: Data):
+      worldid, bodyid = wp.tid()
+      d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[bodyid]
 
-  @kernel
-  def subtree_div(m: Model, d: Data):
-    worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] /= m.subtree_mass[bodyid]
+    @kernel
+    def subtree_com_acc(m: Model, d: Data, leveladr: int):
+      worldid, nodeid = wp.tid()
+      bodyid = m.body_tree[leveladr + nodeid]
+      pid = m.body_parentid[bodyid]
+      wp.atomic_add(d.subtree_com, worldid, pid, d.subtree_com[worldid, bodyid])
 
-  @kernel
-  def cinert(m: Model, d: Data):
-    worldid, bodyid = wp.tid()
-    mat = d.ximat[worldid, bodyid]
-    inert = m.body_inertia[bodyid]
-    mass = m.body_mass[bodyid]
-    dif = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
-    # express inertia in com-based frame (mju_inertCom)
+    @kernel
+    def subtree_div(m: Model, d: Data):
+      worldid, bodyid = wp.tid()
+      d.subtree_com[worldid, bodyid] /= m.subtree_mass[bodyid]
 
-    res = vec10()
-    # res_rot = mat * diag(inert) * mat'
-    tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
-    res[0] = tmp[0, 0]
-    res[1] = tmp[1, 1]
-    res[2] = tmp[2, 2]
-    res[3] = tmp[0, 1]
-    res[4] = tmp[0, 2]
-    res[5] = tmp[1, 2]
-    # res_rot -= mass * dif_cross * dif_cross
-    res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
-    res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
-    res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1])
-    res[3] -= mass * dif[0] * dif[1]
-    res[4] -= mass * dif[0] * dif[2]
-    res[5] -= mass * dif[1] * dif[2]
-    # res_tran = mass * dif
-    res[6] = mass * dif[0]
-    res[7] = mass * dif[1]
-    res[8] = mass * dif[2]
-    # res_mass = mass
-    res[9] = mass
+    @kernel
+    def cinert(m: Model, d: Data):
+      worldid, bodyid = wp.tid()
+      mat = d.ximat[worldid, bodyid]
+      inert = m.body_inertia[bodyid]
+      mass = m.body_mass[bodyid]
+      dif = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
+      # express inertia in com-based frame (mju_inertCom)
 
-    d.cinert[worldid, bodyid] = res
+      res = vec10()
+      # res_rot = mat * diag(inert) * mat'
+      tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
+      res[0] = tmp[0, 0]
+      res[1] = tmp[1, 1]
+      res[2] = tmp[2, 2]
+      res[3] = tmp[0, 1]
+      res[4] = tmp[0, 2]
+      res[5] = tmp[1, 2]
+      # res_rot -= mass * dif_cross * dif_cross
+      res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
+      res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
+      res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1])
+      res[3] -= mass * dif[0] * dif[1]
+      res[4] -= mass * dif[0] * dif[2]
+      res[5] -= mass * dif[1] * dif[2]
+      # res_tran = mass * dif
+      res[6] = mass * dif[0]
+      res[7] = mass * dif[1]
+      res[8] = mass * dif[2]
+      # res_mass = mass
+      res[9] = mass
 
-  @kernel
-  def cdof(m: Model, d: Data):
-    worldid, jntid = wp.tid()
-    bodyid = m.jnt_bodyid[jntid]
-    dofid = m.jnt_dofadr[jntid]
-    jnt_type = m.jnt_type[jntid]
-    xaxis = d.xaxis[worldid, jntid]
-    xmat = wp.transpose(d.xmat[worldid, bodyid])
+      d.cinert[worldid, bodyid] = res
 
-    # compute com-anchor vector
-    offset = d.subtree_com[worldid, m.body_rootid[bodyid]] - d.xanchor[worldid, jntid]
+    @kernel
+    def cdof(m: Model, d: Data):
+      worldid, jntid = wp.tid()
+      bodyid = m.jnt_bodyid[jntid]
+      dofid = m.jnt_dofadr[jntid]
+      jnt_type = m.jnt_type[jntid]
+      xaxis = d.xaxis[worldid, jntid]
+      xmat = wp.transpose(d.xmat[worldid, bodyid])
 
-    res = d.cdof[worldid]
-    if jnt_type == wp.static(JointType.FREE.value):
-      res[dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
-      res[dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-      res[dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-      # I_3 rotation in child frame (assume no subsequent rotations)
-      res[dofid + 3] = wp.spatial_vector(xmat[0], wp.cross(xmat[0], offset))
-      res[dofid + 4] = wp.spatial_vector(xmat[1], wp.cross(xmat[1], offset))
-      res[dofid + 5] = wp.spatial_vector(xmat[2], wp.cross(xmat[2], offset))
-    elif jnt_type == wp.static(JointType.BALL.value):  # ball
-      # I_3 rotation in child frame (assume no subsequent rotations)
-      res[dofid + 0] = wp.spatial_vector(xmat[0], wp.cross(xmat[0], offset))
-      res[dofid + 1] = wp.spatial_vector(xmat[1], wp.cross(xmat[1], offset))
-      res[dofid + 2] = wp.spatial_vector(xmat[2], wp.cross(xmat[2], offset))
-    elif jnt_type == wp.static(JointType.SLIDE.value):
-      res[dofid] = wp.spatial_vector(wp.vec3(0.0), xaxis)
-    elif jnt_type == wp.static(JointType.HINGE.value):  # hinge
-      res[dofid] = wp.spatial_vector(xaxis, wp.cross(xaxis, offset))
+      # compute com-anchor vector
+      offset = d.subtree_com[worldid, m.body_rootid[bodyid]] - d.xanchor[worldid, jntid]
 
-  wp.launch(subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m, d])
+      res = d.cdof[worldid]
+      if jnt_type == wp.static(JointType.FREE.value):
+        res[dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        res[dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+        res[dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        # I_3 rotation in child frame (assume no subsequent rotations)
+        res[dofid + 3] = wp.spatial_vector(xmat[0], wp.cross(xmat[0], offset))
+        res[dofid + 4] = wp.spatial_vector(xmat[1], wp.cross(xmat[1], offset))
+        res[dofid + 5] = wp.spatial_vector(xmat[2], wp.cross(xmat[2], offset))
+      elif jnt_type == wp.static(JointType.BALL.value):  # ball
+        # I_3 rotation in child frame (assume no subsequent rotations)
+        res[dofid + 0] = wp.spatial_vector(xmat[0], wp.cross(xmat[0], offset))
+        res[dofid + 1] = wp.spatial_vector(xmat[1], wp.cross(xmat[1], offset))
+        res[dofid + 2] = wp.spatial_vector(xmat[2], wp.cross(xmat[2], offset))
+      elif jnt_type == wp.static(JointType.SLIDE.value):
+        res[dofid] = wp.spatial_vector(wp.vec3(0.0), xaxis)
+      elif jnt_type == wp.static(JointType.HINGE.value):  # hinge
+        res[dofid] = wp.spatial_vector(xaxis, wp.cross(xaxis, offset))
 
-  body_treeadr = m.body_treeadr.numpy()
+    wp.launch(subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m, d])
 
-  for i in reversed(range(len(body_treeadr))):
-    beg = body_treeadr[i]
-    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(subtree_com_acc, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+    body_treeadr = m.body_treeadr.numpy()
 
-  wp.launch(subtree_div, dim=(d.nworld, m.nbody), inputs=[m, d])
-  wp.launch(cinert, dim=(d.nworld, m.nbody), inputs=[m, d])
-  wp.launch(cdof, dim=(d.nworld, m.njnt), inputs=[m, d])
+    for i in reversed(range(len(body_treeadr))):
+      beg = body_treeadr[i]
+      end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+      wp.launch(subtree_com_acc, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+
+    wp.launch(subtree_div, dim=(d.nworld, m.nbody), inputs=[m, d])
+    wp.launch(cinert, dim=(d.nworld, m.nbody), inputs=[m, d])
+    wp.launch(cdof, dim=(d.nworld, m.njnt), inputs=[m, d])
 
 
 @event_scope
 def camlight(m: Model, d: Data):
   """Computes camera and light positions and orientations."""
 
-  @kernel
-  def cam_local_to_global(m: Model, d: Data):
-    """Fixed cameras."""
-    worldid, camid = wp.tid()
-    bodyid = m.cam_bodyid[camid]
-    xpos = d.xpos[worldid, bodyid]
-    xquat = d.xquat[worldid, bodyid]
-    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[camid], xquat)
-    d.cam_xmat[worldid, camid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.cam_quat[camid])
-    )
+  with wp.ScopedDevice(m.qpos0.device):
 
-  @kernel
-  def cam_fn(m: Model, d: Data):
-    worldid, camid = wp.tid()
-    is_target_cam = (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)) or (
-      m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value)
-    )
-    invalid_target = is_target_cam and (m.cam_targetbodyid[camid] < 0)
-    if invalid_target:
-      return
-    elif m.cam_mode[camid] == wp.static(CamLightType.TRACK.value):
-      body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
-      d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[camid]
-    elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
-      d.cam_xpos[worldid, camid] = (
-        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[camid]
+    @kernel
+    def cam_local_to_global(m: Model, d: Data):
+      """Fixed cameras."""
+      worldid, camid = wp.tid()
+      bodyid = m.cam_bodyid[camid]
+      xpos = d.xpos[worldid, bodyid]
+      xquat = d.xquat[worldid, bodyid]
+      d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[camid], xquat)
+      d.cam_xmat[worldid, camid] = math.quat_to_mat(
+        math.mul_quat(xquat, m.cam_quat[camid])
       )
-    elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
-      camid
-    ] == wp.static(CamLightType.TARGETBODYCOM.value):
-      pos = d.xpos[worldid, m.cam_targetbodyid[camid]]
-      if m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value):
-        pos = d.subtree_com[worldid, m.cam_targetbodyid[camid]]
-      # zaxis = -desired camera direction, in global frame
-      mat_3 = wp.normalize(d.cam_xpos[worldid, camid] - pos)
-      # xaxis: orthogonal to zaxis and to (0,0,1)
-      mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
-      mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
-      # fmt: off
-      d.cam_xmat[worldid, camid] = wp.mat33(
-        mat_1[0], mat_2[0], mat_3[0],
-        mat_1[1], mat_2[1], mat_3[1],
-        mat_1[2], mat_2[2], mat_3[2]
+
+    @kernel
+    def cam_fn(m: Model, d: Data):
+      worldid, camid = wp.tid()
+      is_target_cam = (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)) or (
+        m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value)
       )
-      # fmt: on
+      invalid_target = is_target_cam and (m.cam_targetbodyid[camid] < 0)
+      if invalid_target:
+        return
+      elif m.cam_mode[camid] == wp.static(CamLightType.TRACK.value):
+        body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
+        d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[camid]
+      elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
+        d.cam_xpos[worldid, camid] = (
+          d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[camid]
+        )
+      elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
+        camid
+      ] == wp.static(CamLightType.TARGETBODYCOM.value):
+        pos = d.xpos[worldid, m.cam_targetbodyid[camid]]
+        if m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value):
+          pos = d.subtree_com[worldid, m.cam_targetbodyid[camid]]
+        # zaxis = -desired camera direction, in global frame
+        mat_3 = wp.normalize(d.cam_xpos[worldid, camid] - pos)
+        # xaxis: orthogonal to zaxis and to (0,0,1)
+        mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
+        mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+        # fmt: off
+        d.cam_xmat[worldid, camid] = wp.mat33(
+          mat_1[0], mat_2[0], mat_3[0],
+          mat_1[1], mat_2[1], mat_3[1],
+          mat_1[2], mat_2[2], mat_3[2]
+        )
+        # fmt: on
 
-  @kernel
-  def light_local_to_global(m: Model, d: Data):
-    """Fixed lights."""
-    worldid, lightid = wp.tid()
-    bodyid = m.light_bodyid[lightid]
-    xpos = d.xpos[worldid, bodyid]
-    xquat = d.xquat[worldid, bodyid]
-    d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
-      m.light_pos[lightid], xquat
-    )
-    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
-
-  @kernel
-  def light_fn(m: Model, d: Data):
-    worldid, lightid = wp.tid()
-    is_target_light = (
-      m.light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value)
-    ) or (m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value))
-    invalid_target = is_target_light and (m.light_targetbodyid[lightid] < 0)
-    if invalid_target:
-      return
-    elif m.light_mode[lightid] == wp.static(CamLightType.TRACK.value):
-      body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
-      d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[lightid]
-    elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
-      d.light_xpos[worldid, lightid] = (
-        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[lightid]
+    @kernel
+    def light_local_to_global(m: Model, d: Data):
+      """Fixed lights."""
+      worldid, lightid = wp.tid()
+      bodyid = m.light_bodyid[lightid]
+      xpos = d.xpos[worldid, bodyid]
+      xquat = d.xquat[worldid, bodyid]
+      d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
+        m.light_pos[lightid], xquat
       )
-    elif m.light_mode[lightid] == wp.static(
-      CamLightType.TARGETBODY.value
-    ) or m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
-      pos = d.xpos[worldid, m.light_targetbodyid[lightid]]
-      if m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
-        pos = d.subtree_com[worldid, m.light_targetbodyid[lightid]]
-      d.light_xdir[worldid, lightid] = pos - d.light_xpos[worldid, lightid]
-    d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
+      d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
 
-  if m.ncam > 0:
-    wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
-    wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
-  if m.nlight > 0:
-    wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
-    wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
+    @kernel
+    def light_fn(m: Model, d: Data):
+      worldid, lightid = wp.tid()
+      is_target_light = (
+        m.light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value)
+      ) or (m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value))
+      invalid_target = is_target_light and (m.light_targetbodyid[lightid] < 0)
+      if invalid_target:
+        return
+      elif m.light_mode[lightid] == wp.static(CamLightType.TRACK.value):
+        body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
+        d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[lightid]
+      elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
+        d.light_xpos[worldid, lightid] = (
+          d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[lightid]
+        )
+      elif m.light_mode[lightid] == wp.static(
+        CamLightType.TARGETBODY.value
+      ) or m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
+        pos = d.xpos[worldid, m.light_targetbodyid[lightid]]
+        if m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
+          pos = d.subtree_com[worldid, m.light_targetbodyid[lightid]]
+        d.light_xdir[worldid, lightid] = pos - d.light_xpos[worldid, lightid]
+      d.light_xdir[worldid, lightid] = wp.normalize(d.light_xdir[worldid, lightid])
+
+    if m.ncam > 0:
+      wp.launch(cam_local_to_global, dim=(d.nworld, m.ncam), inputs=[m, d])
+      wp.launch(cam_fn, dim=(d.nworld, m.ncam), inputs=[m, d])
+    if m.nlight > 0:
+      wp.launch(light_local_to_global, dim=(d.nworld, m.nlight), inputs=[m, d])
+      wp.launch(light_fn, dim=(d.nworld, m.nlight), inputs=[m, d])
 
 
 @event_scope
