@@ -113,9 +113,8 @@ def benchmark(
   measure_alloc: bool = False,
 ) -> Tuple[float, float, dict, list, list]:
   """Benchmark a function of Model and Data."""
-  
-  with wp.ScopedDevice(m.qpos0.device):
 
+  with wp.ScopedDevice(m.qpos0.device):
     jit_beg = time.perf_counter()
 
     fn(m, d)

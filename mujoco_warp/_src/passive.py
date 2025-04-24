@@ -29,7 +29,6 @@ def passive(m: Model, d: Data):
   """Adds all passive forces."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     if m.opt.disableflags & DisableBit.PASSIVE:
       d.qfrc_passive.zero_()
       # TODO(team): qfrc_gravcomp

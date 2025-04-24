@@ -187,7 +187,6 @@ def euler(m: Model, d: Data):
   """Euler integrator, semi-implicit in velocity."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     # integrate damping implicitly
 
     def eulerdamp_sparse(m: Model, d: Data):
@@ -243,7 +242,10 @@ def euler(m: Model, d: Data):
           wp.tile_store(d.qacc_integration[worldid], qacc_tile, offset=(dofid))
 
         wp.launch_tiled(
-          eulerdamp, dim=(d.nworld, size), inputs=[m, d, m.dof_damping, adr], block_dim=32
+          eulerdamp,
+          dim=(d.nworld, size),
+          inputs=[m, d, m.dof_damping, adr],
+          block_dim=32,
         )
 
       qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
@@ -264,13 +266,11 @@ def euler(m: Model, d: Data):
       _advance(m, d, d.qacc)
 
 
-
 @event_scope
 def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     kernel_copy(d.qpos_t0, d.qpos)
     kernel_copy(d.qvel_t0, d.qvel)
     if m.na:
@@ -345,7 +345,6 @@ def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     # optimization comments (AD)
     # I went from small kernels for every step to a relatively big single
     # kernel using tile API because it kept improving performance -
@@ -448,7 +447,9 @@ def implicit(m: Model, d: Data):
 
           # add to qM
           qM_tile = wp.tile_load(
-            d.qM[worldid], shape=(tilesize_nv, tilesize_nv), offset=(offset_nv, offset_nv)
+            d.qM[worldid],
+            shape=(tilesize_nv, tilesize_nv),
+            offset=(offset_nv, offset_nv),
           )
           qderiv_tile = wp.tile_map(subtract_multiply, qM_tile, qderiv_tile)
           wp.tile_store(
@@ -510,7 +511,6 @@ def fwd_position(m: Model, d: Data):
   """Position-dependent computations."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     smooth.kinematics(m, d)
     smooth.com_pos(m, d)
     smooth.camlight(m, d)
@@ -527,7 +527,6 @@ def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     if m.opt.is_sparse:
       # TODO(team): sparse version
       NV = m.nv
@@ -541,7 +540,9 @@ def fwd_velocity(m: Model, d: Data):
         actuator_velocity_tile = wp.tile_reduce(wp.add, moment_qvel_tile)
         wp.tile_store(d.actuator_velocity[worldid], actuator_velocity_tile)
 
-      wp.launch_tiled(_actuator_velocity, dim=(d.nworld, m.nu), inputs=[d], block_dim=32)
+      wp.launch_tiled(
+        _actuator_velocity, dim=(d.nworld, m.nu), inputs=[d], block_dim=32
+      )
     else:
 
       def actuator_velocity(
@@ -628,7 +629,6 @@ def fwd_actuation(m: Model, d: Data):
   """Actuation-dependent computations."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     if not m.nu or (m.opt.disableflags & DisableBit.ACTUATION):
       d.act_dot.zero_()
       d.qfrc_actuator.zero_()
@@ -827,7 +827,6 @@ def forward(m: Model, d: Data):
   """Forward dynamics."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     fwd_position(m, d)
     sensor.sensor_pos(m, d)
     fwd_velocity(m, d)
@@ -847,7 +846,6 @@ def step(m: Model, d: Data):
   """Advance simulation."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     forward(m, d)
 
     if m.opt.integrator == mujoco.mjtIntegrator.mjINT_EULER:

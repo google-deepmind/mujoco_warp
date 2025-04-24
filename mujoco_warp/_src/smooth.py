@@ -279,9 +279,9 @@ def camlight(m: Model, d: Data):
     @kernel
     def cam_fn(m: Model, d: Data):
       worldid, camid = wp.tid()
-      is_target_cam = (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)) or (
-        m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value)
-      )
+      is_target_cam = (
+        m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value)
+      ) or (m.cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value))
       invalid_target = is_target_cam and (m.cam_targetbodyid[camid] < 0)
       if invalid_target:
         return
@@ -361,7 +361,6 @@ def crb(m: Model, d: Data):
   """Composite rigid body inertia algorithm."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     kernel_copy(d.crb, d.cinert)
 
     @kernel
@@ -657,7 +656,6 @@ def rne_postconstraint(m: Model, d: Data):
   """RNE with complete data: compute cacc, cfrc_ext, cfrc_int."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     # cfrc_ext = perturb
     @kernel
     def _cfrc_ext(m: Model, d: Data):
@@ -734,7 +732,9 @@ def rne_postconstraint(m: Model, d: Data):
         newpos = d.subtree_com[worldid, m.body_rootid[bodyid1]]
 
         dif = newpos - pos
-        cfrc_com = wp.spatial_vector(cfrc_torque - wp.cross(dif, cfrc_force), cfrc_force)
+        cfrc_com = wp.spatial_vector(
+          cfrc_torque - wp.cross(dif, cfrc_force), cfrc_force
+        )
 
         # apply (opposite for body 1)
         wp.atomic_add(d.cfrc_ext[worldid], bodyid1, cfrc_com)
@@ -756,7 +756,9 @@ def rne_postconstraint(m: Model, d: Data):
         newpos = d.subtree_com[worldid, m.body_rootid[bodyid2]]
 
         dif = newpos - pos
-        cfrc_com = wp.spatial_vector(cfrc_torque - wp.cross(dif, cfrc_force), cfrc_force)
+        cfrc_com = wp.spatial_vector(
+          cfrc_torque - wp.cross(dif, cfrc_force), cfrc_force
+        )
 
         # apply
         wp.atomic_sub(d.cfrc_ext[worldid], bodyid2, cfrc_com)
@@ -815,7 +817,6 @@ def transmission(m: Model, d: Data):
   """Computes actuator/transmission lengths and moments."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     if not m.nu:
       return d
 
@@ -1114,7 +1115,6 @@ def subtree_vel(m: Model, d: Data):
   """Subtree linear velocity and angular momentum."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     # bodywise quantities
     @kernel
     def _forward(m: Model, d: Data):
@@ -1205,7 +1205,6 @@ def tendon(m: Model, d: Data):
   """Computes tendon lengths and moments."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     if not m.ntendon:
       return
 
@@ -1292,7 +1291,9 @@ def tendon(m: Model, d: Data):
               if J:
                 wp.atomic_add(d.ten_J[worldid, ten_adr], i, J)
 
-      wp.launch(_spatial_site_tendon, dim=(d.nworld, m.wrap_site_adr.size), inputs=[m, d])
+      wp.launch(
+        _spatial_site_tendon, dim=(d.nworld, m.wrap_site_adr.size), inputs=[m, d]
+      )
 
       @kernel
       def _spatial_tendon(m: Model, d: Data):

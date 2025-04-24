@@ -168,7 +168,6 @@ def sap_broadphase(m: Model, d: Data):
   """Broadphase collision detection via sweep-and-prune."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     nworldgeom = d.nworld * m.ngeom
 
     # TODO(team): direction
@@ -232,7 +231,9 @@ def nxn_broadphase(m: Model, d: Data):
         _add_geom_pair(m, d, geom1, geom2, worldid, elementid)
 
     if m.nxn_geom_pair.shape[0]:
-      wp.launch(_nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d])
+      wp.launch(
+        _nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d]
+      )
 
 
 @event_scope
@@ -240,7 +241,6 @@ def collision(m: Model, d: Data):
   """Collision detection."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     d.ncollision.zero_()
     d.ncon.zero_()
 

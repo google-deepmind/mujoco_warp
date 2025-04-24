@@ -308,11 +308,7 @@ class IOTest(absltest.TestCase):
 
     missing_scoped_device = []
     # List of functions to exclude from the check
-    excluded_functions = {
-        "geom_pair",
-        "get_data_into",
-        "is_sparse"
-    }
+    excluded_functions = {"geom_pair", "get_data_into", "is_sparse"}
 
     for func in mjwarp_funcs:
       # Skip excluded functions
@@ -329,46 +325,50 @@ class IOTest(absltest.TestCase):
 
         # Skip decorators
         while line_index < len(lines) and lines[line_index].strip().startswith("@"):
-            line_index += 1
-        
+          line_index += 1
+
         # Skip the function definition line itself (might span multiple lines)
         while line_index < len(lines) and lines[line_index].strip().startswith("def "):
+          line_index += 1
+          # Handle potential multi-line defs until the line ends with ":"
+          while line_index < len(lines) and not lines[line_index - 1].strip().endswith(
+            ":"
+          ):
             line_index += 1
-            # Handle potential multi-line defs until the line ends with ":"
-            while line_index < len(lines) and not lines[line_index-1].strip().endswith(':'):
-                 line_index += 1
 
         in_docstring = False
         first_code_line = None
         while line_index < len(lines):
-            line = lines[line_index].strip()
+          line = lines[line_index].strip()
 
-            # Handle docstrings
-            if line.startswith('"""') or line.startswith("'''"):
-                quote_type = line[:3]
-                # Started or ended docstring
-                in_docstring = not in_docstring
-                # If it starts and ends on the same line, reset state
-                if in_docstring and len(line) > 3 and line.endswith(quote_type):
-                    in_docstring = False
-                # If it just ended, continue to next line
-                elif not in_docstring:
-                    line_index += 1
-                    continue
+          # Handle docstrings
+          if line.startswith('"""') or line.startswith("'''"):
+            quote_type = line[:3]
+            # Started or ended docstring
+            in_docstring = not in_docstring
+            # If it starts and ends on the same line, reset state
+            if in_docstring and len(line) > 3 and line.endswith(quote_type):
+              in_docstring = False
+            # If it just ended, continue to next line
+            elif not in_docstring:
+              line_index += 1
+              continue
 
-            elif not in_docstring and line and not line.startswith("#"):
-                # Found the first non-comment, non-docstring, non-decorator line
-                first_code_line = line
-                break
-            
-            # If in_docstring is True, or line is empty/comment, continue
-            line_index += 1
+          elif not in_docstring and line and not line.startswith("#"):
+            # Found the first non-comment, non-docstring, non-decorator line
+            first_code_line = line
+            break
+
+          # If in_docstring is True, or line is empty/comment, continue
+          line_index += 1
 
         # Strip leading whitespace from the found line before checking
         if first_code_line is not None:
-            first_code_line = first_code_line.lstrip()
+          first_code_line = first_code_line.lstrip()
 
-        if first_code_line is None or not first_code_line.startswith("with wp.ScopedDevice"):
+        if first_code_line is None or not first_code_line.startswith(
+          "with wp.ScopedDevice"
+        ):
           missing_scoped_device.append(func.__name__)
       except (TypeError, OSError) as e:
         # Built-in functions or dynamically generated ones might not have source
@@ -377,7 +377,7 @@ class IOTest(absltest.TestCase):
 
     self.assertEmpty(
       missing_scoped_device,
-      f"Functions missing 'with wp.ScopedDevice': {', '.join(missing_scoped_device)}"
+      f"Functions missing 'with wp.ScopedDevice': {', '.join(missing_scoped_device)}",
     )
 
 

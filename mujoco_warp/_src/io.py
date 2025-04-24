@@ -70,10 +70,10 @@ def geom_pair(m: mujoco.MjModel) -> Tuple[np.array, np.array]:
   return np.array(geompairs), np.array(pairids)
 
 
-def put_model(mjm: mujoco.MjModel, device: Optional[wp.context.Device] = None) -> types.Model:
-
+def put_model(
+  mjm: mujoco.MjModel, device: Optional[wp.context.Device] = None
+) -> types.Model:
   with wp.ScopedDevice(device):
-
     # check supported features
     for field, field_types, field_str in (
       (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -678,11 +678,13 @@ def _constraint(
 
 
 def make_data(
-  mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1, device: Optional[wp.context.Device] = None
+  mjm: mujoco.MjModel,
+  nworld: int = 1,
+  nconmax: int = -1,
+  njmax: int = -1,
+  device: Optional[wp.context.Device] = None,
 ) -> types.Data:
-  
   with wp.ScopedDevice(device):
-
     d = types.Data()
     d.nworld = nworld
 
@@ -836,11 +838,9 @@ def put_data(
   nworld: Optional[int] = None,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
-  device: Optional[wp.context.Device] = None
+  device: Optional[wp.context.Device] = None,
 ) -> types.Data:
-  
   with wp.ScopedDevice(device):
-
     d = types.Data()
 
     # TODO(team): confirm that Data is set correctly for solver with elliptic friction cones
@@ -952,7 +952,9 @@ def put_data(
     d.qLDiagInv = wp.array(tile(mjd.qLDiagInv), dtype=wp.float32, ndim=2)
     d.ctrl = wp.array(tile(mjd.ctrl), dtype=wp.float32, ndim=2)
     d.ten_velocity = wp.array(tile(mjd.ten_velocity), dtype=wp.float32, ndim=2)
-    d.actuator_velocity = wp.array(tile(mjd.actuator_velocity), dtype=wp.float32, ndim=2)
+    d.actuator_velocity = wp.array(
+      tile(mjd.actuator_velocity), dtype=wp.float32, ndim=2
+    )
     d.actuator_force = wp.array(tile(mjd.actuator_force), dtype=wp.float32, ndim=2)
     d.actuator_length = wp.array(tile(mjd.actuator_length), dtype=wp.float32, ndim=2)
     d.actuator_moment = wp.array(tile(actuator_moment), dtype=wp.float32, ndim=3)
@@ -1012,7 +1014,9 @@ def put_data(
       for j in range(ncon):
         condim = mjd.contact.dim[j]
         for k in range(condim):
-          con_efc_address[i * ncon + j, k] = mjd.nefc * i + mjd.contact.efc_address[j] + k
+          con_efc_address[i * ncon + j, k] = (
+            mjd.nefc * i + mjd.contact.efc_address[j] + k
+          )
 
     con_worldid = np.zeros(nconmax, dtype=int)
     for i in range(nworld):
@@ -1050,7 +1054,9 @@ def put_data(
     con_geom_fill = np.vstack(
       [np.repeat(mjd.contact.geom, nworld, axis=0), np.zeros((ncon_fill, 2))]
     )
-    con_efc_address_fill = np.vstack([con_efc_address, np.zeros((ncon_fill, condim_max))])
+    con_efc_address_fill = np.vstack(
+      [con_efc_address, np.zeros((ncon_fill, condim_max))]
+    )
 
     d.contact.dist = wp.array(con_dist_fill, dtype=wp.float32, ndim=1)
     d.contact.pos = wp.array(con_pos_fill, dtype=wp.vec3f, ndim=1)
@@ -1099,7 +1105,9 @@ def put_data(
     d.sap_sort_index = wp.zeros((2 * nworld, mjm.ngeom), dtype=wp.int32)
     d.sap_range = wp.zeros((nworld, mjm.ngeom), dtype=wp.int32)
     d.sap_cumulative_sum = wp.zeros(nworld * mjm.ngeom, dtype=wp.int32)
-    d.sap_segment_index = wp.array([i * mjm.ngeom for i in range(nworld + 1)], dtype=int)
+    d.sap_segment_index = wp.array(
+      [i * mjm.ngeom for i in range(nworld + 1)], dtype=int
+    )
 
     # collision driver
     d.collision_pair = wp.empty(nconmax, dtype=wp.vec2i, ndim=1)

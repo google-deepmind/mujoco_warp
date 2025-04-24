@@ -691,7 +691,6 @@ def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     d.ne.zero_()
     d.ne_connect.zero_()
     d.ne_weld.zero_()

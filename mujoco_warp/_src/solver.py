@@ -1536,7 +1536,6 @@ def solve(m: types.Model, d: types.Data):
   """Finds forces that satisfy constraints."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     ITERATIONS = m.opt.iterations
 
     @kernel
@@ -1631,7 +1630,8 @@ def solve(m: types.Model, d: types.Data):
             return
 
         d.efc.beta[worldid] = wp.max(
-          0.0, d.efc.beta_num[worldid] / wp.max(types.MJ_MINVAL, d.efc.beta_den[worldid])
+          0.0,
+          d.efc.beta_num[worldid] / wp.max(types.MJ_MINVAL, d.efc.beta_den[worldid]),
         )
 
     # warmstart

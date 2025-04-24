@@ -47,7 +47,6 @@ def mul_m(
   """Multiply vector by inertia matrix."""
 
   with wp.ScopedDevice(m.qpos0.device):
-
     if not m.opt.is_sparse:
 
       def tile_mul(adr: int, size: int, tilesize: int):
@@ -147,8 +146,8 @@ def mul_m(
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: array2df):
-
   with wp.ScopedDevice(m.qpos0.device):
+
     @wp.kernel
     def _accumulate(m: Model, d: Data, qfrc: array2df):
       worldid, dofid = wp.tid()
@@ -166,7 +165,9 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: array2df):
           parentid = m.body_parentid[parentid]
         if parentid == 0:
           continue  # body is not part of the subtree
-        offset = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
+        offset = (
+          d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
+        )
         cross_term = wp.cross(rotational_cdof, offset)
         accumul += wp.dot(jac, d.xfrc_applied[worldid, bodyid]) + wp.dot(
           cross_term,
