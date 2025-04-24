@@ -178,97 +178,99 @@ def _sap_broadphase(m: Model, d: Data, nsweep: int, filterparent: bool):
 def sap_broadphase(m: Model, d: Data):
   """Broadphase collision detection via sweep-and-prune."""
 
-  nworldgeom = d.nworld * m.ngeom
+  with wp.ScopedDevice(m.qpos0.device):
+    nworldgeom = d.nworld * m.ngeom
 
-  # TODO(team): direction
+    # TODO(team): direction
 
-  # random fixed direction
-  direction = wp.vec3(0.5935, 0.7790, 0.1235)
-  direction = wp.normalize(direction)
+    # random fixed direction
+    direction = wp.vec3(0.5935, 0.7790, 0.1235)
+    direction = wp.normalize(direction)
 
-  wp.launch(
-    kernel=_sap_project,
-    dim=(d.nworld, m.ngeom),
-    inputs=[m, d, direction],
-  )
+    wp.launch(
+      kernel=_sap_project,
+      dim=(d.nworld, m.ngeom),
+      inputs=[m, d, direction],
+    )
 
-  # TODO(team): tile sort
+    # TODO(team): tile sort
 
-  wp.utils.segmented_sort_pairs(
-    d.sap_projection_lower,
-    d.sap_sort_index,
-    nworldgeom,
-    d.sap_segment_index,
-  )
+    wp.utils.segmented_sort_pairs(
+      d.sap_projection_lower,
+      d.sap_sort_index,
+      nworldgeom,
+      d.sap_segment_index,
+    )
 
-  wp.launch(
-    kernel=_sap_range,
-    dim=(d.nworld, m.ngeom),
-    inputs=[m, d],
-  )
+    wp.launch(
+      kernel=_sap_range,
+      dim=(d.nworld, m.ngeom),
+      inputs=[m, d],
+    )
 
-  # scan is used for load balancing among the threads
-  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
+    # scan is used for load balancing among the threads
+    wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
 
-  # estimate number of overlap checks - assumes each geom has 5 other geoms (batched over all worlds)
-  nsweep = 5 * nworldgeom
-  filterparent = not m.opt.disableflags & DisableBit.FILTERPARENT.value
-  wp.launch(
-    kernel=_sap_broadphase,
-    dim=nsweep,
-    inputs=[m, d, nsweep, filterparent],
-  )
+    # estimate number of overlap checks - assumes each geom has 5 other geoms (batched over all worlds)
+    nsweep = 5 * nworldgeom
+    filterparent = not m.opt.disableflags & DisableBit.FILTERPARENT.value
+    wp.launch(
+      kernel=_sap_broadphase,
+      dim=nsweep,
+      inputs=[m, d, nsweep, filterparent],
+    )
 
 
 def nxn_broadphase(m: Model, d: Data):
   """Broadphase collision detection via brute-force search."""
 
-  @wp.kernel
-  def _nxn_broadphase(m: Model, d: Data):
-    worldid, elementid = wp.tid()
+  with wp.ScopedDevice(m.qpos0.device):
 
-    # check for valid geom pair
-    if m.nxn_pairid[elementid] < -1:
-      return
+    @wp.kernel
+    def _nxn_broadphase(m: Model, d: Data):
+      worldid, elementid = wp.tid()
 
-    geom = m.nxn_geom_pair[elementid]
-    geom1 = geom[0]
-    geom2 = geom[1]
+      # check for valid geom pair
+      if m.nxn_pairid[elementid] < -1:
+        return
 
-    if _sphere_filter(m, d, geom1, geom2, worldid):
-      _add_geom_pair(m, d, geom1, geom2, worldid, elementid)
+      geom = m.nxn_geom_pair[elementid]
+      geom1 = geom[0]
+      geom2 = geom[1]
 
-  if m.nxn_geom_pair.shape[0]:
-    wp.launch(_nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d])
+      if _sphere_filter(m, d, geom1, geom2, worldid):
+        _add_geom_pair(m, d, geom1, geom2, worldid, elementid)
+
+    if m.nxn_geom_pair.shape[0]:
+      wp.launch(
+        _nxn_broadphase, dim=(d.nworld, m.nxn_geom_pair.shape[0]), inputs=[m, d]
+      )
 
 
 @event_scope
 def collision(m: Model, d: Data):
   """Collision detection."""
 
-  # AD: based on engine_collision_driver.py in Eric's warp fork/mjx-collisions-dev
-  # which is further based on the CUDA code here:
-  # https://github.com/btaba/mujoco/blob/warp-collisions/mjx/mujoco/mjx/_src/cuda/engine_collision_driver.cu.cc#L458-L583
+  with wp.ScopedDevice(m.qpos0.device):
+    d.ncollision.zero_()
+    d.ncon.zero_()
 
-  d.ncollision.zero_()
-  d.ncon.zero_()
+    if d.nconmax == 0:
+      return
 
-  if d.nconmax == 0:
-    return
+    dsbl_flgs = m.opt.disableflags
+    if (dsbl_flgs & DisableBit.CONSTRAINT) | (dsbl_flgs & DisableBit.CONTACT):
+      return
 
-  dsbl_flgs = m.opt.disableflags
-  if (dsbl_flgs & DisableBit.CONSTRAINT) | (dsbl_flgs & DisableBit.CONTACT):
-    return
+    # TODO(team): determine ngeom to switch from n^2 to sap
+    if m.ngeom <= 100:
+      nxn_broadphase(m, d)
+    else:
+      sap_broadphase(m, d)
 
-  # TODO(team): determine ngeom to switch from n^2 to sap
-  if m.ngeom <= 100:
-    nxn_broadphase(m, d)
-  else:
-    sap_broadphase(m, d)
-
-  # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
-  #             partitioning because we can move some pressure of the atomics
-  # TODO(team) switch between collision functions and GJK/EPA here
-  gjk_narrowphase(m, d)
-  primitive_narrowphase(m, d)
-  box_box_narrowphase(m, d)
+    # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
+    #             partitioning because we can move some pressure of the atomics
+    # TODO(team) switch between collision functions and GJK/EPA here
+    gjk_narrowphase(m, d)
+    primitive_narrowphase(m, d)
+    box_box_narrowphase(m, d)

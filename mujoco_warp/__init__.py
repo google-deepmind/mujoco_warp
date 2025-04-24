@@ -51,7 +51,6 @@ from ._src.smooth import subtree_vel as subtree_vel
 from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
 from ._src.solver import solve as solve
-from ._src.support import contact_force as contact_force
 from ._src.support import is_sparse as is_sparse
 from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate

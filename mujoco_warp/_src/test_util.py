@@ -116,36 +116,38 @@ def benchmark(
   measure_alloc: bool = False,
 ) -> Tuple[float, float, dict, list, list]:
   """Benchmark a function of Model and Data."""
-  jit_beg = time.perf_counter()
 
-  fn(m, d)
+  with wp.ScopedDevice(m.qpos0.device):
+    jit_beg = time.perf_counter()
 
-  jit_end = time.perf_counter()
-  jit_duration = jit_end - jit_beg
-  wp.synchronize()
+    fn(m, d)
 
-  trace = {}
-  ncon, nefc = [], []
-
-  with warp_util.EventTracer(enabled=event_trace) as tracer:
-    # capture the whole function as a CUDA graph
-    with wp.ScopedCapture() as capture:
-      fn(m, d)
-    graph = capture.graph
-
-    run_beg = time.perf_counter()
-    for _ in range(nstep):
-      wp.capture_launch(graph)
-      if trace:
-        trace = _sum(trace, tracer.trace())
-      else:
-        trace = tracer.trace()
-      if measure_alloc:
-        wp.synchronize()
-        ncon.append(d.ncon.numpy()[0])
-        nefc.append(d.nefc.numpy()[0])
+    jit_end = time.perf_counter()
+    jit_duration = jit_end - jit_beg
     wp.synchronize()
-    run_end = time.perf_counter()
-    run_duration = run_end - run_beg
 
-  return jit_duration, run_duration, trace, ncon, nefc
+    trace = {}
+    ncon, nefc = [], []
+
+    with warp_util.EventTracer(enabled=event_trace) as tracer:
+      # capture the whole function as a CUDA graph
+      with wp.ScopedCapture() as capture:
+        fn(m, d)
+      graph = capture.graph
+
+      run_beg = time.perf_counter()
+      for _ in range(nstep):
+        wp.capture_launch(graph)
+        if trace:
+          trace = _sum(trace, tracer.trace())
+        else:
+          trace = tracer.trace()
+        if measure_alloc:
+          wp.synchronize()
+          ncon.append(d.ncon.numpy()[0])
+          nefc.append(d.nefc.numpy()[0])
+      wp.synchronize()
+      run_end = time.perf_counter()
+      run_duration = run_end - run_beg
+
+    return jit_duration, run_duration, trace, ncon, nefc
