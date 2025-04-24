@@ -550,7 +550,9 @@ def factor_i(m: Model, d: Data, M, L, D=None):
 @event_scope
 def factor_m(m: Model, d: Data):
   """Factorizaton of inertia-like matrix M, assumed spd."""
-  factor_i(m, d, d.qM, d.qLD, d.qLDiagInv)
+
+  with wp.ScopedDevice(m.qpos0.device):
+    factor_i(m, d, d.qM, d.qLD, d.qLDiagInv)
 
 
 def _rne_cacc_world(m: Model, d: Data):
