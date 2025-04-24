@@ -33,7 +33,6 @@ from .types import array3df
 from .types import vec10
 from .warp_util import event_scope
 from .warp_util import kernel
-from .warp_util import kernel_copy
 
 wp.set_module_options({"enable_backward": False})
 
@@ -354,7 +353,7 @@ def camlight(m: Model, d: Data):
 def crb(m: Model, d: Data):
   """Composite rigid body inertia algorithm."""
 
-  kernel_copy(d.crb, d.cinert)
+  wp.copy(d.crb, d.cinert)
 
   @kernel
   def crb_accumulate(m: Model, d: Data, leveladr: int):
@@ -441,7 +440,7 @@ def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: arra
     worldid, dofid = wp.tid()
     D[worldid, dofid] = 1.0 / L[worldid, 0, m.dof_Madr[dofid]]
 
-  kernel_copy(L, M)
+  wp.copy(L, M)
 
   qLD_update_treeadr = m.qLD_update_treeadr.numpy()
 
@@ -979,7 +978,7 @@ def _solve_LD_sparse(
     i, k, Madr_ki = update[0], update[1], update[2]
     wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
 
-  kernel_copy(x, y)
+  wp.copy(x, y)
 
   qLD_update_treeadr = m.qLD_update_treeadr.numpy()
 

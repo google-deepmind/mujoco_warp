@@ -28,7 +28,7 @@ pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
 Then install MJWarp in editable mode for local development:
 
 ```
-pip install -e .
+pip install -e .[dev,cuda]
 ```
 
 Now make sure everything is working:

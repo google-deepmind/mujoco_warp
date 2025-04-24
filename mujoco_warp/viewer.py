@@ -109,7 +109,7 @@ def _main(argv: Sequence[str]) -> None:
         wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
         wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
         wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
-        d.time = mjd.time
+        wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
 
         if _VIEWER_GLOBAL_STATE["running"]:
           wp.capture_launch(graph)
