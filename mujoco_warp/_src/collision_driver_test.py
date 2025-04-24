@@ -225,17 +225,6 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
-    "capsule_box_cap": """
-        <mujoco>
-          <worldbody>
-            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
-            <body pos="0 0 1.5" >
-              <geom type="capsule" size="0.5 0.8"/>
-              <freejoint/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """,
     "capsule_box_edge": """
         <mujoco>
           <worldbody>
@@ -247,7 +236,41 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "capsule_box_corner": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .55 .6" />
+            <body pos="0.55 0.6 0.65" euler="0 0 0" >
+              <geom type="capsule" size="0.4 0.6"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_face_tip": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
+            <body pos="0 0 1.5" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_face_flat": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .7 .9" />
+            <body pos="0.5 0.2 0.0" euler="0 0 0" >
+              <geom type="capsule" size="0.2 0.4"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
+
 
   # Temporarily disabled
   #  "box_mesh": """
