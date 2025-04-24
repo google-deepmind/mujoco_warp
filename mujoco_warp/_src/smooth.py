@@ -358,69 +358,71 @@ def camlight(m: Model, d: Data):
 def crb(m: Model, d: Data):
   """Composite rigid body inertia algorithm."""
 
-  kernel_copy(d.crb, d.cinert)
+  with wp.ScopedDevice(m.qpos0.device):
 
-  @kernel
-  def crb_accumulate(m: Model, d: Data, leveladr: int):
-    worldid, nodeid = wp.tid()
-    bodyid = m.body_tree[leveladr + nodeid]
-    pid = m.body_parentid[bodyid]
-    if pid == 0:
-      return
-    wp.atomic_add(d.crb, worldid, pid, d.crb[worldid, bodyid])
+    kernel_copy(d.crb, d.cinert)
 
-  @kernel
-  def qM_sparse(m: Model, d: Data):
-    worldid, dofid = wp.tid()
-    madr_ij = m.dof_Madr[dofid]
-    bodyid = m.dof_bodyid[dofid]
+    @kernel
+    def crb_accumulate(m: Model, d: Data, leveladr: int):
+      worldid, nodeid = wp.tid()
+      bodyid = m.body_tree[leveladr + nodeid]
+      pid = m.body_parentid[bodyid]
+      if pid == 0:
+        return
+      wp.atomic_add(d.crb, worldid, pid, d.crb[worldid, bodyid])
 
-    # init M(i,i) with armature inertia
-    d.qM[worldid, 0, madr_ij] = m.dof_armature[dofid]
+    @kernel
+    def qM_sparse(m: Model, d: Data):
+      worldid, dofid = wp.tid()
+      madr_ij = m.dof_Madr[dofid]
+      bodyid = m.dof_bodyid[dofid]
 
-    # precompute buf = crb_body_i * cdof_i
-    buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
+      # init M(i,i) with armature inertia
+      d.qM[worldid, 0, madr_ij] = m.dof_armature[dofid]
 
-    # sparse backward pass over ancestors
-    while dofid >= 0:
-      d.qM[worldid, 0, madr_ij] += wp.dot(d.cdof[worldid, dofid], buf)
-      madr_ij += 1
+      # precompute buf = crb_body_i * cdof_i
+      buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
+
+      # sparse backward pass over ancestors
+      while dofid >= 0:
+        d.qM[worldid, 0, madr_ij] += wp.dot(d.cdof[worldid, dofid], buf)
+        madr_ij += 1
+        dofid = m.dof_parentid[dofid]
+
+    @kernel
+    def qM_dense(m: Model, d: Data):
+      worldid, dofid = wp.tid()
+      bodyid = m.dof_bodyid[dofid]
+
+      # init M(i,i) with armature inertia
+      M = m.dof_armature[dofid]
+
+      # precompute buf = crb_body_i * cdof_i
+      buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
+      M += wp.dot(d.cdof[worldid, dofid], buf)
+
+      d.qM[worldid, dofid, dofid] = M
+
+      # sparse backward pass over ancestors
+      dofidi = dofid
       dofid = m.dof_parentid[dofid]
+      while dofid >= 0:
+        qMij = wp.dot(d.cdof[worldid, dofid], buf)
+        d.qM[worldid, dofidi, dofid] += qMij
+        d.qM[worldid, dofid, dofidi] += qMij
+        dofid = m.dof_parentid[dofid]
 
-  @kernel
-  def qM_dense(m: Model, d: Data):
-    worldid, dofid = wp.tid()
-    bodyid = m.dof_bodyid[dofid]
+    body_treeadr = m.body_treeadr.numpy()
+    for i in reversed(range(len(body_treeadr))):
+      beg = body_treeadr[i]
+      end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
+      wp.launch(crb_accumulate, dim=(d.nworld, end - beg), inputs=[m, d, beg])
 
-    # init M(i,i) with armature inertia
-    M = m.dof_armature[dofid]
-
-    # precompute buf = crb_body_i * cdof_i
-    buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
-    M += wp.dot(d.cdof[worldid, dofid], buf)
-
-    d.qM[worldid, dofid, dofid] = M
-
-    # sparse backward pass over ancestors
-    dofidi = dofid
-    dofid = m.dof_parentid[dofid]
-    while dofid >= 0:
-      qMij = wp.dot(d.cdof[worldid, dofid], buf)
-      d.qM[worldid, dofidi, dofid] += qMij
-      d.qM[worldid, dofid, dofidi] += qMij
-      dofid = m.dof_parentid[dofid]
-
-  body_treeadr = m.body_treeadr.numpy()
-  for i in reversed(range(len(body_treeadr))):
-    beg = body_treeadr[i]
-    end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
-    wp.launch(crb_accumulate, dim=(d.nworld, end - beg), inputs=[m, d, beg])
-
-  d.qM.zero_()
-  if m.opt.is_sparse:
-    wp.launch(qM_sparse, dim=(d.nworld, m.nv), inputs=[m, d])
-  else:
-    wp.launch(qM_dense, dim=(d.nworld, m.nv), inputs=[m, d])
+    d.qM.zero_()
+    if m.opt.is_sparse:
+      wp.launch(qM_sparse, dim=(d.nworld, m.nv), inputs=[m, d])
+    else:
+      wp.launch(qM_dense, dim=(d.nworld, m.nv), inputs=[m, d])
 
 
 def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
