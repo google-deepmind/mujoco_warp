@@ -555,7 +555,7 @@ class Model:
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nmodel, nq)
-    qpos_spring: reference pose for springs                  (nq,)
+    qpos_spring: reference pose for springs                  (nmodel, nq,)
     body_tree: BFS ordering of body ids
     body_treeadr: starting index of each body tree level
     actuator_moment_offset_nv: tiling configuration
@@ -765,7 +765,7 @@ class Model:
   opt: Option
   stat: Statistic
   qpos0: wp.array(dtype=wp.float32, ndim=2)
-  qpos_spring: wp.array(dtype=wp.float32, ndim=1)
+  qpos_spring: wp.array(dtype=wp.float32, ndim=2)
   body_tree: wp.array(dtype=wp.int32, ndim=1)  # warp only
   body_treeadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   actuator_moment_offset_nv: wp.array(dtype=wp.int32, ndim=1)  # warp only
