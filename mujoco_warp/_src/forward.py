@@ -130,7 +130,7 @@ def _next_activation(m: Model, d: Data):
 
     # advance the actuation
     if m.actuator_dyntype[actid] == wp.static(DynType.FILTEREXACT.value):
-      dyn_prm = m.actuator_dynprm[actid]
+      dyn_prm = get_batched_value(m.actuator_dynprm, worldid, actid)
       tau = wp.max(MJ_MINVAL, dyn_prm[0])
       act += act_dot * tau * (1.0 - wp.exp(-m.opt.timestep / tau))
     else:
@@ -138,7 +138,7 @@ def _next_activation(m: Model, d: Data):
 
     # clamp to actrange
     if m.actuator_actlimited[actid]:
-      actrange = m.actuator_actrange[actid]
+      actrange = get_batched_value(m.actuator_actrange, worldid, actid)
       act = wp.clamp(act, actrange[0], actrange[1])
 
     d.act[worldid, actid] = act
@@ -380,10 +380,10 @@ def implicit(m: Model, d: Data):
     actuator_dyntype = m.actuator_dyntype[actid]
 
     if actuator_biastype == wp.static(BiasType.AFFINE.value):
-      bias_vel = m.actuator_biasprm[actid][2]
+      bias_vel = get_batched_value(m.actuator_biasprm, worldid, actid)[2]
 
     if actuator_gaintype == wp.static(GainType.AFFINE.value):
-      gain_vel = m.actuator_gainprm[actid][2]
+      gain_vel = get_batched_value(m.actuator_gainprm, worldid, actid)[2]
 
     ctrl = d.ctrl[worldid, actid]
 
@@ -629,7 +629,7 @@ def fwd_actuation(m: Model, d: Data):
     dsbl_clampctrl = m.opt.disableflags & wp.static(DisableBit.CLAMPCTRL.value)
 
     if m.actuator_ctrllimited[uid] and not dsbl_clampctrl:
-      r = m.actuator_ctrlrange[uid]
+      r = get_batched_value(m.actuator_ctrlrange, worldid, uid)
       ctrl = wp.clamp(ctrl, r[0], r[1])
 
     if m.na:
@@ -640,7 +640,7 @@ def fwd_actuation(m: Model, d: Data):
       elif dyntype == int(DynType.FILTER.value) or dyntype == int(
         DynType.FILTEREXACT.value
       ):
-        dynprm = m.actuator_dynprm[uid]
+        dynprm = get_batched_value(m.actuator_dynprm, worldid, uid)
         actadr = m.actuator_actadr[uid]
         act = d.act[worldid, actadr]
         d.act_dot[worldid, actadr] = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
@@ -659,7 +659,7 @@ def fwd_actuation(m: Model, d: Data):
 
     # gain
     gaintype = m.actuator_gaintype[uid]
-    gainprm = m.actuator_gainprm[uid]
+    gainprm = get_batched_value(m.actuator_gainprm, worldid, uid)
 
     gain = 0.0
     if gaintype == int(GainType.FIXED.value):
@@ -671,7 +671,7 @@ def fwd_actuation(m: Model, d: Data):
 
     # bias
     biastype = m.actuator_biastype[uid]
-    biasprm = m.actuator_biasprm[uid]
+    biasprm = get_batched_value(m.actuator_biasprm, worldid, uid)
 
     bias = 0.0  # BiasType.NONE
     if biastype == int(BiasType.AFFINE.value):
@@ -684,7 +684,7 @@ def fwd_actuation(m: Model, d: Data):
     # TODO(team): tendon total force clamping
 
     if m.actuator_forcelimited[uid]:
-      r = m.actuator_forcerange[uid]
+      r = get_batched_value(m.actuator_forcerange, worldid, uid)
       f = wp.clamp(f, r[0], r[1])
     d.actuator_force[worldid, uid] = f
 
@@ -693,10 +693,11 @@ def fwd_actuation(m: Model, d: Data):
     worldid, dofid = wp.tid()
     jntid = m.dof_jntid[dofid]
     if m.jnt_actfrclimited[jntid]:
+      range = get_batched_value(m.jnt_actfrcrange, worldid, jntid)
       d.qfrc_actuator[worldid, dofid] = wp.clamp(
         d.qfrc_actuator[worldid, dofid],
-        m.jnt_actfrcrange[jntid][0],
-        m.jnt_actfrcrange[jntid][1],
+        range[0],
+        range[1],
       )
 
   if m.opt.is_sparse:
@@ -711,8 +712,8 @@ def fwd_actuation(m: Model, d: Data):
         s += moment[worldid, uid, vid] * force[worldid, uid]
       jntid = m.dof_jntid[vid]
       if m.jnt_actfrclimited[jntid]:
-        r = m.jnt_actfrcrange[jntid]
-        s = wp.clamp(s, r[0], r[1])
+        range = get_batched_value(m.jnt_actfrcrange, worldid, jntid)
+        s = wp.clamp(s, range[0], range[1])
       qfrc[worldid, vid] = s
 
   wp.launch(_force, dim=[d.nworld, m.nu], inputs=[m, d])

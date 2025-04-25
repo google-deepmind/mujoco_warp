@@ -123,9 +123,9 @@ def kinematics(m: Model, d: Data):
     bodyid = m.geom_bodyid[geomid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.geom_xpos[worldid, geomid] = xpos + math.rot_vec_quat(m.geom_pos[geomid], xquat)
+    d.geom_xpos[worldid, geomid] = xpos + math.rot_vec_quat(get_batched_value(m.geom_pos, worldid, geomid), xquat)
     d.geom_xmat[worldid, geomid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.geom_quat[geomid])
+      math.mul_quat(xquat, get_batched_value(m.geom_quat, worldid, geomid))
     )
 
   @kernel
@@ -134,9 +134,9 @@ def kinematics(m: Model, d: Data):
     bodyid = m.site_bodyid[siteid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.site_xpos[worldid, siteid] = xpos + math.rot_vec_quat(m.site_pos[siteid], xquat)
+    d.site_xpos[worldid, siteid] = xpos + math.rot_vec_quat(get_batched_value(m.site_pos, worldid, siteid), xquat)
     d.site_xmat[worldid, siteid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.site_quat[siteid])
+      math.mul_quat(xquat, get_batched_value(m.site_quat, worldid, siteid))
     )
 
   wp.launch(_root, dim=(d.nworld), inputs=[m, d])
@@ -265,9 +265,9 @@ def camlight(m: Model, d: Data):
     bodyid = m.cam_bodyid[camid]
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
-    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(m.cam_pos[camid], xquat)
+    d.cam_xpos[worldid, camid] = xpos + math.rot_vec_quat(get_batched_value(m.cam_pos, worldid, camid), xquat)
     d.cam_xmat[worldid, camid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.cam_quat[camid])
+      math.mul_quat(xquat, get_batched_value(m.cam_quat, worldid, camid))
     )
 
   @kernel
@@ -281,10 +281,10 @@ def camlight(m: Model, d: Data):
       return
     elif m.cam_mode[camid] == wp.static(CamLightType.TRACK.value):
       body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
-      d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[camid]
+      d.cam_xpos[worldid, camid] = body_xpos + get_batched_value(m.cam_pos0, worldid, camid)
     elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
       d.cam_xpos[worldid, camid] = (
-        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[camid]
+        d.subtree_com[worldid, m.cam_bodyid[camid]] + get_batched_value(m.cam_poscom0, worldid, camid)
       )
     elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
       camid
@@ -313,9 +313,9 @@ def camlight(m: Model, d: Data):
     xpos = d.xpos[worldid, bodyid]
     xquat = d.xquat[worldid, bodyid]
     d.light_xpos[worldid, lightid] = xpos + math.rot_vec_quat(
-      m.light_pos[lightid], xquat
+      get_batched_value(m.light_pos, worldid, lightid), xquat
     )
-    d.light_xdir[worldid, lightid] = math.rot_vec_quat(m.light_dir[lightid], xquat)
+    d.light_xdir[worldid, lightid] = math.rot_vec_quat(get_batched_value(m.light_dir, worldid, lightid), xquat)
 
   @kernel
   def light_fn(m: Model, d: Data):
@@ -328,10 +328,10 @@ def camlight(m: Model, d: Data):
       return
     elif m.light_mode[lightid] == wp.static(CamLightType.TRACK.value):
       body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
-      d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[lightid]
+      d.light_xpos[worldid, lightid] = body_xpos + get_batched_value(m.light_pos0, worldid, lightid)
     elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
       d.light_xpos[worldid, lightid] = (
-        d.subtree_com[worldid, m.light_bodyid[lightid]] + m.light_poscom0[lightid]
+        d.subtree_com[worldid, m.light_bodyid[lightid]] + get_batched_value(m.light_poscom0, worldid, lightid)
       )
     elif m.light_mode[lightid] == wp.static(
       CamLightType.TARGETBODY.value
@@ -372,7 +372,7 @@ def crb(m: Model, d: Data):
     bodyid = m.dof_bodyid[dofid]
 
     # init M(i,i) with armature inertia
-    d.qM[worldid, 0, madr_ij] = m.dof_armature[dofid]
+    d.qM[worldid, 0, madr_ij] = get_batched_value(m.dof_armature, worldid, dofid)
 
     # precompute buf = crb_body_i * cdof_i
     buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
@@ -389,7 +389,7 @@ def crb(m: Model, d: Data):
     bodyid = m.dof_bodyid[dofid]
 
     # init M(i,i) with armature inertia
-    M = m.dof_armature[dofid]
+    M = get_batched_value(m.dof_armature, worldid, dofid)
 
     # precompute buf = crb_body_i * cdof_i
     buf = math.inert_vec(d.crb[worldid, bodyid], d.cdof[worldid, dofid])
@@ -690,7 +690,7 @@ def rne_postconstraint(m: Model, d: Data):
 
     worldid = d.efc.worldid[efcid]
     id = d.efc.id[efcid]
-    eq_data = m.eq_data[id]
+    eq_data = get_batched_value(m.eq_data, worldid, id)
     body_semantic = m.eq_objtype[id] == wp.static(ObjType.BODY.value)
 
     obj1 = m.eq_obj1id[id]
@@ -711,7 +711,7 @@ def rne_postconstraint(m: Model, d: Data):
         else:
           offset = wp.vec3(eq_data[3], eq_data[4], eq_data[5])
       else:
-        offset = m.site_pos[obj1]
+        offset = get_batched_value(m.site_pos, worldid, obj1)
 
       # transform point on body1: local -> global
       pos = d.xmat[worldid, bodyid1] @ offset + d.xpos[worldid, bodyid1]
@@ -733,7 +733,7 @@ def rne_postconstraint(m: Model, d: Data):
         else:
           offset = wp.vec3(eq_data[0], eq_data[1], eq_data[2])
       else:
-        offset = m.site_pos[obj2]
+        offset = get_batched_value(m.site_pos, worldid, obj2)
 
       # transform point on body2: local -> global
       pos = d.xmat[worldid, bodyid2] @ offset + d.xpos[worldid, bodyid2]
@@ -812,7 +812,7 @@ def transmission(m: Model, d: Data):
   ):
     worldid, actid = wp.tid()
     trntype = m.actuator_trntype[actid]
-    gear = m.actuator_gear[actid]
+    gear = get_batched_value(m.actuator_gear, worldid, actid)
     if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
       TrnType.JOINTINPARENT.value
     ):
@@ -1198,7 +1198,7 @@ def tendon(m: Model, d: Data):
       wrap_jnt_adr = m.wrap_jnt_adr[wrapid]
 
       wrap_objid = m.wrap_objid[wrap_jnt_adr]
-      prm = m.wrap_prm[wrap_jnt_adr]
+      prm = get_batched_value(m.wrap_prm, worldid, wrap_jnt_adr)
 
       # add to length
       L = prm * d.qpos[worldid, m.jnt_qposadr[wrap_objid]]

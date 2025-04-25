@@ -147,15 +147,15 @@ def _frame_quat(
       return quat
     refquat = math.mul_quat(d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid))
   elif objtype == int(ObjType.GEOM.value):
-    quat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[objid]], m.geom_quat[objid])
+    quat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[objid]], get_batched_value(m.geom_quat, worldid, objid))
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[refid]], m.geom_quat[refid])
+    refquat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[refid]], get_batched_value(m.geom_quat, worldid, refid))
   elif objtype == int(ObjType.SITE.value):
-    quat = math.mul_quat(d.xquat[worldid, m.site_bodyid[objid]], m.site_quat[objid])
+    quat = math.mul_quat(d.xquat[worldid, m.site_bodyid[objid]], get_batched_value(m.site_quat, worldid, objid))
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, m.site_bodyid[refid]], m.site_quat[refid])
+    refquat = math.mul_quat(d.xquat[worldid, m.site_bodyid[refid]], get_batched_value(m.site_quat, worldid, refid))
 
   # TODO(team): camera
 

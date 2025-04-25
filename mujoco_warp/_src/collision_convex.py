@@ -29,6 +29,7 @@ from .types import NUM_GEOM_TYPES
 from .types import Data
 from .types import GeomType
 from .types import Model
+from .support import get_batched_value
 
 # XXX disable backward pass codegen globally for now
 #     enabling backward pass leads to 10min compile time
@@ -732,10 +733,10 @@ def gjk_epa_pipeline(
     if m.geom_type[g1] != type1 or m.geom_type[g2] != type2:
       return
 
-    info1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
-    info2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
+    info1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid], worldid)
+    info2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid], worldid)
 
-    margin = wp.max(m.geom_margin[g1], m.geom_margin[g2])
+    margin = wp.max(get_batched_value(m.geom_margin, worldid, g1), get_batched_value(m.geom_margin, worldid, g2))
 
     simplex, normal = _gjk(m, info1, info2)
 

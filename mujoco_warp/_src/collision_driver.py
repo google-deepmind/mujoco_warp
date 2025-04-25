@@ -26,14 +26,15 @@ from .types import Data
 from .types import DisableBit
 from .types import Model
 from .warp_util import event_scope
+from .support import get_batched_value
 
 wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
 def _sphere_filter(m: Model, d: Data, geom1: int, geom2: int, worldid: int) -> bool:
-  margin1 = m.geom_margin[geom1]
-  margin2 = m.geom_margin[geom2]
+  margin1 = get_batched_value(m.geom_margin, worldid, geom1)
+  margin2 = get_batched_value(m.geom_margin, worldid, geom2)
   pos1 = d.geom_xpos[worldid, geom1]
   pos2 = d.geom_xpos[worldid, geom2]
   size1 = m.geom_rbound[geom1]
@@ -111,7 +112,7 @@ def _sap_project(m: Model, d: Data, direction: wp.vec3):
     # geom is a plane
     rbound = MJ_MAXVAL
 
-  radius = rbound + m.geom_margin[geomid]
+  radius = rbound + get_batched_value(m.geom_margin, worldid, geomid)
   center = wp.dot(direction, xpos)
 
   d.sap_projection_lower[worldid, geomid] = center - radius

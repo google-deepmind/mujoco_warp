@@ -24,6 +24,8 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .support import get_batched_value
+from .support import get_batched_array
 
 wp.set_module_options({"enable_backward": False})
 
@@ -44,12 +46,13 @@ def _geom(
   m: Model,
   geom_xpos: wp.array(dtype=wp.vec3),
   geom_xmat: wp.array(dtype=wp.mat33),
+  worldid: int,
 ) -> Geom:
   geom = Geom()
   geom.pos = geom_xpos[gid]
   rot = geom_xmat[gid]
   geom.rot = rot
-  geom.size = m.geom_size[gid]
+  geom.size = get_batched_value(m.geom_size, worldid, gid)
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = m.geom_dataid[gid]
   if dataid >= 0:
@@ -737,27 +740,27 @@ def plane_cylinder(
 
 
 @wp.func
-def contact_params(m: Model, d: Data, cid: int):
+def contact_params(m: Model, d: Data, cid: int, worldid: int):
   geoms = d.collision_pair[cid]
   pairid = d.collision_pairid[cid]
 
   if pairid > -1:
-    margin = m.pair_margin[pairid]
-    gap = m.pair_gap[pairid]
+    margin = get_batched_value(m.pair_margin, worldid, pairid)
+    gap = get_batched_value(m.pair_gap, worldid, pairid)
     condim = m.pair_dim[pairid]
-    friction = m.pair_friction[pairid]
-    solref = m.pair_solref[pairid]
-    solreffriction = m.pair_solreffriction[pairid]
-    solimp = m.pair_solimp[pairid]
+    friction = get_batched_value(m.pair_friction, worldid, pairid)
+    solref = get_batched_value(m.pair_solref, worldid, pairid)
+    solreffriction = get_batched_value(m.pair_solreffriction, worldid, pairid)
+    solimp = get_batched_value(m.pair_solimp, worldid, pairid)
   else:
     g1 = geoms[0]
     g2 = geoms[1]
 
-    p1 = m.geom_priority[g1]
-    p2 = m.geom_priority[g2]
+    p1 = get_batched_value(m.geom_priority, worldid, g1)
+    p2 = get_batched_value(m.geom_priority, worldid, g2)
 
-    solmix1 = m.geom_solmix[g1]
-    solmix2 = m.geom_solmix[g2]
+    solmix1 = get_batched_value(m.geom_solmix, worldid, g1)
+    solmix2 = get_batched_value(m.geom_solmix, worldid, g2)
 
     mix = solmix1 / (solmix1 + solmix2)
     mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
@@ -765,8 +768,8 @@ def contact_params(m: Model, d: Data, cid: int):
     mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
     mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
-    margin = wp.max(m.geom_margin[g1], m.geom_margin[g2])
-    gap = wp.max(m.geom_gap[g1], m.geom_gap[g2])
+    margin = wp.max(get_batched_value(m.geom_margin, worldid, g1), get_batched_value(m.geom_margin, worldid, g2))
+    gap = wp.max(get_batched_value(m.geom_gap, worldid, g1), get_batched_value(m.geom_gap, worldid, g2))
 
     condim1 = m.geom_condim[g1]
     condim2 = m.geom_condim[g2]
@@ -774,7 +777,7 @@ def contact_params(m: Model, d: Data, cid: int):
       p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2)
     )
 
-    geom_friction = wp.max(m.geom_friction[g1], m.geom_friction[g2])
+    geom_friction = wp.max(get_batched_value(m.geom_friction, worldid, g1), get_batched_value(m.geom_friction, worldid, g2))
     friction = vec5(
       geom_friction[0],
       geom_friction[0],
@@ -783,14 +786,14 @@ def contact_params(m: Model, d: Data, cid: int):
       geom_friction[2],
     )
 
-    if m.geom_solref[g1].x > 0.0 and m.geom_solref[g2].x > 0.0:
-      solref = mix * m.geom_solref[g1] + (1.0 - mix) * m.geom_solref[g2]
+    if get_batched_value(m.geom_solref, worldid, g1).x > 0.0 and get_batched_value(m.geom_solref, worldid, g2).x > 0.0:
+      solref = mix * get_batched_value(m.geom_solref, worldid, g1) + (1.0 - mix) * get_batched_value(m.geom_solref, worldid, g2)
     else:
-      solref = wp.min(m.geom_solref[g1], m.geom_solref[g2])
+      solref = wp.min(get_batched_value(m.geom_solref, worldid, g1), get_batched_value(m.geom_solref, worldid, g2))
 
     solreffriction = wp.vec2(0.0, 0.0)
 
-    solimp = mix * m.geom_solimp[g1] + (1.0 - mix) * m.geom_solimp[g2]
+    solimp = mix * get_batched_value(m.geom_solimp, worldid, g1) + (1.0 - mix) * get_batched_value(m.geom_solimp, worldid, g2)
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -868,16 +871,17 @@ def _primitive_narrowphase(
   if tid >= d.ncollision[0]:
     return
 
+  worldid = d.collision_worldid[tid]
+
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
-    m, d, tid
+    m, d, tid, worldid
   )
   g1 = geoms[0]
   g2 = geoms[1]
 
-  worldid = d.collision_worldid[tid]
 
-  geom1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
-  geom2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
+  geom1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid], worldid)
+  geom2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid], worldid)
 
   type1 = m.geom_type[g1]
   type2 = m.geom_type[g2]
