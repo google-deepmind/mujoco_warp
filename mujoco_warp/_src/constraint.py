@@ -19,6 +19,7 @@ from . import math
 from . import support
 from . import types
 from .support import get_batched_value
+from .support import get_batched_array
 from .warp_util import event_scope
 
 wp.config.enable_backward = False
@@ -132,7 +133,7 @@ def _efc_equality_connect(
     d.efc.J[efcid + 2, dofid] = j1mj2[2]
     Jqvel += j1mj2 * d.qvel[worldid, dofid]
 
-  invweight = m.body_invweight0[body1id, 0] + m.body_invweight0[body2id, 0]
+  invweight = get_batched_value(m.body_invweight0, worldid, body1id, 0) + get_batched_value(m.body_invweight0, worldid, body2id, 0)
   pos_imp = wp.length(pos)
 
   solref = m.eq_solref[i_eq]
@@ -326,7 +327,7 @@ def _efc_equality_weld(
   crotq = math.mul_quat(quat1, quat)  # copy axis components
   crot = wp.vec3(crotq[1], crotq[2], crotq[3]) * torquescale
 
-  invweight_t = m.body_invweight0[body1id, 0] + m.body_invweight0[body2id, 0]
+  invweight_t = get_batched_value(m.body_invweight0, worldid, body1id, 0) + get_batched_value(m.body_invweight0, worldid, body2id, 0)
 
   pos_imp = wp.sqrt(wp.length_sq(cpos) + wp.length_sq(crot))
 
@@ -349,7 +350,7 @@ def _efc_equality_weld(
       i_eq,
     )
 
-  invweight_r = m.body_invweight0[body1id, 1] + m.body_invweight0[body2id, 1]
+  invweight_r = get_batched_value(m.body_invweight0, worldid, body1id, 1) + get_batched_value(m.body_invweight0, worldid, body2id, 1)
 
   for i in range(3):
     _update_efc_row(
@@ -377,9 +378,9 @@ def _efc_limit_slide_hinge(
   jntid = m.jnt_limited_slide_hinge_adr[jntlimitedid]
 
   qpos = d.qpos[worldid, m.jnt_qposadr[jntid]]
-  jnt_range = m.jnt_range[jntid]
+  jnt_range = get_batched_array(m.jnt_range, worldid, jntid)
   dist_min, dist_max = qpos - jnt_range[0], jnt_range[1] - qpos
-  pos = wp.min(dist_min, dist_max) - m.jnt_margin[jntid]
+  pos = wp.min(dist_min, dist_max) - get_batched_value(m.jnt_margin, worldid, jntid)
   active = pos < 0
 
   if active:
@@ -400,9 +401,9 @@ def _efc_limit_slide_hinge(
       pos,
       pos,
       m.dof_invweight0[dofadr],
-      m.jnt_solref[jntid],
-      m.jnt_solimp[jntid],
-      m.jnt_margin[jntid],
+      get_batched_value(m.jnt_solref, worldid, jntid),
+      get_batched_value(m.jnt_solimp, worldid, jntid),
+      get_batched_value(m.jnt_margin, worldid, jntid),
       Jqvel,
       0.0,
       dofadr,
@@ -424,8 +425,8 @@ def _efc_limit_ball(
   )
   axis_angle = math.quat_to_vel(jnt_quat)
   axis, angle = math.normalize_with_norm(axis_angle)
-  jnt_margin = m.jnt_margin[jntid]
-  jnt_range = m.jnt_range[jntid]
+  jnt_margin = get_batched_value(m.jnt_margin, worldid, jntid)
+  jnt_range = get_batched_array(m.jnt_range, worldid, jntid)
 
   pos = wp.max(jnt_range[0], jnt_range[1]) - angle - jnt_margin
   active = pos < 0
@@ -452,9 +453,9 @@ def _efc_limit_ball(
       pos,
       pos,
       m.dof_invweight0[dofadr],
-      m.jnt_solref[jntid],
-      m.jnt_solimp[jntid],
-      jnt_margin,
+      get_batched_value(m.jnt_solref, worldid, jntid),
+      get_batched_value(m.jnt_solimp, worldid, jntid),
+      get_batched_value(m.jnt_margin, worldid, jntid),
       Jqvel,
       0.0,
       jntid,
@@ -548,7 +549,7 @@ def _efc_contact_pyramidal(
     frame = d.contact.frame[conid]
 
     # pyramidal has common invweight across all edges
-    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+    invweight = get_batched_value(m.body_invweight0, worldid, body1, 0) + get_batched_value(m.body_invweight0, worldid, body2, 0)
 
     if condim > 1:
       dimid2 = dimid / 2 + 1
@@ -649,7 +650,7 @@ def _efc_contact_elliptic(
       d.efc.J[efcid, i] = J
       Jqvel += J * d.qvel[worldid, i]
 
-    invweight = m.body_invweight0[body1, 0] + m.body_invweight0[body2, 0]
+    invweight = get_batched_value(m.body_invweight0, worldid, body1, 0) + get_batched_value(m.body_invweight0, worldid, body2, 0)
 
     ref = d.contact.solref[conid]
     pos_aref = pos

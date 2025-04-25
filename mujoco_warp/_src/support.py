@@ -362,6 +362,12 @@ def get_batched_value(array: wp.array2d(dtype=Any), worldid: wp.int32, i: wp.int
   return array[modelid, i]
 
 @wp.func
+def get_batched_array(array: wp.array3d(dtype=Any), worldid: wp.int32, i: wp.int32):
+  """Returns the array slice for the given worldid."""
+  modelid = worldid % array.shape[0]
+  return array[modelid, i]
+
+@wp.func
 def get_batched_value(array: wp.array3d(dtype=Any), worldid: wp.int32, i: wp.int32, j: wp.int32):
   modelid = worldid % array.shape[0]
   return array[modelid, i, j]

@@ -36,7 +36,7 @@ def passive(m: Model, d: Data):
   @kernel
   def _spring(m: Model, d: Data):
     worldid, jntid = wp.tid()
-    stiffness = m.jnt_stiffness[jntid]
+    stiffness = get_batched_value(m.jnt_stiffness, worldid, jntid)
     dofid = m.jnt_dofadr[jntid]
 
     if stiffness == 0.0:

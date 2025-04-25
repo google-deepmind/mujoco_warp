@@ -82,7 +82,7 @@ def kinematics(m: Model, d: Data):
         qadr = m.jnt_qposadr[jntadr]
         jnt_type = m.jnt_type[jntadr]
         jnt_axis = m.jnt_axis[jntadr]
-        xanchor = math.rot_vec_quat(m.jnt_pos[jntadr], xquat) + xpos
+        xanchor = math.rot_vec_quat(get_batched_value(m.jnt_pos, worldid, jntadr), xquat) + xpos
         xaxis = math.rot_vec_quat(jnt_axis, xquat)
 
         if jnt_type == wp.static(JointType.BALL.value):
@@ -94,7 +94,7 @@ def kinematics(m: Model, d: Data):
           )
           xquat = math.mul_quat(xquat, qloc)
           # correct for off-center rotation
-          xpos = xanchor - math.rot_vec_quat(m.jnt_pos[jntadr], xquat)
+          xpos = xanchor - math.rot_vec_quat(get_batched_value(m.jnt_pos, worldid, jntadr), xquat)
         elif jnt_type == wp.static(JointType.SLIDE.value):
           xpos += xaxis * (qpos[qadr] - get_batched_value(m.qpos0, worldid, qadr))
         elif jnt_type == wp.static(JointType.HINGE.value):
@@ -102,7 +102,7 @@ def kinematics(m: Model, d: Data):
           qloc = math.axis_angle_to_quat(jnt_axis, qpos[qadr] - qpos0)
           xquat = math.mul_quat(xquat, qloc)
           # correct for off-center rotation
-          xpos = xanchor - math.rot_vec_quat(m.jnt_pos[jntadr], xquat)
+          xpos = xanchor - math.rot_vec_quat(get_batched_value(m.jnt_pos, worldid, jntadr), xquat)
 
         d.xanchor[worldid, jntadr] = xanchor
         d.xaxis[worldid, jntadr] = xaxis
@@ -173,7 +173,7 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_div(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] /= m.subtree_mass[bodyid]
+    d.subtree_com[worldid, bodyid] /= get_batched_value(m.subtree_mass, worldid, bodyid)
 
   @kernel
   def cinert(m: Model, d: Data):
