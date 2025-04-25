@@ -31,6 +31,7 @@ from .types import WrapType
 from .types import array2df
 from .types import array3df
 from .types import vec10
+from .support import get_batched_value
 from .warp_util import event_scope
 from .warp_util import kernel
 
@@ -95,9 +96,9 @@ def kinematics(m: Model, d: Data):
           # correct for off-center rotation
           xpos = xanchor - math.rot_vec_quat(m.jnt_pos[jntadr], xquat)
         elif jnt_type == wp.static(JointType.SLIDE.value):
-          xpos += xaxis * (qpos[qadr] - m.qpos0[qadr])
+          xpos += xaxis * (qpos[qadr] - get_batched_value(m.qpos0, worldid, qadr))
         elif jnt_type == wp.static(JointType.HINGE.value):
-          qpos0 = m.qpos0[qadr]
+          qpos0 = get_batched_value(m.qpos0, worldid, qadr)
           qloc = math.axis_angle_to_quat(jnt_axis, qpos[qadr] - qpos0)
           xquat = math.mul_quat(xquat, qloc)
           # correct for off-center rotation

@@ -18,6 +18,7 @@ import warp as wp
 from . import math
 from . import support
 from . import types
+from .support import get_batched_value
 from .warp_util import event_scope
 
 wp.config.enable_backward = False
@@ -182,7 +183,7 @@ def _efc_equality_joint(
     # Two joint constraint
     qposadr2 = m.jnt_qposadr[jntid_2]
     dofadr2 = m.jnt_dofadr[jntid_2]
-    dif = d.qpos[worldid, qposadr2] - m.qpos0[qposadr2]
+    dif = d.qpos[worldid, qposadr2] - get_batched_value(m.qpos0, worldid, qposadr2)
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
@@ -190,14 +191,14 @@ def _efc_equality_joint(
       2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4])
     )
 
-    pos = d.qpos[worldid, qposadr1] - m.qpos0[qposadr1] - rhs
+    pos = d.qpos[worldid, qposadr1] - get_batched_value(m.qpos0, worldid, qposadr1) - rhs
     Jqvel = d.qvel[worldid, dofadr1] - d.qvel[worldid, dofadr2] * deriv_2
     invweight = m.dof_invweight0[dofadr1] + m.dof_invweight0[dofadr2]
 
     d.efc.J[efcid, dofadr2] = -deriv_2
   else:
     # Single joint constraint
-    pos = d.qpos[worldid, qposadr1] - m.qpos0[qposadr1] - data[0]
+    pos = d.qpos[worldid, qposadr1] - get_batched_value(m.qpos0, worldid, qposadr1) - data[0]
     Jqvel = d.qvel[worldid, dofadr1]
     invweight = m.dof_invweight0[dofadr1]
 

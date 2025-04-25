@@ -69,6 +69,12 @@ def geom_pair(m: mujoco.MjModel) -> Tuple[np.array, np.array]:
 
   return np.array(geompairs), np.array(pairids)
 
+def create_nmodel_batched_array(mjm_array, dtype):
+    array = wp.array(mjm_array, dtype=dtype)
+    array.ndim += 1
+    array.shape = (1,) + array.shape
+    array.strides = (0,) + array.strides
+    return array
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   # check supported features
@@ -161,7 +167,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt.depth_extension = wp.float32(0.1)  # warp only
   m.stat.meaninertia = mjm.stat.meaninertia
 
-  m.qpos0 = wp.array(mjm.qpos0, dtype=wp.float32, ndim=1)
+  m.qpos0 = create_nmodel_batched_array(mjm.qpos0, dtype=wp.float32)
   m.qpos_spring = wp.array(mjm.qpos_spring, dtype=wp.float32, ndim=1)
 
   # dof lower triangle row and column indices

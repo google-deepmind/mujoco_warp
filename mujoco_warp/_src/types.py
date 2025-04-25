@@ -554,7 +554,7 @@ class Model:
     npair: number of predefined geom pairs                   ()
     opt: physics options
     stat: model statistics
-    qpos0: qpos values at default pose                       (nq,)
+    qpos0: qpos values at default pose                       (nmodel, nq)
     qpos_spring: reference pose for springs                  (nq,)
     body_tree: BFS ordering of body ids
     body_treeadr: starting index of each body tree level
@@ -764,7 +764,7 @@ class Model:
   npair: int
   opt: Option
   stat: Statistic
-  qpos0: wp.array(dtype=wp.float32, ndim=1)
+  qpos0: wp.array(dtype=wp.float32, ndim=2)
   qpos_spring: wp.array(dtype=wp.float32, ndim=1)
   body_tree: wp.array(dtype=wp.int32, ndim=1)  # warp only
   body_treeadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
