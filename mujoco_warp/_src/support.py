@@ -351,7 +351,8 @@ def jac(
   return jacp, jacr
 
 @wp.func
-def get_batched_value(array: wp.array2d(dtype=Any), worldid: wp.int32):
+def get_batched_array(array: wp.array2d(dtype=Any), worldid: wp.int32):
+  """Returns the array slice for the given worldid."""
   modelid = worldid % array.shape[0]
   return array[modelid]
 

@@ -458,7 +458,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.dof_parentid = wp.array(mjm.dof_parentid, dtype=wp.int32, ndim=1)
   m.dof_Madr = wp.array(mjm.dof_Madr, dtype=wp.int32, ndim=1)
   m.dof_armature = wp.array(mjm.dof_armature, dtype=wp.float32, ndim=1)
-  m.dof_damping = wp.array(mjm.dof_damping, dtype=wp.float32, ndim=1)
+  m.dof_damping = create_nmodel_batched_array(mjm.dof_damping, dtype=wp.float32)
   m.dof_frictionloss = wp.array(mjm.dof_frictionloss, dtype=wp.float32, ndim=1)
   m.dof_solimp = wp.array(mjm.dof_solimp, dtype=types.vec5, ndim=1)
   m.dof_solref = wp.array(mjm.dof_solref, dtype=wp.vec2, ndim=1)

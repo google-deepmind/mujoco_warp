@@ -26,7 +26,7 @@ from . import sensor
 from . import smooth
 from . import solver
 from .support import xfrc_accumulate
-from .support import get_batched_value
+from .support import get_batched_array
 from .types import MJ_MINVAL
 from .types import BiasType
 from .types import Data
@@ -194,7 +194,7 @@ def euler(m: Model, d: Data):
       worldid, tid = wp.tid()
 
       dof_Madr = m.dof_Madr[tid]
-      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * get_batched_value(m.dof_damping, worldid, tid)
+      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * get_batched_array(m.dof_damping, worldid, tid)
 
       d.qfrc_integration[worldid, tid] = (
         d.qfrc_smooth[worldid, tid] + d.qfrc_constraint[worldid, tid]
@@ -223,7 +223,7 @@ def euler(m: Model, d: Data):
         M_tile = wp.tile_load(
           d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
         )
-        damping_tile = wp.tile_load(get_batched_value(damping, worldid), shape=(tilesize,), offset=(dofid,))
+        damping_tile = wp.tile_load(get_batched_array(damping, worldid), shape=(tilesize,), offset=(dofid,))
         damping_scaled = damping_tile * m.opt.timestep
         qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
@@ -392,7 +392,7 @@ def implicit(m: Model, d: Data):
     d.act_vel_integration[worldid, actid] = bias_vel + gain_vel * ctrl
 
   def qderiv_actuator_damping_fused(
-    m: Model, d: Data, damping: wp.array(dtype=wp.float32)
+    m: Model, d: Data, damping: wp.array2d(dtype=wp.float32)
   ):
     if actuation_enabled:
       block_dim = 64
@@ -408,7 +408,7 @@ def implicit(m: Model, d: Data):
     ):
       @kernel
       def qderiv_actuator_fused_kernel(
-        m: Model, d: Data, damping: wp.array(dtype=wp.float32), leveladr: int
+        m: Model, d: Data, damping: wp.array2d(dtype=wp.float32), leveladr: int
       ):
         worldid, nodeid = wp.tid()
         offset_nv = m.actuator_moment_offset_nv[leveladr + nodeid]
@@ -435,7 +435,7 @@ def implicit(m: Model, d: Data):
           )
 
         if wp.static(passive_enabled):
-          dof_damping = wp.tile_load(damping, shape=tilesize_nv, offset=offset_nv)
+          dof_damping = wp.tile_load(get_batched_array(damping, worldid), shape=tilesize_nv, offset=offset_nv)
           negative = wp.neg(dof_damping)
           qderiv_tile = wp.tile_diag_add(qderiv_tile, negative)
 
