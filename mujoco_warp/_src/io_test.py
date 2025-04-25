@@ -24,6 +24,14 @@ import mujoco_warp as mjwarp
 
 from . import test_util
 
+# tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
+# due to float precision
+_TOLERANCE = 5e-5
+
+def _assert_eq(a, b, name):
+  tol = _TOLERANCE * 10  # avoid test noise
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 class IOTest(absltest.TestCase):
   def test_make_put_data(self):
@@ -289,6 +297,41 @@ class IOTest(absltest.TestCase):
 
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
+
+
+  def test_model_batching(self):
+    mjm, mjd, _, _ = test_util.fixture("humanoid/humanoid.xml", kick=True)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=3)
+
+    # manually create a batch of damping values
+    damping_orig = mjm.dof_damping
+    dof_damping = np.zeros((2, len(damping_orig)), dtype=np.float32)
+    dof_damping[0, :] = damping_orig
+    dof_damping[1, :] = damping_orig * 0.5
+    
+    # set the batched damping values
+    m.dof_damping = wp.from_numpy(dof_damping, dtype=wp.float32)
+
+    mjwarp.passive(m, d)
+
+    # mujoco reference, just have 3 separate model/data strctures
+    mujoco.mj_passive(mjm, mjd)
+
+    m2, d2, _, _ = test_util.fixture("humanoid/humanoid.xml")
+    d2.qvel = mjd.qvel  # need to copy qvel because of randomization
+    m2.dof_damping *= 0.5
+
+    m3, d3, _, _ = test_util.fixture("humanoid/humanoid.xml")
+    d3.qvel = mjd.qvel  # need to copy qvel because of randomization
+
+    mujoco.mj_passive(m2, d2)
+    mujoco.mj_passive(m3, d3)
+
+    _assert_eq(d.qfrc_damper.numpy()[0, :], mjd.qfrc_damper, "qfrc_damper")
+    _assert_eq(d.qfrc_damper.numpy()[1, :], d2.qfrc_damper, "qfrc_damper")
+    _assert_eq(d.qfrc_damper.numpy()[0, :], d3.qfrc_damper, "qfrc_damper")
 
 
 if __name__ == "__main__":

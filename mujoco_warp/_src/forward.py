@@ -26,6 +26,7 @@ from . import sensor
 from . import smooth
 from . import solver
 from .support import xfrc_accumulate
+from .support import get_batched_value
 from .types import MJ_MINVAL
 from .types import BiasType
 from .types import Data
@@ -193,7 +194,7 @@ def euler(m: Model, d: Data):
       worldid, tid = wp.tid()
 
       dof_Madr = m.dof_Madr[tid]
-      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * m.dof_damping[tid]
+      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * get_batched_value(m.dof_damping, worldid, tid)
 
       d.qfrc_integration[worldid, tid] = (
         d.qfrc_smooth[worldid, tid] + d.qfrc_constraint[worldid, tid]
@@ -215,14 +216,14 @@ def euler(m: Model, d: Data):
     def tile_eulerdamp(adr: int, size: int, tilesize: int):
       @kernel
       def eulerdamp(
-        m: Model, d: Data, damping: wp.array(dtype=wp.float32), leveladr: int
+        m: Model, d: Data, damping: wp.array2d(dtype=wp.float32), leveladr: int
       ):
         worldid, nodeid = wp.tid()
         dofid = m.qLD_tile[leveladr + nodeid]
         M_tile = wp.tile_load(
           d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
         )
-        damping_tile = wp.tile_load(damping, shape=(tilesize,), offset=(dofid,))
+        damping_tile = wp.tile_load(get_batched_value(damping, worldid), shape=(tilesize,), offset=(dofid,))
         damping_scaled = damping_tile * m.opt.timestep
         qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 

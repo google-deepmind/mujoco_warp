@@ -22,6 +22,7 @@ from .types import JointType
 from .types import Model
 from .warp_util import event_scope
 from .warp_util import kernel
+from .support import get_batched_value
 
 
 @event_scope
@@ -93,7 +94,7 @@ def passive(m: Model, d: Data):
   @kernel
   def _damper_passive(m: Model, d: Data):
     worldid, dofid = wp.tid()
-    damping = m.dof_damping[dofid]
+    damping = get_batched_value(m.dof_damping, worldid, dofid)
     qfrc_damper = -damping * d.qvel[worldid, dofid]
 
     d.qfrc_damper[worldid, dofid] = qfrc_damper
