@@ -349,3 +349,17 @@ def jac(
   jacr = cdof_ang
 
   return jacp, jacr
+
+@wp.func
+def get_modelId(array: wp.array(dtype=Any), worldid: int) -> int:
+  return worldid % array.shape[0]
+
+@wp.func
+def get_modelId(array: wp.array2d(dtype=Any), worldid: int) -> int:
+  return worldid % array.shape[0]
+
+@wp.func
+def get_modelId(array: wp.array3d(dtype=Any), worldid: int) -> int:
+  return worldid % array.shape[0]
+
+
