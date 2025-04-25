@@ -62,7 +62,7 @@ def kinematics(m: Model, d: Data):
     if jntnum == 0:
       # no joints - apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
-      xpos = (d.xmat[worldid, pid] * m.body_pos[bodyid]) + d.xpos[worldid, pid]
+      xpos = (d.xmat[worldid, pid] * get_batched_value(m.body_pos, worldid, bodyid)) + d.xpos[worldid, pid]
       xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[bodyid])
     elif jntnum == 1 and m.jnt_type[jntadr] == wp.static(JointType.FREE.value):
       # free joint
@@ -75,7 +75,7 @@ def kinematics(m: Model, d: Data):
       # regular or no joints
       # apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
-      xpos = (d.xmat[worldid, pid] * m.body_pos[bodyid]) + d.xpos[worldid, pid]
+      xpos = (d.xmat[worldid, pid] * get_batched_value(m.body_pos, worldid, bodyid)) + d.xpos[worldid, pid]
       xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[bodyid])
 
       for _ in range(jntnum):

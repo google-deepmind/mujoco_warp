@@ -369,7 +369,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.body_parentid = wp.array(mjm.body_parentid, dtype=wp.int32, ndim=1)
   m.body_mocapid = wp.array(mjm.body_mocapid, dtype=wp.int32, ndim=1)
   m.body_weldid = wp.array(mjm.body_weldid, dtype=wp.int32, ndim=1)
-  m.body_pos = wp.array(mjm.body_pos, dtype=wp.vec3, ndim=1)
+  m.body_pos = create_nmodel_batched_array(mjm.body_pos, dtype=wp.vec3)
   m.body_quat = wp.array(mjm.body_quat, dtype=wp.quat, ndim=1)
   m.body_ipos = wp.array(mjm.body_ipos, dtype=wp.vec3, ndim=1)
   m.body_iquat = wp.array(mjm.body_iquat, dtype=wp.quat, ndim=1)
