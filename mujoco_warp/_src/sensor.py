@@ -27,6 +27,7 @@ from .types import ObjType
 from .types import SensorType
 from .warp_util import event_scope
 from .warp_util import kernel
+from .support import get_batched_value
 
 
 @wp.func
@@ -136,15 +137,15 @@ def _frame_quat(
   m: Model, d: Data, worldid: int, objid: int, objtype: int, refid: int
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
-    quat = math.mul_quat(d.xquat[worldid, objid], m.body_iquat[objid])
+    quat = math.mul_quat(d.xquat[worldid, objid], get_batched_value(m.body_iquat, worldid, objid))
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, refid], m.body_iquat[refid])
+    refquat = math.mul_quat(d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid))
   elif objtype == int(ObjType.XBODY.value):
     quat = d.xquat[worldid, objid]
     if refid == -1:
       return quat
-    refquat = d.xquat[worldid, refid]
+    refquat = math.mul_quat(d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid))
   elif objtype == int(ObjType.GEOM.value):
     quat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[objid]], m.geom_quat[objid])
     if refid == -1:

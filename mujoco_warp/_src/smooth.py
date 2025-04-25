@@ -63,7 +63,7 @@ def kinematics(m: Model, d: Data):
       # no joints - apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
       xpos = (d.xmat[worldid, pid] * get_batched_value(m.body_pos, worldid, bodyid)) + d.xpos[worldid, pid]
-      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[bodyid])
+      xquat = math.mul_quat(d.xquat[worldid, pid], get_batched_value(m.body_quat, worldid, bodyid))
     elif jntnum == 1 and m.jnt_type[jntadr] == wp.static(JointType.FREE.value):
       # free joint
       qadr = m.jnt_qposadr[jntadr]
@@ -76,7 +76,7 @@ def kinematics(m: Model, d: Data):
       # apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
       xpos = (d.xmat[worldid, pid] * get_batched_value(m.body_pos, worldid, bodyid)) + d.xpos[worldid, pid]
-      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[bodyid])
+      xquat = math.mul_quat(d.xquat[worldid, pid], get_batched_value(m.body_quat, worldid, bodyid))
 
       for _ in range(jntnum):
         qadr = m.jnt_qposadr[jntadr]
@@ -112,9 +112,9 @@ def kinematics(m: Model, d: Data):
     xquat = wp.normalize(xquat)
     d.xquat[worldid, bodyid] = xquat
     d.xmat[worldid, bodyid] = math.quat_to_mat(xquat)
-    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(m.body_ipos[bodyid], xquat)
+    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(get_batched_value(m.body_ipos, worldid, bodyid), xquat)
     d.ximat[worldid, bodyid] = math.quat_to_mat(
-      math.mul_quat(xquat, m.body_iquat[bodyid])
+      math.mul_quat(xquat, get_batched_value(m.body_iquat, worldid, bodyid))
     )
 
   @kernel
@@ -161,7 +161,7 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_com_init(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[bodyid]
+    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * get_batched_value(m.body_mass, worldid, bodyid)
 
   @kernel
   def subtree_com_acc(m: Model, d: Data, leveladr: int):
@@ -179,8 +179,8 @@ def com_pos(m: Model, d: Data):
   def cinert(m: Model, d: Data):
     worldid, bodyid = wp.tid()
     mat = d.ximat[worldid, bodyid]
-    inert = m.body_inertia[bodyid]
-    mass = m.body_mass[bodyid]
+    inert = get_batched_value(m.body_inertia, worldid, bodyid)
+    mass = get_batched_value(m.body_mass, worldid, bodyid)
     dif = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
     # express inertia in com-based frame (mju_inertCom)
 
@@ -1107,11 +1107,11 @@ def subtree_vel(m: Model, d: Data):
     # update linear velocity
     lin -= wp.cross(xipos - subtree_com_root, ang)
 
-    d.subtree_linvel[worldid, bodyid] = m.body_mass[bodyid] * lin
+    d.subtree_linvel[worldid, bodyid] = get_batched_value(m.body_mass, worldid, bodyid) * lin
     dv = wp.transpose(ximat) @ ang
-    dv[0] *= m.body_inertia[bodyid][0]
-    dv[1] *= m.body_inertia[bodyid][1]
-    dv[2] *= m.body_inertia[bodyid][2]
+    dv[0] *= get_batched_value(m.body_inertia, worldid, bodyid)[0]
+    dv[1] *= get_batched_value(m.body_inertia, worldid, bodyid)[1]
+    dv[2] *= get_batched_value(m.body_inertia, worldid, bodyid)[2]
     d.subtree_angmom[worldid, bodyid] = ximat @ dv
     d.subtree_bodyvel[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
@@ -1149,7 +1149,7 @@ def subtree_vel(m: Model, d: Data):
     vel = d.subtree_bodyvel[worldid, bodyid]
     linvel = d.subtree_linvel[worldid, bodyid]
     linvel_parent = d.subtree_linvel[worldid, pid]
-    mass = m.body_mass[bodyid]
+    mass = get_batched_value(m.body_mass, worldid, bodyid)
     subtreemass = m.body_subtreemass[bodyid]
 
     # momentum wrt body i
