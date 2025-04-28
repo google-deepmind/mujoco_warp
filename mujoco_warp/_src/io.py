@@ -435,7 +435,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.eq_active0 = wp.array(mjm.eq_active0, dtype=wp.bool, ndim=1)
   m.eq_solref = create_nmodel_batched_array(mjm.eq_solref, dtype=wp.vec2)
   m.eq_solimp = create_nmodel_batched_array(mjm.eq_solimp, dtype=types.vec5)
-  m.eq_data = wp.array(mjm.eq_data, dtype=types.vec11, ndim=1)
+  m.eq_data = create_nmodel_batched_array(mjm.eq_data, dtype=types.vec11)
   m.site_pos = create_nmodel_batched_array(mjm.site_pos, dtype=wp.vec3)
   m.site_quat = create_nmodel_batched_array(mjm.site_quat, dtype=wp.quat)
   m.site_bodyid = wp.array(mjm.site_bodyid, dtype=wp.int32, ndim=1)

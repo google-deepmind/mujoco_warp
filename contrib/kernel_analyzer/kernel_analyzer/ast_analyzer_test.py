@@ -137,7 +137,7 @@ from mujoco_warp.warp_util import kernel
 def test_no_issues(
     # Model:
     qpos0: wp.array(dtype=wp.float32, ndim=2),
-    geom_pos: wp.array(dtype=wp.vec3, ndim=1),
+    geom_pos: wp.array(dtype=wp.vec3, ndim=2),
     # Data in:
     qpos_in: wp.array(dtype=wp.float32, ndim=2),
     qvel_in: wp.array(dtype=wp.float32, ndim=2),

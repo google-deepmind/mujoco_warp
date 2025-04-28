@@ -672,7 +672,7 @@ class Model:
     eq_active0: initial enable/disable constraint state      (neq,)
     eq_solref: constraint solver reference                   (nmodel, neq, mjNREF)
     eq_solimp: constraint solver impedance                   (nmodel, neq, mjNIMP)
-    eq_data: numeric data for constraint                     (neq, mjNEQDATA)
+    eq_data: numeric data for constraint                     (nmodel, neq, mjNEQDATA)
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
