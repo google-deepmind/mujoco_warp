@@ -637,7 +637,7 @@ class Model:
     geom_solmix: mixing coef for solref/imp in geom pair     (nmodel, ngeom,)
     geom_solref: constraint solver reference: contact        (nmodel, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nmodel, ngeom, mjNIMP)
-    geom_size: geom-specific size parameters                 (ngeom, 3)
+    geom_size: geom-specific size parameters                 (nmodel, ngeom, 3)
     geom_aabb: bounding box, (center, size)                  (ngeom, 6)
     geom_rbound: radius of bounding sphere                   (ngeom,)
     geom_pos: local position offset rel. to body             (nmodel, ngeom, 3)

@@ -414,7 +414,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.geom_condim = wp.array(mjm.geom_condim, dtype=wp.int32, ndim=1)
   m.geom_pos = create_nmodel_batched_array(mjm.geom_pos, dtype=wp.vec3)
   m.geom_quat = create_nmodel_batched_array(mjm.geom_quat, dtype=wp.quat)
-  m.geom_size = wp.array(mjm.geom_size, dtype=wp.vec3, ndim=1)
+  m.geom_size = create_nmodel_batched_array(mjm.geom_size, dtype=wp.vec3)
   m.geom_priority = create_nmodel_batched_array(mjm.geom_priority, dtype=wp.int32)
   m.geom_solmix = create_nmodel_batched_array(mjm.geom_solmix, dtype=wp.float32)
   m.geom_solref = create_nmodel_batched_array(mjm.geom_solref, dtype=wp.vec2)
