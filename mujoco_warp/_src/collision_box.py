@@ -22,10 +22,10 @@ import warp as wp
 from .collision_primitive import contact_params
 from .collision_primitive import write_contact
 from .math import make_frame
+from .support import get_batched_value
 from .types import Data
 from .types import GeomType
 from .types import Model
-from .support import get_batched_value
 
 BOX_BOX_BLOCK_DIM = 32
 
@@ -313,7 +313,10 @@ def box_box_kernel(
       for i in range(4):
         pos[i] = pos[idx]
 
-    margin = wp.max(get_batched_value(m.geom_margin, worldid, ga), get_batched_value(m.geom_margin, worldid, gb))
+    margin = wp.max(
+      get_batched_value(m.geom_margin, worldid, ga),
+      get_batched_value(m.geom_margin, worldid, gb),
+    )
     for i in range(4):
       pos_glob = b_mat @ pos[i] + b_pos
       n_glob = b_mat @ sep_axis

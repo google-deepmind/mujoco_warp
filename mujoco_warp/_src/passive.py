@@ -16,13 +16,13 @@
 import warp as wp
 
 from . import math
+from .support import get_batched_value
 from .types import Data
 from .types import DisableBit
 from .types import JointType
 from .types import Model
 from .warp_util import event_scope
 from .warp_util import kernel
-from .support import get_batched_value
 
 
 @event_scope
@@ -47,9 +47,12 @@ def passive(m: Model, d: Data):
 
     if jnt_type == wp.static(JointType.FREE.value):
       dif = wp.vec3(
-        d.qpos[worldid, qposid + 0] - get_batched_value(m.qpos_spring, worldid, qposid + 0),
-        d.qpos[worldid, qposid + 1] - get_batched_value(m.qpos_spring, worldid, qposid + 1),
-        d.qpos[worldid, qposid + 2] - get_batched_value(m.qpos_spring, worldid, qposid + 2),
+        d.qpos[worldid, qposid + 0]
+        - get_batched_value(m.qpos_spring, worldid, qposid + 0),
+        d.qpos[worldid, qposid + 1]
+        - get_batched_value(m.qpos_spring, worldid, qposid + 1),
+        d.qpos[worldid, qposid + 2]
+        - get_batched_value(m.qpos_spring, worldid, qposid + 2),
       )
       d.qfrc_spring[worldid, dofid + 0] = -stiffness * dif[0]
       d.qfrc_spring[worldid, dofid + 1] = -stiffness * dif[1]

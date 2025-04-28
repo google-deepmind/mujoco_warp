@@ -69,12 +69,14 @@ def geom_pair(m: mujoco.MjModel) -> Tuple[np.array, np.array]:
 
   return np.array(geompairs), np.array(pairids)
 
+
 def create_nmodel_batched_array(mjm_array, dtype):
-    array = wp.array(mjm_array, dtype=dtype)
-    array.ndim += 1
-    array.shape = (1,) + array.shape
-    array.strides = (0,) + array.strides
-    return array
+  array = wp.array(mjm_array, dtype=dtype)
+  array.ndim += 1
+  array.shape = (1,) + array.shape
+  array.strides = (0,) + array.strides
+  return array
+
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   # check supported features
@@ -459,7 +461,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.dof_Madr = wp.array(mjm.dof_Madr, dtype=wp.int32, ndim=1)
   m.dof_armature = create_nmodel_batched_array(mjm.dof_armature, dtype=wp.float32)
   m.dof_damping = create_nmodel_batched_array(mjm.dof_damping, dtype=wp.float32)
-  m.dof_frictionloss = create_nmodel_batched_array(mjm.dof_frictionloss, dtype=wp.float32)
+  m.dof_frictionloss = create_nmodel_batched_array(
+    mjm.dof_frictionloss, dtype=wp.float32
+  )
   m.dof_solimp = create_nmodel_batched_array(mjm.dof_solimp, dtype=types.vec5)
   m.dof_solref = create_nmodel_batched_array(mjm.dof_solref, dtype=wp.vec2)
   m.dof_tri_row = wp.from_numpy(dof_tri_row, dtype=wp.int32)
@@ -468,20 +472,34 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.actuator_trntype = wp.array(mjm.actuator_trntype, dtype=wp.int32, ndim=1)
   m.actuator_trnid = wp.array(mjm.actuator_trnid, dtype=wp.int32, ndim=2)
   m.actuator_ctrllimited = wp.array(mjm.actuator_ctrllimited, dtype=wp.bool, ndim=1)
-  m.actuator_ctrlrange = create_nmodel_batched_array(mjm.actuator_ctrlrange, dtype=wp.vec2)
+  m.actuator_ctrlrange = create_nmodel_batched_array(
+    mjm.actuator_ctrlrange, dtype=wp.vec2
+  )
   m.actuator_forcelimited = wp.array(mjm.actuator_forcelimited, dtype=wp.bool, ndim=1)
-  m.actuator_forcerange = create_nmodel_batched_array(mjm.actuator_forcerange, dtype=wp.vec2)
+  m.actuator_forcerange = create_nmodel_batched_array(
+    mjm.actuator_forcerange, dtype=wp.vec2
+  )
   m.actuator_gaintype = wp.array(mjm.actuator_gaintype, dtype=wp.int32, ndim=1)
-  m.actuator_gainprm = create_nmodel_batched_array(mjm.actuator_gainprm, dtype=types.vec10f)
+  m.actuator_gainprm = create_nmodel_batched_array(
+    mjm.actuator_gainprm, dtype=types.vec10f
+  )
   m.actuator_biastype = wp.array(mjm.actuator_biastype, dtype=wp.int32, ndim=1)
-  m.actuator_biasprm = create_nmodel_batched_array(mjm.actuator_biasprm, dtype=types.vec10f)
-  m.actuator_gear = create_nmodel_batched_array(mjm.actuator_gear, dtype=wp.spatial_vector)
+  m.actuator_biasprm = create_nmodel_batched_array(
+    mjm.actuator_biasprm, dtype=types.vec10f
+  )
+  m.actuator_gear = create_nmodel_batched_array(
+    mjm.actuator_gear, dtype=wp.spatial_vector
+  )
   m.actuator_actlimited = wp.array(mjm.actuator_actlimited, dtype=wp.bool, ndim=1)
-  m.actuator_actrange = create_nmodel_batched_array(mjm.actuator_actrange, dtype=wp.vec2)
+  m.actuator_actrange = create_nmodel_batched_array(
+    mjm.actuator_actrange, dtype=wp.vec2
+  )
   m.actuator_actadr = wp.array(mjm.actuator_actadr, dtype=wp.int32, ndim=1)
   m.actuator_actnum = wp.array(mjm.actuator_actnum, dtype=wp.int32, ndim=1)
   m.actuator_dyntype = wp.array(mjm.actuator_dyntype, dtype=wp.int32, ndim=1)
-  m.actuator_dynprm = create_nmodel_batched_array(mjm.actuator_dynprm, dtype=types.vec10f)
+  m.actuator_dynprm = create_nmodel_batched_array(
+    mjm.actuator_dynprm, dtype=types.vec10f
+  )
   m.exclude_signature = wp.array(mjm.exclude_signature, dtype=wp.int32, ndim=1)
 
   # pre-compute indices of equality constraints
@@ -510,7 +528,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.pair_geom1 = wp.array(mjm.pair_geom1, dtype=wp.int32, ndim=1)
   m.pair_geom2 = create_nmodel_batched_array(mjm.pair_geom2, dtype=wp.int32)
   m.pair_solref = create_nmodel_batched_array(mjm.pair_solref, dtype=wp.vec2)
-  m.pair_solreffriction = create_nmodel_batched_array(mjm.pair_solreffriction, dtype=wp.vec2)
+  m.pair_solreffriction = create_nmodel_batched_array(
+    mjm.pair_solreffriction, dtype=wp.vec2
+  )
   m.pair_solimp = create_nmodel_batched_array(mjm.pair_solimp, dtype=types.vec5)
   m.pair_margin = create_nmodel_batched_array(mjm.pair_margin, dtype=wp.float32)
   m.pair_gap = create_nmodel_batched_array(mjm.pair_gap, dtype=wp.float32)
@@ -524,12 +544,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.tendon_limited_adr = wp.array(
     np.nonzero(mjm.tendon_limited)[0], dtype=wp.int32, ndim=1
   )
-  m.tendon_solref_lim = create_nmodel_batched_array(mjm.tendon_solref_lim, dtype=wp.vec2f)
-  m.tendon_solimp_lim = create_nmodel_batched_array(mjm.tendon_solimp_lim, dtype=types.vec5)
+  m.tendon_solref_lim = create_nmodel_batched_array(
+    mjm.tendon_solref_lim, dtype=wp.vec2f
+  )
+  m.tendon_solimp_lim = create_nmodel_batched_array(
+    mjm.tendon_solimp_lim, dtype=types.vec5
+  )
   m.tendon_range = create_nmodel_batched_array(mjm.tendon_range, dtype=wp.vec2f)
   m.tendon_margin = create_nmodel_batched_array(mjm.tendon_margin, dtype=wp.float32)
   m.tendon_length0 = create_nmodel_batched_array(mjm.tendon_length0, dtype=wp.float32)
-  m.tendon_invweight0 = create_nmodel_batched_array(mjm.tendon_invweight0, dtype=wp.float32)
+  m.tendon_invweight0 = create_nmodel_batched_array(
+    mjm.tendon_invweight0, dtype=wp.float32
+  )
   m.wrap_objid = wp.array(mjm.wrap_objid, dtype=wp.int32)
   m.wrap_prm = create_nmodel_batched_array(mjm.wrap_prm, dtype=wp.float32)
   m.wrap_type = wp.array(mjm.wrap_type, dtype=wp.int32)

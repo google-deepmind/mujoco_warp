@@ -20,6 +20,7 @@ import warp as wp
 
 from . import math
 from . import smooth
+from .support import get_batched_value
 from .types import Data
 from .types import DisableBit
 from .types import Model
@@ -27,7 +28,6 @@ from .types import ObjType
 from .types import SensorType
 from .warp_util import event_scope
 from .warp_util import kernel
-from .support import get_batched_value
 
 
 @wp.func
@@ -137,25 +137,43 @@ def _frame_quat(
   m: Model, d: Data, worldid: int, objid: int, objtype: int, refid: int
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
-    quat = math.mul_quat(d.xquat[worldid, objid], get_batched_value(m.body_iquat, worldid, objid))
+    quat = math.mul_quat(
+      d.xquat[worldid, objid], get_batched_value(m.body_iquat, worldid, objid)
+    )
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid))
+    refquat = math.mul_quat(
+      d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid)
+    )
   elif objtype == int(ObjType.XBODY.value):
     quat = d.xquat[worldid, objid]
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid))
+    refquat = math.mul_quat(
+      d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid)
+    )
   elif objtype == int(ObjType.GEOM.value):
-    quat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[objid]], get_batched_value(m.geom_quat, worldid, objid))
+    quat = math.mul_quat(
+      d.xquat[worldid, m.geom_bodyid[objid]],
+      get_batched_value(m.geom_quat, worldid, objid),
+    )
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, m.geom_bodyid[refid]], get_batched_value(m.geom_quat, worldid, refid))
+    refquat = math.mul_quat(
+      d.xquat[worldid, m.geom_bodyid[refid]],
+      get_batched_value(m.geom_quat, worldid, refid),
+    )
   elif objtype == int(ObjType.SITE.value):
-    quat = math.mul_quat(d.xquat[worldid, m.site_bodyid[objid]], get_batched_value(m.site_quat, worldid, objid))
+    quat = math.mul_quat(
+      d.xquat[worldid, m.site_bodyid[objid]],
+      get_batched_value(m.site_quat, worldid, objid),
+    )
     if refid == -1:
       return quat
-    refquat = math.mul_quat(d.xquat[worldid, m.site_bodyid[refid]], get_batched_value(m.site_quat, worldid, refid))
+    refquat = math.mul_quat(
+      d.xquat[worldid, m.site_bodyid[refid]],
+      get_batched_value(m.site_quat, worldid, refid),
+    )
 
   # TODO(team): camera
 

@@ -28,10 +28,12 @@ from . import test_util
 # due to float precision
 _TOLERANCE = 5e-5
 
+
 def _assert_eq(a, b, name):
   tol = _TOLERANCE * 10  # avoid test noise
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
 
 class IOTest(absltest.TestCase):
   def test_make_put_data(self):
@@ -298,7 +300,6 @@ class IOTest(absltest.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
-
   def test_model_batching(self):
     mjm, mjd, _, _ = test_util.fixture("humanoid/humanoid.xml", kick=True)
 
@@ -310,7 +311,7 @@ class IOTest(absltest.TestCase):
     dof_damping = np.zeros((2, len(damping_orig)), dtype=np.float32)
     dof_damping[0, :] = damping_orig
     dof_damping[1, :] = damping_orig * 0.5
-    
+
     # set the batched damping values
     m.dof_damping = wp.from_numpy(dof_damping, dtype=wp.float32)
 
