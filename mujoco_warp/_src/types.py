@@ -752,6 +752,7 @@ class Model:
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
+    mocap_bodyid: id of body for mocap                       (nmocap,)
   """
 
   nq: int
@@ -966,6 +967,7 @@ class Model:
   sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
+  mocap_bodyid: wp.array(dtype=wp.int32, ndim=1)  # warp only
 
 
 @wp.struct

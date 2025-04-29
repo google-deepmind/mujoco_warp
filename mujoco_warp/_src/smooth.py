@@ -138,6 +138,20 @@ def kinematics(m: Model, d: Data):
       math.mul_quat(xquat, m.site_quat[siteid])
     )
 
+  @kernel
+  def mocap(m: Model, d: Data):
+    worldid, mocapid = wp.tid()
+    bodyid = m.mocap_bodyid[mocapid]
+    mocap_quat = wp.normalize(d.mocap_quat[worldid, mocapid])
+    xpos = d.mocap_pos[worldid, mocapid]
+    d.xpos[worldid, bodyid] = xpos
+    d.xquat[worldid, bodyid] = mocap_quat
+    d.xmat[worldid, bodyid] = math.quat_to_mat(mocap_quat)
+    d.xipos[worldid, bodyid] = xpos + math.rot_vec_quat(m.body_ipos[bodyid], mocap_quat)
+    d.ximat[worldid, bodyid] = math.quat_to_mat(
+      math.mul_quat(mocap_quat, m.body_iquat[bodyid])
+    )
+
   wp.launch(_root, dim=(d.nworld), inputs=[m, d])
 
   body_treeadr = m.body_treeadr.numpy()
@@ -145,6 +159,9 @@ def kinematics(m: Model, d: Data):
     beg = body_treeadr[i]
     end = m.nbody if i == len(body_treeadr) - 1 else body_treeadr[i + 1]
     wp.launch(_level, dim=(d.nworld, end - beg), inputs=[m, d, beg])
+
+  if m.nmocap:
+    wp.launch(mocap, dim=(d.nworld, m.nmocap), inputs=[m, d])
 
   if m.ngeom:
     wp.launch(geom_local_to_global, dim=(d.nworld, m.ngeom), inputs=[m, d])
