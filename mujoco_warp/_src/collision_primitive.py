@@ -19,7 +19,6 @@ from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
 from .math import normalize_with_norm
-from .support import get_batched_value
 from .types import MJ_MINVAL
 from .types import Data
 from .types import GeomType
@@ -51,7 +50,7 @@ def _geom(
   geom.pos = geom_xpos[gid]
   rot = geom_xmat[gid]
   geom.rot = rot
-  geom.size = get_batched_value(m.geom_size, worldid, gid)
+  geom.size = m.geom_size[worldid, gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = m.geom_dataid[gid]
   if dataid >= 0:
@@ -744,22 +743,22 @@ def contact_params(m: Model, d: Data, cid: int, worldid: int):
   pairid = d.collision_pairid[cid]
 
   if pairid > -1:
-    margin = get_batched_value(m.pair_margin, worldid, pairid)
-    gap = get_batched_value(m.pair_gap, worldid, pairid)
+    margin = m.pair_margin[worldid, pairid]
+    gap = m.pair_gap[worldid, pairid]
     condim = m.pair_dim[pairid]
-    friction = get_batched_value(m.pair_friction, worldid, pairid)
-    solref = get_batched_value(m.pair_solref, worldid, pairid)
-    solreffriction = get_batched_value(m.pair_solreffriction, worldid, pairid)
-    solimp = get_batched_value(m.pair_solimp, worldid, pairid)
+    friction = m.pair_friction[worldid, pairid]
+    solref = m.pair_solref[worldid, pairid]
+    solreffriction = m.pair_solreffriction[worldid, pairid]
+    solimp = m.pair_solimp[worldid, pairid]
   else:
     g1 = geoms[0]
     g2 = geoms[1]
 
-    p1 = get_batched_value(m.geom_priority, worldid, g1)
-    p2 = get_batched_value(m.geom_priority, worldid, g2)
+    p1 = m.geom_priority[worldid, g1]
+    p2 = m.geom_priority[worldid, g2]
 
-    solmix1 = get_batched_value(m.geom_solmix, worldid, g1)
-    solmix2 = get_batched_value(m.geom_solmix, worldid, g2)
+    solmix1 = m.geom_solmix[worldid, g1]
+    solmix2 = m.geom_solmix[worldid, g2]
 
     mix = solmix1 / (solmix1 + solmix2)
     mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
@@ -768,12 +767,12 @@ def contact_params(m: Model, d: Data, cid: int, worldid: int):
     mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
     margin = wp.max(
-      get_batched_value(m.geom_margin, worldid, g1),
-      get_batched_value(m.geom_margin, worldid, g2),
+      m.geom_margin[worldid, g1],
+      m.geom_margin[worldid, g2],
     )
     gap = wp.max(
-      get_batched_value(m.geom_gap, worldid, g1),
-      get_batched_value(m.geom_gap, worldid, g2),
+      m.geom_gap[worldid, g1],
+      m.geom_gap[worldid, g2],
     )
 
     condim1 = m.geom_condim[g1]
@@ -783,8 +782,8 @@ def contact_params(m: Model, d: Data, cid: int, worldid: int):
     )
 
     geom_friction = wp.max(
-      get_batched_value(m.geom_friction, worldid, g1),
-      get_batched_value(m.geom_friction, worldid, g2),
+      m.geom_friction[worldid, g1],
+      m.geom_friction[worldid, g2],
     )
     friction = vec5(
       geom_friction[0],
@@ -795,23 +794,23 @@ def contact_params(m: Model, d: Data, cid: int, worldid: int):
     )
 
     if (
-      get_batched_value(m.geom_solref, worldid, g1).x > 0.0
-      and get_batched_value(m.geom_solref, worldid, g2).x > 0.0
+      m.geom_solref[worldid, g1].x > 0.0
+      and m.geom_solref[worldid, g2].x > 0.0
     ):
-      solref = mix * get_batched_value(m.geom_solref, worldid, g1) + (
+      solref = mix * m.geom_solref[worldid, g1] + (
         1.0 - mix
-      ) * get_batched_value(m.geom_solref, worldid, g2)
+      ) * m.geom_solref[worldid, g2]
     else:
       solref = wp.min(
-        get_batched_value(m.geom_solref, worldid, g1),
-        get_batched_value(m.geom_solref, worldid, g2),
+        m.geom_solref[worldid, g1],
+        m.geom_solref[worldid, g2],
       )
 
     solreffriction = wp.vec2(0.0, 0.0)
 
-    solimp = mix * get_batched_value(m.geom_solimp, worldid, g1) + (
+    solimp = mix * m.geom_solimp[worldid, g1] + (
       1.0 - mix
-    ) * get_batched_value(m.geom_solimp, worldid, g2)
+    ) * m.geom_solimp[worldid, g2]
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
