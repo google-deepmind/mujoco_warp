@@ -754,7 +754,7 @@ def _gjk_epa_pipeline(
 
     worldid = d.collision_worldid[tid]
     geoms, margin, gap, condim, friction, solref, solreffriction, solimp = (
-      contact_params(m, d, tid)
+      contact_params(m, d, tid, worldid)
     )
 
     g1 = geoms[0]
