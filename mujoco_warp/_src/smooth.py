@@ -1150,7 +1150,7 @@ def subtree_vel(m: Model, d: Data):
     if bodyid:
       pid = m.body_parentid[bodyid]
       wp.atomic_add(d.subtree_linvel[worldid], pid, d.subtree_linvel[worldid, bodyid])
-    d.subtree_linvel[worldid, bodyid] /= wp.max(MJ_MINVAL, m.body_subtreemass[bodyid])
+    d.subtree_linvel[worldid, bodyid] /= wp.max(MJ_MINVAL, m.body_subtreemass[worldid,bodyid])
 
   body_treeadr = m.body_treeadr.numpy()
   for i in reversed(range(len(body_treeadr))):
@@ -1175,7 +1175,7 @@ def subtree_vel(m: Model, d: Data):
     linvel = d.subtree_linvel[worldid, bodyid]
     linvel_parent = d.subtree_linvel[worldid, pid]
     mass = m.body_mass[worldid, bodyid]
-    subtreemass = m.body_subtreemass[bodyid]
+    subtreemass = m.body_subtreemass[worldid, bodyid]
 
     # momentum wrt body i
     dx = xipos - com
