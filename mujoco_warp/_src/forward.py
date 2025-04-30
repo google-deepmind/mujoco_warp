@@ -695,9 +695,19 @@ def fwd_actuation(m: Model, d: Data):
   def _qfrc_limited(m: Model, d: Data):
     worldid, dofid = wp.tid()
     jntid = m.dof_jntid[dofid]
-    if m.jnt_actfrclimited[jntid]:
+    limited = m.jnt_actfrclimited[jntid]
+    qfrc_dof = d.qfrc_actuator[worldid, dofid]
+
+    # actuator-level gravity compensation, skip if added as a passive force
+    if m.ngravcomp and m.jnt_actgravcomp[jntid]:
+      qfrc_dof += d.qfrc_gravcomp[worldid, dofid]
+
+      if not limited:
+        d.qfrc_actuator[worldid, dofid] = qfrc_dof
+
+    if limited:
       d.qfrc_actuator[worldid, dofid] = wp.clamp(
-        d.qfrc_actuator[worldid, dofid],
+        qfrc_dof,
         m.jnt_actfrcrange[jntid][0],
         m.jnt_actfrcrange[jntid][1],
       )
@@ -705,18 +715,29 @@ def fwd_actuation(m: Model, d: Data):
   if m.opt.is_sparse:
     # TODO(team): sparse version
     @kernel
-    def _qfrc(m: Model, moment: array3df, force: array2df, qfrc: array2df):
-      worldid, vid = wp.tid()
+    def _qfrc(
+      m: Model,
+      moment: array3df,
+      force: array2df,
+      qfrc_gravcomp: array2df,
+      qfrc: array2df,
+    ):
+      worldid, dofid = wp.tid()
+      jntid = m.dof_jntid[dofid]
 
       s = float(0.0)
       for uid in range(m.nu):
         # TODO consider using Tile API or transpose moment for better access pattern
-        s += moment[worldid, uid, vid] * force[worldid, uid]
-      jntid = m.dof_jntid[vid]
+        s += moment[worldid, uid, dofid] * force[worldid, uid]
+
+      # actuator-level gravity compensation, skip if added as passive force
+      if m.ngravcomp and m.jnt_actgravcomp[jntid]:
+        s += qfrc_gravcomp[worldid, dofid]
+
       if m.jnt_actfrclimited[jntid]:
         r = m.jnt_actfrcrange[jntid]
         s = wp.clamp(s, r[0], r[1])
-      qfrc[worldid, vid] = s
+      qfrc[worldid, dofid] = s
 
   wp.launch(_force, dim=[d.nworld, m.nu], inputs=[m, d])
 
@@ -726,7 +747,7 @@ def fwd_actuation(m: Model, d: Data):
     wp.launch(
       _qfrc,
       dim=(d.nworld, m.nv),
-      inputs=[m, d.actuator_moment, d.actuator_force],
+      inputs=[m, d.actuator_moment, d.actuator_force, d.qfrc_gravcomp],
       outputs=[d.qfrc_actuator],
     )
 

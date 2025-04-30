@@ -20,8 +20,16 @@ def pytest_addoption(parser):
   parser.addoption(
     "--cpu", action="store_true", default=False, help="run tests with cpu"
   )
+  parser.addoption(
+    "--verify_cuda",
+    action="store_true",
+    default=False,
+    help="run tests with cuda error checking",
+  )
 
 
 def pytest_configure(config):
   if config.getoption("--cpu"):
     wp.set_device("cpu")
+  if config.getoption("--verify_cuda"):
+    wp.config.verify_cuda = True

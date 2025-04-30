@@ -24,8 +24,10 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 
 from . import test_util
-
-wp.config.verify_cuda = True
+from .types import BiasType
+from .types import DisableBit
+from .types import GainType
+from .types import IntegratorType
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -42,7 +44,9 @@ class ForwardTest(parameterized.TestCase):
   def test_fwd_velocity(self):
     _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
 
-    d.actuator_velocity.zero_()
+    for arr in (d.actuator_velocity, d.qfrc_bias):
+      arr.zero_()
+
     mjwarp.fwd_velocity(m, d)
 
     _assert_eq(
@@ -59,11 +63,16 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.ten_velocity.numpy()[0], mjd.ten_velocity, "ten_velocity")
 
   @parameterized.parameters(
-    "actuation/actuation.xml",
-    "actuation/actuators.xml",
+    ("actuation/actuation.xml", True),
+    ("actuation/actuation.xml", False),
+    ("actuation/actuators.xml", True),
+    ("actuation/actuators.xml", False),
   )
-  def test_actuation(self, xml):
-    mjm, mjd, m, d = test_util.fixture(xml, keyframe=0)
+  def test_actuation(self, xml, actuation):
+    mjm, mjd, m, d = test_util.fixture(xml, actuation=actuation, keyframe=0)
+
+    for arr in (d.qfrc_actuator, d.actuator_force, d.act_dot):
+      arr.zero_()
 
     mjwarp.fwd_actuation(m, d)
 
@@ -80,7 +89,6 @@ class ForwardTest(parameterized.TestCase):
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
     # TODO(team): test DisableBit.CLAMPCTRL
-    # TODO(team): test DisableBit.ACTUATION
     # TODO(team): test muscle
     # TODO(team): test actearly
 
@@ -96,7 +104,7 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
   @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
-  def test_eulerdamp(self, eulerdamp, sparse):
+  def test_euler(self, eulerdamp, sparse):
     mjm, mjd, _, _ = test_util.fixture(
       "pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse
     )
@@ -113,29 +121,32 @@ class ForwardTest(parameterized.TestCase):
     mjwarp.euler(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
   def test_rungekutta4(self):
-    # slower than other tests because `forward` compilation
     mjm, mjd, m, d = test_util.fixture(
       xml="""
         <mujoco>
-          <option integrator="RK4" iterations="4" ls_iterations="4">
+          <option integrator="RK4" iterations="1" ls_iterations="1">
             <flag constraint="disable"/>
           </option>
           <worldbody>
-            <geom type="plane" size="1 1 .01" pos="0 0 -1"/>
-            <body pos="0.15 0 0">
-              <joint type="hinge" axis="0 1 0"/>
-              <geom type="capsule" size="0.02" fromto="0 0 0 .1 0 0"/>
+            <body>
+              <joint type="hinge"/>
+              <geom type="sphere" size=".1"/>
               <body pos="0.1 0 0">
-                <joint type="slide" axis="1 0 0" stiffness="200"/>
-                <geom type="capsule" size="0.015" fromto="-.1 0 0 .1 0 0"/>
+                <joint type="hinge"/>
+                <geom type="sphere" size=".1"/>
               </body>
             </body>
           </worldbody>
+          <keyframe>
+            <key qpos=".1 .2" qvel=".025 .05"/>
+          </keyframe>
         </mujoco>
-        """
+        """,
+      keyframe=0,
     )
 
     mjwarp.rungekutta4(m, d)
@@ -143,7 +154,6 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
-    _assert_eq(d.act.numpy()[0], mjd.act, "act")
     _assert_eq(d.time.numpy()[0], mjd.time, "time")
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
 
@@ -157,34 +167,32 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
-
-class ImplicitIntegratorTest(parameterized.TestCase):
   @parameterized.parameters(
     0,
-    mjwarp.DisableBit.PASSIVE.value,
-    mjwarp.DisableBit.ACTUATION.value,
-    mjwarp.DisableBit.PASSIVE.value & mjwarp.DisableBit.ACTUATION.value,
+    DisableBit.PASSIVE.value,
+    DisableBit.ACTUATION.value,
+    DisableBit.PASSIVE.value & DisableBit.ACTUATION.value,
   )
-  def test_implicit(self, disableFlags):
-    mjm, _, _, _ = test_util.fixture("pendula.xml")
+  def test_implicit(self, dsblflgs):
+    mjm, mjd, _, _ = test_util.fixture(
+      "pendula.xml",
+      integrator=IntegratorType.IMPLICITFAST,
+      disableflags=dsblflgs,
+    )
 
-    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-    mjm.opt.disableflags |= disableFlags
     mjm.actuator_gainprm[:, 2] = np.random.uniform(
       low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape
     )
 
     # change actuators to velocity/damper to cover all codepaths
-    mjm.actuator_gaintype[3] = mujoco.mjtGain.mjGAIN_AFFINE
-    mjm.actuator_gaintype[6] = mujoco.mjtGain.mjGAIN_AFFINE
-    mjm.actuator_biastype[0:3] = mujoco.mjtBias.mjBIAS_AFFINE
-    mjm.actuator_biastype[4:6] = mujoco.mjtBias.mjBIAS_AFFINE
+    mjm.actuator_gaintype[3] = GainType.AFFINE
+    mjm.actuator_gaintype[6] = GainType.AFFINE
+    mjm.actuator_biastype[0:3] = BiasType.AFFINE
+    mjm.actuator_biastype[4:6] = BiasType.AFFINE
     mjm.actuator_biasprm[0:3, 2] = -1.0
     mjm.actuator_biasprm[4:6, 2] = -1.0
     mjm.actuator_ctrlrange[3:7] = 10.0
     mjm.actuator_gear[:] = 1.0
-
-    mjd = mujoco.MjData(mjm)
 
     mjd.qvel = np.random.uniform(low=-0.01, high=0.01, size=mjd.qvel.shape)
     mjd.ctrl = np.random.uniform(low=-0.1, high=0.1, size=mjd.ctrl.shape)
@@ -199,6 +207,21 @@ class ImplicitIntegratorTest(parameterized.TestCase):
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
+
+  @parameterized.parameters(
+    "humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"
+  )
+  def test_graph_capture(self, xml):
+    # TODO(team): test more environments
+    if wp.get_device().is_cuda and wp.config.verify_cuda == False:
+      _, _, m, d = test_util.fixture(xml)
+
+      with wp.ScopedCapture() as capture:
+        mjwarp.step(m, d)
+
+      wp.capture_launch(capture.graph)
+
+      self.assertTrue(d.time.numpy()[0] > 0.0)
 
 
 if __name__ == "__main__":

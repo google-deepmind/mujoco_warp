@@ -20,6 +20,7 @@ import warp as wp
 
 from . import math
 from . import smooth
+from .types import MJ_MINVAL
 from .types import Data
 from .types import DataType
 from .types import DisableBit
@@ -58,6 +59,109 @@ def _apply_cutoff(m: Model, sensorid: int, sensordim: int, sensor: Any) -> Any:
         sensor[i] = wp.min(sensor[i], cutoff)
 
   return sensor
+
+
+@wp.func
+def _cam_projection(
+  m: Model, d: Data, worldid: int, objid: int, refid: int
+) -> wp.vec2f:
+  sensorsize = m.cam_sensorsize[refid]
+  intrinsic = m.cam_intrinsic[refid]
+  fovy = m.cam_fovy[refid]
+  res = m.cam_resolution[refid]
+
+  target_xpos = d.site_xpos[worldid, objid]
+  xpos = d.cam_xpos[worldid, refid]
+  xmat = d.cam_xmat[worldid, refid]
+
+  translation = wp.mat44f(
+    1.0,
+    0.0,
+    0.0,
+    -xpos[0],
+    0.0,
+    1.0,
+    0.0,
+    -xpos[1],
+    0.0,
+    0.0,
+    1.0,
+    -xpos[2],
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+  )
+  rotation = wp.mat44f(
+    xmat[0, 0],
+    xmat[1, 0],
+    xmat[2, 0],
+    0.0,
+    xmat[0, 1],
+    xmat[1, 1],
+    xmat[2, 1],
+    0.0,
+    xmat[0, 2],
+    xmat[1, 2],
+    xmat[2, 2],
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+  )
+
+  # focal transformation matrix (3 x 4)
+  if sensorsize[0] != 0.0 and sensorsize[1] != 0.0:
+    fx = intrinsic[0] / (sensorsize[0] + MJ_MINVAL) * float(res[0])
+    fy = intrinsic[1] / (sensorsize[1] + MJ_MINVAL) * float(res[1])
+    focal = wp.mat44f(
+      -fx, 0.0, 0.0, 0.0, 0.0, fy, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    )
+  else:
+    f = 0.5 / wp.tan(fovy * wp.static(wp.pi / 360.0)) * float(res[1])
+    focal = wp.mat44f(
+      -f, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    )
+
+  # image matrix (3 x 3)
+  image = wp.mat44f(
+    1.0,
+    0.0,
+    0.5 * float(res[0]),
+    0.0,
+    0.0,
+    1.0,
+    0.5 * float(res[1]),
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+  )
+
+  # projection matrix (3 x 4): product of all 4 matrices
+  # TODO(team): compute proj directly
+  proj = image @ focal @ rotation @ translation
+
+  # projection matrix multiples homogenous [x, y, z, 1] vectors
+  pos_hom = wp.vec4(target_xpos[0], target_xpos[1], target_xpos[2], 1.0)
+
+  # project world coordinates into pixel space, see:
+  # https://en.wikipedia.org/wiki/3D_projection#Mathematical_formula
+  pixel_coord_hom = proj @ pos_hom
+
+  # avoid dividing by tiny numbers
+  denom = pixel_coord_hom[2]
+  if wp.abs(denom) < MJ_MINVAL:
+    denom = wp.clamp(denom, -MJ_MINVAL, MJ_MINVAL)
+
+  # compute projection
+  return wp.vec2f(pixel_coord_hom[0], pixel_coord_hom[1]) / denom
 
 
 @wp.func
@@ -217,7 +321,13 @@ def sensor_pos(m: Model, d: Data):
     objid = m.sensor_objid[posadr]
     adr = m.sensor_adr[posadr]
 
-    if sensortype == int(SensorType.JOINTPOS.value):
+    if sensortype == int(SensorType.CAMPROJECTION.value):
+      refid = m.sensor_refid[posadr]
+      cam_projection = _cam_projection(m, d, worldid, objid, refid)
+      cam_projection = _apply_cutoff(m, posadr, 2, cam_projection)
+      d.sensordata[worldid, adr + 0] = cam_projection[0]
+      d.sensordata[worldid, adr + 1] = cam_projection[1]
+    elif sensortype == int(SensorType.JOINTPOS.value):
       joint_pos = _joint_pos(m, d, worldid, objid)
       joint_pos = _apply_cutoff(m, posadr, joint_pos)
       d.sensordata[worldid, adr] = joint_pos
