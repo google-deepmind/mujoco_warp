@@ -19,7 +19,6 @@ from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
 from .math import normalize_with_norm
-from .support import get_batched_array
 from .support import get_batched_value
 from .types import MJ_MINVAL
 from .types import Data

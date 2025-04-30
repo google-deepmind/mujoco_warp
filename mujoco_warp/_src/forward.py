@@ -25,7 +25,6 @@ from . import passive
 from . import sensor
 from . import smooth
 from . import solver
-from .support import get_batched_array
 from .support import get_batched_value
 from .support import xfrc_accumulate
 from .types import MJ_MINVAL
@@ -227,7 +226,7 @@ def euler(m: Model, d: Data):
           d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
         )
         damping_tile = wp.tile_load(
-          get_batched_array(damping, worldid), shape=(tilesize,), offset=(dofid,)
+          damping[worldid], shape=(tilesize,), offset=(dofid,)
         )
         damping_scaled = damping_tile * m.opt.timestep
         qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
@@ -441,7 +440,7 @@ def implicit(m: Model, d: Data):
 
         if wp.static(passive_enabled):
           dof_damping = wp.tile_load(
-            get_batched_array(damping, worldid), shape=tilesize_nv, offset=offset_nv
+            damping[worldid], shape=tilesize_nv, offset=offset_nv
           )
           negative = wp.neg(dof_damping)
           qderiv_tile = wp.tile_diag_add(qderiv_tile, negative)

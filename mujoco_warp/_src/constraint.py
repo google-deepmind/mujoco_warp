@@ -18,7 +18,6 @@ import warp as wp
 from . import math
 from . import support
 from . import types
-from .support import get_batched_array
 from .support import get_batched_value
 from .warp_util import event_scope
 
@@ -397,7 +396,7 @@ def _efc_limit_slide_hinge(
   jntid = m.jnt_limited_slide_hinge_adr[jntlimitedid]
 
   qpos = d.qpos[worldid, m.jnt_qposadr[jntid]]
-  jnt_range = get_batched_array(m.jnt_range, worldid, jntid)
+  jnt_range = m.jnt_range[worldid, jntid]
   dist_min, dist_max = qpos - jnt_range[0], jnt_range[1] - qpos
   pos = wp.min(dist_min, dist_max) - get_batched_value(m.jnt_margin, worldid, jntid)
   active = pos < 0
@@ -445,7 +444,7 @@ def _efc_limit_ball(
   axis_angle = math.quat_to_vel(jnt_quat)
   axis, angle = math.normalize_with_norm(axis_angle)
   jnt_margin = get_batched_value(m.jnt_margin, worldid, jntid)
-  jnt_range = get_batched_array(m.jnt_range, worldid, jntid)
+  jnt_range = m.jnt_range[worldid, jntid]
 
   pos = wp.max(jnt_range[0], jnt_range[1]) - angle - jnt_margin
   active = pos < 0
