@@ -20,7 +20,6 @@ import warp as wp
 
 from . import math
 from . import smooth
-from .support import get_batched_value
 from .types import Data
 from .types import DisableBit
 from .types import Model
@@ -138,41 +137,41 @@ def _frame_quat(
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
     quat = math.mul_quat(
-      d.xquat[worldid, objid], get_batched_value(m.body_iquat, worldid, objid)
+      d.xquat[worldid, objid], m.body_iquat[worldid, objid]
     )
     if refid == -1:
       return quat
     refquat = math.mul_quat(
-      d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid)
+      d.xquat[worldid, refid], m.body_iquat[worldid, refid]
     )
   elif objtype == int(ObjType.XBODY.value):
     quat = d.xquat[worldid, objid]
     if refid == -1:
       return quat
     refquat = math.mul_quat(
-      d.xquat[worldid, refid], get_batched_value(m.body_iquat, worldid, refid)
+      d.xquat[worldid, refid], m.body_iquat[worldid, refid]
     )
   elif objtype == int(ObjType.GEOM.value):
     quat = math.mul_quat(
       d.xquat[worldid, m.geom_bodyid[objid]],
-      get_batched_value(m.geom_quat, worldid, objid),
+      m.geom_quat[worldid, objid],
     )
     if refid == -1:
       return quat
     refquat = math.mul_quat(
       d.xquat[worldid, m.geom_bodyid[refid]],
-      get_batched_value(m.geom_quat, worldid, refid),
+      m.geom_quat[worldid, refid],
     )
   elif objtype == int(ObjType.SITE.value):
     quat = math.mul_quat(
       d.xquat[worldid, m.site_bodyid[objid]],
-      get_batched_value(m.site_quat, worldid, objid),
+      m.site_quat[worldid, objid],
     )
     if refid == -1:
       return quat
     refquat = math.mul_quat(
       d.xquat[worldid, m.site_bodyid[refid]],
-      get_batched_value(m.site_quat, worldid, refid),
+      m.site_quat[worldid, refid],
     )
 
   # TODO(team): camera
