@@ -24,7 +24,7 @@ def pytest_addoption(parser):
     "--verify_cuda",
     action="store_true",
     default=False,
-    help="run tests with cuda verification",
+    help="run tests with cuda error checking",
   )
 
 
