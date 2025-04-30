@@ -22,7 +22,6 @@ import warp as wp
 from .collision_primitive import contact_params
 from .collision_primitive import write_contact
 from .math import make_frame
-from .support import get_batched_value
 from .types import Data
 from .types import GeomType
 from .types import Model
@@ -221,8 +220,8 @@ def box_box_kernel(
     trans_atob = b_mat_inv @ (a_pos - b_pos)
     rot_atob = b_mat_inv @ a_mat
 
-    a_size = get_batched_value(m.geom_size, worldid, ga)
-    b_size = get_batched_value(m.geom_size, worldid, gb)
+    a_size = m.geom_size[worldid, ga]
+    b_size = m.geom_size[worldid, gb]
     a = box(rot_atob, trans_atob, a_size)
     b = box(wp.identity(3, wp.float32), wp.vec3(0.0), b_size)
 
@@ -314,8 +313,8 @@ def box_box_kernel(
         pos[i] = pos[idx]
 
     margin = wp.max(
-      get_batched_value(m.geom_margin, worldid, ga),
-      get_batched_value(m.geom_margin, worldid, gb),
+      m.geom_margin[worldid, ga],
+      m.geom_margin[worldid, gb],
     )
     for i in range(4):
       pos_glob = b_mat @ pos[i] + b_pos

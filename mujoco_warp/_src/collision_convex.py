@@ -24,7 +24,6 @@ from .math import make_frame
 from .math import orthonormal
 from .support import all_same
 from .support import any_different
-from .support import get_batched_value
 from .types import MJ_MINVAL
 from .types import NUM_GEOM_TYPES
 from .types import Data
@@ -737,8 +736,8 @@ def gjk_epa_pipeline(
     info2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid], worldid)
 
     margin = wp.max(
-      get_batched_value(m.geom_margin, worldid, g1),
-      get_batched_value(m.geom_margin, worldid, g2),
+      m.geom_margin[worldid, g1],
+      m.geom_margin[worldid, g2],
     )
 
     simplex, normal = _gjk(m, info1, info2)
