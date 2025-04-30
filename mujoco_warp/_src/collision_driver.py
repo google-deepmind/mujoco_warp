@@ -36,8 +36,8 @@ def _sphere_filter(m: Model, d: Data, geom1: int, geom2: int, worldid: int) -> b
   margin2 = m.geom_margin[worldid, geom2]
   pos1 = d.geom_xpos[worldid, geom1]
   pos2 = d.geom_xpos[worldid, geom2]
-  size1 = m.geom_rbound[geom1]
-  size2 = m.geom_rbound[geom2]
+  size1 = m.geom_rbound[worldid, geom1]
+  size2 = m.geom_rbound[worldid, geom2]
 
   bound = size1 + size2 + wp.max(margin1, margin2)
   dif = pos2 - pos1
@@ -105,7 +105,7 @@ def _sap_project(m: Model, d: Data, direction: wp.vec3):
   worldid, geomid = wp.tid()
 
   xpos = d.geom_xpos[worldid, geomid]
-  rbound = m.geom_rbound[geomid]
+  rbound = m.geom_rbound[worldid, geomid]
 
   if rbound == 0.0:
     # geom is a plane

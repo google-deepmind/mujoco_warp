@@ -422,7 +422,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.geom_margin = create_nmodel_batched_array(mjm.geom_margin, dtype=wp.float32)
   m.geom_gap = create_nmodel_batched_array(mjm.geom_gap, dtype=wp.float32)
   m.geom_aabb = wp.array(mjm.geom_aabb, dtype=wp.vec3, ndim=3)
-  m.geom_rbound = wp.array(mjm.geom_rbound, dtype=wp.float32, ndim=1)
+  m.geom_rbound = create_nmodel_batched_array(mjm.geom_rbound, dtype=wp.float32)
   m.geom_dataid = create_nmodel_batched_array(mjm.geom_dataid, dtype=wp.int32)
   m.mesh_vertadr = wp.array(mjm.mesh_vertadr, dtype=wp.int32, ndim=1)
   m.mesh_vertnum = wp.array(mjm.mesh_vertnum, dtype=wp.int32, ndim=1)
@@ -523,7 +523,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # predefined collision pairs
   m.pair_dim = wp.array(mjm.pair_dim, dtype=wp.int32, ndim=1)
   m.pair_geom1 = wp.array(mjm.pair_geom1, dtype=wp.int32, ndim=1)
-  m.pair_geom2 = create_nmodel_batched_array(mjm.pair_geom2, dtype=wp.int32)
+  m.pair_geom2 = wp.array(mjm.pair_geom2, dtype=wp.int32, ndim=1)
   m.pair_solref = create_nmodel_batched_array(mjm.pair_solref, dtype=wp.vec2)
   m.pair_solreffriction = create_nmodel_batched_array(
     mjm.pair_solreffriction, dtype=wp.vec2
