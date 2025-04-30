@@ -713,7 +713,7 @@ def rne_postconstraint(m: Model, d: Data):
 
     worldid = d.efc.worldid[efcid]
     id = d.efc.id[efcid]
-    eq_data = get_batched_value(m.eq_data, worldid, id)
+    eq_data = m.eq_data[worldid, id]
     body_semantic = m.eq_objtype[id] == wp.static(ObjType.BODY.value)
 
     obj1 = m.eq_obj1id[id]
@@ -734,7 +734,7 @@ def rne_postconstraint(m: Model, d: Data):
         else:
           offset = wp.vec3(eq_data[3], eq_data[4], eq_data[5])
       else:
-        offset = get_batched_value(m.site_pos, worldid, obj1)
+        offset = m.site_pos[worldid, obj1]
 
       # transform point on body1: local -> global
       pos = d.xmat[worldid, bodyid1] @ offset + d.xpos[worldid, bodyid1]
@@ -756,7 +756,7 @@ def rne_postconstraint(m: Model, d: Data):
         else:
           offset = wp.vec3(eq_data[0], eq_data[1], eq_data[2])
       else:
-        offset = get_batched_value(m.site_pos, worldid, obj2)
+        offset = m.site_pos[worldid, obj2]
 
       # transform point on body2: local -> global
       pos = d.xmat[worldid, bodyid2] @ offset + d.xpos[worldid, bodyid2]
@@ -835,7 +835,7 @@ def transmission(m: Model, d: Data):
   ):
     worldid, actid = wp.tid()
     trntype = m.actuator_trntype[actid]
-    gear = get_batched_value(m.actuator_gear, worldid, actid)
+    gear = m.actuator_gear[worldid, actid]
     if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
       TrnType.JOINTINPARENT.value
     ):
@@ -1131,12 +1131,12 @@ def subtree_vel(m: Model, d: Data):
     lin -= wp.cross(xipos - subtree_com_root, ang)
 
     d.subtree_linvel[worldid, bodyid] = (
-      get_batched_value(m.body_mass, worldid, bodyid) * lin
+      m.body_mass[worldid, bodyid] * lin
     )
     dv = wp.transpose(ximat) @ ang
-    dv[0] *= get_batched_value(m.body_inertia, worldid, bodyid)[0]
-    dv[1] *= get_batched_value(m.body_inertia, worldid, bodyid)[1]
-    dv[2] *= get_batched_value(m.body_inertia, worldid, bodyid)[2]
+    dv[0] *= m.body_inertia[worldid, bodyid][0]
+    dv[1] *= m.body_inertia[worldid, bodyid][1]
+    dv[2] *= m.body_inertia[worldid, bodyid][2]
     d.subtree_angmom[worldid, bodyid] = ximat @ dv
     d.subtree_bodyvel[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
@@ -1174,7 +1174,7 @@ def subtree_vel(m: Model, d: Data):
     vel = d.subtree_bodyvel[worldid, bodyid]
     linvel = d.subtree_linvel[worldid, bodyid]
     linvel_parent = d.subtree_linvel[worldid, pid]
-    mass = get_batched_value(m.body_mass, worldid, bodyid)
+    mass = m.body_mass[worldid, bodyid]
     subtreemass = m.body_subtreemass[bodyid]
 
     # momentum wrt body i
@@ -1223,7 +1223,7 @@ def tendon(m: Model, d: Data):
       wrap_jnt_adr = m.wrap_jnt_adr[wrapid]
 
       wrap_objid = m.wrap_objid[wrap_jnt_adr]
-      prm = get_batched_value(m.wrap_prm, worldid, wrap_jnt_adr)
+      prm = m.wrap_prm[worldid, wrap_jnt_adr]
 
       # add to length
       L = prm * d.qpos[worldid, m.jnt_qposadr[wrap_objid]]
