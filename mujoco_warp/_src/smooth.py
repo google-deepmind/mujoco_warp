@@ -61,12 +61,8 @@ def kinematics(m: Model, d: Data):
     if jntnum == 0:
       # no joints - apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
-      xpos = (
-        d.xmat[worldid, pid] * m.body_pos[worldid, bodyid]
-      ) + d.xpos[worldid, pid]
-      xquat = math.mul_quat(
-        d.xquat[worldid, pid], m.body_quat[worldid, bodyid]
-      )
+      xpos = (d.xmat[worldid, pid] * m.body_pos[worldid, bodyid]) + d.xpos[worldid, pid]
+      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[worldid, bodyid])
     elif jntnum == 1 and m.jnt_type[jntadr] == wp.static(JointType.FREE.value):
       # free joint
       qadr = m.jnt_qposadr[jntadr]
@@ -78,20 +74,14 @@ def kinematics(m: Model, d: Data):
       # regular or no joints
       # apply fixed translation and rotation relative to parent
       pid = m.body_parentid[bodyid]
-      xpos = (
-        d.xmat[worldid, pid] * m.body_pos[worldid, bodyid]
-      ) + d.xpos[worldid, pid]
-      xquat = math.mul_quat(
-        d.xquat[worldid, pid], m.body_quat[worldid, bodyid]
-      )
+      xpos = (d.xmat[worldid, pid] * m.body_pos[worldid, bodyid]) + d.xpos[worldid, pid]
+      xquat = math.mul_quat(d.xquat[worldid, pid], m.body_quat[worldid, bodyid])
 
       for _ in range(jntnum):
         qadr = m.jnt_qposadr[jntadr]
         jnt_type = m.jnt_type[jntadr]
         jnt_axis = m.jnt_axis[jntadr]
-        xanchor = (
-          math.rot_vec_quat(m.jnt_pos[worldid, jntadr], xquat) + xpos
-        )
+        xanchor = math.rot_vec_quat(m.jnt_pos[worldid, jntadr], xquat) + xpos
         xaxis = math.rot_vec_quat(jnt_axis, xquat)
 
         if jnt_type == wp.static(JointType.BALL.value):
@@ -103,9 +93,7 @@ def kinematics(m: Model, d: Data):
           )
           xquat = math.mul_quat(xquat, qloc)
           # correct for off-center rotation
-          xpos = xanchor - math.rot_vec_quat(
-            m.jnt_pos[worldid, jntadr], xquat
-          )
+          xpos = xanchor - math.rot_vec_quat(m.jnt_pos[worldid, jntadr], xquat)
         elif jnt_type == wp.static(JointType.SLIDE.value):
           xpos += xaxis * (qpos[qadr] - m.qpos0[worldid, qadr])
         elif jnt_type == wp.static(JointType.HINGE.value):
@@ -113,9 +101,7 @@ def kinematics(m: Model, d: Data):
           qloc = math.axis_angle_to_quat(jnt_axis, qpos[qadr] - qpos0)
           xquat = math.mul_quat(xquat, qloc)
           # correct for off-center rotation
-          xpos = xanchor - math.rot_vec_quat(
-            m.jnt_pos[worldid, jntadr], xquat
-          )
+          xpos = xanchor - math.rot_vec_quat(m.jnt_pos[worldid, jntadr], xquat)
 
         d.xanchor[worldid, jntadr] = xanchor
         d.xaxis[worldid, jntadr] = xaxis
@@ -180,7 +166,9 @@ def com_pos(m: Model, d: Data):
   @kernel
   def subtree_com_init(m: Model, d: Data):
     worldid, bodyid = wp.tid()
-    d.subtree_com[worldid, bodyid] = d.xipos[worldid, bodyid] * m.body_mass[worldid, bodyid]
+    d.subtree_com[worldid, bodyid] = (
+      d.xipos[worldid, bodyid] * m.body_mass[worldid, bodyid]
+    )
 
   @kernel
   def subtree_com_acc(m: Model, d: Data, leveladr: int):
@@ -304,9 +292,9 @@ def camlight(m: Model, d: Data):
       body_xpos = d.xpos[worldid, m.cam_bodyid[camid]]
       d.cam_xpos[worldid, camid] = body_xpos + m.cam_pos0[worldid, camid]
     elif m.cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
-      d.cam_xpos[worldid, camid] = d.subtree_com[
-        worldid, m.cam_bodyid[camid]
-      ] + m.cam_poscom0[worldid, camid]
+      d.cam_xpos[worldid, camid] = (
+        d.subtree_com[worldid, m.cam_bodyid[camid]] + m.cam_poscom0[worldid, camid]
+      )
     elif m.cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or m.cam_mode[
       camid
     ] == wp.static(CamLightType.TARGETBODYCOM.value):
@@ -353,9 +341,10 @@ def camlight(m: Model, d: Data):
       body_xpos = d.xpos[worldid, m.light_bodyid[lightid]]
       d.light_xpos[worldid, lightid] = body_xpos + m.light_pos0[worldid, lightid]
     elif m.light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
-      d.light_xpos[worldid, lightid] = d.subtree_com[
-        worldid, m.light_bodyid[lightid]
-      ] + m.light_poscom0[worldid, lightid]
+      d.light_xpos[worldid, lightid] = (
+        d.subtree_com[worldid, m.light_bodyid[lightid]]
+        + m.light_poscom0[worldid, lightid]
+      )
     elif m.light_mode[lightid] == wp.static(
       CamLightType.TARGETBODY.value
     ) or m.light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
@@ -1130,9 +1119,7 @@ def subtree_vel(m: Model, d: Data):
     # update linear velocity
     lin -= wp.cross(xipos - subtree_com_root, ang)
 
-    d.subtree_linvel[worldid, bodyid] = (
-      m.body_mass[worldid, bodyid] * lin
-    )
+    d.subtree_linvel[worldid, bodyid] = m.body_mass[worldid, bodyid] * lin
     dv = wp.transpose(ximat) @ ang
     dv[0] *= m.body_inertia[worldid, bodyid][0]
     dv[1] *= m.body_inertia[worldid, bodyid][1]
@@ -1150,7 +1137,9 @@ def subtree_vel(m: Model, d: Data):
     if bodyid:
       pid = m.body_parentid[bodyid]
       wp.atomic_add(d.subtree_linvel[worldid], pid, d.subtree_linvel[worldid, bodyid])
-    d.subtree_linvel[worldid, bodyid] /= wp.max(MJ_MINVAL, m.body_subtreemass[worldid,bodyid])
+    d.subtree_linvel[worldid, bodyid] /= wp.max(
+      MJ_MINVAL, m.body_subtreemass[worldid, bodyid]
+    )
 
   body_treeadr = m.body_treeadr.numpy()
   for i in reversed(range(len(body_treeadr))):

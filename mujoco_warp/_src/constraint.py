@@ -131,7 +131,9 @@ def _efc_equality_connect(
     d.efc.J[efcid + 2, dofid] = j1mj2[2]
     Jqvel += j1mj2 * d.qvel[worldid, dofid]
 
-  invweight = m.body_invweight0[worldid, body1id, 0] + m.body_invweight0[worldid, body2id, 0]
+  invweight = (
+    m.body_invweight0[worldid, body1id, 0] + m.body_invweight0[worldid, body2id, 0]
+  )
   pos_imp = wp.length(pos)
 
   solref = m.eq_solref[worldid, i_eq]
@@ -190,20 +192,14 @@ def _efc_equality_joint(
       2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4])
     )
 
-    pos = (
-      d.qpos[worldid, qposadr1] - m.qpos0[worldid, qposadr1] - rhs
-    )
+    pos = d.qpos[worldid, qposadr1] - m.qpos0[worldid, qposadr1] - rhs
     Jqvel = d.qvel[worldid, dofadr1] - d.qvel[worldid, dofadr2] * deriv_2
     invweight = m.dof_invweight0[worldid, dofadr1] + m.dof_invweight0[worldid, dofadr2]
 
     d.efc.J[efcid, dofadr2] = -deriv_2
   else:
     # Single joint constraint
-    pos = (
-      d.qpos[worldid, qposadr1]
-      - m.qpos0[worldid, qposadr1]
-      - data[0]
-    )
+    pos = d.qpos[worldid, qposadr1] - m.qpos0[worldid, qposadr1] - data[0]
     Jqvel = d.qvel[worldid, dofadr1]
     invweight = m.dof_invweight0[worldid, dofadr1]
 
@@ -290,13 +286,9 @@ def _efc_equality_weld(
     body2id = m.site_bodyid[obj2id]
     pos1 = d.site_xpos[worldid, obj1id]
     pos2 = d.site_xpos[worldid, obj2id]
-    quat = math.mul_quat(
-      d.xquat[worldid, body1id], m.site_quat[worldid, obj1id]
-    )
+    quat = math.mul_quat(d.xquat[worldid, body1id], m.site_quat[worldid, obj1id])
     quat1 = math.quat_inv(
-      math.mul_quat(
-        d.xquat[worldid, body2id], m.site_quat[worldid, obj2id]
-      )
+      math.mul_quat(d.xquat[worldid, body2id], m.site_quat[worldid, obj2id])
     )
 
   else:
@@ -336,7 +328,9 @@ def _efc_equality_weld(
   crotq = math.mul_quat(quat1, quat)  # copy axis components
   crot = wp.vec3(crotq[1], crotq[2], crotq[3]) * torquescale
 
-  invweight_t = m.body_invweight0[worldid, body1id, 0] + m.body_invweight0[worldid, body2id, 0]
+  invweight_t = (
+    m.body_invweight0[worldid, body1id, 0] + m.body_invweight0[worldid, body2id, 0]
+  )
 
   pos_imp = wp.sqrt(wp.length_sq(cpos) + wp.length_sq(crot))
 
@@ -359,7 +353,9 @@ def _efc_equality_weld(
       i_eq,
     )
 
-  invweight_r = m.body_invweight0[worldid, body1id, 1] + m.body_invweight0[worldid, body2id, 1]
+  invweight_r = (
+    m.body_invweight0[worldid, body1id, 1] + m.body_invweight0[worldid, body2id, 1]
+  )
 
   for i in range(3):
     _update_efc_row(
@@ -558,7 +554,9 @@ def _efc_contact_pyramidal(
     frame = d.contact.frame[conid]
 
     # pyramidal has common invweight across all edges
-    invweight = m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
+    invweight = (
+      m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
+    )
 
     if condim > 1:
       dimid2 = dimid / 2 + 1
@@ -659,7 +657,9 @@ def _efc_contact_elliptic(
       d.efc.J[efcid, i] = J
       Jqvel += J * d.qvel[worldid, i]
 
-    invweight = m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
+    invweight = (
+      m.body_invweight0[worldid, body1, 0] + m.body_invweight0[worldid, body2, 0]
+    )
 
     ref = d.contact.solref[conid]
     pos_aref = pos

@@ -46,12 +46,9 @@ def passive(m: Model, d: Data):
 
     if jnt_type == wp.static(JointType.FREE.value):
       dif = wp.vec3(
-        d.qpos[worldid, qposid + 0]
-        - m.qpos_spring[worldid, qposid + 0],
-        d.qpos[worldid, qposid + 1]
-        - m.qpos_spring[worldid, qposid + 1],
-        d.qpos[worldid, qposid + 2]
-        - m.qpos_spring[worldid, qposid + 2],
+        d.qpos[worldid, qposid + 0] - m.qpos_spring[worldid, qposid + 0],
+        d.qpos[worldid, qposid + 1] - m.qpos_spring[worldid, qposid + 1],
+        d.qpos[worldid, qposid + 2] - m.qpos_spring[worldid, qposid + 2],
       )
       d.qfrc_spring[worldid, dofid + 0] = -stiffness * dif[0]
       d.qfrc_spring[worldid, dofid + 1] = -stiffness * dif[1]

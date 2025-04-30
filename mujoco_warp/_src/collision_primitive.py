@@ -793,13 +793,10 @@ def contact_params(m: Model, d: Data, cid: int, worldid: int):
       geom_friction[2],
     )
 
-    if (
-      m.geom_solref[worldid, g1].x > 0.0
-      and m.geom_solref[worldid, g2].x > 0.0
-    ):
-      solref = mix * m.geom_solref[worldid, g1] + (
-        1.0 - mix
-      ) * m.geom_solref[worldid, g2]
+    if m.geom_solref[worldid, g1].x > 0.0 and m.geom_solref[worldid, g2].x > 0.0:
+      solref = (
+        mix * m.geom_solref[worldid, g1] + (1.0 - mix) * m.geom_solref[worldid, g2]
+      )
     else:
       solref = wp.min(
         m.geom_solref[worldid, g1],
@@ -808,9 +805,7 @@ def contact_params(m: Model, d: Data, cid: int, worldid: int):
 
     solreffriction = wp.vec2(0.0, 0.0)
 
-    solimp = mix * m.geom_solimp[worldid, g1] + (
-      1.0 - mix
-    ) * m.geom_solimp[worldid, g2]
+    solimp = mix * m.geom_solimp[worldid, g1] + (1.0 - mix) * m.geom_solimp[worldid, g2]
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 

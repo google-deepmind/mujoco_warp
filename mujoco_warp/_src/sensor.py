@@ -167,21 +167,15 @@ def _frame_quat(
   m: Model, d: Data, worldid: int, objid: int, objtype: int, refid: int
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
-    quat = math.mul_quat(
-      d.xquat[worldid, objid], m.body_iquat[worldid, objid]
-    )
+    quat = math.mul_quat(d.xquat[worldid, objid], m.body_iquat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(
-      d.xquat[worldid, refid], m.body_iquat[worldid, refid]
-    )
+    refquat = math.mul_quat(d.xquat[worldid, refid], m.body_iquat[worldid, refid])
   elif objtype == int(ObjType.XBODY.value):
     quat = d.xquat[worldid, objid]
     if refid == -1:
       return quat
-    refquat = math.mul_quat(
-      d.xquat[worldid, refid], m.body_iquat[worldid, refid]
-    )
+    refquat = math.mul_quat(d.xquat[worldid, refid], m.body_iquat[worldid, refid])
   elif objtype == int(ObjType.GEOM.value):
     quat = math.mul_quat(
       d.xquat[worldid, m.geom_bodyid[objid]],

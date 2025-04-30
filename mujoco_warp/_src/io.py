@@ -375,7 +375,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.body_rootid = wp.array(mjm.body_rootid, dtype=wp.int32, ndim=1)
   m.body_inertia = create_nmodel_batched_array(mjm.body_inertia, dtype=wp.vec3)
   m.body_mass = create_nmodel_batched_array(mjm.body_mass, dtype=wp.float32)
-  m.body_subtreemass = create_nmodel_batched_array(mjm.body_subtreemass, dtype=wp.float32)
+  m.body_subtreemass = create_nmodel_batched_array(
+    mjm.body_subtreemass, dtype=wp.float32
+  )
 
   subtree_mass = np.copy(mjm.body_mass)
   # TODO(team): should this be [mjm.nbody - 1, 0) ?
