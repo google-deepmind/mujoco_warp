@@ -385,7 +385,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.subtree_mass = create_nmodel_batched_array(subtree_mass, dtype=wp.float32)
   m.body_invweight0 = create_nmodel_batched_array(mjm.body_invweight0, dtype=wp.float32)
   m.body_geomnum = wp.array(mjm.body_geomnum, dtype=wp.int32, ndim=1)
-  m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32, ndim=1)
+  m.body_geomadr = create_nmodel_batched_array(mjm.body_geomadr, dtype=wp.int32)
   m.body_contype = wp.array(mjm.body_contype, dtype=wp.int32, ndim=1)
   m.body_conaffinity = wp.array(mjm.body_conaffinity, dtype=wp.int32, ndim=1)
   m.jnt_bodyid = wp.array(mjm.jnt_bodyid, dtype=wp.int32, ndim=1)
