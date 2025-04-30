@@ -43,7 +43,19 @@ class SmoothTest(parameterized.TestCase):
     """Tests kinematics."""
     _, mjd, m, d = test_util.fixture("pendula.xml")
 
-    for arr in (d.xanchor, d.xaxis, d.xquat, d.xpos):
+    for arr in (
+      d.xanchor,
+      d.xaxis,
+      d.xpos,
+      d.xquat,
+      d.xmat,
+      d.xipos,
+      d.ximat,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.site_xpos,
+      d.site_xmat,
+    ):
       arr.zero_()
 
     mjwarp.kinematics(m, d)

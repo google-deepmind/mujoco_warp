@@ -95,8 +95,11 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qfrc_smooth.numpy()[0], mjd.qfrc_smooth, "qfrc_smooth")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
-  def test_eulerdamp(self):
-    mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True)
+  @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
+  def test_eulerdamp(self, eulerdamp, sparse):
+    mjm, mjd, _, _ = test_util.fixture(
+      "pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse
+    )
     self.assertTrue((mjm.dof_damping > 0).any())
 
     mjd.qvel[:] = 1.0
@@ -106,42 +109,11 @@ class ForwardTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    mjwarp.euler(m, d)
     mujoco.mj_Euler(mjm, mjd)
+    mjwarp.euler(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
-
-    # also test sparse
-    mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
-    mjd = mujoco.MjData(mjm)
-    mjd.qvel[:] = 1.0
-    mjd.qacc[:] = 1.0
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-
-    mjwarp.euler(m, d)
-    mujoco.mj_Euler(mjm, mjd)
-
-    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    _assert_eq(d.act.numpy()[0], mjd.act, "act")
-
-  def test_disable_eulerdamp(self):
-    mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True)
-    mjm.opt.disableflags = mjm.opt.disableflags | mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-
-    mujoco.mj_forward(mjm, mjd)
-    mjd.qvel[:] = 1.0
-    mjd.qacc[:] = 1.0
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
-
-    mjwarp.euler(m, d)
-
-    np.testing.assert_allclose(d.qvel.numpy()[0], 1 + mjm.opt.timestep)
 
   def test_rungekutta4(self):
     # slower than other tests because `forward` compilation
@@ -174,6 +146,16 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
     _assert_eq(d.time.numpy()[0], mjd.time, "time")
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
+
+    # test rungekutta determinism
+    def rk_step() -> wp.array(dtype=wp.float32, ndim=2):
+      d.qpos = wp.ones_like(d.qpos)
+      d.qvel = wp.ones_like(d.qvel)
+      d.act = wp.ones_like(d.act)
+      mjwarp.rungekutta4(m, d)
+      return d.qpos
+
+    _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
 
 class ImplicitIntegratorTest(parameterized.TestCase):

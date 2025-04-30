@@ -94,9 +94,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  if mjm.sensor_cutoff.any():
-    raise NotImplementedError("Sensor cutoff is unsupported.")
-
   for n, msg in (
     (mjm.nplugin, "Plugins"),
     (mjm.nflex, "Flexes"),
@@ -163,8 +160,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt.is_sparse = support.is_sparse(mjm)
   m.opt.ls_parallel = False
   # TODO(team) Figure out good default parameters
-  m.opt.gjk_iteration_count = wp.int32(1)  # warp only
-  m.opt.epa_iteration_count = wp.int32(12)  # warp only
+  m.opt.gjk_iterations = wp.int32(1)  # warp only
+  m.opt.epa_iterations = wp.int32(12)  # warp only
   m.opt.epa_exact_neg_distance = wp.bool(False)  # warp only
   m.opt.depth_extension = wp.float32(0.1)  # warp only
   m.stat.meaninertia = mjm.stat.meaninertia
@@ -634,6 +631,20 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ndim=1,
   )
 
+  m.sensor_subtree_vel = np.isin(
+    mjm.sensor_type,
+    [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],
+  ).any()
+  m.sensor_rne_postconstraint = np.isin(
+    mjm.sensor_type,
+    [
+      mujoco.mjtSensor.mjSENS_ACCELEROMETER,
+      mujoco.mjtSensor.mjSENS_FORCE,
+      mujoco.mjtSensor.mjSENS_TORQUE,
+      mujoco.mjtSensor.mjSENS_FRAMELINACC,
+      mujoco.mjtSensor.mjSENS_FRAMEANGACC,
+    ],
+  ).any()
   return m
 
 
@@ -1140,7 +1151,11 @@ def put_data(
   if support.is_sparse(mjm) and mjm.ntendon:
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
     mujoco.mju_sparse2dense(
-      ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind
+      ten_J,
+      mjd.ten_J.reshape(-1),
+      mjd.ten_J_rownnz,
+      mjd.ten_J_rowadr,
+      mjd.ten_J_colind.reshape(-1),
     )
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))

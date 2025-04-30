@@ -71,6 +71,8 @@ select = [
 force-single-line = true
 single-line-exclusions = ["typing"]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
-include = ["mujoco_warp"]
-exclude = ["contrib*"]
+include = ["mujoco_warp*"]

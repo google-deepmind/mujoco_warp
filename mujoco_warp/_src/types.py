@@ -43,6 +43,19 @@ class CamLightType(enum.IntEnum):
   TARGETBODYCOM = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODYCOM
 
 
+class DataType(enum.IntFlag):
+  """Sensor data types.
+
+  Members:
+    REAL: real values, no constraints
+    POSITIVE: positive values, 0 or negative: inactive
+  """
+
+  REAL = mujoco.mjtDataType.mjDATATYPE_REAL
+  POSITIVE = mujoco.mjtDataType.mjDATATYPE_POSITIVE
+  # unsupported: AXIS, QUATERNION
+
+
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
@@ -209,9 +222,6 @@ class GeomType(enum.IntEnum):
   # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
-NUM_GEOM_TYPES = 8
-
-
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
 
@@ -373,8 +383,8 @@ class Option:
     ls_iterations: maximum number of CG/Newton linesearch iterations
     disableflags: bit flags for disabling standard features
     is_sparse: whether to use sparse representations
-    gjk_iteration_count: number of Gjk iterations in the convex narrowphase
-    epa_iteration_count: number of Epa iterations in the convex narrowphase
+    gjk_iterations: number of Gjk iterations in the convex narrowphase
+    epa_iterations: number of Epa iterations in the convex narrowphase
     epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
     depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
@@ -392,8 +402,8 @@ class Option:
   ls_iterations: int
   disableflags: int
   is_sparse: bool
-  gjk_iteration_count: int  # warp only
-  epa_iteration_count: int  # warp only
+  gjk_iterations: int  # warp only
+  epa_iterations: int  # warp only
   epa_exact_neg_distance: bool  # warp only
   depth_extension: float  # warp only
   ls_parallel: bool
@@ -740,6 +750,8 @@ class Model:
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+    sensor_subtree_vel: evaluate subtree_vel
+    sensor_rne_postconstraint: evaluate rne_postconstraint
   """
 
   nq: int
@@ -952,6 +964,8 @@ class Model:
   sensor_pos_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_vel_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  sensor_subtree_vel: bool  # warp only
+  sensor_rne_postconstraint: bool  # warp only
 
 
 @wp.struct

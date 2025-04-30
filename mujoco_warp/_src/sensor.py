@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 import warp as wp
@@ -21,12 +21,43 @@ import warp as wp
 from . import math
 from . import smooth
 from .types import Data
+from .types import DataType
 from .types import DisableBit
 from .types import Model
 from .types import ObjType
 from .types import SensorType
 from .warp_util import event_scope
 from .warp_util import kernel
+
+
+@wp.func
+def _apply_cutoff(m: Model, sensorid: int, sensor: wp.float32) -> wp.float32:
+  cutoff = m.sensor_cutoff[sensorid]
+
+  if cutoff > 0.0:
+    datatype = m.sensor_datatype[sensorid]
+    if datatype == int(DataType.REAL.value):
+      return wp.clamp(sensor, -cutoff, cutoff)
+    elif datatype == int(DataType.POSITIVE.value):
+      return wp.min(sensor, cutoff)
+
+  return sensor
+
+
+@wp.func
+def _apply_cutoff(m: Model, sensorid: int, sensordim: int, sensor: Any) -> Any:
+  cutoff = m.sensor_cutoff[sensorid]
+
+  if cutoff > 0.0:
+    datatype = m.sensor_datatype[sensorid]
+    if datatype == int(DataType.REAL.value):
+      for i in range(sensordim):
+        sensor[i] = wp.clamp(sensor[i], -cutoff, cutoff)
+    elif datatype == int(DataType.POSITIVE.value):
+      for i in range(sensordim):
+        sensor[i] = wp.min(sensor[i], cutoff)
+
+  return sensor
 
 
 @wp.func
@@ -205,11 +236,17 @@ def sensor_pos(m: Model, d: Data):
     adr = m.sensor_adr[posadr]
 
     if sensortype == int(SensorType.JOINTPOS.value):
-      d.sensordata[worldid, adr] = _joint_pos(m, d, worldid, objid)
+      joint_pos = _joint_pos(m, d, worldid, objid)
+      joint_pos = _apply_cutoff(m, posadr, joint_pos)
+      d.sensordata[worldid, adr] = joint_pos
     elif sensortype == int(SensorType.TENDONPOS.value):
-      d.sensordata[worldid, adr] = _tendon_pos(m, d, worldid, objid)
+      tendon_pos = _tendon_pos(m, d, worldid, objid)
+      tendon_pos = _apply_cutoff(m, posadr, tendon_pos)
+      d.sensordata[worldid, adr] = tendon_pos
     elif sensortype == int(SensorType.ACTUATORPOS.value):
-      d.sensordata[worldid, adr] = _actuator_length(m, d, worldid, objid)
+      actuator_length = _actuator_length(m, d, worldid, objid)
+      actuator_length = _apply_cutoff(m, posadr, actuator_length)
+      d.sensordata[worldid, adr] = actuator_length
     elif sensortype == int(SensorType.BALLQUAT.value):
       quat = _ball_quat(m, d, worldid, objid)
       d.sensordata[worldid, adr + 0] = quat[0]
@@ -220,6 +257,7 @@ def sensor_pos(m: Model, d: Data):
       objtype = m.sensor_objtype[posadr]
       refid = m.sensor_refid[posadr]
       framepos = _frame_pos(m, d, worldid, objid, objtype, refid)
+      framepos = _apply_cutoff(m, posadr, 3, framepos)
       d.sensordata[worldid, adr + 0] = framepos[0]
       d.sensordata[worldid, adr + 1] = framepos[1]
       d.sensordata[worldid, adr + 2] = framepos[2]
@@ -243,18 +281,20 @@ def sensor_pos(m: Model, d: Data):
     elif sensortype == int(SensorType.FRAMEQUAT.value):
       objtype = m.sensor_objtype[posadr]
       refid = m.sensor_refid[posadr]
-      quat = _frame_quat(m, d, worldid, objid, objtype, refid)
-      d.sensordata[worldid, adr + 0] = quat[0]
-      d.sensordata[worldid, adr + 1] = quat[1]
-      d.sensordata[worldid, adr + 2] = quat[2]
-      d.sensordata[worldid, adr + 3] = quat[3]
+      frame_quat = _frame_quat(m, d, worldid, objid, objtype, refid)
+      d.sensordata[worldid, adr + 0] = frame_quat[0]
+      d.sensordata[worldid, adr + 1] = frame_quat[1]
+      d.sensordata[worldid, adr + 2] = frame_quat[2]
+      d.sensordata[worldid, adr + 3] = frame_quat[3]
     elif sensortype == int(SensorType.SUBTREECOM.value):
       subtree_com = _subtree_com(m, d, worldid, objid)
+      subtree_com = _apply_cutoff(m, posadr, 3, subtree_com)
       d.sensordata[worldid, adr + 0] = subtree_com[0]
       d.sensordata[worldid, adr + 1] = subtree_com[1]
       d.sensordata[worldid, adr + 2] = subtree_com[2]
     elif sensortype == int(SensorType.CLOCK.value):
       clock = _clock(m, d, worldid)
+      clock = _apply_cutoff(m, posadr, clock)
       d.sensordata[worldid, adr] = clock
 
   if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
@@ -442,22 +482,31 @@ def sensor_vel(m: Model, d: Data):
 
     if sensortype == int(SensorType.VELOCIMETER.value):
       vel = _velocimeter(m, d, worldid, objid)
+      vel = _apply_cutoff(m, veladr, 3, vel)
       d.sensordata[worldid, adr + 0] = vel[0]
       d.sensordata[worldid, adr + 1] = vel[1]
       d.sensordata[worldid, adr + 2] = vel[2]
     elif sensortype == int(SensorType.GYRO.value):
       gyro = _gyro(m, d, worldid, objid)
+      gyro = _apply_cutoff(m, veladr, 3, gyro)
       d.sensordata[worldid, adr + 0] = gyro[0]
       d.sensordata[worldid, adr + 1] = gyro[1]
       d.sensordata[worldid, adr + 2] = gyro[2]
     elif sensortype == int(SensorType.JOINTVEL.value):
-      d.sensordata[worldid, adr] = _joint_vel(m, d, worldid, objid)
+      joint_vel = _joint_vel(m, d, worldid, objid)
+      joint_vel = _apply_cutoff(m, veladr, joint_vel)
+      d.sensordata[worldid, adr] = joint_vel
     elif sensortype == int(SensorType.TENDONVEL.value):
-      d.sensordata[worldid, adr] = _tendon_vel(m, d, worldid, objid)
+      tendon_vel = _tendon_vel(m, d, worldid, objid)
+      tendon_vel = _apply_cutoff(m, veladr, tendon_vel)
+      d.sensordata[worldid, adr] = tendon_vel
     elif sensortype == int(SensorType.ACTUATORVEL.value):
-      d.sensordata[worldid, adr] = _actuator_vel(m, d, worldid, objid)
+      actuator_vel = _actuator_vel(m, d, worldid, objid)
+      actuator_vel = _apply_cutoff(m, veladr, actuator_vel)
+      d.sensordata[worldid, adr] = actuator_vel
     elif sensortype == int(SensorType.BALLANGVEL.value):
       angvel = _ball_ang_vel(m, d, worldid, objid)
+      angvel = _apply_cutoff(m, veladr, 3, angvel)
       d.sensordata[worldid, adr + 0] = angvel[0]
       d.sensordata[worldid, adr + 1] = angvel[1]
       d.sensordata[worldid, adr + 2] = angvel[2]
@@ -466,6 +515,7 @@ def sensor_vel(m: Model, d: Data):
       refid = m.sensor_refid[veladr]
       reftype = m.sensor_reftype[veladr]
       frame_linvel = _frame_linvel(m, d, worldid, objid, objtype, refid, reftype)
+      frame_linvel = _apply_cutoff(m, veladr, 3, frame_linvel)
       d.sensordata[worldid, adr + 0] = frame_linvel[0]
       d.sensordata[worldid, adr + 1] = frame_linvel[1]
       d.sensordata[worldid, adr + 2] = frame_linvel[2]
@@ -474,16 +524,19 @@ def sensor_vel(m: Model, d: Data):
       refid = m.sensor_refid[veladr]
       reftype = m.sensor_reftype[veladr]
       frame_angvel = _frame_angvel(m, d, worldid, objid, objtype, refid, reftype)
+      frame_angvel = _apply_cutoff(m, veladr, 3, frame_angvel)
       d.sensordata[worldid, adr + 0] = frame_angvel[0]
       d.sensordata[worldid, adr + 1] = frame_angvel[1]
       d.sensordata[worldid, adr + 2] = frame_angvel[2]
     elif sensortype == int(SensorType.SUBTREELINVEL.value):
       subtree_linvel = _subtree_linvel(m, d, worldid, objid)
+      subtree_linvel = _apply_cutoff(m, veladr, 3, subtree_linvel)
       d.sensordata[worldid, adr + 0] = subtree_linvel[0]
       d.sensordata[worldid, adr + 1] = subtree_linvel[1]
       d.sensordata[worldid, adr + 2] = subtree_linvel[2]
     elif sensortype == int(SensorType.SUBTREEANGMOM.value):
       subtree_angmom = _subtree_angmom(m, d, worldid, objid)
+      subtree_angmom = _apply_cutoff(m, veladr, 3, subtree_angmom)
       d.sensordata[worldid, adr + 0] = subtree_angmom[0]
       d.sensordata[worldid, adr + 1] = subtree_angmom[1]
       d.sensordata[worldid, adr + 2] = subtree_angmom[2]
@@ -491,11 +544,7 @@ def sensor_vel(m: Model, d: Data):
   if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
-  if wp.static(
-    np.isin(
-      m.sensor_type.numpy(), [SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM]
-    ).any()
-  ):
+  if m.sensor_subtree_vel:
     smooth.subtree_vel(m, d)
 
   wp.launch(_sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size), inputs=[m, d])
@@ -608,45 +657,49 @@ def sensor_acc(m: Model, d: Data):
 
     if sensortype == int(SensorType.ACCELEROMETER.value):
       accelerometer = _accelerometer(m, d, worldid, objid)
+      accelerometer = _apply_cutoff(m, accadr, 3, accelerometer)
       d.sensordata[worldid, adr + 0] = accelerometer[0]
       d.sensordata[worldid, adr + 1] = accelerometer[1]
       d.sensordata[worldid, adr + 2] = accelerometer[2]
     elif sensortype == int(SensorType.FORCE.value):
       force = _force(m, d, worldid, objid)
+      force = _apply_cutoff(m, accadr, 3, force)
       d.sensordata[worldid, adr + 0] = force[0]
       d.sensordata[worldid, adr + 1] = force[1]
       d.sensordata[worldid, adr + 2] = force[2]
     elif sensortype == int(SensorType.TORQUE.value):
       torque = _torque(m, d, worldid, objid)
+      torque = _apply_cutoff(m, accadr, 3, torque)
       d.sensordata[worldid, adr + 0] = torque[0]
       d.sensordata[worldid, adr + 1] = torque[1]
       d.sensordata[worldid, adr + 2] = torque[2]
     elif sensortype == int(SensorType.ACTUATORFRC.value):
-      d.sensordata[worldid, adr] = _actuator_force(m, d, worldid, objid)
+      actuator_force = _actuator_force(m, d, worldid, objid)
+      actuator_force = _apply_cutoff(m, accadr, actuator_force)
+      d.sensordata[worldid, adr] = actuator_force
     elif sensortype == int(SensorType.JOINTACTFRC.value):
-      d.sensordata[worldid, adr] = _joint_actuator_force(m, d, worldid, objid)
+      joint_actuator_force = _joint_actuator_force(m, d, worldid, objid)
+      joint_actuator_force = _apply_cutoff(m, accadr, joint_actuator_force)
+      d.sensordata[worldid, adr] = joint_actuator_force
     elif sensortype == int(SensorType.FRAMELINACC.value):
       objtype = m.sensor_objtype[accadr]
-      framelinacc = _framelinacc(m, d, worldid, objid, objtype)
-      d.sensordata[worldid, adr + 0] = framelinacc[0]
-      d.sensordata[worldid, adr + 1] = framelinacc[1]
-      d.sensordata[worldid, adr + 2] = framelinacc[2]
+      frame_linacc = _framelinacc(m, d, worldid, objid, objtype)
+      frame_linacc = _apply_cutoff(m, accadr, 3, frame_linacc)
+      d.sensordata[worldid, adr + 0] = frame_linacc[0]
+      d.sensordata[worldid, adr + 1] = frame_linacc[1]
+      d.sensordata[worldid, adr + 2] = frame_linacc[2]
     elif sensortype == int(SensorType.FRAMEANGACC.value):
       objtype = m.sensor_objtype[accadr]
-      frameangacc = _frameangacc(m, d, worldid, objid, objtype)
-      d.sensordata[worldid, adr + 0] = frameangacc[0]
-      d.sensordata[worldid, adr + 1] = frameangacc[1]
-      d.sensordata[worldid, adr + 2] = frameangacc[2]
+      frame_angacc = _frameangacc(m, d, worldid, objid, objtype)
+      frame_angacc = _apply_cutoff(m, accadr, 3, frame_angacc)
+      d.sensordata[worldid, adr + 0] = frame_angacc[0]
+      d.sensordata[worldid, adr + 1] = frame_angacc[1]
+      d.sensordata[worldid, adr + 2] = frame_angacc[2]
 
   if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
-  if wp.static(
-    np.isin(
-      m.sensor_type.numpy(),
-      [SensorType.ACCELEROMETER, SensorType.FORCE, SensorType.TORQUE],
-    ).any()
-  ):
+  if m.sensor_rne_postconstraint:
     smooth.rne_postconstraint(m, d)
 
   wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])

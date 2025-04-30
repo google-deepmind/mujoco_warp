@@ -40,6 +40,7 @@ def fixture(
   constraint: bool = True,
   equality: bool = True,
   gravity: bool = True,
+  eulerdamp: Optional[bool] = None,
   cone: Optional[ConeType] = None,
   solver: Optional[SolverType] = None,
   iterations: Optional[int] = None,
@@ -68,6 +69,8 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.EQUALITY
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
+  if not eulerdamp:
+    mjm.opt.disableflags |= DisableBit.EULERDAMP
   if cone is not None:
     mjm.opt.cone = cone
   if solver is not None:

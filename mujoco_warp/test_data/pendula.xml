@@ -140,7 +140,7 @@
     </body>
   </worldbody>
 
-  <!-- <tendon>
+  <tendon>
     <fixed name="tendon_1" limited="true" range="-0.3 0.1" stiffness=".1" damping=".2">
       <joint joint="joint2" coef=".1"/>
       <joint joint="joint3" coef="-.2"/>
@@ -149,7 +149,7 @@
       <joint joint="joint4" coef=".3"/>
       <joint joint="joint5" coef="-.4"/>
     </fixed>
-  </tendon> -->
+  </tendon>
 
   <actuator>
     <motor gear="250 0 0" joint="joint1" name="act1"/>
@@ -160,7 +160,7 @@
     <!-- <motor gear="150" joint="joint15" name="act6"/>
     <motor gear="150" joint="joint16" name="act7"/>
     <motor gear="150" joint="joint17" name="act8"/> -->
-    <!-- <position tendon="tendon_2" kp="100"/> -->
+    <position tendon="tendon_2" kp="100"/>
     <motor gear="2 3 4" jointinparent="joint1"/>
     <motor gear="5 6 7 8 9 10" jointinparent="freejoint"/>
   </actuator>
