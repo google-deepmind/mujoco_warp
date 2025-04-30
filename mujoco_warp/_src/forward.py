@@ -25,7 +25,6 @@ from . import passive
 from . import sensor
 from . import smooth
 from . import solver
-from .support import get_batched_value
 from .support import xfrc_accumulate
 from .types import MJ_MINVAL
 from .types import BiasType
@@ -129,7 +128,7 @@ def _next_activation(m: Model, d: Data):
 
     # advance the actuation
     if m.actuator_dyntype[actid] == wp.static(DynType.FILTEREXACT.value):
-      dyn_prm = get_batched_value(m.actuator_dynprm, worldid, actid)
+      dyn_prm = m.actuator_dynprm[worldid, actid]
       tau = wp.max(MJ_MINVAL, dyn_prm[0])
       act += act_dot * tau * (1.0 - wp.exp(-m.opt.timestep / tau))
     else:
@@ -137,7 +136,7 @@ def _next_activation(m: Model, d: Data):
 
     # clamp to actrange
     if m.actuator_actlimited[actid]:
-      actrange = get_batched_value(m.actuator_actrange, worldid, actid)
+      actrange = m.actuator_actrange[worldid, actid]
       act = wp.clamp(act, actrange[0], actrange[1])
 
     d.act[worldid, actid] = act
@@ -194,9 +193,7 @@ def euler(m: Model, d: Data):
       worldid, tid = wp.tid()
 
       dof_Madr = m.dof_Madr[tid]
-      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * get_batched_value(
-        m.dof_damping, worldid, tid
-      )
+      d.qM_integration[worldid, 0, dof_Madr] += m.opt.timestep * m.dof_damping[worldid, tid]
 
       d.qfrc_integration[worldid, tid] = (
         d.qfrc_smooth[worldid, tid] + d.qfrc_constraint[worldid, tid]
@@ -383,10 +380,10 @@ def implicit(m: Model, d: Data):
     actuator_dyntype = m.actuator_dyntype[actid]
 
     if actuator_biastype == wp.static(BiasType.AFFINE.value):
-      bias_vel = get_batched_value(m.actuator_biasprm, worldid, actid)[2]
+      bias_vel = m.actuator_biasprm[worldid, actid][2]
 
     if actuator_gaintype == wp.static(GainType.AFFINE.value):
-      gain_vel = get_batched_value(m.actuator_gainprm, worldid, actid)[2]
+      gain_vel = m.actuator_gainprm[worldid, actid][2]
 
     ctrl = d.ctrl[worldid, actid]
 
@@ -634,7 +631,7 @@ def fwd_actuation(m: Model, d: Data):
     dsbl_clampctrl = m.opt.disableflags & wp.static(DisableBit.CLAMPCTRL.value)
 
     if m.actuator_ctrllimited[uid] and not dsbl_clampctrl:
-      r = get_batched_value(m.actuator_ctrlrange, worldid, uid)
+      r = m.actuator_ctrlrange[worldid, uid]
       ctrl = wp.clamp(ctrl, r[0], r[1])
 
     if m.na:
@@ -645,7 +642,7 @@ def fwd_actuation(m: Model, d: Data):
       elif dyntype == int(DynType.FILTER.value) or dyntype == int(
         DynType.FILTEREXACT.value
       ):
-        dynprm = get_batched_value(m.actuator_dynprm, worldid, uid)
+        dynprm = m.actuator_dynprm[worldid, uid]
         actadr = m.actuator_actadr[uid]
         act = d.act[worldid, actadr]
         d.act_dot[worldid, actadr] = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
@@ -664,7 +661,7 @@ def fwd_actuation(m: Model, d: Data):
 
     # gain
     gaintype = m.actuator_gaintype[uid]
-    gainprm = get_batched_value(m.actuator_gainprm, worldid, uid)
+    gainprm = m.actuator_gainprm[worldid, uid]
 
     gain = 0.0
     if gaintype == int(GainType.FIXED.value):
@@ -676,7 +673,7 @@ def fwd_actuation(m: Model, d: Data):
 
     # bias
     biastype = m.actuator_biastype[uid]
-    biasprm = get_batched_value(m.actuator_biasprm, worldid, uid)
+    biasprm = m.actuator_biasprm[worldid, uid]
 
     bias = 0.0  # BiasType.NONE
     if biastype == int(BiasType.AFFINE.value):
@@ -689,7 +686,7 @@ def fwd_actuation(m: Model, d: Data):
     # TODO(team): tendon total force clamping
 
     if m.actuator_forcelimited[uid]:
-      r = get_batched_value(m.actuator_forcerange, worldid, uid)
+      r = m.actuator_forcerange[worldid, uid]
       f = wp.clamp(f, r[0], r[1])
     d.actuator_force[worldid, uid] = f
 
@@ -698,7 +695,7 @@ def fwd_actuation(m: Model, d: Data):
     worldid, dofid = wp.tid()
     jntid = m.dof_jntid[dofid]
     if m.jnt_actfrclimited[jntid]:
-      range = get_batched_value(m.jnt_actfrcrange, worldid, jntid)
+      range = m.jnt_actfrcrange[worldid, jntid]
       d.qfrc_actuator[worldid, dofid] = wp.clamp(
         d.qfrc_actuator[worldid, dofid],
         range[0],
@@ -717,7 +714,7 @@ def fwd_actuation(m: Model, d: Data):
         s += moment[worldid, uid, vid] * force[worldid, uid]
       jntid = m.dof_jntid[vid]
       if m.jnt_actfrclimited[jntid]:
-        range = get_batched_value(m.jnt_actfrcrange, worldid, jntid)
+        range = m.jnt_actfrcrange[worldid, jntid]
         s = wp.clamp(s, range[0], range[1])
       qfrc[worldid, vid] = s
 
