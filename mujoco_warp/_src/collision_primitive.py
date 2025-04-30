@@ -52,7 +52,7 @@ def _geom(
   geom.rot = rot
   geom.size = m.geom_size[worldid, gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
-  dataid = m.geom_dataid[gid]
+  dataid = m.geom_dataid[worldid, gid]
   if dataid >= 0:
     geom.vertadr = m.mesh_vertadr[dataid]
     geom.vertnum = m.mesh_vertnum[dataid]
