@@ -20,7 +20,6 @@ import warp as wp
 from .collision_box import box_box_narrowphase
 from .collision_convex import gjk_narrowphase
 from .collision_primitive import primitive_narrowphase
-from .support import get_batched_value
 from .types import MJ_MAXVAL
 from .types import MJ_MINVAL
 from .types import Data
@@ -33,8 +32,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def _sphere_filter(m: Model, d: Data, geom1: int, geom2: int, worldid: int) -> bool:
-  margin1 = get_batched_value(m.geom_margin, worldid, geom1)
-  margin2 = get_batched_value(m.geom_margin, worldid, geom2)
+  margin1 = m.geom_margin[worldid, geom1]
+  margin2 = m.geom_margin[worldid, geom2]
   pos1 = d.geom_xpos[worldid, geom1]
   pos2 = d.geom_xpos[worldid, geom2]
   size1 = m.geom_rbound[geom1]
@@ -112,7 +111,7 @@ def _sap_project(m: Model, d: Data, direction: wp.vec3):
     # geom is a plane
     rbound = MJ_MAXVAL
 
-  radius = rbound + get_batched_value(m.geom_margin, worldid, geomid)
+  radius = rbound + m.geom_margin[worldid, geomid]
   center = wp.dot(direction, xpos)
 
   d.sap_projection_lower[worldid, geomid] = center - radius
