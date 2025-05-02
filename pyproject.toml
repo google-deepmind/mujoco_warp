@@ -72,7 +72,7 @@ force-single-line = true
 single-line-exclusions = ["typing"]
 
 [tool.setuptools]
-include-package-data = true
+package-data = { "mujoco_warp" = ["test_data/**"] }
 
 [tool.setuptools.packages.find]
 include = ["mujoco_warp*"]
