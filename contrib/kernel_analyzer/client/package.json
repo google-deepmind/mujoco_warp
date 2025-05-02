@@ -1,7 +1,7 @@
 {
   "name": "kernel-analyzer-client",
   "description": "Client-side code (TypeScript) for the Kernel Analyzer VS Code extension",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "Apache-2.0",
   "engines": {

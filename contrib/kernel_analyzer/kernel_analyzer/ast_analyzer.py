@@ -80,6 +80,9 @@ class InvalidSuffix(Issue):
 @dataclasses.dataclass
 class InvalidParamOrder(Issue):
   expected: List[str]
+  expected_full: List[str]  # with comments and types
+  # function arg range ((start_lineno, start_col), (end_lineno, end_col))
+  arg_range: Tuple[Tuple[int, int], Tuple[int, int]]
 
   def __str__(self):
     return (
@@ -121,6 +124,43 @@ def _get_classes(src: str) -> Dict[str, List[Tuple[str, str]]]:
     ret.setdefault(class_name, []).append((m.group(1), m.group(2)))
 
   return ret
+
+
+def _get_function_arg_range(
+  node: ast.FunctionDef, source: str
+) -> tuple[tuple[int, int], tuple[int, int]]:
+  """Gets the function arg range."""
+  start_line = node.lineno - 1
+  start_char = node.col_offset + len(node.name)
+  lines = source.splitlines()
+  open_paren = lines[start_line].find("(", start_char)
+  start_pos = (start_line, open_paren + 1)
+
+  balance = 1
+  curr_line, curr_char = start_line, open_paren + 1
+  while balance > 0 and curr_line < len(lines):
+    search_line = lines[curr_line]
+    while curr_char < len(search_line):
+      if search_line[curr_char] == "(":
+        balance += 1
+      elif search_line[curr_char] == ")":
+        balance -= 1
+        if balance == 0:
+          return start_pos, (curr_line, curr_char)
+      curr_char += 1
+    curr_line += 1
+    curr_char = 0
+  return start_pos, (node.end_lineno - 1, node.end_col_offset)
+
+
+def _get_arg_expected_comment(param_source: str, param_out: bool) -> str:
+  if param_source == "Model":
+    expected_comment = "# Model:"
+  elif param_source == "Data":
+    expected_comment = f"# Data {'out' if param_out else 'in'}:"
+  else:
+    expected_comment = f"# {'Out' if param_out else 'In'}:"
+  return expected_comment
 
 
 def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
@@ -183,6 +223,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     params_ordering = []
     params_multiline = any(a.lineno != args.args[0].lineno for a in args.args)
     param_groups = set()
+    param_types = {}
 
     for param in args.args:
       param_name = param.arg
@@ -194,6 +235,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         continue
 
       param_type = ast.get_source_segment(source, param.annotation)
+      param_types[param_name] = param_type
       has_suffix = param_name.endswith("_in") or param_name.endswith("_out")
       field_name = param_name[: param_name.rfind("_")] if has_suffix else param_name
       param_out = param_name.endswith("_out")
@@ -205,12 +247,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       # "{source} {in | out | ""}:" e.g. "Model:" or "Data in:" or "Out:"
       if params_multiline and (param_out, param_source) not in param_groups:
         param_groups.add((param_out, param_source))
-        if param_source == "Model":
-          expected_comment = "# Model:"
-        elif param_source == "Data":
-          expected_comment = f"# Data {'out' if param_out else 'in'}:"
-        else:
-          expected_comment = f"# {'Out' if param_out else 'In'}:"
+        expected_comment = _get_arg_expected_comment(param_source, param_out)
         if (
           param.lineno < 2 or source_lines[param.lineno - 2].strip() != expected_comment
         ):
@@ -241,7 +278,18 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       node.col_offset = node.col_offset + 4
       node.end_lineno = node.lineno
       node.end_col_offset = node.col_offset + len(node.name)
-      issues.append(InvalidParamOrder(node, kernel, expected_names))
+      arg_range = _get_function_arg_range(node, source)
+      # Build the full arg strings with comments and types.
+      expected_full, prev = [], None
+      for e in expected_ordering:
+        if prev != e[:2]:
+          src = {0: "Model", 1: "Data", 2: None}[e[1]]
+          expected_full.append(_get_arg_expected_comment(src, e[0]))
+        expected_full.append(e[-1] + ": " + param_types[e[-1]] + ",")
+        prev = e[:2]
+      issues.append(
+        InvalidParamOrder(node, kernel, expected_names, expected_full, arg_range)
+      )
 
     # don't allow assignments to in parameters
     for sub_node in ast.walk(node):
