@@ -19,18 +19,18 @@ from typing import Any, Dict, List, Optional
 
 import ast_analyzer
 from lsprotocol import types
-from lsprotocol.types import InitializeResult
-from lsprotocol.types import TextDocumentSyncOptions
-from lsprotocol.types import InitializeParams
-from lsprotocol.types import ServerCapabilities
-from lsprotocol.types import TextDocumentSyncKind
 from lsprotocol.types import ConfigurationItem
 from lsprotocol.types import Diagnostic
-from lsprotocol.types import InitializeResultServerInfoType
 from lsprotocol.types import DiagnosticOptions
 from lsprotocol.types import DiagnosticSeverity
+from lsprotocol.types import InitializeParams
+from lsprotocol.types import InitializeResult
+from lsprotocol.types import InitializeResultServerInfoType
 from lsprotocol.types import Position
 from lsprotocol.types import Range
+from lsprotocol.types import ServerCapabilities
+from lsprotocol.types import TextDocumentSyncKind
+from lsprotocol.types import TextDocumentSyncOptions
 from lsprotocol.types import WorkspaceConfigurationParams
 from pygls.server import LanguageServer
 
