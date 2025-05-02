@@ -209,3 +209,6 @@ Temporary Items
 
 # Node stuff
 node_modules
+
+# VS Code
+.vscode/
