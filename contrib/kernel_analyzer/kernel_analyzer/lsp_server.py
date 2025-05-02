@@ -133,27 +133,24 @@ async def code_action(ls: KernelAnalyzerLanguageServer, params: types.CodeAction
   code_actions: List[types.CodeAction] = []
   document = ls.workspace.get_text_document(uri)
 
+  if not document:
+    return
+
   for diagnostic in diagnostics:
     if diagnostic.code == "TypeMismatch":
       expected_type = diagnostic.data["expected_type"]
       annotation_range = diagnostic.range
 
       # Adjust the start of the range to be after the colon and any whitespace
-      if document:
-        line_text = document.lines[annotation_range.start.line]
-        colon_index = line_text.find(":", annotation_range.start.character)
-        if colon_index != -1:
-          annotation_start = types.Position(
-            line=annotation_range.start.line, character=colon_index + 1
-          )
-          while (
-            annotation_start.character < len(line_text)
-            and line_text[annotation_start.character].isspace()
-          ):
-            annotation_start.character += 1
-          annotation_range = types.Range(
-            start=annotation_start, end=annotation_range.end
-          )
+      line_text = document.lines[annotation_range.start.line]
+      colon_index = line_text.find(":", annotation_range.start.character)
+      if colon_index != -1:
+        start = types.Position(
+          line=annotation_range.start.line, character=colon_index + 1
+        )
+        while start.character < len(line_text) and line_text[start.character].isspace():
+          start.character += 1
+        annotation_range = types.Range(start=start, end=annotation_range.end)
 
       replacement_text = expected_type
       edit = types.WorkspaceEdit(
@@ -166,7 +163,6 @@ async def code_action(ls: KernelAnalyzerLanguageServer, params: types.CodeAction
           ]
         }
       )
-
       code_action = types.CodeAction(
         title=f"Change type to '{expected_type}'",
         kind=types.CodeActionKind.QuickFix,
@@ -174,6 +170,7 @@ async def code_action(ls: KernelAnalyzerLanguageServer, params: types.CodeAction
         edit=edit,
       )
       code_actions.append(code_action)
+
     if diagnostic.code == "InvalidParamOrder":
       new_text: str = diagnostic.data["expected_full"]
       ar = diagnostic.data["arg_range"]
@@ -181,28 +178,26 @@ async def code_action(ls: KernelAnalyzerLanguageServer, params: types.CodeAction
         start=types.Position(line=ar[0][0], character=ar[0][1]),
         end=types.Position(line=ar[1][0], character=ar[1][1]),
       )
+      new_text = "\n".join(["  " + q for q in new_text])
+      new_text = "\n" + new_text + "\n"
 
-      if document:
-        new_text = "\n".join(["  " + q for q in new_text])
-        new_text = "\n" + new_text + "\n"
-
-        edit = types.WorkspaceEdit(
-          changes={
-            uri: [
-              types.TextEdit(
-                range=arg_range,
-                new_text=new_text,
-              )
-            ]
-          }
-        )
-        code_action = types.CodeAction(
-          title="Fix Parameter Order",
-          kind=types.CodeActionKind.QuickFix,
-          diagnostics=[diagnostic],
-          edit=edit,
-        )
-        code_actions.append(code_action)
+      edit = types.WorkspaceEdit(
+        changes={
+          uri: [
+            types.TextEdit(
+              range=arg_range,
+              new_text=new_text,
+            )
+          ]
+        }
+      )
+      code_action = types.CodeAction(
+        title="Fix Parameter Order",
+        kind=types.CodeActionKind.QuickFix,
+        diagnostics=[diagnostic],
+        edit=edit,
+      )
+      code_actions.append(code_action)
 
   return code_actions
 
