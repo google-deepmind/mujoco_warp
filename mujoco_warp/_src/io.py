@@ -617,7 +617,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.sensor_adr = wp.array(mjm.sensor_adr, dtype=wp.int32, ndim=1)
   m.sensor_cutoff = wp.array(mjm.sensor_cutoff, dtype=wp.float32, ndim=1)
   m.sensor_pos_adr = wp.array(
-    np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0],
+    np.nonzero(
+      (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)
+      & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_RANGEFINDER)
+    )[0],
     dtype=wp.int32,
     ndim=1,
   )
@@ -628,6 +631,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
   m.sensor_acc_adr = wp.array(
     np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0],
+    dtype=wp.int32,
+    ndim=1,
+  )
+  m.sensor_rangefinder_adr = wp.array(
+    np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)[0],
     dtype=wp.int32,
     ndim=1,
   )
@@ -866,6 +874,11 @@ def make_data(
 
   # sensors
   d.sensordata = wp.zeros((nworld, mjm.nsensordata), dtype=wp.float32)
+  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
+  d.sensor_rangefinder_dist = wp.zeros(
+    (nworld, nrangefinder, mjm.ngeom) if nrangefinder else (0, 0, 0),
+    dtype=float,
+  )
 
   return d
 
@@ -1180,6 +1193,11 @@ def put_data(
 
   # sensors
   d.sensordata = wp.array(tile(mjd.sensordata), dtype=wp.float32, ndim=2)
+  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
+  d.sensor_rangefinder_dist = wp.zeros(
+    (nworld, nrangefinder, mjm.ngeom) if nrangefinder else (0, 0, 0),
+    dtype=float,
+  )
 
   return d
 

@@ -240,6 +240,7 @@ class SensorType(enum.IntEnum):
 
   Members:
     CAMPROJECTION: camera projection
+    RANGEFINDER: scalar distance to nearest geom or site along z-axis
     JOINTPOS: joint position
     TENDONPOS: scalar tendon position
     ACTUATORPOS: actuator position
@@ -271,6 +272,7 @@ class SensorType(enum.IntEnum):
   """
 
   CAMPROJECTION = mujoco.mjtSensor.mjSENS_CAMPROJECTION
+  RANGEFINDER = mujoco.mjtSensor.mjSENS_RANGEFINDER
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   TENDONPOS = mujoco.mjtSensor.mjSENS_TENDONPOS
   ACTUATORPOS = mujoco.mjtSensor.mjSENS_ACTUATORPOS
@@ -759,8 +761,10 @@ class Model:
     sensor_adr: address in sensor array                      (nsensor,)
     sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
+                    (excluding rangefinder sensors)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+    sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
   """
@@ -983,6 +987,7 @@ class Model:
   sensor_pos_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_vel_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  sensor_rangefinder_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
 
@@ -1128,6 +1133,7 @@ class Data:
     wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     sensordata: sensor data array                               (nsensordata,)
+    sensor_rangefinder_dist: distance to geom                   (nworld, <=nsensor, ngeom)
   """
 
   ncon: wp.array(dtype=wp.int32, ndim=1)
@@ -1242,3 +1248,4 @@ class Data:
 
   # sensors
   sensordata: wp.array(dtype=wp.float32, ndim=2)
+  sensor_rangefinder_dist: wp.array3d(dtype=float)

@@ -200,6 +200,41 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_rangefinder(self):
+    """Test rangefinder."""
+    for keyframe in range(2):
+      _, mjd, m, d = test_util.fixture(
+        xml="""
+        <mujoco>
+          <compiler angle="degree"/>
+          <worldbody>
+            <geom type="sphere" size=".1" pos="0 0 1"/>
+            <body>
+              <joint type="hinge" axis="1 0 0"/>
+              <joint type="hinge" axis="0 1 0"/>
+              <joint type="hinge" axis="0 0 1"/>
+              <geom type="sphere" size="0.1"/>
+              <site name="site0" size=".1"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <rangefinder site="site0"/>
+          </sensor>
+          <keyframe>
+            <key qpos="0 0 0"/>
+            <key qpos="0 90 0"/>
+          </keyframe>
+        </mujoco>
+      """,
+        keyframe=keyframe,
+      )
+
+      d.sensordata.zero_()
+
+      mjwarp.sensor_pos(m, d)
+
+      _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   def test_tendon_sensor(self):
     """Test tendon sensors."""
     _, mjd, m, d = test_util.fixture("tendon/fixed.xml", keyframe=0, sparse=False)

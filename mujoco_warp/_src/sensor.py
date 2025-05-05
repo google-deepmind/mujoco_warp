@@ -164,6 +164,44 @@ def _cam_projection(
   return wp.vec2f(pixel_coord_hom[0], pixel_coord_hom[1]) / denom
 
 
+@kernel
+def _sensor_rangefinder_geom_dist(m: Model, d: Data):
+  worldid, sensorrangefinderid, geomid = wp.tid()
+  sensorid = m.sensor_rangefinder_adr[sensorrangefinderid]
+  objid = m.sensor_objid[sensorid]
+  site_xpos = d.site_xpos[worldid, objid]
+  site_xmat = d.site_xmat[worldid, objid]
+  site_bodyid = m.site_bodyid[objid]
+  rvec = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+  dist = -1.0  # TODO(team): dist from ray
+
+  if dist < 0.0:
+    dist = wp.inf
+
+  d.sensor_rangefinder_dist[worldid, sensorrangefinderid, geomid] = dist
+
+
+def _tile_sensor_rangefinder(ngeom: int):
+  @kernel
+  def sensor_rangefinder(m: Model, d: Data):
+    worldid, sensorrangefinderid = wp.tid()
+    sensorid = m.sensor_rangefinder_adr[sensorrangefinderid]
+    adr = m.sensor_adr[sensorid]
+
+    dist_tile = wp.tile_load(
+      d.sensor_rangefinder_dist[worldid, sensorrangefinderid],
+      shape=wp.static(ngeom),
+    )
+    dist_min = wp.tile_min(dist_tile)
+
+    if dist_min[0] == wp.inf:
+      d.sensordata[worldid, adr] = -1.0
+    else:
+      d.sensordata[worldid, adr] = dist_min[0]
+
+  return sensor_rangefinder
+
+
 @wp.func
 def _joint_pos(m: Model, d: Data, worldid: int, objid: int) -> wp.float32:
   return d.qpos[worldid, m.jnt_qposadr[objid]]
@@ -389,10 +427,25 @@ def sensor_pos(m: Model, d: Data):
       clock = _apply_cutoff(m, posadr, clock)
       d.sensordata[worldid, adr] = clock
 
-  if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  wp.launch(_sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), inputs=[m, d])
+  if m.sensor_pos_adr.size > 0:
+    wp.launch(_sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), inputs=[m, d])
+
+  if m.sensor_rangefinder_adr.size > 0:
+    wp.launch(
+      _sensor_rangefinder_geom_dist,
+      dim=(d.nworld, m.sensor_rangefinder_adr.size, m.ngeom),
+      inputs=[m, d],
+    )
+
+    wp.launch_tiled(
+      _tile_sensor_rangefinder(m.ngeom),
+      dim=(d.nworld, m.sensor_rangefinder_adr.size),
+      inputs=[m, d],
+      block_dim=32,
+    )
 
 
 @wp.func
