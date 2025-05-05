@@ -269,6 +269,23 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "hfield_box": """
+        <mujoco>
+          <asset>
+            <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.1 0.1"
+            elevation="0 0 0
+                       0 1 0
+                       0 0 0"/>
+          </asset>
+          <worldbody>
+            <geom type="hfield" hfield="terrain" pos="0 0 0"/>
+            <body pos="0 0 .2">
+              <freejoint/>
+              <geom type="box" size=".1 .1 .1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
 
   # Temporarily disabled

@@ -1,13 +1,19 @@
 <mujoco>
   <asset>
-  <!---->
+  <!--
     <hfield name="terrain" nrow="5" ncol="5" size="1 1 0.5 0.3"
     elevation="5 3 2 3 5
                3 2 1 2 3
                2 1 0 1 2
                3 2 1 2 3
                5 3 2 3 5"/>
-               <!---->
+               -->
+  <!-- -->
+    <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.4 0.3"
+    elevation="0 0 0
+               0 1 0
+               0 0 0"/>
+               <!-- -->
 <!--
     <hfield name="terrain" nrow="3" ncol="5" size="2 1 0.5 0.3"
     elevation="8 4 2 4 8
@@ -49,7 +55,12 @@
       <geom type="sphere" size="0.1" rgba="0.8 0.2 0.2 1"/>
     </body>
     <!---->
- 
+
+    <body pos="0 0 0.6">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.8 0.2 0.2 1"/>
+    </body>
+
     <!-- Boxes ->
     <body name="box1" pos="0.8 0.8 0.6">
       <freejoint/>
