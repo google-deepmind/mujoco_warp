@@ -26,6 +26,7 @@ from .types import Data
 from .types import DisableBit
 from .types import Model
 from .warp_util import event_scope
+from .types import GeomType
 
 wp.set_module_options({"enable_backward": False})
 
@@ -60,11 +61,7 @@ def _sphere_filter(m: Model, d: Data, geom1: int, geom2: int, worldid: int) -> b
 
 @wp.func
 def _add_geom_pair(m: Model, d: Data, geom1: int, geom2: int, worldid: int, nxnid: int):
-  pairid = wp.atomic_add(d.ncollision, 0, 1)
-
-  if pairid >= d.nconmax:
-    return
-
+  nxn_pairid = m.nxn_pairid[nxnid]
   type1 = m.geom_type[geom1]
   type2 = m.geom_type[geom2]
 
@@ -73,9 +70,37 @@ def _add_geom_pair(m: Model, d: Data, geom1: int, geom2: int, worldid: int, nxni
   else:
     pair = wp.vec2i(geom1, geom2)
 
-  d.collision_pair[pairid] = pair
-  d.collision_pairid[pairid] = m.nxn_pairid[nxnid]
-  d.collision_worldid[pairid] = worldid
+  # For height field, add a collision pair for every
+  # triangle that can potentially collide
+  if type1 == int(GeomType.HFIELD.value) or type2 == int(GeomType.HFIELD.value):
+    hfield = geom2
+    if type1 == int(GeomType.HFIELD.value):
+      hfield = geom1
+
+    dataid = m.geom_dataid[hfield]
+    nrow = m.hfield_nrow[dataid]
+    ncol = m.hfield_ncol[dataid]
+    ntri = (nrow - 1) * (ncol - 1) * 2
+
+    # TODO: Only iterate relevant triangles
+    for index in range(ntri):
+      pairid = wp.atomic_add(d.ncollision, 0, 1)
+      if pairid >= d.nconmax:
+        return
+
+      d.collision_pair[pairid] = pair
+      d.collision_index[pairid] = index
+      d.collision_pairid[pairid] = nxn_pairid
+      d.collision_worldid[pairid] = worldid
+  else:
+    pairid = wp.atomic_add(d.ncollision, 0, 1)
+    if pairid >= d.nconmax:
+      return
+
+    d.collision_pair[pairid] = pair
+    d.collision_index[pairid] = -1
+    d.collision_pairid[pairid] = nxn_pairid
+    d.collision_worldid[pairid] = worldid
 
 
 @wp.func

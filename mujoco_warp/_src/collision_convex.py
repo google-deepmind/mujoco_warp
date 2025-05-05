@@ -107,6 +107,16 @@ def gjk_support_geom(
         max_dist = dist
         support_pt = vert
     support_pt = info.rot @ support_pt + info.pos
+  elif typeGeom == int(GeomType.HFIELD.value):
+    max_dist = float(FLOAT_MIN)
+    for i in range(6):
+      vert = wp.vec3(info.verts[i][0], info.verts[i][1], info.verts[i][2])
+      #wp.printf("vert: (%g %g %g)\n", vert[0], vert[1], vert[2])
+      dist = wp.dot(vert, local_dir)
+      if dist > max_dist:
+        max_dist = dist
+        support_pt = vert
+    support_pt = info.rot @ support_pt + info.pos
 
   return wp.dot(support_pt, dir), support_pt
 
@@ -132,6 +142,12 @@ def _gjk_support(
 
 
 convex_collision_functions = {
+  (GeomType.HFIELD.value, GeomType.SPHERE.value),
+  (GeomType.HFIELD.value, GeomType.CAPSULE.value),
+  (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
+  (GeomType.HFIELD.value, GeomType.CYLINDER.value),
+  (GeomType.HFIELD.value, GeomType.BOX.value),
+  (GeomType.HFIELD.value, GeomType.MESH.value),
   (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
   (GeomType.SPHERE.value, GeomType.MESH.value),
   (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
@@ -726,8 +742,10 @@ def gjk_epa_pipeline(
     if m.geom_type[g1] != type1 or m.geom_type[g2] != type2:
       return
 
-    info1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
-    info2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
+    index = d.collision_index[tid]
+
+    info1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid], index)
+    info2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid], index)
 
     simplex, normal = _gjk(m, info1, info2)
 

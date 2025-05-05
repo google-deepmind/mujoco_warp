@@ -419,6 +419,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.mesh_vertadr = wp.array(mjm.mesh_vertadr, dtype=wp.int32, ndim=1)
   m.mesh_vertnum = wp.array(mjm.mesh_vertnum, dtype=wp.int32, ndim=1)
   m.mesh_vert = wp.array(mjm.mesh_vert, dtype=wp.vec3, ndim=1)
+  m.nhfield = mjm.nhfield
+  m.hfield_adr = wp.array(mjm.hfield_adr, dtype=wp.int32, ndim=1)
+  m.hfield_nrow = wp.array(mjm.hfield_nrow, dtype=wp.int32, ndim=1)
+  m.hfield_ncol = wp.array(mjm.hfield_ncol, dtype=wp.int32, ndim=1)
+  m.hfield_size = wp.array(mjm.hfield_size, dtype=types.vec4f, ndim=1)
+  m.hfield_data = wp.array(mjm.hfield_data, dtype=wp.float32, ndim=1)
   m.eq_type = wp.array(mjm.eq_type, dtype=wp.int32, ndim=1)
   m.eq_obj1id = wp.array(mjm.eq_obj1id, dtype=wp.int32, ndim=1)
   m.eq_obj2id = wp.array(mjm.eq_obj2id, dtype=wp.int32, ndim=1)
@@ -813,6 +819,7 @@ def make_data(
   d.collision_pairid = wp.empty(nconmax, dtype=wp.int32, ndim=1)
   d.collision_worldid = wp.empty(nconmax, dtype=wp.int32, ndim=1)
   d.ncollision = wp.zeros(1, dtype=wp.int32, ndim=1)
+  d.collision_index = wp.empty(nconmax, dtype=wp.int32, ndim=1)
 
   # rne_postconstraint
   d.cacc = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector, ndim=2)
@@ -1107,6 +1114,7 @@ def put_data(
   d.collision_pairid = wp.empty(nconmax, dtype=wp.int32, ndim=1)
   d.collision_worldid = wp.empty(nconmax, dtype=wp.int32, ndim=1)
   d.ncollision = wp.zeros(1, dtype=wp.int32, ndim=1)
+  d.collision_index = wp.empty(nconmax, dtype=wp.int32, ndim=1)
 
   # rne_postconstraint
   d.cacc = wp.array(tile(mjd.cacc), dtype=wp.spatial_vector, ndim=2)

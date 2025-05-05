@@ -36,6 +36,7 @@ class Geom:
   size: wp.vec3
   vertadr: int
   vertnum: int
+  verts: wp.types.matrix(shape=(6, 3), dtype=float) # Triangle prism vertices as a 6x3 matrix
 
 
 @wp.func
@@ -44,6 +45,7 @@ def _geom(
   m: Model,
   geom_xpos: wp.array(dtype=wp.vec3),
   geom_xmat: wp.array(dtype=wp.mat33),
+  index: int = -1,
 ) -> Geom:
   geom = Geom()
   geom.pos = geom_xpos[gid]
@@ -58,6 +60,82 @@ def _geom(
   else:
     geom.vertadr = -1
     geom.vertnum = -1
+
+  # If geom is HFIELD, use 'index' (tri index) to
+  # compute and store in 'verts' 6 vertices of the
+  # tri prism in geom local space
+  if m.geom_type[gid] == int(GeomType.HFIELD.value) and dataid >= 0 and index >= 0:
+    # Get heightfield dimensions
+    nrow = m.hfield_nrow[dataid]
+    ncol = m.hfield_ncol[dataid]
+    size = m.hfield_size[dataid]  # (x, y, z_top, z_bottom)
+ 
+    # Calculate which triangle in the grid
+    row = (index // 2) // (ncol - 1)
+    col = (index // 2) % (ncol - 1)
+    
+    # Calculate vertices in 2D grid
+    x_scale = 2.0 * size[0] / wp.float32(ncol - 1)
+    y_scale = 2.0 * size[1] / wp.float32(nrow - 1)
+    
+    # Grid coordinates (i, j) for triangle corners
+    i0 = col
+    j0 = row
+    i1 = i0 + 1
+    j1 = j0 + 1
+    
+    # Convert grid coordinates to local space x, y coordinates
+    x0 = wp.float32(i0) * x_scale - size[0]
+    y0 = wp.float32(j0) * y_scale - size[1]
+    x1 = wp.float32(i1) * x_scale - size[0]
+    y1 = wp.float32(j1) * y_scale - size[1]
+
+    #wp.printf("x0: %g y0: %g x1: %g y1: %g\n", x0, y0, x1, y1)
+    
+    # Get height values at corners from hfield_data
+    base_addr = m.hfield_adr[dataid]
+    z00 = m.hfield_data[base_addr + j0 * ncol + i0]
+    z01 = m.hfield_data[base_addr + j1 * ncol + i0]
+    z10 = m.hfield_data[base_addr + j0 * ncol + i1]
+    z11 = m.hfield_data[base_addr + j1 * ncol + i1]
+    
+    # Scale heights to range [0, 1] and then to [z_bottom, z_top]
+    z_range = size[2]
+    z00 = z00 * z_range
+    z10 = z10 * z_range
+    z01 = z01 * z_range
+    z11 = z11 * z_range
+
+    #wp.printf("z00: %g z01: %g z10: %g z11: %g\n", z00, z01, z10, z11)
+    
+    # Set bottom z-value
+    z_bottom = -size[3]
+
+    # Determine triangle vertices based on whether it's the first or second triangle
+    if (index % 2) == 0:
+      # First triangle: (i0,j0), (i1,j0), (i0,j1)
+      geom.verts = wp.types.matrix(# Top face vertices
+                                   x0, y0, z00,
+                                   x0, y1, z01,
+                                   x1, y0, z10,
+                                   # Bottom face vertices
+                                   x0, y0, z_bottom,
+                                   x0, y1, z_bottom,
+                                   x1, y0, z_bottom,
+                                   # Shape
+                                   shape=(6, 3))
+    else:
+      # Second triangle: (i0,j1), (i1,j1), (i1,j0)
+      geom.verts = wp.types.matrix(# Top face vertices
+                                   x0, y1, z01,
+                                   x1, y1, z11,
+                                   x1, y0, z10,
+                                   # Bottom face vertices
+                                   x0, y1, z_bottom,
+                                   x1, y1, z_bottom,
+                                   x1, y0, z_bottom,
+                                   # Shape
+                                   shape=(6, 3))
 
   return geom
 
