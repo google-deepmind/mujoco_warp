@@ -129,6 +129,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.ncam = mjm.ncam
   m.nlight = mjm.nlight
   m.nmocap = mjm.nmocap
+  m.ngravcomp = mjm.ngravcomp
   m.nM = mjm.nM
   m.ntendon = mjm.ntendon
   m.nwrap = mjm.nwrap
@@ -152,8 +153,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt.is_sparse = support.is_sparse(mjm)
   m.opt.ls_parallel = False
   # TODO(team) Figure out good default parameters
-  m.opt.gjk_iteration_count = wp.int32(1)  # warp only
-  m.opt.epa_iteration_count = wp.int32(12)  # warp only
+  m.opt.gjk_iterations = wp.int32(1)  # warp only
+  m.opt.epa_iterations = wp.int32(12)  # warp only
   m.opt.epa_exact_neg_distance = wp.bool(False)  # warp only
   m.opt.depth_extension = wp.float32(0.1)  # warp only
   m.stat.meaninertia = mjm.stat.meaninertia
@@ -201,6 +202,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   jnt_limited_ball_adr = np.nonzero(
     mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL)
   )[0]
+
+  m.jnt_actgravcomp = wp.array(mjm.jnt_actgravcomp, dtype=wp.int32)
 
   # body_tree is BFS ordering of body ids
   # body_treeadr contains starting index of each body tree level
@@ -295,7 +298,29 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tile_corners = [i for i in range(mjm.nv) if mjm.dof_parentid[i] == -1]
     tree_id = mjm.dof_treeid[tile_corners]
     num_trees = int(np.max(tree_id))
-    tree = mjm.body_treeid[mjm.jnt_bodyid[mjm.actuator_trnid[:, 0]]]
+    bodyid = []
+    for i in range(mjm.nu):
+      trntype = mjm.actuator_trntype[i]
+      if (
+        trntype == mujoco.mjtTrn.mjTRN_JOINT
+        or trntype == mujoco.mjtTrn.mjTRN_JOINTINPARENT
+      ):
+        jntid = mjm.actuator_trnid[i, 0]
+        bodyid.append(mjm.jnt_bodyid[jntid])
+      elif trntype == mujoco.mjtTrn.mjTRN_TENDON:
+        tenid = mjm.actuator_trnid[i, 0]
+        adr = mjm.tendon_adr[tenid]
+        if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+          ten_num = mjm.tendon_num[tenid]
+          for i in range(ten_num):
+            bodyid.append(mjm.jnt_bodyid[mjm.wrap_objid[adr + i]])
+        else:
+          for i in range(mjm.nv):
+            bodyid.append(mjm.dof_bodyid[i])
+      else:
+        raise NotImplementedError(f"Transmission type {trntype} not implemented.")
+
+    tree = mjm.body_treeid[np.array(bodyid, dtype=int)]
     counts, ids = np.histogram(tree, bins=np.arange(0, num_trees + 2))
     acts_per_tree = dict(zip([int(i) for i in ids], [int(i) for i in counts]))
 
@@ -380,6 +405,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.body_geomadr = wp.array(mjm.body_geomadr, dtype=wp.int32, ndim=1)
   m.body_contype = wp.array(mjm.body_contype, dtype=wp.int32, ndim=1)
   m.body_conaffinity = wp.array(mjm.body_conaffinity, dtype=wp.int32, ndim=1)
+  m.body_gravcomp = wp.array(mjm.body_gravcomp, dtype=wp.float32, ndim=1)
   m.jnt_bodyid = wp.array(mjm.jnt_bodyid, dtype=wp.int32, ndim=1)
   m.jnt_limited = wp.array(mjm.jnt_limited, dtype=wp.int32, ndim=1)
   m.jnt_limited_slide_hinge_adr = wp.array(
@@ -443,6 +469,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.cam_quat = wp.array(mjm.cam_quat, dtype=wp.quat, ndim=1)
   m.cam_poscom0 = wp.array(mjm.cam_poscom0, dtype=wp.vec3, ndim=1)
   m.cam_pos0 = wp.array(mjm.cam_pos0, dtype=wp.vec3, ndim=1)
+  m.cam_fovy = wp.array(mjm.cam_fovy, dtype=wp.float32, ndim=1)
+  m.cam_resolution = wp.array(mjm.cam_resolution, dtype=wp.vec2i, ndim=1)
+  m.cam_sensorsize = wp.array(mjm.cam_sensorsize, dtype=wp.vec2f, ndim=1)
+  m.cam_intrinsic = wp.array(mjm.cam_intrinsic, dtype=wp.vec4f, ndim=1)
   m.light_mode = wp.array(mjm.light_mode, dtype=wp.int32, ndim=1)
   m.light_bodyid = wp.array(mjm.light_bodyid, dtype=wp.int32, ndim=1)
   m.light_targetbodyid = wp.array(mjm.light_targetbodyid, dtype=wp.int32, ndim=1)
@@ -490,6 +520,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
   m.eq_jnt_adr = wp.array(
     np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=wp.int32, ndim=1
+  )
+  m.eq_ten_adr = wp.array(
+    np.nonzero(mjm.eq_type == types.EqType.TENDON.value)[0], dtype=wp.int32, ndim=1
   )
 
   # short-circuiting here allows us to skip a lot of code in implicit integration
@@ -712,6 +745,7 @@ def make_data(
   d.ne_connect = wp.zeros(1, dtype=wp.int32, ndim=1)
   d.ne_weld = wp.zeros(1, dtype=wp.int32, ndim=1)
   d.ne_jnt = wp.zeros(1, dtype=wp.int32, ndim=1)
+  d.ne_ten = wp.zeros(1, dtype=wp.int32, ndim=1)
   d.nefc = wp.zeros(1, dtype=wp.int32, ndim=1)
   d.ne = wp.zeros(1, dtype=wp.int32)
   d.nf = wp.zeros(1, dtype=wp.int32)
@@ -784,6 +818,7 @@ def make_data(
   d.subtree_bodyvel = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
   d.qfrc_spring = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_damper = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
+  d.qfrc_gravcomp = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_actuator = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_smooth = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
   d.qfrc_constraint = wp.zeros((nworld, mjm.nv), dtype=wp.float32)
@@ -896,6 +931,11 @@ def put_data(
     dtype=wp.int32,
     ndim=1,
   )
+  d.ne_ten = wp.array(
+    [np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active) * nworld],
+    dtype=wp.int32,
+    ndim=1,
+  )
   d.nf = wp.array([mjd.nf * nworld], dtype=wp.int32, ndim=1)
   d.nl = wp.array([mjd.nl * nworld], dtype=wp.int32, ndim=1)
   d.nefc = wp.array([mjd.nefc * nworld], dtype=wp.int32, ndim=1)
@@ -973,6 +1013,7 @@ def put_data(
   d.subtree_bodyvel = wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector)
   d.qfrc_spring = wp.array(tile(mjd.qfrc_spring), dtype=wp.float32, ndim=2)
   d.qfrc_damper = wp.array(tile(mjd.qfrc_damper), dtype=wp.float32, ndim=2)
+  d.qfrc_gravcomp = wp.array(tile(mjd.qfrc_gravcomp), dtype=wp.float32, ndim=2)
   d.qfrc_actuator = wp.array(tile(mjd.qfrc_actuator), dtype=wp.float32, ndim=2)
   d.qfrc_smooth = wp.array(tile(mjd.qfrc_smooth), dtype=wp.float32, ndim=2)
   d.qfrc_constraint = wp.array(tile(mjd.qfrc_constraint), dtype=wp.float32, ndim=2)
@@ -1215,6 +1256,7 @@ def get_data_into(
   result.subtree_angmom = d.subtree_angmom.numpy()[0]
   result.qfrc_spring = d.qfrc_spring.numpy()[0]
   result.qfrc_damper = d.qfrc_damper.numpy()[0]
+  result.qfrc_gravcomp = d.qfrc_gravcomp.numpy()[0]
   result.qfrc_actuator = d.qfrc_actuator.numpy()[0]
   result.qfrc_smooth = d.qfrc_smooth.numpy()[0]
   result.qfrc_constraint = d.qfrc_constraint.numpy()[0]

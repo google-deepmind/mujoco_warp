@@ -219,6 +219,71 @@ def _efc_equality_joint(
 
 
 @wp.kernel
+def _efc_equality_tendon(m: types.Model, d: types.Data):
+  worldid, eq_ten_adr = wp.tid()
+  eqid = m.eq_ten_adr[eq_ten_adr]
+
+  if not d.eq_active[worldid, eqid]:
+    return
+
+  netid = wp.atomic_add(d.ne_ten, 0, 1)
+  efcid = d.nefc[0] + d.ne_connect[0] + d.ne_weld[0] + d.ne_jnt[0] + netid
+
+  obj1id = m.eq_obj1id[eqid]
+  obj2id = m.eq_obj2id[eqid]
+  data = m.eq_data[eqid]
+  solref = m.eq_solref[eqid]
+  solimp = m.eq_solimp[eqid]
+  pos1 = d.ten_length[worldid, obj1id] - m.tendon_length0[obj1id]
+  pos2 = d.ten_length[worldid, obj2id] - m.tendon_length0[obj2id]
+  jac1 = d.ten_J[worldid, obj1id]
+  jac2 = d.ten_J[worldid, obj2id]
+
+  if obj2id > -1:
+    invweight = m.tendon_invweight0[obj1id] + m.tendon_invweight0[obj2id]
+
+    dif = pos2
+    dif2 = dif * dif
+    dif3 = dif2 * dif
+    dif4 = dif3 * dif
+
+    pos = pos1 - (
+      data[0] + data[1] * dif + data[2] * dif2 + data[3] * dif3 + data[4] * dif4
+    )
+
+    deriv = data[1] + 2.0 * data[2] * dif + 3.0 * data[3] * dif2 + 4.0 * data[4] * dif3
+
+  else:
+    invweight = m.tendon_invweight0[obj1id]
+    pos = pos1 - data[0]
+    deriv = 0.0
+
+  Jqvel = float(0.0)
+  for i in range(m.nv):
+    if deriv != 0.0:
+      J = jac1[i] + jac2[i] * -deriv
+    else:
+      J = jac1[i]
+    d.efc.J[efcid, i] = J
+    Jqvel += J * d.qvel[worldid, i]
+
+  _update_efc_row(
+    m,
+    d,
+    efcid,
+    pos,
+    pos,
+    invweight,
+    solref,
+    solimp,
+    0.0,
+    Jqvel,
+    0.0,
+    eqid,
+  )
+
+
+@wp.kernel
 def _efc_friction(
   m: types.Model,
   d: types.Data,
@@ -690,7 +755,7 @@ def _efc_contact_elliptic(
 
 @wp.kernel
 def _num_equality(d: types.Data):
-  ne = d.ne_connect[0] + d.ne_weld[0] + d.ne_jnt[0]
+  ne = d.ne_connect[0] + d.ne_weld[0] + d.ne_jnt[0] + d.ne_ten[0]
   d.ne[0] = ne
   d.nefc[0] += ne
 
@@ -708,6 +773,7 @@ def make_constraint(m: types.Model, d: types.Data):
   d.ne_connect.zero_()
   d.ne_weld.zero_()
   d.ne_jnt.zero_()
+  d.ne_ten.zero_()
   d.nefc.zero_()
   d.nf.zero_()
   d.nl.zero_()
@@ -729,6 +795,11 @@ def make_constraint(m: types.Model, d: types.Data):
       wp.launch(
         _efc_equality_joint,
         dim=(d.nworld, m.eq_jnt_adr.size),
+        inputs=[m, d],
+      )
+      wp.launch(
+        _efc_equality_tendon,
+        dim=(d.nworld, m.eq_ten_adr.size),
         inputs=[m, d],
       )
 

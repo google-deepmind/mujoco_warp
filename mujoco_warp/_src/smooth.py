@@ -871,7 +871,9 @@ def transmission(m: Model, d: Data):
         for i in range(ten_num):
           dofadr = m.jnt_dofadr[m.wrap_objid[adr + i]]
           moment[worldid, actid, dofadr] = d.ten_J[worldid, tenid, dofadr] * gear0
-      # TODO(team): spatial
+      else:  # spatial
+        for dofadr in range(m.nv):
+          moment[worldid, actid, dofadr] = d.ten_J[worldid, tenid, dofadr] * gear0
     else:
       # TODO(team): site, slidercrank, body
       wp.printf("unhandled transmission type %d\n", trntype)

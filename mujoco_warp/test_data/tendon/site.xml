@@ -14,24 +14,30 @@
     </body>
   </worldbody>
   <tendon>
-    <spatial>
+    <spatial name="spatial0">
       <site site="siteworld"/>
       <site site="site0"/>
       <site site="site1"/>
     </spatial>
-    <spatial>
+    <spatial name="spatial1">
       <site site="siteworld"/>
       <site site="site0"/>
     </spatial>
-    <spatial>
+    <spatial name="spatial2">
       <site site="siteworld"/>
       <site site="site1"/>
     </spatial>
-    <spatial>
+    <spatial name="spatial3">
       <site site="site0"/>
       <site site="site1"/>
     </spatial>
   </tendon>
+  <actuator>
+    <motor tendon="spatial0"/>
+    <motor tendon="spatial1"/>
+    <motor tendon="spatial2"/>
+    <motor tendon="spatial3"/>
+  </actuator>
   <keyframe>
     <key qpos=".25 .5 .75"/>
   </keyframe>
