@@ -58,8 +58,6 @@ class JAXTest(absltest.TestCase):
 
         return qpos, qvel
 
-      wp.clear_kernel_cache()
-
       mjm, mjd, m, d = fixture(
         "humanoid/humanoid.xml",
         nworld=NWORLDS,
