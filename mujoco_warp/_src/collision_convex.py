@@ -108,7 +108,7 @@ def _gjk_support_geom(
   elif geom_type == int(GeomType.HFIELD.value):
     max_dist = float(FLOAT_MIN)
     for i in range(6):
-      vert = wp.vec3(geom.verts[i][0], geom.verts[i][1], geom.verts[i][2])
+      vert = wp.vec3(geom.prism[i][0], geom.prism[i][1], geom.prism[i][2])
       dist = wp.dot(vert, local_dir)
       if dist > max_dist:
         max_dist = dist
