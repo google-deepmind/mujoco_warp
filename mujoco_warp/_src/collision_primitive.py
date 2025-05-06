@@ -15,17 +15,10 @@
 
 import warp as wp
 
-from .math import closest_segment_point
-from .math import closest_segment_to_segment_points
-from .math import make_frame
-from .math import normalize_with_norm
-from .types import MJ_MINVAL
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import vec5
-from .collision_hfield import HFPrism
-from .collision_hfield import get_hfield_triangle_prism
+from .collision_hfield import HFPrism, get_hfield_triangle_prism
+from .math import (closest_segment_point, closest_segment_to_segment_points,
+                   make_frame, normalize_with_norm)
+from .types import MJ_MINVAL, Data, GeomType, Model, vec5
 
 wp.set_module_options({"enable_backward": False})
 

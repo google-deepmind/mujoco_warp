@@ -19,7 +19,7 @@ from typing import Any
 
 import warp as wp
 
-from .types import Model, Data, GeomType
+from .types import Data, GeomType, Model
 from .warp_util import event_scope
 
 
