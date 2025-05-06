@@ -2051,7 +2051,7 @@ def update_gradient_JTDAJ(
     active = efc_active_in[efcid]
 
     if efc_D == 0.0 or not active:
-      return
+      continue
 
     dofi = dof_tri_row[elementid]
     dofj = dof_tri_col[elementid]
