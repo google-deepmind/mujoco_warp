@@ -744,9 +744,7 @@ def linesearch_iterative_swap(
   # if we did not adjust the interval, we are done
   # also done if either low or hi slope is nearly flat
   gtol = efc_gtol_in[worldid]
-  efc_ls_done_out[worldid] = (
-    (not swap_lo and not swap_hi) or (lo[1] < 0 and lo[1] > -gtol) or (hi[1] > 0 and hi[1] < gtol)
-  )
+  efc_ls_done_out[worldid] = (not swap_lo and not swap_hi) or (lo[1] < 0 and lo[1] > -gtol) or (hi[1] > 0 and hi[1] < gtol)
 
   # update alpha if we have an improvement
   p0 = efc_p0_in[worldid]
@@ -976,9 +974,7 @@ def linesearch_parallel_cost_alpha(
   quad_total1 = efc_quad_total_candidate_in[worldid, alphaid][1]
   quad_total2 = efc_quad_total_candidate_in[worldid, alphaid][2]
 
-  efc_cost_candidate_out[worldid, alphaid] = (
-    alpha_sq * quad_total2 + alpha * quad_total1 + quad_total0
-  )
+  efc_cost_candidate_out[worldid, alphaid] = alpha_sq * quad_total2 + alpha * quad_total1 + quad_total0
 
 
 @wp.kernel
@@ -1172,9 +1168,7 @@ def linesearch_init_quad(
       efc_quad_out[efcid] = wp.vec3(floss * (-0.5 * rf + Jaref), floss * jv, 0.0)
       return
 
-  efc_quad_out[efcid] = wp.vec3(
-    0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D
-  )
+  efc_quad_out[efcid] = wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
 
 
 @wp.kernel
@@ -1945,9 +1939,7 @@ def update_gradient_grad(
   if efc_done_in[worldid]:
     return
 
-  grad = (
-    efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
-  )
+  grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
   efc_grad_out[worldid, dofid] = grad
   wp.atomic_add(efc_grad_dot_out, worldid, grad * grad)
 
@@ -2199,9 +2191,7 @@ def update_gradient_cholesky(tile_size: int):
 
 def _update_gradient(m: types.Model, d: types.Data):
   # grad = Ma - qfrc_smooth - qfrc_constraint
-  wp.launch(
-    update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.grad_dot]
-  )
+  wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.grad_dot])
 
   wp.launch(
     update_gradient_grad,
@@ -2391,9 +2381,7 @@ def solve_beta(
   if efc_done_in[worldid]:
     return
 
-  efc_beta_out[worldid] = wp.max(
-    0.0, efc_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, efc_beta_den_in[worldid])
-  )
+  efc_beta_out[worldid] = wp.max(0.0, efc_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, efc_beta_den_in[worldid]))
 
 
 @wp.kernel
@@ -2537,9 +2525,7 @@ def solve(m: types.Model, d: types.Data):
         outputs=[d.efc.beta],
       )
 
-    wp.launch(
-      solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot]
-    )
+    wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot])
 
     wp.launch(
       solve_search_update,

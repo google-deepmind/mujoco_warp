@@ -35,13 +35,12 @@ from .types import vec5
 from .types import vec10
 from .types import vec11
 from .warp_util import event_scope
-from .warp_util import kernel
 from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
 
-@kernel
+@wp.kernel
 def _kinematics_root(
   # Data out:
   xpos_out: wp.array2d(dtype=wp.vec3),
@@ -58,7 +57,7 @@ def _kinematics_root(
   ximat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
 
 
-@kernel
+@wp.kernel
 def _kinematics_level(
   # Model:
   qpos0: wp.array(dtype=float),
@@ -148,12 +147,10 @@ def _kinematics_level(
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[bodyid], xquat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(
-    math.mul_quat(xquat, body_iquat[bodyid])
-  )
+  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[bodyid]))
 
 
-@kernel
+@wp.kernel
 def _geom_local_to_global(
   # Model:
   geom_bodyid: wp.array(dtype=int),
@@ -171,12 +168,10 @@ def _geom_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[geomid], xquat)
-  geom_xmat_out[worldid, geomid] = math.quat_to_mat(
-    math.mul_quat(xquat, geom_quat[geomid])
-  )
+  geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[geomid]))
 
 
-@kernel
+@wp.kernel
 def _site_local_to_global(
   # Model:
   site_bodyid: wp.array(dtype=int),
@@ -194,9 +189,7 @@ def _site_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[siteid], xquat)
-  site_xmat_out[worldid, siteid] = math.quat_to_mat(
-    math.mul_quat(xquat, site_quat[siteid])
-  )
+  site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[siteid]))
 
 
 @event_scope
@@ -254,7 +247,7 @@ def kinematics(m: Model, d: Data):
     )
 
 
-@kernel
+@wp.kernel
 def _subtree_com_init(
   # Model:
   body_mass: wp.array(dtype=float),
@@ -267,7 +260,7 @@ def _subtree_com_init(
   xipos_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[bodyid]
 
 
-@kernel
+@wp.kernel
 def _subtree_com_acc(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -284,7 +277,7 @@ def _subtree_com_acc(
   wp.atomic_add(subtree_com_out, worldid, pid, subtree_com_in[worldid, bodyid])
 
 
-@kernel
+@wp.kernel
 def _subtree_div(
   # Model:
   subtree_mass: wp.array(dtype=float),
@@ -295,7 +288,7 @@ def _subtree_div(
   subtree_com_out[worldid, bodyid] /= subtree_mass[bodyid]
 
 
-@kernel
+@wp.kernel
 def _cinert(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -341,7 +334,7 @@ def _cinert(
   cinert_out[worldid, bodyid] = res
 
 
-@kernel
+@wp.kernel
 def _cdof(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -440,7 +433,7 @@ def com_pos(m: Model, d: Data):
   )
 
 
-@kernel
+@wp.kernel
 def _cam_local_to_global(
   # Model:
   cam_bodyid: wp.array(dtype=int),
@@ -462,7 +455,7 @@ def _cam_local_to_global(
   cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[camid]))
 
 
-@kernel
+@wp.kernel
 def _cam_fn(
   # Model:
   cam_mode: wp.array(dtype=int),
@@ -488,12 +481,10 @@ def _cam_fn(
     body_xpos = xpos_in[worldid, cam_bodyid[camid]]
     cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[camid]
   elif cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
-    cam_xpos_out[worldid, camid] = (
-      subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[camid]
-    )
-  elif cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or cam_mode[
-    camid
-  ] == wp.static(CamLightType.TARGETBODYCOM.value):
+    cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[camid]
+  elif cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or cam_mode[camid] == wp.static(
+    CamLightType.TARGETBODYCOM.value
+  ):
     pos = xpos_in[worldid, cam_targetbodyid[camid]]
     if cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value):
       pos = subtree_com_in[worldid, cam_targetbodyid[camid]]
@@ -511,7 +502,7 @@ def _cam_fn(
     # fmt: on
 
 
-@kernel
+@wp.kernel
 def _light_local_to_global(
   # Model:
   light_bodyid: wp.array(dtype=int),
@@ -533,7 +524,7 @@ def _light_local_to_global(
   light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[lightid], xquat)
 
 
-@kernel
+@wp.kernel
 def _light_fn(
   # Model:
   light_mode: wp.array(dtype=int),
@@ -550,9 +541,9 @@ def _light_fn(
   light_xdir_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, lightid = wp.tid()
-  is_target_light = (
-    light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value)
-  ) or (light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value))
+  is_target_light = (light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value)) or (
+    light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value)
+  )
   invalid_target = is_target_light and (light_targetbodyid[lightid] < 0)
   if invalid_target:
     return
@@ -560,12 +551,10 @@ def _light_fn(
     body_xpos = xpos_in[worldid, light_bodyid[lightid]]
     light_xpos_out[worldid, lightid] = body_xpos + light_pos0[lightid]
   elif light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
-    light_xpos_out[worldid, lightid] = (
-      subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[lightid]
-    )
-  elif light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value) or light_mode[
-    lightid
-  ] == wp.static(CamLightType.TARGETBODYCOM.value):
+    light_xpos_out[worldid, lightid] = subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[lightid]
+  elif light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value) or light_mode[lightid] == wp.static(
+    CamLightType.TARGETBODYCOM.value
+  ):
     pos = xpos_in[worldid, light_targetbodyid[lightid]]
     if light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
       pos = subtree_com_in[worldid, light_targetbodyid[lightid]]
@@ -621,7 +610,7 @@ def camlight(m: Model, d: Data):
     )
 
 
-@kernel
+@wp.kernel
 def _crb_accumulate(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -640,7 +629,7 @@ def _crb_accumulate(
   wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
 
 
-@kernel
+@wp.kernel
 def _qM_sparse(
   # Model:
   dof_bodyid: wp.array(dtype=int),
@@ -670,7 +659,7 @@ def _qM_sparse(
     dofid = dof_parentid[dofid]
 
 
-@kernel
+@wp.kernel
 def _qM_dense(
   # Model:
   dof_bodyid: wp.array(dtype=int),
@@ -748,7 +737,7 @@ def crb(m: Model, d: Data):
     )
 
 
-@kernel
+@wp.kernel
 def _qLD_acc_legacy(
   # Model:
   dof_Madr: wp.array(dtype=int),
@@ -771,7 +760,7 @@ def _qLD_acc_legacy(
   L_out[worldid, 0, Madr_ki] = tmp
 
 
-@kernel
+@wp.kernel
 def _qLDiag_div_legacy(
   # Model:
   dof_Madr: wp.array(dtype=int),
@@ -798,12 +787,10 @@ def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: arra
       outputs=[L],
     )
 
-  wp.launch(
-    _qLDiag_div_legacy, dim=(d.nworld, m.nv), inputs=[m.dof_Madr, L], outputs=[D]
-  )
+  wp.launch(_qLDiag_div_legacy, dim=(d.nworld, m.nv), inputs=[m.dof_Madr, L], outputs=[D])
 
 
-@kernel
+@wp.kernel
 def _copy_CSR(
   # Model:
   mapM2M: wp.array(dtype=int),
@@ -816,7 +803,7 @@ def _copy_CSR(
   L_out[worldid, 0, ind] = M_in[worldid, 0, mapM2M[ind]]
 
 
-@kernel
+@wp.kernel
 def _qLD_acc(
   # Model:
   M_rownnz: wp.array(dtype=int),
@@ -836,14 +823,12 @@ def _qLD_acc(
   tmp = L_out[worldid, 0, Madr_ki] / L_out[worldid, 0, diag_k]
   for j in range(M_rownnz[i]):
     # M(i,j) -= M(k,j) * tmp
-    wp.atomic_sub(
-      L_out[worldid, 0], Madr_i + j, L_in[worldid, 0, M_rowadr[k] + j] * tmp
-    )
+    wp.atomic_sub(L_out[worldid, 0], Madr_i + j, L_in[worldid, 0, M_rowadr[k] + j] * tmp)
   # M(k,i) = tmp
   L_out[worldid, 0, Madr_ki] = tmp
 
 
-@kernel
+@wp.kernel
 def _qLDiag_div(
   # Model:
   M_rownnz: wp.array(dtype=int),
@@ -874,9 +859,7 @@ def _factor_i_sparse(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
       outputs=[L],
     )
 
-  wp.launch(
-    _qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D]
-  )
+  wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
 
 
 def _tile_cholesky(tile: TileSet):
@@ -895,9 +878,7 @@ def _tile_cholesky(tile: TileSet):
     TILE_SIZE = wp.static(tile.size)
 
     dofid = adr[nodeid]
-    M_tile = wp.tile_load(
-      qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid)
-    )
+    M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     L_tile = wp.tile_cholesky(M_tile)
     wp.tile_store(L_out[worldid], L_tile, offset=(dofid, dofid))
 
@@ -935,7 +916,7 @@ def factor_m(m: Model, d: Data):
   factor_i(m, d, d.qM, d.qLD, d.qLDiagInv)
 
 
-@kernel
+@wp.kernel
 def _cacc_world(
   # In:
   gravity: wp.vec3,
@@ -953,7 +934,7 @@ def _rne_cacc_world(m: Model, d: Data):
     wp.launch(_cacc_world, dim=[d.nworld], inputs=[m.opt.gravity], outputs=[d.cacc])
 
 
-@kernel
+@wp.kernel
 def _cacc(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -1005,7 +986,7 @@ def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
     )
 
 
-@kernel
+@wp.kernel
 def _cfrc(
   # Data in:
   cinert_in: wp.array2d(dtype=vec10),
@@ -1039,7 +1020,7 @@ def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
   )
 
 
-@kernel
+@wp.kernel
 def _cfrc_backward(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -1067,7 +1048,7 @@ def _rne_cfrc_backward(m: Model, d: Data):
     )
 
 
-@kernel
+@wp.kernel
 def _qfrc_bias(
   # Model:
   dof_bodyid: wp.array(dtype=int),
@@ -1079,9 +1060,7 @@ def _qfrc_bias(
 ):
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
-  qfrc_bias_out[worldid, dofid] = wp.dot(
-    cdof_in[worldid, dofid], cfrc_int_in[worldid, bodyid]
-  )
+  qfrc_bias_out[worldid, dofid] = wp.dot(cdof_in[worldid, dofid], cfrc_int_in[worldid, bodyid])
 
 
 @event_scope
@@ -1100,7 +1079,7 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   )
 
 
-@kernel
+@wp.kernel
 def _cfrc_ext(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -1118,12 +1097,10 @@ def _cfrc_ext(
     xfrc_applied = xfrc_applied_in[worldid, bodyid]
     subtree_com = subtree_com_in[worldid, body_rootid[bodyid]]
     xipos = xipos_in[worldid, bodyid]
-    cfrc_ext_out[worldid, bodyid] = support.transform_force(
-      xfrc_applied, subtree_com - xipos
-    )
+    cfrc_ext_out[worldid, bodyid] = support.transform_force(xfrc_applied, subtree_com - xipos)
 
 
-@kernel
+@wp.kernel
 def _cfrc_ext_equality(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -1160,9 +1137,7 @@ def _cfrc_ext_equality(
     cfrc_torque = wp.vec3(0.0, 0.0, 0.0)  # no torque from connect
   else:
     efcid = 6 * eqid - ne_connect
-    cfrc_torque = wp.vec3(
-      efc_force_in[efcid + 3], efc_force_in[efcid + 4], efc_force_in[efcid + 5]
-    )
+    cfrc_torque = wp.vec3(efc_force_in[efcid + 3], efc_force_in[efcid + 4], efc_force_in[efcid + 5])
 
   cfrc_force = wp.vec3(
     efc_force_in[efcid + 0],
@@ -1231,14 +1206,12 @@ def _cfrc_ext_equality(
 
 
 @wp.func
-def transform_force(
-  force: wp.vec3, torque: wp.vec3, offset: wp.vec3
-) -> wp.spatial_vector:
+def transform_force(force: wp.vec3, torque: wp.vec3, offset: wp.vec3) -> wp.spatial_vector:
   torque -= wp.cross(offset, force)
   return wp.spatial_vector(torque, force)
 
 
-@kernel
+@wp.kernel
 def _cfrc_ext_contact(
   # Model:
   opt_cone: int,
@@ -1289,15 +1262,11 @@ def _cfrc_ext_contact(
   # contact force on bodies
   if id1:
     com1 = subtree_com_in[worldid, body_rootid[id1]]
-    wp.atomic_sub(
-      cfrc_ext_out[worldid], id1, support.transform_force(force, com1 - pos)
-    )
+    wp.atomic_sub(cfrc_ext_out[worldid], id1, support.transform_force(force, com1 - pos))
 
   if id2:
     com2 = subtree_com_in[worldid, body_rootid[id2]]
-    wp.atomic_add(
-      cfrc_ext_out[worldid], id2, support.transform_force(force, com2 - pos)
-    )
+    wp.atomic_add(cfrc_ext_out[worldid], id2, support.transform_force(force, com2 - pos))
 
 
 @event_scope
@@ -1368,13 +1337,13 @@ def rne_postconstraint(m: Model, d: Data):
   _rne_cfrc_backward(m, d)
 
 
-@kernel
+@wp.kernel
 def _comvel_root(cvel_out: wp.array2d(dtype=wp.spatial_vector)):
   worldid, elementid = wp.tid()
   cvel_out[worldid, 0][elementid] = 0.0
 
 
-@kernel
+@wp.kernel
 def _comvel_level(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -1467,7 +1436,7 @@ def com_vel(m: Model, d: Data):
     )
 
 
-@kernel
+@wp.kernel
 def _transmission(
   # Model:
   jnt_type: wp.array(dtype=int),
@@ -1491,9 +1460,7 @@ def _transmission(
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
   gear = actuator_gear[actid]
-  if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(
-    TrnType.JOINTINPARENT.value
-  ):
+  if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(TrnType.JOINTINPARENT.value):
     qpos = qpos_in[worldid]
     jntid = actuator_trnid[actid][0]
     jnt_typ = jnt_type[jntid]
@@ -1530,9 +1497,7 @@ def _transmission(
       length_out[worldid, actid] = wp.dot(axis_angle, gearaxis)
       for i in range(3):
         moment_out[worldid, actid, vadr + i] = gearaxis[i]
-    elif jnt_typ == wp.static(JointType.SLIDE.value) or jnt_typ == wp.static(
-      JointType.HINGE.value
-    ):
+    elif jnt_typ == wp.static(JointType.SLIDE.value) or jnt_typ == wp.static(JointType.HINGE.value):
       length_out[worldid, actid] = qpos[qadr] * gear[0]
       moment_out[worldid, actid, vadr] = gear[0]
     else:
@@ -1584,59 +1549,56 @@ def transmission(m: Model, d: Data):
   )
 
 
-def _solve_LD_sparse(
-  m: Model, d: Data, L: array3df, D: array2df, x: array2df, y: array2df
+@wp.kernel
+def solve_LD_sparse_x_acc_up(
+  # In:
+  L: array3df,
+  qLD_updates_: wp.array(dtype=wp.vec3i),
+  # Out:
+  x: array2df,
 ):
+  worldid, nodeid = wp.tid()
+  update = qLD_updates_[nodeid]
+  i, k, Madr_ki = update[0], update[1], update[2]
+  wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
+
+
+@wp.kernel
+def solve_LD_sparse_qLDiag_mul(
+  # In:
+  D: array2df,
+  # Out:
+  out: array2df,
+):
+  worldid, dofid = wp.tid()
+  out[worldid, dofid] *= D[worldid, dofid]
+
+
+@wp.kernel
+def solve_LD_sparse_x_acc_down(
+  # In:
+  L: array3df,
+  qLD_updates_: wp.array(dtype=wp.vec3i),
+  # Out:
+  x: array2df,
+):
+  worldid, nodeid = wp.tid()
+  update = qLD_updates_[nodeid]
+  i, k, Madr_ki = update[0], update[1], update[2]
+  wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
+
+
+def _solve_LD_sparse(m: Model, d: Data, L: array3df, D: array2df, x: array2df, y: array2df):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y"""
-
-  @nested_kernel
-  def x_acc_up(
-    # In:
-    L: array3df,
-    qLD_updates_: wp.array(dtype=wp.vec3i),
-    # Out:
-    x: array2df,
-  ):
-    worldid, nodeid = wp.tid()
-    update = qLD_updates_[nodeid]
-    i, k, Madr_ki = update[0], update[1], update[2]
-    wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
-
-  @nested_kernel
-  def qLDiag_mul(
-    # In:
-    D: array2df,
-    # Out:
-    x: array2df,
-  ):
-    worldid, dofid = wp.tid()
-    x[worldid, dofid] *= D[worldid, dofid]
-
-  @nested_kernel
-  def x_acc_down(
-    # In:
-    L: array3df,
-    qLD_updates_: wp.array(dtype=wp.vec3i),
-    # Out:
-    x: array2df,
-  ):
-    worldid, nodeid = wp.tid()
-    update = qLD_updates_[nodeid]
-    i, k, Madr_ki = update[0], update[1], update[2]
-    wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
 
   wp.copy(x, y)
   for qLD_updates in reversed(m.qLD_updates):
-    wp.launch(
-      x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x]
-    )
+    wp.launch(solve_LD_sparse_x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
 
-  wp.launch(qLDiag_mul, dim=(d.nworld, m.nv), inputs=[D], outputs=[x])
+  wp.launch(solve_LD_sparse_qLDiag_mul, dim=(d.nworld, m.nv), inputs=[D], outputs=[x])
 
   for qLD_updates in m.qLD_updates:
-    wp.launch(
-      x_acc_down, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x]
-    )
+    wp.launch(solve_LD_sparse_x_acc_down, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
 
 
 def _tile_cho_solve(tile: TileSet):
@@ -1656,9 +1618,7 @@ def _tile_cho_solve(tile: TileSet):
 
     dofid = adr[nodeid]
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    L_tile = wp.tile_load(
-      L[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid)
-    )
+    L_tile = wp.tile_load(L[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     x_slice = wp.tile_cholesky_solve(L_tile, y_slice)
     wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
@@ -1712,9 +1672,7 @@ def _tile_cho_solve_full(tile: TileSet):
     TILE_SIZE = wp.static(tile.size)
 
     dofid = adr[nodeid]
-    M_tile = wp.tile_load(
-      M[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid)
-    )
+    M_tile = wp.tile_load(M[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
 
     L_tile = wp.tile_cholesky(M_tile)
@@ -1746,7 +1704,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _factor_solve_i_dense(m, d, M, x, y)
 
 
-@kernel
+@wp.kernel
 def _subtree_vel_forward(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -1783,7 +1741,7 @@ def _subtree_vel_forward(
   subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
 
-@kernel
+@wp.kernel
 def _linear_momentum(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -1803,7 +1761,7 @@ def _linear_momentum(
   subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[bodyid])
 
 
-@kernel
+@wp.kernel
 def _angular_momentum(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -1902,7 +1860,7 @@ def subtree_vel(m: Model, d: Data):
     )
 
 
-@kernel
+@wp.kernel
 def _joint_tendon(
   # Model:
   jnt_qposadr: wp.array(dtype=int),
@@ -1934,7 +1892,7 @@ def _joint_tendon(
   ten_J_out[worldid, tendon_jnt_adr_, jnt_dofadr[wrap_objid_]] = prm
 
 
-@kernel
+@wp.kernel
 def _spatial_site_tendon(
   # Model:
   nv: int,
@@ -2028,7 +1986,7 @@ def _spatial_site_tendon(
           wp.atomic_add(ten_J_out[worldid, ten_adr], i, J)
 
 
-@kernel
+@wp.kernel
 def _spatial_tendon(
   # Model:
   ten_wrapadr_site: wp.array(dtype=int),

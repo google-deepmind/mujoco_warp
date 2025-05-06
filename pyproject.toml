@@ -59,7 +59,7 @@ Repository = "https://github.com/google-deepmind/mujoco_warp"
 Changelog = "https://mujoco.readthedocs.io/en/stable/changelog.html"
 
 [tool.ruff]
-line-length = 100
+line-length = 128
 indent-width = 2
 
 [tool.ruff.lint]
@@ -78,7 +78,7 @@ docstring-code-line-length = 88
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 92
-max-line-length = 100
+max-line-length = 128
 
 [tool.setuptools.packages.find]
 include = ["mujoco_warp"]
