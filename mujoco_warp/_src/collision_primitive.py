@@ -64,7 +64,7 @@ def _geom(
     geom.vertnum = -1
 
   # If geom is HFIELD, store 6 vertices of the tri prism
-  if m.geom_type[gid] == int(GeomType.HFIELD.value):
+  if m.geom_type[gid] == int(GeomType.HFIELD.value) and index > -1:
     geom.prism = get_hfield_triangle_prism(m, gid, index)
 
   return geom
