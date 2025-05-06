@@ -21,7 +21,12 @@ from .collision_box import box_box_narrowphase
 from .collision_convex import gjk_narrowphase
 from .collision_hfield import get_hfield_overlap_range
 from .collision_primitive import primitive_narrowphase
-from .types import MJ_MAXVAL, MJ_MINVAL, Data, DisableBit, GeomType, Model
+from .types import MJ_MAXVAL
+from .types import MJ_MINVAL
+from .types import Data
+from .types import DisableBit
+from .types import GeomType
+from .types import Model
 from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
