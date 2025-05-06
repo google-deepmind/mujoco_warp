@@ -50,7 +50,7 @@ def rot_vec_quat(vec: wp.vec3, quat: wp.quat) -> wp.vec3:
 
 
 @wp.func
-def axis_angle_to_quat(axis: wp.vec3, angle: wp.float32) -> wp.quat:
+def axis_angle_to_quat(axis: wp.vec3, angle: float) -> wp.quat:
   s, c = wp.sin(angle * 0.5), wp.cos(angle * 0.5)
   axis = axis * s
   return wp.quat(c, axis[0], axis[1], axis[2])
@@ -151,7 +151,7 @@ def quat_sub(qa: wp.quat, qb: wp.quat) -> wp.vec3:
 
 
 @wp.func
-def quat_integrate(q: wp.quat, v: wp.vec3, dt: wp.float32) -> wp.quat:
+def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
   """Integrates a quaternion given angular velocity and dt."""
   norm_ = wp.length(v)
   v = wp.normalize(v)  # does that need proper zero gradient handling?

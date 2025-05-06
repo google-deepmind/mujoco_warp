@@ -282,19 +282,16 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
 
       # paramater type must match field type (or generic types if no corresponding field)
       if expected_type is None:
-        # TODO(team): it may be that we should not enforce this, too many types
-        expected_type = (
-          "Any",
-          "int",
-          "float",
-          "bool",
-          "(wp\\.)?spatial_vector",
-          "(wp\\.)?array([1-3]d)?\(dtype=(wp\\.)?[a-zA-Z_]+\)",
-          "(wp\\.)?vec[0-9][0-9]?f?i?",
-          "(wp\\.)?mat[0-9][0-9]?f?i?",
-        )
-        if not any(re.fullmatch(t, param_type) for t in expected_type):
-          issues.append(TypeMismatch(param, kernel, ", ".join(expected_type), None))
+        # if the parameter does not correspond to a Model/Data fields, it has no expected type
+        # still, there are a few type conventions we stick to
+        if 'wp.int32' in param_type:
+          expected_type = "int"
+        elif 'wp.float32' in param_type:
+          expected_type = "float"
+        elif 'wp.bool' in param_type:
+          expected_type = "bool"          
+        if expected_type:          
+          issues.append(TypeMismatch(param, kernel, expected_type, None))
       elif param_type != expected_type:
         issues.append(TypeMismatch(param, kernel, expected_type, param_source))
 

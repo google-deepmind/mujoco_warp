@@ -1139,10 +1139,9 @@ def _cfrc_ext_equality(
   xpos_in: wp.array2d(dtype=wp.vec3),
   xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
-  # In:
-  efc_force_in: wp.array(dtype=float),
   efc_worldid_in: wp.array(dtype=int),
   efc_id_in: wp.array(dtype=int),
+  efc_force_in: wp.array(dtype=float),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
@@ -1242,21 +1241,20 @@ def transform_force(
 @kernel
 def _cfrc_ext_contact(
   # Model:
+  opt_cone: int,
   body_rootid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   # Data in:
   ncon_in: wp.array(dtype=int),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
-  # In:
-  opt_cone: int,
-  contact_dim_in: wp.array(dtype=int),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_friction_in: wp.array(dtype=vec5),
-  contact_frame_in: wp.array(dtype=wp.mat33),
   contact_pos_in: wp.array(dtype=wp.vec3),
-  efc_force_in: wp.array(dtype=float),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_friction_in: wp.array(dtype=vec5),
+  contact_dim_in: wp.array(dtype=int),
   contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
+  efc_force_in: wp.array(dtype=float),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
@@ -1330,9 +1328,9 @@ def rne_postconstraint(m: Model, d: Data):
       d.xpos,
       d.xmat,
       d.subtree_com,
-      d.efc.force,
       d.efc.worldid,
       d.efc.id,
+      d.efc.force,
     ],
     outputs=[d.cfrc_ext],
   )
@@ -1342,19 +1340,19 @@ def rne_postconstraint(m: Model, d: Data):
     _cfrc_ext_contact,
     dim=(d.nconmax,),
     inputs=[
+      m.opt.cone,
       m.body_rootid,
       m.geom_bodyid,
       d.ncon,
       d.subtree_com,
-      m.opt.cone,
-      d.contact.dim,
-      d.contact.efc_address,
-      d.contact.friction,
-      d.contact.frame,
       d.contact.pos,
-      d.efc.force,
+      d.contact.frame,
+      d.contact.friction,
+      d.contact.dim,
       d.contact.geom,
+      d.contact.efc_address,
       d.contact.worldid,
+      d.efc.force,
     ],
     outputs=[d.cfrc_ext],
   )
