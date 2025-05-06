@@ -57,11 +57,12 @@ from ._src.solver import solve as solve
 from ._src.support import contact_force as contact_force
 from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate
+
 # from ._src.test_util import benchmark as benchmark
 # from ._src.types import ConeType as ConeType
 # from ._src.types import Contact as Contact
 # from ._src.types import Data as Data
-# from ._src.types import DisableBit as DisableBit
+from ._src.types import DisableBit as DisableBit
 # from ._src.types import DynType as DynType
 # from ._src.types import JointType as JointType
 # from ._src.types import Model as Model
