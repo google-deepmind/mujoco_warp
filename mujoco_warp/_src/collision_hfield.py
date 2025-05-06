@@ -25,8 +25,8 @@ from .types import Model
 from .warp_util import event_scope
 
 
-class HFPrism(wp.types.matrix(shape=(6, 3), dtype=wp.float32)):
-  pass
+#class HFPrism(wp.types.matrix(shape=(3, 3), dtype=wp.float32)):
+#  pass
 
 
 @wp.func
@@ -86,7 +86,7 @@ def get_hfield_overlap_range(
 
 
 @wp.func
-def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> HFPrism:
+def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.mat33:
   """Returns the vertices of a triangular prism for a heightfield triangle.
 
   Args:
@@ -95,12 +95,12 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> HFP
       tri_index: Index of the triangle in the heightfield
 
   Returns:
-      6x3 matrix containing the vertices of the triangular prism
+      3x3 matrix containing the vertices of the triangular prism
   """
   # Get heightfield dimensions
   dataid = m.geom_dataid[hfield_geom]
   if dataid < 0 or tri_index < 0:
-    return HFPrism()
+    return wp.mat33(.0, .0, .0, .0, .0, .0, .0, .0, .0)
 
   nrow = m.hfield_nrow[dataid]
   ncol = m.hfield_ncol[dataid]
@@ -143,52 +143,109 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> HFP
   # Set bottom z-value
   z_bottom = -size[3]
 
-  # Determine triangle vertices based on whether it's the first or second triangle
-  if (tri_index % 2) == 0:
-    # First triangle: (i0 j0), (i0 j1), (i1 j1)
-    return HFPrism(
-      # Top face vertices
-      x0,
-      y0,
-      z00,
-      x0,
-      y1,
-      z01,
-      x1,
-      y1,
-      z11,
-      # Bottom face vertices
-      x0,
-      y0,
-      z_bottom,
-      x0,
-      y1,
-      z_bottom,
-      x1,
-      y1,
-      z_bottom,
-    )
+  # Compress 6 vertices in to 3x3 matrix.
+  # See get_hfield_prism_vertex for detaild
+  if (tri_index % 2):
+    return wp.mat33(
+      x0, y0, z00,
+      x1, y1, z11,
+      1.0, z10, z_bottom
+      )
   else:
-    # Second triangle: (i0 j0), (i1 j1), (i1 j0)
-    return HFPrism(
-      # Top face vertices
-      x0,
-      y0,
-      z00,
-      x1,
-      y1,
-      z11,
-      x1,
-      y0,
-      z10,
-      # Bottom face vertices
-      x0,
-      y0,
-      z_bottom,
-      x1,
-      y1,
-      z_bottom,
-      x1,
-      y0,
-      z_bottom,
-    )
+    return wp.mat33(
+      x0, y0, z00,
+      x1, y1, z11,
+      0.0, z01, z_bottom
+      )
+
+
+  ## Determine triangle vertices based on whether it's the first or second triangle
+  #if (tri_index % 2) == 0:
+  #  # First triangle: (i0 j0), (i0 j1), (i1 j1)
+  #  return wp.mat33(
+  #    # Top face vertices
+  #    x0,
+  #    y0,
+  #    z00,
+  #    x0,
+  #    y1,
+  #    z01,
+  #    x1,
+  #    y1,
+  #    z11,
+  #    ## Bottom face vertices
+  #    #x0,
+  #    #y0,
+  #    #z_bottom,
+  #    #x0,
+  #    #y1,
+  #    #z_bottom,
+  #    #x1,
+  #    #y1,
+  #    #z_bottom,
+  #  )
+  #else:
+  #  # Second triangle: (i0 j0), (i1 j1), (i1 j0)
+  #  return wp.mat33(
+  #    # Top face vertices
+  #    x0,
+  #    y0,
+  #    z00,
+  #    x1,
+  #    y1,
+  #    z11,
+  #    x1,
+  #    y0,
+  #    z10,
+  #    ## Bottom face vertices
+  #    #x0,
+  #    #y0,
+  #    #z_bottom,
+  #    #x1,
+  #    #y1,
+  #    #z_bottom,
+  #    #x1,
+  #    #y0,
+  #    #z_bottom,
+  #  )
+
+
+@wp.func
+def get_hfield_prism_vertex(prism: wp.mat33, vert_index: int) -> wp.vec3:
+    """Extracts vertices from a compressed triangular prism representation.
+    
+    The compression scheme stores a 6-vertex triangular prism using a 3x3 matrix:
+    - prism[0] = First vertex (x,y,z) - corner (i,j)
+    - prism[1] = Second vertex (x,y,z) - corner (i+1,j+1)
+    - prism[2,0] = Triangle type flag: 0 for even triangle (using corner (i,j+1)),
+                   non-zero for odd triangle (using corner (i+1,j))
+    - prism[2,1] = Z-coordinate of the third vertex
+    - prism[2,2] = Z-coordinate used for all bottom vertices (common z)
+    
+    In this way, we can reconstruct all 6 vertices of the prism by reusing
+    coordinates from the stored vertices.
+    
+    Args:
+        prism: 3x3 compressed representation of a triangular prism
+        vert_index: Index of vertex to extract (0-5)
+        
+    Returns:
+        The 3D coordinates of the requested vertex
+    """
+    if vert_index == 0 or vert_index == 1:
+        return prism[vert_index]  # First two vertices stored directly
+
+    if vert_index == 2:  # Third vertex
+        if prism[2][0] == 0:  # Even triangle (i,j+1)
+            return wp.vec3(prism[0][0], prism[1][1], prism[2][1])
+        else:  # Odd triangle (i+1,j)
+            return wp.vec3(prism[1][0], prism[0][1], prism[2][1])
+
+    if vert_index == 3 or vert_index == 4:  # Bottom vertices below 0 and 1
+        return wp.vec3(prism[vert_index - 3][0], prism[vert_index - 3][1], prism[2][2])
+
+    if vert_index == 5:  # Bottom vertex below 2
+        if prism[2][0] == 0:  # Even triangle
+            return wp.vec3(prism[0][0], prism[1][1], prism[2][2])
+        else:  # Odd triangle
+            return wp.vec3(prism[1][0], prism[0][1], prism[2][2])

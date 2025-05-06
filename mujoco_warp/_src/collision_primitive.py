@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .collision_hfield import HFPrism
+#from .collision_hfield import HFPrism
 from .collision_hfield import get_hfield_triangle_prism
 from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
@@ -38,7 +38,7 @@ class Geom:
   size: wp.vec3
   vertadr: int
   vertnum: int
-  prism: HFPrism  # Triangle prism vertices
+  hfprism: wp.mat33
 
 
 @wp.func
@@ -47,7 +47,7 @@ def _geom(
   m: Model,
   geom_xpos: wp.array(dtype=wp.vec3),
   geom_xmat: wp.array(dtype=wp.mat33),
-  index: int = -1,
+  tri_index: int = -1,
 ) -> Geom:
   geom = Geom()
   geom.pos = geom_xpos[gid]
@@ -63,9 +63,9 @@ def _geom(
     geom.vertadr = -1
     geom.vertnum = -1
 
-  # If geom is HFIELD, store 6 vertices of the tri prism
-  if m.geom_type[gid] == int(GeomType.HFIELD.value) and index > -1:
-    geom.prism = get_hfield_triangle_prism(m, gid, index)
+  # If geom is HFIELD triangle, compute triangle prism verts
+  if m.geom_type[gid] == int(GeomType.HFIELD.value):
+    geom.hfprism = get_hfield_triangle_prism(m, gid, tri_index)
 
   return geom
 
