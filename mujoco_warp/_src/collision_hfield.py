@@ -30,7 +30,9 @@ class HFPrism(wp.types.matrix(shape=(6, 3), dtype=wp.float32)):
 
 
 @wp.func
-def get_hfield_overlap_range(m: Model, d: Data, hfield_geom: int, other_geom: int, worldid: int):
+def get_hfield_overlap_range(
+  m: Model, d: Data, hfield_geom: int, other_geom: int, worldid: int
+):
   """Returns min/max grid coordinates of height field cells overlapped by other geom's bounds.
 
   Args:
@@ -72,9 +74,13 @@ def get_hfield_overlap_range(m: Model, d: Data, hfield_geom: int, other_geom: in
 
   # Calculate min/max grid coordinates that could contain the object
   min_i = wp.max(0, wp.int32((local_pos[0] - bound_radius + size[0]) / x_scale))
-  max_i = wp.min(ncol - 2, wp.int32((local_pos[0] + bound_radius + size[0]) / x_scale) + 1)
+  max_i = wp.min(
+    ncol - 2, wp.int32((local_pos[0] + bound_radius + size[0]) / x_scale) + 1
+  )
   min_j = wp.max(0, wp.int32((local_pos[1] - bound_radius + size[1]) / y_scale))
-  max_j = wp.min(nrow - 2, wp.int32((local_pos[1] + bound_radius + size[1]) / y_scale) + 1)
+  max_j = wp.min(
+    nrow - 2, wp.int32((local_pos[1] + bound_radius + size[1]) / y_scale) + 1
+  )
 
   return min_i, min_j, max_i, max_j
 
@@ -142,23 +148,47 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> HFP
     # First triangle: (i0 j0), (i0 j1), (i1 j1)
     return HFPrism(
       # Top face vertices
-      x0, y0, z00,
-      x0, y1, z01,
-      x1, y1, z11,
+      x0,
+      y0,
+      z00,
+      x0,
+      y1,
+      z01,
+      x1,
+      y1,
+      z11,
       # Bottom face vertices
-      x0, y0, z_bottom,
-      x0, y1, z_bottom,
-      x1, y1, z_bottom,
+      x0,
+      y0,
+      z_bottom,
+      x0,
+      y1,
+      z_bottom,
+      x1,
+      y1,
+      z_bottom,
     )
   else:
     # Second triangle: (i0 j0), (i1 j1), (i1 j0)
     return HFPrism(
       # Top face vertices
-      x0, y0, z00,
-      x1, y1, z11,
-      x1, y0, z10,
+      x0,
+      y0,
+      z00,
+      x1,
+      y1,
+      z11,
+      x1,
+      y0,
+      z10,
       # Bottom face vertices
-      x0, y0, z_bottom,
-      x1, y1, z_bottom,
-      x1, y0, z_bottom,
+      x0,
+      y0,
+      z_bottom,
+      x1,
+      y1,
+      z_bottom,
+      x1,
+      y0,
+      z_bottom,
     )
