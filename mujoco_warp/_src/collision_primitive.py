@@ -38,7 +38,7 @@ class Geom:
   size: wp.vec3
   vertadr: int
   vertnum: int
-  prism: HFPrism # Triangle prism vertices
+  prism: HFPrism  # Triangle prism vertices
 
 
 @wp.func

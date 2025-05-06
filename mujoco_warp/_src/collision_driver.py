@@ -82,11 +82,11 @@ def _add_geom_pair(m: Model, d: Data, geom1: int, geom2: int, worldid: int, nxni
 
     # Get min/max grid coordinates for overlap region
     min_i, min_j, max_i, max_j = get_hfield_overlap_range(m, d, hfield, other, worldid)
-    
+
     # Get hfield dimensions for triangle index calculation
     dataid = m.geom_dataid[hfield]
     ncol = m.hfield_ncol[dataid]
-    
+
     # Loop through grid cells and add pairs for all triangles
     for j in range(min_j, max_j + 1):
       for i in range(min_i, max_i + 1):
@@ -94,7 +94,7 @@ def _add_geom_pair(m: Model, d: Data, geom1: int, geom2: int, worldid: int, nxni
           pairid = wp.atomic_add(d.ncollision, 0, 1)
           if pairid >= d.nconmax:
             return
-          
+
           d.collision_pair[pairid] = pair
           d.collision_index[pairid] = ((j * (ncol - 1)) + i) * 2 + t
           d.collision_pairid[pairid] = nxn_pairid

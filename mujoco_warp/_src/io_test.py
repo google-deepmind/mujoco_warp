@@ -87,7 +87,7 @@ class IOTest(absltest.TestCase):
     # TODO(team): sdf
 
     # seems to fail coz all above's implemented now
-    #with self.assertRaises(NotImplementedError):
+    # with self.assertRaises(NotImplementedError):
     #  mjwarp.put_model(mjm)
 
   def test_dense(self):
