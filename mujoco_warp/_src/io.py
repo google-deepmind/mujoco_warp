@@ -533,7 +533,7 @@ def make_data(
     qacc_warmstart=wp.zeros((nworld, mjm.nv), dtype=float),
     ctrl=wp.zeros((nworld, mjm.nu), dtype=float),
     qfrc_applied=wp.zeros((nworld, mjm.nv), dtype=float),
-    xfrc_applied=wp.zeros((nworld, mjm.nbody, 6), dtype=wp.spatial_vector),
+    xfrc_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     eq_active=wp.array(np.tile(mjm.eq_active0, (nworld, 1)), dtype=bool),
     mocap_pos=wp.zeros((nworld, mjm.nmocap), dtype=wp.vec3),
     mocap_quat=wp.zeros((nworld, mjm.nmocap), dtype=wp.quat),
