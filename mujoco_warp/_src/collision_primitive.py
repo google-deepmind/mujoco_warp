@@ -15,7 +15,6 @@
 
 import warp as wp
 
-#from .collision_hfield import HFPrism
 from .collision_hfield import get_hfield_triangle_prism
 from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
