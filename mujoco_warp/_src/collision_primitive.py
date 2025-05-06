@@ -35,9 +35,9 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+  hfprism: wp.mat33
   vertadr: int
   vertnum: int
-  hfprism: wp.mat33
 
 
 @wp.func
@@ -55,7 +55,7 @@ def _geom(
   geom.size = m.geom_size[gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = m.geom_dataid[gid]
-  if dataid >= 0:
+  if dataid >= 0 and m.geom_type[gid] == int(GeomType.MESH.value):
     geom.vertadr = m.mesh_vertadr[dataid]
     geom.vertnum = m.mesh_vertnum[dataid]
   else:

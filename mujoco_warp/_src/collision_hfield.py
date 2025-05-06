@@ -139,12 +139,19 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.
   # Set bottom z-value
   z_bottom = -size[3]
 
-  # Compress 6 vertices into 3x3 matrix.
-  # See get_hfield_prism_vertex for detaild
-  if (tri_index % 2) == 0:
-    return wp.mat33(x0, y0, z00, x1, y1, z11, 0.0, z01, z_bottom)
-  else:
-    return wp.mat33(x0, y0, z00, x1, y1, z11, 1.0, z10, z_bottom)
+  # Compress 6 prism vertices into 3x3 matrix
+  # See get_hfield_prism_vertex() for the details
+  return wp.mat33(
+    x0,
+    y0,
+    z00,
+    x1,
+    y1,
+    z11,
+    wp.where(tri_index % 2, 1.0, 0.0),
+    wp.where(tri_index % 2, z10, z01),
+    z_bottom,
+  )
 
 
 @wp.func
