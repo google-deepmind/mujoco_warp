@@ -21,6 +21,7 @@ import warp as wp
 from . import math
 from . import smooth
 from .types import MJ_MINVAL
+from .types import ConeType
 from .types import Data
 from .types import DataType
 from .types import DisableBit
@@ -740,6 +741,60 @@ def sensor_acc(m: Model, d: Data):
   """Compute acceleration-dependent sensor values."""
 
   @kernel
+  def _sensor_touch_zero(m: Model, d: Data):
+    worldid, sensortouchadrid = wp.tid()
+    sensorid = m.sensor_touch_adr[sensortouchadrid]
+    adr = m.sensor_adr[sensorid]
+    d.sensordata[worldid, adr] = 0.0
+
+  @kernel
+  def _sensor_touch(m: Model, d: Data):
+    conid, sensortouchadrid = wp.tid()
+
+    if conid > d.ncon[0]:
+      return
+
+    sensorid = m.sensor_touch_adr[sensortouchadrid]
+
+    objid = m.sensor_objid[sensorid]
+    bodyid = m.site_bodyid[objid]
+
+    # find contact in sensor zone, add normal force
+
+    # contacting bodies
+    geom = d.contact.geom[conid]
+    conbody = wp.vec2i(m.geom_bodyid[geom[0]], m.geom_bodyid[geom[1]])
+
+    # select contacts involving sensorized body
+    efc_address0 = d.contact.efc_address[conid, 0]
+    if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
+      # get contact normal force
+      normalforce = d.efc.force[efc_address0]
+
+      if m.opt.cone == int(ConeType.PYRAMIDAL.value):
+        dim = d.contact.dim[conid]
+        for i in range(1, 2 * (dim - 1)):
+          normalforce += d.efc.force[d.contact.efc_address[conid, i]]
+
+      if normalforce <= 0.0:
+        return
+
+      # convert contact normal force to global frame, normalize
+      frame = d.contact.frame[conid]
+      conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
+      conray, _ = math.normalize_with_norm(conray)
+
+      # flip ray direction if sensor is on body2
+      if bodyid == conbody[1]:
+        conray = -conray
+
+      # add if ray-zone intersection (always true when contact.pos inside zone)
+      worldid = d.contact.worldid[conid]
+      if True:  # TODO(team): ray.ray_geom(d.site_xpos[worldid, objid], d.site_xmat[worldid, objid], m.site_size[objid], d.contact.pos[conid], conray, m.site_type[objid]) >= 0.0
+        adr = m.sensor_adr[sensorid]
+        wp.atomic_add(d.sensordata[worldid], adr, normalforce)
+
+  @kernel
   def _sensor_acc(m: Model, d: Data):
     worldid, accid = wp.tid()
     accadr = m.sensor_acc_adr[accid]
@@ -788,10 +843,17 @@ def sensor_acc(m: Model, d: Data):
       d.sensordata[worldid, adr + 1] = frame_angacc[1]
       d.sensordata[worldid, adr + 2] = frame_angacc[2]
 
-  if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  if m.sensor_rne_postconstraint:
-    smooth.rne_postconstraint(m, d)
+  if m.sensor_touch_adr.size > 0:
+    wp.launch(
+      _sensor_touch_zero, dim=(d.nworld, m.sensor_touch_adr.size), inputs=[m, d]
+    )
+    wp.launch(_sensor_touch, dim=(d.nconmax, m.sensor_touch_adr.size), inputs=[m, d])
 
-  wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])
+  if m.sensor_acc_adr.size > 0:
+    if m.sensor_rne_postconstraint:
+      smooth.rne_postconstraint(m, d)
+
+    wp.launch(_sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size), inputs=[m, d])

@@ -627,7 +627,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ndim=1,
   )
   m.sensor_acc_adr = wp.array(
-    np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0],
+    np.nonzero(
+      (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)
+      & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH)
+    )[0],
+    dtype=wp.int32,
+    ndim=1,
+  )
+  m.sensor_touch_adr = wp.array(
+    np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TOUCH)[0],
     dtype=wp.int32,
     ndim=1,
   )

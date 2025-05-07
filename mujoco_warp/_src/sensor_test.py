@@ -200,6 +200,50 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_touch_sensor(self):
+    """Test touch sensor."""
+    for keyframe in range(2):
+      _, mjd, m, d = test_util.fixture(
+        xml="""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="10 10 .001"/>
+            <body pos="0 0 .25">
+              <geom type="sphere" size="0.1" pos=".1 0 0"/>
+              <geom type="sphere" size="0.1" pos="-.1 0 0"/>
+              <geom type="sphere" size="0.1" pos="0 0 .11"/>
+              <geom type="sphere" size="0.1" pos="0 0 10"/>
+              <site name="site_sphere" type="sphere" size=".2"/>
+              <site name="site_capsule" type="capsule" size=".2 .2"/>
+              <site name="site_ellipsoid" type="ellipsoid" size=".2 .2 .2"/>
+              <site name="site_cylinder" type="cylinder" size=".2 .2"/>
+              <site name="site_box" type="box" size=".2 .2 .2"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+          <sensor>
+            <touch site="site_sphere"/>
+            <touch site="site_capsule"/>
+            <touch site="site_ellipsoid"/>
+            <touch site="site_cylinder"/>
+            <touch site="site_box"/>
+          </sensor>
+          <keyframe>
+            <key qpos="0 0 10 1 0 0 0"/>
+            <key qpos="0 0 .05 1 0 0 0"/>
+            <key qpos="0 0 0 1 0 0 0"/>
+          </keyframe>
+        </mujoco>
+      """,
+        keyframe=keyframe,
+      )
+
+      d.sensordata.zero_()
+
+      mjwarp.sensor_acc(m, d)
+
+      _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   def test_tendon_sensor(self):
     """Test tendon sensors."""
     _, mjd, m, d = test_util.fixture("tendon/fixed.xml", keyframe=0, sparse=False)

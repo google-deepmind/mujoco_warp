@@ -261,6 +261,7 @@ class SensorType(enum.IntEnum):
     FRAMEANGVEL: 3D angular velocity
     SUBTREELINVEL: subtree linear velocity
     SUBTREEANGMOM: subtree angular momentum
+    TOUCH: scalar contact normal forces summed over sensor zone
     ACCELEROMETER: accelerometer
     FORCE: force
     TORQUE: torque
@@ -292,6 +293,7 @@ class SensorType(enum.IntEnum):
   FRAMEANGVEL = mujoco.mjtSensor.mjSENS_FRAMEANGVEL
   SUBTREELINVEL = mujoco.mjtSensor.mjSENS_SUBTREELINVEL
   SUBTREEANGMOM = mujoco.mjtSensor.mjSENS_SUBTREEANGMOM
+  TOUCH = mujoco.mjtSensor.mjSENS_TOUCH
   ACCELEROMETER = mujoco.mjtSensor.mjSENS_ACCELEROMETER
   FORCE = mujoco.mjtSensor.mjSENS_FORCE
   TORQUE = mujoco.mjtSensor.mjSENS_TORQUE
@@ -761,6 +763,8 @@ class Model:
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+                    (excluding touch sensors)
+    sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
   """
@@ -983,6 +987,7 @@ class Model:
   sensor_pos_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_vel_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  sensor_touch_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
 
