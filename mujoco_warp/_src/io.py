@@ -449,7 +449,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.hfield_adr = wp.array(mjm.hfield_adr, dtype=wp.int32, ndim=1)
   m.hfield_nrow = wp.array(mjm.hfield_nrow, dtype=wp.int32, ndim=1)
   m.hfield_ncol = wp.array(mjm.hfield_ncol, dtype=wp.int32, ndim=1)
-  m.hfield_size = wp.array(mjm.hfield_size, dtype=types.vec4f, ndim=1)
+  m.hfield_size = wp.array(mjm.hfield_size, dtype=wp.vec4f, ndim=1)
   m.hfield_data = wp.array(mjm.hfield_data, dtype=wp.float32, ndim=1)
   m.eq_type = wp.array(mjm.eq_type, dtype=wp.int32, ndim=1)
   m.eq_obj1id = wp.array(mjm.eq_obj1id, dtype=wp.int32, ndim=1)

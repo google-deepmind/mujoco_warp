@@ -351,10 +351,6 @@ class WrapType(enum.IntEnum):
   # unsupported: PULLEY, SPHERE, CYLINDER
 
 
-class vec4f(wp.types.vector(length=4, dtype=wp.float32)):
-  pass
-
-
 class vec5f(wp.types.vector(length=5, dtype=wp.float32)):
   pass
 

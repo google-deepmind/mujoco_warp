@@ -1,6 +1,6 @@
 <mujoco>
   <asset>
-  <!--
+    <!--
     <hfield name="terrain" nrow="5" ncol="5" size="1 1 0.5 0.3"
     elevation="5 3 2 3 5
                3 2 1 2 3
@@ -8,27 +8,28 @@
                3 2 1 2 3
                5 3 2 3 5"/>
                -->
-  <!-- -->
+    <!-- -->
     <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.1 0.3"
     elevation="0 0 0
                0 1 0
                0 0 0"/>
                <!-- -->
-<!--
+    <!--
     <hfield name="terrain" nrow="3" ncol="5" size="2 1 0.5 0.3"
     elevation="8 4 2 4 8
                4 2 1 2 4
                8 4 2 4 8"/>
                -->
 
-<!--
+    <!--
     <hfield name="terrain" nrow="2" ncol="3" size="2 1 0.5 0.3"
     elevation="8 2 8
                2 8 2"/>
                -->
 
-    <!-- Simple box mesh, size will be scaled by the geom size -->
+    <!-- Simple box mesh, size will be scaled by the geom size
     <mesh name="box_mesh" vertex="1 1 0  1 1 -1  1 -1 0.2  1 -1 -1  -1 1 0  -1 1 -1  -1 -1 0  -1 -1 -1"/>
+    -->
   </asset>
 
   <worldbody>
@@ -78,9 +79,6 @@
       <freejoint/>
       <geom type="box" size="0.1 0.1 0.1" rgba="0.8 0.2 0.2 1"/>
     </body>
-    <!---->
-    
-    <!-- Static convex mesh ->
-    <geom type="mesh" mesh="box_mesh" pos="0 0 0" size="1.0 1.0 0.1" rgba="0.2 0.8 0.2 1"/-->
+    -->
   </worldbody>
 </mujoco> 

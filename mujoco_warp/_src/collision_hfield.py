@@ -93,6 +93,8 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.
   Returns:
       3x3 matrix containing the vertices of the triangular prism
   """
+  # See https://mujoco.readthedocs.io/en/stable/XMLreference.html#asset-hfield
+  
   # Get heightfield dimensions
   dataid = m.geom_dataid[hfield_geom]
   if dataid < 0 or tri_index < 0:
@@ -129,12 +131,12 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.
   z10 = m.hfield_data[base_addr + j0 * ncol + i1]
   z11 = m.hfield_data[base_addr + j1 * ncol + i1]
 
-  # Scale heights to range [0, 1] and then to [z_bottom, z_top]
-  z_range = size[2]
-  z00 = z00 * z_range
-  z01 = z01 * z_range
-  z10 = z10 * z_range
-  z11 = z11 * z_range
+  # Scale heights from range [0, 1] to [0, z_top]
+  z_top = size[2]
+  z00 = z00 * z_top
+  z01 = z01 * z_top
+  z10 = z10 * z_top
+  z11 = z11 * z_top
 
   # Set bottom z-value
   z_bottom = -size[3]
