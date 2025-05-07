@@ -97,10 +97,10 @@ def inert_vec(i: types.vec10, v: wp.spatial_vector) -> wp.spatial_vector:
 def motion_cross(u: wp.spatial_vector, v: wp.spatial_vector) -> wp.spatial_vector:
   """Cross product of two motions."""
 
-  u0 = wp.vec3(u[0], u[1], u[2], dtype=float)
-  u1 = wp.vec3(u[3], u[4], u[5], dtype=float)
-  v0 = wp.vec3(v[0], v[1], v[2], dtype=float)
-  v1 = wp.vec3(v[3], v[4], v[5], dtype=float)
+  u0 = wp.vec3(u[0], u[1], u[2])
+  u1 = wp.vec3(u[3], u[4], u[5])
+  v0 = wp.vec3(v[0], v[1], v[2])
+  v1 = wp.vec3(v[3], v[4], v[5])
 
   ang = wp.cross(u0, v0)
   vel = wp.cross(u1, v0) + wp.cross(u0, v1)
@@ -112,10 +112,10 @@ def motion_cross(u: wp.spatial_vector, v: wp.spatial_vector) -> wp.spatial_vecto
 def motion_cross_force(v: wp.spatial_vector, f: wp.spatial_vector) -> wp.spatial_vector:
   """Cross product of a motion and a force."""
 
-  v0 = wp.vec3(v[0], v[1], v[2], dtype=float)
-  v1 = wp.vec3(v[3], v[4], v[5], dtype=float)
-  f0 = wp.vec3(f[0], f[1], f[2], dtype=float)
-  f1 = wp.vec3(f[3], f[4], f[5], dtype=float)
+  v0 = wp.vec3(v[0], v[1], v[2])
+  v1 = wp.vec3(v[3], v[4], v[5])
+  f0 = wp.vec3(f[0], f[1], f[2])
+  f1 = wp.vec3(f[3], f[4], f[5])
 
   ang = wp.cross(v0, f0) + wp.cross(v1, f1)
   vel = wp.cross(v0, f1)
