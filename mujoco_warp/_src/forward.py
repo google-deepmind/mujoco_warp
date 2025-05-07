@@ -15,7 +15,6 @@
 
 from typing import Optional
 
-import mujoco
 import warp as wp
 
 from . import collision_driver
@@ -32,6 +31,7 @@ from .types import Data
 from .types import DisableBit
 from .types import DynType
 from .types import GainType
+from .types import IntegratorType
 from .types import JointType
 from .types import Model
 from .types import array2df
@@ -854,11 +854,11 @@ def step(m: Model, d: Data):
   """Advance simulation."""
   forward(m, d)
 
-  if m.opt.integrator == mujoco.mjtIntegrator.mjINT_EULER:
+  if m.opt.integrator == IntegratorType.EULER:
     euler(m, d)
-  elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4:
+  elif m.opt.integrator == IntegratorType.RK4:
     rungekutta4(m, d)
-  elif m.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+  elif m.opt.integrator == IntegratorType.IMPLICITFAST:
     implicit(m, d)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")

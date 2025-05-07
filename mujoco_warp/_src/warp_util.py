@@ -16,12 +16,9 @@
 import functools
 from typing import Callable, Optional
 
-import numpy as np
 import warp as wp
 from warp.context import Module
 from warp.context import get_module
-
-from . import types
 
 _STACK = None
 
