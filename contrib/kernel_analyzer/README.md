@@ -5,13 +5,13 @@ Kernel Analyzer checks warp kernels to ensure correctness and conformity.  It co
 # CLI usage
 
 ```bash
-python contrib/kernel_analyzer/kernel_analyzer/cli.py --files somefile.py --types mujoco_warp/_src/types.py 
+python contrib/kernel_analyzer/kernel_analyzer/cli.py mujoco_warp/_src/*.py --types mujoco_warp/_src/types.py 
 ```
 
 # CLI for github CI
 
 ```bash
-python contrib/kernel_analyzer/kernel_analyzer/cli.py --files somefile.py --types mujoco_warp/_src/types.py 
+python contrib/kernel_analyzer/kernel_analyzer/cli.py mujoco_warp/_src/*.py --types mujoco_warp/_src/types.py --output=github
 ```
 
 # VSCode plugin

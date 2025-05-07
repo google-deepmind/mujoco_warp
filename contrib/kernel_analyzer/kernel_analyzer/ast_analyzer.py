@@ -242,6 +242,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     param_outs = set()
     param_reftypes = set()
 
+    # TODO(team): we might also want to check return types of wp.func
     for param in args.args:
       param_name = param.arg
       param_names.add(param_name)
@@ -337,6 +338,20 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
           issues.append(InvalidWrite(sub_node.value, kernel))
       # TODO: atomic_add, atomic_sub
 
-  logging.info(f"Finished analyzing {filename}. Found {len(issues)} issues.")
+  # skip issues in ignored lines
+  ignore_lines = set()
+  ignoring = False
+  for lineno, line in enumerate(source_lines, 1):  # lineno is 1-indexed
+    if "# kernel_analyzer: off" in line:
+      ignoring = True
+    elif "# kernel_analyzer: on" in line:
+      ignoring = False
+    if "# kernel_analyzer: ignore" in line or ignoring:
+      ignore_lines.add(lineno)
 
-  return issues
+  filtered_issues = [i for i in issues if i.node.lineno not in ignore_lines]
+  filter_count, ignore_count = len(filtered_issues), len(issues) - len(filtered_issues)
+
+  logging.info(f"Finished analyzing {filename}. Found {filter_count} issues, ignoring {ignore_count} issues.")
+
+  return filtered_issues

@@ -161,6 +161,30 @@ def test_non_kernel(qpos0: int = 0, *args, **kwargs):
     qpos0 = 1
 """
 
+_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_ignore(
+    # Data in:
+    act_in: wp.array2d(dtype=float)
+):
+    act_in[0] = 2  # kernel_analyzer: ignore
+"""
+
+_MULTILINE_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_multiline_ignore(
+    # kernel_analyzer: off
+    qpos0: wp.array(dtype=int),   # Type mismatch with Model field
+    qvel_invalid: int,            # Invalid data field suffix
+    # kernel_analyzer: on
+):
+    qpos0[3] = 3  # this should still be reported
+"""
+
 
 def _analyze_str(code_str: str) -> List[Any]:
   full_path = os.path.realpath(__file__)
@@ -244,15 +268,22 @@ class TestAnalyzer(absltest.TestCase):
   def test_no_issues(self):
     """Test a function with no issues."""
     issues = _analyze_str(_NO_ISSUES_CODE)
-    for iss in issues:
-      print(f"{iss.node.lineno}:{iss}")
-
     self.assertEqual(len(issues), 0, issues)
 
   def test_non_kernel_function(self):
     """Test that non-kernel functions aren't analyzed."""
     issues = _analyze_str(_NON_KERNEL_CODE)
     self.assertEqual(len(issues), 0)  # Not a kernel, so no issues
+
+  def test_ignore_issues(self):
+    """Test that ignored issues are not reported."""
+    issues = _analyze_str(_IGNORE_CODE)
+    self.assertEqual(len(issues), 0, issues)
+
+  def test_multiline_ignore(self):
+    """Test that multiline ignore works."""
+    issues = _analyze_str(_MULTILINE_IGNORE_CODE)
+    self.assertEqual(len(issues), 1, issues)
 
 
 if __name__ == "__main__":
