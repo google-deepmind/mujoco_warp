@@ -82,12 +82,12 @@ def get_hfield_overlap_range(
 
 
 @wp.func
-def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.mat33:
+def get_hfield_triangle_prism(m: Model, hfieldid: int, tri_index: int) -> wp.mat33:
   """Returns the vertices of a triangular prism for a heightfield triangle.
 
   Args:
       m: Model containing geometry data
-      hfield_geom: Index of the height field geometry
+      hfieldid: Index of the height field geometry
       tri_index: Index of the triangle in the heightfield
 
   Returns:
@@ -96,7 +96,7 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.
   # See https://mujoco.readthedocs.io/en/stable/XMLreference.html#asset-hfield
 
   # Get heightfield dimensions
-  dataid = m.geom_dataid[hfield_geom]
+  dataid = m.geom_dataid[hfieldid]
   if dataid < 0 or tri_index < 0:
     return wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
