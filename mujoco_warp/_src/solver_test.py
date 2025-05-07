@@ -32,9 +32,6 @@ from .types import SolverType
 # due to float precision
 _TOLERANCE = 5e-3
 
-wp.config.verify_cuda = True
-wp.config.debug = True
-
 
 def _assert_eq(a, b, name):
   tol = _TOLERANCE * 10  # avoid test noise
