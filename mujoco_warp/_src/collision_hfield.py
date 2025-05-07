@@ -94,7 +94,7 @@ def get_hfield_triangle_prism(m: Model, hfield_geom: int, tri_index: int) -> wp.
       3x3 matrix containing the vertices of the triangular prism
   """
   # See https://mujoco.readthedocs.io/en/stable/XMLreference.html#asset-hfield
-  
+
   # Get heightfield dimensions
   dataid = m.geom_dataid[hfield_geom]
   if dataid < 0 or tri_index < 0:
