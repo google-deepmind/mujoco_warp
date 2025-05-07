@@ -343,11 +343,15 @@ class WrapType(enum.IntEnum):
   Members:
     JOINT: constant moment arm
     SITE: pass through site
+    SPHERE: wrap around sphere
+    CYLINDER: wrap around (infinite) cylinder
   """
 
   JOINT = mujoco.mjtWrap.mjWRAP_JOINT
   SITE = mujoco.mjtWrap.mjWRAP_SITE
-  # unsupported: PULLEY, SPHERE, CYLINDER
+  SPHERE = mujoco.mjtWrap.mjWRAP_SPHERE
+  CYLINDER = mujoco.mjtWrap.mjWRAP_CYLINDER
+  # unsupported: PULLEY
 
 
 class vec5f(wp.types.vector(length=5, dtype=wp.float32)):

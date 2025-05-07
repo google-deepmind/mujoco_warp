@@ -218,6 +218,14 @@ def make_frame(a: wp.vec3):
 
 
 @wp.func
+def normalize_with_norm(x: wp.vec2):
+  norm = wp.length(x)
+  if norm == 0.0:
+    return x, 0.0
+  return x / norm, norm
+
+
+@wp.func
 def normalize_with_norm(x: wp.vec3):
   norm = wp.length(x)
   if norm == 0.0:

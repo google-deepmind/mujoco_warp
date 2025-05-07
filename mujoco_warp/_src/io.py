@@ -86,6 +86,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
+  if np.isin(mjm.wrap_type, [types.WrapType.SPHERE, types.WrapType.CYLINDER]).any():
+    raise NotImplementedError("Tendon geom wrapping not supported.")
+
   for n, msg in (
     (mjm.nplugin, "Plugins"),
     (mjm.nflex, "Flexes"),
