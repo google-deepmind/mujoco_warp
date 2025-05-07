@@ -568,6 +568,7 @@ class Model:
     nlsp: number of step sizes for parallel linsearch        ()
     npair: number of predefined geom pairs                   ()
     nhfield: number of heightfields                          ()
+    nhfielddata: size of elevation data                      ()
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nq,)
@@ -794,6 +795,7 @@ class Model:
   nlsp: int  # warp only
   npair: int
   nhfield: int
+  nhfielddata: int
   opt: Option
   stat: Statistic
   qpos0: wp.array(dtype=wp.float32, ndim=1)
