@@ -17,6 +17,7 @@ from typing import Any
 
 import warp as wp
 
+from .collision_hfield import get_hfield_prism_vertex
 from .collision_primitive import Geom
 from .collision_primitive import _geom
 from .collision_primitive import contact_params
@@ -105,6 +106,15 @@ def _gjk_support_geom(
         max_dist = dist
         support_pt = vert
     support_pt = geom.rot @ support_pt + geom.pos
+  elif geom_type == int(GeomType.HFIELD.value):
+    max_dist = float(FLOAT_MIN)
+    for i in range(6):
+      vert = get_hfield_prism_vertex(geom.hfprism, i)
+      dist = wp.dot(vert, local_dir)
+      if dist > max_dist:
+        max_dist = dist
+        support_pt = vert
+    support_pt = geom.rot @ support_pt + geom.pos
 
   return wp.dot(support_pt, dir), support_pt
 
@@ -130,6 +140,12 @@ def _gjk_support(
 
 
 _CONVEX_COLLISION_FUNC = {
+  (GeomType.HFIELD.value, GeomType.SPHERE.value),
+  (GeomType.HFIELD.value, GeomType.CAPSULE.value),
+  (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
+  (GeomType.HFIELD.value, GeomType.CYLINDER.value),
+  (GeomType.HFIELD.value, GeomType.BOX.value),
+  (GeomType.HFIELD.value, GeomType.MESH.value),
   (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
   (GeomType.SPHERE.value, GeomType.MESH.value),
   (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
@@ -763,8 +779,10 @@ def _gjk_epa_pipeline(
     if m.geom_type[g1] != geomtype1 or m.geom_type[g2] != geomtype2:
       return
 
-    geom1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
-    geom2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
+    index = d.collision_index[tid]
+
+    geom1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid], index)
+    geom2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid], index)
 
     margin = wp.max(m.geom_margin[g1], m.geom_margin[g2])
 

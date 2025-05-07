@@ -19,11 +19,13 @@ import warp as wp
 
 from .collision_box import box_box_narrowphase
 from .collision_convex import gjk_narrowphase
+from .collision_hfield import get_hfield_overlap_range
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MAXVAL
 from .types import MJ_MINVAL
 from .types import Data
 from .types import DisableBit
+from .types import GeomType
 from .types import Model
 from .warp_util import event_scope
 
@@ -60,11 +62,7 @@ def _sphere_filter(m: Model, d: Data, geom1: int, geom2: int, worldid: int) -> b
 
 @wp.func
 def _add_geom_pair(m: Model, d: Data, geom1: int, geom2: int, worldid: int, nxnid: int):
-  pairid = wp.atomic_add(d.ncollision, 0, 1)
-
-  if pairid >= d.nconmax:
-    return
-
+  nxn_pairid = m.nxn_pairid[nxnid]
   type1 = m.geom_type[geom1]
   type2 = m.geom_type[geom2]
 
@@ -73,9 +71,43 @@ def _add_geom_pair(m: Model, d: Data, geom1: int, geom2: int, worldid: int, nxni
   else:
     pair = wp.vec2i(geom1, geom2)
 
-  d.collision_pair[pairid] = pair
-  d.collision_pairid[pairid] = m.nxn_pairid[nxnid]
-  d.collision_worldid[pairid] = worldid
+  # For height field, add a collision pair for every
+  # triangle that can potentially collide
+  if type1 == int(GeomType.HFIELD.value) or type2 == int(GeomType.HFIELD.value):
+    hfield = geom1
+    other = geom2
+    if type1 != int(GeomType.HFIELD.value):
+      hfield = geom2
+      other = geom1
+
+    # Get min/max grid coordinates for overlap region
+    min_i, min_j, max_i, max_j = get_hfield_overlap_range(m, d, hfield, other, worldid)
+
+    # Get hfield dimensions for triangle index calculation
+    dataid = m.geom_dataid[hfield]
+    ncol = m.hfield_ncol[dataid]
+
+    # Loop through grid cells and add pairs for all triangles
+    for j in range(min_j, max_j + 1):
+      for i in range(min_i, max_i + 1):
+        for t in range(2):
+          pairid = wp.atomic_add(d.ncollision, 0, 1)
+          if pairid >= d.nconmax:
+            return
+
+          d.collision_pair[pairid] = pair
+          d.collision_index[pairid] = ((j * (ncol - 1)) + i) * 2 + t
+          d.collision_pairid[pairid] = nxn_pairid
+          d.collision_worldid[pairid] = worldid
+  else:
+    pairid = wp.atomic_add(d.ncollision, 0, 1)
+    if pairid >= d.nconmax:
+      return
+
+    d.collision_pair[pairid] = pair
+    d.collision_index[pairid] = -1
+    d.collision_pairid[pairid] = nxn_pairid
+    d.collision_worldid[pairid] = worldid
 
 
 @wp.func

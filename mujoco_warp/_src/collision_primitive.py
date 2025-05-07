@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .collision_hfield import get_hfield_triangle_prism
 from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
@@ -34,6 +35,7 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+  hfprism: wp.mat33
   vertadr: int
   vertnum: int
 
@@ -44,6 +46,7 @@ def _geom(
   m: Model,
   geom_xpos: wp.array(dtype=wp.vec3),
   geom_xmat: wp.array(dtype=wp.mat33),
+  tri_index: int = -1,
 ) -> Geom:
   geom = Geom()
   geom.pos = geom_xpos[gid]
@@ -52,12 +55,16 @@ def _geom(
   geom.size = m.geom_size[gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = m.geom_dataid[gid]
-  if dataid >= 0:
+  if dataid >= 0 and m.geom_type[gid] == int(GeomType.MESH.value):
     geom.vertadr = m.mesh_vertadr[dataid]
     geom.vertnum = m.mesh_vertnum[dataid]
   else:
     geom.vertadr = -1
     geom.vertnum = -1
+
+  # If geom is HFIELD triangle, compute triangle prism verts
+  if m.geom_type[gid] == int(GeomType.HFIELD.value):
+    geom.hfprism = get_hfield_triangle_prism(m, gid, tri_index)
 
   return geom
 
