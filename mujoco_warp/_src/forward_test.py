@@ -41,88 +41,84 @@ def _assert_eq(a, b, name):
 
 
 class ForwardTest(parameterized.TestCase):
-  # def test_fwd_velocity(self):
-  #   _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
+  def test_fwd_velocity(self):
+    _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
 
-  #   for arr in (d.actuator_velocity, d.qfrc_bias):
-  #     arr.zero_()
+    for arr in (d.actuator_velocity, d.qfrc_bias):
+      arr.zero_()
 
-  #   mjwarp.fwd_velocity(m, d)
+    mjwarp.fwd_velocity(m, d)
 
-  #   _assert_eq(
-  #     d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity"
-  #   )
-  #   _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
+    _assert_eq(d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity")
+    _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
-  # def test_fwd_velocity_tendon(self):
-  #   _, mjd, m, d = test_util.fixture("tendon/fixed.xml", sparse=False)
+  def test_fwd_velocity_tendon(self):
+    _, mjd, m, d = test_util.fixture("tendon/fixed.xml", sparse=False)
 
-  #   d.ten_velocity.zero_()
-  #   mjwarp.fwd_velocity(m, d)
+    d.ten_velocity.zero_()
+    mjwarp.fwd_velocity(m, d)
 
-  #   _assert_eq(d.ten_velocity.numpy()[0], mjd.ten_velocity, "ten_velocity")
+    _assert_eq(d.ten_velocity.numpy()[0], mjd.ten_velocity, "ten_velocity")
 
-  # @parameterized.parameters(
-  #   ("actuation/actuation.xml", True),
-  #   ("actuation/actuation.xml", False),
-  #   ("actuation/actuators.xml", True),
-  #   ("actuation/actuators.xml", False),
-  # )
-  # def test_actuation(self, xml, actuation):
-  #   mjm, mjd, m, d = test_util.fixture(xml, actuation=actuation, keyframe=0)
+  @parameterized.parameters(
+    ("actuation/actuation.xml", True),
+    ("actuation/actuation.xml", False),
+    ("actuation/actuators.xml", True),
+    ("actuation/actuators.xml", False),
+  )
+  def test_actuation(self, xml, actuation):
+    mjm, mjd, m, d = test_util.fixture(xml, actuation=actuation, keyframe=0)
 
-  #   for arr in (d.qfrc_actuator, d.actuator_force, d.act_dot):
-  #     arr.zero_()
+    for arr in (d.qfrc_actuator, d.actuator_force, d.act_dot):
+      arr.zero_()
 
-  #   mjwarp.fwd_actuation(m, d)
+    mjwarp.fwd_actuation(m, d)
 
-  #   _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
-  #   _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+    _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
+    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
 
-  #   if mjm.na:
-  #     _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
+    if mjm.na:
+      _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
 
-  #     # next activations
-  #     mujoco.mj_step(mjm, mjd)
-  #     mjwarp.step(m, d)
+      # next activations
+      mujoco.mj_step(mjm, mjd)
+      mjwarp.step(m, d)
 
-  #     _assert_eq(d.act.numpy()[0], mjd.act, "act")
+      _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-  #   # TODO(team): test DisableBit.CLAMPCTRL
-  #   # TODO(team): test muscle
-  #   # TODO(team): test actearly
+    # TODO(team): test DisableBit.CLAMPCTRL
+    # TODO(team): test muscle
+    # TODO(team): test actearly
 
-  # def test_fwd_acceleration(self):
-  #   _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
+  def test_fwd_acceleration(self):
+    _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
 
-  #   for arr in (d.qfrc_smooth, d.qacc_smooth):
-  #     arr.zero_()
+    for arr in (d.qfrc_smooth, d.qacc_smooth):
+      arr.zero_()
 
-  #   mjwarp.fwd_acceleration(m, d)
+    mjwarp.fwd_acceleration(m, d)
 
-  #   _assert_eq(d.qfrc_smooth.numpy()[0], mjd.qfrc_smooth, "qfrc_smooth")
-  #   _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qfrc_smooth.numpy()[0], mjd.qfrc_smooth, "qfrc_smooth")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
-  # @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
-  # def test_euler(self, eulerdamp, sparse):
-  #   mjm, mjd, _, _ = test_util.fixture(
-  #     "pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse
-  #   )
-  #   self.assertTrue((mjm.dof_damping > 0).any())
+  @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
+  def test_euler(self, eulerdamp, sparse):
+    mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse)
+    self.assertTrue((mjm.dof_damping > 0).any())
 
-  #   mjd.qvel[:] = 1.0
-  #   mjd.qacc[:] = 1.0
-  #   mujoco.mj_forward(mjm, mjd)
+    mjd.qvel[:] = 1.0
+    mjd.qacc[:] = 1.0
+    mujoco.mj_forward(mjm, mjd)
 
-  #   m = mjwarp.put_model(mjm)
-  #   d = mjwarp.put_data(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
 
-  #   mujoco.mj_Euler(mjm, mjd)
-  #   mjwarp.euler(m, d)
+    mujoco.mj_Euler(mjm, mjd)
+    mjwarp.euler(m, d)
 
-  #   _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-  #   _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
-  #   _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
   def test_rungekutta4(self):
     mjm, mjd, m, d = test_util.fixture(
