@@ -14,17 +14,21 @@
     </body>
   </worldbody>
   <tendon>
-    <fixed>
+    <fixed name="fixed">
       <joint joint="jnt0" coef=".1"/>
       <joint joint="jnt1" coef=".2"/>
       <joint joint="jnt2" coef=".3"/>
     </fixed>
-    <spatial>
+    <spatial name="spatial">
       <site site="siteworld"/>
       <site site="site0"/>
       <site site="site1"/>
     </spatial>
   </tendon>
+  <actuator>
+    <motor tendon="fixed"/>
+    <motor tendon="spatial"/>
+  </actuator>
   <keyframe>
     <key qpos=".25 .5 .75"/>
   </keyframe>

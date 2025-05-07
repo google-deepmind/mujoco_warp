@@ -72,14 +72,16 @@ select = [
 force-single-line = true
 single-line-exclusions = ["typing"]
 
-[tool.ruff.format]
-docstring-code-format = true
-docstring-code-line-length = 88
-
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 92
 max-line-length = 128
 
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 88
+
+[tool.setuptools]
+package-data = { "mujoco_warp" = ["test_data/**"] }
+
 [tool.setuptools.packages.find]
-include = ["mujoco_warp"]
-exclude = ["contrib*"]
+include = ["mujoco_warp*"]

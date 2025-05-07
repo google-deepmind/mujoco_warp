@@ -224,6 +224,50 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "capsule_box_edge": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
+            <body pos="0.4 0.2 0.8" euler="0 -40 0" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_corner": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .55 .6" />
+            <body pos="0.55 0.6 0.65" euler="0 0 0" >
+              <geom type="capsule" size="0.4 0.6"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_face_tip": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .4 .9" />
+            <body pos="0 0 1.5" >
+              <geom type="capsule" size="0.5 0.8"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_face_flat": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" pos="0 0 0" size=".5 .7 .9" />
+            <body pos="0.5 0.2 0.0" euler="0 0 0" >
+              <geom type="capsule" size="0.2 0.4"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
 
   # Temporarily disabled
@@ -249,6 +293,10 @@ class CollisionTest(parameterized.TestCase):
     """Tests collisions with different geometries."""
     mjm, mjd, m, d = test_util.fixture(xml=self._FIXTURES[fixture])
 
+    # Exempt GJK collisions from exact contact count check
+    # because GJK generates more contacts
+    allow_different_contact_count = False
+
     mujoco.mj_collision(mjm, mjd)
     mjwarp.collision(m, d)
 
@@ -256,7 +304,6 @@ class CollisionTest(parameterized.TestCase):
       actual_dist = mjd.contact.dist[i]
       actual_pos = mjd.contact.pos[i]
       actual_frame = mjd.contact.frame[i]
-      # This is because Gjk generates more contact
       result = False
       for j in range(d.ncon.numpy()[0]):
         test_dist = d.contact.dist.numpy()[j]
@@ -269,6 +316,9 @@ class CollisionTest(parameterized.TestCase):
           result = True
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+
+    if not allow_different_contact_count:
+      self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
   def test_contact_exclude(self):
     """Tests contact exclude."""

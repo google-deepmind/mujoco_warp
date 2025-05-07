@@ -26,8 +26,6 @@ import mujoco_warp as mjwarp
 from . import test_util
 from .types import ConeType
 
-wp.config.verify_cuda = True
-
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-5

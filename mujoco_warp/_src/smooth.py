@@ -1439,6 +1439,7 @@ def com_vel(m: Model, d: Data):
 @wp.kernel
 def _transmission(
   # Model:
+  nv: int,
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
@@ -1515,7 +1516,9 @@ def _transmission(
       for i in range(ten_num):
         dofadr = jnt_dofadr[wrap_objid[adr + i]]
         moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
-    # TODO(team): spatial
+    else:  # spatial
+      for dofadr in range(nv):
+        moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
   else:
     # TODO(team): site, slidercrank, body
     wp.printf("unhandled transmission type %d\n", trntype)
@@ -1531,6 +1534,7 @@ def transmission(m: Model, d: Data):
     _transmission,
     dim=[d.nworld, m.nu],
     inputs=[
+      m.nv,
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_dofadr,

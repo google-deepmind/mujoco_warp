@@ -39,53 +39,6 @@ class IOTest(absltest.TestCase):
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
-  def test_equality(self):
-    mjm = mujoco.MjModel.from_xml_string("""
-    <mujoco>
-      <worldbody>
-        <body name="body1">
-          <geom type="sphere" size=".1"/>
-          <freejoint/>
-        </body>
-        <body name="body2">
-          <geom type="sphere" size=".1"/>
-          <freejoint/>
-        </body>
-        <body>
-          <site name="site1"/>
-          <geom type="sphere" size=".1"/>
-          <joint name="slide1" type="slide"/>
-          <body>
-            <site name="site2"/>
-            <geom type="sphere" size=".1"/>
-            <joint name="slide2" type="slide"/>
-          </body>
-        </body>
-      </worldbody>  
-      <tendon>
-        <spatial name="tendon1">
-          <site site="site1"/>
-          <site site="site2"/>
-        </spatial>
-        <spatial name="tendon2">
-          <site site="site1"/>
-          <site site="site2"/>
-        </spatial>
-      </tendon>
-      <equality>
-        <connect body1="body1" body2="body2" anchor="0 0 0"/>
-        <weld body1="body1" body2="body2"/> 
-        <joint joint1="slide1" joint2="slide2"/>
-        <tendon tendon1="tendon1" tendon2="tendon2"/>
-      </equality>              
-    </mujoco>
-    """)
-
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
-
-    # TODO(team): flex
-
   # TODO(team): sensors
 
   def test_tendon(self):

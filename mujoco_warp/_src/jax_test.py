@@ -15,11 +15,8 @@
 
 import os
 
-import jax
 import warp as wp
 from absl.testing import absltest
-from jax import numpy as jp
-from warp.jax_experimental.ffi import jax_callable
 
 import mujoco_warp as mjwarp
 from mujoco_warp._src.test_util import fixture
@@ -29,9 +26,19 @@ from mujoco_warp._src.test_util import fixture
 
 class JAXTest(absltest.TestCase):
   def test_jax(self):
-    if jax.default_backend() == "gpu":
-      os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
+    os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
+    # Force JAX to allocate memory on demand and deallocate when not needed (slow)
+    os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
+    try:
+      import jax
+    except ImportError:
+      self.skipTest("JAX not installed")
+
+    from jax import numpy as jp
+    from warp.jax_experimental.ffi import jax_callable
+
+    if jax.default_backend() == "gpu":
       NWORLDS = 1
       NCONTACTS = 16
       UNROLL_LENGTH = 1
@@ -58,8 +65,6 @@ class JAXTest(absltest.TestCase):
 
         return qpos, qvel
 
-      wp.clear_kernel_cache()
-
       mjm, mjd, m, d = fixture(
         "humanoid/humanoid.xml",
         nworld=NWORLDS,
@@ -81,6 +86,8 @@ class JAXTest(absltest.TestCase):
 
       jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
       jax_unroll_fn(jax_qpos, jax_qvel)
+    else:
+      self.skipTest("JAX default backend is not GPU")
 
 
 if __name__ == "__main__":

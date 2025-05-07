@@ -16,6 +16,7 @@
 import warp as wp
 
 from . import math
+from . import support
 from .types import Data
 from .types import DisableBit
 from .types import JointType
@@ -112,15 +113,62 @@ def _damper_passive(
   qfrc_passive_out[worldid, dofid] = qfrc_damper + qfrc_spring_in[worldid, dofid]
 
 
+@wp.kernel
+def _gravity_force(
+  # Model:
+  opt_gravity: wp.vec3,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  body_mass: wp.array(dtype=float),
+  body_gravcomp: wp.array(dtype=float),
+  dof_bodyid: wp.array(dtype=int),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # Data out:
+  qfrc_gravcomp_out: wp.array2d(dtype=float),
+):
+  worldid, bodyid, dofid = wp.tid()
+  bodyid += 1  # skip world body
+  gravcomp = body_gravcomp[bodyid]
+
+  if gravcomp:
+    force = -opt_gravity * body_mass[bodyid] * gravcomp
+
+    pos = xipos_in[worldid, bodyid]
+    jac, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
+
+    wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
+
+
+@wp.kernel
+def _qfrc_passive_gravcomp(
+  # Model:
+  jnt_actgravcomp: wp.array(dtype=int),
+  dof_jntid: wp.array(dtype=int),
+  # Data in:
+  qfrc_gravcomp_in: wp.array2d(dtype=float),
+  # Data out:
+  qfrc_passive_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+
+  # add gravcomp unless added by actuators
+  if jnt_actgravcomp[dof_jntid[dofid]]:
+    return
+
+  qfrc_passive_out[worldid, dofid] += qfrc_gravcomp_in[worldid, dofid]
+
+
 @event_scope
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
   if m.opt.disableflags & DisableBit.PASSIVE:
     d.qfrc_passive.zero_()
-    # TODO(team): qfrc_gravcomp
+    d.qfrc_gravcomp.zero_()
     return
 
-  # TODO(team): mj_gravcomp
   # TODO(team): mj_ellipsoidFluidModel
   # TODO(team): mj_inertiaBoxFluidModell
 
@@ -128,14 +176,7 @@ def passive(m: Model, d: Data):
   wp.launch(
     _spring_passive,
     dim=(d.nworld, m.njnt),
-    inputs=[
-      m.qpos_spring,
-      m.jnt_type,
-      m.jnt_qposadr,
-      m.jnt_dofadr,
-      m.jnt_stiffness,
-      d.qpos,
-    ],
+    inputs=[m.qpos_spring, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, m.jnt_stiffness, d.qpos],
     outputs=[d.qfrc_spring],
   )
   wp.launch(
@@ -144,3 +185,27 @@ def passive(m: Model, d: Data):
     inputs=[m.dof_damping, d.qvel, d.qfrc_spring],
     outputs=[d.qfrc_damper, d.qfrc_passive],
   )
+  if m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY):
+    d.qfrc_gravcomp.zero_()
+    wp.launch(
+      _gravity_force,
+      dim=(d.nworld, m.nbody - 1, m.nv),
+      inputs=[
+        m.opt.gravity,
+        m.body_parentid,
+        m.body_rootid,
+        m.body_mass,
+        m.body_gravcomp,
+        m.dof_bodyid,
+        d.xipos,
+        d.subtree_com,
+        d.cdof,
+      ],
+      outputs=[d.qfrc_gravcomp],
+    )
+    wp.launch(
+      _qfrc_passive_gravcomp,
+      dim=(d.nworld, m.nv),
+      inputs=[m.jnt_actgravcomp, m.dof_jntid, d.qfrc_gravcomp],
+      outputs=[d.qfrc_passive],
+    )

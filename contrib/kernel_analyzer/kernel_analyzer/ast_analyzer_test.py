@@ -103,7 +103,7 @@ import warp as wp
 from mujoco_warp.warp_util import kernel
 
 @kernel
-def test_write_readonly(qpos0: int, qvel_in: int):
+def test_write_readonly(qpos0: wp.array(dtype=int), qvel_in: wp.array(dtype=int)):
     qpos0 = 1  # Writing to Model field
     qvel_in = 2  # Writing to Data _in field
 """
@@ -114,18 +114,18 @@ from mujoco_warp.warp_util import kernel
 
 @kernel
 def test_all_issues(
-    haha,               # No type
-    qpos0: str,         # Type mismatch with Model field
-    qvel_invalid: int,  # Invalid data field suffix
-    geom_pos_in: int,   # Model field with suffix
-    custom_param: int,  # Non-model/data in the middle
-    act_in: int,        # Data order issue (in after out)
-    qvel_out: int,      # Out before in
-    qpos: int = 0,      # Default param
-    *args,              # Varargs
-    **kwargs            # Kwargs
+    haha,                         # No type
+    qpos0: str,                   # Type mismatch with Model field
+    qvel_invalid: int,            # Invalid data field suffix
+    geom_pos_in: int,             # Model field with suffix
+    custom_param: int,            # Non-model/data in the middle
+    act_in: wp.array(dtype=int),  # Data order issue (in after out)
+    qvel_out: int,                # Out before in
+    qpos: int = 0,                # Default param
+    *args,                        # Varargs
+    **kwargs                      # Kwargs
 ):
-    qpos0 = 1  # Writing to Model field
+    qpos0 = 1  # actually this is OK because it's a value type
     act_in = 2  # Writing to Data _in field
 """
 

@@ -28,6 +28,7 @@ from . import warp_util
 from .types import ConeType
 from .types import Data
 from .types import DisableBit
+from .types import IntegratorType
 from .types import Model
 from .types import SolverType
 
@@ -36,16 +37,20 @@ def fixture(
   fname: Optional[str] = None,
   xml: Optional[str] = None,
   keyframe: int = -1,
+  actuation: bool = True,
   contact: bool = True,
   constraint: bool = True,
   equality: bool = True,
   gravity: bool = True,
+  eulerdamp: Optional[bool] = None,
   cone: Optional[ConeType] = None,
+  integrator: Optional[IntegratorType] = None,
   solver: Optional[SolverType] = None,
   iterations: Optional[int] = None,
   ls_iterations: Optional[int] = None,
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
+  disableflags: Optional[int] = None,
   kick: bool = False,
   seed: int = 42,
   nworld: int = None,
@@ -60,6 +65,8 @@ def fixture(
     mjm = mujoco.MjModel.from_xml_string(xml)
   else:
     raise ValueError("either fname or xml must be provided")
+  if not actuation:
+    mjm.opt.disableflags |= DisableBit.ACTUATION
   if not contact:
     mjm.opt.disableflags |= DisableBit.CONTACT
   if not constraint:
@@ -68,8 +75,14 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.EQUALITY
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
+  if not eulerdamp:
+    mjm.opt.disableflags |= DisableBit.EULERDAMP
   if cone is not None:
     mjm.opt.cone = cone
+  if integrator is not None:
+    mjm.opt.integrator = integrator
+  if disableflags is not None:
+    mjm.opt.disableflags |= disableflags
   if solver is not None:
     mjm.opt.solver = solver
   if iterations is not None:

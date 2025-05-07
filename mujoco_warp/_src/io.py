@@ -38,9 +38,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  if mjm.sensor_cutoff.any():
-    raise NotImplementedError("Sensor cutoff is unsupported.")
-
   if mjm.nplugin > 0:
     raise NotImplementedError("Plugins are unsupported.")
 
@@ -121,9 +118,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       i = mjm.dof_parentid[i]
       Madr_ki -= 1
 
-  qLD_updates = tuple(
-    wp.array(qLD_updates[i], dtype=wp.vec3i) for i in sorted(qLD_updates)
-  )
+  qLD_updates = tuple(wp.array(qLD_updates[i], dtype=wp.vec3i) for i in sorted(qLD_updates))
 
   # qM_tiles records the block diagonal structure of qM
   tile_corners = [i for i in range(mjm.nv) if mjm.dof_parentid[i] == -1]
@@ -132,10 +127,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tile_beg = tile_corners[i]
     tile_end = mjm.nv if i == len(tile_corners) - 1 else tile_corners[i + 1]
     tiles.setdefault(tile_end - tile_beg, []).append(tile_beg)
-  qM_tiles = tuple(
-    types.TileSet(adr=wp.array(tiles[sz], dtype=int), size=sz)
-    for sz in sorted(tiles.keys())
-  )
+  qM_tiles = tuple(types.TileSet(adr=wp.array(tiles[sz], dtype=int), size=sz) for sz in sorted(tiles.keys()))
 
   # subtree_mass is a precalculated arrya used in smooth
   subtree_mass = np.copy(mjm.body_mass)
@@ -146,7 +138,25 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # actuator_moment tiles are grouped by dof size and number of actuators
   tree_id = mjm.dof_treeid[tile_corners]
   num_trees = int(np.max(tree_id))
-  tree = mjm.body_treeid[mjm.jnt_bodyid[mjm.actuator_trnid[:, 0]]]
+  bodyid = []
+  for i in range(mjm.nu):
+    trntype = mjm.actuator_trntype[i]
+    if trntype == mujoco.mjtTrn.mjTRN_JOINT or trntype == mujoco.mjtTrn.mjTRN_JOINTINPARENT:
+      jntid = mjm.actuator_trnid[i, 0]
+      bodyid.append(mjm.jnt_bodyid[jntid])
+    elif trntype == mujoco.mjtTrn.mjTRN_TENDON:
+      tenid = mjm.actuator_trnid[i, 0]
+      adr = mjm.tendon_adr[tenid]
+      if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+        ten_num = mjm.tendon_num[tenid]
+        for i in range(ten_num):
+          bodyid.append(mjm.jnt_bodyid[mjm.wrap_objid[adr + i]])
+      else:
+        for i in range(mjm.nv):
+          bodyid.append(mjm.dof_bodyid[i])
+    else:
+      raise NotImplementedError(f"Transmission type {trntype} not implemented.")
+  tree = mjm.body_treeid[np.array(bodyid, dtype=int)]
   counts, ids = np.histogram(tree, bins=np.arange(0, num_trees + 2))
   acts_per_tree = dict(zip(ids, counts))
 
@@ -200,16 +210,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       ten_wrapnum_site.append(0)
 
   wrap_site_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)[0]
-  wrap_site_pair_adr = np.setdiff1d(
-    wrap_site_adr[np.nonzero(np.diff(wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1
-  )
+  wrap_site_pair_adr = np.setdiff1d(wrap_site_adr[np.nonzero(np.diff(wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1)
 
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT.value)
   exclude_signature = set(mjm.exclude_signature)
-  predefined_pairs = {
-    (mjm.pair_geom1[i], mjm.pair_geom2[i]): i for i in range(mjm.npair)
-  }
+  predefined_pairs = {(mjm.pair_geom1[i], mjm.pair_geom2[i]): i for i in range(mjm.npair)}
 
   nxn_geom_pair, nxn_pairid = [], []
   for geom1, geom2 in zip(*np.triu_indices(mjm.ngeom, k=1)):  # k=1 skip diagonal
@@ -223,10 +229,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     self_collision = weldid1 == weldid2
     parent_child_collision = (
-      filterparent
-      and (weldid1 != 0)
-      and (weldid2 != 0)
-      and ((weldid1 == weld_parentid2) or (weldid2 == weld_parentid1))
+      filterparent and (weldid1 != 0) and (weldid2 != 0) and ((weldid1 == weld_parentid2) or (weldid2 == weld_parentid1))
     )
     mask = (contype1 & conaffinity2) or (contype2 & conaffinity1)
     exclude = (bodyid1 << 16) + (bodyid2) in exclude_signature
@@ -257,6 +260,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nexclude=mjm.nexclude,
     neq=mjm.nM,
     nmocap=mjm.nmocap,
+    ngravcomp=mjm.ngravcomp,
     nM=mjm.nM,
     ntendon=mjm.ntendon,
     nwrap=mjm.nwrap,
@@ -278,8 +282,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       impratio=mjm.opt.impratio,
       is_sparse=mujoco.mj_isSparse(mjm),
       ls_parallel=False,
-      gjk_iteration_count=1,
-      epa_iteration_count=12,
+      gjk_iterations=1,
+      epa_iterations=12,
       epa_exact_neg_distance=wp.bool(False),
       depth_extension=0.1,
     ),
@@ -321,6 +325,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     body_invweight0=wp.array(mjm.body_invweight0, dtype=float),
     body_contype=wp.array(mjm.body_contype, dtype=int),
     body_conaffinity=wp.array(mjm.body_conaffinity, dtype=int),
+    body_gravcomp=wp.array(mjm.body_gravcomp, dtype=float),
     jnt_type=wp.array(mjm.jnt_type, dtype=int),
     jnt_qposadr=wp.array(mjm.jnt_qposadr, dtype=int),
     jnt_dofadr=wp.array(mjm.jnt_dofadr, dtype=int),
@@ -338,11 +343,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     # these jnt_limited adrs are used in constraint.py
     jnt_limited_slide_hinge_adr=wp.array(
       np.nonzero(
-        mjm.jnt_limited
-        & (
-          (mjm.jnt_type == mujoco.mjtJoint.mjJNT_SLIDE)
-          | (mjm.jnt_type == mujoco.mjtJoint.mjJNT_HINGE)
-        )
+        mjm.jnt_limited & ((mjm.jnt_type == mujoco.mjtJoint.mjJNT_SLIDE) | (mjm.jnt_type == mujoco.mjtJoint.mjJNT_HINGE))
       )[0],
       dtype=int,
     ),
@@ -350,6 +351,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0],
       dtype=int,
     ),
+    jnt_actgravcomp=wp.array(mjm.jnt_actgravcomp, dtype=int),
     dof_bodyid=wp.array(mjm.dof_bodyid, dtype=int),
     dof_jntid=wp.array(mjm.dof_jntid, dtype=int),
     dof_parentid=wp.array(mjm.dof_parentid, dtype=int),
@@ -390,6 +392,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     cam_quat=wp.array(mjm.cam_quat, dtype=wp.quat),
     cam_poscom0=wp.array(mjm.cam_poscom0, dtype=wp.vec3),
     cam_pos0=wp.array(mjm.cam_pos0, dtype=wp.vec3),
+    cam_fovy=wp.array(mjm.cam_fovy, dtype=float),
+    cam_resolution=wp.array(mjm.cam_resolution, dtype=wp.vec2i),
+    cam_sensorsize=wp.array(mjm.cam_sensorsize, dtype=wp.vec2),
+    cam_intrinsic=wp.array(mjm.cam_intrinsic, dtype=wp.vec4),
     light_mode=wp.array(mjm.light_mode, dtype=int),
     light_bodyid=wp.array(mjm.light_bodyid, dtype=int),
     light_targetbodyid=wp.array(mjm.light_targetbodyid, dtype=int),
@@ -409,15 +415,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     eq_solimp=wp.array(mjm.eq_solimp, dtype=types.vec5),
     eq_data=wp.array(mjm.eq_data, dtype=types.vec11),
     # pre-compute indices of equality constraints
-    eq_connect_adr=wp.array(
-      np.nonzero(mjm.eq_type == types.EqType.CONNECT.value)[0], dtype=int
-    ),
-    eq_wld_adr=wp.array(
-      np.nonzero(mjm.eq_type == types.EqType.WELD.value)[0], dtype=int
-    ),
-    eq_jnt_adr=wp.array(
-      np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=int
-    ),
+    eq_connect_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.CONNECT.value)[0], dtype=int),
+    eq_wld_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.WELD.value)[0], dtype=int),
+    eq_jnt_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=int),
+    eq_ten_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.TENDON.value)[0], dtype=int),
     actuator_moment_tiles_nv=actuator_moment_tiles_nv,
     actuator_moment_tiles_nu=actuator_moment_tiles_nu,
     actuator_trntype=wp.array(mjm.actuator_trntype, dtype=int),
@@ -454,15 +455,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     pair_margin=wp.array(mjm.pair_margin, dtype=float),
     pair_gap=wp.array(mjm.pair_gap, dtype=float),
     pair_friction=wp.array(mjm.pair_friction, dtype=types.vec5),
-    condim_max=np.max(mjm.pair_dim)
-    if mjm.npair
-    else np.max(mjm.geom_condim),  # TODO(team): get max after filtering,
+    condim_max=np.max(mjm.pair_dim) if mjm.npair else np.max(mjm.geom_condim),  # TODO(team): get max after filtering,
     tendon_adr=wp.array(mjm.tendon_adr, dtype=int),
     tendon_num=wp.array(mjm.tendon_num, dtype=int),
     tendon_limited=wp.array(mjm.tendon_limited, dtype=int),
-    tendon_limited_adr=wp.array(
-      np.nonzero(mjm.tendon_limited)[0], dtype=wp.int32, ndim=1
-    ),
+    tendon_limited_adr=wp.array(np.nonzero(mjm.tendon_limited)[0], dtype=wp.int32, ndim=1),
     tendon_solref_lim=wp.array(mjm.tendon_solref_lim, dtype=wp.vec2f),
     tendon_solimp_lim=wp.array(mjm.tendon_solimp_lim, dtype=types.vec5),
     tendon_range=wp.array(mjm.tendon_range, dtype=wp.vec2f),
@@ -501,12 +498,32 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0],
       dtype=int,
     ),
+    sensor_subtree_vel=np.isin(
+      mjm.sensor_type,
+      [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],
+    ).any(),
+    sensor_rne_postconstraint=np.isin(
+      mjm.sensor_type,
+      [
+        mujoco.mjtSensor.mjSENS_ACCELEROMETER,
+        mujoco.mjtSensor.mjSENS_FORCE,
+        mujoco.mjtSensor.mjSENS_TORQUE,
+        mujoco.mjtSensor.mjSENS_FRAMELINACC,
+        mujoco.mjtSensor.mjSENS_FRAMEANGACC,
+      ],
+    ).any(),
   )
 
 
-def make_data(
-  mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1
-) -> types.Data:
+def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
+  # TODO(team): move to Model?
+  if nconmax == -1:
+    # TODO(team): heuristic for nconmax
+    nconmax = nworld * 20
+  if njmax == -1:
+    # TODO(team): heuristic for njmax
+    njmax = nworld * 20 * 6
+
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     qLD = wp.zeros((nworld, 1, mjm.nM), dtype=float)
@@ -523,6 +540,7 @@ def make_data(
     ne_connect=wp.zeros(1, dtype=int),  # warp only
     ne_weld=wp.zeros(1, dtype=int),  # warp only
     ne_jnt=wp.zeros(1, dtype=int),  # warp only
+    ne_ten=wp.zeros(1, dtype=int),  # warp only
     nf=wp.zeros(1, dtype=int),
     nl=wp.zeros(1, dtype=int),
     nefc=wp.zeros(1, dtype=int),
@@ -570,6 +588,7 @@ def make_data(
     qfrc_bias=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_spring=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_damper=wp.zeros((nworld, mjm.nv), dtype=float),
+    qfrc_gravcomp=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_passive=wp.zeros((nworld, mjm.nv), dtype=float),
     subtree_linvel=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
     subtree_angmom=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
@@ -688,8 +707,8 @@ def make_data(
     ten_J=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
     ten_wrapadr=wp.zeros((nworld, mjm.ntendon), dtype=int),
     ten_wrapnum=wp.zeros((nworld, mjm.ntendon), dtype=int),
-    wrap_obj=wp.zeros((nworld, mjm.ntendon), dtype=wp.vec2i),
-    wrap_xpos=wp.zeros((nworld, mjm.ntendon), dtype=wp.spatial_vector),
+    wrap_obj=wp.zeros((nworld, mjm.nwrap), dtype=wp.vec2i),
+    wrap_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=wp.zeros((nworld, mjm.nsensordata), dtype=float),
   )
@@ -735,9 +754,7 @@ def put_data(
     qM_integration = np.zeros((1, mjm.nM), dtype=float)
     qLD_integration = np.zeros((1, mjm.nM), dtype=float)
     efc_J = np.zeros((mjd.nefc, mjm.nv))
-    mujoco.mju_sparse2dense(
-      efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind
-    )
+    mujoco.mju_sparse2dense(efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
     mujoco.mju_sparse2dense(
       ten_J,
@@ -765,24 +782,15 @@ def put_data(
     mjd.moment_colind,
   )
 
-  contact_efc_address = np.zeros(
-    (nconmax, np.max(mjm.pair_dim) if mjm.npair else np.max(mjm.geom_condim)), dtype=int
-  )
+  contact_efc_address = np.zeros((nconmax, np.max(mjm.pair_dim) if mjm.npair else np.max(mjm.geom_condim)), dtype=int)
   for i in range(nworld):
     for j in range(mjd.ncon):
       condim = mjd.contact.dim[j]
       for k in range(condim):
-        contact_efc_address[i * mjd.ncon + j, k] = (
-          mjd.nefc * i + mjd.contact.efc_address[j] + k
-        )
+        contact_efc_address[i * mjd.ncon + j, k] = mjd.nefc * i + mjd.contact.efc_address[j] + k
 
-  contact_worldid = np.pad(
-    np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon)
-  )
-
-  efc_worldid = np.pad(
-    np.repeat(np.arange(nworld), mjd.nefc), (0, njmax - nworld * mjd.nefc)
-  )
+  contact_worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon))
+  efc_worldid = np.pad(np.repeat(np.arange(nworld), mjd.nefc), (0, njmax - nworld * mjd.nefc))
 
   # some helper functions to simplify the data field definitions below
 
@@ -798,11 +806,7 @@ def put_data(
         dtype = wp.bool
       else:
         raise ValueError(f"Unsupported dtype: {x.dtype}")
-    wp_array = {
-      1: wp.array,
-      2: wp.array2d,
-      3: wp.array3d,
-    }[x.ndim]
+    wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d}[x.ndim]
     return wp_array(x, dtype=dtype)
 
   def tile(x, dtype=None):
@@ -819,15 +823,10 @@ def put_data(
     njmax=njmax,
     ncon=arr([mjd.ncon * nworld]),
     ne=arr([mjd.ne * nworld]),
-    ne_connect=arr(
-      [3 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active)],
-    ),
-    ne_weld=arr(
-      [6 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active)],
-    ),
-    ne_jnt=arr(
-      [nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active)],
-    ),
+    ne_connect=arr([3 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active)]),
+    ne_weld=arr([6 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active)]),
+    ne_jnt=arr([nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active)]),
+    ne_ten=arr([nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active)]),
     nf=arr([mjd.nf * nworld]),
     nl=arr([mjd.nl * nworld]),
     nefc=arr([mjd.nefc * nworld]),
@@ -875,6 +874,7 @@ def put_data(
     qfrc_bias=tile(mjd.qfrc_bias),
     qfrc_spring=tile(mjd.qfrc_spring),
     qfrc_damper=tile(mjd.qfrc_damper),
+    qfrc_gravcomp=tile(mjd.qfrc_gravcomp),
     qfrc_passive=tile(mjd.qfrc_passive),
     subtree_linvel=tile(mjd.subtree_linvel, dtype=wp.vec3),
     subtree_angmom=tile(mjd.subtree_angmom, dtype=wp.vec3),
@@ -946,9 +946,7 @@ def put_data(
       mid=wp.empty(shape=(nworld,), dtype=wp.vec3),
       mid_alpha=wp.empty(shape=(nworld,), dtype=float),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
-      quad_total_candidate=wp.empty(
-        shape=(nworld, mjm.opt.ls_iterations), dtype=wp.vec3f
-      ),
+      quad_total_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=wp.vec3f),
       # TODO(team): skip allocation if not ellpitic
       u=wp.empty((nconmax, 6), dtype=float),
       uu=wp.empty((nconmax,), dtype=float),
@@ -1062,6 +1060,7 @@ def get_data_into(
   result.subtree_angmom = d.subtree_angmom.numpy()[0]
   result.qfrc_spring = d.qfrc_spring.numpy()[0]
   result.qfrc_damper = d.qfrc_damper.numpy()[0]
+  result.qfrc_gravcomp = d.qfrc_gravcomp.numpy()[0]
   result.qfrc_actuator = d.qfrc_actuator.numpy()[0]
   result.qfrc_smooth = d.qfrc_smooth.numpy()[0]
   result.qfrc_constraint = d.qfrc_constraint.numpy()[0]

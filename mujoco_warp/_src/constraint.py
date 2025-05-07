@@ -285,9 +285,7 @@ def _efc_equality_joint(
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
-    deriv_2 = data[1] + dif * (
-      2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4])
-    )
+    deriv_2 = data[1] + dif * (2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4]))
 
     pos = qpos_in[worldid, qposadr1] - qpos0[qposadr1] - rhs
     Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
@@ -314,6 +312,107 @@ def _efc_equality_joint(
     Jqvel,
     0.0,
     i_eq,
+    efc_id_out,
+    efc_pos_out,
+    efc_margin_out,
+    efc_D_out,
+    efc_aref_out,
+    efc_frictionloss_out,
+  )
+
+
+@wp.kernel
+def _efc_equality_tendon(
+  # Model:
+  nv: int,
+  opt_timestep: float,
+  eq_obj1id: wp.array(dtype=int),
+  eq_obj2id: wp.array(dtype=int),
+  eq_solref: wp.array(dtype=wp.vec2),
+  eq_solimp: wp.array(dtype=vec5),
+  eq_data: wp.array(dtype=vec11),
+  eq_ten_adr: wp.array(dtype=int),
+  tendon_length0: wp.array(dtype=float),
+  tendon_invweight0: wp.array(dtype=float),
+  # Data in:
+  ne_connect_in: wp.array(dtype=int),
+  ne_weld_in: wp.array(dtype=int),
+  ne_jnt_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  qvel_in: wp.array2d(dtype=float),
+  eq_active_in: wp.array2d(dtype=bool),
+  ten_length_in: wp.array2d(dtype=float),
+  ten_J_in: wp.array3d(dtype=float),
+  # In:
+  refsafe_in: int,
+  # Data out:
+  ne_ten_out: wp.array(dtype=int),
+  efc_worldid_out: wp.array(dtype=int),
+  efc_id_out: wp.array(dtype=int),
+  efc_J_out: wp.array2d(dtype=float),
+  efc_pos_out: wp.array(dtype=float),
+  efc_margin_out: wp.array(dtype=float),
+  efc_D_out: wp.array(dtype=float),
+  efc_aref_out: wp.array(dtype=float),
+  efc_frictionloss_out: wp.array(dtype=float),
+):
+  worldid, tenid = wp.tid()
+  eqid = eq_ten_adr[tenid]
+
+  if not eq_active_in[worldid, eqid]:
+    return
+
+  netid = wp.atomic_add(ne_ten_out, 0, 1)
+  efcid = nefc_in[0] + ne_connect_in[0] + ne_weld_in[0] + ne_jnt_in[0] + netid
+  efc_worldid_out[efcid] = worldid
+
+  obj1id = eq_obj1id[eqid]
+  obj2id = eq_obj2id[eqid]
+  data = eq_data[eqid]
+  solref = eq_solref[eqid]
+  solimp = eq_solimp[eqid]
+  pos1 = ten_length_in[worldid, obj1id] - tendon_length0[obj1id]
+  pos2 = ten_length_in[worldid, obj2id] - tendon_length0[obj2id]
+  jac1 = ten_J_in[worldid, obj1id]
+  jac2 = ten_J_in[worldid, obj2id]
+
+  if obj2id > -1:
+    invweight = tendon_invweight0[obj1id] + tendon_invweight0[obj2id]
+
+    dif = pos2
+    dif2 = dif * dif
+    dif3 = dif2 * dif
+    dif4 = dif3 * dif
+
+    pos = pos1 - (data[0] + data[1] * dif + data[2] * dif2 + data[3] * dif3 + data[4] * dif4)
+    deriv = data[1] + 2.0 * data[2] * dif + 3.0 * data[3] * dif2 + 4.0 * data[4] * dif3
+  else:
+    invweight = tendon_invweight0[obj1id]
+    pos = pos1 - data[0]
+    deriv = 0.0
+
+  Jqvel = float(0.0)
+  for i in range(nv):
+    if deriv != 0.0:
+      J = jac1[i] + jac2[i] * -deriv
+    else:
+      J = jac1[i]
+    efc_J_out[efcid, i] = J
+    Jqvel += J * qvel_in[worldid, i]
+
+  _update_efc_row(
+    opt_timestep,
+    refsafe_in,
+    efcid,
+    pos,
+    pos,
+    invweight,
+    solref,
+    solimp,
+    0.0,
+    Jqvel,
+    0.0,
+    eqid,
     efc_id_out,
     efc_pos_out,
     efc_margin_out,
@@ -673,9 +772,7 @@ def _efc_limit_ball(
   qposadr = jnt_qposadr[jntid]
 
   qpos = qpos_in[worldid]
-  jnt_quat = wp.quat(
-    qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3]
-  )
+  jnt_quat = wp.quat(qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3])
   axis_angle = math.quat_to_vel(jnt_quat)
   jntrange = jnt_range[jntid]
   axis, angle = math.normalize_with_norm(axis_angle)
@@ -1113,11 +1210,12 @@ def _num_equality(
   ne_connect_in: wp.array(dtype=int),
   ne_weld_in: wp.array(dtype=int),
   ne_jnt_in: wp.array(dtype=int),
+  ne_ten_in: wp.array(dtype=int),
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
 ):
-  ne = ne_connect_in[0] + ne_weld_in[0] + ne_jnt_in[0]
+  ne = ne_connect_in[0] + ne_weld_in[0] + ne_jnt_in[0] + ne_ten_in[0]
   ne_out[0] = ne
   nefc_out[0] += ne
 
@@ -1140,6 +1238,7 @@ def make_constraint(m: types.Model, d: types.Data):
   d.ne_connect.zero_()
   d.ne_weld.zero_()
   d.ne_jnt.zero_()
+  d.ne_ten.zero_()
   d.nefc.zero_()
   d.nf.zero_()
   d.nl.zero_()
@@ -1270,6 +1369,42 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.frictionloss,
         ],
       )
+      wp.launch(
+        _efc_equality_tendon,
+        dim=(d.nworld, m.eq_ten_adr.size),
+        inputs=[
+          m.nv,
+          m.opt.timestep,
+          m.eq_obj1id,
+          m.eq_obj2id,
+          m.eq_solref,
+          m.eq_solimp,
+          m.eq_data,
+          m.eq_ten_adr,
+          m.tendon_length0,
+          m.tendon_invweight0,
+          d.ne_connect,
+          d.ne_weld,
+          d.ne_jnt,
+          d.nefc,
+          d.qvel,
+          d.eq_active,
+          d.ten_length,
+          d.ten_J,
+          refsafe,
+        ],
+        outputs=[
+          d.ne_ten,
+          d.efc.worldid,
+          d.efc.id,
+          d.efc.J,
+          d.efc.pos,
+          d.efc.margin,
+          d.efc.D,
+          d.efc.aref,
+          d.efc.frictionloss,
+        ],
+      )
 
       wp.launch(
         _num_equality,
@@ -1278,6 +1413,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ne_connect,
           d.ne_weld,
           d.ne_jnt,
+          d.ne_ten,
         ],
         outputs=[
           d.ne,

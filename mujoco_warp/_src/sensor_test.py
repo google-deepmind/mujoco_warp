@@ -25,8 +25,6 @@ import mujoco_warp as mjwarp
 
 from . import test_util
 
-wp.config.verify_cuda = True
-
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-5
@@ -96,48 +94,64 @@ class SensorTest(parameterized.TestCase):
               <site name="site9" pos=".2 .4 .6"/>        
             </body>
           </body>
+          <camera name="camera"/>
+          <site name="camera_site" pos="0 0 -1"/>
         </worldbody>
         <actuator>
           <motor name="slide" joint="slide"/>
         </actuator>
         <sensor>
+          <camprojection camera="camera" site="camera_site"/>
+          <camprojection camera="camera" site="camera_site" cutoff=".001"/>
           <jointpos joint="slide"/>
+          <jointpos joint="slide" cutoff=".001"/>
           <actuatorpos actuator="slide"/>
+          <actuatorpos actuator="slide" cutoff=".001"/>
           <ballquat joint="ballquat"/>
-          <framepos objtype="body" objname="body1"/>      
+          <framepos objtype="body" objname="body1"/>
+          <framepos objtype="body" objname="body1" cutoff=".001"/>      
           <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>    
           <framepos objtype="xbody" objname="body1"/> 
           <framepos objtype="geom" objname="geom0"/>    
           <framepos objtype="site" objname="site0"/>
-          <framexaxis objtype="body" objname="body1"/>      
+          <framexaxis objtype="body" objname="body1"/>
           <framexaxis objtype="body" objname="body1" reftype="body" refname="body0"/>    
           <framexaxis objtype="xbody" objname="body1"/> 
           <framexaxis objtype="geom" objname="geom0"/>    
           <framexaxis objtype="site" objname="site0"/>
-          <frameyaxis objtype="body" objname="body1"/>      
+          <frameyaxis objtype="body" objname="body1"/> 
           <frameyaxis objtype="body" objname="body1" reftype="body" refname="body0"/>    
           <frameyaxis objtype="xbody" objname="body1"/> 
           <frameyaxis objtype="geom" objname="geom0"/>    
           <frameyaxis objtype="site" objname="site0"/> 
-          <framezaxis objtype="body" objname="body1"/>      
+          <framezaxis objtype="body" objname="body1"/>  
           <framezaxis objtype="body" objname="body1" reftype="body" refname="body0"/>    
           <framezaxis objtype="xbody" objname="body1"/> 
           <framezaxis objtype="geom" objname="geom0"/>    
           <framezaxis objtype="site" objname="site0"/>  
-          <framequat objtype="body" objname="body1"/>      
+          <framequat objtype="body" objname="body1"/>   
           <framequat objtype="body" objname="body1" reftype="body" refname="body0"/>    
           <framequat objtype="xbody" objname="body1"/> 
           <framequat objtype="geom" objname="geom0"/>    
           <framequat objtype="site" objname="site0"/>
           <subtreecom body="body3"/>
+          <subtreecom body="body3" cutoff=".001"/>
           <clock/>
-          <velocimeter site="site2"/>                           
-          <gyro site="site2"/>       
+          <clock cutoff=".001"/>
+          <velocimeter site="site2"/> 
+          <velocimeter site="site2" cutoff=".001"/>                           
+          <gyro site="site2"/> 
+          <gyro site="site2" cutoff=".001"/>       
           <jointvel joint="slide"/>
+          <jointvel joint="slide" cutoff=".001"/>
           <actuatorvel actuator="slide"/>
+          <actuatorvel actuator="slide" cutoff=".001"/>
           <ballangvel joint="ballquat"/>
+          <ballangvel joint="ballquat" cutoff=".001"/>
           <framelinvel objtype="body" objname="body9"/>
+          <framelinvel objtype="body" objname="body9" cutoff=".001"/>
           <frameangvel objtype="body" objname="body9"/>
+          <frameangvel objtype="body" objname="body9" cutoff=".001"/>
           <framelinvel objtype="xbody" objname="body9"/>
           <frameangvel objtype="xbody" objname="body9"/>
           <framelinvel objtype="geom" objname="geom9"/>
@@ -145,14 +159,23 @@ class SensorTest(parameterized.TestCase):
           <framelinvel objtype="site" objname="site9"/>
           <frameangvel objtype="site" objname="site9"/>
           <subtreelinvel body="body4"/>
+          <subtreelinvel body="body4" cutoff=".001"/>
           <subtreeangmom body="body4"/>
+          <subtreeangmom body="body4" cutoff=".001"/>
           <accelerometer site="force_site"/>
+          <accelerometer site="force_site" cutoff=".001"/>
           <force site="force_site"/>
+          <force site="force_site" cutoff=".001"/>
           <torque site="torque_site"/>
+          <torque site="torque_site" cutoff=".001"/>
           <actuatorfrc actuator="slide"/>
-          <jointactuatorfrc joint="slide"/>                      
+          <actuatorfrc actuator="slide" cutoff=".001"/>
+          <jointactuatorfrc joint="slide"/>
+          <jointactuatorfrc joint="slide" cutoff=".001"/>            
           <framelinacc objtype="body" objname="body9"/>
+          <framelinacc objtype="body" objname="body9" cutoff=".001"/>
           <frameangacc objtype="body" objname="body9"/>
+          <frameangacc objtype="body" objname="body9" cutoff=".001"/>
           <framelinacc objtype="xbody" objname="body9"/>
           <frameangacc objtype="xbody" objname="body9"/>
           <framelinacc objtype="geom" objname="geom9"/>
