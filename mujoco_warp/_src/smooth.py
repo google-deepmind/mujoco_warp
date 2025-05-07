@@ -1450,7 +1450,7 @@ def _transmission(
   tendon_num: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
   wrap_type: wp.array(dtype=int),
-  # Data in:
+  # Data inxx:
   qpos_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   ten_J_in: wp.array3d(dtype=float),

@@ -39,6 +39,8 @@ dev = [
     "pytest",
     "pytest-xdist",
     "ruff",
+    "pygls>=1.0.0,<2.0.0",
+    "lsprotocol>=2023.0.1,<2024.0.0",
 ]
 # TODO(team): cpu and cuda JAX optional dependencies are temporary, remove after we land MJX:Warp
 cpu = [

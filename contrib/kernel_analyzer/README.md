@@ -21,9 +21,10 @@ Enjoy kernel analysis directly within vscode.
 ## Installing kernel analyzer
 
 1. Create a new python env (`python3 -m venv env`) or use your existing mjwarp env (`source env/bin/activate`).
-2. Within the python env, install the kernel analyzer python dependencies:
+2. Within the python env, install the kernel analyzer's python dependencies by pip installing MJWarp dev:
   ```bash
-  pip install -r contrib/kernel_analyzer/kernel_analyzer/requirements.txt
+  cd mujoco_warp
+  pip install -e .[dev]
   ```
 3. Inside vscode, navigate to `contrib/kernel_analyzer/`
 4. Right click on `kernel-analyzer-{version}.vsix` file
