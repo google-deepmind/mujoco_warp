@@ -30,36 +30,22 @@ from .warp_util import event_scope
 
 
 @wp.func
-def _joint_pos(
-  jnt_qposadr: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  qpos_in: wp.array2d(dtype=float),
-) -> wp.float32:
+def _joint_pos(jnt_qposadr: wp.array(dtype=int), qpos_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return qpos_in[worldid, jnt_qposadr[objid]]
 
 
 @wp.func
-def _tendon_pos(
-  worldid: int, objid: int, ten_length_in: wp.array2d(dtype=float)
-) -> wp.float32:
+def _tendon_pos(ten_length_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return ten_length_in[worldid, objid]
 
 
 @wp.func
-def _actuator_pos(
-  worldid: int, objid: int, actuator_length_in: wp.array2d(dtype=float)
-) -> wp.float32:
+def _actuator_pos(actuator_length_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return actuator_length_in[worldid, objid]
 
 
 @wp.func
-def _ball_quat(
-  jnt_qposadr: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  qpos_in: wp.array2d(dtype=float),
-) -> wp.quat:
+def _ball_quat(jnt_qposadr: wp.array(dtype=int), qpos_in: wp.array2d(dtype=float), worldid: int, objid: int) -> wp.quat:
   adr = jnt_qposadr[objid]
   quat = wp.quat(
     qpos_in[worldid, adr + 0],
@@ -72,18 +58,20 @@ def _ball_quat(
 
 @wp.func
 def _frame_pos(
-  worldid: int,
-  objid: int,
-  objtype: int,
-  refid: int,
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   xmat_in: wp.array2d(dtype=wp.mat33),
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  ximat_in: wp.array2d(dtype=wp.mat33),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  worldid: int,
+  objid: int,
+  objtype: int,
+  refid: int,
 ) -> wp.vec3:
   if objtype == int(ObjType.BODY.value):
     xpos = xipos_in[worldid, objid]
@@ -120,15 +108,17 @@ def _frame_pos(
 
 @wp.func
 def _frame_axis(
+  # Data in:
+  xmat_in: wp.array2d(dtype=wp.mat33),
+  ximat_in: wp.array2d(dtype=wp.mat33),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
   worldid: int,
   objid: int,
   objtype: int,
   refid: int,
   frame_axis: int,
-  ximat_in: wp.array2d(dtype=wp.mat33),
-  xmat_in: wp.array2d(dtype=wp.mat33),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
 ) -> wp.vec3:
   if objtype == int(ObjType.BODY.value):
     xmat = ximat_in[worldid, objid]
@@ -158,7 +148,7 @@ def _frame_axis(
   # TODO(team): camera
 
   else:  # UNKNOWN
-    xmat = wp.identity(3, dtype=wp.float32)
+    xmat = wp.identity(3, dtype=float)
     return wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
 
   return wp.transpose(xmat_ref) @ axis
@@ -166,16 +156,19 @@ def _frame_axis(
 
 @wp.func
 def _frame_quat(
+  # Model:
   body_iquat: wp.array(dtype=wp.quat),
   geom_bodyid: wp.array(dtype=int),
   geom_quat: wp.array(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array(dtype=wp.quat),
+  # Data in:
+  xquat_in: wp.array2d(dtype=wp.quat),
+  # In:
   worldid: int,
   objid: int,
   objtype: int,
   refid: int,
-  xquat_in: wp.array2d(dtype=wp.quat),
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
     quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[objid])
@@ -207,14 +200,12 @@ def _frame_quat(
 
 
 @wp.func
-def _subtree_com(
-  worldid: int, objid: int, subtree_com_in: wp.array2d(dtype=wp.vec3)
-) -> wp.vec3:
+def _subtree_com(subtree_com_in: wp.array2d(dtype=wp.vec3), worldid: int, objid: int) -> wp.vec3:
   return subtree_com_in[worldid, objid]
 
 
 @wp.func
-def _clock(worldid: int, time_in: wp.array(dtype=float)) -> wp.float32:
+def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
   return time_in[worldid]
 
 
@@ -258,13 +249,13 @@ def _sensor_pos(
   adr = sensor_adr[posadr]
 
   if sensortype == int(SensorType.JOINTPOS.value):
-    sensordata_out[worldid, adr] = _joint_pos(jnt_qposadr, worldid, objid, qpos_in)
+    sensordata_out[worldid, adr] = _joint_pos(jnt_qposadr, qpos_in, worldid, objid)
   elif sensortype == int(SensorType.TENDONPOS.value):
-    sensordata_out[worldid, adr] = _tendon_pos(worldid, objid, ten_length_in)
+    sensordata_out[worldid, adr] = _tendon_pos(ten_length_in, worldid, objid)
   elif sensortype == int(SensorType.ACTUATORPOS.value):
-    sensordata_out[worldid, adr] = _actuator_pos(worldid, objid, actuator_length_in)
+    sensordata_out[worldid, adr] = _actuator_pos(actuator_length_in, worldid, objid)
   elif sensortype == int(SensorType.BALLQUAT.value):
-    quat = _ball_quat(jnt_qposadr, worldid, objid, qpos_in)
+    quat = _ball_quat(jnt_qposadr, qpos_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = quat[0]
     sensordata_out[worldid, adr + 1] = quat[1]
     sensordata_out[worldid, adr + 2] = quat[2]
@@ -273,18 +264,18 @@ def _sensor_pos(
     objtype = sensor_objtype[posadr]
     refid = sensor_refid[posadr]
     framepos = _frame_pos(
-      worldid,
-      objid,
-      objtype,
-      refid,
-      xipos_in,
-      ximat_in,
       xpos_in,
       xmat_in,
+      xipos_in,
+      ximat_in,
       geom_xpos_in,
       geom_xmat_in,
       site_xpos_in,
       site_xmat_in,
+      worldid,
+      objid,
+      objtype,
+      refid,
     )
     sensordata_out[worldid, adr + 0] = framepos[0]
     sensordata_out[worldid, adr + 1] = framepos[1]
@@ -302,46 +293,25 @@ def _sensor_pos(
       axis = 1
     elif sensortype == int(SensorType.FRAMEZAXIS.value):
       axis = 2
-    frameaxis = _frame_axis(
-      worldid,
-      objid,
-      objtype,
-      refid,
-      axis,
-      ximat_in,
-      xmat_in,
-      geom_xmat_in,
-      site_xmat_in,
-    )
+    frameaxis = _frame_axis(ximat_in, xmat_in, geom_xmat_in, site_xmat_in, worldid, objid, objtype, refid, axis)
     sensordata_out[worldid, adr + 0] = frameaxis[0]
     sensordata_out[worldid, adr + 1] = frameaxis[1]
     sensordata_out[worldid, adr + 2] = frameaxis[2]
   elif sensortype == int(SensorType.FRAMEQUAT.value):
     objtype = sensor_objtype[posadr]
     refid = sensor_refid[posadr]
-    quat = _frame_quat(
-      body_iquat,
-      geom_bodyid,
-      geom_quat,
-      site_bodyid,
-      site_quat,
-      worldid,
-      objid,
-      objtype,
-      refid,
-      xquat_in,
-    )
+    quat = _frame_quat(body_iquat, geom_bodyid, geom_quat, site_bodyid, site_quat, xquat_in, worldid, objid, objtype, refid)
     sensordata_out[worldid, adr + 0] = quat[0]
     sensordata_out[worldid, adr + 1] = quat[1]
     sensordata_out[worldid, adr + 2] = quat[2]
     sensordata_out[worldid, adr + 3] = quat[3]
   elif sensortype == int(SensorType.SUBTREECOM.value):
-    subtree_com = _subtree_com(worldid, objid, subtree_com_in)
+    subtree_com = _subtree_com(subtree_com_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = subtree_com[0]
     sensordata_out[worldid, adr + 1] = subtree_com[1]
     sensordata_out[worldid, adr + 2] = subtree_com[2]
   elif sensortype == int(SensorType.CLOCK.value):
-    clock = _clock(worldid, time_in)
+    clock = _clock(time_in, worldid)
     sensordata_out[worldid, adr] = clock
 
 
@@ -389,14 +359,17 @@ def sensor_pos(m: Model, d: Data):
 
 @wp.func
 def _velocimeter(
+  # Model:
   body_rootid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  worldid: int,
+  objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   pos = site_xpos_in[worldid, objid]
@@ -411,11 +384,14 @@ def _velocimeter(
 
 @wp.func
 def _gyro(
+  # Model:
   site_bodyid: wp.array(dtype=int),
+  # Data in:
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   worldid: int,
   objid: int,
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   rot = site_xmat_in[worldid, objid]
@@ -425,58 +401,45 @@ def _gyro(
 
 
 @wp.func
-def _joint_vel(
-  jnt_dofadr: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  qvel_in: wp.array2d(dtype=float),
-) -> wp.float32:
+def _joint_vel(jnt_dofadr: wp.array(dtype=int), qvel_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return qvel_in[worldid, jnt_dofadr[objid]]
 
 
 @wp.func
-def _tendon_vel(
-  worldid: int, objid: int, ten_velocity_in: wp.array2d(dtype=float)
-) -> wp.float32:
+def _tendon_vel(ten_velocity_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return ten_velocity_in[worldid, objid]
 
 
 @wp.func
-def _actuator_vel(
-  worldid: int, objid: int, actuator_velocity_in: wp.array2d(dtype=float)
-) -> wp.float32:
+def _actuator_vel(actuator_velocity_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return actuator_velocity_in[worldid, objid]
 
 
 @wp.func
-def _ball_ang_vel(
-  jnt_dofadr: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  qvel_in: wp.array2d(dtype=float),
-) -> wp.vec3:
+def _ball_ang_vel(jnt_dofadr: wp.array(dtype=int), qvel_in: wp.array2d(dtype=float), worldid: int, objid: int) -> wp.vec3:
   adr = jnt_dofadr[objid]
-  return wp.vec3(
-    qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2]
-  )
+  return wp.vec3(qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2])
 
 
 @wp.func
 def _cvel_offset(
+  # Model:
   body_rootid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   cam_bodyid: wp.array(dtype=int),
-  worldid: int,
-  objtype: int,
-  objid: int,
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  xipos_in: wp.array2d(dtype=wp.vec3),
+  # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
+  xipos_in: wp.array2d(dtype=wp.vec3),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  worldid: int,
+  objtype: int,
+  objid: int,
 ) -> Tuple[wp.spatial_vector, wp.vec3]:
   if objtype == int(ObjType.BODY.value):
     pos = xipos_in[worldid, objid]
@@ -502,27 +465,30 @@ def _cvel_offset(
 
 @wp.func
 def _frame_linvel(
+  # Model:
   body_rootid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   cam_bodyid: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  objtype: int,
-  refid: int,
-  reftype: int,
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   xmat_in: wp.array2d(dtype=wp.mat33),
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  ximat_in: wp.array2d(dtype=wp.mat33),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  worldid: int,
+  objid: int,
+  objtype: int,
+  refid: int,
+  reftype: int,
 ) -> wp.vec3:
   if objtype == int(ObjType.BODY.value):
     xpos = xipos_in[worldid, objid]
@@ -554,39 +520,39 @@ def _frame_linvel(
     xmatref = cam_xmat_in[worldid, refid]
   else:  # UNKNOWN
     xposref = wp.vec3(0.0)
-    xmatref = wp.identity(3, dtype=wp.float32)
+    xmatref = wp.identity(3, dtype=float)
 
   cvel, offset = _cvel_offset(
     body_rootid,
     geom_bodyid,
     site_bodyid,
     cam_bodyid,
-    worldid,
-    objtype,
-    objid,
-    cvel_in,
-    subtree_com_in,
-    xipos_in,
     xpos_in,
+    xipos_in,
     geom_xpos_in,
     site_xpos_in,
     cam_xpos_in,
+    subtree_com_in,
+    cvel_in,
+    worldid,
+    objtype,
+    objid,
   )
   cvelref, offsetref = _cvel_offset(
     body_rootid,
     geom_bodyid,
     site_bodyid,
     cam_bodyid,
-    worldid,
-    reftype,
-    refid,
-    cvel_in,
-    subtree_com_in,
-    xipos_in,
     xpos_in,
+    xipos_in,
     geom_xpos_in,
     site_xpos_in,
     cam_xpos_in,
+    subtree_com_in,
+    cvel_in,
+    worldid,
+    reftype,
+    refid,
   )
   clinvel = wp.spatial_bottom(cvel)
   cangvel = wp.spatial_top(cvel)
@@ -605,43 +571,46 @@ def _frame_linvel(
 
 @wp.func
 def _frame_angvel(
+  # Model:
   body_rootid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   cam_bodyid: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  objtype: int,
-  refid: int,
-  reftype: int,
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   xmat_in: wp.array2d(dtype=wp.mat33),
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  ximat_in: wp.array2d(dtype=wp.mat33),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  worldid: int,
+  objid: int,
+  objtype: int,
+  refid: int,
+  reftype: int,
 ) -> wp.vec3:
   cvel, _ = _cvel_offset(
     body_rootid,
     geom_bodyid,
     site_bodyid,
     cam_bodyid,
-    worldid,
-    objtype,
-    objid,
-    cvel_in,
-    subtree_com_in,
-    xipos_in,
     xpos_in,
+    xipos_in,
     geom_xpos_in,
     site_xpos_in,
     cam_xpos_in,
+    subtree_com_in,
+    cvel_in,
+    worldid,
+    objtype,
+    objid,
   )
   cangvel = wp.spatial_top(cvel)
 
@@ -657,23 +626,23 @@ def _frame_angvel(
     elif reftype == int(ObjType.CAMERA.value):
       xmatref = cam_xmat_in[worldid, refid]
     else:  # UNKNOWN
-      xmatref = wp.identity(3, dtype=wp.float32)
+      xmatref = wp.identity(3, dtype=float)
 
     cvelref, _ = _cvel_offset(
       body_rootid,
       geom_bodyid,
       site_bodyid,
       cam_bodyid,
-      worldid,
-      reftype,
-      refid,
-      cvel_in,
-      subtree_com_in,
-      xipos_in,
       xpos_in,
+      xipos_in,
       geom_xpos_in,
       site_xpos_in,
       cam_xpos_in,
+      subtree_com_in,
+      cvel_in,
+      worldid,
+      objtype,
+      objid,
     )
     cangvelref = wp.spatial_top(cvelref)
 
@@ -683,16 +652,12 @@ def _frame_angvel(
 
 
 @wp.func
-def _subtree_linvel(
-  worldid: int, objid: int, subtree_linvel_in: wp.array2d(dtype=wp.vec3)
-) -> wp.vec3:
+def _subtree_linvel(subtree_linvel_in: wp.array2d(dtype=wp.vec3), worldid: int, objid: int) -> wp.vec3:
   return subtree_linvel_in[worldid, objid]
 
 
 @wp.func
-def _subtree_angmom(
-  worldid: int, objid: int, subtree_angmom_in: wp.array2d(dtype=wp.vec3)
-) -> wp.vec3:
+def _subtree_angmom(subtree_angmom_in: wp.array2d(dtype=wp.vec3), worldid: int, objid: int) -> wp.vec3:
   return subtree_angmom_in[worldid, objid]
 
 
@@ -739,43 +704,23 @@ def _sensor_vel(
   adr = sensor_adr[veladr]
 
   if sensortype == int(SensorType.VELOCIMETER.value):
-    vel = _velocimeter(
-      body_rootid,
-      site_bodyid,
-      worldid,
-      objid,
-      cvel_in,
-      site_xpos_in,
-      site_xmat_in,
-      subtree_com_in,
-    )
+    vel = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = vel[0]
     sensordata_out[worldid, adr + 1] = vel[1]
     sensordata_out[worldid, adr + 2] = vel[2]
   elif sensortype == int(SensorType.GYRO.value):
-    gyro = _gyro(
-      site_bodyid,
-      worldid,
-      objid,
-      cvel_in,
-      site_xmat_in,
-    )
+    gyro = _gyro(site_bodyid, site_xmat_in, cvel_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = gyro[0]
     sensordata_out[worldid, adr + 1] = gyro[1]
     sensordata_out[worldid, adr + 2] = gyro[2]
   elif sensortype == int(SensorType.JOINTVEL.value):
-    sensordata_out[worldid, adr] = _joint_vel(
-      jnt_dofadr,
-      worldid,
-      objid,
-      qvel_in,
-    )
+    sensordata_out[worldid, adr] = _joint_vel(jnt_dofadr, qvel_in, worldid, objid)
   elif sensortype == int(SensorType.TENDONVEL.value):
-    sensordata_out[worldid, adr] = _tendon_vel(worldid, objid, ten_velocity_in)
+    sensordata_out[worldid, adr] = _tendon_vel(ten_velocity_in, worldid, objid)
   elif sensortype == int(SensorType.ACTUATORVEL.value):
-    sensordata_out[worldid, adr] = _actuator_vel(worldid, objid, actuator_velocity_in)
+    sensordata_out[worldid, adr] = _actuator_vel(actuator_velocity_in, worldid, objid)
   elif sensortype == int(SensorType.BALLANGVEL.value):
-    angvel = _ball_ang_vel(jnt_dofadr, worldid, objid, qvel_in)
+    angvel = _ball_ang_vel(jnt_dofadr, qvel_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = angvel[0]
     sensordata_out[worldid, adr + 1] = angvel[1]
     sensordata_out[worldid, adr + 2] = angvel[2]
@@ -788,23 +733,23 @@ def _sensor_vel(
       geom_bodyid,
       site_bodyid,
       cam_bodyid,
-      worldid,
-      objid,
-      objtype,
-      refid,
-      reftype,
-      cvel_in,
-      subtree_com_in,
-      xipos_in,
-      ximat_in,
       xpos_in,
       xmat_in,
+      xipos_in,
+      ximat_in,
       geom_xpos_in,
       geom_xmat_in,
       site_xpos_in,
       site_xmat_in,
       cam_xpos_in,
       cam_xmat_in,
+      subtree_com_in,
+      cvel_in,
+      worldid,
+      objid,
+      objtype,
+      refid,
+      reftype,
     )
     sensordata_out[worldid, adr + 0] = frame_linvel[0]
     sensordata_out[worldid, adr + 1] = frame_linvel[1]
@@ -818,34 +763,34 @@ def _sensor_vel(
       geom_bodyid,
       site_bodyid,
       cam_bodyid,
-      worldid,
-      objid,
-      objtype,
-      refid,
-      reftype,
-      cvel_in,
-      subtree_com_in,
-      xipos_in,
-      ximat_in,
       xpos_in,
       xmat_in,
+      xipos_in,
+      ximat_in,
       geom_xpos_in,
       geom_xmat_in,
       site_xpos_in,
       site_xmat_in,
       cam_xpos_in,
       cam_xmat_in,
+      subtree_com_in,
+      cvel_in,
+      worldid,
+      objid,
+      objtype,
+      refid,
+      reftype,
     )
     sensordata_out[worldid, adr + 0] = frame_angvel[0]
     sensordata_out[worldid, adr + 1] = frame_angvel[1]
     sensordata_out[worldid, adr + 2] = frame_angvel[2]
   elif sensortype == int(SensorType.SUBTREELINVEL.value):
-    subtree_linvel = _subtree_linvel(worldid, objid, subtree_linvel_in)
+    subtree_linvel = _subtree_linvel(subtree_linvel_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = subtree_linvel[0]
     sensordata_out[worldid, adr + 1] = subtree_linvel[1]
     sensordata_out[worldid, adr + 2] = subtree_linvel[2]
   elif sensortype == int(SensorType.SUBTREEANGMOM.value):
-    subtree_angmom = _subtree_angmom(worldid, objid, subtree_angmom_in)
+    subtree_angmom = _subtree_angmom(subtree_angmom_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = subtree_angmom[0]
     sensordata_out[worldid, adr + 1] = subtree_angmom[1]
     sensordata_out[worldid, adr + 2] = subtree_angmom[2]
@@ -858,11 +803,7 @@ def sensor_vel(m: Model, d: Data):
   if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
-  if wp.static(
-    np.isin(
-      m.sensor_type.numpy(), [SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM]
-    ).any()
-  ):
+  if wp.static(np.isin(m.sensor_type.numpy(), [SensorType.SUBTREELINVEL, SensorType.SUBTREEANGMOM]).any()):
     pass
     # smooth.subtree_vel(m, d)
 
@@ -906,15 +847,18 @@ def sensor_vel(m: Model, d: Data):
 
 @wp.func
 def _accelerometer(
+  # Model:
   body_rootid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  cacc_in: wp.array2d(dtype=wp.spatial_vector),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  cacc_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  worldid: int,
+  objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   rot = site_xmat_in[worldid, objid]
@@ -935,11 +879,14 @@ def _accelerometer(
 
 @wp.func
 def _force(
+  # Model:
   site_bodyid: wp.array(dtype=int),
+  # Data in:
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   worldid: int,
   objid: int,
-  cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
@@ -949,56 +896,61 @@ def _force(
 
 @wp.func
 def _torque(
+  # Model:
   body_rootid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
-  worldid: int,
-  objid: int,
-  cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
+  # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  worldid: int,
+  objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
   site_xmat = site_xmat_in[worldid, objid]
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  return wp.transpose(site_xmat) @ (
-    wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int))
-  )
+  return wp.transpose(site_xmat) @ (wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)))
 
 
 @wp.func
-def _actuator_force(
-  worldid: int, objid: int, actuator_force_in: wp.array2d(dtype=float)
-) -> wp.float32:
+def _actuator_force(actuator_force_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return actuator_force_in[worldid, objid]
 
 
 @wp.func
 def _joint_actuator_force(
+  # Model:
   jnt_dofadr: wp.array(dtype=int),
+  # Data in:
+  qfrc_actuator_in: wp.array2d(dtype=float),
+  # In:
   worldid: int,
   objid: int,
-  qfrc_actuator_in: wp.array2d(dtype=float),
-) -> wp.float32:
+) -> float:
   return qfrc_actuator_in[worldid, jnt_dofadr[objid]]
 
 
 @wp.func
 def _framelinacc(
+  # Model:
   body_rootid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
+  # Data in:
+  xpos_in: wp.array2d(dtype=wp.vec3),
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  cacc_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   worldid: int,
   objid: int,
   objtype: int,
-  cacc_in: wp.array2d(dtype=wp.spatial_vector),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xpos_in: wp.array2d(dtype=wp.vec3),
 ) -> wp.vec3:
   if objtype == int(ObjType.BODY.value):
     bodyid = objid
@@ -1030,12 +982,15 @@ def _framelinacc(
 
 @wp.func
 def _frameangacc(
+  # Model:
   geom_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
+  # Data in:
+  cacc_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   worldid: int,
   objid: int,
   objtype: int,
-  cacc_in: wp.array2d(dtype=wp.spatial_vector),
 ) -> wp.vec3:
   if objtype == int(ObjType.BODY.value) or objtype == int(ObjType.XBODY.value):
     bodyid = objid
@@ -1085,66 +1040,41 @@ def _sensor_acc(
 
   if sensortype == int(SensorType.ACCELEROMETER.value):
     accelerometer = _accelerometer(
-      body_rootid,
-      site_bodyid,
-      worldid,
-      objid,
-      cacc_in,
-      cvel_in,
-      subtree_com_in,
-      site_xpos_in,
-      site_xmat_in,
+      body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
     )
     sensordata_out[worldid, adr + 0] = accelerometer[0]
     sensordata_out[worldid, adr + 1] = accelerometer[1]
     sensordata_out[worldid, adr + 2] = accelerometer[2]
   elif sensortype == int(SensorType.FORCE.value):
-    force = _force(
-      site_bodyid,
-      worldid,
-      objid,
-      cfrc_int_in,
-      site_xmat_in,
-    )
+    force = _force(site_bodyid, site_xmat_in, cfrc_int_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = force[0]
     sensordata_out[worldid, adr + 1] = force[1]
     sensordata_out[worldid, adr + 2] = force[2]
   elif sensortype == int(SensorType.TORQUE.value):
-    torque = _torque(
-      body_rootid,
-      site_bodyid,
-      worldid,
-      objid,
-      cfrc_int_in,
-      site_xpos_in,
-      site_xmat_in,
-      subtree_com_in,
-    )
+    torque = _torque(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cfrc_int_in, worldid, objid)
     sensordata_out[worldid, adr + 0] = torque[0]
     sensordata_out[worldid, adr + 1] = torque[1]
     sensordata_out[worldid, adr + 2] = torque[2]
   elif sensortype == int(SensorType.ACTUATORFRC.value):
-    sensordata_out[worldid, adr] = _actuator_force(worldid, objid, actuator_force_in)
+    sensordata_out[worldid, adr] = _actuator_force(actuator_force_in, worldid, objid)
   elif sensortype == int(SensorType.JOINTACTFRC.value):
-    sensordata_out[worldid, adr] = _joint_actuator_force(
-      jnt_dofadr, worldid, objid, qfrc_actuator_in
-    )
+    sensordata_out[worldid, adr] = _joint_actuator_force(jnt_dofadr, qfrc_actuator_in, worldid, objid)
   elif sensortype == int(SensorType.FRAMELINACC.value):
     objtype = sensor_objtype[accadr]
     framelinacc = _framelinacc(
       body_rootid,
       geom_bodyid,
       site_bodyid,
+      xpos_in,
+      xipos_in,
+      geom_xpos_in,
+      site_xpos_in,
+      subtree_com_in,
+      cvel_in,
+      cacc_in,
       worldid,
       objid,
       objtype,
-      cacc_in,
-      cvel_in,
-      subtree_com_in,
-      xipos_in,
-      xpos_in,
-      geom_xpos_in,
-      site_xpos_in,
     )
     sensordata_out[worldid, adr + 0] = framelinacc[0]
     sensordata_out[worldid, adr + 1] = framelinacc[1]
@@ -1155,10 +1085,10 @@ def _sensor_acc(
     frameangacc = _frameangacc(
       geom_bodyid,
       site_bodyid,
+      cacc_in,
       worldid,
       objid,
       objtype,
-      cacc_in,
     )
     sensordata_out[worldid, adr + 0] = frameangacc[0]
     sensordata_out[worldid, adr + 1] = frameangacc[1]

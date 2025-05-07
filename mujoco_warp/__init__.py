@@ -20,8 +20,6 @@ from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase
 from ._src.collision_primitive import primitive_narrowphase as primitive_narrowphase
 from ._src.constraint import make_constraint as make_constraint
-
-# from ._src.constraint import make_constraint as make_constraint
 from ._src.forward import euler as euler
 from ._src.forward import forward as forward
 from ._src.forward import fwd_acceleration as fwd_acceleration
@@ -39,7 +37,6 @@ from ._src.passive import passive as passive
 from ._src.sensor import sensor_acc as sensor_acc
 from ._src.sensor import sensor_pos as sensor_pos
 from ._src.sensor import sensor_vel as sensor_vel
-
 from ._src.smooth import camlight as camlight
 from ._src.smooth import com_pos as com_pos
 from ._src.smooth import com_vel as com_vel
@@ -52,20 +49,18 @@ from ._src.smooth import solve_m as solve_m
 from ._src.smooth import subtree_vel as subtree_vel
 from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
-
 from ._src.solver import solve as solve
 from ._src.support import contact_force as contact_force
 from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate
-
-# from ._src.test_util import benchmark as benchmark
-# from ._src.types import ConeType as ConeType
-# from ._src.types import Contact as Contact
-# from ._src.types import Data as Data
+from ._src.test_util import benchmark as benchmark
+from ._src.types import ConeType as ConeType
+from ._src.types import Contact as Contact
+from ._src.types import Data as Data
 from ._src.types import DisableBit as DisableBit
-# from ._src.types import DynType as DynType
-# from ._src.types import JointType as JointType
-# from ._src.types import Model as Model
-# from ._src.types import Option as Option
-# from ._src.types import Statistic as Statistic
-# from ._src.types import TrnType as TrnType
+from ._src.types import DynType as DynType
+from ._src.types import JointType as JointType
+from ._src.types import Model as Model
+from ._src.types import Option as Option
+from ._src.types import Statistic as Statistic
+from ._src.types import TrnType as TrnType

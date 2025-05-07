@@ -61,12 +61,7 @@ VECI2 = vec6(1, 2, 3, 2, 3, 3)
 
 
 @wp.func
-def gjk_support_geom(
-  info: Geom,
-  typeGeom: int,
-  dir: wp.vec3,
-  convex_vert: wp.array(dtype=wp.vec3),
-):
+def gjk_support_geom(info: Geom, typeGeom: int, dir: wp.vec3, convex_vert: wp.array(dtype=wp.vec3)):
   local_dir = wp.transpose(info.rot) @ dir
   if typeGeom == int(GeomType.SPHERE.value):
     support_pt = info.pos + info.size[0] * dir
@@ -110,14 +105,7 @@ def gjk_support_geom(
 
 
 @wp.func
-def _gjk_support(
-  info1: Geom,
-  info2: Geom,
-  type1: int,
-  type2: int,
-  dir: wp.vec3,
-  convex_vert: wp.array(dtype=wp.vec3),
-):
+def _gjk_support(info1: Geom, info2: Geom, type1: int, type2: int, dir: wp.vec3, convex_vert: wp.array(dtype=wp.vec3)):
   # Returns the distance between support points on two geoms, and the support point.
   # Negative distance means objects are not intersecting along direction `dir`.
   # Positive distance means objects are intersecting along the given direction `dir`.
@@ -148,13 +136,7 @@ convex_collision_functions = {
 
 
 @wp.func
-def _expand_polytope(
-  count: int,
-  prevCount: int,
-  dists: vecc3,
-  tris: mat2c3,
-  p: matc3,
-):
+def _expand_polytope(count: int, prevCount: int, dists: vecc3, tris: mat2c3, p: matc3):
   # Expand the polytope greedily.
   for j in range(count):
     bestIndex = int(0)

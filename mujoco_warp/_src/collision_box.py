@@ -76,11 +76,11 @@ def box_normals(i: int) -> wp.vec3:
 
 
 @wp.func
-def box(R: wp.mat33, t: wp.vec3, geom_size: wp.vec3) -> Box:
+def box(R: wp.mat33, t: wp.vec3, size: wp.vec3) -> Box:
   """Get a transformed box"""
-  x = geom_size[0]
-  y = geom_size[1]
-  z = geom_size[2]
+  x = size[0]
+  y = size[1]
+  z = size[2]
   m = Box()
   for i in range(8):
     ix = wp.where(i & 4, x, -x)
@@ -91,7 +91,7 @@ def box(R: wp.mat33, t: wp.vec3, geom_size: wp.vec3) -> Box:
 
 
 @wp.func
-def box_face_verts(box: Box, idx: wp.int32) -> mat43f:
+def box_face_verts(box: Box, idx: int) -> mat43f:
   """Get the quad corresponding to a box face"""
   if idx == 0:
     verts = wp.vec4i(0, 4, 5, 1)
@@ -113,10 +113,7 @@ def box_face_verts(box: Box, idx: wp.int32) -> mat43f:
 
 
 @wp.func
-def get_box_axis(
-  axis_idx: int,
-  R: wp.mat33,
-):
+def get_box_axis(axis_idx: int, R: wp.mat33):
   """Get the axis at index axis_idx.
   R: rotation matrix from a to b
   Axes 0-12 are face normals of boxes a & b
@@ -241,34 +238,30 @@ def _box_box(
 
     ga, gb = geoms[0], geoms[1]
 
-    if geom_type[ga] != int(GeomType.BOX.value) or geom_type[gb] != int(
-      GeomType.BOX.value
-    ):
+    if geom_type[ga] != int(GeomType.BOX.value) or geom_type[gb] != int(GeomType.BOX.value):
       continue
 
     worldid = collision_worldid_in[bp_idx]
 
-    geoms, margin, gap, condim, friction, solref, solreffriction, solimp = (
-      contact_params(
-        geom_condim,
-        geom_priority,
-        geom_solmix,
-        geom_solref,
-        geom_solimp,
-        geom_friction,
-        geom_margin,
-        geom_gap,
-        pair_dim,
-        pair_solref,
-        pair_solreffriction,
-        pair_solimp,
-        pair_margin,
-        pair_gap,
-        pair_friction,
-        collision_pair_in,
-        collision_pairid_in,
-        tid,
-      )
+    geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+      geom_condim,
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_margin,
+      geom_gap,
+      pair_dim,
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_margin,
+      pair_gap,
+      pair_friction,
+      collision_pair_in,
+      collision_pairid_in,
+      tid,
     )
 
     # transformations
@@ -394,20 +387,18 @@ def _box_box(
         contact_pos_out,
         contact_frame_out,
         contact_includemargin_out,
-        contact_dim_out,
         contact_friction_out,
         contact_solref_out,
         contact_solreffriction_out,
         contact_solimp_out,
+        contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
       )
 
 
 @wp.func
-def _closest_segment_point_plane(
-  a: wp.vec3, b: wp.vec3, p0: wp.vec3, plane_normal: wp.vec3
-) -> wp.vec3:
+def _closest_segment_point_plane(a: wp.vec3, b: wp.vec3, p0: wp.vec3, plane_normal: wp.vec3) -> wp.vec3:
   """Gets the closest point between a line segment and a plane.
 
   Args:
@@ -433,12 +424,7 @@ def _closest_segment_point_plane(
 
 
 @wp.func
-def _project_poly_onto_plane(
-  poly: Any,
-  poly_n: wp.vec3,
-  plane_n: wp.vec3,
-  plane_pt: wp.vec3,
-):
+def _project_poly_onto_plane(poly: Any, poly_n: wp.vec3, plane_n: wp.vec3, plane_pt: wp.vec3):
   """Projects poly1 onto the poly2 plane along poly2's normal."""
   d = wp.dot(plane_pt, plane_n)
   denom = wp.dot(poly_n, plane_n)
@@ -450,11 +436,7 @@ def _project_poly_onto_plane(
 
 
 @wp.func
-def _clip_edge_to_quad(
-  subject_poly: mat43f,
-  clipping_poly: mat43f,
-  clipping_normal: wp.vec3,
-):
+def _clip_edge_to_quad(subject_poly: mat43f, clipping_poly: mat43f, clipping_normal: wp.vec3):
   p0 = mat43f()
   p1 = mat43f()
   mask = wp.vec4b()
@@ -475,9 +457,7 @@ def _clip_edge_to_quad(
 
       p0_in_front = wp.dot(subject_p0 - clipping_p0, edge_normal) > _TINY_VAL
       p1_in_front = wp.dot(subject_p1 - clipping_p0, edge_normal) > _TINY_VAL
-      candidate_clipped_p = _closest_segment_point_plane(
-        subject_p0, subject_p1, clipping_p1, edge_normal
-      )
+      candidate_clipped_p = _closest_segment_point_plane(subject_p0, subject_p1, clipping_p1, edge_normal)
       clipped_p0 = wp.where(p0_in_front, candidate_clipped_p, subject_p0)
       clipped_p1 = wp.where(p1_in_front, candidate_clipped_p, subject_p1)
       clipped_dist_p0 = wp.dot(clipped_p0 - subject_p0, subject_p1 - subject_p0)
@@ -509,25 +489,14 @@ def _clip_edge_to_quad(
 
 
 @wp.func
-def _clip_quad(
-  subject_quad: mat43f,
-  subject_normal: wp.vec3,
-  clipping_quad: mat43f,
-  clipping_normal: wp.vec3,
-):
+def _clip_quad(subject_quad: mat43f, subject_normal: wp.vec3, clipping_quad: mat43f, clipping_normal: wp.vec3):
   """Clips a subject quad against a clipping quad.
   Serial implementation.
   """
 
-  subject_clipped_p0, subject_clipped_p1, subject_mask = _clip_edge_to_quad(
-    subject_quad, clipping_quad, clipping_normal
-  )
-  clipping_proj = _project_poly_onto_plane(
-    clipping_quad, clipping_normal, subject_normal, subject_quad[0]
-  )
-  clipping_clipped_p0, clipping_clipped_p1, clipping_mask = _clip_edge_to_quad(
-    clipping_proj, subject_quad, subject_normal
-  )
+  subject_clipped_p0, subject_clipped_p1, subject_mask = _clip_edge_to_quad(subject_quad, clipping_quad, clipping_normal)
+  clipping_proj = _project_poly_onto_plane(clipping_quad, clipping_normal, subject_normal, subject_quad[0])
+  clipping_clipped_p0, clipping_clipped_p1, clipping_mask = _clip_edge_to_quad(clipping_proj, subject_quad, subject_normal)
 
   clipped = mat16_3f()
   mask = vec16b()
@@ -546,11 +515,7 @@ def _clip_quad(
 
 # TODO(ca): tiling variant
 @wp.func
-def _manifold_points(
-  poly: Any,
-  mask: Any,
-  clipping_norm: wp.vec3,
-) -> wp.vec4b:
+def _manifold_points(poly: Any, mask: Any, clipping_norm: wp.vec3) -> wp.vec4b:
   """Chooses four points on the polygon with approximately maximal area. Return the indices"""
   n = len(poly)
 
@@ -601,17 +566,10 @@ def _manifold_points(
 
 
 @wp.func
-def _create_contact_manifold(
-  clipping_quad: mat43f,
-  clipping_normal: wp.vec3,
-  subject_quad: mat43f,
-  subject_normal: wp.vec3,
-):
+def _create_contact_manifold(clipping_quad: mat43f, clipping_normal: wp.vec3, subject_quad: mat43f, subject_normal: wp.vec3):
   # Clip the subject (incident) face onto the clipping (reference) face.
   # The incident points are clipped points on the subject polygon.
-  incident, mask = _clip_quad(
-    subject_quad, subject_normal, clipping_quad, clipping_normal
-  )
+  incident, mask = _clip_quad(subject_quad, subject_normal, clipping_quad, clipping_normal)
 
   clipping_normal_neg = -clipping_normal
   d = wp.dot(clipping_quad[0], clipping_normal_neg) + _TINY_VAL
@@ -620,9 +578,7 @@ def _create_contact_manifold(
     if wp.dot(incident[i], clipping_normal_neg) < d:
       mask[i] = wp.int8(0)
 
-  ref = _project_poly_onto_plane(
-    incident, clipping_normal, clipping_normal, clipping_quad[0]
-  )
+  ref = _project_poly_onto_plane(incident, clipping_normal, clipping_normal, clipping_quad[0])
 
   # Choose four contact points.
   best = _manifold_points(ref, mask, clipping_normal)
