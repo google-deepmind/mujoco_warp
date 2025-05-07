@@ -988,6 +988,7 @@ class Model:
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
 
+
 @dataclasses.dataclass
 class Contact:
   """Contact data.

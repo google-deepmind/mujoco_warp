@@ -168,12 +168,8 @@ class SmoothTest(parameterized.TestCase):
     """Tests rne_postconstraint."""
     mjm, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity)
 
-    mjd.xfrc_applied = np.random.uniform(
-      low=-0.01, high=0.01, size=mjd.xfrc_applied.shape
-    )
-    d.xfrc_applied = wp.array(
-      np.expand_dims(mjd.xfrc_applied, axis=0), dtype=wp.spatial_vector
-    )
+    mjd.xfrc_applied = np.random.uniform(low=-0.01, high=0.01, size=mjd.xfrc_applied.shape)
+    d.xfrc_applied = wp.array(np.expand_dims(mjd.xfrc_applied, axis=0), dtype=wp.spatial_vector)
 
     mujoco.mj_rnePostConstraint(mjm, mjd)
 

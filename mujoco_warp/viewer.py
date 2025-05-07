@@ -28,19 +28,11 @@ from absl import flags
 
 import mujoco_warp as mjwarp
 
-_MODEL_PATH = flags.DEFINE_string(
-  "mjcf", None, "Path to a MuJoCo MJCF file.", required=True
-)
-_CLEAR_KERNEL_CACHE = flags.DEFINE_bool(
-  "clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)"
-)
+_MODEL_PATH = flags.DEFINE_string("mjcf", None, "Path to a MuJoCo MJCF file.", required=True)
+_CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
 _ENGINE = flags.DEFINE_enum("engine", "mjwarp", ["mjwarp", "mjc"], "Simulation engine")
-_CONE = flags.DEFINE_enum(
-  "cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type"
-)
-_LS_PARALLEL = flags.DEFINE_bool(
-  "ls_parallel", False, "Engine solver with parallel linesearch"
-)
+_CONE = flags.DEFINE_enum("cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type")
+_LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "Engine solver with parallel linesearch")
 _VIEWER_GLOBAL_STATE = {
   "running": True,
   "step_once": False,

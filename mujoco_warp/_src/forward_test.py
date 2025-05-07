@@ -180,9 +180,7 @@ class ForwardTest(parameterized.TestCase):
       disableflags=dsblflgs,
     )
 
-    mjm.actuator_gainprm[:, 2] = np.random.uniform(
-      low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape
-    )
+    mjm.actuator_gainprm[:, 2] = np.random.uniform(low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape)
 
     # change actuators to velocity/damper to cover all codepaths
     mjm.actuator_gaintype[3] = GainType.AFFINE
@@ -208,9 +206,7 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-  @parameterized.parameters(
-    "humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"
-  )
+  @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml")
   def test_graph_capture(self, xml):
     # TODO(team): test more environments
     if wp.get_device().is_cuda and wp.config.verify_cuda == False:

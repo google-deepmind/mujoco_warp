@@ -102,9 +102,7 @@ class ConstraintTest(parameterized.TestCase):
   def test_constraints(self, cone):
     """Test constraints."""
     for key in range(3):
-      mjm, mjd, m, d = test_util.fixture(
-        "constraints.xml", sparse=False, cone=cone, keyframe=key
-      )
+      mjm, mjd, m, d = test_util.fixture("constraints.xml", sparse=False, cone=cone, keyframe=key)
 
       for arr in (
         d.efc.J,
@@ -134,9 +132,7 @@ class ConstraintTest(parameterized.TestCase):
   def test_limit_tendon(self):
     """Test limit tendon constraints."""
     for keyframe in range(-1, 1):
-      _, mjd, m, d = test_util.fixture(
-        "tendon/tendon_limit.xml", sparse=False, keyframe=keyframe
-      )
+      _, mjd, m, d = test_util.fixture("tendon/tendon_limit.xml", sparse=False, keyframe=keyframe)
 
       for arr in (d.nefc, d.nl, d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
         arr.zero_()

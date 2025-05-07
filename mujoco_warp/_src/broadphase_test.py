@@ -196,9 +196,7 @@ class BroadphaseTest(absltest.TestCase):
     # two worlds and four collisions
     d3 = mjwarp.make_data(mjm, nworld=2, nconmax=512, njmax=512)
     d3.geom_xpos = wp.array(
-      np.vstack(
-        [np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]
-      ),
+      np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
       dtype=wp.vec3,
     )
 

@@ -171,9 +171,7 @@ def _analyze_str(code_str: str) -> List[Any]:
 def _assert_has_issue(issues, issue_type: Type):
   """Assert that the issues list contains at least one issue of the given type."""
   if not any(isinstance(issue, issue_type) for issue in issues):
-    raise AssertionError(
-      f"Expected issue of type {issue_type.__name__} not found in issues."
-    )
+    raise AssertionError(f"Expected issue of type {issue_type.__name__} not found in issues.")
 
 
 class TestAnalyzer(absltest.TestCase):

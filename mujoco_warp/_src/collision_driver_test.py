@@ -405,12 +405,8 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.contact.dim.numpy()[0], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], np.array([5, 4, 3, 2, 1]))
     np.testing.assert_allclose(d.contact.solref.numpy()[0], np.array([-0.25, -0.5]))
-    np.testing.assert_allclose(
-      d.contact.solreffriction.numpy()[0], np.array([2.0, 4.0])
-    )
-    np.testing.assert_allclose(
-      d.contact.solimp.numpy()[0], np.array([0.1, 0.2, 0.3, 0.4, 0.5])
-    )
+    np.testing.assert_allclose(d.contact.solreffriction.numpy()[0], np.array([2.0, 4.0]))
+    np.testing.assert_allclose(d.contact.solimp.numpy()[0], np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
 
     # 1 pair: override contype and conaffinity
     _, _, m, d = test_util.fixture(
@@ -452,12 +448,8 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.contact.dim.numpy()[0], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], np.array([5, 4, 3, 2, 1]))
     np.testing.assert_allclose(d.contact.solref.numpy()[0], np.array([-0.25, -0.5]))
-    np.testing.assert_allclose(
-      d.contact.solreffriction.numpy()[0], np.array([2.0, 4.0])
-    )
-    np.testing.assert_allclose(
-      d.contact.solimp.numpy()[0], np.array([0.1, 0.2, 0.3, 0.4, 0.5])
-    )
+    np.testing.assert_allclose(d.contact.solreffriction.numpy()[0], np.array([2.0, 4.0]))
+    np.testing.assert_allclose(d.contact.solimp.numpy()[0], np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
 
     # 1 pair: override exclude
     _, _, m, d = test_util.fixture(
@@ -500,12 +492,8 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.contact.dim.numpy()[0], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], np.array([5, 4, 3, 2, 1]))
     np.testing.assert_allclose(d.contact.solref.numpy()[0], np.array([-0.25, -0.5]))
-    np.testing.assert_allclose(
-      d.contact.solreffriction.numpy()[0], np.array([2.0, 4.0])
-    )
-    np.testing.assert_allclose(
-      d.contact.solimp.numpy()[0], np.array([0.1, 0.2, 0.3, 0.4, 0.5])
-    )
+    np.testing.assert_allclose(d.contact.solreffriction.numpy()[0], np.array([2.0, 4.0]))
+    np.testing.assert_allclose(d.contact.solimp.numpy()[0], np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
 
     # 1 pair 1 exclude
     _, _, m, d = test_util.fixture(
@@ -552,12 +540,8 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.contact.dim.numpy()[1], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[1], np.array([5, 4, 3, 2, 1]))
     np.testing.assert_allclose(d.contact.solref.numpy()[1], np.array([-0.25, -0.5]))
-    np.testing.assert_allclose(
-      d.contact.solreffriction.numpy()[1], np.array([2.0, 4.0])
-    )
-    np.testing.assert_allclose(
-      d.contact.solimp.numpy()[1], np.array([0.1, 0.2, 0.3, 0.4, 0.5])
-    )
+    np.testing.assert_allclose(d.contact.solreffriction.numpy()[1], np.array([2.0, 4.0]))
+    np.testing.assert_allclose(d.contact.solimp.numpy()[1], np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
 
     # TODO(team): test sap_broadphase
 

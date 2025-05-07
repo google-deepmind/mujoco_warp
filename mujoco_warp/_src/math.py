@@ -180,17 +180,11 @@ def orthogonals(a: wp.vec3):
 @wp.func
 def orthonormal(normal: wp.vec3) -> wp.vec3:
   if wp.abs(normal[0]) < wp.abs(normal[1]) and wp.abs(normal[0]) < wp.abs(normal[2]):
-    dir = wp.vec3(
-      1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2]
-    )
+    dir = wp.vec3(1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2])
   elif wp.abs(normal[1]) < wp.abs(normal[2]):
-    dir = wp.vec3(
-      -normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2]
-    )
+    dir = wp.vec3(-normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2])
   else:
-    dir = wp.vec3(
-      -normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2]
-    )
+    dir = wp.vec3(-normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2])
   dir, _ = gjk_normalize(dir)
   return dir
 
@@ -234,9 +228,7 @@ def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def closest_segment_point_and_dist(
-  a: wp.vec3, b: wp.vec3, pt: wp.vec3
-) -> Tuple[wp.vec3, wp.float32]:
+def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> Tuple[wp.vec3, wp.float32]:
   """Returns closest point on the line segment and the distance squared."""
   closest = closest_segment_point(a, b, pt)
   dist = wp.dot((pt - closest), (pt - closest))
@@ -244,9 +236,7 @@ def closest_segment_point_and_dist(
 
 
 @wp.func
-def closest_segment_to_segment_points(
-  a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3
-) -> Tuple[wp.vec3, wp.vec3]:
+def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Returns closest points between two line segments."""
 
   dir_a, len_a = normalize_with_norm(a1 - a0)

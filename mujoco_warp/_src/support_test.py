@@ -65,9 +65,7 @@ class SupportTest(parameterized.TestCase):
     qfrc_expected = np.zeros(m.nv)
     xfrc = xfrc[0]
     for i in range(1, m.nbody):
-      mujoco.mj_applyFT(
-        mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected
-      )
+      mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
   @parameterized.parameters(

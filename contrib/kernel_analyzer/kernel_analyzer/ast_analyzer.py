@@ -68,9 +68,7 @@ class InvalidSuffix(Issue):
 
   def __str__(self):
     if self.source == "Model":
-      return (
-        f'"{self.node.arg}" invalid suffix, _in/_out not allowed on Model parameters.'
-      )
+      return f'"{self.node.arg}" invalid suffix, _in/_out not allowed on Model parameters.'
     elif self.source == "Data":
       return f'"{self.node.arg}" invalid suffix, _in/_out required on Data parameters.'
     else:
@@ -85,9 +83,7 @@ class InvalidParamOrder(Issue):
   arg_range: Tuple[Tuple[int, int], Tuple[int, int]]
 
   def __str__(self):
-    return (
-      f'"{self.kernel}" invalid parameter order, expected: {", ".join(self.expected)}'
-    )
+    return f'"{self.kernel}" invalid parameter order, expected: {", ".join(self.expected)}'
 
 
 @dataclasses.dataclass
@@ -107,6 +103,7 @@ class InvalidWrite(Issue):
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
+
 
 def _get_classes(src: str) -> Dict[str, List[Tuple[str, str]]]:
   """Return classes and fields and annotations."""
@@ -130,9 +127,7 @@ def _get_classes(src: str) -> Dict[str, List[Tuple[str, str]]]:
   return ret
 
 
-def _get_function_arg_range(
-  node: ast.FunctionDef, source: str
-) -> tuple[tuple[int, int], tuple[int, int]]:
+def _get_function_arg_range(node: ast.FunctionDef, source: str) -> tuple[tuple[int, int], tuple[int, int]]:
   """Gets the function arg range."""
   start_line = node.lineno - 1
   start_char = node.col_offset + len(node.name)
@@ -266,31 +261,27 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         param_outs.add(param_name)
       if "array" in param_type:
         param_reftypes.add(param_name)
-      param_source, expected_type, param_order = field_info.get(
-        field_name, (None, None, None)
-      )
+      param_source, expected_type, param_order = field_info.get(field_name, (None, None, None))
 
       # if parameters are multi-line, parameters must be grouped by comments of the form
       # "{source} {in | out | ""}:" e.g. "Model:" or "Data in:" or "Out:"
       if params_multiline and (param_out, param_source) not in param_groups:
         param_groups.add((param_out, param_source))
         expected_comment = _get_arg_expected_comment(param_source, param_out)
-        if (
-          param.lineno < 2 or source_lines[param.lineno - 2].strip() != expected_comment
-        ):
+        if param.lineno < 2 or source_lines[param.lineno - 2].strip() != expected_comment:
           issues.append(MissingComment(param, kernel, expected_comment))
 
       # paramater type must match field type (or generic types if no corresponding field)
       if expected_type is None:
         # if the parameter does not correspond to a Model/Data fields, it has no expected type
         # still, there are a few type conventions we stick to
-        if 'wp.int32' in param_type:
+        if "wp.int32" in param_type:
           expected_type = "int"
-        elif 'wp.float32' in param_type:
+        elif "wp.float32" in param_type:
           expected_type = "float"
-        elif 'wp.bool' in param_type:
-          expected_type = "bool"          
-        if expected_type:          
+        elif "wp.bool" in param_type:
+          expected_type = "bool"
+        if expected_type:
           issues.append(TypeMismatch(param, kernel, expected_type, None))
       elif param_type != expected_type:
         issues.append(TypeMismatch(param, kernel, expected_type, param_source))
@@ -324,9 +315,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
           expected_full.append(_get_arg_expected_comment(src, e[0]))
         expected_full.append(e[-1] + ": " + param_types[e[-1]] + ",")
         prev = e[:2]
-      issues.append(
-        InvalidParamOrder(node, kernel, expected_names, expected_full, arg_range)
-      )
+      issues.append(InvalidParamOrder(node, kernel, expected_names, expected_full, arg_range))
 
     # don't allow assignments to in parameters
     for sub_node in ast.walk(node):

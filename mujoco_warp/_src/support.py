@@ -98,11 +98,9 @@ def mul_m_dense(tile: TileSet):
 
     if skip[worldid]:
       return
-    
+
     dofid = adr[nodeid]
-    qM_tile = wp.tile_load(
-      qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid)
-    )
+    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     vec_tile = wp.tile_load(vec[worldid], shape=(TILE_SIZE, 1), offset=(dofid, 0))
     res_tile = wp.tile_matmul(qM_tile, vec_tile)
     wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
@@ -195,9 +193,7 @@ def xfrc_accumulate_kernel(
     offset = xipos_in[worldid, child] - subtree_com_in[worldid, body_rootid[child]]
     cross_term = wp.cross(rotational_cdof, offset)
     xfrc_applied = xfrc_applied_in[worldid, child]
-    accumul += wp.dot(jac, xfrc_applied) + wp.dot(
-      cross_term, wp.spatial_top(xfrc_applied)
-    )
+    accumul += wp.dot(jac, xfrc_applied) + wp.dot(cross_term, wp.spatial_top(xfrc_applied))
 
   out[worldid, dofid] += accumul
 
@@ -268,9 +264,7 @@ def any_different(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
 
 
 @wp.func
-def _decode_pyramid(
-  pyramid: wp.array(dtype=float), efc_address: int, mu: vec5, condim: int
-) -> wp.spatial_vector:
+def _decode_pyramid(pyramid: wp.array(dtype=float), efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
   """Converts pyramid representation to contact force."""
   force = wp.spatial_vector()
 
@@ -392,9 +386,7 @@ def contact_force(
 
 
 @wp.func
-def transform_force(
-  force: wp.vec3, torque: wp.vec3, offset: wp.vec3
-) -> wp.spatial_vector:
+def transform_force(force: wp.vec3, torque: wp.vec3, offset: wp.vec3) -> wp.spatial_vector:
   return wp.spatial_vector(torque - wp.cross(offset, force), force)
 
 

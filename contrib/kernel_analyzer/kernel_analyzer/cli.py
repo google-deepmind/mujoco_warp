@@ -23,9 +23,7 @@ from absl import logging
 
 _VERBOSE = flags.DEFINE_bool("verbose", False, "Enable debug logging.")
 _FILES = flags.DEFINE_multi_string("files", [], "Python files to check.")
-_OUTPUT = flags.DEFINE_enum(
-  "output", "console", ["console", "github"], "Analyzer output format."
-)
+_OUTPUT = flags.DEFINE_enum("output", "console", ["console", "github"], "Analyzer output format.")
 _TYPES_PATH = flags.DEFINE_string("types", "", "Path to mujoco_warp types.py.")
 
 
@@ -47,9 +45,7 @@ def main(argv):
       print(f"{filepath}:{iss.node.lineno}:{iss}", file=sys.stderr)
 
     def err_github(iss):
-      print(
-        f"::error title=Kernel Analyzer,file={filepath},line={iss.node.lineno}::{iss}"
-      )
+      print(f"::error title=Kernel Analyzer,file={filepath},line={iss.node.lineno}::{iss}")
 
     err = {"console": err_console, "github": err_github}[_OUTPUT.value]
 

@@ -74,9 +74,7 @@ async def initialize(client: LanguageServer, params: InitializeParams):
 async def validate(ls: KernelAnalyzerLanguageServer, params):
   """Validate the document using core_logic.ast_analyzer."""
   config = await ls.get_configuration_async(
-    WorkspaceConfigurationParams(
-      items=[ConfigurationItem(scope_uri="", section="kernelAnalyzer.typesPath")]
-    )
+    WorkspaceConfigurationParams(items=[ConfigurationItem(scope_uri="", section="kernelAnalyzer.typesPath")])
   )
   type_source = Path(config[0]).read_text()
 
@@ -96,9 +94,7 @@ async def validate(ls: KernelAnalyzerLanguageServer, params):
       diag = Diagnostic(
         range=Range(
           start=Position(line=issue.node.lineno - 1, character=issue.node.col_offset),
-          end=Position(
-            line=issue.node.end_lineno - 1, character=issue.node.end_col_offset
-          ),
+          end=Position(line=issue.node.end_lineno - 1, character=issue.node.end_col_offset),
         ),
         message=str(issue),
         severity=DiagnosticSeverity.Warning,  # Yellow underline
@@ -113,9 +109,7 @@ async def validate(ls: KernelAnalyzerLanguageServer, params):
     logging.error(f"Error during validation for {text_doc.uri}: {e}", exc_info=True)
     diagnostics.append(
       Diagnostic(
-        range=Range(
-          start=Position(line=0, character=0), end=Position(line=0, character=0)
-        ),
+        range=Range(start=Position(line=0, character=0), end=Position(line=0, character=0)),
         message=str(e),
       )
     )
@@ -145,9 +139,7 @@ async def code_action(ls: KernelAnalyzerLanguageServer, params: types.CodeAction
       line_text = document.lines[annotation_range.start.line]
       colon_index = line_text.find(":", annotation_range.start.character)
       if colon_index != -1:
-        start = types.Position(
-          line=annotation_range.start.line, character=colon_index + 1
-        )
+        start = types.Position(line=annotation_range.start.line, character=colon_index + 1)
         while start.character < len(line_text) and line_text[start.character].isspace():
           start.character += 1
         annotation_range = types.Range(start=start, end=annotation_range.end)

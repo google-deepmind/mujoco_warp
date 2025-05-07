@@ -54,6 +54,7 @@ def _write_scalar(
   else:
     out[adr] = sensor
 
+
 @wp.func
 def _write_vector(
   # Model:
