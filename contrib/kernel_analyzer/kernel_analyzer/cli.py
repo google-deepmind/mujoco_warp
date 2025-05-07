@@ -27,7 +27,6 @@ _TYPES_PATH = flags.DEFINE_string("types", "", "Path to mujoco_warp types.py.")
 
 
 def main(argv):
-
   log_level = logging.DEBUG if _VERBOSE.value else logging.WARNING
   logging.set_verbosity(log_level)
 
