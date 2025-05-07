@@ -64,7 +64,7 @@ def get_hfield_overlap_range(
   other_margin = m.geom_margin[other_geom]
   bound_radius = other_rbound + other_margin
 
-  # Calculate grid coordinates that bound the other geometry
+  # Calculate grid resolution
   x_scale = 2.0 * size[0] / wp.float32(ncol - 1)
   y_scale = 2.0 * size[1] / wp.float32(nrow - 1)
 
