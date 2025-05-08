@@ -192,7 +192,7 @@ def _box_box(
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_priority: wp.array2d(dtype=int),
-  geom_solmix: wp.array(dtype=float),
+  geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array(dtype=wp.vec2),
   geom_solimp: wp.array(dtype=vec5),
   geom_size: wp.array(dtype=wp.vec3),
@@ -246,7 +246,7 @@ def _box_box(
     geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
       geom_condim,
       geom_priority[worldid],
-      geom_solmix,
+      geom_solmix[worldid],
       geom_solref,
       geom_solimp,
       geom_friction,
