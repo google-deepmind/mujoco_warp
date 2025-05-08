@@ -904,7 +904,7 @@ def _qfrc_actuator_sparse(
   nu: int,
   ngravcomp: int,
   jnt_actfrclimited: wp.array(dtype=bool),
-  jnt_actfrcrange: wp.array(dtype=wp.vec2),
+  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
   jnt_actgravcomp: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
   # Data in:
@@ -928,7 +928,7 @@ def _qfrc_actuator_sparse(
     qfrc += qfrc_gravcomp_in[worldid, dofid]
 
   if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[jntid]
+    frcrange = jnt_actfrcrange[worldid, jntid]
     qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
 
   qfrc_actuator_out[worldid, dofid] = qfrc
@@ -939,7 +939,7 @@ def _qfrc_actuator_limited(
   # Model:
   ngravcomp: int,
   jnt_actfrclimited: wp.array(dtype=bool),
-  jnt_actfrcrange: wp.array(dtype=wp.vec2),
+  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
   jnt_actgravcomp: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
   # Data in:
@@ -957,7 +957,7 @@ def _qfrc_actuator_limited(
     qfrc_dof += qfrc_gravcomp_in[worldid, dofid]
 
   if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[jntid]
+    frcrange = jnt_actfrcrange[worldid, jntid]
     qfrc_dof = wp.clamp(qfrc_dof, frcrange[0], frcrange[1])
 
   qfrc_actuator_out[worldid, dofid] = qfrc_dof
