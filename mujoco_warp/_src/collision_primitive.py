@@ -1728,7 +1728,7 @@ def _primitive_narrowphase(
   geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   geom_friction: wp.array(dtype=wp.vec3),
   geom_margin: wp.array(dtype=float),
   geom_gap: wp.array(dtype=float),
@@ -1795,7 +1795,7 @@ def _primitive_narrowphase(
 
   geom1 = _geom(
     geom_dataid,
-    geom_size,
+    geom_size[worldid],
     mesh_vertadr,
     mesh_vertnum,
     geom_xpos_in,
@@ -1805,7 +1805,7 @@ def _primitive_narrowphase(
   )
   geom2 = _geom(
     geom_dataid,
-    geom_size,
+    geom_size[worldid],
     mesh_vertadr,
     mesh_vertnum,
     geom_xpos_in,

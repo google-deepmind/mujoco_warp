@@ -195,7 +195,7 @@ def _box_box(
   geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   geom_friction: wp.array(dtype=wp.vec3),
   geom_margin: wp.array(dtype=float),
   geom_gap: wp.array(dtype=float),
@@ -271,8 +271,8 @@ def _box_box(
     trans_atob = b_mat_inv @ (a_pos - b_pos)
     rot_atob = b_mat_inv @ a_mat
 
-    a_size = geom_size[ga]
-    b_size = geom_size[gb]
+    a_size = geom_size[worldid, ga]
+    b_size = geom_size[worldid, gb]
     a = box(rot_atob, trans_atob, a_size)
     b = box(wp.identity(3, wp.float32), wp.vec3(0.0), b_size)
 
