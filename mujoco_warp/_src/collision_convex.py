@@ -755,23 +755,24 @@ def _gjk_epa_pipeline(
     worldid = collision_worldid_in[tid]
     geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
       geom_condim,
-      geom_priority[worldid],
-      geom_solmix[worldid],
-      geom_solref[worldid],
-      geom_solimp[worldid],
-      geom_friction[worldid],
-      geom_margin[worldid],
-      geom_gap[worldid],
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_margin,
+      geom_gap,
       pair_dim,
-      pair_solref[worldid],
-      pair_solreffriction[worldid],
-      pair_solimp[worldid],
-      pair_margin[worldid],
-      pair_gap[worldid],
-      pair_friction[worldid],
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_margin,
+      pair_gap,
+      pair_friction,
       collision_pair_in,
       collision_pairid_in,
       tid,
+      worldid
     )
 
     g1 = geoms[0]
