@@ -462,7 +462,7 @@ def _cam_fn(
   cam_bodyid: wp.array(dtype=int),
   cam_targetbodyid: wp.array(dtype=int),
   cam_poscom0: wp.array2d(dtype=wp.vec3),
-  cam_pos0: wp.array(dtype=wp.vec3),
+  cam_pos0: wp.array2d(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -479,9 +479,9 @@ def _cam_fn(
     return
   elif cam_mode[camid] == wp.static(CamLightType.TRACK.value):
     body_xpos = xpos_in[worldid, cam_bodyid[camid]]
-    cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[camid]
+    cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[worldid,camid]
   elif cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
-    cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[camid]
+    cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[worldid, camid]
   elif cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or cam_mode[camid] == wp.static(
     CamLightType.TARGETBODYCOM.value
   ):
