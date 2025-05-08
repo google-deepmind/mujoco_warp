@@ -141,7 +141,7 @@ def _next_activation(
   opt_timestep: float,
   actuator_dyntype: wp.array(dtype=int),
   actuator_actlimited: wp.array(dtype=bool),
-  actuator_dynprm: wp.array(dtype=vec10f),
+  actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_actrange: wp.array(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
@@ -159,7 +159,7 @@ def _next_activation(
 
   # advance the actuation
   if actuator_dyntype[actid] == wp.static(DynType.FILTEREXACT.value):
-    dyn_prm = actuator_dynprm[actid]
+    dyn_prm = actuator_dynprm[worldid,actid]
     tau = wp.max(MJ_MINVAL, dyn_prm[0])
     act += act_dot_scale_in * act_dot * tau * (1.0 - wp.exp(-opt_timestep / tau))
   else:
@@ -818,7 +818,7 @@ def _actuator_force(
   actuator_actnum: wp.array(dtype=int),
   actuator_ctrllimited: wp.array(dtype=bool),
   actuator_forcelimited: wp.array(dtype=bool),
-  actuator_dynprm: wp.array(dtype=vec10f),
+  actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_gainprm: wp.array(dtype=vec10f),
   actuator_biasprm: wp.array(dtype=vec10f),
   actuator_ctrlrange: wp.array(dtype=wp.vec2),
@@ -848,7 +848,7 @@ def _actuator_force(
     if dyntype == int(DynType.INTEGRATOR.value):
       act_dot_out[worldid, actuator_actadr[uid]] = ctrl
     elif dyntype == int(DynType.FILTER.value) or dyntype == int(DynType.FILTEREXACT.value):
-      dynprm = actuator_dynprm[uid]
+      dynprm = actuator_dynprm[worldid, uid]
       actadr = actuator_actadr[uid]
       act = act_in[worldid, actadr]
       act_dot_out[worldid, actadr] = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
