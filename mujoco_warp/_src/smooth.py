@@ -293,7 +293,7 @@ def _cinert(
   # Model:
   body_rootid: wp.array(dtype=int),
   body_mass: wp.array2d(dtype=float),
-  body_inertia: wp.array(dtype=wp.vec3),
+  body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   ximat_in: wp.array2d(dtype=wp.mat33),
@@ -303,7 +303,7 @@ def _cinert(
 ):
   worldid, bodyid = wp.tid()
   mat = ximat_in[worldid, bodyid]
-  inert = body_inertia[bodyid]
+  inert = body_inertia[worldid,bodyid]
   mass = body_mass[worldid, bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
   # express inertia in com-based frame (mju_inertCom)
@@ -1713,7 +1713,7 @@ def _subtree_vel_forward(
   # Model:
   body_rootid: wp.array(dtype=int),
   body_mass: wp.array2d(dtype=float),
-  body_inertia: wp.array(dtype=wp.vec3),
+  body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   ximat_in: wp.array2d(dtype=wp.mat33),
@@ -1738,9 +1738,9 @@ def _subtree_vel_forward(
 
   subtree_linvel_out[worldid, bodyid] = body_mass[worldid, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
-  dv[0] *= body_inertia[bodyid][0]
-  dv[1] *= body_inertia[bodyid][1]
-  dv[2] *= body_inertia[bodyid][2]
+  dv[0] *= body_inertia[worldid, bodyid][0]
+  dv[1] *= body_inertia[worldid, bodyid][1]
+  dv[2] *= body_inertia[worldid, bodyid][2]
   subtree_angmom_out[worldid, bodyid] = ximat @ dv
   subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
