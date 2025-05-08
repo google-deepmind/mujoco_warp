@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 import sys
+import traceback
 from pathlib import Path
 
 import ast_analyzer
@@ -71,7 +71,8 @@ def main(argv):
       for issue in file_issues:
         err(issue)
     except Exception as e:
-      logging.error(f"Error processing file {filepath}: {e}")
+      full_traceback = traceback.format_exc()
+      logging.error(f"Error processing file {filepath}: {full_traceback}")
       sys.exit(1)
 
   if issues:
