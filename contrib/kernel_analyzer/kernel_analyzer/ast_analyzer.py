@@ -241,7 +241,6 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     param_types = {}
     param_outs = set()
     param_reftypes = set()
-    expected_types = {}
 
     # TODO(team): we might also want to check return types of wp.func
     for param in args.args:
@@ -283,8 +282,9 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
           expected_type = "float"
         elif "wp.bool" in param_type:
           expected_type = "bool"
-      expected_types[param_name] = expected_type
-      if expected_type and param_type != expected_type:
+        if expected_type:
+          issues.append(TypeMismatch(param, kernel, expected_type, None))
+      elif param_type != expected_type:
         issues.append(TypeMismatch(param, kernel, expected_type, param_source))
 
       # Model params must not have in/out suffix, Data params must, other params optional
@@ -314,8 +314,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         if prev != e[:2]:
           src = {0: "Model", 1: "Data", 2: None}[e[1]]
           expected_full.append(_get_arg_expected_comment(src, e[0]))
-        type_ = expected_types[e[-1]] or param_types[e[-1]]
-        expected_full.append(e[-1] + ": " + type_ + ",")
+        expected_full.append(e[-1] + ": " + param_types[e[-1]] + ",")
         prev = e[:2]
       issues.append(InvalidParamOrder(node, kernel, expected_names, expected_full, arg_range))
 

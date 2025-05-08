@@ -43,7 +43,7 @@ class KernelAnalyzerLanguageServer(LanguageServer):
     self.issues: Dict[str, List[Any]] = {}
 
 
-_server = KernelAnalyzerLanguageServer("kernel-analyzer", "v0.3")
+_server = KernelAnalyzerLanguageServer("kernel-analyzer", "v0.2")
 
 
 @_server.feature(types.INITIALIZE)
@@ -63,7 +63,7 @@ async def initialize(client: LanguageServer, params: InitializeParams):
     ),
     server_info=InitializeResultServerInfoType(
       name="kernel-analyzer",
-      version="v0.3",
+      version="v0.2",
     ),
   )
 
