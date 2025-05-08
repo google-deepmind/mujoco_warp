@@ -332,8 +332,8 @@ def _efc_equality_tendon(
   eq_solimp: wp.array2d(dtype=vec5),
   eq_data: wp.array(dtype=vec11),
   eq_ten_adr: wp.array(dtype=int),
-  tendon_length0: wp.array(dtype=float),
-  tendon_invweight0: wp.array(dtype=float),
+  tendon_length0: wp.array2d(dtype=float),
+  tendon_invweight0: wp.array2d(dtype=float),
   # Data in:
   ne_connect_in: wp.array(dtype=int),
   ne_weld_in: wp.array(dtype=int),
@@ -371,13 +371,13 @@ def _efc_equality_tendon(
   data = eq_data[eqid]
   solref = eq_solref[worldid, eqid]
   solimp = eq_solimp[worldid, eqid]
-  pos1 = ten_length_in[worldid, obj1id] - tendon_length0[obj1id]
-  pos2 = ten_length_in[worldid, obj2id] - tendon_length0[obj2id]
+  pos1 = ten_length_in[worldid, obj1id] - tendon_length0[worldid, obj1id]
+  pos2 = ten_length_in[worldid, obj2id] - tendon_length0[worldid, obj2id]
   jac1 = ten_J_in[worldid, obj1id]
   jac2 = ten_J_in[worldid, obj2id]
 
   if obj2id > -1:
-    invweight = tendon_invweight0[obj1id] + tendon_invweight0[obj2id]
+    invweight = tendon_invweight0[worldid, obj1id] + tendon_invweight0[worldid, obj2id]
 
     dif = pos2
     dif2 = dif * dif
@@ -387,7 +387,7 @@ def _efc_equality_tendon(
     pos = pos1 - (data[0] + data[1] * dif + data[2] * dif2 + data[3] * dif3 + data[4] * dif4)
     deriv = data[1] + 2.0 * data[2] * dif + 3.0 * data[3] * dif2 + 4.0 * data[4] * dif3
   else:
-    invweight = tendon_invweight0[obj1id]
+    invweight = tendon_invweight0[worldid, obj1id]
     pos = pos1 - data[0]
     deriv = 0.0
 
@@ -827,11 +827,11 @@ def _efc_limit_tendon(
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
   tendon_limited_adr: wp.array(dtype=int),
-  tendon_solref_lim: wp.array(dtype=wp.vec2),
-  tendon_solimp_lim: wp.array(dtype=vec5),
-  tendon_range: wp.array(dtype=wp.vec2),
-  tendon_margin: wp.array(dtype=float),
-  tendon_invweight0: wp.array(dtype=float),
+  tendon_solref_lim: wp.array2d(dtype=wp.vec2),
+  tendon_solimp_lim: wp.array2d(dtype=vec5),
+  tendon_range: wp.array2d(dtype=wp.vec2),
+  tendon_margin: wp.array2d(dtype=float),
+  tendon_invweight0: wp.array2d(dtype=float),
   wrap_objid: wp.array(dtype=int),
   wrap_type: wp.array(dtype=int),
   # Data in:
@@ -855,10 +855,10 @@ def _efc_limit_tendon(
   worldid, tenlimitedid = wp.tid()
   tenid = tendon_limited_adr[tenlimitedid]
 
-  tenrange = tendon_range[tenid]
+  tenrange = tendon_range[worldid, tenid]
   length = ten_length_in[worldid, tenid]
   dist_min, dist_max = length - tenrange[0], tenrange[1] - length
-  tenmargin = tendon_margin[tenid]
+  tenmargin = tendon_margin[worldid,tenid]
   pos = wp.min(dist_min, dist_max) - tenmargin
   active = pos < 0
 
@@ -890,9 +890,9 @@ def _efc_limit_tendon(
       efcid,
       pos,
       pos,
-      tendon_invweight0[tenid],
-      tendon_solref_lim[tenid],
-      tendon_solimp_lim[tenid],
+      tendon_invweight0[worldid,tenid],
+      tendon_solref_lim[worldid, tenid],
+      tendon_solimp_lim[worldid, tenid],
       tenmargin,
       Jqvel,
       0.0,
