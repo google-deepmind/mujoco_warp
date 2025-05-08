@@ -27,7 +27,7 @@ from .warp_util import event_scope
 @wp.kernel
 def _spring_passive(
   # Model:
-  qpos_spring: wp.array(dtype=float),
+  qpos_spring: wp.array2d(dtype=float),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
@@ -49,9 +49,9 @@ def _spring_passive(
 
   if jnttype == wp.static(JointType.FREE.value):
     dif = wp.vec3(
-      qpos_in[worldid, qposid + 0] - qpos_spring[qposid + 0],
-      qpos_in[worldid, qposid + 1] - qpos_spring[qposid + 1],
-      qpos_in[worldid, qposid + 2] - qpos_spring[qposid + 2],
+      qpos_in[worldid, qposid + 0] - qpos_spring[worldid, qposid + 0],
+      qpos_in[worldid, qposid + 1] - qpos_spring[worldid, qposid + 1],
+      qpos_in[worldid, qposid + 2] - qpos_spring[worldid, qposid + 2],
     )
     qfrc_spring_out[worldid, dofid + 0] = -stiffness * dif[0]
     qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
@@ -63,10 +63,10 @@ def _spring_passive(
       qpos_in[worldid, qposid + 6],
     )
     ref = wp.quat(
-      qpos_spring[qposid + 3],
-      qpos_spring[qposid + 4],
-      qpos_spring[qposid + 5],
-      qpos_spring[qposid + 6],
+      qpos_spring[worldid, qposid + 3],
+      qpos_spring[worldid, qposid + 4],
+      qpos_spring[worldid, qposid + 5],
+      qpos_spring[worldid, qposid + 6],
     )
     dif = math.quat_sub(rot, ref)
     qfrc_spring_out[worldid, dofid + 3] = -stiffness * dif[0]
@@ -80,17 +80,17 @@ def _spring_passive(
       qpos_in[worldid, qposid + 3],
     )
     ref = wp.quat(
-      qpos_spring[qposid + 0],
-      qpos_spring[qposid + 1],
-      qpos_spring[qposid + 2],
-      qpos_spring[qposid + 3],
+      qpos_spring[worldid, qposid + 0],
+      qpos_spring[worldid, qposid + 1],
+      qpos_spring[worldid, qposid + 2],
+      qpos_spring[worldid, qposid + 3],
     )
     dif = math.quat_sub(rot, ref)
     qfrc_spring_out[worldid, dofid + 0] = -stiffness * dif[0]
     qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
     qfrc_spring_out[worldid, dofid + 2] = -stiffness * dif[2]
   else:  # mjJNT_SLIDE, mjJNT_HINGE
-    fdif = qpos_in[worldid, qposid] - qpos_spring[qposid]
+    fdif = qpos_in[worldid, qposid] - qpos_spring[worldid,qposid]
     qfrc_spring_out[worldid, dofid] = -stiffness * fdif
 
 
