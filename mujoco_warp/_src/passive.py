@@ -97,7 +97,7 @@ def _spring_passive(
 @wp.kernel
 def _damper_passive(
   # Model:
-  dof_damping: wp.array(dtype=float),
+  dof_damping: wp.array2d(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   qfrc_spring_in: wp.array2d(dtype=float),
@@ -107,7 +107,7 @@ def _damper_passive(
 ):
   worldid, dofid = wp.tid()
 
-  qfrc_damper = -dof_damping[dofid] * qvel_in[worldid, dofid]
+  qfrc_damper = -dof_damping[worldid, dofid] * qvel_in[worldid, dofid]
 
   qfrc_damper_out[worldid, dofid] = qfrc_damper
   qfrc_passive_out[worldid, dofid] = qfrc_damper + qfrc_spring_in[worldid, dofid]

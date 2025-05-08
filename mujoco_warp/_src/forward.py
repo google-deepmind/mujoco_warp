@@ -267,7 +267,7 @@ def _euler_damp_qfrc_sparse(
   # Model:
   opt_timestep: float,
   dof_Madr: wp.array(dtype=int),
-  dof_damping: wp.array(dtype=float),
+  dof_damping: wp.array2d(dtype=float),
   # Data in:
   qfrc_smooth_in: wp.array2d(dtype=float),
   qfrc_constraint_in: wp.array2d(dtype=float),
@@ -278,7 +278,7 @@ def _euler_damp_qfrc_sparse(
   worldid, tid = wp.tid()
 
   adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += opt_timestep * dof_damping[tid]
+  qM_integration_out[worldid, 0, adr] += opt_timestep * dof_damping[worldid,tid]
   qfrc_integration_out[worldid, tid] = qfrc_smooth_in[worldid, tid] + qfrc_constraint_in[worldid, tid]
 
 
@@ -314,7 +314,7 @@ def _tile_euler_dense(tile: TileSet):
   @nested_kernel
   def euler_dense(
     # Model:
-    dof_damping: wp.array(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
     opt_timestep: float,
     # Data in:
     qM_in: wp.array3d(dtype=float),
@@ -330,7 +330,7 @@ def _tile_euler_dense(tile: TileSet):
 
     dofid = adr_in[nodeid]
     M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    damping_tile = wp.tile_load(dof_damping, shape=(TILE_SIZE,), offset=(dofid,))
+    damping_tile = wp.tile_load(dof_damping[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     damping_scaled = damping_tile * opt_timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
@@ -523,7 +523,7 @@ def _tile_implicit_actuator_qderiv(
   @nested_kernel
   def implicit_actuator_qderiv(
     # Model:
-    dof_damping: wp.array(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
     # Data in:
     actuator_moment_in: wp.array3d(dtype=float),
     qM_in: wp.array3d(dtype=float),
@@ -562,7 +562,7 @@ def _tile_implicit_actuator_qderiv(
       qderiv_tile = wp.tile_zeros(shape=(TILE_NV_SIZE, TILE_NV_SIZE), dtype=wp.float32)
 
     if wp.static(passive_enabled):
-      dof_damping_tile = wp.tile_load(dof_damping, shape=TILE_NV_SIZE, offset=offset_nv)
+      dof_damping_tile = wp.tile_load(dof_damping[worldid], shape=TILE_NV_SIZE, offset=offset_nv)
       negative = wp.neg(dof_damping_tile)
       qderiv_tile = wp.tile_diag_add(qderiv_tile, negative)
 
