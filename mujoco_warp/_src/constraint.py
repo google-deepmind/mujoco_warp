@@ -427,7 +427,7 @@ def _efc_friction(
   # Model:
   opt_timestep: float,
   dof_invweight0: wp.array2d(dtype=float),
-  dof_frictionloss: wp.array(dtype=float),
+  dof_frictionloss: wp.array2d(dtype=float),
   dof_solimp: wp.array(dtype=vec5),
   dof_solref: wp.array(dtype=wp.vec2),
   # Data in:
@@ -449,7 +449,7 @@ def _efc_friction(
   # TODO(team): tendon
   worldid, dofid = wp.tid()
 
-  if dof_frictionloss[dofid] <= 0.0:
+  if dof_frictionloss[worldid, dofid] <= 0.0:
     return
 
   efcid = wp.atomic_add(nefc_out, 0, 1)
@@ -470,7 +470,7 @@ def _efc_friction(
     dof_solimp[dofid],
     0.0,
     Jqvel,
-    dof_frictionloss[dofid],
+    dof_frictionloss[worldid, dofid],
     dofid,
     efc_id_out,
     efc_pos_out,
