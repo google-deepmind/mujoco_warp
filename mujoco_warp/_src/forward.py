@@ -822,7 +822,7 @@ def _actuator_force(
   actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array2d(dtype=vec10f),
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
-  actuator_forcerange: wp.array(dtype=wp.vec2),
+  actuator_forcerange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
@@ -892,7 +892,7 @@ def _actuator_force(
   # TODO(team): tendon total force clamping
 
   if actuator_forcelimited[uid]:
-    forcerange = actuator_forcerange[uid]
+    forcerange = actuator_forcerange[worldid, uid]
     force = wp.clamp(force, forcerange[0], forcerange[1])
 
   actuator_force_out[worldid, uid] = force
