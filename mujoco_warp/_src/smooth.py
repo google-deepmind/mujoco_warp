@@ -437,7 +437,7 @@ def com_pos(m: Model, d: Data):
 def _cam_local_to_global(
   # Model:
   cam_bodyid: wp.array(dtype=int),
-  cam_pos: wp.array(dtype=wp.vec3),
+  cam_pos: wp.array2d(dtype=wp.vec3),
   cam_quat: wp.array(dtype=wp.quat),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
@@ -451,7 +451,7 @@ def _cam_local_to_global(
   bodyid = cam_bodyid[camid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
-  cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[camid], xquat)
+  cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid,camid], xquat)
   cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[camid]))
 
 
