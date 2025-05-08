@@ -175,7 +175,7 @@ def _geom_local_to_global(
 def _site_local_to_global(
   # Model:
   site_bodyid: wp.array(dtype=int),
-  site_pos: wp.array(dtype=wp.vec3),
+  site_pos: wp.array2d(dtype=wp.vec3),
   site_quat: wp.array(dtype=wp.quat),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
@@ -188,7 +188,7 @@ def _site_local_to_global(
   bodyid = site_bodyid[siteid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
-  site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[siteid], xquat)
+  site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[worldid, siteid], xquat)
   site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[siteid]))
 
 
@@ -1105,7 +1105,7 @@ def _cfrc_ext_equality(
   # Model:
   body_rootid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
-  site_pos: wp.array(dtype=wp.vec3),
+  site_pos: wp.array2d(dtype=wp.vec3),
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
   eq_objtype: wp.array(dtype=int),
@@ -1168,7 +1168,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
     else:
-      offset = site_pos[obj1]
+      offset = site_pos[worldid, obj1]
 
     # transform point on body1: local -> global
     pos = xmat_in[worldid, bodyid1] @ offset + xpos_in[worldid, bodyid1]
@@ -1190,7 +1190,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
     else:
-      offset = site_pos[obj2]
+      offset = site_pos[worldid,obj2]
 
     # transform point on body2: local -> global
     pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
