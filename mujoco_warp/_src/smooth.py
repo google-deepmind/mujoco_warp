@@ -438,7 +438,7 @@ def _cam_local_to_global(
   # Model:
   cam_bodyid: wp.array(dtype=int),
   cam_pos: wp.array2d(dtype=wp.vec3),
-  cam_quat: wp.array(dtype=wp.quat),
+  cam_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -452,7 +452,7 @@ def _cam_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid,camid], xquat)
-  cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[camid]))
+  cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
 
 
 @wp.kernel
@@ -461,7 +461,7 @@ def _cam_fn(
   cam_mode: wp.array(dtype=int),
   cam_bodyid: wp.array(dtype=int),
   cam_targetbodyid: wp.array(dtype=int),
-  cam_poscom0: wp.array(dtype=wp.vec3),
+  cam_poscom0: wp.array2d(dtype=wp.vec3),
   cam_pos0: wp.array(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
