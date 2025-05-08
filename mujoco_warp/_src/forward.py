@@ -142,7 +142,7 @@ def _next_activation(
   actuator_dyntype: wp.array(dtype=int),
   actuator_actlimited: wp.array(dtype=bool),
   actuator_dynprm: wp.array2d(dtype=vec10f),
-  actuator_actrange: wp.array(dtype=wp.vec2),
+  actuator_actrange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   act_dot_in: wp.array2d(dtype=float),
@@ -167,7 +167,7 @@ def _next_activation(
 
   # clamp to actrange
   if limit and actuator_actlimited[actid]:
-    actrange = actuator_actrange[actid]
+    actrange = actuator_actrange[worldid,actid]
     act = wp.clamp(act, actrange[0], actrange[1])
 
   act_out[worldid, actid] = act

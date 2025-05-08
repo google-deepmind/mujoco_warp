@@ -1445,7 +1445,7 @@ def _transmission(
   jnt_dofadr: wp.array(dtype=int),
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
-  actuator_gear: wp.array(dtype=wp.spatial_vector),
+  actuator_gear: wp.array2d(dtype=wp.spatial_vector),
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
@@ -1460,7 +1460,7 @@ def _transmission(
 ):
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
-  gear = actuator_gear[actid]
+  gear = actuator_gear[worldid, actid]
   if trntype == wp.static(TrnType.JOINT.value) or trntype == wp.static(TrnType.JOINTINPARENT.value):
     qpos = qpos_in[worldid]
     jntid = actuator_trnid[actid][0]
