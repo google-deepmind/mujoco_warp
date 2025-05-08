@@ -1740,7 +1740,7 @@ def _primitive_narrowphase(
   pair_solimp: wp.array2d(dtype=vec5),
   pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array2d(dtype=float),
-  pair_friction: wp.array(dtype=vec5),
+  pair_friction: wp.array2d(dtype=vec5),
   # Data in:
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1783,7 +1783,7 @@ def _primitive_narrowphase(
     pair_solimp[worldid],
     pair_margin[worldid],
     pair_gap[worldid],
-    pair_friction,
+    pair_friction[worldid],
     collision_pair_in,
     collision_pairid_in,
     tid,
