@@ -99,7 +99,7 @@ def _efc_equality_connect(
   opt_timestep: float,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=float),
+  body_invweight0: wp.array3d(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   eq_obj1id: wp.array(dtype=int),
@@ -195,7 +195,7 @@ def _efc_equality_connect(
     efc_J_out[efcid + 2, dofid] = j1mj2[2]
     Jqvel += j1mj2 * qvel_in[worldid, dofid]
 
-  invweight = body_invweight0[body1id, 0] + body_invweight0[body2id, 0]
+  invweight = body_invweight0[worldid, body1id, 0] + body_invweight0[worldid, body2id, 0]
   pos_imp = wp.length(pos)
 
   solref = eq_solref[i_eq]
@@ -489,7 +489,7 @@ def _efc_equality_weld(
   opt_timestep: float,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=float),
+  body_invweight0: wp.array3d(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array(dtype=wp.quat),
@@ -612,7 +612,7 @@ def _efc_equality_weld(
   crotq = math.mul_quat(quat1, quat)  # copy axis components
   crot = wp.vec3(crotq[1], crotq[2], crotq[3]) * torquescale
 
-  invweight_t = body_invweight0[body1id, 0] + body_invweight0[body2id, 0]
+  invweight_t = body_invweight0[worldid, body1id, 0] + body_invweight0[worldid, body2id, 0]
 
   pos_imp = wp.sqrt(wp.length_sq(cpos) + wp.length_sq(crot))
 
@@ -641,7 +641,7 @@ def _efc_equality_weld(
       efc_frictionloss_out,
     )
 
-  invweight_r = body_invweight0[body1id, 1] + body_invweight0[body2id, 1]
+  invweight_r = body_invweight0[worldid, body1id, 1] + body_invweight0[worldid, body2id, 1]
 
   for i in range(3):
     _update_efc_row(
@@ -914,7 +914,7 @@ def _efc_contact_pyramidal(
   opt_impratio: float,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=float),
+  body_invweight0: wp.array3d(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   # Data in:
@@ -974,7 +974,7 @@ def _efc_contact_pyramidal(
     frame = frame_in[conid]
 
     # pyramidal has common invweight across all edges
-    invweight = body_invweight0[body1, 0] + body_invweight0[body2, 0]
+    invweight = body_invweight0[worldid, body1, 0] + body_invweight0[worldid, body2, 0]
 
     if condim > 1:
       dimid2 = dimid / 2 + 1
@@ -1060,7 +1060,7 @@ def _efc_contact_elliptic(
   opt_impratio: float,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=float),
+  body_invweight0: wp.array3d(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   # Data in:
@@ -1158,7 +1158,7 @@ def _efc_contact_elliptic(
       efc_J_out[efcid, i] = J
       Jqvel += J * qvel_in[worldid, i]
 
-    invweight = body_invweight0[body1, 0] + body_invweight0[body2, 0]
+    invweight = body_invweight0[worldid, body1, 0] + body_invweight0[worldid, body2, 0]
 
     ref = solref_in[conid]
     pos_aref = pos
