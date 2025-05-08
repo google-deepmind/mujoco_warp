@@ -482,7 +482,7 @@ def _implicit_actuator_bias_gain_vel(
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
   actuator_gainprm: wp.array2d(dtype=vec10f),
-  actuator_biasprm: wp.array(dtype=vec10f),
+  actuator_biasprm: wp.array2d(dtype=vec10f),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
@@ -492,7 +492,7 @@ def _implicit_actuator_bias_gain_vel(
   worldid, actid = wp.tid()
 
   if actuator_biastype[actid] == wp.static(BiasType.AFFINE.value):
-    bias_vel = actuator_biasprm[actid][2]
+    bias_vel = actuator_biasprm[worldid, actid][2]
   else:
     bias_vel = 0.0
 
@@ -820,7 +820,7 @@ def _actuator_force(
   actuator_forcelimited: wp.array(dtype=bool),
   actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_gainprm: wp.array2d(dtype=vec10f),
-  actuator_biasprm: wp.array(dtype=vec10f),
+  actuator_biasprm: wp.array2d(dtype=vec10f),
   actuator_ctrlrange: wp.array(dtype=wp.vec2),
   actuator_forcerange: wp.array(dtype=wp.vec2),
   # Data in:
@@ -879,7 +879,7 @@ def _actuator_force(
 
   # bias
   biastype = actuator_biastype[uid]
-  biasprm = actuator_biasprm[uid]
+  biasprm = actuator_biasprm[worldid, uid]
 
   bias = 0.0  # BiasType.NONE
   if biastype == int(BiasType.AFFINE.value):
