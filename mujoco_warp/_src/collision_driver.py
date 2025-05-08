@@ -32,8 +32,8 @@ wp.set_module_options({"enable_backward": False})
 @wp.func
 def _sphere_filter(
   # Model:
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -42,12 +42,12 @@ def _sphere_filter(
   geom2: int,
   worldid: int,
 ) -> bool:
-  margin1 = geom_margin[geom1]
-  margin2 = geom_margin[geom2]
+  margin1 = geom_margin[worldid, geom1]
+  margin2 = geom_margin[worldid, geom2]
   pos1 = geom_xpos_in[worldid, geom1]
   pos2 = geom_xpos_in[worldid, geom2]
-  size1 = geom_rbound[geom1]
-  size2 = geom_rbound[geom2]
+  size1 = geom_rbound[worldid, geom1]
+  size2 = geom_rbound[worldid, geom2]
 
   bound = size1 + size2 + wp.max(margin1, margin2)
   dif = pos2 - pos1
@@ -125,7 +125,7 @@ def _upper_tri_index(n: int, i: int, j: int) -> int:
 def _sap_project(
   # Model:
   geom_rbound: wp.array2d(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
@@ -144,7 +144,7 @@ def _sap_project(
     # geom is a plane
     rbound = MJ_MAXVAL
 
-  radius = rbound + geom_margin[geomid]
+  radius = rbound + geom_margin[worldid,geomid]
   center = wp.dot(direction_in, xpos)
 
   sap_projection_lower_out[worldid, geomid] = center - radius
@@ -183,7 +183,7 @@ def _sap_broadphase(
   ngeom: int,
   geom_type: wp.array(dtype=int),
   geom_rbound: wp.array2d(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   nxn_pairid: wp.array(dtype=int),
   # Data in:
   nworld_in: int,
@@ -233,7 +233,7 @@ def _sap_broadphase(
       continue
 
     if _sphere_filter(
-      geom_rbound[worldid],
+      geom_rbound,
       geom_margin,
       geom_xpos_in,
       geom_xmat_in,
@@ -344,7 +344,7 @@ def _nxn_broadphase(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_rbound: wp.array2d(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   nxn_geom_pair: wp.array(dtype=wp.vec2i),
   nxn_pairid: wp.array(dtype=int),
   # Data in:
@@ -368,7 +368,7 @@ def _nxn_broadphase(
   geom2 = geom[1]
 
   if _sphere_filter(
-    geom_rbound[worldid],
+    geom_rbound,
     geom_margin,
     geom_xpos_in,
     geom_xmat_in,

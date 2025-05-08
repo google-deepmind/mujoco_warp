@@ -1775,7 +1775,7 @@ def _primitive_narrowphase(
     geom_solref[worldid],
     geom_solimp[worldid],
     geom_friction[worldid],
-    geom_margin,
+    geom_margin[worldid],
     geom_gap,
     pair_dim,
     pair_solref,

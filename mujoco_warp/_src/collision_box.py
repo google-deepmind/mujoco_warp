@@ -197,7 +197,7 @@ def _box_box(
   geom_solimp: wp.array2d(dtype=vec5),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_friction: wp.array2d(dtype=wp.vec3),
-  geom_margin: wp.array(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array(dtype=float),
   pair_dim: wp.array(dtype=int),
   pair_solref: wp.array(dtype=wp.vec2),
@@ -250,7 +250,7 @@ def _box_box(
       geom_solref[worldid],
       geom_solimp[worldid],
       geom_friction[worldid],
-      geom_margin,
+      geom_margin[worldid],
       geom_gap,
       pair_dim,
       pair_solref,
@@ -363,7 +363,7 @@ def _box_box(
       for i in range(4):
         pos[i] = pos[idx]
 
-    margin = wp.max(geom_margin[ga], geom_margin[gb])
+    margin = wp.max(geom_margin[worldid, ga], geom_margin[worldid, gb])
     for i in range(4):
       pos_glob = b_mat @ pos[i] + b_pos
       n_glob = b_mat @ sep_axis

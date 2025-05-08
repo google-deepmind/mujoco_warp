@@ -714,7 +714,7 @@ def _gjk_epa_pipeline(
     geom_solimp: wp.array2d(dtype=vec5),
     geom_size: wp.array2d(dtype=wp.vec3),
     geom_friction: wp.array2d(dtype=wp.vec3),
-    geom_margin: wp.array(dtype=float),
+    geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array(dtype=float),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
@@ -760,7 +760,7 @@ def _gjk_epa_pipeline(
       geom_solref[worldid],
       geom_solimp[worldid],
       geom_friction[worldid],
-      geom_margin,
+      geom_margin[worldid],
       geom_gap,
       pair_dim,
       pair_solref,
@@ -802,7 +802,7 @@ def _gjk_epa_pipeline(
       g2,
     )
 
-    margin = wp.max(geom_margin[g1], geom_margin[g2])
+    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
 
     simplex, normal = _gjk(mesh_vert, geom1, geom2)
 
