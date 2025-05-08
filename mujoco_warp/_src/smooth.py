@@ -154,7 +154,7 @@ def _kinematics_level(
 def _geom_local_to_global(
   # Model:
   geom_bodyid: wp.array(dtype=int),
-  geom_pos: wp.array(dtype=wp.vec3),
+  geom_pos: wp.array2d(dtype=wp.vec3),
   geom_quat: wp.array(dtype=wp.quat),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
@@ -167,7 +167,7 @@ def _geom_local_to_global(
   bodyid = geom_bodyid[geomid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
-  geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[geomid], xquat)
+  geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid,geomid], xquat)
   geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[geomid]))
 
 
