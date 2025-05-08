@@ -70,7 +70,7 @@ def _kinematics_level(
   body_iquat: wp.array2d(dtype=wp.quat),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
-  jnt_pos: wp.array(dtype=wp.vec3),
+  jnt_pos: wp.array2d(dtype=wp.vec3),
   jnt_axis: wp.array(dtype=wp.vec3),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
@@ -117,7 +117,7 @@ def _kinematics_level(
       qadr = jnt_qposadr[jntadr]
       jnt_type_ = jnt_type[jntadr]
       jnt_axis_ = jnt_axis[jntadr]
-      xanchor = math.rot_vec_quat(jnt_pos[jntadr], xquat) + xpos
+      xanchor = math.rot_vec_quat(jnt_pos[worldid, jntadr], xquat) + xpos
       xaxis = math.rot_vec_quat(jnt_axis_, xquat)
 
       if jnt_type_ == wp.static(JointType.BALL.value):
@@ -129,7 +129,7 @@ def _kinematics_level(
         )
         xquat = math.mul_quat(xquat, qloc)
         # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jntadr], xquat)
+        xpos = xanchor - math.rot_vec_quat(jnt_pos[worldid, jntadr], xquat)
       elif jnt_type_ == wp.static(JointType.SLIDE.value):
         xpos += xaxis * (qpos[qadr] - qpos0[worldid, qadr])
       elif jnt_type_ == wp.static(JointType.HINGE.value):
@@ -137,7 +137,7 @@ def _kinematics_level(
         qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
         xquat = math.mul_quat(xquat, qloc_)
         # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jntadr], xquat)
+        xpos = xanchor - math.rot_vec_quat(jnt_pos[worldid, jntadr], xquat)
 
       xanchor_out[worldid, jntadr] = xanchor
       xaxis_out[worldid, jntadr] = xaxis
