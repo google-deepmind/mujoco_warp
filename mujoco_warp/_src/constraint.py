@@ -492,7 +492,7 @@ def _efc_equality_weld(
   body_invweight0: wp.array3d(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
-  site_quat: wp.array(dtype=wp.quat),
+  site_quat: wp.array2d(dtype=wp.quat),
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
   eq_objtype: wp.array(dtype=int),
@@ -552,8 +552,8 @@ def _efc_equality_weld(
     pos1 = site_xpos_in[worldid, obj1id]
     pos2 = site_xpos_in[worldid, obj2id]
 
-    quat = math.mul_quat(xquat_in[worldid, body1id], site_quat[obj1id])
-    quat1 = math.quat_inv(math.mul_quat(xquat_in[worldid, body2id], site_quat[obj2id]))
+    quat = math.mul_quat(xquat_in[worldid, body1id], site_quat[worldid, obj1id])
+    quat1 = math.quat_inv(math.mul_quat(xquat_in[worldid, body2id], site_quat[worldid, obj2id]))
 
   else:
     body1id = obj1id

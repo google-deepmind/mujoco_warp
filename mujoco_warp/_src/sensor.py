@@ -283,7 +283,7 @@ def _frame_quat(
   geom_bodyid: wp.array(dtype=int),
   geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
-  site_quat: wp.array(dtype=wp.quat),
+  site_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   xquat_in: wp.array2d(dtype=wp.quat),
   # In:
@@ -308,10 +308,10 @@ def _frame_quat(
       return quat
     refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid,refid])
   elif objtype == int(ObjType.SITE.value):
-    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[worldid, refid])
 
   # TODO(team): camera
 
@@ -337,7 +337,7 @@ def _sensor_pos(
   body_iquat: wp.array2d(dtype=wp.quat),
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array(dtype=wp.quat),
   cam_fovy: wp.array(dtype=float),
