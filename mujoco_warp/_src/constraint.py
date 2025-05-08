@@ -234,7 +234,7 @@ def _efc_equality_joint(
   qpos0: wp.array2d(dtype=float),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
-  dof_invweight0: wp.array(dtype=float),
+  dof_invweight0: wp.array2d(dtype=float),
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
   eq_solref: wp.array(dtype=wp.vec2),
@@ -289,14 +289,14 @@ def _efc_equality_joint(
 
     pos = qpos_in[worldid, qposadr1] - qpos0[worldid,qposadr1] - rhs
     Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
-    invweight = dof_invweight0[dofadr1] + dof_invweight0[dofadr2]
+    invweight = dof_invweight0[worldid, dofadr1] + dof_invweight0[worldid, dofadr2]
 
     efc_J_out[efcid, dofadr2] = -deriv_2
   else:
     # Single joint constraint
     pos = qpos_in[worldid, qposadr1] - qpos0[worldid, qposadr1] - data[0]
     Jqvel = qvel_in[worldid, dofadr1]
-    invweight = dof_invweight0[dofadr1]
+    invweight = dof_invweight0[worldid, dofadr1]
 
   # Update constraint parameters
   _update_efc_row(
@@ -426,7 +426,7 @@ def _efc_equality_tendon(
 def _efc_friction(
   # Model:
   opt_timestep: float,
-  dof_invweight0: wp.array(dtype=float),
+  dof_invweight0: wp.array2d(dtype=float),
   dof_frictionloss: wp.array(dtype=float),
   dof_solimp: wp.array(dtype=vec5),
   dof_solref: wp.array(dtype=wp.vec2),
@@ -465,7 +465,7 @@ def _efc_friction(
     efcid,
     0.0,
     0.0,
-    dof_invweight0[dofid],
+    dof_invweight0[worldid, dofid],
     dof_solref[dofid],
     dof_solimp[dofid],
     0.0,
@@ -677,7 +677,7 @@ def _efc_limit_slide_hinge(
   jnt_range: wp.array3d(dtype=float),
   jnt_margin: wp.array2d(dtype=float),
   jnt_limited_slide_hinge_adr: wp.array(dtype=int),
-  dof_invweight0: wp.array(dtype=float),
+  dof_invweight0: wp.array2d(dtype=float),
   # Data in:
   nefc_in: wp.array(dtype=int),
   qpos_in: wp.array2d(dtype=float),
@@ -722,7 +722,7 @@ def _efc_limit_slide_hinge(
       efcid,
       pos,
       pos,
-      dof_invweight0[dofadr],
+      dof_invweight0[worldid, dofadr],
       jnt_solref[worldid, jntid],
       jnt_solimp[worldid,jntid],
       jntmargin,
@@ -749,7 +749,7 @@ def _efc_limit_ball(
   jnt_range: wp.array3d(dtype=float),
   jnt_margin: wp.array2d(dtype=float),
   jnt_limited_ball_adr: wp.array(dtype=int),
-  dof_invweight0: wp.array(dtype=float),
+  dof_invweight0: wp.array2d(dtype=float),
   # Data in:
   nefc_in: wp.array(dtype=int),
   qpos_in: wp.array2d(dtype=float),
@@ -802,7 +802,7 @@ def _efc_limit_ball(
       efcid,
       pos,
       pos,
-      dof_invweight0[dofadr],
+      dof_invweight0[worldid, dofadr],
       jnt_solref[worldid, jntid],
       jnt_solimp[worldid, jntid],
       jntmargin,
