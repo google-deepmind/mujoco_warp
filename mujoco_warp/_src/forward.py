@@ -481,7 +481,7 @@ def _implicit_actuator_bias_gain_vel(
   actuator_dyntype: wp.array(dtype=int),
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
-  actuator_gainprm: wp.array(dtype=vec10f),
+  actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array(dtype=vec10f),
   # Data in:
   act_in: wp.array2d(dtype=float),
@@ -497,7 +497,7 @@ def _implicit_actuator_bias_gain_vel(
     bias_vel = 0.0
 
   if actuator_gaintype[actid] == wp.static(GainType.AFFINE.value):
-    gain_vel = actuator_gainprm[actid][2]
+    gain_vel = actuator_gainprm[worldid,actid][2]
   else:
     gain_vel = 0.0
 
@@ -819,7 +819,7 @@ def _actuator_force(
   actuator_ctrllimited: wp.array(dtype=bool),
   actuator_forcelimited: wp.array(dtype=bool),
   actuator_dynprm: wp.array2d(dtype=vec10f),
-  actuator_gainprm: wp.array(dtype=vec10f),
+  actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array(dtype=vec10f),
   actuator_ctrlrange: wp.array(dtype=wp.vec2),
   actuator_forcerange: wp.array(dtype=wp.vec2),
@@ -867,7 +867,7 @@ def _actuator_force(
 
   # gain
   gaintype = actuator_gaintype[uid]
-  gainprm = actuator_gainprm[uid]
+  gainprm = actuator_gainprm[worldid, uid]
 
   gain = 0.0
   if gaintype == int(GainType.FIXED.value):
