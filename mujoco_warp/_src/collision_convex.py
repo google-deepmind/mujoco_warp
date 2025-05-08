@@ -508,14 +508,18 @@ def _gjk_epa_pipeline(
       _, p = _gjk_support_geom(geom1, geomtype1, n, mesh_vert)
       v1[v1count] = wp.vec3(wp.dot(p, dir), wp.dot(p, dir2), wp.dot(p, normal))
 
-      if i != 0 or any_different(v1[v1count], v1[v1count - 1]):
+      if i == 0:
+        v1count += 1
+      elif any_different(v1[v1count], v1[v1count - 1]):
         v1count += 1
 
       n = -n
       _, p = _gjk_support_geom(geom2, geomtype2, n, mesh_vert)
       v2[v2count] = wp.vec3(wp.dot(p, dir), wp.dot(p, dir2), wp.dot(p, normal))
 
-      if i != 0 or any_different(v2[v2count], v2[v2count - 1]):
+      if i == 0:
+        v2count += 1
+      elif any_different(v2[v2count], v2[v2count - 1]):
         v2count += 1
 
     # remove duplicate vertices on the array boundary
