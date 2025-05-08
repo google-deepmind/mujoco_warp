@@ -338,7 +338,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     jnt_dofadr=wp.array(mjm.jnt_dofadr, dtype=int),
     jnt_bodyid=wp.array(mjm.jnt_bodyid, dtype=int),
     jnt_limited=wp.array(mjm.jnt_limited, dtype=int),
-    jnt_actfrclimited=create_nmodel_batched_array(mjm.jnt_actfrclimited, dtype=bool),
+    jnt_actfrclimited=wp.array(mjm.jnt_actfrclimited, dtype=bool),
     jnt_solref=create_nmodel_batched_array(mjm.jnt_solref, dtype=wp.vec2),
     jnt_solimp=create_nmodel_batched_array(mjm.jnt_solimp, dtype=types.vec5),
     jnt_pos=create_nmodel_batched_array(mjm.jnt_pos, dtype=wp.vec3),
