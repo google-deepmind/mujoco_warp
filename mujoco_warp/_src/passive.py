@@ -31,14 +31,14 @@ def _spring_passive(
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
-  jnt_stiffness: wp.array(dtype=float),
+  jnt_stiffness: wp.array2d(dtype=float),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   # Data out:
   qfrc_spring_out: wp.array2d(dtype=float),
 ):
   worldid, jntid = wp.tid()
-  stiffness = jnt_stiffness[jntid]
+  stiffness = jnt_stiffness[worldid,jntid]
   dofid = jnt_dofadr[jntid]
 
   if stiffness == 0.0:
