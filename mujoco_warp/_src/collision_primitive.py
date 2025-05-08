@@ -1738,7 +1738,7 @@ def _primitive_narrowphase(
   pair_solref: wp.array2d(dtype=wp.vec2),
   pair_solreffriction: wp.array2d(dtype=wp.vec2),
   pair_solimp: wp.array2d(dtype=vec5),
-  pair_margin: wp.array(dtype=float),
+  pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array(dtype=float),
   pair_friction: wp.array(dtype=vec5),
   # Data in:
@@ -1781,7 +1781,7 @@ def _primitive_narrowphase(
     pair_solref[worldid],
     pair_solreffriction[worldid],
     pair_solimp[worldid],
-    pair_margin,
+    pair_margin[worldid],
     pair_gap,
     pair_friction,
     collision_pair_in,
