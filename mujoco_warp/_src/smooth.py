@@ -1870,7 +1870,7 @@ def _joint_tendon(
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
-  wrap_prm: wp.array(dtype=float),
+  wrap_prm: wp.array2d(dtype=float),
   tendon_jnt_adr: wp.array(dtype=int),
   wrap_jnt_adr: wp.array(dtype=int),
   # Data in:
@@ -1885,7 +1885,7 @@ def _joint_tendon(
   wrap_jnt_adr_ = wrap_jnt_adr[wrapid]
 
   wrap_objid_ = wrap_objid[wrap_jnt_adr_]
-  prm = wrap_prm[wrap_jnt_adr_]
+  prm = wrap_prm[worldid, wrap_jnt_adr_]
 
   # add to length
   L = prm * qpos_in[worldid, jnt_qposadr[wrap_objid_]]
