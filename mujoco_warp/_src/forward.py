@@ -821,7 +821,7 @@ def _actuator_force(
   actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array2d(dtype=vec10f),
-  actuator_ctrlrange: wp.array(dtype=wp.vec2),
+  actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   actuator_forcerange: wp.array(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
@@ -839,7 +839,7 @@ def _actuator_force(
   ctrl = ctrl_in[worldid, uid]
 
   if actuator_ctrllimited[uid] and not dsbl_clampctrl:
-    ctrlrange = actuator_ctrlrange[uid]
+    ctrlrange = actuator_ctrlrange[worldid, uid]
     ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
 
   if na:
