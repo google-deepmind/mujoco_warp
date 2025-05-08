@@ -1730,7 +1730,7 @@ def _primitive_narrowphase(
   geom_solimp: wp.array2d(dtype=vec5),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_friction: wp.array2d(dtype=wp.vec3),
-  geom_margin: wp.array(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array2d(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
@@ -1767,6 +1767,8 @@ def _primitive_narrowphase(
 
   if tid >= ncollision_in[0]:
     return
+  
+  worldid = collision_worldid_in[tid]
 
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
     geom_condim,
@@ -1790,8 +1792,6 @@ def _primitive_narrowphase(
   )
   g1 = geoms[0]
   g2 = geoms[1]
-
-  worldid = collision_worldid_in[tid]
 
   geom1 = _geom(
     geom_dataid,

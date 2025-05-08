@@ -280,12 +280,12 @@ def _subtree_com_acc(
 @wp.kernel
 def _subtree_div(
   # Model:
-  subtree_mass: wp.array(dtype=float),
+  subtree_mass: wp.array2d(dtype=float),
   # Data out:
   subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  subtree_com_out[worldid, bodyid] /= subtree_mass[bodyid]
+  subtree_com_out[worldid, bodyid] /= subtree_mass[worldid,bodyid]
 
 
 @wp.kernel
