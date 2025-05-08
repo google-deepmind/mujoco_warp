@@ -105,7 +105,7 @@ def _efc_equality_connect(
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
   eq_objtype: wp.array(dtype=int),
-  eq_solref: wp.array(dtype=wp.vec2),
+  eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array(dtype=vec5),
   eq_data: wp.array(dtype=vec11),
   eq_connect_adr: wp.array(dtype=int),
@@ -198,7 +198,7 @@ def _efc_equality_connect(
   invweight = body_invweight0[worldid, body1id, 0] + body_invweight0[worldid, body2id, 0]
   pos_imp = wp.length(pos)
 
-  solref = eq_solref[i_eq]
+  solref = eq_solref[worldid, i_eq]
   solimp = eq_solimp[i_eq]
 
   for i in range(3):
@@ -237,7 +237,7 @@ def _efc_equality_joint(
   dof_invweight0: wp.array2d(dtype=float),
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
-  eq_solref: wp.array(dtype=wp.vec2),
+  eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array(dtype=vec5),
   eq_data: wp.array(dtype=vec11),
   eq_jnt_adr: wp.array(dtype=int),
@@ -306,7 +306,7 @@ def _efc_equality_joint(
     pos,
     pos,
     invweight,
-    eq_solref[i_eq],
+    eq_solref[worldid, i_eq],
     eq_solimp[i_eq],
     0.0,
     Jqvel,
@@ -328,7 +328,7 @@ def _efc_equality_tendon(
   opt_timestep: float,
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
-  eq_solref: wp.array(dtype=wp.vec2),
+  eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array(dtype=vec5),
   eq_data: wp.array(dtype=vec11),
   eq_ten_adr: wp.array(dtype=int),
@@ -369,7 +369,7 @@ def _efc_equality_tendon(
   obj1id = eq_obj1id[eqid]
   obj2id = eq_obj2id[eqid]
   data = eq_data[eqid]
-  solref = eq_solref[eqid]
+  solref = eq_solref[worldid, eqid]
   solimp = eq_solimp[eqid]
   pos1 = ten_length_in[worldid, obj1id] - tendon_length0[obj1id]
   pos2 = ten_length_in[worldid, obj2id] - tendon_length0[obj2id]
@@ -496,7 +496,7 @@ def _efc_equality_weld(
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
   eq_objtype: wp.array(dtype=int),
-  eq_solref: wp.array(dtype=wp.vec2),
+  eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array(dtype=vec5),
   eq_data: wp.array(dtype=vec11),
   eq_wld_adr: wp.array(dtype=int),
@@ -616,7 +616,7 @@ def _efc_equality_weld(
 
   pos_imp = wp.sqrt(wp.length_sq(cpos) + wp.length_sq(crot))
 
-  solref = eq_solref[i_eq]
+  solref = eq_solref[worldid, i_eq]
   solimp = eq_solimp[i_eq]
 
   for i in range(3):
