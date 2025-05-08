@@ -65,7 +65,7 @@ def _kinematics_level(
   body_jntnum: wp.array(dtype=int),
   body_jntadr: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
-  body_quat: wp.array(dtype=wp.quat),
+  body_quat: wp.array2d(dtype=wp.quat),
   body_ipos: wp.array(dtype=wp.vec3),
   body_iquat: wp.array(dtype=wp.quat),
   jnt_type: wp.array(dtype=int),
@@ -98,7 +98,7 @@ def _kinematics_level(
     # no joints - apply fixed translation and rotation relative to parent
     pid = body_parentid[bodyid]
     xpos = (xmat_in[worldid, pid] * body_pos[worldid, bodyid]) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[bodyid])
+    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[worldid, bodyid])
   elif jntnum == 1 and jnt_type[jntadr] == wp.static(JointType.FREE.value):
     # free joint
     qadr = jnt_qposadr[jntadr]
@@ -111,7 +111,7 @@ def _kinematics_level(
     # apply fixed translation and rotation relative to parent
     pid = body_parentid[bodyid]
     xpos = (xmat_in[worldid, pid] * body_pos[worldid, bodyid]) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[bodyid])
+    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[worldid, bodyid])
 
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
