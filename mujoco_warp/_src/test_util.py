@@ -109,7 +109,9 @@ def fixture(
 
   if mjm.nmocap:
     mjd.mocap_pos = np.random.random(mjd.mocap_pos.shape)
-    mjd.mocap_quat = np.random.random(mjd.mocap_quat.shape)
+    mocap_quat = np.random.random(mjd.mocap_quat.shape)
+    norms = np.linalg.norm(mocap_quat, axis=1, keepdims=True)
+    mjd.mocap_quat = mocap_quat / norms
 
   mujoco.mj_forward(mjm, mjd)
   m = io.put_model(mjm)
