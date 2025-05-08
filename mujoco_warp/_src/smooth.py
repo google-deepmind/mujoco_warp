@@ -67,7 +67,7 @@ def _kinematics_level(
   body_pos: wp.array2d(dtype=wp.vec3),
   body_quat: wp.array2d(dtype=wp.quat),
   body_ipos: wp.array2d(dtype=wp.vec3),
-  body_iquat: wp.array(dtype=wp.quat),
+  body_iquat: wp.array2d(dtype=wp.quat),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array(dtype=wp.vec3),
@@ -147,7 +147,7 @@ def _kinematics_level(
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid, bodyid], xquat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[bodyid]))
+  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid,bodyid]))
 
 
 @wp.kernel
@@ -250,14 +250,14 @@ def kinematics(m: Model, d: Data):
 @wp.kernel
 def _subtree_com_init(
   # Model:
-  body_mass: wp.array(dtype=float),
+  body_mass: wp.array2d(dtype=float),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   xipos_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  xipos_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[bodyid]
+  xipos_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
 
 
 @wp.kernel
@@ -292,7 +292,7 @@ def _subtree_div(
 def _cinert(
   # Model:
   body_rootid: wp.array(dtype=int),
-  body_mass: wp.array(dtype=float),
+  body_mass: wp.array2d(dtype=float),
   body_inertia: wp.array(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
@@ -304,7 +304,7 @@ def _cinert(
   worldid, bodyid = wp.tid()
   mat = ximat_in[worldid, bodyid]
   inert = body_inertia[bodyid]
-  mass = body_mass[bodyid]
+  mass = body_mass[worldid, bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
   # express inertia in com-based frame (mju_inertCom)
 
@@ -1712,7 +1712,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
 def _subtree_vel_forward(
   # Model:
   body_rootid: wp.array(dtype=int),
-  body_mass: wp.array(dtype=float),
+  body_mass: wp.array2d(dtype=float),
   body_inertia: wp.array(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
@@ -1736,7 +1736,7 @@ def _subtree_vel_forward(
   # update linear velocity
   lin -= wp.cross(xipos - subtree_com_root, ang)
 
-  subtree_linvel_out[worldid, bodyid] = body_mass[bodyid] * lin
+  subtree_linvel_out[worldid, bodyid] = body_mass[worldid, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
   dv[0] *= body_inertia[bodyid][0]
   dv[1] *= body_inertia[bodyid][1]
@@ -1769,7 +1769,7 @@ def _linear_momentum(
 def _angular_momentum(
   # Model:
   body_parentid: wp.array(dtype=int),
-  body_mass: wp.array(dtype=float),
+  body_mass: wp.array2d(dtype=float),
   body_subtreemass: wp.array(dtype=float),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
@@ -1795,7 +1795,7 @@ def _angular_momentum(
   vel = subtree_bodyvel_in[worldid, bodyid]
   linvel = subtree_linvel_in[worldid, bodyid]
   linvel_parent = subtree_linvel_in[worldid, pid]
-  mass = body_mass[bodyid]
+  mass = body_mass[worldid, bodyid]
   subtreemass = body_subtreemass[bodyid]
 
   # momentum wrt body i

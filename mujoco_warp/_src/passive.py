@@ -119,7 +119,7 @@ def _gravity_force(
   opt_gravity: wp.vec3,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  body_mass: wp.array(dtype=float),
+  body_mass: wp.array2d(dtype=float),
   body_gravcomp: wp.array(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   # Data in:
@@ -134,7 +134,7 @@ def _gravity_force(
   gravcomp = body_gravcomp[bodyid]
 
   if gravcomp:
-    force = -opt_gravity * body_mass[bodyid] * gravcomp
+    force = -opt_gravity * body_mass[worldid, bodyid] * gravcomp
 
     pos = xipos_in[worldid, bodyid]
     jac, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)

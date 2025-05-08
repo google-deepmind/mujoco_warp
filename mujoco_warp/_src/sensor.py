@@ -279,7 +279,7 @@ def _frame_axis(
 @wp.func
 def _frame_quat(
   # Model:
-  body_iquat: wp.array(dtype=wp.quat),
+  body_iquat: wp.array2d(dtype=wp.quat),
   geom_bodyid: wp.array(dtype=int),
   geom_quat: wp.array(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
@@ -293,10 +293,10 @@ def _frame_quat(
   refid: int,
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
-    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[objid])
+    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[worldid, refid])
   elif objtype == int(ObjType.XBODY.value):
     quat = xquat_in[worldid, objid]
     if refid == -1:
@@ -334,7 +334,7 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
-  body_iquat: wp.array(dtype=wp.quat),
+  body_iquat: wp.array2d(dtype=wp.quat),
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_quat: wp.array(dtype=wp.quat),
