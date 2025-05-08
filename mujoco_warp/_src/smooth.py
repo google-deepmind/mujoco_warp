@@ -1749,7 +1749,7 @@ def _subtree_vel_forward(
 def _linear_momentum(
   # Model:
   body_parentid: wp.array(dtype=int),
-  body_subtreemass: wp.array(dtype=float),
+  body_subtreemass: wp.array2d(dtype=float),
   # Data in:
   subtree_linvel_in: wp.array2d(dtype=wp.vec3),
   # In:
@@ -1762,7 +1762,7 @@ def _linear_momentum(
   if bodyid:
     pid = body_parentid[bodyid]
     wp.atomic_add(subtree_linvel_out[worldid], pid, subtree_linvel_in[worldid, bodyid])
-  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[bodyid])
+  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[worldid,bodyid])
 
 
 @wp.kernel
@@ -1770,7 +1770,7 @@ def _angular_momentum(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_mass: wp.array2d(dtype=float),
-  body_subtreemass: wp.array(dtype=float),
+  body_subtreemass: wp.array2d(dtype=float),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -1796,7 +1796,7 @@ def _angular_momentum(
   linvel = subtree_linvel_in[worldid, bodyid]
   linvel_parent = subtree_linvel_in[worldid, pid]
   mass = body_mass[worldid, bodyid]
-  subtreemass = body_subtreemass[bodyid]
+  subtreemass = body_subtreemass[worldid, bodyid]
 
   # momentum wrt body i
   dx = xipos - com
