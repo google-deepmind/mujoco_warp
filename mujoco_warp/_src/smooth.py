@@ -261,7 +261,8 @@ def kinematics(m: Model, d: Data):
     wp.launch(
       _mocap,
       dim=(d.nworld, m.nmocap),
-      inputs=[m.body_ipos, m.body_iquat, m.mocap_bodyid, d.mocap_pos, d.mocap_quat, d.xpos, d.xquat, d.xmat, d.xipos, d.ximat],
+      inputs=[m.body_ipos, m.body_iquat, m.mocap_bodyid, d.mocap_pos, d.mocap_quat],
+      outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat],
     )
 
   if m.ngeom:
