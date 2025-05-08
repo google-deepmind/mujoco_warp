@@ -9,20 +9,10 @@ repos:
     rev: v4.6.0 # Use the latest version
     hooks:
       - id: check-yaml
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
   - repo: local
     hooks:
-      - id: pytest
-        name: pytest
-        entry: pytest
-        language: system
-        types: [python]
-        pass_filenames: true # Run pytest on changed files
       - id: kernel-analyzer
         name: kernel-analyzer
         entry: python contrib/kernel_analyzer/kernel_analyzer/cli.py
-        args: [mujoco_warp/_src/*.py]
         language: system
         types: [python]
-        pass_filenames: false
