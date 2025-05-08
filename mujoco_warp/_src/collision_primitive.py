@@ -1130,7 +1130,7 @@ def contact_params(
   if pairid > -1:
     margin = pair_margin[worldid, pairid]
     gap = pair_gap[worldid, pairid]
-    condim = pair_dim[worldid, pairid]
+    condim = pair_dim[pairid]
     friction = pair_friction[worldid, pairid]
     solref = pair_solref[worldid, pairid]
     solreffriction = pair_solreffriction[worldid, pairid]
