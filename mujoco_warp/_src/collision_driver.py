@@ -124,7 +124,7 @@ def _upper_tri_index(n: int, i: int, j: int) -> int:
 @wp.kernel
 def _sap_project(
   # Model:
-  geom_rbound: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -138,7 +138,7 @@ def _sap_project(
   worldid, geomid = wp.tid()
 
   xpos = geom_xpos_in[worldid, geomid]
-  rbound = geom_rbound[geomid]
+  rbound = geom_rbound[worldid,geomid]
 
   if rbound == 0.0:
     # geom is a plane
@@ -182,7 +182,7 @@ def _sap_broadphase(
   # Model:
   ngeom: int,
   geom_type: wp.array(dtype=int),
-  geom_rbound: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array(dtype=float),
   nxn_pairid: wp.array(dtype=int),
   # Data in:
@@ -233,7 +233,7 @@ def _sap_broadphase(
       continue
 
     if _sphere_filter(
-      geom_rbound,
+      geom_rbound[worldid],
       geom_margin,
       geom_xpos_in,
       geom_xmat_in,
@@ -343,7 +343,7 @@ def sap_broadphase(m: Model, d: Data):
 def _nxn_broadphase(
   # Model:
   geom_type: wp.array(dtype=int),
-  geom_rbound: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array(dtype=float),
   nxn_geom_pair: wp.array(dtype=wp.vec2i),
   nxn_pairid: wp.array(dtype=int),
@@ -368,7 +368,7 @@ def _nxn_broadphase(
   geom2 = geom[1]
 
   if _sphere_filter(
-    geom_rbound,
+    geom_rbound[worldid],
     geom_margin,
     geom_xpos_in,
     geom_xmat_in,
