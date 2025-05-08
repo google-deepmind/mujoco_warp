@@ -674,7 +674,7 @@ def _efc_limit_slide_hinge(
   jnt_dofadr: wp.array(dtype=int),
   jnt_solref: wp.array2d(dtype=wp.vec2),
   jnt_solimp: wp.array2d(dtype=vec5),
-  jnt_range: wp.array2d(dtype=float),
+  jnt_range: wp.array3d(dtype=float),
   jnt_margin: wp.array(dtype=float),
   jnt_limited_slide_hinge_adr: wp.array(dtype=int),
   dof_invweight0: wp.array(dtype=float),
@@ -697,7 +697,7 @@ def _efc_limit_slide_hinge(
 ):
   worldid, jntlimitedid = wp.tid()
   jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
-  jntrange = jnt_range[jntid]
+  jntrange = jnt_range[worldid,jntid]
 
   qpos = qpos_in[worldid, jnt_qposadr[jntid]]
   jntmargin = jnt_margin[jntid]
@@ -746,7 +746,7 @@ def _efc_limit_ball(
   jnt_dofadr: wp.array(dtype=int),
   jnt_solref: wp.array2d(dtype=wp.vec2),
   jnt_solimp: wp.array2d(dtype=vec5),
-  jnt_range: wp.array2d(dtype=float),
+  jnt_range: wp.array3d(dtype=float),
   jnt_margin: wp.array(dtype=float),
   jnt_limited_ball_adr: wp.array(dtype=int),
   dof_invweight0: wp.array(dtype=float),
@@ -774,7 +774,7 @@ def _efc_limit_ball(
   qpos = qpos_in[worldid]
   jnt_quat = wp.quat(qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3])
   axis_angle = math.quat_to_vel(jnt_quat)
-  jntrange = jnt_range[jntid]
+  jntrange = jnt_range[worldid, jntid]
   axis, angle = math.normalize_with_norm(axis_angle)
   jntmargin = jnt_margin[jntid]
 
