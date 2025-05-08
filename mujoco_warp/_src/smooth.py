@@ -506,7 +506,7 @@ def _cam_fn(
 def _light_local_to_global(
   # Model:
   light_bodyid: wp.array(dtype=int),
-  light_pos: wp.array(dtype=wp.vec3),
+  light_pos: wp.array2d(dtype=wp.vec3),
   light_dir: wp.array(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
@@ -520,7 +520,7 @@ def _light_local_to_global(
   bodyid = light_bodyid[lightid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
-  light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[lightid], xquat)
+  light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
   light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[lightid], xquat)
 
 
