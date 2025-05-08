@@ -60,7 +60,7 @@ def _kinematics_root(
 @wp.kernel
 def _kinematics_level(
   # Model:
-  qpos0: wp.array(dtype=float),
+  qpos0: wp.array2d(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_jntnum: wp.array(dtype=int),
   body_jntadr: wp.array(dtype=int),
@@ -131,9 +131,9 @@ def _kinematics_level(
         # correct for off-center rotation
         xpos = xanchor - math.rot_vec_quat(jnt_pos[jntadr], xquat)
       elif jnt_type_ == wp.static(JointType.SLIDE.value):
-        xpos += xaxis * (qpos[qadr] - qpos0[qadr])
+        xpos += xaxis * (qpos[qadr] - qpos0[worldid, qadr])
       elif jnt_type_ == wp.static(JointType.HINGE.value):
-        qpos0_ = qpos0[qadr]
+        qpos0_ = qpos0[worldid, qadr]
         qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
         xquat = math.mul_quat(xquat, qloc_)
         # correct for off-center rotation

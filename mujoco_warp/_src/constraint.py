@@ -231,7 +231,7 @@ def _efc_equality_connect(
 def _efc_equality_joint(
   # Model:
   opt_timestep: float,
-  qpos0: wp.array(dtype=float),
+  qpos0: wp.array2d(dtype=float),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
   dof_invweight0: wp.array(dtype=float),
@@ -281,20 +281,20 @@ def _efc_equality_joint(
     # Two joint constraint
     qposadr2 = jnt_qposadr[jntid_2]
     dofadr2 = jnt_dofadr[jntid_2]
-    dif = qpos_in[worldid, qposadr2] - qpos0[qposadr2]
+    dif = qpos_in[worldid, qposadr2] - qpos0[worldid, qposadr2]
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
     deriv_2 = data[1] + dif * (2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4]))
 
-    pos = qpos_in[worldid, qposadr1] - qpos0[qposadr1] - rhs
+    pos = qpos_in[worldid, qposadr1] - qpos0[worldid,qposadr1] - rhs
     Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
     invweight = dof_invweight0[dofadr1] + dof_invweight0[dofadr2]
 
     efc_J_out[efcid, dofadr2] = -deriv_2
   else:
     # Single joint constraint
-    pos = qpos_in[worldid, qposadr1] - qpos0[qposadr1] - data[0]
+    pos = qpos_in[worldid, qposadr1] - qpos0[worldid, qposadr1] - data[0]
     Jqvel = qvel_in[worldid, dofadr1]
     invweight = dof_invweight0[dofadr1]
 
