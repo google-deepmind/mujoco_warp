@@ -708,7 +708,7 @@ def _gjk_epa_pipeline(
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
-    geom_priority: wp.array(dtype=int),
+    geom_priority: wp.array2d(dtype=int),
     geom_solmix: wp.array(dtype=float),
     geom_solref: wp.array(dtype=wp.vec2),
     geom_solimp: wp.array(dtype=vec5),
@@ -755,7 +755,7 @@ def _gjk_epa_pipeline(
     worldid = collision_worldid_in[tid]
     geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
       geom_condim,
-      geom_priority,
+      geom_priority[worldid],
       geom_solmix,
       geom_solref,
       geom_solimp,
