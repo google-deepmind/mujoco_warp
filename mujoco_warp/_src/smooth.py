@@ -192,6 +192,33 @@ def _site_local_to_global(
   site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[siteid]))
 
 
+@wp.kernel
+def _mocap(
+  # Model:
+  body_ipos: wp.array(dtype=wp.vec3),
+  body_iquat: wp.array(dtype=wp.quat),
+  mocap_bodyid: wp.array(dtype=int),
+  # Data in:
+  mocap_pos_in: wp.array2d(dtype=wp.vec3),
+  mocap_quat_in: wp.array2d(dtype=wp.quat),
+  # Data out:
+  xpos_out: wp.array2d(dtype=wp.vec3),
+  xquat_out: wp.array2d(dtype=wp.quat),
+  xmat_out: wp.array2d(dtype=wp.mat33),
+  xipos_out: wp.array2d(dtype=wp.vec3),
+  ximat_out: wp.array2d(dtype=wp.mat33),
+):
+  worldid, mocapid = wp.tid()
+  bodyid = mocap_bodyid[mocapid]
+  mocap_quat = wp.normalize(mocap_quat_in[worldid, mocapid])
+  xpos = mocap_pos_in[worldid, mocapid]
+  xpos_out[worldid, bodyid] = xpos
+  xquat_out[worldid, bodyid] = mocap_quat
+  xmat_out[worldid, bodyid] = math.quat_to_mat(mocap_quat)
+  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[bodyid], mocap_quat)
+  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(mocap_quat, body_iquat[bodyid]))
+
+
 @event_scope
 def kinematics(m: Model, d: Data):
   """Forward kinematics."""
@@ -228,6 +255,13 @@ def kinematics(m: Model, d: Data):
         body_tree,
       ],
       outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat, d.xanchor, d.xaxis],
+    )
+
+  if m.nmocap:
+    wp.launch(
+      _mocap,
+      dim=(d.nworld, m.nmocap),
+      inputs=[m.body_ipos, m.body_iquat, m.mocap_bodyid, d.mocap_pos, d.mocap_quat, d.xpos, d.xquat, d.xmat, d.xipos, d.ximat],
     )
 
   if m.ngeom:

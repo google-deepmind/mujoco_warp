@@ -212,6 +212,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   wrap_site_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)[0]
   wrap_site_pair_adr = np.setdiff1d(wrap_site_adr[np.nonzero(np.diff(wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1)
 
+  # mocap
+  mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
+  mocap_bodyid = mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
+
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT.value)
   exclude_signature = set(mjm.exclude_signature)
@@ -308,6 +312,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     body_rootid=wp.array(mjm.body_rootid, dtype=int),
     body_weldid=wp.array(mjm.body_weldid, dtype=int),
     body_mocapid=wp.array(mjm.body_mocapid, dtype=int),
+    mocap_bodyid=wp.array(mocap_bodyid, dtype=int),
     body_jntnum=wp.array(mjm.body_jntnum, dtype=int),
     body_jntadr=wp.array(mjm.body_jntadr, dtype=int),
     body_dofnum=wp.array(mjm.body_dofnum, dtype=int),
