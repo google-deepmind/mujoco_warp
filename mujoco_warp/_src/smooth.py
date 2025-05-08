@@ -635,7 +635,7 @@ def _qM_sparse(
   dof_bodyid: wp.array(dtype=int),
   dof_parentid: wp.array(dtype=int),
   dof_Madr: wp.array(dtype=int),
-  dof_armature: wp.array(dtype=float),
+  dof_armature: wp.array2d(dtype=float),
   # Data in:
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   crb_in: wp.array2d(dtype=vec10),
@@ -647,7 +647,7 @@ def _qM_sparse(
   bodyid = dof_bodyid[dofid]
 
   # init M(i,i) with armature inertia
-  qM_out[worldid, 0, madr_ij] = dof_armature[dofid]
+  qM_out[worldid, 0, madr_ij] = dof_armature[worldid,dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
@@ -664,7 +664,7 @@ def _qM_dense(
   # Model:
   dof_bodyid: wp.array(dtype=int),
   dof_parentid: wp.array(dtype=int),
-  dof_armature: wp.array(dtype=float),
+  dof_armature: wp.array2d(dtype=float),
   # Data in:
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   crb_in: wp.array2d(dtype=vec10),
@@ -674,7 +674,7 @@ def _qM_dense(
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
   # init M(i,i) with armature inertia
-  M = dof_armature[dofid]
+  M = dof_armature[worldid, dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
