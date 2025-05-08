@@ -531,7 +531,7 @@ def _light_fn(
   light_bodyid: wp.array(dtype=int),
   light_targetbodyid: wp.array(dtype=int),
   light_poscom0: wp.array2d(dtype=wp.vec3),
-  light_pos0: wp.array(dtype=wp.vec3),
+  light_pos0: wp.array2d(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   light_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -549,7 +549,7 @@ def _light_fn(
     return
   elif light_mode[lightid] == wp.static(CamLightType.TRACK.value):
     body_xpos = xpos_in[worldid, light_bodyid[lightid]]
-    light_xpos_out[worldid, lightid] = body_xpos + light_pos0[lightid]
+    light_xpos_out[worldid, lightid] = body_xpos + light_pos0[worldid, lightid]
   elif light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
     light_xpos_out[worldid, lightid] = subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[worldid, lightid]
   elif light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value) or light_mode[lightid] == wp.static(
