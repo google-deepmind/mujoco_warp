@@ -429,7 +429,7 @@ def _efc_friction(
   dof_invweight0: wp.array2d(dtype=float),
   dof_frictionloss: wp.array2d(dtype=float),
   dof_solimp: wp.array2d(dtype=vec5),
-  dof_solref: wp.array(dtype=wp.vec2),
+  dof_solref: wp.array2d(dtype=wp.vec2),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   # In:
@@ -466,7 +466,7 @@ def _efc_friction(
     0.0,
     0.0,
     dof_invweight0[worldid, dofid],
-    dof_solref[dofid],
+    dof_solref[worldid, dofid],
     dof_solimp[worldid, dofid],
     0.0,
     Jqvel,
