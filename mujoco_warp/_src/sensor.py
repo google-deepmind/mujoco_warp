@@ -281,7 +281,7 @@ def _frame_quat(
   # Model:
   body_iquat: wp.array2d(dtype=wp.quat),
   geom_bodyid: wp.array(dtype=int),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array(dtype=wp.quat),
   # Data in:
@@ -303,10 +303,10 @@ def _frame_quat(
       return quat
     refquat = xquat_in[worldid, refid]
   elif objtype == int(ObjType.GEOM.value):
-    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid,refid])
   elif objtype == int(ObjType.SITE.value):
     quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[objid])
     if refid == -1:
