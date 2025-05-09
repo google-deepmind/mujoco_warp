@@ -1,0 +1,266 @@
+<mujoco model="aloha with pot">
+  <compiler autolimits="true" boundmass="0.01" boundinertia="9.9999999999999995e-07" angle="radian"/>
+  <option impratio="10" cone="elliptic">
+    <flag multiccd="enable"/>
+  </option>
+  <visual>
+    <global azimuth="90" elevation="-20" offwidth="848" offheight="480"/>
+    <quality shadowsize="8192"/>
+    <headlight ambient="0.29999999999999999 0.29999999999999999 0.29999999999999999" diffuse="0.59999999999999998 0.59999999999999998 0.59999999999999998" specular="0 0 0"/>
+    <rgba haze="0.14999999999999999 0.25 0.34999999999999998 1"/>
+  </visual>
+  <statistic meansize="0.050000000000000003" extent="0.59999999999999998" center="0 -0.10000000000000001 0.20000000000000001"/>
+  <default>
+    <default class="/">
+      <default class="frame">
+        <geom type="mesh" group="1" material="black"/>
+      </default>      
+    </default>
+    <default class="partnet_100015/">
+      <joint frictionloss="1"/>
+      <default class="partnet_100015/collision">
+        <mesh scale="0.20000000000000001 0.20000000000000001 0.20000000000000001" inertia="convex"/>
+        <geom type="mesh"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <texture name="//unnamed_texture_3" type="skybox" builtin="gradient" rgb1="0.29999999999999999 0.5 0.69999999999999996" rgb2="0 0 0" width="512" height="3072"/>
+    <texture name="groundplane" type="2d" builtin="checker" rgb1="0.20000000000000001 0.29999999999999999 0.40000000000000002" rgb2="0.10000000000000001 0.20000000000000001 0.29999999999999999" mark="edge" markrgb="0.80000000000000004 0.80000000000000004 0.80000000000000004" width="300" height="300"/>
+    <material name="groundplane" class="/" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.20000000000000001"/>
+    <material name="metal" class="/" rgba="0.51700000000000002 0.52900000000000003 0.53700000000000003 1"/>
+    <material name="black" class="/" rgba="0.14999999999999999 0.14999999999999999 0.14999999999999999 1"/>
+    <mesh name="partnet_100015/original-17_col_collision_0" class="partnet_100015/collision" file="original-17_col_collision_0-b439e444107a6087da79e6278eafc574c027bcd0.obj"/>
+    <mesh name="partnet_100015/original-17_col_collision_1" class="partnet_100015/collision" file="original-17_col_collision_1-ca56bb587dfb53ac2dc9a1b879f6ee4621776c47.obj"/>
+    <mesh name="partnet_100015/original-17_col_collision_2" class="partnet_100015/collision" file="original-17_col_collision_2-98d1a01665521786bae65a8926f051b0bfdbdbd6.obj"/>
+    <mesh name="partnet_100015/original-17_col_collision_3" class="partnet_100015/collision" file="original-17_col_collision_3-213ea4e7a3d15bd82c74f43117462d5098777802.obj"/>
+    <mesh name="partnet_100015/original-10_col_collision_0" class="partnet_100015/collision" file="original-10_col_collision_0-208fe51a40113c78c2172ae79d2d0b8a5d9002d1.obj"/>
+    <mesh name="partnet_100015/original-10_col_collision_1" class="partnet_100015/collision" file="original-10_col_collision_1-e1c239941aa3757c1a8c08c0e7ac9ce503ec8d05.obj"/>
+    <mesh name="partnet_100015/original-10_col_collision_2" class="partnet_100015/collision" file="original-10_col_collision_2-e190f600631515ffcf851e485d44658c713792e2.obj"/>
+    <mesh name="partnet_100015/original-11_col_collision_0" class="partnet_100015/collision" file="original-11_col_collision_0-a478c968f22f8fb86ec096bfa4739e8fa1eeceaf.obj"/>
+    <mesh name="partnet_100015/original-8_col_collision_0" class="partnet_100015/collision" file="original-8_col_collision_0-3e66afde19240856451b0fc8f5e31590e7e998f0.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_0" class="partnet_100015/collision" file="original-13_col_collision_0-0cd922b53e782e2add994cbafff464e869755941.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_1" class="partnet_100015/collision" file="original-13_col_collision_1-88e56b18a79a8daec67f71cf3dfb02c50659863c.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_2" class="partnet_100015/collision" file="original-13_col_collision_2-ec8e1afc2bcaa23895712349e76fcd00eb0bd33f.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_3" class="partnet_100015/collision" file="original-13_col_collision_3-722d5fffa71966e308e7f2993748005d70a874c9.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_4" class="partnet_100015/collision" file="original-13_col_collision_4-61a0de5070f55e2bb145b0122ecba1848e40cae6.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_5" class="partnet_100015/collision" file="original-13_col_collision_5-f927db3114dd0fe49bd66244990f88c818c756b3.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_6" class="partnet_100015/collision" file="original-13_col_collision_6-cfce18dc0d773030ae0aeb24475d7789b68e858e.obj"/>
+    <mesh name="partnet_100015/original-13_col_collision_7" class="partnet_100015/collision" file="original-13_col_collision_7-d3a6f38e04f915c4ac7c0a5134a0b680881190b8.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_0" class="partnet_100015/collision" file="original-14_col_collision_0-778f4a2bfbfe1a245ef5339cf88ba2d67f6047e3.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_1" class="partnet_100015/collision" file="original-14_col_collision_1-ee44d4c9c075207d4618aa4990a635cce9621dd7.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_2" class="partnet_100015/collision" file="original-14_col_collision_2-74987c61a726a3ac722b52fb4eee10763febd48d.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_3" class="partnet_100015/collision" file="original-14_col_collision_3-928a14acef9d0fb5ceb5658cdb1e61bbec00b058.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_4" class="partnet_100015/collision" file="original-14_col_collision_4-8977d2ce50ff654661aea7888c3851962f049c9c.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_5" class="partnet_100015/collision" file="original-14_col_collision_5-c336653cef4a18fe2bc8967e34ca58404b73fa4d.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_6" class="partnet_100015/collision" file="original-14_col_collision_6-6493d308c471712f4b27bd7ac69e433f779b31a6.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_7" class="partnet_100015/collision" file="original-14_col_collision_7-403fcdc88dfbd4473e87852461b45193c22f7a5d.obj"/>
+    <mesh name="partnet_100015/original-14_col_collision_8" class="partnet_100015/collision" file="original-14_col_collision_8-634b94344d8aa949eb4e59ce7cfc72e6c6421751.obj"/>
+    <mesh name="partnet_100015/original-29_col_collision_0" class="partnet_100015/collision" file="original-29_col_collision_0-898f82718a43061e3f7d46041e964fe213a45c18.obj"/>
+    <mesh name="partnet_100015/original-29_col_collision_1" class="partnet_100015/collision" file="original-29_col_collision_1-c2c4706030166e8c1b0834f343d6812fdc8623e0.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_0" class="partnet_100015/collision" file="original-21_col_collision_0-c8948b4fccbd63e4c4835435b6e32c87f0cd1b5b.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_1" class="partnet_100015/collision" file="original-21_col_collision_1-2708605fa032bbd3c3458a0823fc3adb4e6095d1.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_2" class="partnet_100015/collision" file="original-21_col_collision_2-3b94f002a719c9606862e1fb1227f9110825bb79.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_3" class="partnet_100015/collision" file="original-21_col_collision_3-e4933c58c0e8ad8b2de88ff6af7f4293ad96929c.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_4" class="partnet_100015/collision" file="original-21_col_collision_4-5465a7ef409ce22edd43097a0569168883c3eb5c.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_5" class="partnet_100015/collision" file="original-21_col_collision_5-d03b05250829877106a511befd9cf6fa8823675a.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_6" class="partnet_100015/collision" file="original-21_col_collision_6-12a5679233100eec0a3295abb54b1b7b9b4b0839.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_7" class="partnet_100015/collision" file="original-21_col_collision_7-2374e4da93bd05a4065813d1d2efe3cd2102dfe7.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_8" class="partnet_100015/collision" file="original-21_col_collision_8-d140e96d3a62e6fac0428a167cc13de2f120c57a.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_9" class="partnet_100015/collision" file="original-21_col_collision_9-6edf8358c6c7f7dd89929ae63b66ef778bd8746c.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_10" class="partnet_100015/collision" file="original-21_col_collision_10-225221cb64e522621919eddad8b1cbb56367ee40.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_11" class="partnet_100015/collision" file="original-21_col_collision_11-e3ef67903a31437ad5b27e2f0fca54596d68a026.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_12" class="partnet_100015/collision" file="original-21_col_collision_12-b44e24db22fafda8618c5c5c784debc3c74d4298.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_13" class="partnet_100015/collision" file="original-21_col_collision_13-cbc5cc87f26f9079dec574f7683dfd9e950cd10e.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_14" class="partnet_100015/collision" file="original-21_col_collision_14-8e8dfdca17412c2cacd2d3558f53110d9f9df0f2.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_15" class="partnet_100015/collision" file="original-21_col_collision_15-3a6e65dc60499d1b3ebabafd73eef5615cefc236.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_16" class="partnet_100015/collision" file="original-21_col_collision_16-3104b26d016115d98af353973731e730d3a6dc0a.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_17" class="partnet_100015/collision" file="original-21_col_collision_17-df37344b83d744900ac4fc2ca3397c2da1dba5cc.obj"/>
+    <mesh name="partnet_100015/original-21_col_collision_18" class="partnet_100015/collision" file="original-21_col_collision_18-e24714646f4c886da3b1472b959a9ada8f08333b.obj"/>
+    <mesh name="partnet_100015/original-30_col_collision_0" class="partnet_100015/collision" file="original-30_col_collision_0-18bf7ffccaf2bf740bd3134f32fa2c221678fa0f.obj"/>
+    <mesh name="partnet_100015/original-30_col_collision_1" class="partnet_100015/collision" file="original-30_col_collision_1-249061bdc92ac3a5e4ee6614811f4d022863ac30.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_0" class="partnet_100015/collision" file="original-22_col_collision_0-db5abc551d7a44ee3d4d97301c152cb05af78767.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_1" class="partnet_100015/collision" file="original-22_col_collision_1-96400f78b8859f07b401002cd19ffaa952da7468.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_2" class="partnet_100015/collision" file="original-22_col_collision_2-8a318237a2ff73b64244d87128194ea897852e93.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_3" class="partnet_100015/collision" file="original-22_col_collision_3-df7c5e4cd695911b0efeafbf97c62e1a82418c67.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_4" class="partnet_100015/collision" file="original-22_col_collision_4-dc9963e0fb42ed6852e78415fdc74faa645347ee.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_5" class="partnet_100015/collision" file="original-22_col_collision_5-6bcda3d287d1cfcabe91c62bc3aa506569f518b7.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_6" class="partnet_100015/collision" file="original-22_col_collision_6-60b9408de472c6c15fcfe0ddb302b65c5bf9e960.obj"/>
+    <mesh name="partnet_100015/original-22_col_collision_7" class="partnet_100015/collision" file="original-22_col_collision_7-9382299967302621d8e6ed94305028a9b209dfd2.obj"/>
+    <mesh name="partnet_100015/original-26_col_collision_0" class="partnet_100015/collision" file="original-26_col_collision_0-259901813433e123bb23132256974b4cbb27f450.obj"/>
+    <mesh name="partnet_100015/original-26_col_collision_1" class="partnet_100015/collision" file="original-26_col_collision_1-87f2f4ceb88b73a331d804f2c4658746126af80f.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_0" class="partnet_100015/collision" file="original-5_col_collision_0-03fd8fe1964def48aa4fe42635f9542bc6015573.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_1" class="partnet_100015/collision" file="original-5_col_collision_1-543900e1c3bad73bd2b2a016cf4ae951dc16a798.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_2" class="partnet_100015/collision" file="original-5_col_collision_2-6cc34f530a06ad54b80a9006aaf215bbac9509fa.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_3" class="partnet_100015/collision" file="original-5_col_collision_3-e12322ca1c81b79a05bff62846ac490b8d1ac3d4.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_4" class="partnet_100015/collision" file="original-5_col_collision_4-edc2a944b721ef784d23454f3252f30bae943bd2.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_5" class="partnet_100015/collision" file="original-5_col_collision_5-7b80b71c4d74bf20ac97b1f0875e34a789547c53.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_6" class="partnet_100015/collision" file="original-5_col_collision_6-6a99b40aab7dab531fef77ff92bdec5a3410b9bc.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_7" class="partnet_100015/collision" file="original-5_col_collision_7-2a8b7651225ffadfd716665f99970af90a86e52f.obj"/>
+    <mesh name="partnet_100015/original-5_col_collision_8" class="partnet_100015/collision" file="original-5_col_collision_8-f3ede03f8a622ddcc01fc62430a1d6c807741421.obj"/>
+    <mesh name="partnet_100015/original-27_col_collision_0" class="partnet_100015/collision" file="original-27_col_collision_0-c5b903ddd2b86d74a023dc3caa2977ddb0414ae8.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_0" class="partnet_100015/collision" file="original-6_col_collision_0-91dd649f5629943594425caa55f1e4d5a4e93e0d.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_1" class="partnet_100015/collision" file="original-6_col_collision_1-d99b4cd611d64e52b1529afd3668ba7bed221919.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_2" class="partnet_100015/collision" file="original-6_col_collision_2-a2fcfa80779b37d0b35006ff6ff99d1e2d77e774.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_3" class="partnet_100015/collision" file="original-6_col_collision_3-118912a3efd6064071faf75a14023617d7a29750.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_4" class="partnet_100015/collision" file="original-6_col_collision_4-a5d16325a58a37ef9fa2bbdaf15b6d20f798e33e.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_5" class="partnet_100015/collision" file="original-6_col_collision_5-da44cc1653ede725016118d7cdd0eceb1af55583.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_6" class="partnet_100015/collision" file="original-6_col_collision_6-ebfef0d9372bf84dec2f832426530128338bbfb2.obj"/>
+    <mesh name="partnet_100015/original-6_col_collision_7" class="partnet_100015/collision" file="original-6_col_collision_7-dbb4279ab8f42b3a35de1b776130701108a50bc3.obj"/>
+    <mesh name="partnet_100015/original-31_col_collision_0" class="partnet_100015/collision" file="original-31_col_collision_0-d7dd02393237429b33a2296feda0a0f2e3887e90.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_0" class="partnet_100015/collision" file="original-23_col_collision_0-12ce5ed902c7b7a8a0c407f48118fff68016dfec.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_1" class="partnet_100015/collision" file="original-23_col_collision_1-d498452198415d0e7d49f87079b6eeca643a356f.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_2" class="partnet_100015/collision" file="original-23_col_collision_2-6f4cedd984c14af625555605dec4650b7286d5fa.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_3" class="partnet_100015/collision" file="original-23_col_collision_3-b71ea9d6f39011787da8fbb18f65ed5932cd23db.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_4" class="partnet_100015/collision" file="original-23_col_collision_4-ea78c38f2458a8e06326875928b64ea676c3a083.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_5" class="partnet_100015/collision" file="original-23_col_collision_5-d519cc650173b632bc1329ddf4c2ddcf9337d5cd.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_6" class="partnet_100015/collision" file="original-23_col_collision_6-5a7124ea953dd835721ae4893a0d480c6202e9fc.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_7" class="partnet_100015/collision" file="original-23_col_collision_7-552ef675dbe9332f84d2ec2bd523ca31c5fc9c21.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_8" class="partnet_100015/collision" file="original-23_col_collision_8-a4f5b867c535a7b91a54511fd9e36eee82e9b943.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_9" class="partnet_100015/collision" file="original-23_col_collision_9-c3b5946fc3874b7ebfd1ac0f0a2bac3407b6d1ad.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_10" class="partnet_100015/collision" file="original-23_col_collision_10-73c4c0aeef953ee56e3531c0f2ae64b2dc3655ce.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_11" class="partnet_100015/collision" file="original-23_col_collision_11-8b7a70b9746eb429fd6fb1555649ae813a4cee43.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_12" class="partnet_100015/collision" file="original-23_col_collision_12-486a9bb9b03dc60fb32bb6ca9f7fddbd172f08fa.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_13" class="partnet_100015/collision" file="original-23_col_collision_13-920bb87696882db99697715207acc1d326b62947.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_14" class="partnet_100015/collision" file="original-23_col_collision_14-f1351b3484dabfb2999f03923638186f714e52ae.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_15" class="partnet_100015/collision" file="original-23_col_collision_15-f8ede1030270611430302fee1fc06cf8f6a8c101.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_16" class="partnet_100015/collision" file="original-23_col_collision_16-d605d61a021487a768f29be67bf681bf19bbbd36.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_17" class="partnet_100015/collision" file="original-23_col_collision_17-c3f2ecf0799db93fd1d265370bb939e0f33c5c18.obj"/>
+    <mesh name="partnet_100015/original-23_col_collision_18" class="partnet_100015/collision" file="original-23_col_collision_18-bb412f7d3891d34d1425bf5829dcdb9576b7fee5.obj"/>
+    <mesh name="partnet_100015/original-25_col_collision_0" class="partnet_100015/collision" file="original-25_col_collision_0-0f44eed200b016b11d4936140ec35102f9e8d4ab.obj"/>
+    <mesh name="partnet_100015/original-25_col_collision_1" class="partnet_100015/collision" file="original-25_col_collision_1-16ef9250fff030b5c0cc3df5565b7763875b1f11.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_0" class="partnet_100015/collision" file="original-7_col_collision_0-3638c6eae9bf1f3ae55798660678516b5820fc46.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_1" class="partnet_100015/collision" file="original-7_col_collision_1-616d2b3c89ad237434b655c8490aa663274cb58f.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_2" class="partnet_100015/collision" file="original-7_col_collision_2-25c9e799427a1745776a8110a2b9aeb34cb5d3b3.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_3" class="partnet_100015/collision" file="original-7_col_collision_3-27e866ca632c952bcd7e8fb4d08b1c02ca70230f.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_4" class="partnet_100015/collision" file="original-7_col_collision_4-06b9a772794eb9b36235a69486bb86d42e381ad2.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_5" class="partnet_100015/collision" file="original-7_col_collision_5-4b6a8bb29df4bfb7dcc3af405310880df1109f0b.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_6" class="partnet_100015/collision" file="original-7_col_collision_6-505d98f451863b8794bb95c618796c8c752c6518.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_7" class="partnet_100015/collision" file="original-7_col_collision_7-2e466ad73a6129bf39af3c092662bc00b560a663.obj"/>
+    <mesh name="partnet_100015/original-7_col_collision_8" class="partnet_100015/collision" file="original-7_col_collision_8-7f396c1ac75f494900bf8db473bcc89d6412342d.obj"/>
+    <mesh name="partnet_100015/original-19_col_collision_0" class="partnet_100015/collision" file="original-19_col_collision_0-ea922fffdad3044d90075c80dcb505681d487cb5.obj"/>
+  </asset>
+  <worldbody>
+    <light name="light" class="/" castshadow="true" pos="0 0.10000000000000001 2.5"/>
+    <geom name="floor" class="/" type="plane" size="2 2 0.050000000000000003" material="groundplane" pos="0 0 -0.75"/>
+    <body name="partnet_100015/">
+      <freejoint name="partnet_100015/"/>
+      <body name="partnet_100015/base">
+        <body name="partnet_100015/link_1" quat="0.5 0.5 -0.5 -0.5">
+          <body name="partnet_100015/link_0">
+            <joint name="partnet_100015/joint_0" class="partnet_100015/" type="slide" pos="0 0 0" axis="0 1 0" range="0 0.059999999999999998"/>
+            <geom name="partnet_100015/original-17_col_collision_0" class="partnet_100015/collision" rgba="0.2429661695188895 0.1717615006243578 0.69881767504896219 1" mesh="partnet_100015/original-17_col_collision_0"/>
+            <geom name="partnet_100015/original-17_col_collision_1" class="partnet_100015/collision" rgba="0.81010754340812707 0.53695231897144846 0.013876290027652782 1" mesh="partnet_100015/original-17_col_collision_1"/>
+            <geom name="partnet_100015/original-17_col_collision_2" class="partnet_100015/collision" rgba="0.61929132709427115 0.15164945271003938 0.043109856905326538 1" mesh="partnet_100015/original-17_col_collision_2"/>
+            <geom name="partnet_100015/original-17_col_collision_3" class="partnet_100015/collision" rgba="0.71245854960298072 0.18590758961375298 0.48998273332128006 1" mesh="partnet_100015/original-17_col_collision_3"/>
+            <geom name="partnet_100015/original-10_col_collision_0" class="partnet_100015/collision" rgba="0.74506648581516055 0.60828647948130177 0.76323778542638598 1" mesh="partnet_100015/original-10_col_collision_0"/>
+            <geom name="partnet_100015/original-10_col_collision_1" class="partnet_100015/collision" rgba="0.73475666406722095 0.2757706920457742 0.60891585206548027 1" mesh="partnet_100015/original-10_col_collision_1"/>
+            <geom name="partnet_100015/original-10_col_collision_2" class="partnet_100015/collision" rgba="0.43991524596441545 0.3849750941545661 0.06954919022308681 1" mesh="partnet_100015/original-10_col_collision_2"/>
+            <geom name="partnet_100015/original-11_col_collision_0" class="partnet_100015/collision" rgba="0.028739351158978521 0.080516695471403832 0.38060516034291259 1" mesh="partnet_100015/original-11_col_collision_0"/>
+            <geom name="partnet_100015/original-8_col_collision_0" class="partnet_100015/collision" rgba="0.74732900109910538 0.34891463574247084 0.89125074406994009 1" mesh="partnet_100015/original-8_col_collision_0"/>
+            <geom name="partnet_100015/original-13_col_collision_0" class="partnet_100015/collision" rgba="0.31622816773024554 0.4714301435766769 0.95359888837939011 1" mesh="partnet_100015/original-13_col_collision_0"/>
+            <geom name="partnet_100015/original-13_col_collision_1" class="partnet_100015/collision" rgba="0.090821034085616481 0.99993520958227067 0.040537010495240278 1" mesh="partnet_100015/original-13_col_collision_1"/>
+            <geom name="partnet_100015/original-13_col_collision_2" class="partnet_100015/collision" rgba="0.61689046406202841 0.74822881402250929 0.51027190635397068 1" mesh="partnet_100015/original-13_col_collision_2"/>
+            <geom name="partnet_100015/original-13_col_collision_3" class="partnet_100015/collision" rgba="0.71113175162994957 0.166615841994179 0.27527495628870402 1" mesh="partnet_100015/original-13_col_collision_3"/>
+            <geom name="partnet_100015/original-13_col_collision_4" class="partnet_100015/collision" rgba="0.62798642938401084 0.8082792937698362 0.53077806693912455 1" mesh="partnet_100015/original-13_col_collision_4"/>
+            <geom name="partnet_100015/original-13_col_collision_5" class="partnet_100015/collision" rgba="0.43416469903665644 0.44395777194029418 0.21838712693177853 1" mesh="partnet_100015/original-13_col_collision_5"/>
+            <geom name="partnet_100015/original-13_col_collision_6" class="partnet_100015/collision" rgba="0.073079988733321888 0.63292125875073757 0.13242889868959895 1" mesh="partnet_100015/original-13_col_collision_6"/>
+            <geom name="partnet_100015/original-13_col_collision_7" class="partnet_100015/collision" rgba="0.43403334665574811 0.24770885729683023 0.16950415515514805 1" mesh="partnet_100015/original-13_col_collision_7"/>
+            <geom name="partnet_100015/original-14_col_collision_0" class="partnet_100015/collision" rgba="0.62613359688420211 0.11161824845709978 0.59936012616375545 1" mesh="partnet_100015/original-14_col_collision_0"/>
+            <geom name="partnet_100015/original-14_col_collision_1" class="partnet_100015/collision" rgba="0.26799822081402391 0.24581126257850716 0.94446830668512705 1" mesh="partnet_100015/original-14_col_collision_1"/>
+            <geom name="partnet_100015/original-14_col_collision_2" class="partnet_100015/collision" rgba="0.10190849794456081 0.23399443812466603 0.41677761873664509 1" mesh="partnet_100015/original-14_col_collision_2"/>
+            <geom name="partnet_100015/original-14_col_collision_3" class="partnet_100015/collision" rgba="0.99027650408276902 0.91293560417404884 0.054187787542814392 1" mesh="partnet_100015/original-14_col_collision_3"/>
+            <geom name="partnet_100015/original-14_col_collision_4" class="partnet_100015/collision" rgba="0.014709904683656405 0.99721322487133401 0.22876503343965016 1" mesh="partnet_100015/original-14_col_collision_4"/>
+            <geom name="partnet_100015/original-14_col_collision_5" class="partnet_100015/collision" rgba="0.63927574560847744 0.94937619687611396 0.06870714257528121 1" mesh="partnet_100015/original-14_col_collision_5"/>
+            <geom name="partnet_100015/original-14_col_collision_6" class="partnet_100015/collision" rgba="0.44313055034616489 0.22915639933825405 0.90688983420149683 1" mesh="partnet_100015/original-14_col_collision_6"/>
+            <geom name="partnet_100015/original-14_col_collision_7" class="partnet_100015/collision" rgba="0.19838702222933391 0.242561428520778 0.39810296391818434 1" mesh="partnet_100015/original-14_col_collision_7"/>
+            <geom name="partnet_100015/original-14_col_collision_8" class="partnet_100015/collision" rgba="0.35170814138262108 0.25511349015642981 0.85097503709343081 1" mesh="partnet_100015/original-14_col_collision_8"/>
+          </body>
+          <geom name="partnet_100015/original-29_col_collision_0" class="partnet_100015/collision" rgba="0.2371501395028518 0.73055075863239871 0.9991017182235109 1" mesh="partnet_100015/original-29_col_collision_0"/>
+          <geom name="partnet_100015/original-29_col_collision_1" class="partnet_100015/collision" rgba="0.36671837681918851 0.53879047456766505 0.41988237524477734 1" mesh="partnet_100015/original-29_col_collision_1"/>
+          <geom name="partnet_100015/original-21_col_collision_0" class="partnet_100015/collision" rgba="0.72694462892298073 0.088287303678812545 0.53670984612456041 1" mesh="partnet_100015/original-21_col_collision_0"/>
+          <geom name="partnet_100015/original-21_col_collision_1" class="partnet_100015/collision" rgba="0.87923835044474663 0.73913685429425213 0.44439314417412834 1" mesh="partnet_100015/original-21_col_collision_1"/>
+          <geom name="partnet_100015/original-21_col_collision_2" class="partnet_100015/collision" rgba="0.20001693649171337 0.85104953882982159 0.00052752290506863364 1" mesh="partnet_100015/original-21_col_collision_2"/>
+          <geom name="partnet_100015/original-21_col_collision_3" class="partnet_100015/collision" rgba="0.26632715877764701 0.29825962103676051 0.40719168236732506 1" mesh="partnet_100015/original-21_col_collision_3"/>
+          <geom name="partnet_100015/original-21_col_collision_4" class="partnet_100015/collision" rgba="0.60570051995790897 0.27917313750265582 0.38650544180232249 1" mesh="partnet_100015/original-21_col_collision_4"/>
+          <geom name="partnet_100015/original-21_col_collision_5" class="partnet_100015/collision" rgba="0.29882412806283865 0.86800527650689741 0.82398112316274419 1" mesh="partnet_100015/original-21_col_collision_5"/>
+          <geom name="partnet_100015/original-21_col_collision_6" class="partnet_100015/collision" rgba="0.75107873153317284 0.99113889492281448 0.56013587416356947 1" mesh="partnet_100015/original-21_col_collision_6"/>
+          <geom name="partnet_100015/original-21_col_collision_7" class="partnet_100015/collision" rgba="0.78721850235269852 0.5451900809408563 0.38887180915744501 1" mesh="partnet_100015/original-21_col_collision_7"/>
+          <geom name="partnet_100015/original-21_col_collision_8" class="partnet_100015/collision" rgba="0.16461820234671709 0.11696096798701006 0.0064006509578259374 1" mesh="partnet_100015/original-21_col_collision_8"/>
+          <geom name="partnet_100015/original-21_col_collision_9" class="partnet_100015/collision" rgba="0.66124903248795852 0.36955222187784265 0.085068671978545174 1" mesh="partnet_100015/original-21_col_collision_9"/>
+          <geom name="partnet_100015/original-21_col_collision_10" class="partnet_100015/collision" rgba="0.18455731743594517 0.50156698475223171 0.29162325846054427 1" mesh="partnet_100015/original-21_col_collision_10"/>
+          <geom name="partnet_100015/original-21_col_collision_11" class="partnet_100015/collision" rgba="0.35343840866402298 0.76367166624343663 0.79656270134104579 1" mesh="partnet_100015/original-21_col_collision_11"/>
+          <geom name="partnet_100015/original-21_col_collision_12" class="partnet_100015/collision" rgba="0.027799244594417849 0.99004866452511486 0.43609098090792664 1" mesh="partnet_100015/original-21_col_collision_12"/>
+          <geom name="partnet_100015/original-21_col_collision_13" class="partnet_100015/collision" rgba="0.39611678650311888 0.40523183172980715 0.72899074743971015 1" mesh="partnet_100015/original-21_col_collision_13"/>
+          <geom name="partnet_100015/original-21_col_collision_14" class="partnet_100015/collision" rgba="0.45339605915180736 0.10999468633978604 0.015499720375338866 1" mesh="partnet_100015/original-21_col_collision_14"/>
+          <geom name="partnet_100015/original-21_col_collision_15" class="partnet_100015/collision" rgba="0.30422567349334551 0.15983947090955219 0.33492761266589921 1" mesh="partnet_100015/original-21_col_collision_15"/>
+          <geom name="partnet_100015/original-21_col_collision_16" class="partnet_100015/collision" rgba="0.70726511865004393 0.26779715300370444 0.65195908819372073 1" mesh="partnet_100015/original-21_col_collision_16"/>
+          <geom name="partnet_100015/original-21_col_collision_17" class="partnet_100015/collision" rgba="0.39387732220289973 0.069000946585947798 0.069963261562612011 1" mesh="partnet_100015/original-21_col_collision_17"/>
+          <geom name="partnet_100015/original-21_col_collision_18" class="partnet_100015/collision" rgba="0.84525589378516641 0.17163919505705794 0.19071832020806478 1" mesh="partnet_100015/original-21_col_collision_18"/>
+          <geom name="partnet_100015/original-30_col_collision_0" class="partnet_100015/collision" rgba="0.23546052576135013 0.046664471806812324 0.1614593559147508 1" mesh="partnet_100015/original-30_col_collision_0"/>
+          <geom name="partnet_100015/original-30_col_collision_1" class="partnet_100015/collision" rgba="0.16248977741700932 0.49040752359416484 0.092424702292943639 1" mesh="partnet_100015/original-30_col_collision_1"/>
+          <geom name="partnet_100015/original-22_col_collision_0" class="partnet_100015/collision" rgba="0.12491967617364974 0.3521401081126323 0.9777753403621382 1" mesh="partnet_100015/original-22_col_collision_0"/>
+          <geom name="partnet_100015/original-22_col_collision_1" class="partnet_100015/collision" rgba="0.10760352751332014 0.90449972156595526 0.99425627382832593 1" mesh="partnet_100015/original-22_col_collision_1"/>
+          <geom name="partnet_100015/original-22_col_collision_2" class="partnet_100015/collision" rgba="0.043933301203645359 0.58608980893181395 0.010299120946716034 1" mesh="partnet_100015/original-22_col_collision_2"/>
+          <geom name="partnet_100015/original-22_col_collision_3" class="partnet_100015/collision" rgba="0.02547387145696689 0.28186772584206998 0.61025981386674599 1" mesh="partnet_100015/original-22_col_collision_3"/>
+          <geom name="partnet_100015/original-22_col_collision_4" class="partnet_100015/collision" rgba="0.50427577465974482 0.28484341902816934 0.69826634092453599 1" mesh="partnet_100015/original-22_col_collision_4"/>
+          <geom name="partnet_100015/original-22_col_collision_5" class="partnet_100015/collision" rgba="0.23878319538624515 0.0030386540727425082 0.60667233305404422 1" mesh="partnet_100015/original-22_col_collision_5"/>
+          <geom name="partnet_100015/original-22_col_collision_6" class="partnet_100015/collision" rgba="0.7781951368402884 0.019902001335425856 0.78351861065041395 1" mesh="partnet_100015/original-22_col_collision_6"/>
+          <geom name="partnet_100015/original-22_col_collision_7" class="partnet_100015/collision" rgba="0.56240576950467025 0.82631121499810467 0.38325169575128848 1" mesh="partnet_100015/original-22_col_collision_7"/>
+          <geom name="partnet_100015/original-26_col_collision_0" class="partnet_100015/collision" rgba="0.35201508651974633 0.76850927330474517 0.02685988091917213 1" mesh="partnet_100015/original-26_col_collision_0"/>
+          <geom name="partnet_100015/original-26_col_collision_1" class="partnet_100015/collision" rgba="0.766945416841188 0.32495251801500924 0.80956665557874719 1" mesh="partnet_100015/original-26_col_collision_1"/>
+          <geom name="partnet_100015/original-5_col_collision_0" class="partnet_100015/collision" rgba="0.64019153812667629 0.875587430811684 0.28407520663537589 1" mesh="partnet_100015/original-5_col_collision_0"/>
+          <geom name="partnet_100015/original-5_col_collision_1" class="partnet_100015/collision" rgba="0.18875744928029115 0.57862517522592405 0.10309527569060684 1" mesh="partnet_100015/original-5_col_collision_1"/>
+          <geom name="partnet_100015/original-5_col_collision_2" class="partnet_100015/collision" rgba="0.95213218205700012 0.032338553407572301 0.25187646149749543 1" mesh="partnet_100015/original-5_col_collision_2"/>
+          <geom name="partnet_100015/original-5_col_collision_3" class="partnet_100015/collision" rgba="0.87028430446278859 0.23970721231357461 0.45334546369671769 1" mesh="partnet_100015/original-5_col_collision_3"/>
+          <geom name="partnet_100015/original-5_col_collision_4" class="partnet_100015/collision" rgba="0.88612266074157287 0.26828984628744623 0.81040065538461392 1" mesh="partnet_100015/original-5_col_collision_4"/>
+          <geom name="partnet_100015/original-5_col_collision_5" class="partnet_100015/collision" rgba="0.34449197960191524 0.71668927620461886 0.060768356838344917 1" mesh="partnet_100015/original-5_col_collision_5"/>
+          <geom name="partnet_100015/original-5_col_collision_6" class="partnet_100015/collision" rgba="0.66576804277605273 0.3027781355323178 0.50403380025536759 1" mesh="partnet_100015/original-5_col_collision_6"/>
+          <geom name="partnet_100015/original-5_col_collision_7" class="partnet_100015/collision" rgba="0.65864903771003602 0.38234373333845662 0.074122585036215605 1" mesh="partnet_100015/original-5_col_collision_7"/>
+          <geom name="partnet_100015/original-5_col_collision_8" class="partnet_100015/collision" rgba="0.6968021877471624 0.45035925236760699 0.50355802495966118 1" mesh="partnet_100015/original-5_col_collision_8"/>
+          <geom name="partnet_100015/original-27_col_collision_0" class="partnet_100015/collision" rgba="0.92258410018875725 0.55670236684474705 0.15214841995255535 1" mesh="partnet_100015/original-27_col_collision_0"/>
+          <geom name="partnet_100015/original-6_col_collision_0" class="partnet_100015/collision" rgba="0.81998627871459895 0.3957513985257437 0.46075500653997881 1" mesh="partnet_100015/original-6_col_collision_0"/>
+          <geom name="partnet_100015/original-6_col_collision_1" class="partnet_100015/collision" rgba="0.45478206662981735 0.68989624905149705 0.056494157047724869 1" mesh="partnet_100015/original-6_col_collision_1"/>
+          <geom name="partnet_100015/original-6_col_collision_2" class="partnet_100015/collision" rgba="0.47060379633919702 0.97205093139196541 0.1674225055889802 1" mesh="partnet_100015/original-6_col_collision_2"/>
+          <geom name="partnet_100015/original-6_col_collision_3" class="partnet_100015/collision" rgba="0.88745373477829204 0.94021353230225857 0.077659363329541931 1" mesh="partnet_100015/original-6_col_collision_3"/>
+          <geom name="partnet_100015/original-6_col_collision_4" class="partnet_100015/collision" rgba="0.48221982586243217 0.38057057050939302 0.9786532506045964 1" mesh="partnet_100015/original-6_col_collision_4"/>
+          <geom name="partnet_100015/original-6_col_collision_5" class="partnet_100015/collision" rgba="0.52381681721586704 0.64612699550535868 0.36309803407923369 1" mesh="partnet_100015/original-6_col_collision_5"/>
+          <geom name="partnet_100015/original-6_col_collision_6" class="partnet_100015/collision" rgba="0.33775648158673777 0.30869112610378524 0.721076840479282 1" mesh="partnet_100015/original-6_col_collision_6"/>
+          <geom name="partnet_100015/original-6_col_collision_7" class="partnet_100015/collision" rgba="0.85528647160450411 0.439800967912372 0.16918323162160731 1" mesh="partnet_100015/original-6_col_collision_7"/>
+          <geom name="partnet_100015/original-31_col_collision_0" class="partnet_100015/collision" rgba="0.62826014606228253 0.54538920132542212 0.87188299736661445 1" mesh="partnet_100015/original-31_col_collision_0"/>
+          <geom name="partnet_100015/original-23_col_collision_0" class="partnet_100015/collision" rgba="0.22631516220221592 0.29444530923822321 0.39316809986465595 1" mesh="partnet_100015/original-23_col_collision_0"/>
+          <geom name="partnet_100015/original-23_col_collision_1" class="partnet_100015/collision" rgba="0.47479126880460587 0.66910797601999528 0.83603181510679614 1" mesh="partnet_100015/original-23_col_collision_1"/>
+          <geom name="partnet_100015/original-23_col_collision_2" class="partnet_100015/collision" rgba="0.054339540885102622 0.49898736711460367 0.69056751969195462 1" mesh="partnet_100015/original-23_col_collision_2"/>
+          <geom name="partnet_100015/original-23_col_collision_3" class="partnet_100015/collision" rgba="0.55596288614469269 0.024739242247220683 0.92040696510810882 1" mesh="partnet_100015/original-23_col_collision_3"/>
+          <geom name="partnet_100015/original-23_col_collision_4" class="partnet_100015/collision" rgba="0.73084414498316386 0.56231662103386548 0.81081260904006935 1" mesh="partnet_100015/original-23_col_collision_4"/>
+          <geom name="partnet_100015/original-23_col_collision_5" class="partnet_100015/collision" rgba="0.31745858434192853 0.61738224821690924 0.25979765921770348 1" mesh="partnet_100015/original-23_col_collision_5"/>
+          <geom name="partnet_100015/original-23_col_collision_6" class="partnet_100015/collision" rgba="0.17400189011086298 0.13450280336290454 0.53137278835861057 1" mesh="partnet_100015/original-23_col_collision_6"/>
+          <geom name="partnet_100015/original-23_col_collision_7" class="partnet_100015/collision" rgba="0.1317097898266929 0.22215587711455587 0.52617660722771098 1" mesh="partnet_100015/original-23_col_collision_7"/>
+          <geom name="partnet_100015/original-23_col_collision_8" class="partnet_100015/collision" rgba="0.2171380232784238 0.96786107175847214 0.27491761615325094 1" mesh="partnet_100015/original-23_col_collision_8"/>
+          <geom name="partnet_100015/original-23_col_collision_9" class="partnet_100015/collision" rgba="0.54587845879084296 0.40154766386540564 0.10820684366866329 1" mesh="partnet_100015/original-23_col_collision_9"/>
+          <geom name="partnet_100015/original-23_col_collision_10" class="partnet_100015/collision" rgba="0.45669477608856457 0.16009888719161536 0.33998644846548465 1" mesh="partnet_100015/original-23_col_collision_10"/>
+          <geom name="partnet_100015/original-23_col_collision_11" class="partnet_100015/collision" rgba="0.82036061885111289 0.79097580245985144 0.32424583324758738 1" mesh="partnet_100015/original-23_col_collision_11"/>
+          <geom name="partnet_100015/original-23_col_collision_12" class="partnet_100015/collision" rgba="0.35545667197357955 0.61531315664501107 0.6849850778505997 1" mesh="partnet_100015/original-23_col_collision_12"/>
+          <geom name="partnet_100015/original-23_col_collision_13" class="partnet_100015/collision" rgba="0.31603401560024336 0.79677249415968587 0.67219037501612033 1" mesh="partnet_100015/original-23_col_collision_13"/>
+          <geom name="partnet_100015/original-23_col_collision_14" class="partnet_100015/collision" rgba="0.25348353721095207 0.24844760631449225 0.21228719138813978 1" mesh="partnet_100015/original-23_col_collision_14"/>
+          <geom name="partnet_100015/original-23_col_collision_15" class="partnet_100015/collision" rgba="0.27481865599623578 0.040529413801638436 0.00029910608416472417 1" mesh="partnet_100015/original-23_col_collision_15"/>
+          <geom name="partnet_100015/original-23_col_collision_16" class="partnet_100015/collision" rgba="0.81113456616996316 0.26600656330743955 0.82481261311796872 1" mesh="partnet_100015/original-23_col_collision_16"/>
+          <geom name="partnet_100015/original-23_col_collision_17" class="partnet_100015/collision" rgba="0.4194621228442682 0.9813641690832432 0.69697296200167869 1" mesh="partnet_100015/original-23_col_collision_17"/>
+          <geom name="partnet_100015/original-23_col_collision_18" class="partnet_100015/collision" rgba="0.99357271523318846 0.28119615769006001 0.9524501064205716 1" mesh="partnet_100015/original-23_col_collision_18"/>
+          <geom name="partnet_100015/original-25_col_collision_0" class="partnet_100015/collision" rgba="0.21990968528834853 0.13723789522382335 0.28711249983431786 1" mesh="partnet_100015/original-25_col_collision_0"/>
+          <geom name="partnet_100015/original-25_col_collision_1" class="partnet_100015/collision" rgba="0.21569310611683401 0.93268316154734865 0.37703188423266076 1" mesh="partnet_100015/original-25_col_collision_1"/>
+          <geom name="partnet_100015/original-7_col_collision_0" class="partnet_100015/collision" rgba="0.42791027529461823 0.37740601695878906 0.44471295077949202 1" mesh="partnet_100015/original-7_col_collision_0"/>
+          <geom name="partnet_100015/original-7_col_collision_1" class="partnet_100015/collision" rgba="0.7465145519713714 0.56929119815332296 0.75228424030000773 1" mesh="partnet_100015/original-7_col_collision_1"/>
+          <geom name="partnet_100015/original-7_col_collision_2" class="partnet_100015/collision" rgba="0.99244828247151184 0.077280130728063834 0.77458083048184712 1" mesh="partnet_100015/original-7_col_collision_2"/>
+          <geom name="partnet_100015/original-7_col_collision_3" class="partnet_100015/collision" rgba="0.14044954823131417 0.22036989845327637 0.37895439936182418 1" mesh="partnet_100015/original-7_col_collision_3"/>
+          <geom name="partnet_100015/original-7_col_collision_4" class="partnet_100015/collision" rgba="0.41930318239812781 0.443183168010299 0.23516047384606287 1" mesh="partnet_100015/original-7_col_collision_4"/>
+          <geom name="partnet_100015/original-7_col_collision_5" class="partnet_100015/collision" rgba="0.39997723157664222 0.53730193289187533 0.63460201846103148 1" mesh="partnet_100015/original-7_col_collision_5"/>
+          <geom name="partnet_100015/original-7_col_collision_6" class="partnet_100015/collision" rgba="0.1050076227620852 0.46013551789532647 0.8687836904282441 1" mesh="partnet_100015/original-7_col_collision_6"/>
+          <geom name="partnet_100015/original-7_col_collision_7" class="partnet_100015/collision" rgba="0.63050306148031932 0.98564653562163296 0.10457433802786176 1" mesh="partnet_100015/original-7_col_collision_7"/>
+          <geom name="partnet_100015/original-7_col_collision_8" class="partnet_100015/collision" rgba="0.73512758698709335 0.18633873974288118 0.80447428086197459 1" mesh="partnet_100015/original-7_col_collision_8"/>
+          <geom name="partnet_100015/original-19_col_collision_0" class="partnet_100015/collision" rgba="0.076814437851910111 0.34142362485887601 0.52972081751580347 1" mesh="partnet_100015/original-19_col_collision_0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

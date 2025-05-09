@@ -202,6 +202,20 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "mesh_plane": """
+        <mujoco>
+          <asset>
+            <mesh name="cube" vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 1" euler="45 0 0">
+              <freejoint/>
+              <geom type="mesh" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "sphere_box_shallow": """
         <mujoco>
           <worldbody>
