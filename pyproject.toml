@@ -36,6 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pre-commit",
     "pytest",
     "pytest-xdist",
     "ruff",

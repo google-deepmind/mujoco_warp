@@ -1425,8 +1425,8 @@ def update_constraint_init_cost(
     return
 
   efc_gauss_out[worldid] = 0.0
-  efc_cost_out[worldid] = 0.0
   efc_prev_cost_out[worldid] = efc_cost_in[worldid]
+  efc_cost_out[worldid] = 0.0
 
 
 @wp.kernel

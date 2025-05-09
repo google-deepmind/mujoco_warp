@@ -65,6 +65,7 @@ def fixture(
     mjm = mujoco.MjModel.from_xml_string(xml)
   else:
     raise ValueError("either fname or xml must be provided")
+
   if not actuation:
     mjm.opt.disableflags |= DisableBit.ACTUATION
   if not contact:
@@ -77,6 +78,7 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.GRAVITY
   if not eulerdamp:
     mjm.opt.disableflags |= DisableBit.EULERDAMP
+
   if cone is not None:
     mjm.opt.cone = cone
   if integrator is not None:
@@ -94,18 +96,28 @@ def fixture(
       mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
     else:
       mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
+
   mjd = mujoco.MjData(mjm)
   if keyframe > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
+
   if kick:
     # give the system a little kick to ensure we have non-identity rotations
     mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
     mjd.ctrl = np.random.normal(scale=0.01, size=mjm.nu)
     mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
+
+  if mjm.nmocap:
+    mjd.mocap_pos = np.random.random(mjd.mocap_pos.shape)
+    mocap_quat = np.random.random(mjd.mocap_quat.shape)
+    norms = np.linalg.norm(mocap_quat, axis=1, keepdims=True)
+    mjd.mocap_quat = mocap_quat / norms
+
   mujoco.mj_forward(mjm, mjd)
   m = io.put_model(mjm)
   if ls_parallel is not None:
     m.opt.ls_parallel = ls_parallel
+
   d = io.put_data(mjm, mjd, nworld=nworld, nconmax=nconmax, njmax=njmax)
   return mjm, mjd, m, d
 
