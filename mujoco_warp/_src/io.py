@@ -44,9 +44,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.nflex > 0:
     raise NotImplementedError("Flex is unsupported.")
 
-  if mjm.tendon_frictionloss.any():
-    raise NotImplementedError("Tendon frictionloss is unsupported.")
-
   # check options
   for opt, opt_types, msg in (
     (mjm.opt.integrator, types.IntegratorType, "Integrator"),
@@ -467,9 +464,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tendon_limited_adr=wp.array(np.nonzero(mjm.tendon_limited)[0], dtype=wp.int32, ndim=1),
     tendon_solref_lim=wp.array(mjm.tendon_solref_lim, dtype=wp.vec2f),
     tendon_solimp_lim=wp.array(mjm.tendon_solimp_lim, dtype=types.vec5),
+    tendon_solref_fri=wp.array(mjm.tendon_solref_fri, dtype=wp.vec2f),
+    tendon_solimp_fri=wp.array(mjm.tendon_solimp_fri, dtype=types.vec5),
     tendon_range=wp.array(mjm.tendon_range, dtype=wp.vec2f),
     tendon_margin=wp.array(mjm.tendon_margin, dtype=float),
     tendon_length0=wp.array(mjm.tendon_length0, dtype=float),
+    tendon_frictionloss=wp.array(mjm.tendon_frictionloss, dtype=float),
     tendon_invweight0=wp.array(mjm.tendon_invweight0, dtype=float),
     wrap_objid=wp.array(mjm.wrap_objid, dtype=int),
     wrap_prm=wp.array(mjm.wrap_prm, dtype=float),
