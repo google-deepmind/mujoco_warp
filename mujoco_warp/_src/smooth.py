@@ -195,8 +195,8 @@ def _site_local_to_global(
 @wp.kernel
 def _mocap(
   # Model:
-  body_ipos: wp.array(dtype=wp.vec3),
-  body_iquat: wp.array(dtype=wp.quat),
+  body_ipos: wp.array2d(dtype=wp.vec3),
+  body_iquat: wp.array2d(dtype=wp.quat),
   mocap_bodyid: wp.array(dtype=int),
   # Data in:
   mocap_pos_in: wp.array2d(dtype=wp.vec3),
@@ -215,8 +215,8 @@ def _mocap(
   xpos_out[worldid, bodyid] = xpos
   xquat_out[worldid, bodyid] = mocap_quat
   xmat_out[worldid, bodyid] = math.quat_to_mat(mocap_quat)
-  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[bodyid], mocap_quat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(mocap_quat, body_iquat[bodyid]))
+  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid,bodyid], mocap_quat)
+  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(mocap_quat, body_iquat[worldid, bodyid]))
 
 
 @event_scope
