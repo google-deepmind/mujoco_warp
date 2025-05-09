@@ -27,18 +27,18 @@ from .warp_util import event_scope
 @wp.kernel
 def _spring_passive(
   # Model:
-  qpos_spring: wp.array(dtype=float),
+  qpos_spring: wp.array2d(dtype=float),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
-  jnt_stiffness: wp.array(dtype=float),
+  jnt_stiffness: wp.array2d(dtype=float),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   # Data out:
   qfrc_spring_out: wp.array2d(dtype=float),
 ):
   worldid, jntid = wp.tid()
-  stiffness = jnt_stiffness[jntid]
+  stiffness = jnt_stiffness[worldid, jntid]
   dofid = jnt_dofadr[jntid]
 
   if stiffness == 0.0:
@@ -49,9 +49,9 @@ def _spring_passive(
 
   if jnttype == wp.static(JointType.FREE.value):
     dif = wp.vec3(
-      qpos_in[worldid, qposid + 0] - qpos_spring[qposid + 0],
-      qpos_in[worldid, qposid + 1] - qpos_spring[qposid + 1],
-      qpos_in[worldid, qposid + 2] - qpos_spring[qposid + 2],
+      qpos_in[worldid, qposid + 0] - qpos_spring[worldid, qposid + 0],
+      qpos_in[worldid, qposid + 1] - qpos_spring[worldid, qposid + 1],
+      qpos_in[worldid, qposid + 2] - qpos_spring[worldid, qposid + 2],
     )
     qfrc_spring_out[worldid, dofid + 0] = -stiffness * dif[0]
     qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
@@ -63,10 +63,10 @@ def _spring_passive(
       qpos_in[worldid, qposid + 6],
     )
     ref = wp.quat(
-      qpos_spring[qposid + 3],
-      qpos_spring[qposid + 4],
-      qpos_spring[qposid + 5],
-      qpos_spring[qposid + 6],
+      qpos_spring[worldid, qposid + 3],
+      qpos_spring[worldid, qposid + 4],
+      qpos_spring[worldid, qposid + 5],
+      qpos_spring[worldid, qposid + 6],
     )
     dif = math.quat_sub(rot, ref)
     qfrc_spring_out[worldid, dofid + 3] = -stiffness * dif[0]
@@ -80,24 +80,24 @@ def _spring_passive(
       qpos_in[worldid, qposid + 3],
     )
     ref = wp.quat(
-      qpos_spring[qposid + 0],
-      qpos_spring[qposid + 1],
-      qpos_spring[qposid + 2],
-      qpos_spring[qposid + 3],
+      qpos_spring[worldid, qposid + 0],
+      qpos_spring[worldid, qposid + 1],
+      qpos_spring[worldid, qposid + 2],
+      qpos_spring[worldid, qposid + 3],
     )
     dif = math.quat_sub(rot, ref)
     qfrc_spring_out[worldid, dofid + 0] = -stiffness * dif[0]
     qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
     qfrc_spring_out[worldid, dofid + 2] = -stiffness * dif[2]
   else:  # mjJNT_SLIDE, mjJNT_HINGE
-    fdif = qpos_in[worldid, qposid] - qpos_spring[qposid]
+    fdif = qpos_in[worldid, qposid] - qpos_spring[worldid, qposid]
     qfrc_spring_out[worldid, dofid] = -stiffness * fdif
 
 
 @wp.kernel
 def _damper_passive(
   # Model:
-  dof_damping: wp.array(dtype=float),
+  dof_damping: wp.array2d(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   qfrc_spring_in: wp.array2d(dtype=float),
@@ -107,7 +107,7 @@ def _damper_passive(
 ):
   worldid, dofid = wp.tid()
 
-  qfrc_damper = -dof_damping[dofid] * qvel_in[worldid, dofid]
+  qfrc_damper = -dof_damping[worldid, dofid] * qvel_in[worldid, dofid]
 
   qfrc_damper_out[worldid, dofid] = qfrc_damper
   qfrc_passive_out[worldid, dofid] = qfrc_damper + qfrc_spring_in[worldid, dofid]
@@ -119,7 +119,7 @@ def _gravity_force(
   opt_gravity: wp.vec3,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  body_mass: wp.array(dtype=float),
+  body_mass: wp.array2d(dtype=float),
   body_gravcomp: wp.array(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   # Data in:
@@ -134,7 +134,7 @@ def _gravity_force(
   gravcomp = body_gravcomp[bodyid]
 
   if gravcomp:
-    force = -opt_gravity * body_mass[bodyid] * gravcomp
+    force = -opt_gravity * body_mass[worldid, bodyid] * gravcomp
 
     pos = xipos_in[worldid, bodyid]
     jac, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)

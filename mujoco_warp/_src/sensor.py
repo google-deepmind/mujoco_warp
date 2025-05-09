@@ -35,15 +35,16 @@ def _write_scalar(
   # Model:
   sensor_datatype: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
-  sensor_cutoff: wp.array(dtype=float),
+  sensor_cutoff: wp.array2d(dtype=float),
   # In:
   sensorid: int,
   sensor: Any,
+  worldid: int,
   # Out:
   out: wp.array(dtype=float),
 ):
   adr = sensor_adr[sensorid]
-  cutoff = sensor_cutoff[sensorid]
+  cutoff = sensor_cutoff[worldid, sensorid]
 
   if cutoff > 0.0:
     datatype = sensor_datatype[sensorid]
@@ -60,16 +61,17 @@ def _write_vector(
   # Model:
   sensor_datatype: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
-  sensor_cutoff: wp.array(dtype=float),
+  sensor_cutoff: wp.array2d(dtype=float),
   # In:
   sensorid: int,
   sensordim: int,
   sensor: Any,
+  worldid: int,
   # Out:
   out: wp.array(dtype=float),
 ):
   adr = sensor_adr[sensorid]
-  cutoff = sensor_cutoff[sensorid]
+  cutoff = sensor_cutoff[worldid, sensorid]
 
   if cutoff > 0.0:
     datatype = sensor_datatype[sensorid]
@@ -279,11 +281,11 @@ def _frame_axis(
 @wp.func
 def _frame_quat(
   # Model:
-  body_iquat: wp.array(dtype=wp.quat),
+  body_iquat: wp.array2d(dtype=wp.quat),
   geom_bodyid: wp.array(dtype=int),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
-  site_quat: wp.array(dtype=wp.quat),
+  site_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   xquat_in: wp.array2d(dtype=wp.quat),
   # In:
@@ -293,25 +295,25 @@ def _frame_quat(
   refid: int,
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
-    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[objid])
+    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[worldid, refid])
   elif objtype == int(ObjType.XBODY.value):
     quat = xquat_in[worldid, objid]
     if refid == -1:
       return quat
     refquat = xquat_in[worldid, refid]
   elif objtype == int(ObjType.GEOM.value):
-    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid, refid])
   elif objtype == int(ObjType.SITE.value):
-    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[worldid, refid])
 
   # TODO(team): camera
 
@@ -334,12 +336,12 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
-  body_iquat: wp.array(dtype=wp.quat),
+  body_iquat: wp.array2d(dtype=wp.quat),
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
-  site_quat: wp.array(dtype=wp.quat),
+  site_quat: wp.array2d(dtype=wp.quat),
   cam_fovy: wp.array(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
@@ -350,7 +352,7 @@ def _sensor_pos(
   sensor_objid: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
-  sensor_cutoff: wp.array(dtype=float),
+  sensor_cutoff: wp.array2d(dtype=float),
   sensor_pos_adr: wp.array(dtype=int),
   # Data in:
   time_in: wp.array(dtype=float),
@@ -383,19 +385,19 @@ def _sensor_pos(
     vec2 = _cam_projection(
       cam_fovy, cam_resolution, cam_sensorsize, cam_intrinsic, site_xpos_in, cam_xpos_in, cam_xmat_in, worldid, objid, refid
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 2, vec2, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 2, vec2, worldid, out)
   elif sensortype == int(SensorType.JOINTPOS.value):
     val = _joint_pos(jnt_qposadr, qpos_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.TENDONPOS.value):
     val = _tendon_pos(ten_length_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.ACTUATORPOS.value):
     val = _actuator_pos(actuator_length_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.BALLQUAT.value):
     quat = _ball_quat(jnt_qposadr, qpos_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 4, quat, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 4, quat, worldid, out)
   elif sensortype == int(SensorType.FRAMEPOS.value):
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
@@ -413,7 +415,7 @@ def _sensor_pos(
       objtype,
       refid,
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif (
     sensortype == int(SensorType.FRAMEXAXIS.value)
     or sensortype == int(SensorType.FRAMEYAXIS.value)
@@ -428,18 +430,18 @@ def _sensor_pos(
     elif sensortype == int(SensorType.FRAMEZAXIS.value):
       axis = 2
     vec3 = _frame_axis(ximat_in, xmat_in, geom_xmat_in, site_xmat_in, worldid, objid, objtype, refid, axis)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.FRAMEQUAT.value):
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
     quat = _frame_quat(body_iquat, geom_bodyid, geom_quat, site_bodyid, site_quat, xquat_in, worldid, objid, objtype, refid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 4, quat, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 4, quat, worldid, out)
   elif sensortype == int(SensorType.SUBTREECOM.value):
     vec3 = _subtree_com(subtree_com_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.CLOCK.value):
     val = _clock(time_in, worldid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
 
 
 @event_scope
@@ -811,7 +813,7 @@ def _sensor_vel(
   sensor_reftype: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
-  sensor_cutoff: wp.array(dtype=float),
+  sensor_cutoff: wp.array2d(dtype=float),
   sensor_vel_adr: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
@@ -842,22 +844,22 @@ def _sensor_vel(
 
   if sensortype == int(SensorType.VELOCIMETER.value):
     vec3 = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.GYRO.value):
     vec3 = _gyro(site_bodyid, site_xmat_in, cvel_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.JOINTVEL.value):
     val = _joint_vel(jnt_dofadr, qvel_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.TENDONVEL.value):
     val = _tendon_vel(ten_velocity_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.ACTUATORVEL.value):
     val = _actuator_vel(actuator_velocity_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.BALLANGVEL.value):
     vec3 = _ball_ang_vel(jnt_dofadr, qvel_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.FRAMELINVEL.value):
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
@@ -885,7 +887,7 @@ def _sensor_vel(
       refid,
       reftype,
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_linvel, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_linvel, worldid, out)
   elif sensortype == int(SensorType.FRAMEANGVEL.value):
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
@@ -913,13 +915,13 @@ def _sensor_vel(
       refid,
       reftype,
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_angvel, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_angvel, worldid, out)
   elif sensortype == int(SensorType.SUBTREELINVEL.value):
     vec3 = _subtree_linvel(subtree_linvel_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.SUBTREEANGMOM.value):
     vec3 = _subtree_angmom(subtree_angmom_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
 
 
 @event_scope
@@ -1144,7 +1146,7 @@ def _sensor_acc(
   sensor_objtype: wp.array(dtype=int),
   sensor_objid: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
-  sensor_cutoff: wp.array(dtype=float),
+  sensor_cutoff: wp.array2d(dtype=float),
   sensor_acc_adr: wp.array(dtype=int),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1171,19 +1173,19 @@ def _sensor_acc(
     vec3 = _accelerometer(
       body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.FORCE.value):
     vec3 = _force(site_bodyid, site_xmat_in, cfrc_int_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.TORQUE.value):
     vec3 = _torque(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cfrc_int_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.ACTUATORFRC.value):
     val = _actuator_force(actuator_force_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.JOINTACTFRC.value):
     val = _joint_actuator_force(jnt_dofadr, qfrc_actuator_in, worldid, objid)
-    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, worldid, out)
   elif sensortype == int(SensorType.FRAMELINACC.value):
     objtype = sensor_objtype[sensorid]
     vec3 = _framelinacc(
@@ -1201,7 +1203,7 @@ def _sensor_acc(
       objid,
       objtype,
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.FRAMEANGACC.value):
     objtype = sensor_objtype[sensorid]
     vec3 = _frameangacc(
@@ -1212,7 +1214,7 @@ def _sensor_acc(
       objid,
       objtype,
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
 
 
 @event_scope
