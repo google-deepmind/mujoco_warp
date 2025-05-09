@@ -147,7 +147,7 @@ def _kinematics_level(
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid, bodyid], xquat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid,bodyid]))
+  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid, bodyid]))
 
 
 @wp.kernel
@@ -167,7 +167,7 @@ def _geom_local_to_global(
   bodyid = geom_bodyid[geomid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
-  geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid,geomid], xquat)
+  geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid, geomid], xquat)
   geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid, geomid]))
 
 
@@ -189,7 +189,7 @@ def _site_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[worldid, siteid], xquat)
-  site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[worldid,siteid]))
+  site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[worldid, siteid]))
 
 
 @wp.kernel
@@ -215,7 +215,7 @@ def _mocap(
   xpos_out[worldid, bodyid] = xpos
   xquat_out[worldid, bodyid] = mocap_quat
   xmat_out[worldid, bodyid] = math.quat_to_mat(mocap_quat)
-  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid,bodyid], mocap_quat)
+  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid, bodyid], mocap_quat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(mocap_quat, body_iquat[worldid, bodyid]))
 
 
@@ -320,7 +320,7 @@ def _subtree_div(
   subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  subtree_com_out[worldid, bodyid] /= subtree_mass[worldid,bodyid]
+  subtree_com_out[worldid, bodyid] /= subtree_mass[worldid, bodyid]
 
 
 @wp.kernel
@@ -338,7 +338,7 @@ def _cinert(
 ):
   worldid, bodyid = wp.tid()
   mat = ximat_in[worldid, bodyid]
-  inert = body_inertia[worldid,bodyid]
+  inert = body_inertia[worldid, bodyid]
   mass = body_mass[worldid, bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
   # express inertia in com-based frame (mju_inertCom)
@@ -486,7 +486,7 @@ def _cam_local_to_global(
   bodyid = cam_bodyid[camid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
-  cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid,camid], xquat)
+  cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
   cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
 
 
@@ -514,7 +514,7 @@ def _cam_fn(
     return
   elif cam_mode[camid] == wp.static(CamLightType.TRACK.value):
     body_xpos = xpos_in[worldid, cam_bodyid[camid]]
-    cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[worldid,camid]
+    cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[worldid, camid]
   elif cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
     cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[worldid, camid]
   elif cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or cam_mode[camid] == wp.static(
@@ -556,7 +556,7 @@ def _light_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
-  light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid,lightid], xquat)
+  light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
 
 
 @wp.kernel
@@ -682,7 +682,7 @@ def _qM_sparse(
   bodyid = dof_bodyid[dofid]
 
   # init M(i,i) with armature inertia
-  qM_out[worldid, 0, madr_ij] = dof_armature[worldid,dofid]
+  qM_out[worldid, 0, madr_ij] = dof_armature[worldid, dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
@@ -1225,7 +1225,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
     else:
-      offset = site_pos[worldid,obj2]
+      offset = site_pos[worldid, obj2]
 
     # transform point on body2: local -> global
     pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
@@ -1797,7 +1797,7 @@ def _linear_momentum(
   if bodyid:
     pid = body_parentid[bodyid]
     wp.atomic_add(subtree_linvel_out[worldid], pid, subtree_linvel_in[worldid, bodyid])
-  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[worldid,bodyid])
+  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[worldid, bodyid])
 
 
 @wp.kernel

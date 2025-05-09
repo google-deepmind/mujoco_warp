@@ -772,7 +772,7 @@ def _gjk_epa_pipeline(
       collision_pair_in,
       collision_pairid_in,
       tid,
-      worldid
+      worldid,
     )
 
     g1 = geoms[0]

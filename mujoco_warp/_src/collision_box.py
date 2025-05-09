@@ -262,7 +262,7 @@ def _box_box(
       collision_pair_in,
       collision_pairid_in,
       tid,
-      worldid
+      worldid,
     )
 
     # transformations

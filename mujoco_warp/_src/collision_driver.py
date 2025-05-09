@@ -138,13 +138,13 @@ def _sap_project(
   worldid, geomid = wp.tid()
 
   xpos = geom_xpos_in[worldid, geomid]
-  rbound = geom_rbound[worldid,geomid]
+  rbound = geom_rbound[worldid, geomid]
 
   if rbound == 0.0:
     # geom is a plane
     rbound = MJ_MAXVAL
 
-  radius = rbound + geom_margin[worldid,geomid]
+  radius = rbound + geom_margin[worldid, geomid]
   center = wp.dot(direction_in, xpos)
 
   sap_projection_lower_out[worldid, geomid] = center - radius

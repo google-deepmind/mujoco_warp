@@ -44,7 +44,7 @@ def _write_scalar(
   out: wp.array(dtype=float),
 ):
   adr = sensor_adr[sensorid]
-  cutoff = sensor_cutoff[worldid,sensorid]
+  cutoff = sensor_cutoff[worldid, sensorid]
 
   if cutoff > 0.0:
     datatype = sensor_datatype[sensorid]
@@ -308,7 +308,7 @@ def _frame_quat(
     quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[worldid, objid])
     if refid == -1:
       return quat
-    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid,refid])
+    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid, refid])
   elif objtype == int(ObjType.SITE.value):
     quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[worldid, objid])
     if refid == -1:

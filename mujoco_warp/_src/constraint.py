@@ -287,7 +287,7 @@ def _efc_equality_joint(
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
     deriv_2 = data[1] + dif * (2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4]))
 
-    pos = qpos_in[worldid, qposadr1] - qpos0[worldid,qposadr1] - rhs
+    pos = qpos_in[worldid, qposadr1] - qpos0[worldid, qposadr1] - rhs
     Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
     invweight = dof_invweight0[worldid, dofadr1] + dof_invweight0[worldid, dofadr2]
 
@@ -697,7 +697,7 @@ def _efc_limit_slide_hinge(
 ):
   worldid, jntlimitedid = wp.tid()
   jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
-  jntrange = jnt_range[worldid,jntid]
+  jntrange = jnt_range[worldid, jntid]
 
   qpos = qpos_in[worldid, jnt_qposadr[jntid]]
   jntmargin = jnt_margin[worldid, jntid]
@@ -724,7 +724,7 @@ def _efc_limit_slide_hinge(
       pos,
       dof_invweight0[worldid, dofadr],
       jnt_solref[worldid, jntid],
-      jnt_solimp[worldid,jntid],
+      jnt_solimp[worldid, jntid],
       jntmargin,
       Jqvel,
       0.0,
@@ -858,7 +858,7 @@ def _efc_limit_tendon(
   tenrange = tendon_range[worldid, tenid]
   length = ten_length_in[worldid, tenid]
   dist_min, dist_max = length - tenrange[0], tenrange[1] - length
-  tenmargin = tendon_margin[worldid,tenid]
+  tenmargin = tendon_margin[worldid, tenid]
   pos = wp.min(dist_min, dist_max) - tenmargin
   active = pos < 0
 
@@ -890,7 +890,7 @@ def _efc_limit_tendon(
       efcid,
       pos,
       pos,
-      tendon_invweight0[worldid,tenid],
+      tendon_invweight0[worldid, tenid],
       tendon_solref_lim[worldid, tenid],
       tendon_solimp_lim[worldid, tenid],
       tenmargin,

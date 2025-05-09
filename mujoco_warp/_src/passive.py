@@ -38,7 +38,7 @@ def _spring_passive(
   qfrc_spring_out: wp.array2d(dtype=float),
 ):
   worldid, jntid = wp.tid()
-  stiffness = jnt_stiffness[worldid,jntid]
+  stiffness = jnt_stiffness[worldid, jntid]
   dofid = jnt_dofadr[jntid]
 
   if stiffness == 0.0:
@@ -90,7 +90,7 @@ def _spring_passive(
     qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
     qfrc_spring_out[worldid, dofid + 2] = -stiffness * dif[2]
   else:  # mjJNT_SLIDE, mjJNT_HINGE
-    fdif = qpos_in[worldid, qposid] - qpos_spring[worldid,qposid]
+    fdif = qpos_in[worldid, qposid] - qpos_spring[worldid, qposid]
     qfrc_spring_out[worldid, dofid] = -stiffness * fdif
 
 

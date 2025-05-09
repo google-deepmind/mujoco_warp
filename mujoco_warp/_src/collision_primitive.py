@@ -56,7 +56,7 @@ def _geom(
   geom.pos = geom_xpos_in[worldid, gid]
   rot = geom_xmat_in[worldid, gid]
   geom.rot = rot
-  geom.size = geom_size[worldid,gid]
+  geom.size = geom_size[worldid, gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = geom_dataid[gid]
 
@@ -1768,7 +1768,7 @@ def _primitive_narrowphase(
 
   if tid >= ncollision_in[0]:
     return
-  
+
   worldid = collision_worldid_in[tid]
 
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
@@ -1790,7 +1790,7 @@ def _primitive_narrowphase(
     collision_pair_in,
     collision_pairid_in,
     tid,
-    worldid
+    worldid,
   )
   g1 = geoms[0]
   g2 = geoms[1]

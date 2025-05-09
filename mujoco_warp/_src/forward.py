@@ -159,7 +159,7 @@ def _next_activation(
 
   # advance the actuation
   if actuator_dyntype[actid] == wp.static(DynType.FILTEREXACT.value):
-    dyn_prm = actuator_dynprm[worldid,actid]
+    dyn_prm = actuator_dynprm[worldid, actid]
     tau = wp.max(MJ_MINVAL, dyn_prm[0])
     act += act_dot_scale_in * act_dot * tau * (1.0 - wp.exp(-opt_timestep / tau))
   else:
@@ -167,7 +167,7 @@ def _next_activation(
 
   # clamp to actrange
   if limit and actuator_actlimited[actid]:
-    actrange = actuator_actrange[worldid,actid]
+    actrange = actuator_actrange[worldid, actid]
     act = wp.clamp(act, actrange[0], actrange[1])
 
   act_out[worldid, actid] = act
@@ -278,7 +278,7 @@ def _euler_damp_qfrc_sparse(
   worldid, tid = wp.tid()
 
   adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += opt_timestep * dof_damping[worldid,tid]
+  qM_integration_out[worldid, 0, adr] += opt_timestep * dof_damping[worldid, tid]
   qfrc_integration_out[worldid, tid] = qfrc_smooth_in[worldid, tid] + qfrc_constraint_in[worldid, tid]
 
 
@@ -497,7 +497,7 @@ def _implicit_actuator_bias_gain_vel(
     bias_vel = 0.0
 
   if actuator_gaintype[actid] == wp.static(GainType.AFFINE.value):
-    gain_vel = actuator_gainprm[worldid,actid][2]
+    gain_vel = actuator_gainprm[worldid, actid][2]
   else:
     gain_vel = 0.0
 
