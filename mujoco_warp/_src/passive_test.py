@@ -41,7 +41,7 @@ class PassiveTest(parameterized.TestCase):
     """Tests passive."""
     _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity)
 
-    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_gravcomp, d.qfrc_passive):
       arr.zero_()
 
     mjwarp.passive(m, d)
