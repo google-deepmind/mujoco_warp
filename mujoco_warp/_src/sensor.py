@@ -915,13 +915,13 @@ def _sensor_vel(
       refid,
       reftype,
     )
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff[worldid], sensorid, 3, frame_angvel, worldid, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_angvel, worldid, out)
   elif sensortype == int(SensorType.SUBTREELINVEL.value):
     vec3 = _subtree_linvel(subtree_linvel_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff[worldid], sensorid, 3, vec3, worldid, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
   elif sensortype == int(SensorType.SUBTREEANGMOM.value):
     vec3 = _subtree_angmom(subtree_angmom_in, worldid, objid)
-    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff[worldid], sensorid, 3, vec3, worldid, out)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, worldid, out)
 
 
 @event_scope
