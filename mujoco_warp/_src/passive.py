@@ -13,15 +13,20 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Tuple
+
 import warp as wp
 
 from . import math
 from . import support
+from .types import MJ_MINVAL
 from .types import Data
 from .types import DisableBit
 from .types import JointType
 from .types import Model
+from .types import Option
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 
 @wp.kernel
@@ -95,25 +100,6 @@ def _spring_passive(
 
 
 @wp.kernel
-def _damper_passive(
-  # Model:
-  dof_damping: wp.array(dtype=float),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  qfrc_spring_in: wp.array2d(dtype=float),
-  # Data out:
-  qfrc_damper_out: wp.array2d(dtype=float),
-  qfrc_passive_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-
-  qfrc_damper = -dof_damping[dofid] * qvel_in[worldid, dofid]
-
-  qfrc_damper_out[worldid, dofid] = qfrc_damper
-  qfrc_passive_out[worldid, dofid] = qfrc_damper + qfrc_spring_in[worldid, dofid]
-
-
-@wp.kernel
 def _gravity_force(
   # Model:
   opt_gravity: wp.vec3,
@@ -142,35 +128,176 @@ def _gravity_force(
     wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
 
 
+def _box_fluid(opt: Option):
+  opt_wind = opt.wind
+  opt_viscosity = opt.viscosity
+  opt_density = opt.density
+
+  @nested_kernel
+  def box_fluid(
+    # Model:
+    body_rootid: wp.array(dtype=int),
+    body_mass: wp.array(dtype=float),
+    body_inertia: wp.array(dtype=wp.vec3),
+    # Data in:
+    xipos_in: wp.array2d(dtype=wp.vec3),
+    ximat_in: wp.array2d(dtype=wp.mat33),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cvel_in: wp.array2d(dtype=wp.spatial_vector),
+    # Data out:
+    fluid_applied_out: wp.array2d(dtype=wp.spatial_vector),
+  ):
+    """Fluid forces based on inertia-box approximation."""
+
+    worldid, bodyid = wp.tid()
+
+    # map from CoM-centered to local body-centered 6D velocity
+
+    # body-inertial
+    pos = xipos_in[worldid, bodyid]
+    rot = ximat_in[worldid, bodyid]
+    rotT = wp.transpose(rot)
+
+    # transform velocity
+    cvel = cvel_in[worldid, bodyid]
+    torque = wp.spatial_top(cvel)
+    force = wp.spatial_bottom(cvel)
+    subtree_com = subtree_com_in[worldid, body_rootid[bodyid]]
+    dif = pos - subtree_com
+    force -= wp.cross(dif, torque)
+
+    lvel_torque = rotT @ torque
+    lvel_force = rotT @ force
+
+    if wp.static(opt_wind[0] or opt_wind[1] or opt_wind[2]):
+      # subtract translational component from body velocity
+      lvel_force -= rotT @ opt_wind
+
+    lfrc_torque = wp.vec3(0.0)
+    lfrc_force = wp.vec3(0.0)
+
+    viscosity = wp.static(opt_viscosity > 0.0)
+    density = wp.static(opt_density > 0.0)
+
+    if wp.static(viscosity or density):
+      inertia = body_inertia[bodyid]
+      mass = body_mass[bodyid]
+      scl = 6.0 / mass
+      box0 = wp.sqrt(wp.max(MJ_MINVAL, inertia[1] + inertia[2] - inertia[0]) * scl)
+      box1 = wp.sqrt(wp.max(MJ_MINVAL, inertia[0] + inertia[2] - inertia[1]) * scl)
+      box2 = wp.sqrt(wp.max(MJ_MINVAL, inertia[0] + inertia[1] - inertia[2]) * scl)
+
+    if viscosity:
+      # diameter of sphere approximation
+      diam = (box0 + box1 + box2) * wp.static(1.0 / 3.0)
+
+      # angular viscosity
+      lfrc_torque = -lvel_torque * wp.pow(diam, 3.0) * wp.static(wp.pi * opt_viscosity)
+
+      # linear viscosity
+      lfrc_force = -lvel_force * diam * wp.static(3.0 * wp.pi * opt_viscosity)
+
+    if density:
+      # force
+      lfrc_force -= wp.vec3(
+        wp.static(0.5 * opt_density) * box1 * box2 * wp.abs(lvel_force[0]) * lvel_force[0],
+        wp.static(0.5 * opt_density) * box0 * box2 * wp.abs(lvel_force[1]) * lvel_force[1],
+        wp.static(0.5 * opt_density) * box0 * box1 * wp.abs(lvel_force[2]) * lvel_force[2],
+      )
+
+      # torque
+      scl = wp.static(opt_density / 64.0)
+      box0_pow4 = wp.pow(box0, 4.0)
+      box1_pow4 = wp.pow(box1, 4.0)
+      box2_pow4 = wp.pow(box2, 4.0)
+      lfrc_torque -= wp.vec3(
+        box0 * (box1_pow4 + box2_pow4) * wp.abs(lvel_torque[0]) * lvel_torque[0] * scl,
+        box1 * (box0_pow4 + box2_pow4) * wp.abs(lvel_torque[1]) * lvel_torque[1] * scl,
+        box2 * (box0_pow4 + box1_pow4) * wp.abs(lvel_torque[2]) * lvel_torque[2] * scl,
+      )
+
+    # rotate to global orientation: lfrc -> bfrc
+    torque = rot @ lfrc_torque
+    force = rot @ lfrc_force
+
+    fluid_applied_out[worldid, bodyid] = wp.spatial_vector(force, torque)
+
+  return box_fluid
+
+
+def _fluid(m: Model, d: Data):
+  wp.launch(
+    _box_fluid(m.opt),
+    dim=(d.nworld, m.nbody),
+    inputs=[
+      m.body_rootid,
+      m.body_mass,
+      m.body_inertia,
+      d.xipos,
+      d.ximat,
+      d.subtree_com,
+      d.cvel,
+    ],
+    outputs=[
+      d.fluid_applied,
+    ],
+  )
+
+  # TODO(team): ellipsoid fluid model
+
+  support.apply_ft(m, d, d.fluid_applied, d.qfrc_fluid)
+
+
 @wp.kernel
-def _qfrc_passive_gravcomp(
+def _qfrc_passive(
   # Model:
   jnt_actgravcomp: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
+  dof_damping: wp.array(dtype=float),
   # Data in:
+  qvel_in: wp.array2d(dtype=float),
+  qfrc_spring_in: wp.array2d(dtype=float),
   qfrc_gravcomp_in: wp.array2d(dtype=float),
+  qfrc_fluid_in: wp.array2d(dtype=float),
+  # In:
+  gravcomp: bool,
+  fluid: bool,
   # Data out:
+  qfrc_damper_out: wp.array2d(dtype=float),
   qfrc_passive_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
 
-  # add gravcomp unless added by actuators
-  if jnt_actgravcomp[dof_jntid[dofid]]:
-    return
+  # spring
+  qfrc_passive = qfrc_spring_in[worldid, dofid]
 
-  qfrc_passive_out[worldid, dofid] += qfrc_gravcomp_in[worldid, dofid]
+  # damper
+  qfrc_damper = -dof_damping[dofid] * qvel_in[worldid, dofid]
+  qfrc_damper_out[worldid, dofid] = qfrc_damper
+
+  qfrc_passive += qfrc_damper
+
+  # add gravcomp unless added by actuators
+  if gravcomp and not jnt_actgravcomp[dof_jntid[dofid]]:
+    qfrc_passive += qfrc_gravcomp_in[worldid, dofid]
+
+  # add fluid force
+  if fluid:
+    qfrc_passive += qfrc_fluid_in[worldid, dofid]
+
+  qfrc_passive_out[worldid, dofid] = qfrc_passive
 
 
 @event_scope
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
   if m.opt.disableflags & DisableBit.PASSIVE:
-    d.qfrc_passive.zero_()
+    d.qfrc_spring.zero_()
+    d.qfrc_damper.zero_()
     d.qfrc_gravcomp.zero_()
+    d.qfrc_fluid.zero_()
+    d.qfrc_passive.zero_()
     return
-
-  # TODO(team): mj_ellipsoidFluidModel
-  # TODO(team): mj_inertiaBoxFluidModell
 
   d.qfrc_spring.zero_()
   wp.launch(
@@ -179,14 +306,11 @@ def passive(m: Model, d: Data):
     inputs=[m.qpos_spring, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, m.jnt_stiffness, d.qpos],
     outputs=[d.qfrc_spring],
   )
-  wp.launch(
-    _damper_passive,
-    dim=(d.nworld, m.nv),
-    inputs=[m.dof_damping, d.qvel, d.qfrc_spring],
-    outputs=[d.qfrc_damper, d.qfrc_passive],
-  )
-  if m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY):
-    d.qfrc_gravcomp.zero_()
+
+  gravcomp = m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY)
+  d.qfrc_gravcomp.zero_()
+
+  if gravcomp:
     wp.launch(
       _gravity_force,
       dim=(d.nworld, m.nbody - 1, m.nv),
@@ -203,9 +327,24 @@ def passive(m: Model, d: Data):
       ],
       outputs=[d.qfrc_gravcomp],
     )
-    wp.launch(
-      _qfrc_passive_gravcomp,
-      dim=(d.nworld, m.nv),
-      inputs=[m.jnt_actgravcomp, m.dof_jntid, d.qfrc_gravcomp],
-      outputs=[d.qfrc_passive],
-    )
+
+  fluid = m.opt.density or m.opt.viscosity or m.opt.wind[0] or m.opt.wind[1] or m.opt.wind[2]
+  if fluid:
+    _fluid(m, d)
+
+  wp.launch(
+    _qfrc_passive,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.jnt_actgravcomp,
+      m.dof_jntid,
+      m.dof_damping,
+      d.qvel,
+      d.qfrc_spring,
+      d.qfrc_gravcomp,
+      d.qfrc_fluid,
+      gravcomp,
+      fluid,
+    ],
+    outputs=[d.qfrc_damper, d.qfrc_passive],
+  )

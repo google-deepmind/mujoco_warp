@@ -198,23 +198,57 @@ def xfrc_accumulate_kernel(
   out[worldid, dofid] += accumul
 
 
-@event_scope
-def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+@wp.kernel
+def _apply_ft(
+  # Model:
+  nbody: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  ft_in: wp.array2d(dtype=wp.spatial_vector),
+  # Out:
+  qfrc_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  cdof = cdof_in[worldid, dofid]
+  rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
+  jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
+
+  dofbodyid = dof_bodyid[dofid]
+  accumul = float(0.0)
+
+  for bodyid in range(dofbodyid, nbody):
+    # any body that is in the subtree of dofbodyid is part of the jacobian
+    parentid = bodyid
+    while parentid != 0 and parentid != dofbodyid:
+      parentid = body_parentid[parentid]
+    if parentid == 0:
+      continue  # body is not part of the subtree
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    cross_term = wp.cross(rotational_cdof, offset)
+    ft_body = ft_in[worldid, bodyid]
+    accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
+
+  qfrc_out[worldid, dofid] += accumul
+
+
+def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: wp.array2d(dtype=float)):
   wp.launch(
-    kernel=xfrc_accumulate_kernel,
+    kernel=_apply_ft,
     dim=(d.nworld, m.nv),
-    inputs=[
-      m.nbody,
-      m.body_parentid,
-      m.body_rootid,
-      m.dof_bodyid,
-      d.xfrc_applied,
-      d.xipos,
-      d.subtree_com,
-      d.cdof,
-    ],
+    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft],
     outputs=[qfrc],
   )
+
+
+@event_scope
+def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+  apply_ft(m, d, d.xfrc_applied, qfrc)
 
 
 @wp.func

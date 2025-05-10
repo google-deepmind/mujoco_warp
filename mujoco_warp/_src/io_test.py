@@ -227,22 +227,6 @@ class IOTest(absltest.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
-  def test_option_physical_constants(self):
-    mjm = mujoco.MjModel.from_xml_string("""
-      <mujoco>
-        <option wind="1 1 1" density="1" viscosity="1"/>
-        <worldbody>
-          <body>          
-            <geom type="sphere" size=".1"/>
-            <freejoint/>
-          </body>
-        </worldbody> 
-    </mujoco>
-    """)
-
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
-
 
 if __name__ == "__main__":
   wp.init()

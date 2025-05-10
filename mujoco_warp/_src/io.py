@@ -56,12 +56,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if opt not in set(opt_types):
       raise NotImplementedError(f"{msg} {opt} is unsupported.")
 
-  if mjm.opt.wind.any():
-    raise NotImplementedError("Wind is unsupported.")
-
-  if mjm.opt.density > 0 or mjm.opt.viscosity > 0:
-    raise NotImplementedError("Fluid forces are unsupported.")
-
   # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
   nv_max = 60
   if mjm.nv > nv_max and (not mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_SPARSE):
@@ -277,6 +271,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       tolerance=mjm.opt.tolerance,
       ls_tolerance=mjm.opt.ls_tolerance,
       gravity=wp.vec3(mjm.opt.gravity),
+      wind=wp.vec3(mjm.opt.wind[0], mjm.opt.wind[1], mjm.opt.wind[2]),
+      density=mjm.opt.density,
+      viscosity=mjm.opt.viscosity,
       cone=mjm.opt.cone,
       solver=mjm.opt.solver,
       iterations=mjm.opt.iterations,
@@ -557,6 +554,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ctrl=wp.zeros((nworld, mjm.nu), dtype=float),
     qfrc_applied=wp.zeros((nworld, mjm.nv), dtype=float),
     xfrc_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
+    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     eq_active=wp.array(np.tile(mjm.eq_active0, (nworld, 1)), dtype=bool),
     mocap_pos=wp.zeros((nworld, mjm.nmocap), dtype=wp.vec3),
     mocap_quat=wp.zeros((nworld, mjm.nmocap), dtype=wp.quat),
@@ -594,6 +592,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     qfrc_spring=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_damper=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_gravcomp=wp.zeros((nworld, mjm.nv), dtype=float),
+    qfrc_fluid=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_passive=wp.zeros((nworld, mjm.nv), dtype=float),
     subtree_linvel=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
     subtree_angmom=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
@@ -843,6 +842,7 @@ def put_data(
     ctrl=tile(mjd.ctrl),
     qfrc_applied=tile(mjd.qfrc_applied),
     xfrc_applied=tile(mjd.xfrc_applied, dtype=wp.spatial_vector),
+    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     eq_active=tile(mjd.eq_active.astype(bool)),
     mocap_pos=tile(mjd.mocap_pos, dtype=wp.vec3),
     mocap_quat=tile(mjd.mocap_quat, dtype=wp.quat),
@@ -880,6 +880,7 @@ def put_data(
     qfrc_spring=tile(mjd.qfrc_spring),
     qfrc_damper=tile(mjd.qfrc_damper),
     qfrc_gravcomp=tile(mjd.qfrc_gravcomp),
+    qfrc_fluid=tile(mjd.qfrc_fluid),
     qfrc_passive=tile(mjd.qfrc_passive),
     subtree_linvel=tile(mjd.subtree_linvel, dtype=wp.vec3),
     subtree_angmom=tile(mjd.subtree_angmom, dtype=wp.vec3),
@@ -1060,12 +1061,14 @@ def get_data_into(
   result.cvel = d.cvel.numpy()[0]
   result.cdof_dot = d.cdof_dot.numpy()[0]
   result.qfrc_bias = d.qfrc_bias.numpy()[0]
+  result.qfrc_fluid = d.qfrc_fluid.numpy()[0]
   result.qfrc_passive = d.qfrc_passive.numpy()[0]
   result.subtree_linvel = d.subtree_linvel.numpy()[0]
   result.subtree_angmom = d.subtree_angmom.numpy()[0]
   result.qfrc_spring = d.qfrc_spring.numpy()[0]
   result.qfrc_damper = d.qfrc_damper.numpy()[0]
   result.qfrc_gravcomp = d.qfrc_gravcomp.numpy()[0]
+  result.qfrc_fluid = d.qfrc_fluid.numpy()[0]
   result.qfrc_actuator = d.qfrc_actuator.numpy()[0]
   result.qfrc_smooth = d.qfrc_smooth.numpy()[0]
   result.qfrc_constraint = d.qfrc_constraint.numpy()[0]

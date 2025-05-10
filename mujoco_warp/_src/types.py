@@ -392,6 +392,9 @@ class Option:
     epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
     depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
+    wind: wind (for lift, drag, and viscosity)
+    density: density of medium
+    viscosity: viscosity of medium
   """
 
   timestep: float
@@ -411,6 +414,9 @@ class Option:
   epa_exact_neg_distance: bool  # warp only
   depth_extension: float  # warp only
   ls_parallel: bool
+  wind: wp.vec3
+  density: float
+  viscosity: float
 
 
 @dataclasses.dataclass
@@ -1049,6 +1055,7 @@ class Data:
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
     xfrc_applied: applied Cartesian force/torque                (nworld, nbody, 6)
+    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     eq_active: enable/disable constraints                       (nworld, neq)
     mocap_pos: position of mocap bodies                         (nworld, nmocap, 3)
     mocap_quat: orientation of mocap bodies                     (nworld, nmocap, 4)
@@ -1086,6 +1093,7 @@ class Data:
     qfrc_spring: passive spring force                           (nworld, nv)
     qfrc_damper: passive damper force                           (nworld, nv)
     qfrc_gravcomp: passive gravity compensation force           (nworld, nv)
+    qfrc_fluid: passive fluid force                             (nworld, nv)
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
@@ -1155,6 +1163,7 @@ class Data:
   ctrl: wp.array2d(dtype=float)
   qfrc_applied: wp.array2d(dtype=float)
   xfrc_applied: wp.array2d(dtype=wp.spatial_vector)
+  fluid_applied: wp.array2d(dtype=wp.spatial_vector)  # warp only
   eq_active: wp.array2d(dtype=bool)
   mocap_pos: wp.array2d(dtype=wp.vec3)
   mocap_quat: wp.array2d(dtype=wp.quat)
@@ -1192,6 +1201,7 @@ class Data:
   qfrc_spring: wp.array2d(dtype=float)
   qfrc_damper: wp.array2d(dtype=float)
   qfrc_gravcomp: wp.array2d(dtype=float)
+  qfrc_fluid: wp.array2d(dtype=float)
   qfrc_passive: wp.array2d(dtype=float)
   subtree_linvel: wp.array2d(dtype=wp.vec3)
   subtree_angmom: wp.array2d(dtype=wp.vec3)

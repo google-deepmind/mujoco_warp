@@ -53,6 +53,43 @@ class PassiveTest(parameterized.TestCase):
 
   # TODO(team): test DisableBit.PASSIVE
 
+  @parameterized.parameters(
+    (1, 0, 0, 0, 0),
+    (0, 1, 0, 0, 0),
+    (0, 0, 1, 0, 0),
+    (0, 0, 0, 1, 0),
+    (0, 0, 0, 0, 1),
+    (1, 1, 1, 1, 1),
+  )
+  def test_fluid(self, density, viscosity, wind0, wind1, wind2):
+    """Tests fluid model."""
+
+    _, mjd, m, d = test_util.fixture(
+      xml=f"""
+      <mujoco>
+        <option density="{density}" viscosity="{viscosity}" wind="{wind0} {wind1} {wind2}"/>
+        <worldbody>
+          <body>
+            <geom type="box" size=".1 .1 .1"/>
+            <freejoint/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 1 1 1 1 1"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    for arr in (d.qfrc_passive, d.qfrc_fluid):
+      arr.zero_()
+
+    mjwarp.passive(m, d)
+
+    _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
+    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
+
   @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
   def test_gravcomp(self, sparse, gravity):
     """Tests gravity compenstation."""
