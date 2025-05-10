@@ -17,7 +17,6 @@ from typing import Any
 
 import warp as wp
 
-from .collision_box import box_box_narrowphase
 from .collision_convex import gjk_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MAXVAL
@@ -446,4 +445,3 @@ def collision(m: Model, d: Data):
   # TODO(team) switch between collision functions and GJK/EPA here
   gjk_narrowphase(m, d)
   primitive_narrowphase(m, d)
-  box_box_narrowphase(m, d)
