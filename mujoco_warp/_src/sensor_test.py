@@ -244,6 +244,22 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  @parameterized.parameters("humanoid/humanoid.xml", "constraints.xml")
+  def test_energy(self, xml):
+    mjm, mjd, m, d = test_util.fixture(xml, constraint=False, kick=True)
+
+    d.energy.zero_()
+
+    mujoco.mj_energyPos(mjm, mjd)
+    mjwarp.energy_pos(m, d)
+
+    _assert_eq(d.energy.numpy()[0][0], mjd.energy[0], "potential energy")
+
+    mujoco.mj_energyVel(mjm, mjd)
+    mjwarp.energy_vel(m, d)
+
+    _assert_eq(d.energy.numpy()[0][1], mjd.energy[1], "kinetic energy")
+
 
 if __name__ == "__main__":
   wp.init()

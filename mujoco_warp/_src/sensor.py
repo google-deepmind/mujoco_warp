@@ -19,14 +19,17 @@ import warp as wp
 
 from . import math
 from . import smooth
+from . import support
 from .types import MJ_MINVAL
 from .types import Data
 from .types import DataType
 from .types import DisableBit
+from .types import JointType
 from .types import Model
 from .types import ObjType
 from .types import SensorType
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 
 @wp.func
@@ -1313,4 +1316,236 @@ def sensor_acc(m: Model, d: Data):
       d.cfrc_int,
     ],
     outputs=[d.sensordata],
+  )
+
+
+@wp.kernel
+def _energy_pos_gravity(
+  # Model:
+  opt_gravity: wp.vec3,
+  body_mass: wp.array(dtype=float),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, bodyid = wp.tid()
+  bodyid += 1  # skip world body
+
+  energy = wp.vec2(
+    body_mass[bodyid] * wp.dot(opt_gravity, xipos_in[worldid, bodyid]),
+    0.0,
+  )
+
+  wp.atomic_sub(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_passive_joint(
+  # Model:
+  qpos_spring: wp.array(dtype=float),
+  jnt_type: wp.array(dtype=int),
+  jnt_qposadr: wp.array(dtype=int),
+  jnt_stiffness: wp.array(dtype=float),
+  # Data in:
+  qpos_in: wp.array2d(dtype=float),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, jntid = wp.tid()
+  stiffness = jnt_stiffness[jntid]
+
+  if stiffness == 0.0:
+    return
+
+  padr = jnt_qposadr[jntid]
+  jnttype = jnt_type[jntid]
+
+  if jnttype == int(JointType.FREE.value):
+    quat0 = wp.quat(
+      qpos_in[worldid, padr + 0],
+      qpos_in[worldid, padr + 1],
+      qpos_in[worldid, padr + 2],
+      qpos_in[worldid, padr + 3],
+    )
+    quat0 = wp.normalize(quat0)
+
+    dif0 = wp.vec3(
+      quat0[0] - qpos_spring[padr + 0],
+      quat0[1] - qpos_spring[padr + 1],
+      quat0[2] - qpos_spring[padr + 2],
+    )
+
+    # convert quaternion difference into angular "velocity"
+    quat1 = wp.quat(
+      qpos_in[worldid, padr + 3],
+      qpos_in[worldid, padr + 4],
+      qpos_in[worldid, padr + 5],
+      qpos_in[worldid, padr + 6],
+    )
+    quat1 = wp.normalize(quat1)
+
+    quat_spring = wp.quat(
+      qpos_spring[padr + 3],
+      qpos_spring[padr + 4],
+      qpos_spring[padr + 5],
+      qpos_spring[padr + 6],
+    )
+
+    dif1 = math.quat_sub(quat1, quat_spring)
+
+    energy = wp.vec2(
+      0.5 * stiffness * (wp.dot(dif0, dif0) + wp.dot(dif1, dif1)),
+      0.0,
+    )
+
+    wp.atomic_add(energy_out, worldid, energy)
+
+  elif jnttype == int(JointType.BALL.value):
+    quat = wp.quat(
+      qpos_in[worldid, padr + 0],
+      qpos_in[worldid, padr + 1],
+      qpos_in[worldid, padr + 2],
+      qpos_in[worldid, padr + 3],
+    )
+    quat = wp.normalize(quat)
+
+    quat_spring = wp.quat(
+      qpos_spring[padr + 0],
+      qpos_spring[padr + 1],
+      qpos_spring[padr + 2],
+      qpos_spring[padr + 3],
+    )
+
+    dif = math.quat_sub(quat, quat_spring)
+    energy = wp.vec2(
+      0.5 * stiffness * wp.dot(dif, dif),
+      0.0,
+    )
+    wp.atomic_add(energy_out, worldid, energy)
+  elif jnttype == int(JointType.SLIDE.value) or jnttype == int(JointType.HINGE.value):
+    dif_ = qpos_in[worldid, padr] - qpos_spring[padr]
+    energy = wp.vec2(
+      0.5 * stiffness * dif_ * dif_,
+      0.0,
+    )
+    wp.atomic_add(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_passive_tendon(
+  # Model:
+  tendon_stiffness: wp.array(dtype=float),
+  tendon_lengthspring: wp.array(dtype=wp.vec2),
+  # Data in:
+  ten_length_in: wp.array2d(dtype=float),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, tenid = wp.tid()
+
+  stiffness = tendon_stiffness[tenid]
+
+  if stiffness == 0.0:
+    return
+
+  length = ten_length_in[worldid, tenid]
+
+  # compute spring displacement
+  lengthspring = tendon_lengthspring[tenid]
+  lower = lengthspring[0]
+  upper = lengthspring[1]
+
+  if length > upper:
+    displacement = upper - length
+  elif length < lower:
+    displacement = lower - length
+  else:
+    displacement = 0.0
+
+  energy = wp.vec2(0.5 * stiffness * displacement * displacement, 0.0)
+  wp.atomic_add(energy_out, worldid, energy)
+
+
+def energy_pos(m: Model, d: Data):
+  """Position-dependent energy (potential)."""
+
+  # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
+  if not m.opt.disableflags & DisableBit.GRAVITY:
+    wp.launch(
+      _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
+    )
+
+  if not m.opt.disableflags & DisableBit.PASSIVE:
+    # add joint-level springs
+    wp.launch(
+      _energy_pos_passive_joint,
+      dim=(d.nworld, m.njnt),
+      inputs=[
+        m.qpos_spring,
+        m.jnt_type,
+        m.jnt_qposadr,
+        m.jnt_stiffness,
+        d.qpos,
+      ],
+      outputs=[d.energy],
+    )
+
+    # add tendon-level springs
+    if m.ntendon:
+      wp.launch(
+        _energy_pos_passive_tendon,
+        dim=(d.nworld, m.ntendon),
+        inputs=[
+          m.tendon_stiffness,
+          m.tendon_lengthspring,
+          d.ten_length,
+        ],
+        outputs=[d.energy],
+      )
+
+    # TODO(team): flex
+
+
+def _energy_vel_kinetic(nv: int):
+  @nested_kernel
+  def energy_vel_kinetic(
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    # In:
+    Mqvel: wp.array2d(dtype=float),
+    # Out:
+    energy_out: wp.array(dtype=wp.vec2),
+  ):
+    worldid = wp.tid()
+
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
+    Mqvel_tile = wp.tile_load(Mqvel[worldid], shape=wp.static(nv))
+
+    # qvel * (M @ qvel)
+    qvelMqvel_tile = wp.tile_map(wp.mul, qvel_tile, Mqvel_tile)
+
+    # sum(qvel * (M @ qvel))
+    quadratic_tile = wp.tile_reduce(wp.add, qvelMqvel_tile)
+
+    energy_out[worldid][1] = 0.5 * quadratic_tile[0]
+
+  return energy_vel_kinetic
+
+
+def energy_vel(m: Model, d: Data):
+  """Velocity-dependent energy (kinetic)."""
+
+  # kinetic energy: 0.5 * qvel.T @ M @ qvel
+
+  # M @ qvel
+  skip = wp.zeros(d.nworld, dtype=bool)
+  support.mul_m(m, d, d.efc.mv, d.qvel, skip)
+
+  wp.launch_tiled(
+    _energy_vel_kinetic(m.nv),
+    dim=(d.nworld,),
+    inputs=[d.qvel, d.efc.mv],
+    outputs=[d.energy],
+    block_dim=32,
   )
