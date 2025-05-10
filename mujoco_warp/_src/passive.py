@@ -161,6 +161,92 @@ def _qfrc_passive_gravcomp(
   qfrc_passive_out[worldid, dofid] += qfrc_gravcomp_in[worldid, dofid]
 
 
+@wp.kernel
+def _flex_elasticity(
+  # Model:
+  body_dofadr: wp.array(dtype=int),
+  flex_dim: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_edgeadr: wp.array(dtype=int),
+  flex_elemedgeadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
+  flex_elem: wp.array(dtype=int),
+  flex_elemedge: wp.array(dtype=int),
+  flexedge_length0: wp.array(dtype=float),
+  flex_stiffness: wp.array(dtype=float),
+  flex_damping: wp.array(dtype=float),
+  # Data in:
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexedge_length_in: wp.array2d(dtype=float),
+  flexedge_velocity_in: wp.array2d(dtype=float),
+  # In:
+  timestep: float,
+  # Data out:
+  qfrc_spring_out: wp.array2d(dtype=float),
+):
+  worldid, t = wp.tid()
+  f = 0  # TODO(quaglino): this should become a function of t
+
+  # TODO(quaglino): support dim != 2
+  dim = flex_dim[f]
+  nedge = 3
+  nvert = 3
+  kD = flex_damping[f] / timestep
+
+  edges = wp.mat(1, 2, 2, 0, 0, 1, shape=(3, 2), dtype=int)
+  gradient = wp.mat(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, shape=(3, 6))
+  for e in range(nedge):
+    vert0 = flex_elem[(dim + 1) * t + edges[e, 0]]
+    vert1 = flex_elem[(dim + 1) * t + edges[e, 1]]
+    xpos0 = flexvert_xpos_in[worldid, vert0]
+    xpos1 = flexvert_xpos_in[worldid, vert1]
+    for i in range(3):
+      gradient[e, 0 + i] = xpos0[i] - xpos1[i]
+      gradient[e, 3 + i] = xpos1[i] - xpos0[i]
+
+  elongation = wp.vec3(0.0, 0.0, 0.0)
+  for e in range(nedge):
+    idx = flex_elemedge[flex_elemedgeadr[f] + t * nedge + e]
+    vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
+    deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
+    reference = flexedge_length0[flex_edgeadr[f] + idx]
+    previous = deformed - vel * timestep
+    elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
+
+  metric = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  id = 0
+  for ed1 in range(nedge):
+    for ed2 in range(ed1, nedge):
+      metric[ed1, ed2] = flex_stiffness[21 * t + id]
+      metric[ed2, ed1] = flex_stiffness[21 * t + id]
+      id += 1
+
+  force = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  for ed1 in range(nedge):
+    for ed2 in range(nedge):
+      for i in range(2):
+        for x in range(3):
+          force[edges[ed2, i], x] -= elongation[ed1] * gradient[ed2, 3 * i + x] * metric[ed1, ed2]
+
+  for v in range(nvert):
+    vert = flex_elem[(dim + 1) * t + v]
+    bodyid = flex_vertbodyid[flex_vertadr[f] + vert]
+    for x in range(3):
+      qfrc_spring_out[worldid, body_dofadr[bodyid] + x] += force[v, x]
+
+
+@wp.kernel
+def _combine_qfrc(
+  # Data in:
+  qfrc_spring_in: wp.array2d(dtype=float),
+  qfrc_damper_in: wp.array2d(dtype=float),
+  # Data out:
+  qfrc_passive_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  qfrc_passive_out[worldid, dofid] = qfrc_spring_in[worldid, dofid] + qfrc_damper_in[worldid, dofid]
+
+
 @event_scope
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
@@ -184,6 +270,34 @@ def passive(m: Model, d: Data):
     dim=(d.nworld, m.nv),
     inputs=[m.dof_damping, d.qvel, d.qfrc_spring],
     outputs=[d.qfrc_damper, d.qfrc_passive],
+  )
+  wp.launch(
+    _flex_elasticity,
+    dim=(d.nworld, m.nflexelem),
+    inputs=[
+      m.body_dofadr,
+      m.flex_dim,
+      m.flex_vertadr,
+      m.flex_edgeadr,
+      m.flex_elemedgeadr,
+      m.flex_vertbodyid,
+      m.flex_elem,
+      m.flex_elemedge,
+      m.flexedge_length0,
+      m.flex_stiffness,
+      m.flex_damping,
+      d.flexvert_xpos,
+      d.flexedge_length,
+      d.flexedge_velocity,
+      m.opt.timestep,
+    ],
+    outputs=[d.qfrc_spring],
+  )
+  wp.launch(
+    _combine_qfrc,
+    dim=(d.nworld, m.nv),
+    inputs=[d.qfrc_spring, d.qfrc_damper],
+    outputs=[d.qfrc_passive],
   )
   if m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY):
     d.qfrc_gravcomp.zero_()

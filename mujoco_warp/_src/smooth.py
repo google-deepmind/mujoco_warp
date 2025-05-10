@@ -193,6 +193,50 @@ def _site_local_to_global(
 
 
 @wp.kernel
+def _flex_vertices(
+  # Model:
+  flex_vertbodyid: wp.array(dtype=int),
+  # Data in:
+  xpos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  flexvert_xpos_out: wp.array2d(dtype=wp.vec3),
+):
+  worldid, vertid = wp.tid()
+  flexvert_xpos_out[worldid, vertid] = xpos_in[worldid, flex_vertbodyid[vertid]]
+
+
+@wp.kernel
+def _flex_edges(
+  # Model:
+  body_dofadr: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
+  flex_edge: wp.array(dtype=wp.vec2i),
+  # Data in:
+  qvel_in: wp.array2d(dtype=float),
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  flexedge_length_out: wp.array2d(dtype=float),
+  flexedge_velocity_out: wp.array2d(dtype=float),
+):
+  worldid, edgeid = wp.tid()
+  f = 0  # TODO(quaglino): get f from edgeid
+  vbase = flex_vertadr[f]
+  v = flex_edge[edgeid]
+  pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
+  pos2 = flexvert_xpos_in[worldid, vbase + v[1]]
+  vec = pos2 - pos1
+  vecnorm = wp.length(vec)
+  flexedge_length_out[worldid, edgeid] = vecnorm
+  # TODO(quaglino): use Jacobian
+  i = body_dofadr[flex_vertbodyid[vbase + v[0]]]
+  j = body_dofadr[flex_vertbodyid[vbase + v[1]]]
+  vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
+  vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
+  flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, vec) / vecnorm
+
+
+@wp.kernel
 def _mocap(
   # Model:
   body_ipos: wp.array(dtype=wp.vec3),
@@ -279,6 +323,20 @@ def kinematics(m: Model, d: Data):
       dim=(d.nworld, m.nsite),
       inputs=[m.site_bodyid, m.site_pos, m.site_quat, d.xpos, d.xquat],
       outputs=[d.site_xpos, d.site_xmat],
+    )
+
+  if m.nflex:
+    wp.launch(
+      _flex_vertices,
+      dim=(d.nworld, m.nflexvert),
+      inputs=[m.flex_vertbodyid, d.xpos],
+      outputs=[d.flexvert_xpos],
+    )
+    wp.launch(
+      _flex_edges,
+      dim=(d.nworld, m.nflexedge),
+      inputs=[m.body_dofadr, m.flex_vertadr, m.flex_vertbodyid, m.flex_edge, d.qvel, d.flexvert_xpos],
+      outputs=[d.flexedge_length, d.flexedge_velocity],
     )
 
 
