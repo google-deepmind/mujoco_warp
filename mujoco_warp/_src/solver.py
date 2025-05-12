@@ -2440,10 +2440,14 @@ def solve_done(
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_done_out: wp.array(dtype=bool),
+  # Out:
   condition_iteration_out: wp.array(dtype=int),
+  number_iterations_out: wp.array(dtype=int),
 ):
   # TODO(team): static m?
   worldid = wp.tid()
+
+  number_iterations_out[worldid] -= 1
 
   if efc_done_in[worldid]:
     return
@@ -2451,7 +2455,7 @@ def solve_done(
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
   done = (improvement < opt_tolerance) or (gradient < opt_tolerance)
-  if done:
+  if done or number_iterations_out[worldid] == 0:
     efc_done_out[worldid] = True
     wp.atomic_add(condition_iteration_out, 0, -1)
 
@@ -2459,6 +2463,7 @@ def solve_done(
 @event_scope
 def _solver_iteration(
   condition_iteration: wp.array(dtype=wp.int32),
+  number_iterations: wp.array(dtype=wp.int32),
   m: types.Model,
   d: types.Data,
 ):
@@ -2519,7 +2524,7 @@ def _solver_iteration(
         d.efc.prev_cost,
         d.efc.done,
       ],
-      outputs=[d.efc.done, condition_iteration],
+      outputs=[d.efc.done, condition_iteration, number_iterations],
     )
 
 @event_scope
@@ -2559,15 +2564,16 @@ def solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
-  condition_iteration = wp.array([d.nworld], dtype=wp.int32)
   # note: we only launch the iteration kernel if everything is not done
-  for i in range(m.opt.iterations):
-    wp.capture_if(
-      condition_iteration,
-      on_true=_solver_iteration,
-      condition_iteration=condition_iteration,
-      m=m,
-      d=d,
-    )
+  condition_iteration = wp.array([d.nworld], dtype=wp.int32)
+  number_iterations = wp.full(shape=d.nworld, value=m.opt.iterations, dtype=wp.int32)
+  wp.capture_while(
+    condition_iteration,
+    while_body=_solver_iteration,
+    condition_iteration=condition_iteration,
+    number_iterations=number_iterations,
+    m=m,
+    d=d,
+  )
 
   wp.copy(d.qacc_warmstart, d.qacc)
