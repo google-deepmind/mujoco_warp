@@ -2440,6 +2440,7 @@ def solve_done(
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_done_out: wp.array(dtype=bool),
+  condition_iteration_out: wp.array(dtype=int),
 ):
   # TODO(team): static m?
   worldid = wp.tid()
@@ -2449,47 +2450,18 @@ def solve_done(
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
-  efc_done_out[worldid] = (improvement < opt_tolerance) or (gradient < opt_tolerance)
+  done = (improvement < opt_tolerance) or (gradient < opt_tolerance)
+  if done:
+    efc_done_out[worldid] = True
+    wp.atomic_add(condition_iteration_out, 0, -1)
 
 
 @event_scope
-def solve(m: types.Model, d: types.Data):
-  """Finds forces that satisfy constraints."""
-
-  # warmstart
-  wp.copy(d.qacc, d.qacc_warmstart)
-
-  # initialize some efc arrays
-  wp.launch(
-    solve_init_efc,
-    dim=(d.nworld),
-    outputs=[d.efc.search_dot, d.efc.cost, d.efc.solver_niter, d.efc.done],
-  )
-
-  # jaref = d.efc_J @ d.qacc - d.efc_aref
-  d.efc.Jaref.zero_()
-  wp.launch(
-    solve_init_jaref,
-    dim=(d.njmax, m.nv),
-    inputs=[m.nv, d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
-    outputs=[d.efc.Jaref],
-  )
-
-  # Ma = qM @ qacc
-  support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
-
-  _update_constraint(m, d)
-  _update_gradient(m, d)
-
-  # search = -Mgrad
-  wp.launch(
-    solve_init_search,
-    dim=(d.nworld, m.nv),
-    inputs=[d.efc.Mgrad],
-    outputs=[d.efc.search, d.efc.search_dot],
-  )
-
-  for i in range(m.opt.iterations):
+def _solver_iteration(
+  condition_iteration: wp.array(dtype=wp.int32),
+  m: types.Model,
+  d: types.Data,
+):
     _linesearch(m, d)
 
     if m.opt.solver == types.SolverType.CG:
@@ -2547,7 +2519,55 @@ def solve(m: types.Model, d: types.Data):
         d.efc.prev_cost,
         d.efc.done,
       ],
-      outputs=[d.efc.done],
+      outputs=[d.efc.done, condition_iteration],
+    )
+
+@event_scope
+def solve(m: types.Model, d: types.Data):
+  """Finds forces that satisfy constraints."""
+
+  # warmstart
+  wp.copy(d.qacc, d.qacc_warmstart)
+
+  # initialize some efc arrays
+  wp.launch(
+    solve_init_efc,
+    dim=(d.nworld),
+    outputs=[d.efc.search_dot, d.efc.cost, d.efc.solver_niter, d.efc.done],
+  )
+
+  # jaref = d.efc_J @ d.qacc - d.efc_aref
+  d.efc.Jaref.zero_()
+  wp.launch(
+    solve_init_jaref,
+    dim=(d.njmax, m.nv),
+    inputs=[m.nv, d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
+    outputs=[d.efc.Jaref],
+  )
+
+  # Ma = qM @ qacc
+  support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
+
+  _update_constraint(m, d)
+  _update_gradient(m, d)
+
+  # search = -Mgrad
+  wp.launch(
+    solve_init_search,
+    dim=(d.nworld, m.nv),
+    inputs=[d.efc.Mgrad],
+    outputs=[d.efc.search, d.efc.search_dot],
+  )
+
+  condition_iteration = wp.array([d.nworld], dtype=wp.int32)
+  # note: we only launch the iteration kernel if everything is not done
+  for i in range(m.opt.iterations):
+    wp.capture_if(
+      condition_iteration,
+      on_true=_solver_iteration,
+      condition_iteration=condition_iteration,
+      m=m,
+      d=d,
     )
 
   wp.copy(d.qacc_warmstart, d.qacc)
