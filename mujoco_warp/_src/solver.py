@@ -22,6 +22,7 @@ from . import types
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
+
 @wp.func
 def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
   return value / (stat_meaninertia * float(wp.max(1, nv)))
