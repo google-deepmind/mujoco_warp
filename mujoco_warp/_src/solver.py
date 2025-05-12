@@ -2462,70 +2462,71 @@ def solve_done(
 
 @event_scope
 def _solver_iteration(
-  condition_iteration: wp.array(dtype=wp.int32),
-  number_iterations: wp.array(dtype=wp.int32),
   m: types.Model,
   d: types.Data,
+  condition_iteration: wp.array(dtype=wp.int32),
+  number_iterations: wp.array(dtype=wp.int32),
 ):
-    _linesearch(m, d)
+  _linesearch(m, d)
 
-    if m.opt.solver == types.SolverType.CG:
-      wp.launch(
-        solve_prev_grad_Mgrad,
-        dim=(d.nworld, m.nv),
-        inputs=[d.efc.grad, d.efc.Mgrad, d.efc.done],
-        outputs=[d.efc.prev_grad, d.efc.prev_Mgrad],
-      )
-
-    _update_constraint(m, d)
-    _update_gradient(m, d)
-
-    # polak-ribiere
-    if m.opt.solver == types.SolverType.CG:
-      wp.launch(
-        solve_zero_beta_num_den,
-        dim=(d.nworld),
-        inputs=[d.efc.done],
-        outputs=[d.efc.beta_num, d.efc.beta_den],
-      )
-
-      wp.launch(
-        solve_beta_num_den,
-        dim=(d.nworld, m.nv),
-        inputs=[d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
-        outputs=[d.efc.beta_num, d.efc.beta_den],
-      )
-
-      wp.launch(
-        solve_beta,
-        dim=(d.nworld,),
-        inputs=[d.efc.beta_num, d.efc.beta_den, d.efc.done],
-        outputs=[d.efc.beta],
-      )
-
-    wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot])
-
+  if m.opt.solver == types.SolverType.CG:
     wp.launch(
-      solve_search_update,
+      solve_prev_grad_Mgrad,
       dim=(d.nworld, m.nv),
-      inputs=[m.opt.solver, d.efc.Mgrad, d.efc.search, d.efc.beta, d.efc.done],
-      outputs=[d.efc.search, d.efc.search_dot],
+      inputs=[d.efc.grad, d.efc.Mgrad, d.efc.done],
+      outputs=[d.efc.prev_grad, d.efc.prev_Mgrad],
+    )
+
+  _update_constraint(m, d)
+  _update_gradient(m, d)
+
+  # polak-ribiere
+  if m.opt.solver == types.SolverType.CG:
+    wp.launch(
+      solve_zero_beta_num_den,
+      dim=(d.nworld),
+      inputs=[d.efc.done],
+      outputs=[d.efc.beta_num, d.efc.beta_den],
     )
 
     wp.launch(
-      solve_done,
-      dim=(d.nworld,),
-      inputs=[
-        m.nv,
-        m.opt.tolerance,
-        m.stat.meaninertia,
-        d.efc.grad_dot,
-        d.efc.cost,
-        d.efc.prev_cost,
-        d.efc.done,
-      ],
-      outputs=[d.efc.done, condition_iteration, number_iterations],
+      solve_beta_num_den,
+      dim=(d.nworld, m.nv),
+      inputs=[d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
+      outputs=[d.efc.beta_num, d.efc.beta_den],
     )
+
+    wp.launch(
+      solve_beta,
+      dim=(d.nworld,),
+      inputs=[d.efc.beta_num, d.efc.beta_den, d.efc.done],
+      outputs=[d.efc.beta],
+    )
+
+  wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot])
+
+  wp.launch(
+    solve_search_update,
+    dim=(d.nworld, m.nv),
+    inputs=[m.opt.solver, d.efc.Mgrad, d.efc.search, d.efc.beta, d.efc.done],
+    outputs=[d.efc.search, d.efc.search_dot],
+  )
+
+  wp.launch(
+    solve_done,
+    dim=(d.nworld,),
+    inputs=[
+      m.nv,
+      m.opt.tolerance,
+      m.stat.meaninertia,
+      d.efc.grad_dot,
+      d.efc.cost,
+      d.efc.prev_cost,
+      d.efc.done,
+    ],
+    outputs=[d.efc.done, condition_iteration, number_iterations],
+  )
+
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
@@ -2570,10 +2571,10 @@ def solve(m: types.Model, d: types.Data):
   wp.capture_while(
     condition_iteration,
     while_body=_solver_iteration,
-    condition_iteration=condition_iteration,
-    number_iterations=number_iterations,
     m=m,
     d=d,
+    condition_iteration=condition_iteration,
+    number_iterations=number_iterations,
   )
 
   wp.copy(d.qacc_warmstart, d.qacc)
