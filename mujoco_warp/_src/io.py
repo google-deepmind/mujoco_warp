@@ -64,7 +64,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
   nv_max = 60
-  if mjm.nv > nv_max and (not mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_SPARSE):
+  if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
   # calculate some fields that cannot be easily computed inline
@@ -1115,11 +1115,21 @@ def get_data_into(
   result.xfrc_applied[:] = d.xfrc_applied.numpy()[0]
   result.eq_active[:] = d.eq_active.numpy()[0]
 
-  result.efc_D[:] = d.efc.D.numpy()[:nefc]
-  result.efc_pos[:] = d.efc.pos.numpy()[:nefc]
-  result.efc_aref[:] = d.efc.aref.numpy()[:nefc]
-  result.efc_force[:] = d.efc.force.numpy()[:nefc]
-  result.efc_margin[:] = d.efc.margin.numpy()[:nefc]
+  # TODO(team): set these efc_* fields after fix to _realloc_con_efc
+  # Safely copy only up to the minimum of the destination and source sizes
+  # n = min(result.efc_D.shape[0], d.efc.D.numpy()[:nefc].shape[0])
+  # result.efc_D[:n] = d.efc.D.numpy()[:nefc][:n]
+  # n_pos = min(result.efc_pos.shape[0], d.efc.pos.numpy()[:nefc].shape[0])
+  # result.efc_pos[:n_pos] = d.efc.pos.numpy()[:nefc][:n_pos]
+
+  # n_aref = min(result.efc_aref.shape[0], d.efc.aref.numpy()[:nefc].shape[0])
+  # result.efc_aref[:n_aref] = d.efc.aref.numpy()[:nefc][:n_aref]
+
+  # n_force = min(result.efc_force.shape[0], d.efc.force.numpy()[:nefc].shape[0])
+  # result.efc_force[:n_force] = d.efc.force.numpy()[:nefc][:n_force]
+
+  # n_margin = min(result.efc_margin.shape[0], d.efc.margin.numpy()[:nefc].shape[0])
+  # result.efc_margin[:n_margin] = d.efc.margin.numpy()[:nefc][:n_margin]
 
   result.cacc[:] = d.cacc.numpy()[0]
   result.cfrc_int[:] = d.cfrc_int.numpy()[0]

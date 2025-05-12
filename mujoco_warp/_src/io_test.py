@@ -89,11 +89,6 @@ class IOTest(absltest.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
-  def test_dense(self):
-    with self.assertRaises(ValueError):
-      # dense not supported yet for large nv
-      test_util.fixture("humanoid/n_humanoids.xml")
-
   def test_actuator_trntype(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
@@ -242,6 +237,22 @@ class IOTest(absltest.TestCase):
 
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
+
+  def test_jacobian_auto(self):
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option jacobian="auto"/>
+        <worldbody>
+          <replicate count="11">
+          <body>          
+            <geom type="sphere" size=".1"/>
+            <freejoint/>
+            </body>
+          </replicate>
+        </worldbody> 
+      </mujoco>
+    """)
+    mjwarp.put_model(mjm)
 
 
 if __name__ == "__main__":

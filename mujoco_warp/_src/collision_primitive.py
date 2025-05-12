@@ -36,15 +36,18 @@ class Geom:
   size: wp.vec3
   vertadr: int
   vertnum: int
+  vert: wp.array(dtype=wp.vec3)
 
 
 @wp.func
 def _geom(
   # Model:
+  geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -66,6 +69,9 @@ def _geom(
   else:
     geom.vertadr = -1
     geom.vertnum = -1
+
+  if geom_type[gid] == int(GeomType.MESH.value):
+    geom.vert = mesh_vert
 
   return geom
 
@@ -722,6 +728,152 @@ def plane_box(
     count += 1
     if count >= 4:
       break
+
+
+_HUGE_VAL = 1e6
+
+
+@wp.func
+def plane_convex(
+  # Data in:
+  nconmax_in: int,
+  # In:
+  plane: Geom,
+  convex: Geom,
+  worldid: int,
+  margin: float,
+  gap: float,
+  condim: int,
+  friction: vec5,
+  solref: wp.vec2f,
+  solreffriction: wp.vec2f,
+  solimp: vec5,
+  geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
+):
+  """Calculates contacts between a plane and a convex object."""
+
+  # get points in the convex frame
+  plane_pos = wp.transpose(convex.rot) @ (plane.pos - convex.pos)
+  n = wp.transpose(convex.rot) @ plane.normal
+
+  # Find support points
+  max_support = wp.float32(-_HUGE_VAL)
+  for i in range(convex.vertnum):
+    support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+
+    max_support = wp.max(support, max_support)
+
+  threshold = wp.max(0.0, max_support - 1e-3)
+
+  # Store indices in vec4
+  indices = wp.vec4i(-1, -1, -1, -1)
+
+  # TODO(team): Explore faster methods like tile_min or even fast pass kernels if the upper bound of vertices in all convexes is small enough such that all vertices fit into shared memory
+  # Find point a (first support point)
+  a_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.vertnum):
+    support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+    dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    if dist > a_dist:
+      indices[0] = i
+      a_dist = dist
+  a = convex.vert[convex.vertadr + indices[0]]
+
+  # Find point b (furthest from a)
+  b_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.vertnum):
+    support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+    dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    dist = wp.length_sq(a - convex.vert[convex.vertadr + i]) + dist_mask
+    if dist > b_dist:
+      indices[1] = i
+      b_dist = dist
+  b = convex.vert[convex.vertadr + indices[1]]
+
+  # Find point c (furthest along axis orthogonal to a-b)
+  ab = wp.cross(n, a - b)
+  c_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.vertnum):
+    support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+    dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    ap = a - convex.vert[convex.vertadr + i]
+    dist = wp.abs(wp.dot(ap, ab)) + dist_mask
+    if dist > c_dist:
+      indices[2] = i
+      c_dist = dist
+  c = convex.vert[convex.vertadr + indices[2]]
+
+  # Find point d (furthest from other triangle edges)
+  ac = wp.cross(n, a - c)
+  bc = wp.cross(n, b - c)
+  d_dist = wp.float32(-_HUGE_VAL)
+  for i in range(convex.vertnum):
+    support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+    dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+    ap = a - convex.vert[convex.vertadr + i]
+    bp = b - convex.vert[convex.vertadr + i]
+    dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
+    dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
+    if dist_ap + dist_bp > d_dist:
+      indices[3] = i
+      d_dist = dist_ap + dist_bp
+
+  # Write contacts
+  frame = make_frame(plane.normal)
+  for i in range(3, -1, -1):
+    idx = indices[i]
+    count = int(0)
+    for j in range(i + 1):
+      if indices[j] == idx:
+        count = count + 1
+
+    # Check if the index is unique (appears exactly once)
+    if count == 1:
+      pos = convex.vert[convex.vertadr + idx]
+      pos = convex.pos + convex.rot @ pos
+      support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
+      dist = -support
+      pos = pos - 0.5 * dist * plane.normal
+      write_contact(
+        nconmax_in,
+        dist,
+        pos,
+        frame,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        worldid,
+        ncon_out,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+      )
 
 
 @wp.func
@@ -1735,6 +1887,7 @@ def _primitive_narrowphase(
   geom_gap: wp.array2d(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
   pair_dim: wp.array(dtype=int),
   pair_solref: wp.array2d(dtype=wp.vec2),
   pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -1796,20 +1949,24 @@ def _primitive_narrowphase(
   g2 = geoms[1]
 
   geom1 = _geom(
+    geom_type,
     geom_dataid,
     geom_size,
     mesh_vertadr,
     mesh_vertnum,
+    mesh_vert,
     geom_xpos_in,
     geom_xmat_in,
     worldid,
     g1,
   )
   geom2 = _geom(
+    geom_type,
     geom_dataid,
     geom_size,
     mesh_vertadr,
     mesh_vertnum,
+    mesh_vert,
     geom_xpos_in,
     geom_xmat_in,
     worldid,
@@ -1930,6 +2087,33 @@ def _primitive_narrowphase(
     )
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.CAPSULE.value):
     capsule_capsule(
+      nconmax_in,
+      geom1,
+      geom2,
+      worldid,
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+    )
+  elif type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.MESH.value):
+    plane_convex(
       nconmax_in,
       geom1,
       geom2,
@@ -2112,6 +2296,7 @@ def primitive_narrowphase(m: Model, d: Data):
       m.geom_gap,
       m.mesh_vertadr,
       m.mesh_vertnum,
+      m.mesh_vert,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,
