@@ -2565,16 +2565,17 @@ def solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
-  # note: we only launch the iteration kernel if everything is not done
-  condition_iteration = wp.array([d.nworld], dtype=wp.int32)
-  number_iterations = wp.full(shape=d.nworld, value=m.opt.iterations, dtype=wp.int32)
-  wp.capture_while(
-    condition_iteration,
-    while_body=_solver_iteration,
-    m=m,
-    d=d,
-    condition_iteration=condition_iteration,
-    number_iterations=number_iterations,
-  )
+  if m.opt.iterations != 0:
+    # note: we only launch the iteration kernel if everything is not done
+    condition_iteration = wp.array([d.nworld], dtype=wp.int32)
+    number_iterations = wp.full(shape=d.nworld, value=m.opt.iterations, dtype=wp.int32)
+    wp.capture_while(
+      condition_iteration,
+      while_body=_solver_iteration,
+      m=m,
+      d=d,
+      condition_iteration=condition_iteration,
+      number_iterations=number_iterations,
+    )
 
   wp.copy(d.qacc_warmstart, d.qacc)
