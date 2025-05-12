@@ -300,7 +300,7 @@ def _frame_quat(
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
-  cam_quat: wp.array(dtype=wp.quat),
+  cam_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   xquat_in: wp.array2d(dtype=wp.quat),
   # In:
@@ -327,15 +327,15 @@ def _frame_quat(
     return quat
 
   if reftype == int(ObjType.BODY.value):
-    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[worldid, refid])
   elif reftype == int(ObjType.XBODY.value):
     refquat = xquat_in[worldid, refid]
   elif reftype == int(ObjType.GEOM.value):
-    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid, refid])
   elif reftype == int(ObjType.SITE.value):
-    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[worldid, refid])
   elif reftype == int(ObjType.CAMERA.value):
-    refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[worldid, refid])
   else:  # UNKNOWN
     refquat = wp.quat(1.0, 0.0, 0.0, 0.0)
 
@@ -362,7 +362,7 @@ def _sensor_pos(
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
-  cam_quat: wp.array(dtype=wp.quat),
+  cam_quat: wp.array2d(dtype=wp.quat),
   cam_fovy: wp.array(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
