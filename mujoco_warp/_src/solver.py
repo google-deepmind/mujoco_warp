@@ -880,26 +880,26 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
           d.efc.uv, d.efc.vv
         ],
         outputs=[d.efc.lo_next, d.efc.hi_next, d.efc.mid])  # fmt: skip
-  else:
-    wp.launch(
-      linesearch_iterative_next_quad_pyramidal,
-      dim=(d.njmax,),
-      inputs=[
-        d.ne, d.nf, d.nefc, d.efc.worldid, d.efc.Jaref, d.efc.jv, d.efc.quad, d.efc.done, d.efc.ls_done,
-        d.efc.lo_next_alpha, d.efc.hi_next_alpha, d.efc.mid_alpha
-      ],
-      outputs=[d.efc.lo_next, d.efc.hi_next, d.efc.mid])  # fmt: skip
+    else:
+      wp.launch(
+        linesearch_iterative_next_quad_pyramidal,
+        dim=(d.njmax,),
+        inputs=[
+          d.ne, d.nf, d.nefc, d.efc.worldid, d.efc.Jaref, d.efc.jv, d.efc.quad, d.efc.done, d.efc.ls_done,
+          d.efc.lo_next_alpha, d.efc.hi_next_alpha, d.efc.mid_alpha
+        ],
+        outputs=[d.efc.lo_next, d.efc.hi_next, d.efc.mid])  # fmt: skip
 
-  wp.launch(
-    linesearch_iterative_swap,
-    dim=(d.nworld,),
-    inputs=[
-      d.efc.gtol, d.efc.done, d.efc.ls_done, d.efc.p0, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha,
-      d.efc.lo_next, d.efc.lo_next_alpha, d.efc.hi_next, d.efc.hi_next_alpha, d.efc.mid, d.efc.mid_alpha
-    ],
-    outputs=[
-      d.efc.alpha, d.efc.ls_done, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha
-    ])  # fmt: skip
+    wp.launch(
+      linesearch_iterative_swap,
+      dim=(d.nworld,),
+      inputs=[
+        d.efc.gtol, d.efc.done, d.efc.ls_done, d.efc.p0, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha,
+        d.efc.lo_next, d.efc.lo_next_alpha, d.efc.hi_next, d.efc.hi_next_alpha, d.efc.mid, d.efc.mid_alpha
+      ],
+      outputs=[
+        d.efc.alpha, d.efc.ls_done, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha
+      ])  # fmt: skip
 
 
 @wp.kernel
