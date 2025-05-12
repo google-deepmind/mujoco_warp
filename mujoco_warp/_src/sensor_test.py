@@ -102,6 +102,7 @@ class SensorTest(parameterized.TestCase):
           <motor name="slide" joint="slide"/>
         </actuator>
         <sensor>
+          <magnetometer site="site0"/>
           <camprojection camera="camera" site="camera_site"/>
           <camprojection camera="camera" site="camera_site" cutoff=".001"/>
           <jointpos joint="slide"/>

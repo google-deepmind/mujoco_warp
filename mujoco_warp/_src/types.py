@@ -240,6 +240,7 @@ class SensorType(enum.IntEnum):
   """Type of sensor.
 
   Members:
+    MAGNETOMETER: magnetometer
     CAMPROJECTION: camera projection
     JOINTPOS: joint position
     TENDONPOS: scalar tendon position
@@ -271,6 +272,7 @@ class SensorType(enum.IntEnum):
     FRAMEANGACC: 3D angular acceleration
   """
 
+  MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
   CAMPROJECTION = mujoco.mjtSensor.mjSENS_CAMPROJECTION
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   TENDONPOS = mujoco.mjtSensor.mjSENS_TENDONPOS
@@ -385,6 +387,7 @@ class Option:
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
     gravity: gravitational acceleration
+    magnetic: global magnetic flux
     integrator: integration mode (mjtIntegrator)
     cone: type of friction cone (mjtCone)
     solver: solver algorithm (mjtSolver)
@@ -404,6 +407,7 @@ class Option:
   tolerance: float
   ls_tolerance: float
   gravity: wp.vec3
+  magnetic: wp.vec3
   integrator: int
   cone: int
   solver: int

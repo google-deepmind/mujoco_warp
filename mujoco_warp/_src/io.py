@@ -280,6 +280,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       tolerance=mjm.opt.tolerance,
       ls_tolerance=mjm.opt.ls_tolerance,
       gravity=wp.vec3(mjm.opt.gravity),
+      magnetic=wp.vec3(mjm.opt.magnetic),
       cone=mjm.opt.cone,
       solver=mjm.opt.solver,
       iterations=mjm.opt.iterations,
