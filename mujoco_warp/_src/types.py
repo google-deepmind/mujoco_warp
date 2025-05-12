@@ -115,13 +115,15 @@ class DynType(enum.IntEnum):
     INTEGRATOR: integrator: da/dt = u
     FILTER: linear filter: da/dt = (u-a) / tau
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
+    MUSCLE: piece-wise linear filter with two time constants
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
   INTEGRATOR = mujoco.mjtDyn.mjDYN_INTEGRATOR
   FILTER = mujoco.mjtDyn.mjDYN_FILTER
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
-  # unsupported: MUSCLE, USER
+  MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
+  # unsupported: USER
 
 
 class GainType(enum.IntEnum):
@@ -130,11 +132,13 @@ class GainType(enum.IntEnum):
   Members:
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
+    MUSCLE: muscle FLV curve computed by muscle_gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
-  # unsupported: MUSCLE, USER
+  MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
+  # unsupported: USER
 
 
 class BiasType(enum.IntEnum):
@@ -143,11 +147,13 @@ class BiasType(enum.IntEnum):
   Members:
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
+    MUSCLE: muscle passive force computed by muscle_bias
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
-  # unsupported: MUSCLE, USER
+  MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
+  # unsupported: USER
 
 
 class JointType(enum.IntEnum):
@@ -739,6 +745,8 @@ class Model:
     actuator_forcerange: range of forces                     (nu, 2)
     actuator_actrange: range of activations                  (nu, 2)
     actuator_gear: scale length and transmitted force        (nu, 6)
+    actuator_acc0: acceleration from unit force in qpos0     (nu,)
+    actuator_lengthrange: feasible actuator length range     (nu, 2)
     nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
     nxn_pairid: predefined pair id, -1 if not predefined     (<= ngeom * (ngeom - 1) // 2,)
     pair_dim: contact dimensionality                         (npair,)
@@ -960,6 +968,8 @@ class Model:
   actuator_forcerange: wp.array(dtype=wp.vec2)
   actuator_actrange: wp.array(dtype=wp.vec2)
   actuator_gear: wp.array(dtype=wp.spatial_vector)
+  actuator_acc0: wp.array(dtype=float)
+  actuator_lengthrange: wp.array(dtype=wp.vec2)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
   nxn_pairid: wp.array(dtype=int)  # warp only
   pair_dim: wp.array(dtype=int)

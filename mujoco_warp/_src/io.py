@@ -451,6 +451,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_forcerange=wp.array(mjm.actuator_forcerange, dtype=wp.vec2),
     actuator_actrange=wp.array(mjm.actuator_actrange, dtype=wp.vec2),
     actuator_gear=wp.array(mjm.actuator_gear, dtype=wp.spatial_vector),
+    actuator_acc0=wp.array(mjm.actuator_acc0, dtype=float),
+    actuator_lengthrange=wp.array(mjm.actuator_lengthrange, dtype=wp.vec2),
     exclude_signature=wp.array(mjm.exclude_signature, dtype=int),
     # short-circuiting here allows us to skip a lot of code in implicit integration
     actuator_affine_bias_gain=bool(

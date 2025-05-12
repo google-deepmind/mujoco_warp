@@ -65,6 +65,8 @@ class ForwardTest(parameterized.TestCase):
     ("actuation/actuation.xml", False),
     ("actuation/actuators.xml", True),
     ("actuation/actuators.xml", False),
+    ("actuation/muscle.xml", True),
+    ("actuation/muscle.xml", False),
   )
   def test_actuation(self, xml, actuation):
     mjm, mjd, m, d = test_util.fixture(xml, actuation=actuation, keyframe=0)
@@ -87,7 +89,6 @@ class ForwardTest(parameterized.TestCase):
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
     # TODO(team): test DisableBit.CLAMPCTRL
-    # TODO(team): test muscle
     # TODO(team): test actearly
 
   def test_fwd_acceleration(self):

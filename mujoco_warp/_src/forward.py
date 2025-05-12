@@ -24,6 +24,7 @@ from . import passive
 from . import sensor
 from . import smooth
 from . import solver
+from . import util_misc
 from .support import xfrc_accumulate
 from .types import MJ_MINVAL
 from .types import BiasType
@@ -823,6 +824,8 @@ def _actuator_force(
   actuator_biasprm: wp.array(dtype=vec10f),
   actuator_ctrlrange: wp.array(dtype=wp.vec2),
   actuator_forcerange: wp.array(dtype=wp.vec2),
+  actuator_acc0: wp.array(dtype=float),
+  actuator_lengthrange: wp.array(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
@@ -844,16 +847,21 @@ def _actuator_force(
 
   if na:
     dyntype = actuator_dyntype[uid]
+    actadr = actuator_actadr[uid]
 
+    act_dot = 0.0
     if dyntype == int(DynType.INTEGRATOR.value):
-      act_dot_out[worldid, actuator_actadr[uid]] = ctrl
+      act_dot = ctrl
     elif dyntype == int(DynType.FILTER.value) or dyntype == int(DynType.FILTEREXACT.value):
       dynprm = actuator_dynprm[uid]
-      actadr = actuator_actadr[uid]
       act = act_in[worldid, actadr]
-      act_dot_out[worldid, actadr] = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
+      act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
+    elif dyntype == int(DynType.MUSCLE.value):
+      dynprm = actuator_dynprm[uid]
+      act = act_in[worldid, actadr]
+      act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
 
-    # TODO(team): DynType.MUSCLE
+    act_dot_out[worldid, actadr] = act_dot
 
   ctrl_act = ctrl
   if na:
@@ -874,8 +882,10 @@ def _actuator_force(
     gain = gainprm[0]
   elif gaintype == int(GainType.AFFINE.value):
     gain = gainprm[0] + gainprm[1] * length + gainprm[2] * velocity
-
-  # TODO(team): GainType.MUSCLE
+  elif gaintype == int(GainType.MUSCLE.value):
+    acc0 = actuator_acc0[uid]
+    lengthrange = actuator_lengthrange[uid]
+    gain = util_misc.muscle_gain(length, velocity, lengthrange, acc0, gainprm)
 
   # bias
   biastype = actuator_biastype[uid]
@@ -884,8 +894,10 @@ def _actuator_force(
   bias = 0.0  # BiasType.NONE
   if biastype == int(BiasType.AFFINE.value):
     bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
-
-  # TODO(team): BiasType.MUSCLE
+  elif biastype == int(BiasType.MUSCLE.value):
+    acc0 = actuator_acc0[uid]
+    lengthrange = actuator_lengthrange[uid]
+    bias = util_misc.muscle_bias(length, lengthrange, acc0, biasprm)
 
   force = gain * ctrl_act + bias
 
@@ -1020,6 +1032,8 @@ def fwd_actuation(m: Model, d: Data):
       m.actuator_biasprm,
       m.actuator_ctrlrange,
       m.actuator_forcerange,
+      m.actuator_acc0,
+      m.actuator_lengthrange,
       d.act,
       d.ctrl,
       d.actuator_length,

@@ -51,9 +51,9 @@ The following features are implemented:
 | ----------------- | ---------------------------------------------------------------------------------------------------------|
 | Dynamics          | Forward only                                                                                             |
 | Transmission      | `JOINT`, `JOINTINPARENT`                                                                                 |
-| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`                                                            |
-| Actuator Gain     | `FIXED`, `AFFINE`                                                                                        |
-| Actuator Bias     | `NONE`, `AFFINE`                                                                                         |
+| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`, `MUSCLE`                                                  |
+| Actuator Gain     | `FIXED`, `AFFINE`, `MUSCLE`                                                                              |
+| Actuator Bias     | `NONE`, `AFFINE`, `MUSCLE`                                                                               |
 | Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `MESH`                                     |
 | Constraint        | `FRICTION (JOINT)`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`, `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC` |
 | Equality          | `CONNECT`, `WELD`, `JOINT`, `TENDON`                                                                     |
