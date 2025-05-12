@@ -50,7 +50,7 @@ def rot_vec_quat(vec: wp.vec3, quat: wp.quat) -> wp.vec3:
 
 
 @wp.func
-def axis_angle_to_quat(axis: wp.vec3, angle: wp.float32) -> wp.quat:
+def axis_angle_to_quat(axis: wp.vec3, angle: float) -> wp.quat:
   s, c = wp.sin(angle * 0.5), wp.cos(angle * 0.5)
   axis = axis * s
   return wp.quat(c, axis[0], axis[1], axis[2])
@@ -97,10 +97,10 @@ def inert_vec(i: types.vec10, v: wp.spatial_vector) -> wp.spatial_vector:
 def motion_cross(u: wp.spatial_vector, v: wp.spatial_vector) -> wp.spatial_vector:
   """Cross product of two motions."""
 
-  u0 = wp.vec3(u[0], u[1], u[2], dtype=wp.float32)
-  u1 = wp.vec3(u[3], u[4], u[5], dtype=wp.float32)
-  v0 = wp.vec3(v[0], v[1], v[2], dtype=wp.float32)
-  v1 = wp.vec3(v[3], v[4], v[5], dtype=wp.float32)
+  u0 = wp.vec3(u[0], u[1], u[2])
+  u1 = wp.vec3(u[3], u[4], u[5])
+  v0 = wp.vec3(v[0], v[1], v[2])
+  v1 = wp.vec3(v[3], v[4], v[5])
 
   ang = wp.cross(u0, v0)
   vel = wp.cross(u1, v0) + wp.cross(u0, v1)
@@ -112,10 +112,10 @@ def motion_cross(u: wp.spatial_vector, v: wp.spatial_vector) -> wp.spatial_vecto
 def motion_cross_force(v: wp.spatial_vector, f: wp.spatial_vector) -> wp.spatial_vector:
   """Cross product of a motion and a force."""
 
-  v0 = wp.vec3(v[0], v[1], v[2], dtype=wp.float32)
-  v1 = wp.vec3(v[3], v[4], v[5], dtype=wp.float32)
-  f0 = wp.vec3(f[0], f[1], f[2], dtype=wp.float32)
-  f1 = wp.vec3(f[3], f[4], f[5], dtype=wp.float32)
+  v0 = wp.vec3(v[0], v[1], v[2])
+  v1 = wp.vec3(v[3], v[4], v[5])
+  f0 = wp.vec3(f[0], f[1], f[2])
+  f1 = wp.vec3(f[3], f[4], f[5])
 
   ang = wp.cross(v0, f0) + wp.cross(v1, f1)
   vel = wp.cross(v0, f1)
@@ -151,7 +151,7 @@ def quat_sub(qa: wp.quat, qb: wp.quat) -> wp.vec3:
 
 
 @wp.func
-def quat_integrate(q: wp.quat, v: wp.vec3, dt: wp.float32) -> wp.quat:
+def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
   """Integrates a quaternion given angular velocity and dt."""
   norm_ = wp.length(v)
   v = wp.normalize(v)  # does that need proper zero gradient handling?
@@ -180,17 +180,11 @@ def orthogonals(a: wp.vec3):
 @wp.func
 def orthonormal(normal: wp.vec3) -> wp.vec3:
   if wp.abs(normal[0]) < wp.abs(normal[1]) and wp.abs(normal[0]) < wp.abs(normal[2]):
-    dir = wp.vec3(
-      1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2]
-    )
+    dir = wp.vec3(1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2])
   elif wp.abs(normal[1]) < wp.abs(normal[2]):
-    dir = wp.vec3(
-      -normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2]
-    )
+    dir = wp.vec3(-normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2])
   else:
-    dir = wp.vec3(
-      -normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2]
-    )
+    dir = wp.vec3(-normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2])
   dir, _ = gjk_normalize(dir)
   return dir
 
@@ -234,9 +228,7 @@ def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def closest_segment_point_and_dist(
-  a: wp.vec3, b: wp.vec3, pt: wp.vec3
-) -> Tuple[wp.vec3, wp.float32]:
+def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> Tuple[wp.vec3, float]:
   """Returns closest point on the line segment and the distance squared."""
   closest = closest_segment_point(a, b, pt)
   dist = wp.dot((pt - closest), (pt - closest))
@@ -244,9 +236,7 @@ def closest_segment_point_and_dist(
 
 
 @wp.func
-def closest_segment_to_segment_points(
-  a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3
-) -> Tuple[wp.vec3, wp.vec3]:
+def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Returns closest points between two line segments."""
 
   dir_a, len_a = normalize_with_norm(a1 - a0)
@@ -277,3 +267,8 @@ def closest_segment_to_segment_points(
   if d1 < d2:
     return new_a, best_b
   return best_a, new_b
+
+
+@wp.func
+def safe_div(x: float, y: float) -> float:
+  return x / wp.where(y != 0.0, y, types.MJ_MINVAL)

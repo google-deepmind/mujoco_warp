@@ -152,19 +152,19 @@ class BroadphaseTest(absltest.TestCase):
                     .05 0 0 1 0 0 0
                     2 0 0 1 0 0 0
                     3 0 0 1 0 0 0
-                    4 0 0 1 0 0 0 
+                    4 0 0 1 0 0 0
                     0'/>
           <key qpos='0 0 0 1 0 0 0
                     .01 0 0 1 0 0 0
                     .02 0 0 1 0 0 0
                     3 0 0 1 0 0 0
-                    4 0 0 1 0 0 0 
+                    4 0 0 1 0 0 0
                     0'/>
           <key qpos='0 0 0 1 0 0 0
                     1 0 0 1 0 0 0
                     2 0 0 1 0 0 0
                     2 0 0 1 0 0 0
-                    4 0 0 1 0 0 0 
+                    4 0 0 1 0 0 0
                     0'/>
         </keyframe>
       </mujoco>
@@ -194,11 +194,9 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d2.collision_pair.numpy()[2][1], 2)
 
     # two worlds and four collisions
-    d3 = mjwarp.make_data(mjm, nworld=2)
+    d3 = mjwarp.make_data(mjm, nworld=2, nconmax=512, njmax=512)
     d3.geom_xpos = wp.array(
-      np.vstack(
-        [np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]
-      ),
+      np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
       dtype=wp.vec3,
     )
 
@@ -214,12 +212,9 @@ class BroadphaseTest(absltest.TestCase):
     np.testing.assert_allclose(d3.collision_pair.numpy()[3][1], 2)
 
     # one world and zero collisions: contype and conaffinity incompatibility
-    mjm4, mjd4, m4, d4 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
+    mjm4, _, _, d4 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
     mjm4.geom_contype[:3] = 0
-    m4.geom_contype = wp.array(mjm4.geom_contype, dtype=wp.int32)
-    geompair, pairid = io.geom_pair(mjm4)
-    m4.nxn_geom_pair = wp.array(geompair, dtype=wp.vec2i)
-    m4.nxn_pairid = wp.array(pairid, dtype=wp.int32)
+    m4 = mjwarp.put_model(mjm4)
 
     collision_driver.nxn_broadphase(m4, d4)
     np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)

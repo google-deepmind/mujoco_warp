@@ -82,7 +82,7 @@ import warp as wp
 from mujoco_warp.warp_util import kernel
 
 @kernel
-def test_data_suffix(qpos_invalid: int):
+def test_data_suffix(qpos: int):
     pass
 """
 
@@ -103,7 +103,7 @@ import warp as wp
 from mujoco_warp.warp_util import kernel
 
 @kernel
-def test_write_readonly(qpos0: int, qvel_in: int):
+def test_write_readonly(qpos0: wp.array(dtype=int), qvel_in: wp.array(dtype=int)):
     qpos0 = 1  # Writing to Model field
     qvel_in = 2  # Writing to Data _in field
 """
@@ -114,18 +114,18 @@ from mujoco_warp.warp_util import kernel
 
 @kernel
 def test_all_issues(
-    haha,               # No type
-    qpos0: str,         # Type mismatch with Model field
-    qvel_invalid: int,  # Invalid data field suffix
-    geom_pos_in: int,   # Model field with suffix
-    custom_param: int,  # Non-model/data in the middle
-    act_in: int,        # Data order issue (in after out)
-    qvel_out: int,      # Out before in
-    qpos: int = 0,      # Default param
-    *args,              # Varargs
-    **kwargs            # Kwargs
+    haha,                         # No type
+    qpos0: str,                   # Type mismatch with Model field
+    qvel_invalid: int,            # Invalid data field suffix
+    geom_pos_in: int,             # Model field with suffix
+    custom_param: int,            # Non-model/data in the middle
+    act_in: wp.array(dtype=int),  # Data order issue (in after out)
+    qvel_out: int,                # Out before in
+    qpos: int = 0,                # Default param
+    *args,                        # Varargs
+    **kwargs                      # Kwargs
 ):
-    qpos0 = 1  # Writing to Model field
+    qpos0 = 1  # actually this is OK because it's a value type
     act_in = 2  # Writing to Data _in field
 """
 
@@ -136,14 +136,14 @@ from mujoco_warp.warp_util import kernel
 @kernel
 def test_no_issues(
     # Model:
-    qpos0: wp.array(dtype=wp.float32, ndim=1),
-    geom_pos: wp.array(dtype=wp.vec3, ndim=1),
+    qpos0: wp.array(dtype=float),
+    geom_pos: wp.array(dtype=wp.vec3),
     # Data in:
-    qpos_in: wp.array(dtype=wp.float32, ndim=2),
-    qvel_in: wp.array(dtype=wp.float32, ndim=2),
-    act_in: wp.array(dtype=wp.float32, ndim=2),
+    qpos_in: wp.array2d(dtype=float),
+    qvel_in: wp.array2d(dtype=float),
+    act_in: wp.array2d(dtype=float),
     # Data out:
-    act_out: wp.array(dtype=wp.float32, ndim=2)
+    act_out: wp.array2d(dtype=float)
 ):
     x = qpos0  # Reading Model field is fine
     y = act_in  # Reading Data _in field is fine
@@ -161,6 +161,30 @@ def test_non_kernel(qpos0: int = 0, *args, **kwargs):
     qpos0 = 1
 """
 
+_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_ignore(
+    # Data in:
+    act_in: wp.array2d(dtype=float)
+):
+    act_in[0] = 2  # kernel_analyzer: ignore
+"""
+
+_MULTILINE_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_multiline_ignore(
+    # kernel_analyzer: off
+    qpos0: wp.array(dtype=int),   # Type mismatch with Model field
+    qvel_invalid: int,            # Invalid data field suffix
+    # kernel_analyzer: on
+):
+    qpos0[3] = 3  # this should still be reported
+"""
+
 
 def _analyze_str(code_str: str) -> List[Any]:
   full_path = os.path.realpath(__file__)
@@ -171,9 +195,7 @@ def _analyze_str(code_str: str) -> List[Any]:
 def _assert_has_issue(issues, issue_type: Type):
   """Assert that the issues list contains at least one issue of the given type."""
   if not any(isinstance(issue, issue_type) for issue in issues):
-    raise AssertionError(
-      f"Expected issue of type {issue_type.__name__} not found in issues."
-    )
+    raise AssertionError(f"Expected issue of type {issue_type.__name__} not found in issues.")
 
 
 class TestAnalyzer(absltest.TestCase):
@@ -246,15 +268,22 @@ class TestAnalyzer(absltest.TestCase):
   def test_no_issues(self):
     """Test a function with no issues."""
     issues = _analyze_str(_NO_ISSUES_CODE)
-    for iss in issues:
-      print(f"{iss.node.lineno}:{iss}")
-
-    self.assertEqual(len(issues), 0)
+    self.assertEqual(len(issues), 0, issues)
 
   def test_non_kernel_function(self):
     """Test that non-kernel functions aren't analyzed."""
     issues = _analyze_str(_NON_KERNEL_CODE)
     self.assertEqual(len(issues), 0)  # Not a kernel, so no issues
+
+  def test_ignore_issues(self):
+    """Test that ignored issues are not reported."""
+    issues = _analyze_str(_IGNORE_CODE)
+    self.assertEqual(len(issues), 0, issues)
+
+  def test_multiline_ignore(self):
+    """Test that multiline ignore works."""
+    issues = _analyze_str(_MULTILINE_IGNORE_CODE)
+    self.assertEqual(len(issues), 1, issues)
 
 
 if __name__ == "__main__":

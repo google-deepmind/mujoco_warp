@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 import sys
+import traceback
 from pathlib import Path
 
 import ast_analyzer
@@ -22,34 +22,27 @@ from absl import flags
 from absl import logging
 
 _VERBOSE = flags.DEFINE_bool("verbose", False, "Enable debug logging.")
-_FILES = flags.DEFINE_multi_string("files", [], "Python files to check.")
-_OUTPUT = flags.DEFINE_enum(
-  "output", "console", ["console", "github"], "Analyzer output format."
-)
+_OUTPUT = flags.DEFINE_enum("output", "console", ["console", "github"], "Analyzer output format.")
 _TYPES_PATH = flags.DEFINE_string("types", "", "Path to mujoco_warp types.py.")
 
 
 def main(argv):
-  del argv  # Unused.
-
   log_level = logging.DEBUG if _VERBOSE.value else logging.WARNING
   logging.set_verbosity(log_level)
 
-  if not _FILES.value:
-    logging.error("No files specified. Use --files to specify files to check.")
+  if len(argv) < 2:
+    logging.error("No file path specified. Usage cli.py <filepaths>.")
     sys.exit(1)
 
   issues = []
-  for filename in _FILES.value:
+  for filename in argv[1:]:
     filepath = Path(filename)
 
     def err_console(iss):
       print(f"{filepath}:{iss.node.lineno}:{iss}", file=sys.stderr)
 
     def err_github(iss):
-      print(
-        f"::error title=Kernel Analyzer,file={filepath},line={iss.node.lineno}::{iss}"
-      )
+      print(f"::error title=Kernel Analyzer,file={filepath},line={iss.node.lineno}::{iss}")
 
     err = {"console": err_console, "github": err_github}[_OUTPUT.value]
 
@@ -78,7 +71,8 @@ def main(argv):
       for issue in file_issues:
         err(issue)
     except Exception as e:
-      logging.error(f"Error processing file {filepath}: {e}")
+      full_traceback = traceback.format_exc()
+      logging.error(f"Error processing file {filepath}: {full_traceback}")
       sys.exit(1)
 
   if issues:

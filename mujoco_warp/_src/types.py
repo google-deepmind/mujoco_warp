@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+import dataclasses
 import enum
 
 import mujoco
@@ -351,26 +352,26 @@ class WrapType(enum.IntEnum):
   # unsupported: PULLEY, SPHERE, CYLINDER
 
 
-class vec5f(wp.types.vector(length=5, dtype=wp.float32)):
+class vec5f(wp.types.vector(length=5, dtype=float)):
   pass
 
 
-class vec10f(wp.types.vector(length=10, dtype=wp.float32)):
+class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
 
-class vec11f(wp.types.vector(length=11, dtype=wp.float32)):
+class vec11f(wp.types.vector(length=11, dtype=float)):
   pass
 
 
 vec5 = vec5f
 vec10 = vec10f
 vec11 = vec11f
-array2df = wp.array2d(dtype=wp.float32)
-array3df = wp.array3d(dtype=wp.float32)
+array2df = wp.array2d(dtype=float)
+array3df = wp.array3d(dtype=float)
 
 
-@wp.struct
+@dataclasses.dataclass
 class Option:
   """Physics options.
 
@@ -395,7 +396,7 @@ class Option:
   """
 
   timestep: float
-  impratio: wp.float32
+  impratio: float
   tolerance: float
   ls_tolerance: float
   gravity: wp.vec3
@@ -413,7 +414,7 @@ class Option:
   ls_parallel: bool
 
 
-@wp.struct
+@dataclasses.dataclass
 class Statistic:
   """Model statistics (in qpos0).
 
@@ -424,7 +425,7 @@ class Statistic:
   meaninertia: float
 
 
-@wp.struct
+@dataclasses.dataclass
 class Constraint:
   """Constraint data.
 
@@ -484,64 +485,82 @@ class Constraint:
     condim: if contact: condim, else: -1              (njmax,)
   """
 
-  worldid: wp.array(dtype=wp.int32, ndim=1)
-  id: wp.array(dtype=wp.int32, ndim=1)
-  J: wp.array(dtype=wp.float32, ndim=2)
-  pos: wp.array(dtype=wp.float32, ndim=1)
-  margin: wp.array(dtype=wp.float32, ndim=1)
-  D: wp.array(dtype=wp.float32, ndim=1)
-  aref: wp.array(dtype=wp.float32, ndim=1)
-  frictionloss: wp.array(dtype=wp.float32, ndim=1)
-  force: wp.array(dtype=wp.float32, ndim=1)
-  Jaref: wp.array(dtype=wp.float32, ndim=1)
-  Ma: wp.array(dtype=wp.float32, ndim=2)
-  grad: wp.array(dtype=wp.float32, ndim=2)
-  grad_dot: wp.array(dtype=wp.float32, ndim=1)
-  Mgrad: wp.array(dtype=wp.float32, ndim=2)
-  search: wp.array(dtype=wp.float32, ndim=2)
-  search_dot: wp.array(dtype=wp.float32, ndim=1)
-  gauss: wp.array(dtype=wp.float32, ndim=1)
-  cost: wp.array(dtype=wp.float32, ndim=1)
-  prev_cost: wp.array(dtype=wp.float32, ndim=1)
-  solver_niter: wp.array(dtype=wp.int32, ndim=1)
-  active: wp.array(dtype=bool, ndim=1)
-  gtol: wp.array(dtype=wp.float32, ndim=1)
-  mv: wp.array(dtype=wp.float32, ndim=2)
-  jv: wp.array(dtype=wp.float32, ndim=1)
-  quad: wp.array(dtype=wp.vec3f, ndim=1)
-  quad_gauss: wp.array(dtype=wp.vec3f, ndim=1)
-  h: wp.array(dtype=wp.float32, ndim=3)
-  alpha: wp.array(dtype=wp.float32, ndim=1)
-  prev_grad: wp.array(dtype=wp.float32, ndim=2)
-  prev_Mgrad: wp.array(dtype=wp.float32, ndim=2)
-  beta: wp.array(dtype=wp.float32, ndim=1)
-  beta_num: wp.array(dtype=wp.float32, ndim=1)
-  beta_den: wp.array(dtype=wp.float32, ndim=1)
-  done: wp.array(dtype=bool, ndim=1)
+  worldid: wp.array(dtype=int)
+  id: wp.array(dtype=int)
+  J: wp.array2d(dtype=float)
+  pos: wp.array(dtype=float)
+  margin: wp.array(dtype=float)
+  D: wp.array(dtype=float)
+  aref: wp.array(dtype=float)
+  frictionloss: wp.array(dtype=float)
+  force: wp.array(dtype=float)
+  Jaref: wp.array(dtype=float)
+  Ma: wp.array2d(dtype=float)
+  grad: wp.array2d(dtype=float)
+  grad_dot: wp.array(dtype=float)
+  Mgrad: wp.array2d(dtype=float)
+  search: wp.array2d(dtype=float)
+  search_dot: wp.array(dtype=float)
+  gauss: wp.array(dtype=float)
+  cost: wp.array(dtype=float)
+  prev_cost: wp.array(dtype=float)
+  solver_niter: wp.array(dtype=int)
+  active: wp.array(dtype=bool)
+  gtol: wp.array(dtype=float)
+  mv: wp.array2d(dtype=float)
+  jv: wp.array(dtype=float)
+  quad: wp.array(dtype=wp.vec3)
+  quad_gauss: wp.array(dtype=wp.vec3)
+  h: wp.array3d(dtype=float)
+  alpha: wp.array(dtype=float)
+  prev_grad: wp.array2d(dtype=float)
+  prev_Mgrad: wp.array2d(dtype=float)
+  beta: wp.array(dtype=float)
+  beta_num: wp.array(dtype=float)
+  beta_den: wp.array(dtype=float)
+  done: wp.array(dtype=bool)
   # linesearch
-  ls_done: wp.array(dtype=bool, ndim=1)
-  p0: wp.array(dtype=wp.vec3, ndim=1)
-  lo: wp.array(dtype=wp.vec3, ndim=1)
-  lo_alpha: wp.array(dtype=wp.float32, ndim=1)
-  hi: wp.array(dtype=wp.vec3, ndim=1)
-  hi_alpha: wp.array(dtype=wp.float32, ndim=1)
-  lo_next: wp.array(dtype=wp.vec3, ndim=1)
-  lo_next_alpha: wp.array(dtype=wp.float32, ndim=1)
-  hi_next: wp.array(dtype=wp.vec3, ndim=1)
-  hi_next_alpha: wp.array(dtype=wp.float32, ndim=1)
-  mid: wp.array(dtype=wp.vec3, ndim=1)
-  mid_alpha: wp.array(dtype=wp.float32, ndim=1)
-  cost_candidate: wp.array(dtype=wp.float32, ndim=2)
-  quad_total_candidate: wp.array(dtype=wp.vec3f, ndim=2)
+  ls_done: wp.array(dtype=bool)
+  p0: wp.array(dtype=wp.vec3)
+  lo: wp.array(dtype=wp.vec3)
+  lo_alpha: wp.array(dtype=float)
+  hi: wp.array(dtype=wp.vec3)
+  hi_alpha: wp.array(dtype=float)
+  lo_next: wp.array(dtype=wp.vec3)
+  lo_next_alpha: wp.array(dtype=float)
+  hi_next: wp.array(dtype=wp.vec3)
+  hi_next_alpha: wp.array(dtype=float)
+  mid: wp.array(dtype=wp.vec3)
+  mid_alpha: wp.array(dtype=float)
+  cost_candidate: wp.array2d(dtype=float)
+  quad_total_candidate: wp.array2d(dtype=wp.vec3)
   # elliptic cone
-  u: wp.array(dtype=wp.float32, ndim=2)
-  uu: wp.array(dtype=wp.float32, ndim=1)
-  uv: wp.array(dtype=wp.float32, ndim=1)
-  vv: wp.array(dtype=wp.float32, ndim=1)
-  condim: wp.array(dtype=wp.int32, ndim=1)
+  u: wp.array2d(dtype=float)
+  uu: wp.array(dtype=float)
+  uv: wp.array(dtype=float)
+  vv: wp.array(dtype=float)
+  condim: wp.array(dtype=int)
 
 
-@wp.struct
+@dataclasses.dataclass
+class TileSet:
+  """Tiling configuration for decomposible block diagonal matrix.
+
+  For non-square, non-block-diagonal tiles, use two tilesets.
+
+  Attributes:
+    adr: address of each tile in the set
+    size: size of all the tiles in this set
+  """
+
+  adr: wp.array(dtype=int)
+  size: int
+
+
+# TODO(team): make Model/Data fields sort order match mujoco
+
+
+@dataclasses.dataclass
 class Model:
   """Model definition and parameters.
 
@@ -565,22 +584,14 @@ class Model:
     nwrap: number of wrap objects in all tendon paths        ()
     nsensor: number of sensors                               ()
     nsensordata: number of elements in sensor data vector    ()
-    nlsp: number of step sizes for parallel linsearch        ()
     npair: number of predefined geom pairs                   ()
     nhfield: number of heightfields                          ()
     nhfielddata: size of elevation data                      ()
+    nlsp: number of step sizes for parallel linsearch        ()
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nq,)
     qpos_spring: reference pose for springs                  (nq,)
-    body_tree: BFS ordering of body ids
-    body_treeadr: starting index of each body tree level
-    actuator_moment_offset_nv: tiling configuration
-    actuator_moment_offset_nu: tiling configuration
-    actuator_moment_tileadr: tiling configuration
-    actuator_moment_tilesize_nv: tiling configuration
-    actuator_moment_tilesize_nu: tiling configuration
-    alpha_candidate: step size candidates for engine solver  (nlsp,)
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
     qM_mulm_i: sparse mass matrix addressing
@@ -592,9 +603,8 @@ class Model:
     M_rowadr: index of each row in qM                           (nv,)
     M_colind: column indices of non-zeros in qM                 (nM,)
     mapM2M: index mapping from M (legacy) to M (CSR)            (nM)
-    qLD_tile: tiling configuration
-    qLD_tileadr: tiling configuration
-    qLD_tilesize: tiling configuration
+    qM_tiles: tiling configuration
+    body_tree: list of body ids by tree level
     body_parentid: id of body's parent                       (nbody,)
     body_rootid: id of root above body                       (nbody,)
     body_weldid: id of body that this body is welded to      (nbody,)
@@ -705,6 +715,9 @@ class Model:
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
     eq_ten_adr: eq_* addresses of type `TENDON`              (<=neq,)
+    actuator_moment_tiles_nv: tiling configuration
+    actuator_moment_tiles_nu: tiling configuration
+    actuator_affine_bias_gain: affine bias/gain present
     actuator_trntype: transmission type (mjtTrn)             (nu,)
     actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
     actuator_gaintype: gain type (mjtGain)                   (nu,)
@@ -722,8 +735,6 @@ class Model:
     actuator_forcerange: range of forces                     (nu, 2)
     actuator_actrange: range of activations                  (nu, 2)
     actuator_gear: scale length and transmitted force        (nu, 6)
-    exclude_signature: body1 << 16 + body2                   (nexclude,)
-    actuator_affine_bias_gain: affine bias/gain present
     nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
     nxn_pairid: predefined pair id, -1 if not predefined     (<= ngeom * (ngeom - 1) // 2,)
     pair_dim: contact dimensionality                         (npair,)
@@ -735,6 +746,7 @@ class Model:
     pair_margin: detect contact if dist<margin               (npair,)
     pair_gap: include in solver if dist<margin-gap           (npair,)
     pair_friction: tangent1, 2, spin, roll1, 2               (npair, 5)
+    exclude_signature: body1 << 16 + body2                   (nexclude,)
     condim_max: maximum condim for geoms
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
@@ -771,6 +783,7 @@ class Model:
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
+    mocap_bodyid: id of body for mocap                       (nmocap,)
   """
 
   nq: int
@@ -792,217 +805,208 @@ class Model:
   nwrap: int
   nsensor: int
   nsensordata: int
-  nlsp: int  # warp only
   npair: int
+  nlsp: int  # warp only
   nhfield: int
   nhfielddata: int
   opt: Option
   stat: Statistic
-  qpos0: wp.array(dtype=wp.float32, ndim=1)
-  qpos_spring: wp.array(dtype=wp.float32, ndim=1)
-  body_tree: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  body_treeadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  actuator_moment_offset_nv: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  actuator_moment_offset_nu: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  actuator_moment_tileadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  actuator_moment_tilesize_nv: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  actuator_moment_tilesize_nu: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  alpha_candidate: wp.array(dtype=wp.float32, ndim=1)  # warp only
-  qM_fullm_i: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qM_fullm_j: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qM_mulm_i: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qM_mulm_j: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qM_madr_ij: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qLD_update_tree: wp.array(dtype=wp.vec3i, ndim=1)  # warp only
-  qLD_update_treeadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  M_rownnz: wp.array(dtype=wp.int32, ndim=1)
-  M_rowadr: wp.array(dtype=wp.int32, ndim=1)
-  M_colind: wp.array(dtype=wp.int32, ndim=1)
-  mapM2M: wp.array(dtype=wp.int32, ndim=1)
-  qLD_tile: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qLD_tileadr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  qLD_tilesize: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  body_parentid: wp.array(dtype=wp.int32, ndim=1)
-  body_rootid: wp.array(dtype=wp.int32, ndim=1)
-  body_weldid: wp.array(dtype=wp.int32, ndim=1)
-  body_mocapid: wp.array(dtype=wp.int32, ndim=1)
-  body_jntnum: wp.array(dtype=wp.int32, ndim=1)
-  body_jntadr: wp.array(dtype=wp.int32, ndim=1)
-  body_dofnum: wp.array(dtype=wp.int32, ndim=1)
-  body_dofadr: wp.array(dtype=wp.int32, ndim=1)
-  body_geomnum: wp.array(dtype=wp.int32, ndim=1)
-  body_geomadr: wp.array(dtype=wp.int32, ndim=1)
-  body_pos: wp.array(dtype=wp.vec3, ndim=1)
-  body_quat: wp.array(dtype=wp.quat, ndim=1)
-  body_ipos: wp.array(dtype=wp.vec3, ndim=1)
-  body_iquat: wp.array(dtype=wp.quat, ndim=1)
-  body_mass: wp.array(dtype=wp.float32, ndim=1)
-  body_subtreemass: wp.array(dtype=wp.float32, ndim=1)
-  subtree_mass: wp.array(dtype=wp.float32, ndim=1)
-  body_inertia: wp.array(dtype=wp.vec3, ndim=1)
-  body_invweight0: wp.array(dtype=wp.float32, ndim=2)
-  body_contype: wp.array(dtype=wp.int32, ndim=1)
-  body_conaffinity: wp.array(dtype=wp.int32, ndim=1)
-  body_gravcomp: wp.array(dtype=wp.float32, ndim=1)
-  jnt_type: wp.array(dtype=wp.int32, ndim=1)
-  jnt_qposadr: wp.array(dtype=wp.int32, ndim=1)
-  jnt_dofadr: wp.array(dtype=wp.int32, ndim=1)
-  jnt_bodyid: wp.array(dtype=wp.int32, ndim=1)
-  jnt_limited: wp.array(dtype=wp.int32, ndim=1)
-  jnt_actfrclimited: wp.array(dtype=wp.bool, ndim=1)
-  jnt_solref: wp.array(dtype=wp.vec2, ndim=1)
-  jnt_solimp: wp.array(dtype=vec5, ndim=1)
-  jnt_pos: wp.array(dtype=wp.vec3, ndim=1)
-  jnt_axis: wp.array(dtype=wp.vec3, ndim=1)
-  jnt_stiffness: wp.array(dtype=wp.float32, ndim=1)
-  jnt_range: wp.array(dtype=wp.float32, ndim=2)
-  jnt_actfrcrange: wp.array(dtype=wp.vec2, ndim=1)
-  jnt_margin: wp.array(dtype=wp.float32, ndim=1)
-  jnt_limited_slide_hinge_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  jnt_limited_ball_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  jnt_actgravcomp: wp.array(dtype=wp.int32, ndim=1)
-  dof_bodyid: wp.array(dtype=wp.int32, ndim=1)
-  dof_jntid: wp.array(dtype=wp.int32, ndim=1)
-  dof_parentid: wp.array(dtype=wp.int32, ndim=1)
-  dof_Madr: wp.array(dtype=wp.int32, ndim=1)
-  dof_armature: wp.array(dtype=wp.float32, ndim=1)
-  dof_damping: wp.array(dtype=wp.float32, ndim=1)
-  dof_invweight0: wp.array(dtype=wp.float32, ndim=1)
-  dof_frictionloss: wp.array(dtype=wp.float32, ndim=1)
-  dof_solimp: wp.array(dtype=vec5, ndim=1)
-  dof_solref: wp.array(dtype=wp.vec2, ndim=1)
-  dof_tri_row: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  dof_tri_col: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  geom_type: wp.array(dtype=wp.int32, ndim=1)
-  geom_contype: wp.array(dtype=wp.int32, ndim=1)
-  geom_conaffinity: wp.array(dtype=wp.int32, ndim=1)
-  geom_condim: wp.array(dtype=wp.int32, ndim=1)
-  geom_bodyid: wp.array(dtype=wp.int32, ndim=1)
-  geom_dataid: wp.array(dtype=wp.int32, ndim=1)
-  geom_priority: wp.array(dtype=wp.int32, ndim=1)
-  geom_solmix: wp.array(dtype=wp.float32, ndim=1)
-  geom_solref: wp.array(dtype=wp.vec2, ndim=1)
-  geom_solimp: wp.array(dtype=vec5, ndim=1)
-  geom_size: wp.array(dtype=wp.vec3, ndim=1)
-  geom_aabb: wp.array(dtype=wp.vec3, ndim=2)
-  geom_rbound: wp.array(dtype=wp.float32, ndim=1)
-  geom_pos: wp.array(dtype=wp.vec3, ndim=1)
-  geom_quat: wp.array(dtype=wp.quat, ndim=1)
-  geom_friction: wp.array(dtype=wp.vec3, ndim=1)
-  geom_margin: wp.array(dtype=wp.float32, ndim=1)
-  geom_gap: wp.array(dtype=wp.float32, ndim=1)
-  hfield_adr: wp.array(dtype=wp.int32, ndim=1)
-  hfield_nrow: wp.array(dtype=wp.int32, ndim=1)
-  hfield_ncol: wp.array(dtype=wp.int32, ndim=1)
-  hfield_size: wp.array(dtype=wp.vec4f, ndim=1)
-  hfield_data: wp.array(dtype=wp.float32, ndim=1)
-  site_bodyid: wp.array(dtype=wp.int32, ndim=1)
-  site_pos: wp.array(dtype=wp.vec3, ndim=1)
-  site_quat: wp.array(dtype=wp.quat, ndim=1)
-  cam_mode: wp.array(dtype=wp.int32, ndim=1)
-  cam_bodyid: wp.array(dtype=wp.int32, ndim=1)
-  cam_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
-  cam_pos: wp.array(dtype=wp.vec3, ndim=1)
-  cam_quat: wp.array(dtype=wp.quat, ndim=1)
-  cam_poscom0: wp.array(dtype=wp.vec3, ndim=1)
-  cam_pos0: wp.array(dtype=wp.vec3, ndim=1)
-  cam_fovy: wp.array(dtype=wp.float32, ndim=1)
-  cam_resolution: wp.array(dtype=wp.vec2i, ndim=1)
-  cam_sensorsize: wp.array(dtype=wp.vec2f, ndim=1)
-  cam_intrinsic: wp.array(dtype=wp.vec4f, ndim=1)
-  light_mode: wp.array(dtype=wp.int32, ndim=1)
-  light_bodyid: wp.array(dtype=wp.int32, ndim=1)
-  light_targetbodyid: wp.array(dtype=wp.int32, ndim=1)
-  light_pos: wp.array(dtype=wp.vec3, ndim=1)
-  light_dir: wp.array(dtype=wp.vec3, ndim=1)
-  light_poscom0: wp.array(dtype=wp.vec3, ndim=1)
-  light_pos0: wp.array(dtype=wp.vec3, ndim=1)
-  mesh_vertadr: wp.array(dtype=wp.int32, ndim=1)
-  mesh_vertnum: wp.array(dtype=wp.int32, ndim=1)
-  mesh_vert: wp.array(dtype=wp.vec3, ndim=1)
-  eq_type: wp.array(dtype=wp.int32, ndim=1)
-  eq_obj1id: wp.array(dtype=wp.int32, ndim=1)
-  eq_obj2id: wp.array(dtype=wp.int32, ndim=1)
-  eq_objtype: wp.array(dtype=wp.int32, ndim=1)
-  eq_active0: wp.array(dtype=wp.bool, ndim=1)
-  eq_solref: wp.array(dtype=wp.vec2, ndim=1)
-  eq_solimp: wp.array(dtype=vec5, ndim=1)
-  eq_data: wp.array(dtype=vec11, ndim=1)
-  eq_connect_adr: wp.array(dtype=wp.int32, ndim=1)
-  eq_wld_adr: wp.array(dtype=wp.int32, ndim=1)
-  eq_jnt_adr: wp.array(dtype=wp.int32, ndim=1)
-  eq_ten_adr: wp.array(dtype=wp.int32, ndim=1)
-  actuator_trntype: wp.array(dtype=wp.int32, ndim=1)
-  actuator_dyntype: wp.array(dtype=wp.int32, ndim=1)
-  actuator_gaintype: wp.array(dtype=wp.int32, ndim=1)
-  actuator_biastype: wp.array(dtype=wp.int32, ndim=1)
-  actuator_trnid: wp.array(dtype=wp.int32, ndim=2)
-  actuator_actadr: wp.array(dtype=wp.int32, ndim=1)
-  actuator_actnum: wp.array(dtype=wp.int32, ndim=1)
-  actuator_ctrllimited: wp.array(dtype=wp.bool, ndim=1)
-  actuator_forcelimited: wp.array(dtype=wp.bool, ndim=1)
-  actuator_actlimited: wp.array(dtype=wp.bool, ndim=1)
-  actuator_dynprm: wp.array(dtype=vec10f, ndim=1)
-  actuator_gainprm: wp.array(dtype=vec10f, ndim=1)
-  actuator_biasprm: wp.array(dtype=vec10f, ndim=1)
-  actuator_ctrlrange: wp.array(dtype=wp.vec2, ndim=1)
-  actuator_forcerange: wp.array(dtype=wp.vec2, ndim=1)
-  actuator_actrange: wp.array(dtype=wp.vec2, ndim=1)
-  actuator_gear: wp.array(dtype=wp.spatial_vector, ndim=1)
-  exclude_signature: wp.array(dtype=wp.int32, ndim=1)
+  qpos0: wp.array(dtype=float)
+  qpos_spring: wp.array(dtype=float)
+  qM_fullm_i: wp.array(dtype=int)  # warp only
+  qM_fullm_j: wp.array(dtype=int)  # warp only
+  qM_mulm_i: wp.array(dtype=int)  # warp only
+  qM_mulm_j: wp.array(dtype=int)  # warp only
+  qM_madr_ij: wp.array(dtype=int)  # warp only
+  qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]  # warp only
+  M_rownnz: wp.array(dtype=int)
+  M_rowadr: wp.array(dtype=int)
+  M_colind: wp.array(dtype=int)
+  mapM2M: wp.array(dtype=int)
+  qM_tiles: tuple[TileSet, ...]
+  body_tree: tuple[wp.array(dtype=int), ...]
+  body_parentid: wp.array(dtype=int)
+  body_rootid: wp.array(dtype=int)
+  body_weldid: wp.array(dtype=int)
+  body_mocapid: wp.array(dtype=int)
+  body_jntnum: wp.array(dtype=int)
+  body_jntadr: wp.array(dtype=int)
+  body_dofnum: wp.array(dtype=int)
+  body_dofadr: wp.array(dtype=int)
+  body_geomnum: wp.array(dtype=int)
+  body_geomadr: wp.array(dtype=int)
+  body_pos: wp.array(dtype=wp.vec3)
+  body_quat: wp.array(dtype=wp.quat)
+  body_ipos: wp.array(dtype=wp.vec3)
+  body_iquat: wp.array(dtype=wp.quat)
+  body_mass: wp.array(dtype=float)
+  body_subtreemass: wp.array(dtype=float)
+  subtree_mass: wp.array(dtype=float)
+  body_inertia: wp.array(dtype=wp.vec3)
+  body_invweight0: wp.array2d(dtype=float)
+  body_contype: wp.array(dtype=int)
+  body_conaffinity: wp.array(dtype=int)
+  body_gravcomp: wp.array(dtype=float)
+  jnt_type: wp.array(dtype=int)
+  jnt_qposadr: wp.array(dtype=int)
+  jnt_dofadr: wp.array(dtype=int)
+  jnt_bodyid: wp.array(dtype=int)
+  jnt_limited: wp.array(dtype=int)
+  jnt_actfrclimited: wp.array(dtype=bool)
+  jnt_solref: wp.array(dtype=wp.vec2)
+  jnt_solimp: wp.array(dtype=vec5)
+  jnt_pos: wp.array(dtype=wp.vec3)
+  jnt_axis: wp.array(dtype=wp.vec3)
+  jnt_stiffness: wp.array(dtype=float)
+  jnt_range: wp.array2d(dtype=float)
+  jnt_actfrcrange: wp.array(dtype=wp.vec2)
+  jnt_margin: wp.array(dtype=float)
+  jnt_limited_slide_hinge_adr: wp.array(dtype=int)  # warp only
+  jnt_limited_ball_adr: wp.array(dtype=int)  # warp only
+  jnt_actgravcomp: wp.array(dtype=int)
+  dof_bodyid: wp.array(dtype=int)
+  dof_jntid: wp.array(dtype=int)
+  dof_parentid: wp.array(dtype=int)
+  dof_Madr: wp.array(dtype=int)
+  dof_armature: wp.array(dtype=float)
+  dof_damping: wp.array(dtype=float)
+  dof_invweight0: wp.array(dtype=float)
+  dof_frictionloss: wp.array(dtype=float)
+  dof_solimp: wp.array(dtype=vec5)
+  dof_solref: wp.array(dtype=wp.vec2)
+  dof_tri_row: wp.array(dtype=int)  # warp only
+  dof_tri_col: wp.array(dtype=int)  # warp only
+  geom_type: wp.array(dtype=int)
+  geom_contype: wp.array(dtype=int)
+  geom_conaffinity: wp.array(dtype=int)
+  geom_condim: wp.array(dtype=int)
+  geom_bodyid: wp.array(dtype=int)
+  geom_dataid: wp.array(dtype=int)
+  geom_priority: wp.array(dtype=int)
+  geom_solmix: wp.array(dtype=float)
+  geom_solref: wp.array(dtype=wp.vec2)
+  geom_solimp: wp.array(dtype=vec5)
+  geom_size: wp.array(dtype=wp.vec3)
+  geom_aabb: wp.array2d(dtype=wp.vec3)
+  geom_rbound: wp.array(dtype=float)
+  geom_pos: wp.array(dtype=wp.vec3)
+  geom_quat: wp.array(dtype=wp.quat)
+  geom_friction: wp.array(dtype=wp.vec3)
+  geom_margin: wp.array(dtype=float)
+  geom_gap: wp.array(dtype=float)
+  hfield_adr: wp.array(dtype=int)
+  hfield_nrow: wp.array(dtype=int)
+  hfield_ncol: wp.array(dtype=int)
+  hfield_size: wp.array(dtype=wp.vec4)
+  hfield_data: wp.array(dtype=float)
+  site_bodyid: wp.array(dtype=int)
+  site_pos: wp.array(dtype=wp.vec3)
+  site_quat: wp.array(dtype=wp.quat)
+  cam_mode: wp.array(dtype=int)
+  cam_bodyid: wp.array(dtype=int)
+  cam_targetbodyid: wp.array(dtype=int)
+  cam_pos: wp.array(dtype=wp.vec3)
+  cam_quat: wp.array(dtype=wp.quat)
+  cam_poscom0: wp.array(dtype=wp.vec3)
+  cam_pos0: wp.array(dtype=wp.vec3)
+  cam_fovy: wp.array(dtype=float)
+  cam_resolution: wp.array(dtype=wp.vec2i)
+  cam_sensorsize: wp.array(dtype=wp.vec2)
+  cam_intrinsic: wp.array(dtype=wp.vec4)
+  light_mode: wp.array(dtype=int)
+  light_bodyid: wp.array(dtype=int)
+  light_targetbodyid: wp.array(dtype=int)
+  light_pos: wp.array(dtype=wp.vec3)
+  light_dir: wp.array(dtype=wp.vec3)
+  light_poscom0: wp.array(dtype=wp.vec3)
+  light_pos0: wp.array(dtype=wp.vec3)
+  mesh_vertadr: wp.array(dtype=int)
+  mesh_vertnum: wp.array(dtype=int)
+  mesh_vert: wp.array(dtype=wp.vec3)
+  eq_type: wp.array(dtype=int)
+  eq_obj1id: wp.array(dtype=int)
+  eq_obj2id: wp.array(dtype=int)
+  eq_objtype: wp.array(dtype=int)
+  eq_active0: wp.array(dtype=bool)
+  eq_solref: wp.array(dtype=wp.vec2)
+  eq_solimp: wp.array(dtype=vec5)
+  eq_data: wp.array(dtype=vec11)
+  eq_connect_adr: wp.array(dtype=int)
+  eq_wld_adr: wp.array(dtype=int)
+  eq_jnt_adr: wp.array(dtype=int)
+  eq_ten_adr: wp.array(dtype=int)
+  actuator_moment_tiles_nv: tuple[TileSet, ...]
+  actuator_moment_tiles_nu: tuple[TileSet, ...]
   actuator_affine_bias_gain: bool  # warp only
-  nxn_geom_pair: wp.array(dtype=wp.vec2i, ndim=1)  # warp only
-  nxn_pairid: wp.array(dtype=wp.int32, ndim=1)  # warp only
-
-  # predefined geom pairs for collision detection
-  pair_dim: wp.array(dtype=wp.int32, ndim=1)
-  pair_geom1: wp.array(dtype=wp.int32, ndim=1)
-  pair_geom2: wp.array(dtype=wp.int32, ndim=1)
-  pair_solref: wp.array(dtype=wp.vec2, ndim=1)
-  pair_solreffriction: wp.array(dtype=wp.vec2, ndim=1)
-  pair_solimp: wp.array(dtype=vec5, ndim=1)
-  pair_margin: wp.array(dtype=wp.float32, ndim=1)
-  pair_gap: wp.array(dtype=wp.float32, ndim=1)
-  pair_friction: wp.array(dtype=vec5, ndim=1)
+  actuator_trntype: wp.array(dtype=int)
+  actuator_dyntype: wp.array(dtype=int)
+  actuator_gaintype: wp.array(dtype=int)
+  actuator_biastype: wp.array(dtype=int)
+  actuator_trnid: wp.array(dtype=wp.vec2i)
+  actuator_actadr: wp.array(dtype=int)
+  actuator_actnum: wp.array(dtype=int)
+  actuator_ctrllimited: wp.array(dtype=bool)
+  actuator_forcelimited: wp.array(dtype=bool)
+  actuator_actlimited: wp.array(dtype=bool)
+  actuator_dynprm: wp.array(dtype=vec10f)
+  actuator_gainprm: wp.array(dtype=vec10f)
+  actuator_biasprm: wp.array(dtype=vec10f)
+  actuator_ctrlrange: wp.array(dtype=wp.vec2)
+  actuator_forcerange: wp.array(dtype=wp.vec2)
+  actuator_actrange: wp.array(dtype=wp.vec2)
+  actuator_gear: wp.array(dtype=wp.spatial_vector)
+  nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
+  nxn_pairid: wp.array(dtype=int)  # warp only
+  pair_dim: wp.array(dtype=int)
+  pair_geom1: wp.array(dtype=int)
+  pair_geom2: wp.array(dtype=int)
+  pair_solref: wp.array(dtype=wp.vec2)
+  pair_solreffriction: wp.array(dtype=wp.vec2)
+  pair_solimp: wp.array(dtype=vec5)
+  pair_margin: wp.array(dtype=float)
+  pair_gap: wp.array(dtype=float)
+  pair_friction: wp.array(dtype=vec5)
+  exclude_signature: wp.array(dtype=int)
   condim_max: int  # warp only
-  tendon_adr: wp.array(dtype=wp.int32, ndim=1)
-  tendon_num: wp.array(dtype=wp.int32, ndim=1)
-  tendon_limited: wp.array(dtype=wp.int32, ndim=1)
-  tendon_limited_adr: wp.array(dtype=wp.int32, ndim=1)
-  tendon_solref_lim: wp.array(dtype=wp.vec2f, ndim=1)
-  tendon_solimp_lim: wp.array(dtype=vec5, ndim=1)
-  tendon_range: wp.array(dtype=wp.vec2f, ndim=1)
-  tendon_margin: wp.array(dtype=wp.float32, ndim=1)
-  tendon_length0: wp.array(dtype=wp.float32, ndim=1)
-  tendon_invweight0: wp.array(dtype=wp.float32, ndim=1)
-  wrap_objid: wp.array(dtype=wp.int32, ndim=1)
-  wrap_prm: wp.array(dtype=wp.float32, ndim=1)
-  wrap_type: wp.array(dtype=wp.int32, ndim=1)
-  tendon_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  tendon_site_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  tendon_site_pair_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  ten_wrapadr_site: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  ten_wrapnum_site: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  wrap_jnt_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  wrap_site_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  wrap_site_pair_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  sensor_type: wp.array(dtype=wp.int32, ndim=1)
-  sensor_datatype: wp.array(dtype=wp.int32, ndim=1)
-  sensor_objtype: wp.array(dtype=wp.int32, ndim=1)
-  sensor_objid: wp.array(dtype=wp.int32, ndim=1)
-  sensor_reftype: wp.array(dtype=wp.int32, ndim=1)
-  sensor_refid: wp.array(dtype=wp.int32, ndim=1)
-  sensor_dim: wp.array(dtype=wp.int32, ndim=1)
-  sensor_adr: wp.array(dtype=wp.int32, ndim=1)
-  sensor_cutoff: wp.array(dtype=wp.float32, ndim=1)
-  sensor_pos_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  sensor_vel_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  sensor_acc_adr: wp.array(dtype=wp.int32, ndim=1)  # warp only
+  tendon_adr: wp.array(dtype=int)
+  tendon_num: wp.array(dtype=int)
+  tendon_limited: wp.array(dtype=int)
+  tendon_limited_adr: wp.array(dtype=int)
+  tendon_solref_lim: wp.array(dtype=wp.vec2)
+  tendon_solimp_lim: wp.array(dtype=vec5)
+  tendon_range: wp.array(dtype=wp.vec2)
+  tendon_margin: wp.array(dtype=float)
+  tendon_length0: wp.array(dtype=float)
+  tendon_invweight0: wp.array(dtype=float)
+  wrap_objid: wp.array(dtype=int)
+  wrap_prm: wp.array(dtype=float)
+  wrap_type: wp.array(dtype=int)
+  tendon_jnt_adr: wp.array(dtype=int)  # warp only
+  tendon_site_adr: wp.array(dtype=int)  # warp only
+  tendon_site_pair_adr: wp.array(dtype=int)  # warp only
+  ten_wrapadr_site: wp.array(dtype=int)  # warp only
+  ten_wrapnum_site: wp.array(dtype=int)  # warp only
+  wrap_jnt_adr: wp.array(dtype=int)  # warp only
+  wrap_site_adr: wp.array(dtype=int)  # warp only
+  wrap_site_pair_adr: wp.array(dtype=int)  # warp only
+  sensor_type: wp.array(dtype=int)
+  sensor_datatype: wp.array(dtype=int)
+  sensor_objtype: wp.array(dtype=int)
+  sensor_objid: wp.array(dtype=int)
+  sensor_reftype: wp.array(dtype=int)
+  sensor_refid: wp.array(dtype=int)
+  sensor_dim: wp.array(dtype=int)
+  sensor_adr: wp.array(dtype=int)
+  sensor_cutoff: wp.array(dtype=float)
+  sensor_pos_adr: wp.array(dtype=int)  # warp only
+  sensor_vel_adr: wp.array(dtype=int)  # warp only
+  sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
+  mocap_bodyid: wp.array(dtype=int)  # warp only
 
 
-@wp.struct
+@dataclasses.dataclass
 class Contact:
   """Contact data.
 
@@ -1021,25 +1025,28 @@ class Contact:
     worldid: world id
   """
 
-  dist: wp.array(dtype=wp.float32, ndim=1)
-  pos: wp.array(dtype=wp.vec3f, ndim=1)
-  frame: wp.array(dtype=wp.mat33f, ndim=1)
-  includemargin: wp.array(dtype=wp.float32, ndim=1)
-  friction: wp.array(dtype=vec5, ndim=1)
-  solref: wp.array(dtype=wp.vec2f, ndim=1)
-  solreffriction: wp.array(dtype=wp.vec2f, ndim=1)
-  solimp: wp.array(dtype=vec5, ndim=1)
-  dim: wp.array(dtype=wp.int32, ndim=1)
-  geom: wp.array(dtype=wp.vec2i, ndim=1)
-  efc_address: wp.array(dtype=wp.int32, ndim=2)
-  worldid: wp.array(dtype=wp.int32, ndim=1)
+  dist: wp.array(dtype=float)
+  pos: wp.array(dtype=wp.vec3)
+  frame: wp.array(dtype=wp.mat33)
+  includemargin: wp.array(dtype=float)
+  friction: wp.array(dtype=vec5)
+  solref: wp.array(dtype=wp.vec2)
+  solreffriction: wp.array(dtype=wp.vec2)
+  solimp: wp.array(dtype=vec5)
+  dim: wp.array(dtype=int)
+  geom: wp.array(dtype=wp.vec2i)
+  efc_address: wp.array2d(dtype=int)
+  worldid: wp.array(dtype=int)
 
 
-@wp.struct
+@dataclasses.dataclass
 class Data:
   """Dynamic state that updates each step.
 
   Attributes:
+    nworld: number of worlds                                    ()
+    nconmax: maximum number of contacts                         ()
+    njmax: maximum number of constraints                        ()
     ncon: number of detected contacts                           ()
     ne: number of equality constraints                          ()
     ne_connect: number of equality connect constraints          ()
@@ -1105,9 +1112,6 @@ class Data:
     qfrc_constraint: constraint force                           (nworld, nv)
     contact: contact data
     efc: constraint data
-    nworld: number of worlds                                    ()
-    nconmax: maximum number of contacts                         ()
-    njmax: maximum number of constraints                        ()
     rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
     rne_cfrc: arrays used for smooth.rne                        (nworld, nbody, 6)
     qpos_t0: temporary array for rk4                            (nworld, nq)
@@ -1119,16 +1123,16 @@ class Data:
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
-    qM_integration: temporary array for integration             (same shape as qM)
-    qLD_integration: temporary array for integration            (same shape as qLD)
+    qM_integration: temporary array for integration             (nworld, nv, nv) if dense
+    qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
     qLDiagInv_integration: temporary array for integration      (nworld, nv)
     boxes_sorted: min, max of sorted bounding boxes             (nworld, ngeom, 2)
-    box_projections_lower: broadphase context                   (2*nworld, ngeom)
-    box_projections_upper: broadphase context                   (nworld, ngeom)
-    box_sorting_indexer: broadphase context                     (2*nworld, ngeom)
-    ranges: broadphase context                                  (nworld, ngeom)
-    cumulative_sum: broadphase context                          (nworld*ngeom,)
-    segment_indices: broadphase context                         (nworld+1,)
+    sap_projections_lower: broadphase context                   (2*nworld, ngeom)
+    sap_projections_upper: broadphase context                   (nworld, ngeom)
+    sap_sort_index: broadphase context                          (2*nworld, ngeom)
+    sap_range: broadphase context                               (nworld, ngeom)
+    sap_cumulative_sum: broadphase context                      (nworld*ngeom,)
+    sap_segment_index: broadphase context                       (nworld+1,)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (nconmax,)
     collision_index: collision index for hfield pairs           (nconmax,)
@@ -1146,116 +1150,119 @@ class Data:
     sensordata: sensor data array                               (nsensordata,)
   """
 
-  ncon: wp.array(dtype=wp.int32, ndim=1)
-  ne: wp.array(dtype=wp.int32, ndim=1)
-  ne_connect: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  ne_weld: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  ne_jnt: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  ne_ten: wp.array(dtype=wp.int32, ndim=1)  # warp only
-  nf: wp.array(dtype=wp.int32, ndim=1)
-  nl: wp.array(dtype=wp.int32, ndim=1)
-  nefc: wp.array(dtype=wp.int32, ndim=1)
-  time: wp.array(dtype=wp.float32, ndim=1)
-  qpos: wp.array(dtype=wp.float32, ndim=2)
-  qvel: wp.array(dtype=wp.float32, ndim=2)
-  act: wp.array(dtype=wp.float32, ndim=2)
-  qacc_warmstart: wp.array(dtype=wp.float32, ndim=2)
-  ctrl: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_applied: wp.array(dtype=wp.float32, ndim=2)
-  xfrc_applied: wp.array(dtype=wp.spatial_vector, ndim=2)
-  eq_active: wp.array(dtype=wp.bool, ndim=2)
-  mocap_pos: wp.array(dtype=wp.vec3, ndim=2)
-  mocap_quat: wp.array(dtype=wp.quat, ndim=2)
-  qacc: wp.array(dtype=wp.float32, ndim=2)
-  act_dot: wp.array(dtype=wp.float32, ndim=2)
-  xpos: wp.array(dtype=wp.vec3, ndim=2)
-  xquat: wp.array(dtype=wp.quat, ndim=2)
-  xmat: wp.array(dtype=wp.mat33, ndim=2)
-  xipos: wp.array(dtype=wp.vec3, ndim=2)
-  ximat: wp.array(dtype=wp.mat33, ndim=2)
-  xanchor: wp.array(dtype=wp.vec3, ndim=2)
-  xaxis: wp.array(dtype=wp.vec3, ndim=2)
-  geom_xpos: wp.array(dtype=wp.vec3, ndim=2)
-  geom_xmat: wp.array(dtype=wp.mat33, ndim=2)
-  site_xpos: wp.array(dtype=wp.vec3, ndim=2)
-  site_xmat: wp.array(dtype=wp.mat33, ndim=2)
-  cam_xpos: wp.array(dtype=wp.vec3, ndim=2)
-  cam_xmat: wp.array(dtype=wp.mat33, ndim=2)
-  light_xpos: wp.array(dtype=wp.vec3, ndim=2)
-  light_xdir: wp.array(dtype=wp.vec3, ndim=2)
-  subtree_com: wp.array(dtype=wp.vec3, ndim=2)
-  cdof: wp.array(dtype=wp.spatial_vector, ndim=2)
-  cinert: wp.array(dtype=vec10, ndim=2)
-  actuator_length: wp.array(dtype=wp.float32, ndim=2)
-  actuator_moment: wp.array(dtype=wp.float32, ndim=3)
-  crb: wp.array(dtype=vec10, ndim=2)
-  qM: wp.array(dtype=wp.float32, ndim=3)
-  qLD: wp.array(dtype=wp.float32, ndim=3)
-  qLDiagInv: wp.array(dtype=wp.float32, ndim=2)
-  ten_velocity: wp.array(dtype=wp.float32, ndim=2)
-  actuator_velocity: wp.array(dtype=wp.float32, ndim=2)
-  cvel: wp.array(dtype=wp.spatial_vector, ndim=2)
-  cdof_dot: wp.array(dtype=wp.spatial_vector, ndim=2)
-  qfrc_bias: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_spring: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_damper: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_gravcomp: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_passive: wp.array(dtype=wp.float32, ndim=2)
-  subtree_linvel: wp.array(dtype=wp.vec3, ndim=2)
-  subtree_angmom: wp.array(dtype=wp.vec3, ndim=2)
-  subtree_bodyvel: wp.array(dtype=wp.spatial_vector, ndim=2)  # warp only
-  actuator_force: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_actuator: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_smooth: wp.array(dtype=wp.float32, ndim=2)
-  qacc_smooth: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_constraint: wp.array(dtype=wp.float32, ndim=2)
+  nworld: int  # warp only
+  nconmax: int  # warp only
+  njmax: int  # warp only
+
+  ncon: wp.array(dtype=int)
+  ne: wp.array(dtype=int)
+  ne_connect: wp.array(dtype=int)  # warp only
+  ne_weld: wp.array(dtype=int)  # warp only
+  ne_jnt: wp.array(dtype=int)  # warp only
+  ne_ten: wp.array(dtype=int)  # warp only
+  nf: wp.array(dtype=int)
+  nl: wp.array(dtype=int)
+  nefc: wp.array(dtype=int)
+  time: wp.array(dtype=float)
+  qpos: wp.array2d(dtype=float)
+  qvel: wp.array2d(dtype=float)
+  act: wp.array2d(dtype=float)
+  qacc_warmstart: wp.array2d(dtype=float)
+  ctrl: wp.array2d(dtype=float)
+  qfrc_applied: wp.array2d(dtype=float)
+  xfrc_applied: wp.array2d(dtype=wp.spatial_vector)
+  eq_active: wp.array2d(dtype=bool)
+  mocap_pos: wp.array2d(dtype=wp.vec3)
+  mocap_quat: wp.array2d(dtype=wp.quat)
+  qacc: wp.array2d(dtype=float)
+  act_dot: wp.array2d(dtype=float)
+  xpos: wp.array2d(dtype=wp.vec3)
+  xquat: wp.array2d(dtype=wp.quat)
+  xmat: wp.array2d(dtype=wp.mat33)
+  xipos: wp.array2d(dtype=wp.vec3)
+  ximat: wp.array2d(dtype=wp.mat33)
+  xanchor: wp.array2d(dtype=wp.vec3)
+  xaxis: wp.array2d(dtype=wp.vec3)
+  geom_xpos: wp.array2d(dtype=wp.vec3)
+  geom_xmat: wp.array2d(dtype=wp.mat33)
+  site_xpos: wp.array2d(dtype=wp.vec3)
+  site_xmat: wp.array2d(dtype=wp.mat33)
+  cam_xpos: wp.array2d(dtype=wp.vec3)
+  cam_xmat: wp.array2d(dtype=wp.mat33)
+  light_xpos: wp.array2d(dtype=wp.vec3)
+  light_xdir: wp.array2d(dtype=wp.vec3)
+  subtree_com: wp.array2d(dtype=wp.vec3)
+  cdof: wp.array2d(dtype=wp.spatial_vector)
+  cinert: wp.array2d(dtype=vec10)
+  actuator_length: wp.array2d(dtype=float)
+  actuator_moment: wp.array3d(dtype=float)
+  crb: wp.array2d(dtype=vec10)
+  qM: wp.array3d(dtype=float)
+  qLD: wp.array3d(dtype=float)
+  qLDiagInv: wp.array2d(dtype=float)
+  ten_velocity: wp.array2d(dtype=float)
+  actuator_velocity: wp.array2d(dtype=float)
+  cvel: wp.array2d(dtype=wp.spatial_vector)
+  cdof_dot: wp.array2d(dtype=wp.spatial_vector)
+  qfrc_bias: wp.array2d(dtype=float)
+  qfrc_spring: wp.array2d(dtype=float)
+  qfrc_damper: wp.array2d(dtype=float)
+  qfrc_gravcomp: wp.array2d(dtype=float)
+  qfrc_passive: wp.array2d(dtype=float)
+  subtree_linvel: wp.array2d(dtype=wp.vec3)
+  subtree_angmom: wp.array2d(dtype=wp.vec3)
+  subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)  # warp only
+  actuator_force: wp.array2d(dtype=float)
+  qfrc_actuator: wp.array2d(dtype=float)
+  qfrc_smooth: wp.array2d(dtype=float)
+  qacc_smooth: wp.array2d(dtype=float)
+  qfrc_constraint: wp.array2d(dtype=float)
   contact: Contact
   efc: Constraint
-  nworld: int
-  nconmax: int
-  njmax: int
-  rne_cacc: wp.array(dtype=wp.spatial_vector, ndim=2)
-  rne_cfrc: wp.array(dtype=wp.spatial_vector, ndim=2)
-  qpos_t0: wp.array(dtype=wp.float32, ndim=2)
-  qvel_t0: wp.array(dtype=wp.float32, ndim=2)
-  act_t0: wp.array(dtype=wp.float32, ndim=2)
-  qvel_rk: wp.array(dtype=wp.float32, ndim=2)
-  qacc_rk: wp.array(dtype=wp.float32, ndim=2)
-  act_dot_rk: wp.array(dtype=wp.float32, ndim=2)
-  qfrc_integration: wp.array(dtype=wp.float32, ndim=2)
-  qacc_integration: wp.array(dtype=wp.float32, ndim=2)
-  act_vel_integration: wp.array(dtype=wp.float32, ndim=2)
-  qM_integration: wp.array(dtype=wp.float32, ndim=3)
-  qLD_integration: wp.array(dtype=wp.float32, ndim=3)
-  qLDiagInv_integration: wp.array(dtype=wp.float32, ndim=2)
+
+  # RK4
+  qpos_t0: wp.array2d(dtype=float)
+  qvel_t0: wp.array2d(dtype=float)
+  act_t0: wp.array2d(dtype=float)
+  qvel_rk: wp.array2d(dtype=float)
+  qacc_rk: wp.array2d(dtype=float)
+  act_dot_rk: wp.array2d(dtype=float)
+
+  # euler + implicit integration
+  qfrc_integration: wp.array2d(dtype=float)
+  qacc_integration: wp.array2d(dtype=float)
+  act_vel_integration: wp.array2d(dtype=float)
+  qM_integration: wp.array3d(dtype=float)
+  qLD_integration: wp.array3d(dtype=float)
+  qLDiagInv_integration: wp.array2d(dtype=float)
 
   # sweep-and-prune broadphase
-  sap_projection_lower: wp.array(dtype=wp.float32, ndim=2)
-  sap_projection_upper: wp.array(dtype=wp.float32, ndim=2)
-  sap_sort_index: wp.array(dtype=wp.int32, ndim=2)
-  sap_range: wp.array(dtype=wp.int32, ndim=2)
-  sap_cumulative_sum: wp.array(dtype=wp.int32, ndim=1)
-  sap_segment_index: wp.array(dtype=wp.int32, ndim=1)
+  sap_projection_lower: wp.array2d(dtype=float)
+  sap_projection_upper: wp.array2d(dtype=float)
+  sap_sort_index: wp.array2d(dtype=int)
+  sap_range: wp.array2d(dtype=int)
+  sap_cumulative_sum: wp.array(dtype=int)
+  sap_segment_index: wp.array(dtype=int)
 
   # collision driver
-  collision_pair: wp.array(dtype=wp.vec2i, ndim=1)
-  collision_index: wp.array(dtype=wp.int32, ndim=1)
-  collision_pairid: wp.array(dtype=wp.int32, ndim=1)
-  collision_worldid: wp.array(dtype=wp.int32, ndim=1)
-  ncollision: wp.array(dtype=wp.int32, ndim=1)
+  collision_pair: wp.array(dtype=wp.vec2i)
+  collision_hftri_index: wp.array(dtype=int)
+  collision_pairid: wp.array(dtype=int)
+  collision_worldid: wp.array(dtype=int)
+  ncollision: wp.array(dtype=int)
 
   # rne_postconstraint
-  cacc: wp.array(dtype=wp.spatial_vector, ndim=2)
-  cfrc_int: wp.array(dtype=wp.spatial_vector, ndim=2)
-  cfrc_ext: wp.array(dtype=wp.spatial_vector, ndim=2)
+  cacc: wp.array2d(dtype=wp.spatial_vector)
+  cfrc_int: wp.array2d(dtype=wp.spatial_vector)
+  cfrc_ext: wp.array2d(dtype=wp.spatial_vector)
 
   # tendon
-  ten_length: wp.array(dtype=wp.float32, ndim=2)
-  ten_J: wp.array(dtype=wp.float32, ndim=3)
-  ten_wrapadr: wp.array(dtype=wp.int32, ndim=2)
-  ten_wrapnum: wp.array(dtype=wp.int32, ndim=2)
-  wrap_obj: wp.array(dtype=wp.vec2i, ndim=2)
-  wrap_xpos: wp.array(dtype=wp.spatial_vector, ndim=2)
+  ten_length: wp.array2d(dtype=float)
+  ten_J: wp.array3d(dtype=float)
+  ten_wrapadr: wp.array2d(dtype=int)
+  ten_wrapnum: wp.array2d(dtype=int)
+  wrap_obj: wp.array2d(dtype=wp.vec2i)
+  wrap_xpos: wp.array2d(dtype=wp.spatial_vector)
 
   # sensors
-  sensordata: wp.array(dtype=wp.float32, ndim=2)
+  sensordata: wp.array2d(dtype=float)

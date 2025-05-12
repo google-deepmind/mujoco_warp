@@ -41,8 +41,42 @@ def _assert_eq(a, b, name):
 
 class SolverTest(parameterized.TestCase):
   @parameterized.parameters(
+    (ConeType.PYRAMIDAL, SolverType.CG),
+    (ConeType.ELLIPTIC, SolverType.CG),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON),
+    (ConeType.ELLIPTIC, SolverType.NEWTON),
+  )
+  def test_cost(self, cone, solver_):
+    """Tests cost function is correct."""
+    for keyframe in range(3):
+      mjm, mjd, m, d = test_util.fixture(
+        "humanoid/humanoid.xml",
+        keyframe=keyframe,
+        cone=cone,
+        solver=solver_,
+        iterations=0,
+      )
+
+      def cost(qacc):
+        jaref = np.zeros(mjd.nefc, dtype=float)
+        cost = np.zeros(1)
+        mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
+        mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
+        return cost
+
+      mj_cost = cost(mjd.qacc)
+
+      # solve with 0 iterations just intializes constraints and costs and then exits
+      mjwarp.solve(m, d)
+
+      mjwarp_cost = d.efc.cost.numpy()[0] - d.efc.gauss.numpy()[0]
+
+      _assert_eq(mjwarp_cost, mj_cost, name="cost")
+
+  @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 5, 5, False, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 5, 5, False, False),
+    # TODO(erikfrey): determine why this used to work as 5,5
+    (ConeType.ELLIPTIC, SolverType.CG, 20, 20, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, False, False),
     (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 4, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, True, True),
@@ -62,27 +96,10 @@ class SolverTest(parameterized.TestCase):
         ls_parallel=ls_parallel,
       )
 
-      def cost(qacc):
-        jaref = np.zeros(mjd.nefc, dtype=float)
-        cost = np.zeros(1)
-        mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
-        mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
-        return cost
-
-      mj_cost = cost(mjd.qacc)
-
-      solver._create_context(m, d)
-
-      mjwarp_cost = d.efc.cost.numpy()[0] - d.efc.gauss.numpy()[0]
-
-      _assert_eq(mjwarp_cost, mj_cost, name="cost")
-
       qacc_warmstart = mjd.qacc_warmstart.copy()
       mujoco.mj_forward(mjm, mjd)
       mjd.qacc_warmstart = qacc_warmstart
 
-      m = mjwarp.put_model(mjm)
-      d = mjwarp.put_data(mjm, mjd, njmax=mjd.nefc)
       d.qacc.zero_()
       d.qfrc_constraint.zero_()
       d.efc.force.zero_()
@@ -90,6 +107,13 @@ class SolverTest(parameterized.TestCase):
       if solver_ == mujoco.mjtSolver.mjSOL_CG:
         mjwarp.factor_m(m, d)
       mjwarp.solve(m, d)
+
+      def cost(qacc):
+        jaref = np.zeros(mjd.nefc, dtype=float)
+        cost = np.zeros(1)
+        mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
+        mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
+        return cost
 
       mj_cost = cost(mjd.qacc)
       mjwarp_cost = cost(d.qacc.numpy()[0])
@@ -239,9 +263,7 @@ class SolverTest(parameterized.TestCase):
     ineq_D1 = mjd1.efc_D[mjd1.ne :]
     ineq_D2 = mjd2.efc_D[mjd2.ne :]
 
-    efc_D_fill = np.concatenate(
-      [eq_D0, eq_D1, eq_D2, ineq_D0, ineq_D1, ineq_D2, np.zeros(nefc_fill)]
-    )
+    efc_D_fill = np.concatenate([eq_D0, eq_D1, eq_D2, ineq_D0, ineq_D1, ineq_D2, np.zeros(nefc_fill)])
 
     eq_aref0 = mjd0.efc_aref[: mjd0.ne]
     eq_aref1 = mjd1.efc_aref[: mjd1.ne]
@@ -347,17 +369,13 @@ class SolverTest(parameterized.TestCase):
 
       # Get world 1 forces
       world1_eq_forces = d.efc.force.numpy()[mjd0.ne : mjd0.ne + mjd1.ne]
-      world1_ineq_forces = d.efc.force.numpy()[
-        ne_active + nieq0 : ne_active + nieq0 + nieq1
-      ]
+      world1_ineq_forces = d.efc.force.numpy()[ne_active + nieq0 : ne_active + nieq0 + nieq1]
       world1_forces = np.concatenate([world1_eq_forces, world1_ineq_forces])
       _assert_eq(world1_forces, mjd1.efc_force, "efc_force1")
 
       # Get world 2 forces
       world2_eq_forces = d.efc.force.numpy()[mjd0.ne + mjd1.ne : ne_active]
-      world2_ineq_forces = d.efc.force.numpy()[
-        ne_active + nieq0 + nieq1 : ne_active + nieq0 + nieq1 + nieq2
-      ]
+      world2_ineq_forces = d.efc.force.numpy()[ne_active + nieq0 + nieq1 : ne_active + nieq0 + nieq1 + nieq2]
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 

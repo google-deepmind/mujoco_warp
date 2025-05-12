@@ -24,10 +24,18 @@ from .types import GeomType
 from .types import Model
 from .warp_util import event_scope
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def get_hfield_overlap_range(
-  m: Model, d: Data, hfield_geom: int, other_geom: int, worldid: int
+  # Model:
+  m: Model,
+  # Data:
+  d: Data,
+  hfield_geom: int,
+  other_geom: int,
+  worldid: int
 ):
   """Returns min/max grid coordinates of height field cells overlapped by other geom's bounds.
 

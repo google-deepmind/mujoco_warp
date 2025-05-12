@@ -42,70 +42,92 @@ class Geom:
 
 @wp.func
 def _geom(
+  # Model:
+  geom_dataid: wp.array(dtype=int),
+  geom_size: wp.array(dtype=wp.vec3),
+  mesh_vertadr: wp.array(dtype=int),
+  mesh_vertnum: wp.array(dtype=int),
+  # Data in:
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  worldid: int,
   gid: int,
-  m: Model,
-  geom_xpos: wp.array(dtype=wp.vec3),
-  geom_xmat: wp.array(dtype=wp.mat33),
-  tri_index: int = -1,
+  hfield_tri_index: int = -1,
 ) -> Geom:
   geom = Geom()
-  geom.pos = geom_xpos[gid]
-  rot = geom_xmat[gid]
+  geom.pos = geom_xpos_in[worldid, gid]
+  rot = geom_xmat_in[worldid, gid]
   geom.rot = rot
-  geom.size = m.geom_size[gid]
+  geom.size = geom_size[gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
-  dataid = m.geom_dataid[gid]
+  dataid = geom_dataid[gid]
+
+  # If geom is MESH, get mesh verts
   if dataid >= 0 and m.geom_type[gid] == int(GeomType.MESH.value):
-    geom.vertadr = m.mesh_vertadr[dataid]
-    geom.vertnum = m.mesh_vertnum[dataid]
+    geom.vertadr = mesh_vertadr[dataid]
+    geom.vertnum = mesh_vertnum[dataid]
   else:
     geom.vertadr = -1
     geom.vertnum = -1
 
   # If geom is HFIELD triangle, compute triangle prism verts
   if m.geom_type[gid] == int(GeomType.HFIELD.value):
-    geom.hfprism = get_hfield_triangle_prism(m, gid, tri_index)
+    geom.hfprism = get_hfield_triangle_prism(m, gid, hfield_tri_index)
 
   return geom
 
 
 @wp.func
 def write_contact(
-  d: Data,
-  dist: float,
-  pos: wp.vec3,
-  frame: wp.mat33,
-  margin: float,
-  gap: float,
-  condim: int,
-  friction: vec5,
-  solref: wp.vec2f,
-  solreffriction: wp.vec2f,
-  solimp: vec5,
-  geoms: wp.vec2i,
-  worldid: int,
+  # Data in:
+  nconmax_in: int,
+  # In:
+  dist_in: float,
+  pos_in: wp.vec3,
+  frame_in: wp.mat33,
+  margin_in: float,
+  gap_in: float,
+  condim_in: int,
+  friction_in: vec5,
+  solref_in: wp.vec2f,
+  solreffriction_in: wp.vec2f,
+  solimp_in: vec5,
+  geoms_in: wp.vec2i,
+  worldid_in: int,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
-  active = (dist - margin) < 0
+  active = (dist_in - margin_in) < 0
   if active:
-    cid = wp.atomic_add(d.ncon, 0, 1)
-    if cid < d.nconmax:
-      d.contact.dist[cid] = dist
-      d.contact.pos[cid] = pos
-      d.contact.frame[cid] = frame
-      d.contact.geom[cid] = geoms
-      d.contact.worldid[cid] = worldid
-      d.contact.includemargin[cid] = margin - gap
-      d.contact.dim[cid] = condim
-      d.contact.friction[cid] = friction
-      d.contact.solref[cid] = solref
-      d.contact.solreffriction[cid] = solreffriction
-      d.contact.solimp[cid] = solimp
+    cid = wp.atomic_add(ncon_out, 0, 1)
+    if cid < nconmax_in:
+      contact_dist_out[cid] = dist_in
+      contact_pos_out[cid] = pos_in
+      contact_frame_out[cid] = frame_in
+      contact_geom_out[cid] = geoms_in
+      contact_worldid_out[cid] = worldid_in
+      contact_includemargin_out[cid] = margin_in - gap_in
+      contact_dim_out[cid] = condim_in
+      contact_friction_out[cid] = friction_in
+      contact_solref_out[cid] = solref_in
+      contact_solreffriction_out[cid] = solreffriction_in
+      contact_solimp_out[cid] = solimp_in
 
 
 @wp.func
-def _plane_sphere(
-  plane_normal: wp.vec3, plane_pos: wp.vec3, sphere_pos: wp.vec3, sphere_radius: float
-):
+def _plane_sphere(plane_normal: wp.vec3, plane_pos: wp.vec3, sphere_pos: wp.vec3, sphere_radius: float):
   dist = wp.dot(sphere_pos - plane_pos, plane_normal) - sphere_radius
   pos = sphere_pos - plane_normal * (sphere_radius + 0.5 * dist)
   return dist, pos
@@ -113,10 +135,12 @@ def _plane_sphere(
 
 @wp.func
 def plane_sphere(
+  # Data in:
+  nconmax_in: int,
+  # In:
   plane: Geom,
   sphere: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -125,11 +149,24 @@ def plane_sphere(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   dist, pos = _plane_sphere(plane.normal, plane.pos, sphere.pos, sphere.size[0])
 
   write_contact(
-    d,
+    nconmax_in,
     dist,
     pos,
     make_frame(plane.normal),
@@ -142,17 +179,31 @@ def plane_sphere(
     solimp,
     geoms,
     worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def _sphere_sphere(
+  # Data in:
+  nconmax_in: int,
+  # In:
   pos1: wp.vec3,
   radius1: float,
   pos2: wp.vec3,
   radius2: float,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -161,6 +212,19 @@ def _sphere_sphere(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   dir = pos2 - pos1
   dist = wp.length(dir)
@@ -172,7 +236,7 @@ def _sphere_sphere(
   pos = pos1 + n * (radius1 + 0.5 * dist)
 
   write_contact(
-    d,
+    nconmax_in,
     dist,
     pos,
     make_frame(n),
@@ -185,17 +249,31 @@ def _sphere_sphere(
     solimp,
     geoms,
     worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def _sphere_sphere_ext(
+  # Data in:
+  nconmax_in: int,
+  # In:
   pos1: wp.vec3,
   radius1: float,
   pos2: wp.vec3,
   radius2: float,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -206,6 +284,19 @@ def _sphere_sphere_ext(
   geoms: wp.vec2i,
   mat1: wp.mat33,
   mat2: wp.mat33,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   dir = pos2 - pos1
   dist = wp.length(dir)
@@ -221,7 +312,7 @@ def _sphere_sphere_ext(
   pos = pos1 + n * (radius1 + 0.5 * dist)
 
   write_contact(
-    d,
+    nconmax_in,
     dist,
     pos,
     make_frame(n),
@@ -234,15 +325,29 @@ def _sphere_sphere_ext(
     solimp,
     geoms,
     worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def sphere_sphere(
+  # Data in:
+  nconmax_in: int,
+  # In:
   sphere1: Geom,
   sphere2: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -251,14 +356,27 @@ def sphere_sphere(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   _sphere_sphere(
+    nconmax_in,
     sphere1.pos,
     sphere1.size[0],
     sphere2.pos,
     sphere2.size[0],
     worldid,
-    d,
     margin,
     gap,
     condim,
@@ -267,15 +385,29 @@ def sphere_sphere(
     solreffriction,
     solimp,
     geoms,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def sphere_capsule(
+  # Data in:
+  nconmax_in: int,
+  # In:
   sphere: Geom,
   cap: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -284,6 +416,19 @@ def sphere_capsule(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   """Calculates one contact between a sphere and a capsule."""
   axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
@@ -295,12 +440,12 @@ def sphere_capsule(
 
   # Treat as sphere-sphere collision between sphere and closest point
   _sphere_sphere(
+    nconmax_in,
     sphere.pos,
     sphere.size[0],
     pt,
     cap.size[0],
     worldid,
-    d,
     margin,
     gap,
     condim,
@@ -309,15 +454,29 @@ def sphere_capsule(
     solreffriction,
     solimp,
     geoms,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def capsule_capsule(
+  # Data in:
+  nconmax_in: int,
+  # In:
   cap1: Geom,
   cap2: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -326,6 +485,19 @@ def capsule_capsule(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   axis1 = wp.vec3(cap1.rot[0, 2], cap1.rot[1, 2], cap1.rot[2, 2])
   axis2 = wp.vec3(cap2.rot[0, 2], cap2.rot[1, 2], cap2.rot[2, 2])
@@ -342,12 +514,12 @@ def capsule_capsule(
   )
 
   _sphere_sphere(
+    nconmax_in,
     pt1,
     cap1.size[0],
     pt2,
     cap2.size[0],
     worldid,
-    d,
     margin,
     gap,
     condim,
@@ -356,15 +528,29 @@ def capsule_capsule(
     solreffriction,
     solimp,
     geoms,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def plane_capsule(
+  # Data in:
+  nconmax_in: int,
+  # In:
   plane: Geom,
   cap: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -373,6 +559,19 @@ def plane_capsule(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   """Calculates two contacts between a capsule and a plane."""
   n = plane.normal
@@ -392,7 +591,7 @@ def plane_capsule(
 
   dist1, pos1 = _plane_sphere(n, plane.pos, cap.pos + segment, cap.size[0])
   write_contact(
-    d,
+    nconmax_in,
     dist1,
     pos1,
     frame,
@@ -405,11 +604,23 @@ def plane_capsule(
     solimp,
     geoms,
     worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
   dist2, pos2 = _plane_sphere(n, plane.pos, cap.pos - segment, cap.size[0])
   write_contact(
-    d,
+    nconmax_in,
     dist2,
     pos2,
     frame,
@@ -422,15 +633,29 @@ def plane_capsule(
     solimp,
     geoms,
     worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def plane_box(
+  # Data in:
+  nconmax_in: int,
+  # In:
   plane: Geom,
   box: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -439,6 +664,19 @@ def plane_box(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   count = int(0)
   corner = wp.vec3()
@@ -463,7 +701,7 @@ def plane_box(
     frame = make_frame(plane.normal)
     pos = corner + box.pos + (plane.normal * cdist / -2.0)
     write_contact(
-      d,
+      nconmax_in,
       cdist,
       pos,
       frame,
@@ -476,6 +714,18 @@ def plane_box(
       solimp,
       geoms,
       worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
     count += 1
     if count >= 4:
@@ -484,10 +734,12 @@ def plane_box(
 
 @wp.func
 def sphere_cylinder(
+  # Data in:
+  nconmax_in: int,
+  # In:
   sphere: Geom,
   cylinder: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -496,6 +748,19 @@ def sphere_cylinder(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   axis = wp.vec3(
     cylinder.rot[0, 2],
@@ -525,13 +790,14 @@ def sphere_cylinder(
   # Side collision
   if collide_side:
     pos_target = cylinder.pos + a_proj
+
     _sphere_sphere_ext(
+      nconmax_in,
       sphere.pos,
       sphere.size[0],
       pos_target,
       cylinder.size[0],
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -542,6 +808,18 @@ def sphere_cylinder(
       geoms,
       sphere.rot,
       cylinder.rot,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
     return
 
@@ -560,7 +838,7 @@ def sphere_cylinder(
     plane_normal = -plane_normal  # Flip normal after position calculation
 
     write_contact(
-      d,
+      nconmax_in,
       dist,
       pos_contact,
       make_frame(plane_normal),
@@ -573,6 +851,18 @@ def sphere_cylinder(
       solimp,
       geoms,
       worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
 
     return
@@ -585,12 +875,12 @@ def sphere_cylinder(
   pos_corner = cylinder.pos + cap_offset + p_proj
 
   _sphere_sphere_ext(
+    nconmax_in,
     sphere.pos,
     sphere.size[0],
     pos_corner,
     0.0,
     worldid,
-    d,
     margin,
     gap,
     condim,
@@ -601,15 +891,29 @@ def sphere_cylinder(
     geoms,
     sphere.rot,
     cylinder.rot,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def plane_cylinder(
+  # Data in:
+  nconmax_in: int,
+  # In:
   plane: Geom,
   cylinder: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -618,6 +922,19 @@ def plane_cylinder(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a cylinder and a plane."""
   # Extract plane normal and cylinder axis
@@ -642,8 +959,7 @@ def plane_cylinder(
   vec = wp.where(
     len_sqr >= 1e-12,
     vec * (cylinder.size[0] / wp.sqrt(len_sqr)),
-    wp.vec3(cylinder.rot[0, 0], cylinder.rot[1, 0], cylinder.rot[2, 0])
-    * cylinder.size[0],
+    wp.vec3(cylinder.rot[0, 0], cylinder.rot[1, 0], cylinder.rot[2, 0]) * cylinder.size[0],
   )
 
   # Project scaled vector on normal
@@ -660,7 +976,7 @@ def plane_cylinder(
   if dist1 <= margin:
     pos1 = cylinder.pos + vec + axis - n * (dist1 * 0.5)
     write_contact(
-      d,
+      nconmax_in,
       dist1,
       pos1,
       frame,
@@ -673,6 +989,18 @@ def plane_cylinder(
       solimp,
       geoms,
       worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   else:
     # If nearest point is above margin, no contacts
@@ -683,10 +1011,10 @@ def plane_cylinder(
   if dist2 <= margin:
     pos2 = cylinder.pos + vec - axis - n * (dist2 * 0.5)
     write_contact(
-      d,
+      nconmax_in,
       dist2,
       pos2,
-      frame,
+      make_frame(plane.normal),
       margin,
       gap,
       condim,
@@ -696,6 +1024,18 @@ def plane_cylinder(
       solimp,
       geoms,
       worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
 
   # Try triangle contact points on side closer to plane
@@ -709,7 +1049,7 @@ def plane_cylinder(
     # Add contact point A - adjust to closest side
     pos3 = cylinder.pos + vec1 + axis - vec * 0.5 - n * (dist3 * 0.5)
     write_contact(
-      d,
+      nconmax_in,
       dist3,
       pos3,
       frame,
@@ -722,12 +1062,24 @@ def plane_cylinder(
       solimp,
       geoms,
       worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
 
     # Add contact point B - adjust to closest side
     pos4 = cylinder.pos - vec1 + axis - vec * 0.5 - n * (dist3 * 0.5)
     write_contact(
-      d,
+      nconmax_in,
       dist3,
       pos4,
       frame,
@@ -740,31 +1092,65 @@ def plane_cylinder(
       solimp,
       geoms,
       worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
 
 
 @wp.func
-def contact_params(m: Model, d: Data, cid: int):
-  geoms = d.collision_pair[cid]
-  pairid = d.collision_pairid[cid]
+def contact_params(
+  # Model:
+  geom_condim: wp.array(dtype=int),
+  geom_priority: wp.array(dtype=int),
+  geom_solmix: wp.array(dtype=float),
+  geom_solref: wp.array(dtype=wp.vec2),
+  geom_solimp: wp.array(dtype=vec5),
+  geom_friction: wp.array(dtype=wp.vec3),
+  geom_margin: wp.array(dtype=float),
+  geom_gap: wp.array(dtype=float),
+  pair_dim: wp.array(dtype=int),
+  pair_solref: wp.array(dtype=wp.vec2),
+  pair_solreffriction: wp.array(dtype=wp.vec2),
+  pair_solimp: wp.array(dtype=vec5),
+  pair_margin: wp.array(dtype=float),
+  pair_gap: wp.array(dtype=float),
+  pair_friction: wp.array(dtype=vec5),
+  # Data in:
+  collision_pair_in: wp.array(dtype=wp.vec2i),
+  collision_pairid_in: wp.array(dtype=int),
+  # In:
+  cid: int,
+):
+  geoms = collision_pair_in[cid]
+  pairid = collision_pairid_in[cid]
 
   if pairid > -1:
-    margin = m.pair_margin[pairid]
-    gap = m.pair_gap[pairid]
-    condim = m.pair_dim[pairid]
-    friction = m.pair_friction[pairid]
-    solref = m.pair_solref[pairid]
-    solreffriction = m.pair_solreffriction[pairid]
-    solimp = m.pair_solimp[pairid]
+    margin = pair_margin[pairid]
+    gap = pair_gap[pairid]
+    condim = pair_dim[pairid]
+    friction = pair_friction[pairid]
+    solref = pair_solref[pairid]
+    solreffriction = pair_solreffriction[pairid]
+    solimp = pair_solimp[pairid]
   else:
     g1 = geoms[0]
     g2 = geoms[1]
 
-    p1 = m.geom_priority[g1]
-    p2 = m.geom_priority[g2]
+    p1 = geom_priority[g1]
+    p2 = geom_priority[g2]
 
-    solmix1 = m.geom_solmix[g1]
-    solmix2 = m.geom_solmix[g2]
+    solmix1 = geom_solmix[g1]
+    solmix2 = geom_solmix[g2]
 
     mix = solmix1 / (solmix1 + solmix2)
     mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
@@ -772,45 +1158,45 @@ def contact_params(m: Model, d: Data, cid: int):
     mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
     mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
-    margin = wp.max(m.geom_margin[g1], m.geom_margin[g2])
-    gap = wp.max(m.geom_gap[g1], m.geom_gap[g2])
+    margin = wp.max(geom_margin[g1], geom_margin[g2])
+    gap = wp.max(geom_gap[g1], geom_gap[g2])
 
-    condim1 = m.geom_condim[g1]
-    condim2 = m.geom_condim[g2]
-    condim = wp.where(
-      p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2)
-    )
+    condim1 = geom_condim[g1]
+    condim2 = geom_condim[g2]
+    condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
 
-    geom_friction = wp.max(m.geom_friction[g1], m.geom_friction[g2])
+    max_geom_friction = wp.max(geom_friction[g1], geom_friction[g2])
     friction = vec5(
-      geom_friction[0],
-      geom_friction[0],
-      geom_friction[1],
-      geom_friction[2],
-      geom_friction[2],
+      max_geom_friction[0],
+      max_geom_friction[0],
+      max_geom_friction[1],
+      max_geom_friction[2],
+      max_geom_friction[2],
     )
 
-    if m.geom_solref[g1].x > 0.0 and m.geom_solref[g2].x > 0.0:
-      solref = mix * m.geom_solref[g1] + (1.0 - mix) * m.geom_solref[g2]
+    if geom_solref[g1].x > 0.0 and geom_solref[g2].x > 0.0:
+      solref = mix * geom_solref[g1] + (1.0 - mix) * geom_solref[g2]
     else:
-      solref = wp.min(m.geom_solref[g1], m.geom_solref[g2])
+      solref = wp.min(geom_solref[g1], geom_solref[g2])
 
     solreffriction = wp.vec2(0.0, 0.0)
 
-    solimp = mix * m.geom_solimp[g1] + (1.0 - mix) * m.geom_solimp[g2]
+    solimp = mix * geom_solimp[g1] + (1.0 - mix) * geom_solimp[g2]
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
 
 @wp.func
 def _sphere_box(
+  # Data in:
+  nconmax_in: int,
+  # In:
   sphere_pos: wp.vec3,
   sphere_size: float,
   box_pos: wp.vec3,
   box_rot: wp.mat33,
   box_size: wp.vec3,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -819,6 +1205,19 @@ def _sphere_box(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   center = wp.transpose(box_rot) @ (sphere_pos - box_pos)
 
@@ -852,7 +1251,7 @@ def _sphere_box(
 
   contact_pos = box_pos + box_rot @ pos
   write_contact(
-    d,
+    nconmax_in,
     contact_dist,
     contact_pos,
     make_frame(contact_normal),
@@ -865,15 +1264,29 @@ def _sphere_box(
     solimp,
     geoms,
     worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def sphere_box(
+  # Data in:
+  nconmax_in: int,
+  # In:
   sphere: Geom,
   box: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -882,15 +1295,28 @@ def sphere_box(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   _sphere_box(
+    nconmax_in,
     sphere.pos,
     sphere.size[0],
     box.pos,
     box.rot,
     box.size,
     worldid,
-    d,
     margin,
     gap,
     condim,
@@ -899,15 +1325,29 @@ def sphere_box(
     solreffriction,
     solimp,
     geoms,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
 
 @wp.func
 def capsule_box(
+  # Data in:
+  nconmax_in: int,
+  # In:
   cap: Geom,
   box: Geom,
   worldid: int,
-  d: Data,
   margin: float,
   gap: float,
   condim: int,
@@ -916,19 +1356,28 @@ def capsule_box(
   solreffriction: wp.vec2f,
   solimp: vec5,
   geoms: wp.vec2i,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a capsule and a box."""
   # Based on the mjc implementation
   pos = wp.transpose(box.rot) @ (cap.pos - box.pos)
   axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
   halfaxis = axis * cap.size[1]  # halfaxis is the capsule direction
-  axisdir = (
-    wp.int32(axis[0] > 0.0) + 2 * wp.int32(axis[1] > 0.0) + 4 * wp.int32(axis[2] > 0.0)
-  )
+  axisdir = wp.int32(axis[0] > 0.0) + 2 * wp.int32(axis[1] > 0.0) + 4 * wp.int32(axis[2] > 0.0)
 
-  bestdistmax = margin + 2.0 * (
-    cap.size[0] + cap.size[1] + box.size[0] + box.size[1] + box.size[2]
-  )
+  bestdistmax = margin + 2.0 * (cap.size[0] + cap.size[1] + box.size[0] + box.size[1] + box.size[2])
 
   # keep track of closest point
   bestdist = wp.float32(bestdistmax)
@@ -1067,14 +1516,11 @@ def capsule_box(
         cltype = ct  # encoded collision configuration
 
   best = wp.float32(0.0)
-  l = wp.float32(0.0)
 
   p = wp.vec2(pos.x, pos.y)
   dd = wp.vec2(halfaxis.x, halfaxis.y)
   s = wp.vec2(box.size.x, box.size.y)
   secondpos = wp.float32(-4.0)
-
-  l = wp.length_sq(dd)
 
   uu = dd.x * s.y
   vv = dd.y * s.x
@@ -1131,7 +1577,8 @@ def capsule_box(
       else:  # second point along a face of the box
         # check for overshoot again
         m = 2.0 * min(
-          box.size[ax1] / wp.abs(halfaxis[ax1]), box.size[ax2] / wp.abs(halfaxis[ax2])
+          box.size[ax1] / wp.abs(halfaxis[ax1]),
+          box.size[ax2] / wp.abs(halfaxis[ax2]),
         )
         secondpos = -min(1.0 + wp.float32(mul) * bestsegmentpos, m)
       secondpos *= wp.float32(mul)
@@ -1216,13 +1663,13 @@ def capsule_box(
 
   # collide with sphere
   _sphere_box(
+    nconmax_in,
     s1_pos_g,
     cap.size[0],
     box.pos,
     box.rot,
     box.size,
     worldid,
-    d,
     margin,
     gap,
     condim,
@@ -1231,19 +1678,31 @@ def capsule_box(
     solreffriction,
     solimp,
     geoms,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
   )
 
   if secondpos > -3:  # secondpos was modified
     s2_pos_l = pos + halfaxis * (secondpos + bestsegmentpos)
     s2_pos_g = box.rot @ s2_pos_l + box.pos
     _sphere_box(
+      nconmax_in,
       s2_pos_g,
       cap.size[0],
       box.pos,
       box.rot,
       box.size,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1252,40 +1711,127 @@ def capsule_box(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
 
 
 @wp.kernel
 def _primitive_narrowphase(
-  m: Model,
-  d: Data,
+  # Model:
+  geom_type: wp.array(dtype=int),
+  geom_condim: wp.array(dtype=int),
+  geom_dataid: wp.array(dtype=int),
+  geom_priority: wp.array(dtype=int),
+  geom_solmix: wp.array(dtype=float),
+  geom_solref: wp.array(dtype=wp.vec2),
+  geom_solimp: wp.array(dtype=vec5),
+  geom_size: wp.array(dtype=wp.vec3),
+  geom_friction: wp.array(dtype=wp.vec3),
+  geom_margin: wp.array(dtype=float),
+  geom_gap: wp.array(dtype=float),
+  mesh_vertadr: wp.array(dtype=int),
+  mesh_vertnum: wp.array(dtype=int),
+  pair_dim: wp.array(dtype=int),
+  pair_solref: wp.array(dtype=wp.vec2),
+  pair_solreffriction: wp.array(dtype=wp.vec2),
+  pair_solimp: wp.array(dtype=vec5),
+  pair_margin: wp.array(dtype=float),
+  pair_gap: wp.array(dtype=float),
+  pair_friction: wp.array(dtype=vec5),
+  # Data in:
+  nconmax_in: int,
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  collision_pair_in: wp.array(dtype=wp.vec2i),
+  collision_pairid_in: wp.array(dtype=int),
+  collision_worldid_in: wp.array(dtype=int),
+  ncollision_in: wp.array(dtype=int),
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_dim_out: wp.array(dtype=int),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   tid = wp.tid()
 
-  if tid >= d.ncollision[0]:
+  if tid >= ncollision_in[0]:
     return
 
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
-    m, d, tid
+    geom_condim,
+    geom_priority,
+    geom_solmix,
+    geom_solref,
+    geom_solimp,
+    geom_friction,
+    geom_margin,
+    geom_gap,
+    pair_dim,
+    pair_solref,
+    pair_solreffriction,
+    pair_solimp,
+    pair_margin,
+    pair_gap,
+    pair_friction,
+    collision_pair_in,
+    collision_pairid_in,
+    tid,
   )
   g1 = geoms[0]
   g2 = geoms[1]
 
-  worldid = d.collision_worldid[tid]
+  worldid = collision_worldid_in[tid]
 
-  geom1 = _geom(g1, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
-  geom2 = _geom(g2, m, d.geom_xpos[worldid], d.geom_xmat[worldid])
+  geom1 = _geom(
+    geom_dataid,
+    geom_size,
+    mesh_vertadr,
+    mesh_vertnum,
+    geom_xpos_in,
+    geom_xmat_in,
+    worldid,
+    g1,
+  )
+  geom2 = _geom(
+    geom_dataid,
+    geom_size,
+    mesh_vertadr,
+    mesh_vertnum,
+    geom_xpos_in,
+    geom_xmat_in,
+    worldid,
+    g2,
+  )
 
-  type1 = m.geom_type[g1]
-  type2 = m.geom_type[g2]
+  type1 = geom_type[g1]
+  type2 = geom_type[g2]
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.SPHERE.value):
     plane_sphere(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1294,13 +1840,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.SPHERE.value):
     sphere_sphere(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1309,13 +1867,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.CAPSULE.value):
     plane_capsule(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1324,13 +1894,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.BOX.value):
     plane_box(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1339,13 +1921,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.CAPSULE.value):
     capsule_capsule(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1354,13 +1948,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.CAPSULE.value):
     sphere_capsule(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1369,13 +1975,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.CYLINDER.value):
     sphere_cylinder(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1384,13 +2002,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.BOX.value):
     sphere_box(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1399,13 +2029,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.PLANE.value) and type2 == int(GeomType.CYLINDER.value):
     plane_cylinder(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1414,13 +2056,25 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
   elif type1 == int(GeomType.CAPSULE.value) and type2 == int(GeomType.BOX.value):
     capsule_box(
+      nconmax_in,
       geom1,
       geom2,
       worldid,
-      d,
       margin,
       gap,
       condim,
@@ -1429,10 +2083,68 @@ def _primitive_narrowphase(
       solreffriction,
       solimp,
       geoms,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
     )
 
 
 def primitive_narrowphase(m: Model, d: Data):
   # we need to figure out how to keep the overhead of this small - not launching anything
   # for pair types without collisions, as well as updating the launch dimensions.
-  wp.launch(_primitive_narrowphase, dim=d.nconmax, inputs=[m, d])
+  wp.launch(
+    _primitive_narrowphase,
+    dim=d.nconmax,
+    inputs=[
+      m.geom_type,
+      m.geom_condim,
+      m.geom_dataid,
+      m.geom_priority,
+      m.geom_solmix,
+      m.geom_solref,
+      m.geom_solimp,
+      m.geom_size,
+      m.geom_friction,
+      m.geom_margin,
+      m.geom_gap,
+      m.mesh_vertadr,
+      m.mesh_vertnum,
+      m.pair_dim,
+      m.pair_solref,
+      m.pair_solreffriction,
+      m.pair_solimp,
+      m.pair_margin,
+      m.pair_gap,
+      m.pair_friction,
+      d.nconmax,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.collision_pair,
+      d.collision_pairid,
+      d.collision_worldid,
+      d.ncollision,
+    ],
+    outputs=[
+      d.ncon,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.includemargin,
+      d.contact.friction,
+      d.contact.solref,
+      d.contact.solreffriction,
+      d.contact.solimp,
+      d.contact.dim,
+      d.contact.geom,
+      d.contact.worldid,
+    ],
+  )

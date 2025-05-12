@@ -49,9 +49,7 @@ class ForwardTest(parameterized.TestCase):
 
     mjwarp.fwd_velocity(m, d)
 
-    _assert_eq(
-      d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity"
-    )
+    _assert_eq(d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity")
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
   def test_fwd_velocity_tendon(self):
@@ -105,9 +103,7 @@ class ForwardTest(parameterized.TestCase):
 
   @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
   def test_euler(self, eulerdamp, sparse):
-    mjm, mjd, _, _ = test_util.fixture(
-      "pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse
-    )
+    mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse)
     self.assertTrue((mjm.dof_damping > 0).any())
 
     mjd.qvel[:] = 1.0
@@ -180,9 +176,7 @@ class ForwardTest(parameterized.TestCase):
       disableflags=dsblflgs,
     )
 
-    mjm.actuator_gainprm[:, 2] = np.random.uniform(
-      low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape
-    )
+    mjm.actuator_gainprm[:, 2] = np.random.uniform(low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape)
 
     # change actuators to velocity/damper to cover all codepaths
     mjm.actuator_gaintype[3] = GainType.AFFINE
@@ -208,9 +202,7 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-  @parameterized.parameters(
-    "humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"
-  )
+  @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml")
   def test_graph_capture(self, xml):
     # TODO(team): test more environments
     if wp.get_device().is_cuda and wp.config.verify_cuda == False:

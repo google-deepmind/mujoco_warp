@@ -39,6 +39,10 @@ pytest
 
 Should print out something like `XX passed in XX.XXs` at the end!
 
+If you plan to write Warp kernels for MJWarp, please use the `kernel_analyzer` vscode plugin located in `contrib/kernel_analyzer`.
+Please see the `README.md` there for details on how to install it and use it.  The same kernel analyzer will be run on any PR
+you open, so it's important to fix any issues it reports.
+
 # Compatibility
 
 The following features are implemented:

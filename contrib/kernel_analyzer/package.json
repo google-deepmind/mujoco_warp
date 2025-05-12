@@ -2,7 +2,7 @@
   "name": "kernel-analyzer",
   "displayName": "Kernel Analyzer",
   "description": "VS Code extension to detect issues with MJWarp kernels.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "publisher": "Newton",
   "private": true,
   "license": "Apache-2.0",

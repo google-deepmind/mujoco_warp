@@ -132,23 +132,23 @@ def kernel(
 
       @kernel
       def my_kernel(a: wp.array(dtype=float), b: wp.array(dtype=float)):
-          tid = wp.tid()
-          b[tid] = a[tid] + 1.0
+        tid = wp.tid()
+        b[tid] = a[tid] + 1.0
 
 
       @kernel(enable_backward=False)
       def my_kernel_no_backward(a: wp.array(dtype=float, ndim=2), x: float):
-          # the backward pass will not be generated
-          i, j = wp.tid()
-          a[i, j] = x
+        # the backward pass will not be generated
+        i, j = wp.tid()
+        a[i, j] = x
 
 
       @kernel(module="unique")
       def my_kernel_unique_module(a: wp.array(dtype=float), b: wp.array(dtype=float)):
-          # the kernel will be registered in new unique module created just for this
-          # kernel and its dependent functions and structs
-          tid = wp.tid()
-          b[tid] = a[tid] + 1.0
+        # the kernel will be registered in new unique module created just for this
+        # kernel and its dependent functions and structs
+        tid = wp.tid()
+        b[tid] = a[tid] + 1.0
 
   Args:
       f: The function to be registered as a kernel.

@@ -33,25 +33,15 @@ _FUNCTION = flags.DEFINE_enum(
   [n for n, _ in inspect.getmembers(mjwarp, inspect.isfunction)],
   "the function to run",
 )
-_MJCF = flags.DEFINE_string(
-  "mjcf", None, "path to model `.xml` or `.mjb`", required=True
-)
+_MJCF = flags.DEFINE_string("mjcf", None, "path to model `.xml` or `.mjb`", required=True)
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _BATCH_SIZE = flags.DEFINE_integer("batch_size", 8192, "number of parallel rollouts")
-_SOLVER = flags.DEFINE_enum(
-  "solver", None, ["cg", "newton"], "Override model constraint solver"
-)
-_ITERATIONS = flags.DEFINE_integer(
-  "iterations", None, "Override model solver iterations"
-)
-_LS_ITERATIONS = flags.DEFINE_integer(
-  "ls_iterations", None, "Override model linesearch iterations"
-)
+_SOLVER = flags.DEFINE_enum("solver", None, ["cg", "newton"], "Override model constraint solver")
+_ITERATIONS = flags.DEFINE_integer("iterations", None, "Override model solver iterations")
+_LS_ITERATIONS = flags.DEFINE_integer("ls_iterations", None, "Override model linesearch iterations")
 _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "solve with parallel linesearch")
 _IS_SPARSE = flags.DEFINE_bool("is_sparse", None, "Override model sparse config")
-_CONE = flags.DEFINE_enum(
-  "cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type"
-)
+_CONE = flags.DEFINE_enum("cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type")
 _NCONMAX = flags.DEFINE_integer(
   "nconmax",
   None,
@@ -63,16 +53,10 @@ _NJMAX = flags.DEFINE_integer(
   "Override default maximum number of constraints in a batch physics step.",
 )
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "Keyframe to initialize simulation.")
-_OUTPUT = flags.DEFINE_enum(
-  "output", "text", ["text", "tsv"], "format to print results"
-)
-_CLEAR_KERNEL_CACHE = flags.DEFINE_bool(
-  "clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)"
-)
+_OUTPUT = flags.DEFINE_enum("output", "text", ["text", "tsv"], "format to print results")
+_CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "Provide a full event trace")
-_MEASURE_ALLOC = flags.DEFINE_bool(
-  "measure_alloc", False, "Measure how much of nconmax, njmax is used."
-)
+_MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of nconmax, njmax is used.")
 
 
 def _main(argv: Sequence[str]):
@@ -118,9 +102,7 @@ def _main(argv: Sequence[str]):
 
   m = mjwarp.put_model(mjm)
   m.opt.ls_parallel = _LS_PARALLEL.value
-  d = mjwarp.put_data(
-    mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value
-  )
+  d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
@@ -180,19 +162,13 @@ Summary for {_BATCH_SIZE.value} parallel rollouts
         size = _NSTEP.value // num_buckets + (i < (_NSTEP.value % num_buckets))
         ncon_arr = np.array(ncon[idx : idx + size])
         nefc_arr = np.array(nefc[idx : idx + size])
-        ncon_matrix.append(
-          [np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)]
-        )
-        nefc_matrix.append(
-          [np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)]
-        )
+        ncon_matrix.append([np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)])
+        nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
         idx += size
 
       def _print_table(matrix, headers):
         num_cols = len(headers)
-        col_widths = [
-          max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)
-        ]
+        col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
         col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
 
         print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))

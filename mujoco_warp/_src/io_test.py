@@ -37,7 +37,7 @@ class IOTest(absltest.TestCase):
     # test shapes for all arrays
     for attr, val in md.__dict__.items():
       if isinstance(val, wp.array):
-        self.assertEqual(val.shape, getattr(d, attr).shape)
+        self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
   # TODO(team): sensors
 

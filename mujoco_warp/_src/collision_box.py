@@ -25,6 +25,7 @@ from .math import make_frame
 from .types import Data
 from .types import GeomType
 from .types import Model
+from .types import vec5
 
 BOX_BOX_BLOCK_DIM = 32
 
@@ -75,11 +76,11 @@ def box_normals(i: int) -> wp.vec3:
 
 
 @wp.func
-def box(R: wp.mat33, t: wp.vec3, geom_size: wp.vec3) -> Box:
+def box(R: wp.mat33, t: wp.vec3, size: wp.vec3) -> Box:
   """Get a transformed box"""
-  x = geom_size[0]
-  y = geom_size[1]
-  z = geom_size[2]
+  x = size[0]
+  y = size[1]
+  z = size[2]
   m = Box()
   for i in range(8):
     ix = wp.where(i & 4, x, -x)
@@ -90,7 +91,7 @@ def box(R: wp.mat33, t: wp.vec3, geom_size: wp.vec3) -> Box:
 
 
 @wp.func
-def box_face_verts(box: Box, idx: wp.int32) -> mat43f:
+def box_face_verts(box: Box, idx: int) -> mat43f:
   """Get the quad corresponding to a box face"""
   if idx == 0:
     verts = wp.vec4i(0, 4, 5, 1)
@@ -112,10 +113,7 @@ def box_face_verts(box: Box, idx: wp.int32) -> mat43f:
 
 
 @wp.func
-def get_box_axis(
-  axis_idx: int,
-  R: wp.mat33,
-):
+def get_box_axis(axis_idx: int, R: wp.mat33):
   """Get the axis at index axis_idx.
   R: rotation matrix from a to b
   Axes 0-12 are face normals of boxes a & b
@@ -189,39 +187,92 @@ def face_axis_alignment(a: wp.vec3, R: wp.mat33) -> wp.int32:
 
 
 @wp.kernel(enable_backward=False)
-def box_box_kernel(
-  m: Model,
-  d: Data,
-  num_kernels: int,
+def _box_box(
+  # Model:
+  geom_type: wp.array(dtype=int),
+  geom_condim: wp.array(dtype=int),
+  geom_priority: wp.array(dtype=int),
+  geom_solmix: wp.array(dtype=float),
+  geom_solref: wp.array(dtype=wp.vec2),
+  geom_solimp: wp.array(dtype=vec5),
+  geom_size: wp.array(dtype=wp.vec3),
+  geom_friction: wp.array(dtype=wp.vec3),
+  geom_margin: wp.array(dtype=float),
+  geom_gap: wp.array(dtype=float),
+  pair_dim: wp.array(dtype=int),
+  pair_solref: wp.array(dtype=wp.vec2),
+  pair_solreffriction: wp.array(dtype=wp.vec2),
+  pair_solimp: wp.array(dtype=vec5),
+  pair_margin: wp.array(dtype=float),
+  pair_gap: wp.array(dtype=float),
+  pair_friction: wp.array(dtype=vec5),
+  # Data in:
+  nconmax_in: int,
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  collision_pair_in: wp.array(dtype=wp.vec2i),
+  collision_pairid_in: wp.array(dtype=int),
+  collision_worldid_in: wp.array(dtype=int),
+  ncollision_in: wp.array(dtype=int),
+  # In:
+  num_kernels_in: int,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array(dtype=float),
+  contact_pos_out: wp.array(dtype=wp.vec3),
+  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_includemargin_out: wp.array(dtype=float),
+  contact_dim_out: wp.array(dtype=int),
+  contact_friction_out: wp.array(dtype=vec5),
+  contact_solref_out: wp.array(dtype=wp.vec2),
+  contact_solreffriction_out: wp.array(dtype=wp.vec2),
+  contact_solimp_out: wp.array(dtype=vec5),
+  contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_worldid_out: wp.array(dtype=int),
 ):
   """Calculates contacts between pairs of boxes."""
   tid, axis_idx = wp.tid()
 
-  for bp_idx in range(tid, min(d.ncollision[0], d.nconmax), num_kernels):
-    geoms = d.collision_pair[bp_idx]
+  for bp_idx in range(tid, min(ncollision_in[0], nconmax_in), num_kernels_in):
+    geoms = collision_pair_in[bp_idx]
 
     ga, gb = geoms[0], geoms[1]
 
-    if m.geom_type[ga] != int(GeomType.BOX.value) or m.geom_type[gb] != int(
-      GeomType.BOX.value
-    ):
+    if geom_type[ga] != int(GeomType.BOX.value) or geom_type[gb] != int(GeomType.BOX.value):
       continue
 
-    worldid = d.collision_worldid[bp_idx]
+    worldid = collision_worldid_in[bp_idx]
 
-    geoms, margin, gap, condim, friction, solref, solreffriction, solimp = (
-      contact_params(m, d, tid)
+    geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+      geom_condim,
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_margin,
+      geom_gap,
+      pair_dim,
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_margin,
+      pair_gap,
+      pair_friction,
+      collision_pair_in,
+      collision_pairid_in,
+      tid,
     )
 
     # transformations
-    a_pos, b_pos = d.geom_xpos[worldid, ga], d.geom_xpos[worldid, gb]
-    a_mat, b_mat = d.geom_xmat[worldid, ga], d.geom_xmat[worldid, gb]
+    a_pos, b_pos = geom_xpos_in[worldid, ga], geom_xpos_in[worldid, gb]
+    a_mat, b_mat = geom_xmat_in[worldid, ga], geom_xmat_in[worldid, gb]
     b_mat_inv = wp.transpose(b_mat)
     trans_atob = b_mat_inv @ (a_pos - b_pos)
     rot_atob = b_mat_inv @ a_mat
 
-    a_size = m.geom_size[ga]
-    b_size = m.geom_size[gb]
+    a_size = geom_size[ga]
+    b_size = geom_size[gb]
     a = box(rot_atob, trans_atob, a_size)
     b = box(wp.identity(3, wp.float32), wp.vec3(0.0), b_size)
 
@@ -312,12 +363,13 @@ def box_box_kernel(
       for i in range(4):
         pos[i] = pos[idx]
 
-    margin = wp.max(m.geom_margin[ga], m.geom_margin[gb])
+    margin = wp.max(geom_margin[ga], geom_margin[gb])
     for i in range(4):
       pos_glob = b_mat @ pos[i] + b_pos
       n_glob = b_mat @ sep_axis
+
       write_contact(
-        d,
+        nconmax_in,
         dist[i],
         pos_glob,
         make_frame(n_glob),
@@ -330,13 +382,23 @@ def box_box_kernel(
         solimp,
         geoms,
         worldid,
+        ncon_out,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
       )
 
 
 @wp.func
-def _closest_segment_point_plane(
-  a: wp.vec3, b: wp.vec3, p0: wp.vec3, plane_normal: wp.vec3
-) -> wp.vec3:
+def _closest_segment_point_plane(a: wp.vec3, b: wp.vec3, p0: wp.vec3, plane_normal: wp.vec3) -> wp.vec3:
   """Gets the closest point between a line segment and a plane.
 
   Args:
@@ -362,12 +424,7 @@ def _closest_segment_point_plane(
 
 
 @wp.func
-def _project_poly_onto_plane(
-  poly: Any,
-  poly_n: wp.vec3,
-  plane_n: wp.vec3,
-  plane_pt: wp.vec3,
-):
+def _project_poly_onto_plane(poly: Any, poly_n: wp.vec3, plane_n: wp.vec3, plane_pt: wp.vec3):
   """Projects poly1 onto the poly2 plane along poly2's normal."""
   d = wp.dot(plane_pt, plane_n)
   denom = wp.dot(poly_n, plane_n)
@@ -379,11 +436,7 @@ def _project_poly_onto_plane(
 
 
 @wp.func
-def _clip_edge_to_quad(
-  subject_poly: mat43f,
-  clipping_poly: mat43f,
-  clipping_normal: wp.vec3,
-):
+def _clip_edge_to_quad(subject_poly: mat43f, clipping_poly: mat43f, clipping_normal: wp.vec3):
   p0 = mat43f()
   p1 = mat43f()
   mask = wp.vec4b()
@@ -404,9 +457,7 @@ def _clip_edge_to_quad(
 
       p0_in_front = wp.dot(subject_p0 - clipping_p0, edge_normal) > _TINY_VAL
       p1_in_front = wp.dot(subject_p1 - clipping_p0, edge_normal) > _TINY_VAL
-      candidate_clipped_p = _closest_segment_point_plane(
-        subject_p0, subject_p1, clipping_p1, edge_normal
-      )
+      candidate_clipped_p = _closest_segment_point_plane(subject_p0, subject_p1, clipping_p1, edge_normal)
       clipped_p0 = wp.where(p0_in_front, candidate_clipped_p, subject_p0)
       clipped_p1 = wp.where(p1_in_front, candidate_clipped_p, subject_p1)
       clipped_dist_p0 = wp.dot(clipped_p0 - subject_p0, subject_p1 - subject_p0)
@@ -438,25 +489,14 @@ def _clip_edge_to_quad(
 
 
 @wp.func
-def _clip_quad(
-  subject_quad: mat43f,
-  subject_normal: wp.vec3,
-  clipping_quad: mat43f,
-  clipping_normal: wp.vec3,
-):
+def _clip_quad(subject_quad: mat43f, subject_normal: wp.vec3, clipping_quad: mat43f, clipping_normal: wp.vec3):
   """Clips a subject quad against a clipping quad.
   Serial implementation.
   """
 
-  subject_clipped_p0, subject_clipped_p1, subject_mask = _clip_edge_to_quad(
-    subject_quad, clipping_quad, clipping_normal
-  )
-  clipping_proj = _project_poly_onto_plane(
-    clipping_quad, clipping_normal, subject_normal, subject_quad[0]
-  )
-  clipping_clipped_p0, clipping_clipped_p1, clipping_mask = _clip_edge_to_quad(
-    clipping_proj, subject_quad, subject_normal
-  )
+  subject_clipped_p0, subject_clipped_p1, subject_mask = _clip_edge_to_quad(subject_quad, clipping_quad, clipping_normal)
+  clipping_proj = _project_poly_onto_plane(clipping_quad, clipping_normal, subject_normal, subject_quad[0])
+  clipping_clipped_p0, clipping_clipped_p1, clipping_mask = _clip_edge_to_quad(clipping_proj, subject_quad, subject_normal)
 
   clipped = mat16_3f()
   mask = vec16b()
@@ -475,11 +515,7 @@ def _clip_quad(
 
 # TODO(ca): tiling variant
 @wp.func
-def _manifold_points(
-  poly: Any,
-  mask: Any,
-  clipping_norm: wp.vec3,
-) -> wp.vec4b:
+def _manifold_points(poly: Any, mask: Any, clipping_norm: wp.vec3) -> wp.vec4b:
   """Chooses four points on the polygon with approximately maximal area. Return the indices"""
   n = len(poly)
 
@@ -530,17 +566,10 @@ def _manifold_points(
 
 
 @wp.func
-def _create_contact_manifold(
-  clipping_quad: mat43f,
-  clipping_normal: wp.vec3,
-  subject_quad: mat43f,
-  subject_normal: wp.vec3,
-):
+def _create_contact_manifold(clipping_quad: mat43f, clipping_normal: wp.vec3, subject_quad: mat43f, subject_normal: wp.vec3):
   # Clip the subject (incident) face onto the clipping (reference) face.
   # The incident points are clipped points on the subject polygon.
-  incident, mask = _clip_quad(
-    subject_quad, subject_normal, clipping_quad, clipping_normal
-  )
+  incident, mask = _clip_quad(subject_quad, subject_normal, clipping_quad, clipping_normal)
 
   clipping_normal_neg = -clipping_normal
   d = wp.dot(clipping_quad[0], clipping_normal_neg) + _TINY_VAL
@@ -549,9 +578,7 @@ def _create_contact_manifold(
     if wp.dot(incident[i], clipping_normal_neg) < d:
       mask[i] = wp.int8(0)
 
-  ref = _project_poly_onto_plane(
-    incident, clipping_normal, clipping_normal, clipping_quad[0]
-  )
+  ref = _project_poly_onto_plane(incident, clipping_normal, clipping_normal, clipping_quad[0])
 
   # Choose four contact points.
   best = _manifold_points(ref, mask, clipping_normal)
@@ -575,12 +602,50 @@ def box_box_narrowphase(
 ):
   """Calculates contacts between pairs of boxes."""
   kernel_ratio = 16
-  num_threads = math.ceil(
-    d.nconmax / kernel_ratio
-  )  # parallel threads excluding tile dim
+  nthread = math.ceil(d.nconmax / kernel_ratio)  # parallel threads excluding tile dim
   wp.launch_tiled(
-    kernel=box_box_kernel,
-    dim=num_threads,
-    inputs=[m, d, num_threads],
+    kernel=_box_box,
+    dim=nthread,
+    inputs=[
+      m.geom_type,
+      m.geom_condim,
+      m.geom_priority,
+      m.geom_solmix,
+      m.geom_solref,
+      m.geom_solimp,
+      m.geom_size,
+      m.geom_friction,
+      m.geom_margin,
+      m.geom_gap,
+      m.pair_dim,
+      m.pair_solref,
+      m.pair_solreffriction,
+      m.pair_solimp,
+      m.pair_margin,
+      m.pair_gap,
+      m.pair_friction,
+      d.nconmax,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.collision_pair,
+      d.collision_pairid,
+      d.collision_worldid,
+      d.ncollision,
+      nthread,
+    ],
+    outputs=[
+      d.ncon,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.includemargin,
+      d.contact.dim,
+      d.contact.friction,
+      d.contact.solref,
+      d.contact.solreffriction,
+      d.contact.solimp,
+      d.contact.geom,
+      d.contact.worldid,
+    ],
     block_dim=BOX_BOX_BLOCK_DIM,
   )

@@ -15,25 +15,97 @@
 
 from typing import Tuple
 
-import mujoco
 import warp as wp
 
 from .types import ConeType
 from .types import Data
 from .types import Model
-from .types import array2df
-from .types import array3df
+from .types import TileSet
 from .types import vec5
 from .warp_util import event_scope
-from .warp_util import kernel
+from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
 
-def is_sparse(m: mujoco.MjModel):
-  if m.opt.jacobian == mujoco.mjtJacobian.mjJAC_AUTO:
-    return m.nv >= 60
-  return m.opt.jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
+@wp.kernel
+def mul_m_sparse_diag(
+  # Model:
+  dof_Madr: wp.array(dtype=int),
+  # Data in:
+  qM_in: wp.array3d(dtype=float),
+  # In:
+  vec: wp.array2d(dtype=float),
+  skip: wp.array(dtype=bool),
+  # Out:
+  res: wp.array2d(dtype=float),
+):
+  """Diagonal update for sparse matmul."""
+  worldid, dofid = wp.tid()
+
+  if skip[worldid]:
+    return
+
+  res[worldid, dofid] = qM_in[worldid, 0, dof_Madr[dofid]] * vec[worldid, dofid]
+
+
+@wp.kernel
+def mul_m_sparse_ij(
+  # Model:
+  qM_mulm_i: wp.array(dtype=int),
+  qM_mulm_j: wp.array(dtype=int),
+  qM_madr_ij: wp.array(dtype=int),
+  # Data in:
+  qM_in: wp.array3d(dtype=float),
+  # In:
+  vec: wp.array2d(dtype=float),
+  skip: wp.array(dtype=bool),
+  # Out:
+  res: wp.array2d(dtype=float),
+):
+  """Off-diagonal update for sparse matmul."""
+  worldid, elementid = wp.tid()
+
+  if skip[worldid]:
+    return
+
+  i = qM_mulm_i[elementid]
+  j = qM_mulm_j[elementid]
+  madr_ij = qM_madr_ij[elementid]
+
+  qM_ij = qM_in[worldid, 0, madr_ij]
+
+  wp.atomic_add(res[worldid], i, qM_ij * vec[worldid, j])
+  wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
+
+
+def mul_m_dense(tile: TileSet):
+  """Returns a matmul kernel for some tile size"""
+
+  @nested_kernel
+  def kernel(
+    # Data In:
+    qM_in: wp.array3d(dtype=float),
+    # In:
+    adr: wp.array(dtype=int),
+    vec: wp.array3d(dtype=float),
+    skip: wp.array(dtype=bool),
+    # Out:
+    res: wp.array3d(dtype=float),
+  ):
+    worldid, nodeid = wp.tid()
+    TILE_SIZE = wp.static(tile.size)
+
+    if skip[worldid]:
+      return
+
+    dofid = adr[nodeid]
+    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
+    vec_tile = wp.tile_load(vec[worldid], shape=(TILE_SIZE, 1), offset=(dofid, 0))
+    res_tile = wp.tile_matmul(qM_tile, vec_tile)
+    wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
+
+  return kernel
 
 
 @event_scope
@@ -44,138 +116,105 @@ def mul_m(
   vec: wp.array(ndim=2, dtype=wp.float32),
   skip: wp.array(ndim=1, dtype=bool),
 ):
-  """Multiply vector by inertia matrix."""
+  """Multiply vectors by inertia matrix.
 
-  if not m.opt.is_sparse:
+  Arguments:
+    m: Model
+    d: Data
+    vec: input vector to multiply by qM (nworld, nv)
+    skip: skip output for row (nworld)
+    res: output vector to store qM * vec (nworld, nv)
+  """
 
-    def tile_mul(adr: int, size: int, tilesize: int):
-      # TODO(team): speed up kernel compile time (14s on 2023 Macbook Pro)
-      @kernel
-      def mul(
-        m: Model,
-        d: Data,
-        leveladr: int,
-        res: array3df,
-        vec: array3df,
-        skip: wp.array(ndim=1, dtype=bool),
-      ):
-        worldid, nodeid = wp.tid()
+  if m.opt.is_sparse:
+    wp.launch(
+      mul_m_sparse_diag,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_Madr, d.qM, vec, skip],
+      outputs=[res],
+    )
 
-        if skip[worldid]:
-          return
+    wp.launch(
+      mul_m_sparse_ij,
+      dim=(d.nworld, m.qM_madr_ij.size),
+      inputs=[m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij, d.qM, vec, skip],
+      outputs=[res],
+    )
 
-        dofid = m.qLD_tile[leveladr + nodeid]
-        qM_tile = wp.tile_load(
-          d.qM[worldid], shape=(tilesize, tilesize), offset=(dofid, dofid)
-        )
-        vec_tile = wp.tile_load(vec[worldid], shape=(tilesize, 1), offset=(dofid, 0))
-        res_tile = wp.tile_zeros(shape=(tilesize, 1), dtype=wp.float32)
-        wp.tile_matmul(qM_tile, vec_tile, res_tile)
-        wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
-
+  else:
+    for tile in m.qM_tiles:
       wp.launch_tiled(
-        mul,
-        dim=(d.nworld, size),
+        mul_m_dense(tile),
+        dim=(d.nworld, tile.adr.size),
         inputs=[
-          m,
-          d,
-          adr,
-          res.reshape(res.shape + (1,)),
+          d.qM,
+          tile.adr,
+          # note reshape: tile_matmul expects 2d input
           vec.reshape(vec.shape + (1,)),
           skip,
         ],
+        outputs=[res.reshape(res.shape + (1,))],
         # TODO(team): develop heuristic for block dim, or make configurable
         block_dim=32,
       )
 
-    qLD_tileadr, qLD_tilesize = m.qLD_tileadr.numpy(), m.qLD_tilesize.numpy()
 
-    for i in range(len(qLD_tileadr)):
-      beg = qLD_tileadr[i]
-      end = m.qLD_tile.shape[0] if i == len(qLD_tileadr) - 1 else qLD_tileadr[i + 1]
-      tile_mul(beg, end - beg, int(qLD_tilesize[i]))
+@wp.kernel
+def xfrc_accumulate_kernel(
+  # Model:
+  nbody: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  # Data in:
+  xfrc_applied_in: wp.array2d(dtype=wp.spatial_vector),
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # Out:
+  out: wp.array2d(dtype=float),
+):
+  """Accumulate applied forces on the subtree of a dof."""
+  worldid, dofid = wp.tid()
+  cdof = cdof_in[worldid, dofid]
+  rotational_cdof = wp.spatial_top(cdof)
+  jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
 
-  else:
+  bodyid = dof_bodyid[dofid]
+  accumul = float(0.0)
 
-    @kernel
-    def _mul_m_sparse_diag(
-      m: Model,
-      d: Data,
-      res: wp.array(ndim=2, dtype=wp.float32),
-      vec: wp.array(ndim=2, dtype=wp.float32),
-      skip: wp.array(ndim=1, dtype=bool),
-    ):
-      worldid, dofid = wp.tid()
+  for child in range(bodyid, nbody):
+    # any body that is in the subtree of dof_bodyid is part of the jacobian
+    parentid = child
+    while parentid != 0 and parentid != bodyid:
+      parentid = body_parentid[parentid]
+    if parentid == 0:
+      continue  # body is not part of the subtree
+    offset = xipos_in[worldid, child] - subtree_com_in[worldid, body_rootid[child]]
+    cross_term = wp.cross(rotational_cdof, offset)
+    xfrc_applied = xfrc_applied_in[worldid, child]
+    accumul += wp.dot(jac, xfrc_applied) + wp.dot(cross_term, wp.spatial_top(xfrc_applied))
 
-      if skip[worldid]:
-        return
-
-      res[worldid, dofid] = d.qM[worldid, 0, m.dof_Madr[dofid]] * vec[worldid, dofid]
-
-    @kernel
-    def _mul_m_sparse_ij(
-      m: Model,
-      d: Data,
-      res: wp.array(ndim=2, dtype=wp.float32),
-      vec: wp.array(ndim=2, dtype=wp.float32),
-      skip: wp.array(ndim=1, dtype=bool),
-    ):
-      worldid, elementid = wp.tid()
-
-      if skip[worldid]:
-        return
-
-      i = m.qM_mulm_i[elementid]
-      j = m.qM_mulm_j[elementid]
-      madr_ij = m.qM_madr_ij[elementid]
-
-      qM = d.qM[worldid, 0, madr_ij]
-
-      wp.atomic_add(res[worldid], i, qM * vec[worldid, j])
-      wp.atomic_add(res[worldid], j, qM * vec[worldid, i])
-
-    wp.launch(_mul_m_sparse_diag, dim=(d.nworld, m.nv), inputs=[m, d, res, vec, skip])
-
-    wp.launch(
-      _mul_m_sparse_ij,
-      dim=(d.nworld, m.qM_madr_ij.size),
-      inputs=[m, d, res, vec, skip],
-    )
+  out[worldid, dofid] += accumul
 
 
 @event_scope
-def xfrc_accumulate(m: Model, d: Data, qfrc: array2df):
-  @wp.kernel
-  def _accumulate(m: Model, d: Data, qfrc: array2df):
-    worldid, dofid = wp.tid()
-    cdof = d.cdof[worldid, dofid]
-    rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
-    jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
-
-    dof_bodyid = m.dof_bodyid[dofid]
-    accumul = float(0.0)
-
-    for bodyid in range(dof_bodyid, m.nbody):
-      # any body that is in the subtree of dof_bodyid is part of the jacobian
-      parentid = bodyid
-      while parentid != 0 and parentid != dof_bodyid:
-        parentid = m.body_parentid[parentid]
-      if parentid == 0:
-        continue  # body is not part of the subtree
-      offset = d.xipos[worldid, bodyid] - d.subtree_com[worldid, m.body_rootid[bodyid]]
-      cross_term = wp.cross(rotational_cdof, offset)
-      accumul += wp.dot(jac, d.xfrc_applied[worldid, bodyid]) + wp.dot(
-        cross_term,
-        wp.vec3(
-          d.xfrc_applied[worldid, bodyid][0],
-          d.xfrc_applied[worldid, bodyid][1],
-          d.xfrc_applied[worldid, bodyid][2],
-        ),
-      )
-
-    qfrc[worldid, dofid] += accumul
-
-  wp.launch(kernel=_accumulate, dim=(d.nworld, m.nv), inputs=[m, d, qfrc])
+def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+  wp.launch(
+    kernel=xfrc_accumulate_kernel,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.nbody,
+      m.body_parentid,
+      m.body_rootid,
+      m.dof_bodyid,
+      d.xfrc_applied,
+      d.xipos,
+      d.subtree_com,
+      d.cdof,
+    ],
+    outputs=[qfrc],
+  )
 
 
 @wp.func
@@ -225,19 +264,7 @@ def any_different(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
 
 
 @wp.func
-def mat33_from_rows(a: wp.vec3, b: wp.vec3, c: wp.vec3):
-  return wp.mat33(a, b, c)
-
-
-@wp.func
-def mat33_from_cols(a: wp.vec3, b: wp.vec3, c: wp.vec3):
-  return wp.mat33(a.x, b.x, c.x, a.y, b.y, c.y, a.z, b.z, c.z)
-
-
-@wp.func
-def _decode_pyramid(
-  pyramid: wp.array(dtype=wp.float32), efc_address: int, mu: vec5, condim: int
-) -> wp.spatial_vector:
+def _decode_pyramid(pyramid: wp.array(dtype=float), efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
   """Converts pyramid representation to contact force."""
   force = wp.spatial_vector()
 
@@ -256,30 +283,41 @@ def _decode_pyramid(
 
 
 @wp.func
-def contact_force(
-  m: Model, d: Data, contact_id: int, to_world_frame: bool = False
+def contact_force_fn(
+  # Model:
+  opt_cone: int,
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_friction_in: wp.array(dtype=vec5),
+  contact_dim_in: wp.array(dtype=int),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  efc_force_in: wp.array(dtype=float),
+  # In:
+  contact_id: int,
+  to_world_frame: bool,
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  condim = d.contact.dim[contact_id]
-  efc_address = d.contact.efc_address[contact_id, 0]
+  condim = contact_dim_in[contact_id]
+  efc_address = contact_efc_address_in[contact_id, 0]
 
-  if contact_id >= 0 and contact_id <= d.ncon[0] and efc_address >= 0:
-    if m.opt.cone == int(ConeType.PYRAMIDAL.value):
+  if contact_id >= 0 and contact_id <= ncon_in[0] and efc_address >= 0:
+    if opt_cone == int(ConeType.PYRAMIDAL.value):
       force = _decode_pyramid(
-        d.efc.force,
+        efc_force_in,
         efc_address,
-        d.contact.friction[contact_id],
+        contact_friction_in[contact_id],
         condim,
       )
     else:
       for i in range(condim):
-        force[i] = d.efc.force[d.contact.efc_address[contact_id, i]]
+        force[i] = efc_force_in[contact_efc_address_in[contact_id, i]]
 
   if to_world_frame:
     # Transform both top and bottom parts of spatial vector by the full contact frame matrix
-    t = wp.spatial_top(force) @ d.contact.frame[contact_id]
-    b = wp.spatial_bottom(force) @ d.contact.frame[contact_id]
+    t = wp.spatial_top(force) @ contact_frame_in[contact_id]
+    b = wp.spatial_bottom(force) @ contact_frame_in[contact_id]
     force = wp.spatial_vector(t, b)
 
   return force
@@ -287,28 +325,69 @@ def contact_force(
 
 @wp.kernel
 def contact_force_kernel(
-  m: Model,
-  d: Data,
-  force: wp.array(dtype=wp.spatial_vector),
+  # Model:
+  opt_cone: int,
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_friction_in: wp.array(dtype=vec5),
+  contact_dim_in: wp.array(dtype=int),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  efc_force_in: wp.array(dtype=float),
+  # In:
   contact_ids: wp.array(dtype=int),
   to_world_frame: bool,
+  # Out:
+  out: wp.array(dtype=wp.spatial_vector),
 ):
   tid = wp.tid()
 
-  contact_id = contact_ids[tid]
+  contactid = contact_ids[tid]
 
-  if contact_id >= d.ncon[0]:
+  if contactid >= ncon_in[0]:
     return
 
-  force[tid] = contact_force(m, d, contact_id, to_world_frame)
+  out[tid] = contact_force_fn(
+    opt_cone,
+    ncon_in,
+    contact_frame_in,
+    contact_friction_in,
+    contact_dim_in,
+    contact_efc_address_in,
+    efc_force_in,
+    contactid,
+    to_world_frame,
+  )
+
+
+def contact_force(
+  m: Model,
+  d: Data,
+  contact_ids: wp.array(dtype=int),
+  to_world_frame: bool,
+  force: wp.array(dtype=wp.spatial_vector),
+):
+  wp.launch(
+    contact_force_kernel,
+    dim=(contact_ids.size,),
+    inputs=[
+      m.opt.cone,
+      d.ncon,
+      d.contact.frame,
+      d.contact.friction,
+      d.contact.dim,
+      d.contact.efc_address,
+      d.efc.force,
+      contact_ids,
+      to_world_frame,
+    ],
+    outputs=[force],
+  )
 
 
 @wp.func
-def transform_force(
-  force: wp.vec3, torque: wp.vec3, offset: wp.vec3
-) -> wp.spatial_vector:
-  torque -= wp.cross(offset, force)
-  return wp.spatial_vector(torque, force)
+def transform_force(force: wp.vec3, torque: wp.vec3, offset: wp.vec3) -> wp.spatial_vector:
+  return wp.spatial_vector(torque - wp.cross(offset, force), force)
 
 
 @wp.func
@@ -320,28 +399,34 @@ def transform_force(frc: wp.spatial_vector, offset: wp.vec3) -> wp.spatial_vecto
 
 @wp.func
 def jac(
-  m: Model,
-  d: Data,
+  # Model:
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  # Data in:
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   point: wp.vec3,
-  bodyid: wp.int32,
-  dofid: wp.int32,
-  worldid: wp.int32,
+  bodyid: int,
+  dofid: int,
+  worldid: int,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  dof_bodyid = m.dof_bodyid[dofid]
-  in_tree = int(dof_bodyid == 0)
+  dof_bodyid_ = dof_bodyid[dofid]
+  in_tree = int(dof_bodyid_ == 0)
   parentid = bodyid
   while parentid != 0:
-    if parentid == dof_bodyid:
+    if parentid == dof_bodyid_:
       in_tree = 1
       break
-    parentid = m.body_parentid[parentid]
+    parentid = body_parentid[parentid]
 
   if not in_tree:
     return wp.vec3(0.0), wp.vec3(0.0)
 
-  offset = point - wp.vec3(d.subtree_com[worldid, m.body_rootid[bodyid]])
+  offset = point - wp.vec3(subtree_com_in[worldid, body_rootid[bodyid]])
 
-  cdof = d.cdof[worldid, dofid]
+  cdof = cdof_in[worldid, dofid]
   cdof_ang = wp.spatial_top(cdof)
   cdof_lin = wp.spatial_bottom(cdof)
 
