@@ -92,6 +92,17 @@ class DisableBit(enum.IntFlag):
   # unsupported: MIDPHASE, WARMSTART
 
 
+class EnableBit(enum.IntFlag):
+  """Enable optional feature bitflags.
+
+  Members:
+    INVDISCRETE: discrete-time inverse dynamics
+  """
+
+  INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+  # unsupported: OVERRIDE, ENERGY, FWDINV, MULTICCD, ISLAND
+
+
 class TrnType(enum.IntEnum):
   """Type of actuator transmission.
 
@@ -391,6 +402,7 @@ class Option:
     iterations: number of main solver iterations
     ls_iterations: maximum number of CG/Newton linesearch iterations
     disableflags: bit flags for disabling standard features
+    enableflags: bit flags for enabling optional features
     is_sparse: whether to use sparse representations
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
@@ -410,6 +422,7 @@ class Option:
   iterations: int
   ls_iterations: int
   disableflags: int
+  enableflags: int
   is_sparse: bool
   gjk_iterations: int  # warp only
   epa_iterations: int  # warp only
@@ -1067,6 +1080,7 @@ class Data:
     qvel: velocity                                              (nworld, nv)
     act: actuator activation                                    (nworld, na)
     qacc_warmstart: acceleration used for warmstart             (nworld, nv)
+    qacc_discrete: discrete-time acceleration                   (nworld, nv)
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
     xfrc_applied: applied Cartesian force/torque                (nworld, nbody, 6)
@@ -1116,6 +1130,8 @@ class Data:
     qfrc_smooth: net unconstrained force                        (nworld, nv)
     qacc_smooth: unconstrained acceleration                     (nworld, nv)
     qfrc_constraint: constraint force                           (nworld, nv)
+    qfrc_inverse: net external force; should equal:             (nworld, nv)
+              qfrc_applied + J.T @ xfrc_applied + qfrc_actuator
     contact: contact data
     efc: constraint data
     rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
@@ -1173,6 +1189,7 @@ class Data:
   qvel: wp.array2d(dtype=float)
   act: wp.array2d(dtype=float)
   qacc_warmstart: wp.array2d(dtype=float)
+  qacc_discrete: wp.array2d(dtype=float)  # warp only
   ctrl: wp.array2d(dtype=float)
   qfrc_applied: wp.array2d(dtype=float)
   xfrc_applied: wp.array2d(dtype=wp.spatial_vector)
@@ -1222,6 +1239,7 @@ class Data:
   qfrc_smooth: wp.array2d(dtype=float)
   qacc_smooth: wp.array2d(dtype=float)
   qfrc_constraint: wp.array2d(dtype=float)
+  qfrc_inverse: wp.array2d(dtype=float)
   contact: Contact
   efc: Constraint
 

@@ -2452,13 +2452,7 @@ def solve_done(
   efc_done_out[worldid] = (improvement < opt_tolerance) or (gradient < opt_tolerance)
 
 
-@event_scope
-def solve(m: types.Model, d: types.Data):
-  """Finds forces that satisfy constraints."""
-
-  # warmstart
-  wp.copy(d.qacc, d.qacc_warmstart)
-
+def solve_context(m: types.Model, d: types.Data, grad: bool = True):
   # initialize some efc arrays
   wp.launch(
     solve_init_efc,
@@ -2479,7 +2473,19 @@ def solve(m: types.Model, d: types.Data):
   support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
 
   _update_constraint(m, d)
-  _update_gradient(m, d)
+
+  if grad:
+    _update_gradient(m, d)
+
+
+@event_scope
+def solve(m: types.Model, d: types.Data):
+  """Finds forces that satisfy constraints."""
+  # warmstart
+  wp.copy(d.qacc, d.qacc_warmstart)
+
+  # create context
+  solve_context(m, d, grad=True)
 
   # search = -Mgrad
   wp.launch(
