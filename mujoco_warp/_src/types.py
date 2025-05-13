@@ -609,10 +609,10 @@ class Model:
     qM_madr_ij: sparse mass matrix addressing
     qLD_update_tree: dof tree ordering for qLD updates
     qLD_update_treeadr: index of each dof tree level
-    M_rownnz: number of non-zeros in each row of qM             (nv,)
-    M_rowadr: index of each row in qM                           (nv,)
-    M_colind: column indices of non-zeros in qM                 (nM,)
-    mapM2M: index mapping from M (legacy) to M (CSR)            (nM)
+    C_rownnz: number of non-zeros in each row of qM             (nv,)
+    C_rowadr: index of each row in qM                           (nv,)
+    C_colind: column indices of non-zeros in qM                 (nM,)
+    mapM2C: index mapping from M (legacy) to C (CSR)            (nC)
     qM_tiles: tiling configuration
     body_tree: list of body ids by tree level
     body_parentid: id of body's parent                       (nbody,)
@@ -830,10 +830,10 @@ class Model:
   qM_mulm_j: wp.array(dtype=int)  # warp only
   qM_madr_ij: wp.array(dtype=int)  # warp only
   qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]  # warp only
-  M_rownnz: wp.array(dtype=int)
-  M_rowadr: wp.array(dtype=int)
-  M_colind: wp.array(dtype=int)
-  mapM2M: wp.array(dtype=int)
+  C_rownnz: wp.array(dtype=int)
+  C_rowadr: wp.array(dtype=int)
+  C_colind: wp.array(dtype=int)
+  mapM2C: wp.array(dtype=int)
   qM_tiles: tuple[TileSet, ...]
   body_tree: tuple[wp.array(dtype=int), ...]
   body_parentid: wp.array(dtype=int)

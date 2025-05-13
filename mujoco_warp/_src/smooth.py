@@ -786,12 +786,12 @@ def _qLD_acc_legacy(
   update = qLD_updates_[nodeid]
   i, k, Madr_ki = update[0], update[1], update[2]
   Madr_i = dof_Madr[i]
-  # tmp = M(k,i) / M(k,k)
+  # tmp = L(k,i) / L(k,k)
   tmp = L_in[worldid, 0, Madr_ki] / L_in[worldid, 0, dof_Madr[k]]
   for j in range(dof_Madr[i + 1] - Madr_i):
-    # M(i,j) -= M(k,j) * tmp
+    # L(i,j) -= L(k,j) * tmp
     wp.atomic_sub(L_out[worldid, 0], Madr_i + j, L_in[worldid, 0, Madr_ki + j] * tmp)
-  # M(k,i) = tmp
+  # L(k,i) /= L(k, k)
   L_out[worldid, 0, Madr_ki] = tmp
 
 
@@ -828,21 +828,21 @@ def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: arra
 @wp.kernel
 def _copy_CSR(
   # Model:
-  mapM2M: wp.array(dtype=int),
+  mapM2C: wp.array(dtype=int),
   # In:
   M_in: array3df,
   # Out:
   L_out: array3df,
 ):
   worldid, ind = wp.tid()
-  L_out[worldid, 0, ind] = M_in[worldid, 0, mapM2M[ind]]
+  L_out[worldid, 0, ind] = M_in[worldid, 0, mapM2C[ind]]
 
 
 @wp.kernel
 def _qLD_acc(
   # Model:
-  M_rownnz: wp.array(dtype=int),
-  M_rowadr: wp.array(dtype=int),
+  C_rownnz: wp.array(dtype=int),
+  C_rowadr: wp.array(dtype=int),
   # In:
   qLD_updates_: wp.array(dtype=wp.vec3i),
   L_in: array3df,
@@ -852,13 +852,13 @@ def _qLD_acc(
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
   i, k, Madr_ki = update[0], update[1], update[2]
-  Madr_i = M_rowadr[i]  # Address of row being updated
-  diag_k = M_rowadr[k] + M_rownnz[k] - 1  # Address of diagonal element of k
+  Madr_i = C_rowadr[i]  # Address of row being updated
+  diag_k = C_rowadr[k] + C_rownnz[k] - 1  # Address of diagonal element of k
   # tmp = M(k,i) / M(k,k)
   tmp = L_out[worldid, 0, Madr_ki] / L_out[worldid, 0, diag_k]
-  for j in range(M_rownnz[i]):
+  for j in range(C_rownnz[i]):
     # M(i,j) -= M(k,j) * tmp
-    wp.atomic_sub(L_out[worldid, 0], Madr_i + j, L_in[worldid, 0, M_rowadr[k] + j] * tmp)
+    wp.atomic_sub(L_out[worldid, 0], Madr_i + j, L_in[worldid, 0, C_rowadr[k] + j] * tmp)
   # M(k,i) = tmp
   L_out[worldid, 0, Madr_ki] = tmp
 
@@ -866,15 +866,15 @@ def _qLD_acc(
 @wp.kernel
 def _qLDiag_div(
   # Model:
-  M_rownnz: wp.array(dtype=int),
-  M_rowadr: wp.array(dtype=int),
+  C_rownnz: wp.array(dtype=int),
+  C_rowadr: wp.array(dtype=int),
   # In:
   L_in: array3df,
   # Out:
   D_out: array2df,
 ):
   worldid, dofid = wp.tid()
-  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
+  diag_i = C_rowadr[dofid] + C_rownnz[dofid] - 1  # Address of diagonal element of i
   D_out[worldid, dofid] = 1.0 / L_in[worldid, 0, diag_i]
 
 
@@ -883,18 +883,18 @@ def _factor_i_sparse(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
   if version.parse(mujoco.__version__) <= version.parse("3.2.7"):
     return _factor_i_sparse_legacy(m, d, M, L, D)
 
-  wp.launch(_copy_CSR, dim=(d.nworld, m.nM), inputs=[m.mapM2M, M], outputs=[L])
+  wp.launch(_copy_CSR, dim=(d.nworld, m.nM), inputs=[m.mapM2C, M], outputs=[L])
 
   for i in reversed(range(len(m.qLD_updates))):
     qLD_updates = m.qLD_updates[i]
     wp.launch(
       _qLD_acc,
       dim=(d.nworld, qLD_updates.size),
-      inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L],
+      inputs=[m.C_rownnz, m.C_rowadr, qLD_updates, L],
       outputs=[L],
     )
 
-  wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
+  wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.C_rownnz, m.C_rowadr, L], outputs=[D])
 
 
 def _tile_cholesky(tile: TileSet):
