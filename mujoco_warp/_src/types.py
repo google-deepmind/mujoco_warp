@@ -356,6 +356,10 @@ class vec5f(wp.types.vector(length=5, dtype=float)):
   pass
 
 
+class vec6f(wp.types.vector(length=6, dtype=float)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -365,6 +369,7 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
 
 
 vec5 = vec5f
+vec6 = vec6f
 vec10 = vec10f
 vec11 = vec11f
 array2df = wp.array2d(dtype=float)
@@ -393,6 +398,9 @@ class Option:
     epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
     depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
+    wind: wind (for lift, drag, and viscosity)
+    density: density of medium
+    viscosity: viscosity of medium
   """
 
   timestep: float
@@ -412,6 +420,9 @@ class Option:
   epa_exact_neg_distance: bool  # warp only
   depth_extension: float  # warp only
   ls_parallel: bool
+  wind: wp.vec3
+  density: float
+  viscosity: float
 
 
 @dataclasses.dataclass
@@ -584,7 +595,11 @@ class Model:
     nwrap: number of wrap objects in all tendon paths        ()
     nsensor: number of sensors                               ()
     nsensordata: number of elements in sensor data vector    ()
+    nmeshvert: number of vertices for all meshes             ()
+    nmeshface: number of faces for all meshes                ()
+    nlsp: number of step sizes for parallel linsearch        ()
     npair: number of predefined geom pairs                   ()
+    nlsp: number of step sizes for parallel linsearch        ()
     nhfield: number of heightfields                          ()
     nhfielddata: size of elevation data                      ()
     nlsp: number of step sizes for parallel linsearch        ()
@@ -662,6 +677,8 @@ class Model:
     geom_condim: contact dimensionality (1, 3, 4, 6)         (ngeom,)
     geom_bodyid: id of geom's body                           (ngeom,)
     geom_dataid: id of geom's mesh/hfield; -1: none          (ngeom,)
+    geom_group: geom group inclusion/exclusion mask          (ngeom,)
+    geom_matid: material id for rendering                    (ngeom,)
     geom_priority: geom contact priority                     (ngeom,)
     geom_solmix: mixing coef for solref/imp in geom pair     (ngeom,)
     geom_solref: constraint solver reference: contact        (ngeom, mjNREF)
@@ -674,6 +691,7 @@ class Model:
     geom_friction: friction for (slide, spin, roll)          (ngeom, 3)
     geom_margin: detect contact if dist<margin               (ngeom,)
     geom_gap: include in solver if dist<margin-gap           (ngeom,)
+    geom_rgba: rgba when material is omitted                  (ngeom, 4)
     hfield_adr: start address in hfield_data                 (nhfield,)
     hfield_nrow: number of rows in grid                      (nhfield,)
     hfield_ncol: number of columns in grid                   (nhfield,)
@@ -703,6 +721,8 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
+    mesh_faceadr: first face address                         (nmesh,)
+    mesh_face: face indices for all meshes                   (nface, 3)
     eq_type: constraint type (mjtEq)                         (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
@@ -784,6 +804,7 @@ class Model:
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     mocap_bodyid: id of body for mocap                       (nmocap,)
+    mat_rgba: rgba                                           (nmat, 4)
   """
 
   nq: int
@@ -805,8 +826,10 @@ class Model:
   nwrap: int
   nsensor: int
   nsensordata: int
-  npair: int
+  nmeshvert: int
+  nmeshface: int
   nlsp: int  # warp only
+  npair: int
   nhfield: int
   nhfielddata: int
   opt: Option
@@ -882,6 +905,8 @@ class Model:
   geom_condim: wp.array(dtype=int)
   geom_bodyid: wp.array(dtype=int)
   geom_dataid: wp.array(dtype=int)
+  geom_group: wp.array(dtype=int)
+  geom_matid: wp.array(dtype=int)
   geom_priority: wp.array(dtype=int)
   geom_solmix: wp.array(dtype=float)
   geom_solref: wp.array(dtype=wp.vec2)
@@ -894,6 +919,7 @@ class Model:
   geom_friction: wp.array(dtype=wp.vec3)
   geom_margin: wp.array(dtype=float)
   geom_gap: wp.array(dtype=float)
+  geom_rgba: wp.array(dtype=wp.vec4)
   hfield_adr: wp.array(dtype=int)
   hfield_nrow: wp.array(dtype=int)
   hfield_ncol: wp.array(dtype=int)
@@ -923,6 +949,8 @@ class Model:
   mesh_vertadr: wp.array(dtype=int)
   mesh_vertnum: wp.array(dtype=int)
   mesh_vert: wp.array(dtype=wp.vec3)
+  mesh_faceadr: wp.array(dtype=int)
+  mesh_face: wp.array(dtype=wp.vec3i)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)
@@ -1004,6 +1032,7 @@ class Model:
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
+  mat_rgba: wp.array(dtype=wp.vec4)
 
 
 @dataclasses.dataclass
@@ -1064,6 +1093,7 @@ class Data:
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
     xfrc_applied: applied Cartesian force/torque                (nworld, nbody, 6)
+    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     eq_active: enable/disable constraints                       (nworld, neq)
     mocap_pos: position of mocap bodies                         (nworld, nmocap, 3)
     mocap_quat: orientation of mocap bodies                     (nworld, nmocap, 4)
@@ -1101,6 +1131,7 @@ class Data:
     qfrc_spring: passive spring force                           (nworld, nv)
     qfrc_damper: passive damper force                           (nworld, nv)
     qfrc_gravcomp: passive gravity compensation force           (nworld, nv)
+    qfrc_fluid: passive fluid force                             (nworld, nv)
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
@@ -1171,6 +1202,7 @@ class Data:
   ctrl: wp.array2d(dtype=float)
   qfrc_applied: wp.array2d(dtype=float)
   xfrc_applied: wp.array2d(dtype=wp.spatial_vector)
+  fluid_applied: wp.array2d(dtype=wp.spatial_vector)  # warp only
   eq_active: wp.array2d(dtype=bool)
   mocap_pos: wp.array2d(dtype=wp.vec3)
   mocap_quat: wp.array2d(dtype=wp.quat)
@@ -1208,6 +1240,7 @@ class Data:
   qfrc_spring: wp.array2d(dtype=float)
   qfrc_damper: wp.array2d(dtype=float)
   qfrc_gravcomp: wp.array2d(dtype=float)
+  qfrc_fluid: wp.array2d(dtype=float)
   qfrc_passive: wp.array2d(dtype=float)
   subtree_linvel: wp.array2d(dtype=wp.vec3)
   subtree_angmom: wp.array2d(dtype=wp.vec3)
