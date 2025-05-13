@@ -100,7 +100,7 @@ def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3, verts: wp.array(d
         max_dist = dist
         support_pt = vert
     support_pt = geom.rot @ support_pt + geom.pos
-  elif geom_type == int(GeomType.HFIELD.value):
+  elif geomtype == int(GeomType.HFIELD.value):
     max_dist = float(FLOAT_MIN)
     for i in range(6):
       vert = get_hfield_prism_vertex(geom.hfprism, i)
@@ -735,6 +735,11 @@ def _gjk_epa_pipeline(
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
     mesh_vert: wp.array(dtype=wp.vec3),
+    hfield_nrow: wp.array(dtype=int),
+    hfield_ncol: wp.array(dtype=int),
+    hfield_size: wp.array(dtype=wp.vec4),
+    hfield_adr: wp.array(dtype=int),
+    hfield_data: wp.array(dtype=float),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array(dtype=wp.vec2),
     pair_solreffriction: wp.array(dtype=wp.vec2),
@@ -749,6 +754,7 @@ def _gjk_epa_pipeline(
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
+    collision_hftri_index: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # Data out:
     ncon_out: wp.array(dtype=int),
@@ -796,13 +802,19 @@ def _gjk_epa_pipeline(
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
 
-    hftri_index = d.collision_hftri_index[tid]
+    hftri_index = collision_hftri_index[tid]
 
     geom1 = _geom(
+      geom_type,
       geom_dataid,
       geom_size,
       mesh_vertadr,
       mesh_vertnum,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_adr,
+      hfield_data,
       geom_xpos_in,
       geom_xmat_in,
       worldid,
@@ -811,10 +823,16 @@ def _gjk_epa_pipeline(
     )
 
     geom2 = _geom(
+      geom_type,
       geom_dataid,
       geom_size,
       mesh_vertadr,
       mesh_vertnum,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_adr,
+      hfield_data,
       geom_xpos_in,
       geom_xmat_in,
       worldid,
@@ -906,6 +924,11 @@ def gjk_narrowphase(m: Model, d: Data):
         m.mesh_vertadr,
         m.mesh_vertnum,
         m.mesh_vert,
+        m.hfield_nrow,
+        m.hfield_ncol,
+        m.hfield_size,
+        m.hfield_adr,
+        m.hfield_data,
         m.pair_dim,
         m.pair_solref,
         m.pair_solreffriction,
@@ -919,6 +942,7 @@ def gjk_narrowphase(m: Model, d: Data):
         d.collision_pair,
         d.collision_pairid,
         d.collision_worldid,
+        d.collision_hftri_index,
         d.ncollision,
       ],
       outputs=[

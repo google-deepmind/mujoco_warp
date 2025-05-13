@@ -19,7 +19,7 @@ import warp as wp
 
 from .collision_box import box_box_narrowphase
 from .collision_convex import gjk_narrowphase
-from .collision_hfield import get_hfield_overlap_range
+from .collision_hfield import hfield_midphase
 from .collision_primitive import primitive_narrowphase
 from .types import MJ_MAXVAL
 from .types import Data
@@ -89,6 +89,11 @@ def _add_geom_pair(
   collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
+  pairid = wp.atomic_add(ncollision_out, 0, 1)
+
+  if pairid >= nconmax_in:
+    return
+
   type1 = geom_type[geom1]
   type2 = geom_type[geom2]
 
@@ -97,47 +102,15 @@ def _add_geom_pair(
   else:
     pair = wp.vec2i(geom1, geom2)
 
-  nxn_pairid = nxn_pairid[nxnid]
+  collision_pair_out[pairid] = pair
+  collision_pairid_out[pairid] = nxn_pairid[nxnid]
+  collision_worldid_out[pairid] = worldid
 
-  # For height field, add a collision pair for every
-  # triangle that can potentially collide
+  # Writing -1 to collision_hftri_index_out[pairid] signals
+  # hfield_midphase to generate a collision pair for every
+  # potentially colliding triangle
   if type1 == int(GeomType.HFIELD.value) or type2 == int(GeomType.HFIELD.value):
-    hfield = geom1
-    other = geom2
-    if type1 != int(GeomType.HFIELD.value):
-      hfield = geom2
-      other = geom1
-
-    # Get min/max grid coordinates for overlap region
-    min_i, min_j, max_i, max_j = get_hfield_overlap_range(m, d, hfield, other, worldid)
-
-    # Get hfield dimensions for triangle index calculation
-    dataid = m.geom_dataid[hfield]
-    ncol = m.hfield_ncol[dataid]
-
-    # Loop through grid cells and add pairs for all triangles
-    for j in range(min_j, max_j + 1):
-      for i in range(min_i, max_i + 1):
-        for t in range(2):
-          pairid = wp.atomic_add(ncollision_out, 0, 1)
-
-          if pairid >= nconmax_in:
-            return
-
-          collision_pair_out[pairid] = pair
-          collision_hftri_index_out[pairid] = ((j * (ncol - 1)) + i) * 2 + t
-          collision_pairid_out[pairid] = nxn_pairid
-          collision_worldid_out[pairid] = worldid
-  else:
-    pairid = wp.atomic_add(ncollision_out, 0, 1)
-
-    if pairid >= nconmax_in:
-      return
-
-    collision_pair_out[pairid] = pair
     collision_hftri_index_out[pairid] = -1
-    collision_pairid_out[pairid] = nxn_pairid
-    collision_worldid_out[pairid] = worldid
 
 
 @wp.func
@@ -234,6 +207,7 @@ def _sap_broadphase(
   collision_pair_out: wp.array(dtype=wp.vec2i),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
+  collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
   worldgeomid = wp.tid()
@@ -288,6 +262,7 @@ def _sap_broadphase(
         collision_pair_out,
         collision_pairid_out,
         collision_worldid_out,
+        collision_hftri_index_out,
         ncollision_out,
       )
 
@@ -370,6 +345,7 @@ def sap_broadphase(m: Model, d: Data):
       d.collision_pair,
       d.collision_pairid,
       d.collision_worldid,
+      d.collision_hftri_index,
       d.ncollision,
     ],
   )
@@ -391,6 +367,7 @@ def _nxn_broadphase(
   collision_pair_out: wp.array(dtype=wp.vec2i),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
+  collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
   worldid, elementid = wp.tid()
@@ -423,6 +400,7 @@ def _nxn_broadphase(
       collision_pair_out,
       collision_pairid_out,
       collision_worldid_out,
+      collision_hftri_index_out,
       ncollision_out,
     )
 
@@ -448,6 +426,7 @@ def nxn_broadphase(m: Model, d: Data):
         d.collision_pair,
         d.collision_pairid,
         d.collision_worldid,
+        d.collision_hftri_index,
         d.ncollision,
       ],
     )
@@ -464,6 +443,9 @@ def collision(m: Model, d: Data):
   d.ncollision.zero_()
   d.ncon.zero_()
 
+  # Clear the collision_hftri_index buffer
+  d.collision_hftri_index.zero_()
+
   if d.nconmax == 0:
     return
 
@@ -476,6 +458,9 @@ def collision(m: Model, d: Data):
     nxn_broadphase(m, d)
   else:
     sap_broadphase(m, d)
+
+  # Process heightfield collisions
+  hfield_midphase(m, d)
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
