@@ -83,9 +83,9 @@ def _add_geom_pair(
   nxnid: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
-  collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
   pairid = wp.atomic_add(ncollision_out, 0, 1)
@@ -204,9 +204,9 @@ def _sap_broadphase(
   nsweep_in: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
-  collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
   worldgeomid = wp.tid()
@@ -259,9 +259,9 @@ def _sap_broadphase(
         worldid,
         idx,
         collision_pair_out,
+        collision_hftri_index_out,
         collision_pairid_out,
         collision_worldid_out,
-        collision_hftri_index_out,
         ncollision_out,
       )
 
@@ -342,9 +342,9 @@ def sap_broadphase(m: Model, d: Data):
     ],
     outputs=[
       d.collision_pair,
+      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
-      d.collision_hftri_index,
       d.ncollision,
     ],
   )
@@ -364,9 +364,9 @@ def _nxn_broadphase(
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
-  collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
   worldid, elementid = wp.tid()
@@ -397,9 +397,9 @@ def _nxn_broadphase(
       worldid,
       elementid,
       collision_pair_out,
+      collision_hftri_index_out,
       collision_pairid_out,
       collision_worldid_out,
-      collision_hftri_index_out,
       ncollision_out,
     )
 
@@ -423,9 +423,9 @@ def nxn_broadphase(m: Model, d: Data):
       ],
       outputs=[
         d.collision_pair,
+        d.collision_hftri_index,
         d.collision_pairid,
         d.collision_worldid,
-        d.collision_hftri_index,
         d.ncollision,
       ],
     )
