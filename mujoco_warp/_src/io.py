@@ -248,6 +248,16 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nxn_geom_pair.append((geom1, geom2))
     nxn_pairid.append(pairid)
 
+  # rangefinder
+  is_rangefinder = mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER
+  sensor_rangefinder_adr = np.nonzero(is_rangefinder)[0]
+  rangefinder_sensor_adr = -1 * np.ones(mjm.nsensor)
+  rangefinder_count = 0
+  for i, rf in enumerate(is_rangefinder):
+    if rf:
+      rangefinder_sensor_adr[i] = rangefinder_count
+      rangefinder_count += 1
+
   m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,
@@ -499,10 +509,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_dim=wp.array(mjm.sensor_dim, dtype=int),
     sensor_adr=wp.array(mjm.sensor_adr, dtype=int),
     sensor_cutoff=wp.array(mjm.sensor_cutoff, dtype=float),
-    sensor_pos_adr=wp.array(
-      np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0],
-      dtype=int,
-    ),
+    sensor_pos_adr=wp.array(np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0], dtype=int),
+    sensor_rangefinder_adr=wp.array(sensor_rangefinder_adr, dtype=int),
+    rangefinder_sensor_adr=wp.array(rangefinder_sensor_adr, dtype=int),
     sensor_vel_adr=wp.array(
       np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0],
       dtype=int,
@@ -525,6 +534,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         mujoco.mjtSensor.mjSENS_FRAMEANGACC,
       ],
     ).any(),
+    sensor_rangefinder_bodyid=wp.array(
+      mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
+    ),
     mat_rgba=wp.array(mjm.mat_rgba, dtype=wp.vec4),
   )
 
@@ -546,6 +558,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   else:
     qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   return types.Data(
     nworld=nworld,
@@ -729,6 +743,10 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     wrap_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=wp.zeros((nworld, mjm.nsensordata), dtype=float),
+    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
+    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
   )
 
 
@@ -809,6 +827,8 @@ def put_data(
 
   contact_worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon))
   efc_worldid = np.pad(np.repeat(np.arange(nworld), mjd.nefc), (0, njmax - nworld * mjd.nefc))
+
+  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   # some helper functions to simplify the data field definitions below
 
@@ -1013,6 +1033,10 @@ def put_data(
     wrap_xpos=tile(mjd.wrap_xpos, dtype=wp.spatial_vector),
     # sensors
     sensordata=tile(mjd.sensordata),
+    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
+    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
   )
 
 

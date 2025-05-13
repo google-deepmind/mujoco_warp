@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Tuple
+
 import warp as wp
 
 from .types import MJ_MINVAL
@@ -625,12 +627,12 @@ def _ray_all_geom_kernel(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
-  pnt: wp.array(dtype=wp.vec3),
-  vec: wp.array(dtype=wp.vec3),
+  pnt: wp.array2d(dtype=wp.vec3),
+  vec: wp.array2d(dtype=wp.vec3),
   geomgroup: vec6,
   has_geomgroup: bool,
   flg_static: bool,
-  bodyexclude: int,
+  bodyexclude: wp.array(dtype=int),
   # Out:
   dist_out: wp.array(dtype=float, ndim=2),
   closest_hit_geom_id_out: wp.array(dtype=int, ndim=2),
@@ -656,12 +658,12 @@ def _ray_all_geom_kernel(
     geom_xpos_in,
     geom_xmat_in,
     worldid,
-    pnt[rayid],
-    vec[rayid],
+    pnt[worldid, rayid],
+    vec[worldid, rayid],
     geomgroup,
     has_geomgroup,
     flg_static,
-    bodyexclude,
+    bodyexclude[rayid],
     tid,
   )
 
@@ -673,12 +675,12 @@ def _ray_all_geom_kernel(
 def ray(
   m: Model,
   d: Data,
-  pnt: wp.array(dtype=wp.vec3),
-  vec: wp.array(dtype=wp.vec3),
+  pnt: wp.array2d(dtype=wp.vec3),
+  vec: wp.array2d(dtype=wp.vec3),
   geomgroup: vec6 = None,
   flg_static: bool = True,
-  bodyexclude: int = -1,
-) -> tuple[wp.array, wp.array]:
+  bodyexclude: wp.array(dtype=int) = None,
+) -> Tuple[wp.array2d(dtype=float), wp.array2d(dtype=int)]:
   """Returns the distance at which rays intersect with primitive geoms.
 
   Args:
@@ -694,19 +696,39 @@ def ray(
       dist: distances from ray origins to geom surfaces
       geom_id: IDs of intersected geoms (-1 if none)
   """
-  nrays = pnt.shape[0]
+  nrays = pnt.shape[1]
   dist = wp.zeros((d.nworld, nrays), dtype=float)
   closest_hit_geom_id = wp.zeros((d.nworld, nrays), dtype=int)
-  num_threads = 64
 
   # Create default geomgroup if None is provided
   has_geomgroup = geomgroup is not None
   if geomgroup is None:
     geomgroup = vec6(0, 0, 0, 0, 0, 0)
 
+  if bodyexclude is None:
+    bodyexclude = wp.zeros(nrays, dtype=int)
+    bodyexclude.fill_(-1)
+
+  _ray(m, d, pnt, vec, geomgroup, has_geomgroup, flg_static, bodyexclude, dist, closest_hit_geom_id)
+
+  return dist, closest_hit_geom_id
+
+
+def _ray(
+  m: Model,
+  d: Data,
+  pnt: wp.array2d(dtype=wp.vec3),
+  vec: wp.array2d(dtype=wp.vec3),
+  geomgroup: vec6,
+  has_geomgroup: bool,
+  flg_static: bool,
+  bodyexclude: wp.array(dtype=int),
+  dist: wp.array2d(dtype=wp.vec3),
+  geomid: wp.array2d(dtype=int),
+):
   wp.launch_tiled(
     _ray_all_geom_kernel,
-    dim=(d.nworld, nrays),
+    dim=(d.nworld, pnt.shape[1]),
     inputs=[
       m.ngeom,
       m.nmeshface,
@@ -733,8 +755,7 @@ def ray(
       flg_static,
       bodyexclude,
       dist,
-      closest_hit_geom_id,
+      geomid,
     ],
-    block_dim=num_threads,
+    block_dim=64,
   )
-  return dist, closest_hit_geom_id
