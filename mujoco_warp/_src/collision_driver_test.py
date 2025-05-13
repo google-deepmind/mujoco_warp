@@ -39,6 +39,58 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
       """,
+    "box_box_vf": """
+        <mujoco>
+          <worldbody>
+            <body pos="0 -0.2 1.2" euler="44 46 0">
+              <freejoint/>
+              <geom size="0.6 0.4 0.7" type="box"/>
+            </body>
+            <body pos="0 0 0" euler="0 0 0">
+              <geom size="0.5 0.5 0.5" type="box"/>
+            </body>
+          </worldbody>
+        </mujoco>
+      """,
+    "box_box_vf_flat": """
+        <mujoco>
+          <worldbody>
+            <body pos="0 0 0" >
+              <geom size="0.6 0.6 0.5" type="box"/>
+            </body>
+            <body pos="-.28 0.4 1.199" >
+              <freejoint/>
+              <geom size="0.6 0.4 0.7" type="box"/>
+            </body>
+          </worldbody>
+        </mujoco>
+      """,
+    "box_box_ee": """
+        <mujoco>
+          <worldbody>
+            <body pos="0 0 0" euler="0 45 0">
+              <geom size="0.5 0.5 0.5" type="box"/>
+            </body>
+            <body pos="0 0 1.6" euler="44 0 90">
+              <freejoint/>
+              <geom size="0.6 0.4 0.7" type="box"/>
+            </body>
+          </worldbody>
+        </mujoco>
+      """,
+    "box_box_ee_deep": """
+        <mujoco>
+          <worldbody>
+            <body pos="0 0 0" euler="0 74 0">
+              <geom size="0.4 0.45 0.4" type="box"/>
+            </body>
+            <body pos="0 0 1.2" euler="24 0 90">
+              <freejoint/>
+              <geom size="0.6 0.4 0.7" type="box"/>
+            </body>
+          </worldbody>
+        </mujoco>
+      """,
     "plane_sphere": """
         <mujoco>
           <worldbody>
@@ -198,6 +250,20 @@ class CollisionTest(parameterized.TestCase):
             <body pos="0.5 0 0.1" euler="3 0 0">
               <freejoint/>
               <geom size="0.05 0.1" type="cylinder"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "mesh_plane": """
+        <mujoco>
+          <asset>
+            <mesh name="cube" vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 1" euler="45 0 0">
+              <freejoint/>
+              <geom type="mesh" mesh="cube"/>
             </body>
           </worldbody>
         </mujoco>
