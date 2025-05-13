@@ -754,7 +754,7 @@ def _gjk_epa_pipeline(
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
-    collision_hftri_index: wp.array(dtype=int),
+    collision_hftri_index_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # Data out:
     ncon_out: wp.array(dtype=int),
@@ -802,7 +802,7 @@ def _gjk_epa_pipeline(
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
 
-    hftri_index = collision_hftri_index[tid]
+    hftri_index = collision_hftri_index_in[tid]
 
     geom1 = _geom(
       geom_type,
