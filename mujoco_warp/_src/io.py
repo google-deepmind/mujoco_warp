@@ -188,27 +188,44 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         wrap_jnt_adr.append(adr + j)
 
   # spatial tendon
-  tendon_site_adr = []
   tendon_site_pair_adr = []
+  tendon_geom_adr = []
+
   ten_wrapadr_site = [0]
   ten_wrapnum_site = []
   for i, tendon_num in enumerate(mjm.tendon_num):
     adr = mjm.tendon_adr[i]
+    # sites
     if (mjm.wrap_type[adr : adr + tendon_num] == mujoco.mjtWrap.mjWRAP_SITE).all():
       if i < mjm.ntendon:
         ten_wrapadr_site.append(ten_wrapadr_site[-1] + tendon_num)
       ten_wrapnum_site.append(tendon_num)
-      for j in range(tendon_num):
-        if j < tendon_num - 1:
-          tendon_site_pair_adr.append(i)
-        tendon_site_adr.append(i)
     else:
       if i < mjm.ntendon:
         ten_wrapadr_site.append(ten_wrapadr_site[-1])
       ten_wrapnum_site.append(0)
 
+    # geoms
+    for j in range(tendon_num):
+      wrap_type = mjm.wrap_type[adr + j]
+      if j < tendon_num - 1:
+        next_wrap_type = mjm.wrap_type[adr + j + 1]
+        if wrap_type == mujoco.mjtWrap.mjWRAP_SITE and next_wrap_type == mujoco.mjtWrap.mjWRAP_SITE:
+          tendon_site_pair_adr.append(i)
+      if wrap_type == mujoco.mjtWrap.mjWRAP_SPHERE or wrap_type == mujoco.mjtWrap.mjWRAP_CYLINDER:
+        tendon_geom_adr.append(i)
+
   wrap_site_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)[0]
   wrap_site_pair_adr = np.setdiff1d(wrap_site_adr[np.nonzero(np.diff(wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1)
+  wrap_geom_adr = np.nonzero(np.isin(mjm.wrap_type, [mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER]))[0]
+
+  # pulley scaling
+  wrap_pulley_scale = np.ones(mjm.nwrap, dtype=float)
+  pulley_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_PULLEY)[0]
+  for tadr, tnum in zip(mjm.tendon_adr, mjm.tendon_num):
+    for padr in pulley_adr:
+      if tadr <= padr < tadr + tnum:
+        wrap_pulley_scale[padr : tadr + tnum] = 1.0 / mjm.wrap_prm[padr]
 
   # mocap
   mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
@@ -483,13 +500,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     wrap_prm=wp.array(mjm.wrap_prm, dtype=float),
     wrap_type=wp.array(mjm.wrap_type, dtype=int),
     tendon_jnt_adr=wp.array(tendon_jnt_adr, dtype=int),
-    tendon_site_adr=wp.array(tendon_site_adr, dtype=int),
     tendon_site_pair_adr=wp.array(tendon_site_pair_adr, dtype=int),
+    tendon_geom_adr=wp.array(tendon_geom_adr, dtype=int),
     ten_wrapadr_site=wp.array(ten_wrapadr_site, dtype=int),
     ten_wrapnum_site=wp.array(ten_wrapnum_site, dtype=int),
     wrap_jnt_adr=wp.array(wrap_jnt_adr, dtype=int),
     wrap_site_adr=wp.array(wrap_site_adr, dtype=int),
     wrap_site_pair_adr=wp.array(wrap_site_pair_adr, dtype=int),
+    wrap_geom_adr=wp.array(wrap_geom_adr, dtype=int),
+    wrap_pulley_scale=wp.array(wrap_pulley_scale, dtype=float),
     sensor_type=wp.array(mjm.sensor_type, dtype=int),
     sensor_datatype=wp.array(mjm.sensor_datatype, dtype=int),
     sensor_objtype=wp.array(mjm.sensor_objtype, dtype=int),
@@ -727,6 +746,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ten_wrapnum=wp.zeros((nworld, mjm.ntendon), dtype=int),
     wrap_obj=wp.zeros((nworld, mjm.nwrap), dtype=wp.vec2i),
     wrap_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
+    wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=wp.zeros((nworld, mjm.nsensordata), dtype=float),
   )
@@ -1011,6 +1031,7 @@ def put_data(
     ten_wrapnum=tile(mjd.ten_wrapnum),
     wrap_obj=tile(mjd.wrap_obj, dtype=wp.vec2i),
     wrap_xpos=tile(mjd.wrap_xpos, dtype=wp.spatial_vector),
+    wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=tile(mjd.sensordata),
   )

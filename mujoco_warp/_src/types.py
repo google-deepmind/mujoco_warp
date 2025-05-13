@@ -343,12 +343,15 @@ class WrapType(enum.IntEnum):
 
   Members:
     JOINT: constant moment arm
+    PULLEY: pulley used to split tendon
     SITE: pass through site
   """
 
   JOINT = mujoco.mjtWrap.mjWRAP_JOINT
+  PULLEY = mujoco.mjtWrap.mjWRAP_PULLEY
   SITE = mujoco.mjtWrap.mjWRAP_SITE
-  # unsupported: PULLEY, SPHERE, CYLINDER
+  SPHERE = mujoco.mjtWrap.mjWRAP_SPHERE
+  CYLINDER = mujoco.mjtWrap.mjWRAP_CYLINDER
 
 
 class vec5f(wp.types.vector(length=5, dtype=float)):
@@ -772,13 +775,15 @@ class Model:
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
-    tendon_site_adr: site tendon address                     (<=nwrap,)
     tendon_site_pair_adr: site pair tendon address           (<=nwrap,)
+    tendon_geom_adr: geom tendon address                     (<=nwrap,)
     ten_wrapadr_site: wrap object starting address for sites (ntendon,)
     ten_wrapnum_site: number of site wrap objects per tendon (ntendon,)
     wrap_jnt_adr: addresses for joint tendon wrap object     (<=nwrap,)
     wrap_site_adr: addresses for site tendon wrap object     (<=nwrap,)
     wrap_site_pair_adr: first address for site wrap pair     (<=nwrap,)
+    wrap_geom_adr: addresses for geom tendon wrap object     (<=nwrap,)
+    wrap_pulley_scale: pulley scaling                        (nwrap,)
     sensor_type: sensor type (mjtSensor)                     (nsensor,)
     sensor_datatype: numeric data type (mjtDataType)         (nsensor,)
     sensor_objtype: type of sensorized object (mjtObj)       (nsensor,)
@@ -993,13 +998,15 @@ class Model:
   wrap_prm: wp.array(dtype=float)
   wrap_type: wp.array(dtype=int)
   tendon_jnt_adr: wp.array(dtype=int)  # warp only
-  tendon_site_adr: wp.array(dtype=int)  # warp only
   tendon_site_pair_adr: wp.array(dtype=int)  # warp only
+  tendon_geom_adr: wp.array(dtype=int)  # warp only
   ten_wrapadr_site: wp.array(dtype=int)  # warp only
   ten_wrapnum_site: wp.array(dtype=int)  # warp only
   wrap_jnt_adr: wp.array(dtype=int)  # warp only
   wrap_site_adr: wp.array(dtype=int)  # warp only
   wrap_site_pair_adr: wp.array(dtype=int)  # warp only
+  wrap_geom_adr: wp.array(dtype=int)  # warp only
+  wrap_pulley_scale: wp.array(dtype=float)  # warp only
   sensor_type: wp.array(dtype=int)
   sensor_datatype: wp.array(dtype=int)
   sensor_objtype: wp.array(dtype=int)
@@ -1160,6 +1167,7 @@ class Data:
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
     wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
+    wrap_geom_xpos: Cartesian 3D points for geom wrap points    (nworld, <=nwrap, 6)
     sensordata: sensor data array                               (nsensordata,)
   """
 
@@ -1277,6 +1285,7 @@ class Data:
   ten_wrapnum: wp.array2d(dtype=int)
   wrap_obj: wp.array2d(dtype=wp.vec2i)
   wrap_xpos: wp.array2d(dtype=wp.spatial_vector)
+  wrap_geom_xpos: wp.array2d(dtype=wp.spatial_vector)
 
   # sensors
   sensordata: wp.array2d(dtype=float)

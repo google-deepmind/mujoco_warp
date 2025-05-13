@@ -288,10 +288,15 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.subtree_angmom.numpy()[0], mjd.subtree_angmom, "subtree_angmom")
 
   @parameterized.parameters(
-    ("tendon/fixed.xml"),
-    ("tendon/site.xml"),
-    ("tendon/fixed_site.xml"),
-    ("tendon/site_fixed.xml"),
+    "tendon/fixed.xml",
+    "tendon/site.xml",
+    "tendon/pulley_site.xml",
+    "tendon/fixed_site.xml",
+    "tendon/pulley_fixed_site.xml",
+    "tendon/site_fixed.xml",
+    "tendon/pulley_site_fixed.xml",
+    "tendon/wrap.xml",
+    "tendon/pulley_wrap.xml",
   )
   def test_tendon(self, xml):
     """Tests tendon."""
