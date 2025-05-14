@@ -222,20 +222,21 @@ class IOTest(absltest.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
-  def test_option_physical_constants(self):
-    mjm = mujoco.MjModel.from_xml_string("""
+  def test_ellipsoid_fluid_model(self):
+    with self.assertRaises(NotImplementedError):
+      mjm = mujoco.MjModel.from_xml_string(
+        """
       <mujoco>
-        <option wind="1 1 1" density="1" viscosity="1"/>
+        <option density="1"/>
         <worldbody>
-          <body>          
-            <geom type="sphere" size=".1"/>
+          <body>
+            <geom type="sphere" size=".1" fluidshape="ellipsoid"/>
             <freejoint/>
           </body>
-        </worldbody> 
-    </mujoco>
-    """)
-
-    with self.assertRaises(NotImplementedError):
+        </worldbody>
+      </mujoco>
+      """
+      )
       mjwarp.put_model(mjm)
 
   def test_jacobian_auto(self):
@@ -253,6 +254,31 @@ class IOTest(absltest.TestCase):
       </mujoco>
     """)
     mjwarp.put_model(mjm)
+
+  def test_put_data_qLD(self):
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="hinge"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+    self.assertTrue((d.qLD.numpy() == 0.0).all())
+
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qM[:] = 0.0
+    d = mjwarp.put_data(mjm, mjd)
+    self.assertTrue((d.qLD.numpy() == 0.0).all())
+
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qLD[:] = 0.0
+    d = mjwarp.put_data(mjm, mjd)
+    self.assertTrue((d.qLD.numpy() == 0.0).all())
 
 
 if __name__ == "__main__":
