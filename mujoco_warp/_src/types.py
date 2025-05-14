@@ -645,11 +645,11 @@ class Model:
     jnt_actfrclimited: does joint have actuator force limits (njnt,)
     jnt_solref: constraint solver reference: limit           (nworld, njnt, mjNREF)
     jnt_solimp: constraint solver impedance: limit           (nworld, njnt, mjNIMP)
-    jnt_pos: local anchor position                           (nworld,njnt, 3)
+    jnt_pos: local anchor position                           (nworld, njnt, 3)
     jnt_axis: local joint axis                               (njnt, 3)
     jnt_stiffness: stiffness coefficient                     (nworld, njnt)
     jnt_range: joint limits                                  (nworld, njnt, 2)
-    jnt_actfrcrange: range of total actuator force           (nworldnjnt, 2)
+    jnt_actfrcrange: range of total actuator force           (nworld, njnt, 2)
     jnt_margin: min distance for limit detection             (nworld, njnt)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
@@ -663,7 +663,7 @@ class Model:
     dof_invweight0: diag. inverse inertia in qpos0           (nworld, nv)
     dof_frictionloss: dof friction loss                      (nworld, nv)
     dof_solimp: constraint solver impedance: frictionloss    (nworld, nv, NIMP)
-    dof_solref: constraint solver reference: frictionloss    (nworld,nv, NREF)
+    dof_solref: constraint solver reference: frictionloss    (nworld, nv, NREF)
     dof_tri_row: np.tril_indices                             (mjm.nv)[0]
     dof_tri_col: np.tril_indices                             (mjm.nv)[1]
     geom_type: geometric type (mjtGeom)                      (ngeom,)
