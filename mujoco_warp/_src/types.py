@@ -636,7 +636,7 @@ class Model:
     body_invweight0: mean inv inert in qpos0 (trn, rot)      (nworld, nbody, 2)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
-    body_gravcomp: antigravity force, units of body weight   (nbody,)
+    body_gravcomp: antigravity force, units of body weight   (nworld, nbody)
     jnt_type: type of joint (mjtJoint)                       (njnt,)
     jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
@@ -646,7 +646,7 @@ class Model:
     jnt_solref: constraint solver reference: limit           (nworld, njnt, mjNREF)
     jnt_solimp: constraint solver impedance: limit           (nworld, njnt, mjNIMP)
     jnt_pos: local anchor position                           (nworld, njnt, 3)
-    jnt_axis: local joint axis                               (njnt, 3)
+    jnt_axis: local joint axis                               (nworld, njnt, 3)
     jnt_stiffness: stiffness coefficient                     (nworld, njnt)
     jnt_range: joint limits                                  (nworld, njnt, 2)
     jnt_actfrcrange: range of total actuator force           (nworld, njnt, 2)
@@ -673,20 +673,20 @@ class Model:
     geom_bodyid: id of geom's body                           (ngeom,)
     geom_dataid: id of geom's mesh/hfield; -1: none          (ngeom,)
     geom_group: geom group inclusion/exclusion mask          (ngeom,)
-    geom_matid: material id for rendering                    (ngeom,)
-    geom_priority: geom contact priority                     (nworld, ngeom,)
+    geom_matid: material id for rendering                    (nworld, ngeom,)
+    geom_priority: geom contact priority                     (ngeom,)
     geom_solmix: mixing coef for solref/imp in geom pair     (nworld, ngeom,)
     geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
-    geom_aabb: bounding box, (center, size)                  (nworld, ngeom, 6)
+    geom_aabb: bounding box, (center, size)                  (ngeom, 6)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
     geom_pos: local position offset rel. to body             (nworld, ngeom, 3)
     geom_quat: local orientation offset rel. to body         (nworld, ngeom, 4)
     geom_friction: friction for (slide, spin, roll)          (nworld, ngeom, 3)
     geom_margin: detect contact if dist<margin               (nworld, ngeom,)
     geom_gap: include in solver if dist<margin-gap           (nworld, ngeom,)
-    geom_rgba: rgba when material is omitted                 (ngeom, 4)
+    geom_rgba: rgba when material is omitted                 (nworld, ngeom, 4)
     site_bodyid: id of site's body                           (nsite,)
     site_pos: local position offset rel. to body             (nworld, nsite, 3)
     site_quat: local orientation offset rel. to body         (nworld, nsite, 4)
@@ -720,7 +720,7 @@ class Model:
     eq_active0: initial enable/disable constraint state      (neq,)
     eq_solref: constraint solver reference                   (nworld, neq, mjNREF)
     eq_solimp: constraint solver impedance                   (nworld, neq, mjNIMP)
-    eq_data: numeric data for constraint                     (neq, mjNEQDATA)
+    eq_data: numeric data for constraint                     (nworld, neq, mjNEQDATA)
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
@@ -769,7 +769,7 @@ class Model:
     tendon_length0: tendon length in qpos0                   (nworld, ntendon,)
     tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
-    wrap_prm: divisor, joint coef, or site id                (nworld, nwrap,)
+    wrap_prm: divisor, joint coef, or site id                (nwrap,)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
     tendon_site_adr: site tendon address                     (<=nwrap,)
@@ -787,14 +787,14 @@ class Model:
     sensor_refid: id of reference frame; -1: global frame    (nsensor,)
     sensor_dim: number of scalar outputs                     (nsensor,)
     sensor_adr: address in sensor array                      (nsensor,)
-    sensor_cutoff: cutoff for real and positive; 0: ignore   (nworld, nsensor,)
+    sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     mocap_bodyid: id of body for mocap                       (nmocap,)
-    mat_rgba: rgba                                           (nmat, 4)
+    mat_rgba: rgba                                           (nworld, nmat, 4)
   """
 
   nq: int
@@ -857,7 +857,7 @@ class Model:
   body_invweight0: wp.array3d(dtype=float)
   body_contype: wp.array(dtype=int)
   body_conaffinity: wp.array(dtype=int)
-  body_gravcomp: wp.array(dtype=float)
+  body_gravcomp: wp.array2d(dtype=float)
   jnt_type: wp.array(dtype=int)
   jnt_qposadr: wp.array(dtype=int)
   jnt_dofadr: wp.array(dtype=int)
@@ -867,7 +867,7 @@ class Model:
   jnt_solref: wp.array2d(dtype=wp.vec2)
   jnt_solimp: wp.array2d(dtype=vec5)
   jnt_pos: wp.array2d(dtype=wp.vec3)
-  jnt_axis: wp.array(dtype=wp.vec3)
+  jnt_axis: wp.array2d(dtype=wp.vec3)
   jnt_stiffness: wp.array2d(dtype=float)
   jnt_range: wp.array3d(dtype=float)
   jnt_actfrcrange: wp.array2d(dtype=wp.vec2)
@@ -894,20 +894,20 @@ class Model:
   geom_bodyid: wp.array(dtype=int)
   geom_dataid: wp.array(dtype=int)
   geom_group: wp.array(dtype=int)
-  geom_matid: wp.array(dtype=int)
-  geom_priority: wp.array2d(dtype=int)
+  geom_matid: wp.array2d(dtype=int)
+  geom_priority: wp.array(dtype=int)
   geom_solmix: wp.array2d(dtype=float)
   geom_solref: wp.array2d(dtype=wp.vec2)
   geom_solimp: wp.array2d(dtype=vec5)
   geom_size: wp.array2d(dtype=wp.vec3)
-  geom_aabb: wp.array2d(dtype=wp.vec3)
+  geom_aabb: wp.array(dtype=wp.vec3)
   geom_rbound: wp.array2d(dtype=float)
   geom_pos: wp.array2d(dtype=wp.vec3)
   geom_quat: wp.array2d(dtype=wp.quat)
   geom_friction: wp.array2d(dtype=wp.vec3)
   geom_margin: wp.array2d(dtype=float)
   geom_gap: wp.array2d(dtype=float)
-  geom_rgba: wp.array(dtype=wp.vec4)
+  geom_rgba: wp.array2d(dtype=wp.vec4)
   site_bodyid: wp.array(dtype=int)
   site_pos: wp.array2d(dtype=wp.vec3)
   site_quat: wp.array2d(dtype=wp.quat)
@@ -941,7 +941,7 @@ class Model:
   eq_active0: wp.array(dtype=bool)
   eq_solref: wp.array2d(dtype=wp.vec2)
   eq_solimp: wp.array2d(dtype=vec5)
-  eq_data: wp.array(dtype=vec11)
+  eq_data: wp.array2d(dtype=vec11)
   eq_connect_adr: wp.array(dtype=int)
   eq_wld_adr: wp.array(dtype=int)
   eq_jnt_adr: wp.array(dtype=int)
@@ -990,7 +990,7 @@ class Model:
   tendon_length0: wp.array2d(dtype=float)
   tendon_invweight0: wp.array2d(dtype=float)
   wrap_objid: wp.array(dtype=int)
-  wrap_prm: wp.array2d(dtype=float)
+  wrap_prm: wp.array(dtype=float)
   wrap_type: wp.array(dtype=int)
   tendon_jnt_adr: wp.array(dtype=int)  # warp only
   tendon_site_adr: wp.array(dtype=int)  # warp only
@@ -1008,14 +1008,14 @@ class Model:
   sensor_refid: wp.array(dtype=int)
   sensor_dim: wp.array(dtype=int)
   sensor_adr: wp.array(dtype=int)
-  sensor_cutoff: wp.array2d(dtype=float)
+  sensor_cutoff: wp.array(dtype=float)
   sensor_pos_adr: wp.array(dtype=int)  # warp only
   sensor_vel_adr: wp.array(dtype=int)  # warp only
   sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
-  mat_rgba: wp.array(dtype=wp.vec4)
+  mat_rgba: wp.array2d(dtype=wp.vec4)
 
 
 @dataclasses.dataclass

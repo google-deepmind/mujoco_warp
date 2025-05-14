@@ -107,7 +107,7 @@ def _efc_equality_connect(
   eq_objtype: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
-  eq_data: wp.array(dtype=vec11),
+  eq_data: wp.array2d(dtype=vec11),
   eq_connect_adr: wp.array(dtype=int),
   # Data in:
   nefc_in: wp.array(dtype=int),
@@ -142,7 +142,7 @@ def _efc_equality_connect(
   necid = wp.atomic_add(ne_connect_out, 0, 3)
   efcid = nefc_in[0] + necid
 
-  data = eq_data[i_eq]
+  data = eq_data[worldid, i_eq]
   anchor1 = wp.vec3f(data[0], data[1], data[2])
   anchor2 = wp.vec3f(data[3], data[4], data[5])
 
@@ -239,7 +239,7 @@ def _efc_equality_joint(
   eq_obj2id: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
-  eq_data: wp.array(dtype=vec11),
+  eq_data: wp.array2d(dtype=vec11),
   eq_jnt_adr: wp.array(dtype=int),
   # Data in:
   ne_connect_in: wp.array(dtype=int),
@@ -272,7 +272,7 @@ def _efc_equality_joint(
 
   jntid_1 = eq_obj1id[i_eq]
   jntid_2 = eq_obj2id[i_eq]
-  data = eq_data[i_eq]
+  data = eq_data[worldid, i_eq]
   dofadr1 = jnt_dofadr[jntid_1]
   qposadr1 = jnt_qposadr[jntid_1]
   efc_J_out[efcid, dofadr1] = 1.0
@@ -330,7 +330,7 @@ def _efc_equality_tendon(
   eq_obj2id: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
-  eq_data: wp.array(dtype=vec11),
+  eq_data: wp.array2d(dtype=vec11),
   eq_ten_adr: wp.array(dtype=int),
   tendon_length0: wp.array2d(dtype=float),
   tendon_invweight0: wp.array2d(dtype=float),
@@ -368,7 +368,7 @@ def _efc_equality_tendon(
 
   obj1id = eq_obj1id[eqid]
   obj2id = eq_obj2id[eqid]
-  data = eq_data[eqid]
+  data = eq_data[worldid,eqid]
   solref = eq_solref[worldid, eqid]
   solimp = eq_solimp[worldid, eqid]
   pos1 = ten_length_in[worldid, obj1id] - tendon_length0[worldid, obj1id]
@@ -498,7 +498,7 @@ def _efc_equality_weld(
   eq_objtype: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
-  eq_data: wp.array(dtype=vec11),
+  eq_data: wp.array2d(dtype=vec11),
   eq_wld_adr: wp.array(dtype=int),
   # Data in:
   ne_connect_in: wp.array(dtype=int),
@@ -539,7 +539,7 @@ def _efc_equality_weld(
   obj1id = eq_obj1id[i_eq]
   obj2id = eq_obj2id[i_eq]
 
-  data = eq_data[i_eq]
+  data = eq_data[worldid, i_eq]
   anchor1 = wp.vec3(data[0], data[1], data[2])
   anchor2 = wp.vec3(data[3], data[4], data[5])
   relpose = wp.quat(data[6], data[7], data[8], data[9])

@@ -1267,7 +1267,7 @@ def plane_cylinder(
 def contact_params(
   # Model:
   geom_condim: wp.array(dtype=int),
-  geom_priority: wp.array2d(dtype=int),
+  geom_priority: wp.array(dtype=int),
   geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),
@@ -1303,8 +1303,8 @@ def contact_params(
     g1 = geoms[0]
     g2 = geoms[1]
 
-    p1 = geom_priority[worldid, g1]
-    p2 = geom_priority[worldid, g2]
+    p1 = geom_priority[g1]
+    p2 = geom_priority[g2]
 
     solmix1 = geom_solmix[worldid, g1]
     solmix2 = geom_solmix[worldid, g2]
@@ -2380,7 +2380,7 @@ def _primitive_narrowphase(
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_priority: wp.array2d(dtype=int),
+  geom_priority: wp.array(dtype=int),
   geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),

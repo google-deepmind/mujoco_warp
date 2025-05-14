@@ -71,7 +71,7 @@ def _kinematics_level(
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array2d(dtype=wp.vec3),
-  jnt_axis: wp.array(dtype=wp.vec3),
+  jnt_axis: wp.array2d(dtype=wp.vec3),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   xpos_in: wp.array2d(dtype=wp.vec3),
@@ -105,7 +105,7 @@ def _kinematics_level(
     xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
     xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
     xanchor_out[worldid, jntadr] = xpos
-    xaxis_out[worldid, jntadr] = jnt_axis[jntadr]
+    xaxis_out[worldid, jntadr] = jnt_axis[worldid, jntadr]
   else:
     # regular or no joints
     # apply fixed translation and rotation relative to parent
@@ -116,7 +116,7 @@ def _kinematics_level(
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
       jnt_type_ = jnt_type[jntadr]
-      jnt_axis_ = jnt_axis[jntadr]
+      jnt_axis_ = jnt_axis[worldid, jntadr]
       xanchor = math.rot_vec_quat(jnt_pos[worldid, jntadr], xquat) + xpos
       xaxis = math.rot_vec_quat(jnt_axis_, xquat)
 
@@ -1144,7 +1144,7 @@ def _cfrc_ext_equality(
   eq_obj1id: wp.array(dtype=int),
   eq_obj2id: wp.array(dtype=int),
   eq_objtype: wp.array(dtype=int),
-  eq_data: wp.array(dtype=vec11),
+  eq_data: wp.array2d(dtype=vec11),
   # Data in:
   ne_connect_in: wp.array(dtype=int),
   ne_weld_in: wp.array(dtype=int),
@@ -1182,7 +1182,7 @@ def _cfrc_ext_equality(
 
   worldid = efc_worldid_in[efcid]
   id = efc_id_in[efcid]
-  eq_data_ = eq_data[id]
+  eq_data_ = eq_data[worldid,id]
   body_semantic = eq_objtype[id] == wp.static(ObjType.BODY.value)
 
   obj1 = eq_obj1id[id]
@@ -1905,7 +1905,7 @@ def _joint_tendon(
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
-  wrap_prm: wp.array2d(dtype=float),
+  wrap_prm: wp.array(dtype=float),
   tendon_jnt_adr: wp.array(dtype=int),
   wrap_jnt_adr: wp.array(dtype=int),
   # Data in:
@@ -1920,7 +1920,7 @@ def _joint_tendon(
   wrap_jnt_adr_ = wrap_jnt_adr[wrapid]
 
   wrap_objid_ = wrap_objid[wrap_jnt_adr_]
-  prm = wrap_prm[worldid, wrap_jnt_adr_]
+  prm = wrap_prm[wrap_jnt_adr_]
 
   # add to length
   L = prm * qpos_in[worldid, jnt_qposadr[wrap_objid_]]

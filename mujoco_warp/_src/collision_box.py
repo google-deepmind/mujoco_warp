@@ -191,7 +191,7 @@ def _box_box(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
-  geom_priority: wp.array2d(dtype=int),
+  geom_priority: wp.array(dtype=int),
   geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),

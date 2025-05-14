@@ -103,7 +103,7 @@ def _gravity_force(
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_mass: wp.array2d(dtype=float),
-  body_gravcomp: wp.array(dtype=float),
+  body_gravcomp: wp.array2d(dtype=float),
   dof_bodyid: wp.array(dtype=int),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
@@ -114,7 +114,7 @@ def _gravity_force(
 ):
   worldid, bodyid, dofid = wp.tid()
   bodyid += 1  # skip world body
-  gravcomp = body_gravcomp[bodyid]
+  gravcomp = body_gravcomp[worldid, bodyid]
 
   if gravcomp:
     force = -opt_gravity * body_mass[worldid, bodyid] * gravcomp
