@@ -435,10 +435,10 @@ def _ray_geom_with_mesh(
   geom_id: int,
   pnt: wp.vec3,
   vec: wp.vec3,
-  worldid: int
+  worldid: int,
 ) -> DistanceWithId:
   type = geom_type[geom_id]
-  size = geom_size[worldid,geom_id]
+  size = geom_size[worldid, geom_id]
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if type == int(GeomType.PLANE.value):
