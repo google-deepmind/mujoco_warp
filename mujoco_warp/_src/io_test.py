@@ -255,6 +255,31 @@ class IOTest(absltest.TestCase):
     """)
     mjwarp.put_model(mjm)
 
+  def test_put_data_qLD(self):
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="hinge"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+    self.assertTrue((d.qLD.numpy() == 0.0).all())
+
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qM[:] = 0.0
+    d = mjwarp.put_data(mjm, mjd)
+    self.assertTrue((d.qLD.numpy() == 0.0).all())
+
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qLD[:] = 0.0
+    d = mjwarp.put_data(mjm, mjd)
+    self.assertTrue((d.qLD.numpy() == 0.0).all())
+
 
 if __name__ == "__main__":
   wp.init()
