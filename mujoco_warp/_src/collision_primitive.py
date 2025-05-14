@@ -95,7 +95,7 @@ def _geom(
     geom.vert = mesh_vert
 
   # If geom is HFIELD triangle, compute triangle prism verts
-  if hftri_index > -1 and geom_type[gid] == int(GeomType.HFIELD.value):
+  if geom_type[gid] == int(GeomType.HFIELD.value):
     geom.hfprism = get_hfield_triangle_prism(
       geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
     )
