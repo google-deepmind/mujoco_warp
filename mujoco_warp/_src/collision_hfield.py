@@ -339,7 +339,7 @@ def _hfield_midphase(
           # We reuse the initial pair for the 1st triangle
           new_pairid = pairid
         else:
-          # For the rest we create a new pait
+          # For the rest we create a new pair
           new_pairid = wp.atomic_add(ncollision_out, 0, 1)
 
         if new_pairid >= nconmax_in:
