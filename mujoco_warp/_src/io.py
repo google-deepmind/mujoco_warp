@@ -47,6 +47,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.tendon_frictionloss.any():
     raise NotImplementedError("Tendon frictionloss is unsupported.")
 
+  if mjm.geom_fluid.any():
+    raise NotImplementedError("Ellipsoid fluid model not implemented.")
+
   # check options
   for opt, opt_types, msg in (
     (mjm.opt.integrator, types.IntegratorType, "Integrator"),
@@ -55,12 +58,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   ):
     if opt not in set(opt_types):
       raise NotImplementedError(f"{msg} {opt} is unsupported.")
-
-  if mjm.opt.wind.any():
-    raise NotImplementedError("Wind is unsupported.")
-
-  if mjm.opt.density > 0 or mjm.opt.viscosity > 0:
-    raise NotImplementedError("Fluid forces are unsupported.")
 
   # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
   nv_max = 60
@@ -127,17 +124,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tile_beg = tile_corners[i]
     tile_end = mjm.nv if i == len(tile_corners) - 1 else tile_corners[i + 1]
     tiles.setdefault(tile_end - tile_beg, []).append(tile_beg)
+
   qM_tiles = tuple(types.TileSet(adr=wp.array(tiles[sz], dtype=int), size=sz) for sz in sorted(tiles.keys()))
 
-  # subtree_mass is a precalculated arrya used in smooth
+  # subtree_mass is a precalculated array used in smooth
   subtree_mass = np.copy(mjm.body_mass)
   # TODO(team): should this be [mjm.nbody - 1, 0) ?
   for i in range(mjm.nbody - 1, -1, -1):
     subtree_mass[mjm.body_parentid[i]] += subtree_mass[i]
 
   # actuator_moment tiles are grouped by dof size and number of actuators
-  tree_id = mjm.dof_treeid[tile_corners]
-  num_trees = int(np.max(tree_id))
+  tree_id = np.arange(len(tile_corners), dtype=np.int32)
+  num_trees = int(np.max(tree_id)) if len(tree_id) > 0 else 0
   bodyid = []
   for i in range(mjm.nu):
     trntype = mjm.actuator_trntype[i]
@@ -257,7 +255,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array.strides = (0,) + array.strides
     return array
 
-  return types.Model(
+  m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,
     nu=mjm.nu,
@@ -277,6 +275,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nwrap=mjm.nwrap,
     nsensor=mjm.nsensor,
     nsensordata=mjm.nsensordata,
+    nmeshvert=mjm.nmeshvert,
+    nmeshface=mjm.nmeshface,
     nlsp=nlsp,
     npair=mjm.npair,
     opt=types.Option(
@@ -284,6 +284,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       tolerance=mjm.opt.tolerance,
       ls_tolerance=mjm.opt.ls_tolerance,
       gravity=wp.vec3(mjm.opt.gravity),
+      wind=wp.vec3(mjm.opt.wind[0], mjm.opt.wind[1], mjm.opt.wind[2]),
+      density=mjm.opt.density,
+      viscosity=mjm.opt.viscosity,
       cone=mjm.opt.cone,
       solver=mjm.opt.solver,
       iterations=mjm.opt.iterations,
@@ -382,6 +385,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_condim=wp.array(mjm.geom_condim, dtype=int),
     geom_bodyid=wp.array(mjm.geom_bodyid, dtype=int),
     geom_dataid=wp.array(mjm.geom_dataid, dtype=int),
+    geom_group=wp.array(mjm.geom_group, dtype=int),
+    geom_matid=wp.array(mjm.geom_matid, dtype=int),
     geom_priority=create_nmodel_batched_array(mjm.geom_priority, dtype=int),
     geom_solmix=create_nmodel_batched_array(mjm.geom_solmix, dtype=float),
     geom_solref=create_nmodel_batched_array(mjm.geom_solref, dtype=wp.vec2),
@@ -394,6 +399,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_friction=create_nmodel_batched_array(mjm.geom_friction, dtype=wp.vec3),
     geom_margin=create_nmodel_batched_array(mjm.geom_margin, dtype=float),
     geom_gap=create_nmodel_batched_array(mjm.geom_gap, dtype=float),
+    geom_rgba=wp.array(mjm.geom_rgba, dtype=wp.vec4),
     site_bodyid=wp.array(mjm.site_bodyid, dtype=int),
     site_pos=create_nmodel_batched_array(mjm.site_pos, dtype=wp.vec3),
     site_quat=create_nmodel_batched_array(mjm.site_quat, dtype=wp.quat),
@@ -418,6 +424,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_vertadr=wp.array(mjm.mesh_vertadr, dtype=int),
     mesh_vertnum=wp.array(mjm.mesh_vertnum, dtype=int),
     mesh_vert=wp.array(mjm.mesh_vert, dtype=wp.vec3),
+    mesh_faceadr=wp.array(mjm.mesh_faceadr, dtype=int),
+    mesh_face=wp.array(mjm.mesh_face, dtype=wp.vec3i),
     eq_type=wp.array(mjm.eq_type, dtype=int),
     eq_obj1id=wp.array(mjm.eq_obj1id, dtype=int),
     eq_obj2id=wp.array(mjm.eq_obj2id, dtype=int),
@@ -524,7 +532,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         mujoco.mjtSensor.mjSENS_FRAMEANGACC,
       ],
     ).any(),
+    mat_rgba=wp.array(mjm.mat_rgba, dtype=wp.vec4),
   )
+
+  return m
 
 
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
@@ -564,6 +575,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ctrl=wp.zeros((nworld, mjm.nu), dtype=float),
     qfrc_applied=wp.zeros((nworld, mjm.nv), dtype=float),
     xfrc_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
+    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     eq_active=wp.array(np.tile(mjm.eq_active0, (nworld, 1)), dtype=bool),
     mocap_pos=wp.zeros((nworld, mjm.nmocap), dtype=wp.vec3),
     mocap_quat=wp.zeros((nworld, mjm.nmocap), dtype=wp.quat),
@@ -601,6 +613,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     qfrc_spring=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_damper=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_gravcomp=wp.zeros((nworld, mjm.nv), dtype=float),
+    qfrc_fluid=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_passive=wp.zeros((nworld, mjm.nv), dtype=float),
     subtree_linvel=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
     subtree_angmom=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
@@ -850,6 +863,7 @@ def put_data(
     ctrl=tile(mjd.ctrl),
     qfrc_applied=tile(mjd.qfrc_applied),
     xfrc_applied=tile(mjd.xfrc_applied, dtype=wp.spatial_vector),
+    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     eq_active=tile(mjd.eq_active.astype(bool)),
     mocap_pos=tile(mjd.mocap_pos, dtype=wp.vec3),
     mocap_quat=tile(mjd.mocap_quat, dtype=wp.quat),
@@ -887,6 +901,7 @@ def put_data(
     qfrc_spring=tile(mjd.qfrc_spring),
     qfrc_damper=tile(mjd.qfrc_damper),
     qfrc_gravcomp=tile(mjd.qfrc_gravcomp),
+    qfrc_fluid=tile(mjd.qfrc_fluid),
     qfrc_passive=tile(mjd.qfrc_passive),
     subtree_linvel=tile(mjd.subtree_linvel, dtype=wp.vec3),
     subtree_angmom=tile(mjd.subtree_angmom, dtype=wp.vec3),
@@ -1067,12 +1082,14 @@ def get_data_into(
   result.cvel = d.cvel.numpy()[0]
   result.cdof_dot = d.cdof_dot.numpy()[0]
   result.qfrc_bias = d.qfrc_bias.numpy()[0]
+  result.qfrc_fluid = d.qfrc_fluid.numpy()[0]
   result.qfrc_passive = d.qfrc_passive.numpy()[0]
   result.subtree_linvel = d.subtree_linvel.numpy()[0]
   result.subtree_angmom = d.subtree_angmom.numpy()[0]
   result.qfrc_spring = d.qfrc_spring.numpy()[0]
   result.qfrc_damper = d.qfrc_damper.numpy()[0]
   result.qfrc_gravcomp = d.qfrc_gravcomp.numpy()[0]
+  result.qfrc_fluid = d.qfrc_fluid.numpy()[0]
   result.qfrc_actuator = d.qfrc_actuator.numpy()[0]
   result.qfrc_smooth = d.qfrc_smooth.numpy()[0]
   result.qfrc_constraint = d.qfrc_constraint.numpy()[0]

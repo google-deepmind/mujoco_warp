@@ -222,20 +222,21 @@ class IOTest(absltest.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
-  def test_option_physical_constants(self):
-    mjm = mujoco.MjModel.from_xml_string("""
+  def test_ellipsoid_fluid_model(self):
+    with self.assertRaises(NotImplementedError):
+      mjm = mujoco.MjModel.from_xml_string(
+        """
       <mujoco>
-        <option wind="1 1 1" density="1" viscosity="1"/>
+        <option density="1"/>
         <worldbody>
-          <body>          
-            <geom type="sphere" size=".1"/>
+          <body>
+            <geom type="sphere" size=".1" fluidshape="ellipsoid"/>
             <freejoint/>
           </body>
-        </worldbody> 
-    </mujoco>
-    """)
-
-    with self.assertRaises(NotImplementedError):
+        </worldbody>
+      </mujoco>
+      """
+      )
       mjwarp.put_model(mjm)
 
   def test_jacobian_auto(self):
