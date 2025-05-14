@@ -425,7 +425,7 @@ def _ray_geom_with_mesh(
   nmeshface: int,
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -435,9 +435,10 @@ def _ray_geom_with_mesh(
   geom_id: int,
   pnt: wp.vec3,
   vec: wp.vec3,
+  worldid: int
 ) -> DistanceWithId:
   type = geom_type[geom_id]
-  size = geom_size[geom_id]
+  size = geom_size[worldid,geom_id]
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if type == int(GeomType.PLANE.value):
@@ -498,7 +499,7 @@ def _ray_all_geom(
   geom_dataid: wp.array(dtype=int),
   geom_group: wp.array(dtype=int),
   geom_matid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   geom_rgba: wp.array(dtype=wp.vec4),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
@@ -581,6 +582,7 @@ def _ray_all_geom(
           geom_id,
           local_pnt,
           local_vec,
+          worldid,
         )
         cur_dist = result.dist
     else:
@@ -613,7 +615,7 @@ def _ray_all_geom_kernel(
   geom_dataid: wp.array(dtype=int),
   geom_group: wp.array(dtype=int),
   geom_matid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   geom_rgba: wp.array(dtype=wp.vec4),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),

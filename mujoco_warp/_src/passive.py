@@ -132,8 +132,8 @@ def _box_fluid(
   opt_density: float,
   opt_viscosity: float,
   body_rootid: wp.array(dtype=int),
-  body_mass: wp.array(dtype=float),
-  body_inertia: wp.array(dtype=wp.vec3),
+  body_mass: wp.array2d(dtype=float),
+  body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   ximat_in: wp.array2d(dtype=wp.mat33),
@@ -175,8 +175,8 @@ def _box_fluid(
   density = opt_density > 0.0
 
   if viscosity or density:
-    inertia = body_inertia[bodyid]
-    mass = body_mass[bodyid]
+    inertia = body_inertia[worldid, bodyid]
+    mass = body_mass[worldid, bodyid]
     scl = 6.0 / mass
     box0 = wp.sqrt(wp.max(MJ_MINVAL, inertia[1] + inertia[2] - inertia[0]) * scl)
     box1 = wp.sqrt(wp.max(MJ_MINVAL, inertia[0] + inertia[2] - inertia[1]) * scl)
@@ -249,7 +249,7 @@ def _qfrc_passive(
   # Model:
   jnt_actgravcomp: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
-  dof_damping: wp.array(dtype=float),
+  dof_damping: wp.array2d(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   qfrc_spring_in: wp.array2d(dtype=float),
@@ -268,7 +268,7 @@ def _qfrc_passive(
   qfrc_passive = qfrc_spring_in[worldid, dofid]
 
   # damper
-  qfrc_damper = -dof_damping[dofid] * qvel_in[worldid, dofid]
+  qfrc_damper = -dof_damping[worldid, dofid] * qvel_in[worldid, dofid]
   qfrc_damper_out[worldid, dofid] = qfrc_damper
 
   qfrc_passive += qfrc_damper
