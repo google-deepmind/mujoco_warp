@@ -41,7 +41,6 @@ def _spring_passive(
 ):
   worldid, jntid = wp.tid()
   stiffness = jnt_stiffness[worldid, jntid]
-  dofid = jnt_dofadr[jntid]
 
   if stiffness == 0.0:
     return

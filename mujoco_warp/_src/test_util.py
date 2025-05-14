@@ -104,6 +104,7 @@ def fixture(
   elif qpos0:
     mjd.qpos[:] = mjm.qpos0
   else:
+    # set random qpos, underlying code should gracefully handle un-normalized quats
     mjd.qpos[:] = np.random.random(mjm.nq)
 
   if kick:

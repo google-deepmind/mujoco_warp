@@ -696,7 +696,7 @@ class Model:
     cam_pos: position rel. to body frame                     (nworld, ncam, 3)
     cam_quat: orientation rel. to body frame                 (nworld, ncam, 4)
     cam_poscom0: global position rel. to sub-com in qpos0    (nworld, ncam, 3)
-    cam_pos0: Cartesian camera position                      (nworld, ncam, 3)
+    cam_pos0: global position rel. to body in qpos0          (nworld, ncam, 3)
     cam_mat0: global orientation in qpos0                    (nworld, ncam, 3, 3)
     cam_fovy: y field-of-view (ortho ? len : deg)            (ncam,)
     cam_resolution: resolution: pixels [width, height]       (ncam, 2)

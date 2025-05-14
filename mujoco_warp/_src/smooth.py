@@ -589,7 +589,7 @@ def _light_fn(
   if invalid_target:
     return
   elif light_mode[lightid] == wp.static(CamLightType.TRACK.value):
-    light_xdir_out[worldid, lightid] = light_dir0[lightid]
+    light_xdir_out[worldid, lightid] = light_dir0[worldid, lightid]
     body_xpos = xpos_in[worldid, light_bodyid[lightid]]
     light_xpos_out[worldid, lightid] = body_xpos + light_pos0[worldid, lightid]
   elif light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
