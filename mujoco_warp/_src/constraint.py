@@ -773,6 +773,7 @@ def _efc_limit_ball(
 
   qpos = qpos_in[worldid]
   jnt_quat = wp.quat(qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3])
+  jnt_quat = wp.normalize(jnt_quat)
   axis_angle = math.quat_to_vel(jnt_quat)
   jntrange = jnt_range[jntid]
   axis, angle = math.normalize_with_norm(axis_angle)

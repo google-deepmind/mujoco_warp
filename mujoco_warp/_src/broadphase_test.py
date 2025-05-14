@@ -85,7 +85,7 @@ class BroadphaseTest(absltest.TestCase):
       (6, 7),
     ]
 
-    _, _, m, d = test_util.fixture(xml=_SAP_MODEL)
+    _, _, m, d = test_util.fixture(xml=_SAP_MODEL, qpos0=True)
 
     mjwarp.sap_broadphase(m, d)
 
