@@ -548,10 +548,10 @@ def _ray_all_geom(
 
       # RGBA filter
       matid = geom_matid[worldid, geom_id]
-      geom_alpha = geom_rgba[worldid,geom_id][3]
+      geom_alpha = geom_rgba[worldid, geom_id][3]
       mat_alpha = wp.float32(0.0)
       if matid != -1:
-        mat_alpha = mat_rgba[worldid,matid][3]
+        mat_alpha = mat_rgba[worldid, matid][3]
 
       # Geom is visible if either:
       # 1. No material and non-zero geom alpha, or

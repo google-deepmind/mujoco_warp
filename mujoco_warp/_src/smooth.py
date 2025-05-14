@@ -1182,7 +1182,7 @@ def _cfrc_ext_equality(
 
   worldid = efc_worldid_in[efcid]
   id = efc_id_in[efcid]
-  eq_data_ = eq_data[worldid,id]
+  eq_data_ = eq_data[worldid, id]
   body_semantic = eq_objtype[id] == wp.static(ObjType.BODY.value)
 
   obj1 = eq_obj1id[id]

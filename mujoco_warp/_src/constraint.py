@@ -368,7 +368,7 @@ def _efc_equality_tendon(
 
   obj1id = eq_obj1id[eqid]
   obj2id = eq_obj2id[eqid]
-  data = eq_data[worldid,eqid]
+  data = eq_data[worldid, eqid]
   solref = eq_solref[worldid, eqid]
   solimp = eq_solimp[worldid, eqid]
   pos1 = ten_length_in[worldid, obj1id] - tendon_length0[worldid, obj1id]
