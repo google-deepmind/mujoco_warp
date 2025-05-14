@@ -38,8 +38,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  if mjm.nplugin > 0:
-    raise NotImplementedError("Plugins are unsupported.")
+  #if mjm.nplugin > 0:
+  #  raise NotImplementedError("Plugins are unsupported.")
 
   if mjm.nflex > 0:
     raise NotImplementedError("Flex is unsupported.")
@@ -370,6 +370,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     dof_tri_row=wp.array(dof_tri_row, dtype=int),
     dof_tri_col=wp.array(dof_tri_col, dtype=int),
     geom_type=wp.array(mjm.geom_type, dtype=int),
+    geom_sdf_plugin_type = wp.zeros(mjm.geom_type.shape, dtype=int),
     geom_contype=wp.array(mjm.geom_contype, dtype=int),
     geom_conaffinity=wp.array(mjm.geom_conaffinity, dtype=int),
     geom_condim=wp.array(mjm.geom_condim, dtype=int),

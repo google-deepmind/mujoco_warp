@@ -219,9 +219,12 @@ class GeomType(enum.IntEnum):
   CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
   BOX = mujoco.mjtGeom.mjGEOM_BOX
   MESH = mujoco.mjtGeom.mjGEOM_MESH
+  SDF = mujoco.mjtGeom.mjGEOM_SDF
   # unsupported: HFIELD,
   # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
+class SDFType(enum.IntEnum):
+  NUT = 0
 
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
@@ -867,6 +870,7 @@ class Model:
   dof_tri_row: wp.array(dtype=int)  # warp only
   dof_tri_col: wp.array(dtype=int)  # warp only
   geom_type: wp.array(dtype=int)
+  geom_sdf_plugin_type: wp.array(dtype=int)
   geom_contype: wp.array(dtype=int)
   geom_conaffinity: wp.array(dtype=int)
   geom_condim: wp.array(dtype=int)
