@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .collision_hfield import get_hfield_prism_vertex
 from .collision_primitive import Geom
 from .collision_primitive import _geom
 from .collision_primitive import contact_params
@@ -99,6 +100,15 @@ def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3, verts: wp.array(d
         max_dist = dist
         support_pt = vert
     support_pt = geom.rot @ support_pt + geom.pos
+  elif geomtype == int(GeomType.HFIELD.value):
+    max_dist = float(FLOAT_MIN)
+    for i in range(6):
+      vert = get_hfield_prism_vertex(geom.hfprism, i)
+      dist = wp.dot(vert, local_dir)
+      if dist > max_dist:
+        max_dist = dist
+        support_pt = vert
+    support_pt = geom.rot @ support_pt + geom.pos
 
   return wp.dot(support_pt, dir), support_pt
 
@@ -125,6 +135,12 @@ def _gjk_support(
 
 
 _CONVEX_COLLISION_FUNC = {
+  (GeomType.HFIELD.value, GeomType.SPHERE.value),
+  (GeomType.HFIELD.value, GeomType.CAPSULE.value),
+  (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
+  (GeomType.HFIELD.value, GeomType.CYLINDER.value),
+  (GeomType.HFIELD.value, GeomType.BOX.value),
+  (GeomType.HFIELD.value, GeomType.MESH.value),
   (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
   (GeomType.SPHERE.value, GeomType.MESH.value),
   (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
@@ -716,6 +732,11 @@ def _gjk_epa_pipeline(
     geom_friction: wp.array(dtype=wp.vec3),
     geom_margin: wp.array(dtype=float),
     geom_gap: wp.array(dtype=float),
+    hfield_adr: wp.array(dtype=int),
+    hfield_nrow: wp.array(dtype=int),
+    hfield_ncol: wp.array(dtype=int),
+    hfield_size: wp.array(dtype=wp.vec4),
+    hfield_data: wp.array(dtype=float),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
     mesh_vert: wp.array(dtype=wp.vec3),
@@ -731,6 +752,7 @@ def _gjk_epa_pipeline(
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
+    collision_hftri_index_in: wp.array(dtype=int),
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
@@ -780,10 +802,17 @@ def _gjk_epa_pipeline(
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
 
+    hftri_index = collision_hftri_index_in[tid]
+
     geom1 = _geom(
       geom_type,
       geom_dataid,
       geom_size,
+      hfield_adr,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_data,
       mesh_vertadr,
       mesh_vertnum,
       mesh_vert,
@@ -791,12 +820,18 @@ def _gjk_epa_pipeline(
       geom_xmat_in,
       worldid,
       g1,
+      hftri_index,
     )
 
     geom2 = _geom(
       geom_type,
       geom_dataid,
       geom_size,
+      hfield_adr,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_data,
       mesh_vertadr,
       mesh_vertnum,
       mesh_vert,
@@ -804,6 +839,7 @@ def _gjk_epa_pipeline(
       geom_xmat_in,
       worldid,
       g2,
+      hftri_index,
     )
 
     margin = wp.max(geom_margin[g1], geom_margin[g2])
@@ -887,6 +923,11 @@ def gjk_narrowphase(m: Model, d: Data):
         m.geom_friction,
         m.geom_margin,
         m.geom_gap,
+        m.hfield_adr,
+        m.hfield_nrow,
+        m.hfield_ncol,
+        m.hfield_size,
+        m.hfield_data,
         m.mesh_vertadr,
         m.mesh_vertnum,
         m.mesh_vert,
@@ -901,6 +942,7 @@ def gjk_narrowphase(m: Model, d: Data):
         d.geom_xpos,
         d.geom_xmat,
         d.collision_pair,
+        d.collision_hftri_index,
         d.collision_pairid,
         d.collision_worldid,
         d.ncollision,

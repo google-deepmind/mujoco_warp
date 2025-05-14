@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .collision_hfield import get_hfield_triangle_prism
 from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
@@ -46,6 +47,7 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+  hfprism: wp.mat33
   vertadr: int
   vertnum: int
   vert: wp.array(dtype=wp.vec3)
@@ -57,6 +59,11 @@ def _geom(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array(dtype=wp.vec3),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -66,6 +73,7 @@ def _geom(
   # In:
   worldid: int,
   gid: int,
+  hftri_index: int,
 ) -> Geom:
   geom = Geom()
   geom.pos = geom_xpos_in[worldid, gid]
@@ -75,7 +83,8 @@ def _geom(
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = geom_dataid[gid]
 
-  if dataid >= 0:
+  # If geom is MESH, get mesh verts
+  if dataid >= 0 and geom_type[gid] == int(GeomType.MESH.value):
     geom.vertadr = mesh_vertadr[dataid]
     geom.vertnum = mesh_vertnum[dataid]
   else:
@@ -84,6 +93,12 @@ def _geom(
 
   if geom_type[gid] == int(GeomType.MESH.value):
     geom.vert = mesh_vert
+
+  # If geom is HFIELD triangle, compute triangle prism verts
+  if geom_type[gid] == int(GeomType.HFIELD.value):
+    geom.hfprism = get_hfield_triangle_prism(
+      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
+    )
 
   return geom
 
@@ -2387,6 +2402,11 @@ def _primitive_narrowphase(
   geom_friction: wp.array(dtype=wp.vec3),
   geom_margin: wp.array(dtype=float),
   geom_gap: wp.array(dtype=float),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -2402,6 +2422,7 @@ def _primitive_narrowphase(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   collision_pair_in: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
@@ -2448,11 +2469,17 @@ def _primitive_narrowphase(
   g2 = geoms[1]
 
   worldid = collision_worldid_in[tid]
+  hftri_index = collision_hftri_index_in[tid]
 
   geom1 = _geom(
     geom_type,
     geom_dataid,
     geom_size,
+    hfield_adr,
+    hfield_nrow,
+    hfield_ncol,
+    hfield_size,
+    hfield_data,
     mesh_vertadr,
     mesh_vertnum,
     mesh_vert,
@@ -2460,11 +2487,17 @@ def _primitive_narrowphase(
     geom_xmat_in,
     worldid,
     g1,
+    hftri_index,
   )
   geom2 = _geom(
     geom_type,
     geom_dataid,
     geom_size,
+    hfield_adr,
+    hfield_nrow,
+    hfield_ncol,
+    hfield_size,
+    hfield_data,
     mesh_vertadr,
     mesh_vertnum,
     mesh_vert,
@@ -2472,6 +2505,7 @@ def _primitive_narrowphase(
     geom_xmat_in,
     worldid,
     g2,
+    hftri_index,
   )
 
   type1 = geom_type[g1]
@@ -2822,6 +2856,11 @@ def primitive_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
+      m.hfield_adr,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_size,
+      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_vert,
@@ -2836,6 +2875,7 @@ def primitive_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
+      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
