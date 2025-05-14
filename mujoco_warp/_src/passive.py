@@ -82,7 +82,7 @@ def _spring_passive(
       qpos_in[worldid, qposid + 2],
       qpos_in[worldid, qposid + 3],
     )
-    # rot = wp.normalize(rot)
+    rot = wp.normalize(rot)
     ref = wp.quat(
       qpos_spring[qposid + 0],
       qpos_spring[qposid + 1],
