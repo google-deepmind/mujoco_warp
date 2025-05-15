@@ -224,7 +224,12 @@ class GeomType(enum.IntEnum):
   # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 class SDFType(enum.IntEnum):
-  NUT = 0
+  BOLT = 3
+  BOWL = 4
+  GEAR = 5
+  NUT = 6
+  TORUS= 7
+
 
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
@@ -871,6 +876,7 @@ class Model:
   dof_tri_col: wp.array(dtype=int)  # warp only
   geom_type: wp.array(dtype=int)
   geom_sdf_plugin_type: wp.array(dtype=int)
+  geom_sdf_plugin_attr: wp.array(dtype=wp.vec3f)
   geom_contype: wp.array(dtype=int)
   geom_conaffinity: wp.array(dtype=int)
   geom_condim: wp.array(dtype=int)

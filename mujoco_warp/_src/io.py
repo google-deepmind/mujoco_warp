@@ -38,8 +38,33 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  #if mjm.nplugin > 0:
-  #  raise NotImplementedError("Plugins are unsupported.")
+  if mjm.nplugin > 0:
+    sdf_types = []
+    attr = []
+    for i in mjm.geom_plugin:
+        if i == -1:
+            sdf_types.append(-1)
+            attr.append([0.0, 0.0, 0.0])
+        else:
+            sdf_types.append(mjm.plugin[i])
+            start = mjm.plugin_attradr[i]
+            end = mjm.plugin_attradr[i + 1] if i + 1 < mjm.nplugin else len(mjm.plugin_attr)
+            values = mjm.plugin_attr[start:end]
+            attr_values = []
+            current = []
+            for v in values:
+                if v == 0:
+                    if current:
+                        s = ''.join(chr(int(x)) for x in current)
+                        attr_values.append(float(s))
+                        current = []
+                else:
+                    current.append(v)
+            # Pad with zeros if less than 3
+            attr_values += [0.0] * (3 - len(attr_values))
+            attr.append(attr_values[:3])  # Ensure only 3 elements
+    sdf_types = np.array(sdf_types)
+    attr = np.array(attr)
 
   if mjm.nflex > 0:
     raise NotImplementedError("Flex is unsupported.")
@@ -370,7 +395,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     dof_tri_row=wp.array(dof_tri_row, dtype=int),
     dof_tri_col=wp.array(dof_tri_col, dtype=int),
     geom_type=wp.array(mjm.geom_type, dtype=int),
-    geom_sdf_plugin_type = wp.zeros(mjm.geom_type.shape, dtype=int),
+    geom_sdf_plugin_type = wp.array(sdf_types, dtype=int),
+    geom_sdf_plugin_attr = wp.array(attr, dtype=wp.vec3f),
     geom_contype=wp.array(mjm.geom_contype, dtype=int),
     geom_conaffinity=wp.array(mjm.geom_conaffinity, dtype=int),
     geom_condim=wp.array(mjm.geom_condim, dtype=int),
