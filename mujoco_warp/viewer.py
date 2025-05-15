@@ -47,6 +47,15 @@ def key_callback(key: int) -> None:
     _VIEWER_GLOBAL_STATE["step_once"] = True
 
 
+def _load_model():
+  spec = mujoco.MjSpec.from_file(_MODEL_PATH.value)
+  # TODO: this will be done not necessary from MuJoCo 3.3.3
+  for flex in spec.flexes:
+    for v in flex.vertbody:
+      spec.body(v).add_geom(size=[flex.radius, 0, 0], group=4)
+  return spec.compile()
+
+
 def _main(argv: Sequence[str]) -> None:
   """Launches MuJoCo passive viewer fed by MJWarp."""
   if len(argv) > 1:
@@ -56,7 +65,7 @@ def _main(argv: Sequence[str]) -> None:
   if _MODEL_PATH.value.endswith(".mjb"):
     mjm = mujoco.MjModel.from_binary_path(_MODEL_PATH.value)
   else:
-    mjm = mujoco.MjModel.from_xml_path(_MODEL_PATH.value)
+    mjm = _load_model()
   if _CONE.value == "pyramidal":
     mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
   elif _CONE.value == "elliptic":

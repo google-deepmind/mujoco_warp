@@ -41,8 +41,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.nplugin > 0:
     raise NotImplementedError("Plugins are unsupported.")
 
-  if mjm.nflex > 0:
-    raise NotImplementedError("Flex is unsupported.")
+  if mjm.nflex > 1:
+    raise NotImplementedError("Only one flex is unsupported.")
 
   if mjm.tendon_frictionloss.any():
     raise NotImplementedError("Tendon frictionloss is unsupported.")
@@ -266,6 +266,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nsite=mjm.nsite,
     ncam=mjm.ncam,
     nlight=mjm.nlight,
+    nflex=mjm.nflex,
+    nflexvert=mjm.nflexvert,
+    nflexedge=mjm.nflexedge,
+    nflexelem=mjm.nflexelem,
+    nflexelemdata=mjm.nflexelemdata,
     nexclude=mjm.nexclude,
     neq=mjm.nM,
     nmocap=mjm.nmocap,
@@ -410,6 +415,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     cam_quat=create_nmodel_batched_array(mjm.cam_quat, dtype=wp.quat),
     cam_poscom0=create_nmodel_batched_array(mjm.cam_poscom0, dtype=wp.vec3),
     cam_pos0=create_nmodel_batched_array(mjm.cam_pos0, dtype=wp.vec3),
+    cam_mat0=create_nmodel_batched_array(mjm.cam_mat0, dtype=wp.mat33),
     cam_fovy=wp.array(mjm.cam_fovy, dtype=float),
     cam_resolution=wp.array(mjm.cam_resolution, dtype=wp.vec2i),
     cam_sensorsize=wp.array(mjm.cam_sensorsize, dtype=wp.vec2),
@@ -421,6 +427,19 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     light_dir=create_nmodel_batched_array(mjm.light_dir, dtype=wp.vec3),
     light_poscom0=create_nmodel_batched_array(mjm.light_poscom0, dtype=wp.vec3),
     light_pos0=create_nmodel_batched_array(mjm.light_pos0, dtype=wp.vec3),
+    light_dir0=create_nmodel_batched_array(mjm.light_dir0, dtype=wp.vec3),
+    flex_dim=wp.array(mjm.flex_dim, dtype=int),
+    flex_vertadr=wp.array(mjm.flex_vertadr, dtype=int),
+    flex_vertnum=wp.array(mjm.flex_vertnum, dtype=int),
+    flex_edgeadr=wp.array(mjm.flex_edgeadr, dtype=int),
+    flex_elemedgeadr=wp.array(mjm.flex_elemedgeadr, dtype=int),
+    flex_vertbodyid=wp.array(mjm.flex_vertbodyid, dtype=int),
+    flex_edge=wp.array(mjm.flex_edge, dtype=wp.vec2i),
+    flex_elem=wp.array(mjm.flex_elem, dtype=int),
+    flex_elemedge=wp.array(mjm.flex_elemedge, dtype=int),
+    flexedge_length0=wp.array(mjm.flexedge_length0, dtype=float),
+    flex_stiffness=wp.array(mjm.flex_stiffness.flatten(), dtype=float),
+    flex_damping=wp.array(mjm.flex_damping, dtype=float),
     mesh_vertadr=wp.array(mjm.mesh_vertadr, dtype=int),
     mesh_vertnum=wp.array(mjm.mesh_vertnum, dtype=int),
     mesh_vert=wp.array(mjm.mesh_vert, dtype=wp.vec3),
@@ -606,6 +625,9 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     subtree_com=wp.zeros((nworld, mjm.nbody), dtype=wp.vec3),
     cdof=wp.zeros((nworld, mjm.nv), dtype=wp.spatial_vector),
     cinert=wp.zeros((nworld, mjm.nbody), dtype=types.vec10),
+    flexvert_xpos=wp.zeros((nworld, mjm.nflexvert), dtype=wp.vec3),
+    flexedge_length=wp.zeros((nworld, mjm.nflexedge), dtype=wp.float32),
+    flexedge_velocity=wp.zeros((nworld, mjm.nflexedge), dtype=wp.float32),
     actuator_length=wp.zeros((nworld, mjm.nu), dtype=float),
     actuator_moment=wp.zeros((nworld, mjm.nu, mjm.nv), dtype=float),
     crb=wp.zeros((nworld, mjm.nbody), dtype=types.vec10),
@@ -799,7 +821,10 @@ def put_data(
   else:
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
-    qLD = np.linalg.cholesky(qM)
+    if (mjd.qM == 0.0).all() or (mjd.qLD == 0.0).all():
+      qLD = np.zeros((mjm.nv, mjm.nv))
+    else:
+      qLD = np.linalg.cholesky(qM)
     qM_integration = np.zeros((mjm.nv, mjm.nv), dtype=float)
     qLD_integration = np.zeros((mjm.nv, mjm.nv), dtype=float)
     efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
@@ -895,6 +920,9 @@ def put_data(
     subtree_com=tile(mjd.subtree_com, dtype=wp.vec3),
     cdof=tile(mjd.cdof, dtype=wp.spatial_vector),
     cinert=tile(mjd.cinert, dtype=types.vec10),
+    flexvert_xpos=tile(mjd.flexvert_xpos, dtype=wp.vec3),
+    flexedge_length=tile(mjd.flexedge_length),
+    flexedge_velocity=tile(mjd.flexedge_velocity),
     actuator_length=tile(mjd.actuator_length),
     actuator_moment=tile(actuator_moment),
     crb=tile(mjd.crb, dtype=types.vec10),
@@ -1073,6 +1101,9 @@ def get_data_into(
   result.light_xpos = d.light_xpos.numpy()[0]
   result.light_xdir = d.light_xdir.numpy()[0]
   result.cinert = d.cinert.numpy()[0]
+  result.flexvert_xpos = d.flexvert_xpos.numpy()[0]
+  result.flexedge_length = d.flexedge_length.numpy()[0]
+  result.flexedge_velocity = d.flexedge_velocity.numpy()[0]
   result.cdof = d.cdof.numpy()[0]
   result.crb = d.crb.numpy()[0]
   result.qLDiagInv = d.qLDiagInv.numpy()[0]

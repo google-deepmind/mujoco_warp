@@ -42,6 +42,8 @@ def fixture(
   constraint: bool = True,
   equality: bool = True,
   gravity: bool = True,
+  qpos0: bool = False,
+  kick: bool = False,
   eulerdamp: Optional[bool] = None,
   cone: Optional[ConeType] = None,
   integrator: Optional[IntegratorType] = None,
@@ -51,7 +53,6 @@ def fixture(
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
   disableflags: Optional[int] = None,
-  kick: bool = False,
   seed: int = 42,
   nworld: int = None,
   nconmax: int = None,
@@ -100,6 +101,11 @@ def fixture(
   mjd = mujoco.MjData(mjm)
   if keyframe > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
+  elif qpos0:
+    mjd.qpos[:] = mjm.qpos0
+  else:
+    # set random qpos, underlying code should gracefully handle un-normalized quats
+    mjd.qpos[:] = np.random.random(mjm.nq)
 
   if kick:
     # give the system a little kick to ensure we have non-identity rotations
@@ -110,8 +116,7 @@ def fixture(
   if mjm.nmocap:
     mjd.mocap_pos = np.random.random(mjd.mocap_pos.shape)
     mocap_quat = np.random.random(mjd.mocap_quat.shape)
-    norms = np.linalg.norm(mocap_quat, axis=1, keepdims=True)
-    mjd.mocap_quat = mocap_quat / norms
+    mjd.mocap_quat = mocap_quat
 
   mujoco.mj_forward(mjm, mjd)
   m = io.put_model(mjm)

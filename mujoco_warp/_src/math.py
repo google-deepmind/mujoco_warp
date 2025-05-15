@@ -158,6 +158,7 @@ def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
   angle = dt * norm_
 
   q_res = axis_angle_to_quat(v, angle)
+  q = wp.normalize(q)
   q_res = mul_quat(q, q_res)
 
   return wp.normalize(q_res)
