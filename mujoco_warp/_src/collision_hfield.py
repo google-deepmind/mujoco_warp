@@ -29,8 +29,8 @@ from .warp_util import event_scope
 def get_hfield_overlap_range(
   # Model:
   geom_dataid: wp.array(dtype=int),
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   hfield_nrow: wp.array(dtype=int),
   hfield_ncol: wp.array(dtype=int),
   hfield_size: wp.array(dtype=wp.vec4),
@@ -79,8 +79,8 @@ def get_hfield_overlap_range(
   local_pos = wp.vec3(local_x, local_y, local_z)
 
   # Get bounding radius of other geometry (including margin)
-  other_rbound = geom_rbound[other_geom]
-  other_margin = geom_margin[other_geom]
+  other_rbound = geom_rbound[worldid, other_geom]
+  other_margin = geom_margin[worldid, other_geom]
   bound_radius = other_rbound + other_margin
 
   # Calculate grid resolution
@@ -233,8 +233,8 @@ def _hfield_midphase(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   hfield_nrow: wp.array(dtype=int),
   hfield_ncol: wp.array(dtype=int),
   hfield_size: wp.array(dtype=wp.vec4),
@@ -268,6 +268,7 @@ def _hfield_midphase(
       hfield_nrow: Array of heightfield rows
       hfield_ncol: Array of heightfield columns
       hfield_size: Array of heightfield sizes
+      nconmax_in: Max number of collisions
       geom_xpos_in: Array of geometry positions
       geom_xmat_in: Array of geometry orientation matrices
       collision_pair_in: Array of collision pairs

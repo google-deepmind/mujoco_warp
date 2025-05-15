@@ -425,7 +425,7 @@ def _ray_geom_with_mesh(
   nmeshface: int,
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -435,9 +435,10 @@ def _ray_geom_with_mesh(
   geom_id: int,
   pnt: wp.vec3,
   vec: wp.vec3,
+  worldid: int,
 ) -> DistanceWithId:
   type = geom_type[geom_id]
-  size = geom_size[geom_id]
+  size = geom_size[worldid, geom_id]
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if type == int(GeomType.PLANE.value):
@@ -497,15 +498,15 @@ def _ray_all_geom(
   geom_bodyid: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_group: wp.array(dtype=int),
-  geom_matid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
-  geom_rgba: wp.array(dtype=wp.vec4),
+  geom_matid: wp.array2d(dtype=int),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_rgba: wp.array2d(dtype=wp.vec4),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_faceadr: wp.array(dtype=int),
   mesh_face: wp.array(dtype=wp.vec3i),
-  mat_rgba: wp.array(dtype=wp.vec4),
+  mat_rgba: wp.array2d(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -546,11 +547,11 @@ def _ray_all_geom(
         geom_filter = geom_filter and (geomgroup[group] != 0)
 
       # RGBA filter
-      matid = geom_matid[geom_id]
-      geom_alpha = geom_rgba[geom_id][3]
+      matid = geom_matid[worldid, geom_id]
+      geom_alpha = geom_rgba[worldid, geom_id][3]
       mat_alpha = wp.float32(0.0)
       if matid != -1:
-        mat_alpha = mat_rgba[matid][3]
+        mat_alpha = mat_rgba[worldid, matid][3]
 
       # Geom is visible if either:
       # 1. No material and non-zero geom alpha, or
@@ -581,6 +582,7 @@ def _ray_all_geom(
           geom_id,
           local_pnt,
           local_vec,
+          worldid,
         )
         cur_dist = result.dist
     else:
@@ -612,15 +614,15 @@ def _ray_all_geom_kernel(
   geom_bodyid: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_group: wp.array(dtype=int),
-  geom_matid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
-  geom_rgba: wp.array(dtype=wp.vec4),
+  geom_matid: wp.array2d(dtype=int),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_rgba: wp.array2d(dtype=wp.vec4),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_faceadr: wp.array(dtype=int),
   mesh_face: wp.array(dtype=wp.vec3i),
-  mat_rgba: wp.array(dtype=wp.vec4),
+  mat_rgba: wp.array2d(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),

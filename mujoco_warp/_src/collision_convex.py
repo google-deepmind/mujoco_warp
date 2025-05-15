@@ -725,13 +725,13 @@ def _gjk_epa_pipeline(
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
     geom_priority: wp.array(dtype=int),
-    geom_solmix: wp.array(dtype=float),
-    geom_solref: wp.array(dtype=wp.vec2),
-    geom_solimp: wp.array(dtype=vec5),
-    geom_size: wp.array(dtype=wp.vec3),
-    geom_friction: wp.array(dtype=wp.vec3),
-    geom_margin: wp.array(dtype=float),
-    geom_gap: wp.array(dtype=float),
+    geom_solmix: wp.array2d(dtype=float),
+    geom_solref: wp.array2d(dtype=wp.vec2),
+    geom_solimp: wp.array2d(dtype=vec5),
+    geom_size: wp.array2d(dtype=wp.vec3),
+    geom_friction: wp.array2d(dtype=wp.vec3),
+    geom_margin: wp.array2d(dtype=float),
+    geom_gap: wp.array2d(dtype=float),
     hfield_adr: wp.array(dtype=int),
     hfield_nrow: wp.array(dtype=int),
     hfield_ncol: wp.array(dtype=int),
@@ -741,12 +741,12 @@ def _gjk_epa_pipeline(
     mesh_vertnum: wp.array(dtype=int),
     mesh_vert: wp.array(dtype=wp.vec3),
     pair_dim: wp.array(dtype=int),
-    pair_solref: wp.array(dtype=wp.vec2),
-    pair_solreffriction: wp.array(dtype=wp.vec2),
-    pair_solimp: wp.array(dtype=vec5),
-    pair_margin: wp.array(dtype=float),
-    pair_gap: wp.array(dtype=float),
-    pair_friction: wp.array(dtype=vec5),
+    pair_solref: wp.array2d(dtype=wp.vec2),
+    pair_solreffriction: wp.array2d(dtype=wp.vec2),
+    pair_solimp: wp.array2d(dtype=vec5),
+    pair_margin: wp.array2d(dtype=float),
+    pair_gap: wp.array2d(dtype=float),
+    pair_friction: wp.array2d(dtype=vec5),
     # Data in:
     nconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -794,6 +794,7 @@ def _gjk_epa_pipeline(
       collision_pair_in,
       collision_pairid_in,
       tid,
+      worldid,
     )
 
     g1 = geoms[0]
@@ -807,7 +808,7 @@ def _gjk_epa_pipeline(
     geom1 = _geom(
       geom_type,
       geom_dataid,
-      geom_size,
+      geom_size[worldid],
       hfield_adr,
       hfield_nrow,
       hfield_ncol,
@@ -826,7 +827,7 @@ def _gjk_epa_pipeline(
     geom2 = _geom(
       geom_type,
       geom_dataid,
-      geom_size,
+      geom_size[worldid],
       hfield_adr,
       hfield_nrow,
       hfield_ncol,
@@ -842,7 +843,7 @@ def _gjk_epa_pipeline(
       hftri_index,
     )
 
-    margin = wp.max(geom_margin[g1], geom_margin[g2])
+    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
 
     simplex, normal = _gjk(mesh_vert, geom1, geom2)
 
