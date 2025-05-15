@@ -39,7 +39,8 @@ class PassiveTest(parameterized.TestCase):
   @parameterized.parameters(True, False)
   def test_passive(self, gravity):
     """Tests passive."""
-    _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity)
+    # TODO(taylorhowell): remove qpos0=True once tendon spring dampers are implemented
+    _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity, qpos0=True)
 
     for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
       arr.zero_()

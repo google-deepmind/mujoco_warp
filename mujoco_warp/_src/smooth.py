@@ -104,6 +104,7 @@ def _kinematics_level(
     qadr = jnt_qposadr[jntadr]
     xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
     xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
+    xquat = wp.normalize(xquat)
     xanchor_out[worldid, jntadr] = xpos
     xaxis_out[worldid, jntadr] = jnt_axis[worldid, jntadr]
   else:
@@ -127,6 +128,7 @@ def _kinematics_level(
           qpos[qadr + 2],
           qpos[qadr + 3],
         )
+        qloc = wp.normalize(qloc)
         xquat = math.mul_quat(xquat, qloc)
         # correct for off-center rotation
         xpos = xanchor - math.rot_vec_quat(jnt_pos[worldid, jntadr], xquat)
@@ -498,6 +500,7 @@ def _cam_fn(
   cam_targetbodyid: wp.array(dtype=int),
   cam_poscom0: wp.array2d(dtype=wp.vec3),
   cam_pos0: wp.array2d(dtype=wp.vec3),
+  cam_mat0: wp.array2d(dtype=wp.mat33),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -513,9 +516,11 @@ def _cam_fn(
   if invalid_target:
     return
   elif cam_mode[camid] == wp.static(CamLightType.TRACK.value):
+    cam_xmat_out[worldid, camid] = cam_mat0[worldid, camid]
     body_xpos = xpos_in[worldid, cam_bodyid[camid]]
     cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[worldid, camid]
   elif cam_mode[camid] == wp.static(CamLightType.TRACKCOM.value):
+    cam_xmat_out[worldid, camid] = cam_mat0[worldid, camid]
     cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[worldid, camid]
   elif cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or cam_mode[camid] == wp.static(
     CamLightType.TARGETBODYCOM.value
@@ -567,6 +572,7 @@ def _light_fn(
   light_targetbodyid: wp.array(dtype=int),
   light_poscom0: wp.array2d(dtype=wp.vec3),
   light_pos0: wp.array2d(dtype=wp.vec3),
+  light_dir0: wp.array2d(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   light_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -583,9 +589,11 @@ def _light_fn(
   if invalid_target:
     return
   elif light_mode[lightid] == wp.static(CamLightType.TRACK.value):
+    light_xdir_out[worldid, lightid] = light_dir0[worldid, lightid]
     body_xpos = xpos_in[worldid, light_bodyid[lightid]]
     light_xpos_out[worldid, lightid] = body_xpos + light_pos0[worldid, lightid]
   elif light_mode[lightid] == wp.static(CamLightType.TRACKCOM.value):
+    light_xdir_out[worldid, lightid] = light_dir0[worldid, lightid]
     light_xpos_out[worldid, lightid] = subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[worldid, lightid]
   elif light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value) or light_mode[lightid] == wp.static(
     CamLightType.TARGETBODYCOM.value
@@ -616,6 +624,7 @@ def camlight(m: Model, d: Data):
         m.cam_targetbodyid,
         m.cam_poscom0,
         m.cam_pos0,
+        m.cam_mat0,
         d.xpos,
         d.subtree_com,
       ],
@@ -637,6 +646,7 @@ def camlight(m: Model, d: Data):
         m.light_targetbodyid,
         m.light_poscom0,
         m.light_pos0,
+        m.light_dir0,
         d.xpos,
         d.light_xpos,
         d.subtree_com,
@@ -1505,7 +1515,7 @@ def _transmission(
     if jnt_typ == wp.static(JointType.FREE.value):
       length_out[worldid, actid] = 0.0
       if trntype == wp.static(TrnType.JOINTINPARENT.value):
-        quat_neg = math.quat_inv(
+        quat = wp.normalize(
           wp.quat(
             qpos[qadr + 3],
             qpos[qadr + 4],
@@ -1513,6 +1523,7 @@ def _transmission(
             qpos[qadr + 6],
           )
         )
+        quat_neg = math.quat_inv(quat)
         gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
         moment_out[worldid, actid, vadr + 0] = gear[0]
         moment_out[worldid, actid, vadr + 1] = gear[1]
@@ -1525,6 +1536,7 @@ def _transmission(
           moment_out[worldid, actid, vadr + i] = gear[i]
     elif jnt_typ == wp.static(JointType.BALL.value):
       q = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
+      q = wp.normalize(q)
       axis_angle = math.quat_to_vel(q)
       gearaxis = wp.spatial_top(gear)  # [:3]
       if trntype == wp.static(TrnType.JOINTINPARENT.value):

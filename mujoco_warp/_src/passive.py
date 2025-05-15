@@ -41,11 +41,11 @@ def _spring_passive(
 ):
   worldid, jntid = wp.tid()
   stiffness = jnt_stiffness[worldid, jntid]
-  dofid = jnt_dofadr[jntid]
 
   if stiffness == 0.0:
     return
 
+  dofid = jnt_dofadr[jntid]
   jnttype = jnt_type[jntid]
   qposid = jnt_qposadr[jntid]
 
@@ -64,6 +64,7 @@ def _spring_passive(
       qpos_in[worldid, qposid + 5],
       qpos_in[worldid, qposid + 6],
     )
+    rot = wp.normalize(rot)
     ref = wp.quat(
       qpos_spring[worldid, qposid + 3],
       qpos_spring[worldid, qposid + 4],
@@ -81,6 +82,7 @@ def _spring_passive(
       qpos_in[worldid, qposid + 2],
       qpos_in[worldid, qposid + 3],
     )
+    rot = wp.normalize(rot)
     ref = wp.quat(
       qpos_spring[worldid, qposid + 0],
       qpos_spring[worldid, qposid + 1],
