@@ -57,7 +57,7 @@ def _eval_pt_elliptic(
   quad: wp.vec3,
   alpha: float,
 ) -> wp.vec3:
-  mu = friction[0] / opt_impratio
+  mu = friction[0] / wp.sqrt(opt_impratio)
   v0 = jv * mu
   n = u0 + alpha * v0
   tsqr = uu + alpha * (2.0 * uv + alpha * vv)
@@ -1526,7 +1526,7 @@ def update_constraint_u_elliptic(
 
   if dimid < condim:
     if dimid == 0:
-      fri = contact_friction_in[conid][0] / opt_impratio
+      fri = contact_friction_in[conid][0] / wp.sqrt(opt_impratio)
     else:
       fri = contact_friction_in[conid][dimid - 1]
     u = efc_Jaref_in[efcid] * fri
@@ -1563,7 +1563,7 @@ def update_constraint_active_elliptic_bottom_zone(
   if condim == 1:
     return
 
-  mu = contact_friction_in[conid][0] / opt_impratio
+  mu = contact_friction_in[conid][0] / wp.sqrt(opt_impratio)
   n = efc_u_in[conid, 0]
   tt = efc_uu_in[conid]
   if tt <= 0.0:
@@ -1685,7 +1685,7 @@ def update_constraint_efc_elliptic1(
   friction = contact_friction_in[conid]
   efcid = contact_efc_address_in[conid, dimid]
 
-  mu = friction[0] / opt_impratio
+  mu = friction[0] / wp.sqrt(opt_impratio)
   n = efc_u_in[conid, 0]
   tt = efc_uu_in[conid]
   if tt <= 0.0:
@@ -2100,7 +2100,7 @@ def update_gradient_JTCJ(
     if (dim1id >= condim) or (dim2id >= condim):
       continue
 
-    mu = contact_friction_in[conid][0] / opt_impratio
+    mu = contact_friction_in[conid][0] / wp.sqrt(opt_impratio)
     n = efc_u_in[conid, 0]
     tt = efc_uu_in[conid]
     if tt <= 0.0:
