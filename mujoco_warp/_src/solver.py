@@ -2442,16 +2442,95 @@ def solve_done(
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_done_out: wp.array(dtype=bool),
+  # Out:
+  condition_iteration_out: wp.array(dtype=int),
+  n_solver_iterations_out: wp.array(dtype=int),
 ):
   # TODO(team): static m?
   worldid = wp.tid()
+
+  # remove one iteration from the counter
+  n_solver_iterations_out[worldid] -= 1
 
   if efc_done_in[worldid]:
     return
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
-  efc_done_out[worldid] = (improvement < opt_tolerance) or (gradient < opt_tolerance)
+  done = (improvement < opt_tolerance) or (gradient < opt_tolerance)
+  if done or n_solver_iterations_out[worldid] == 0:
+    # if the simulation has converged or if the maximum number of iterations has been reached then
+    # marks this world as done and remove it from the number of unconverged worlds in condition_iteration
+    efc_done_out[worldid] = True
+    wp.atomic_add(condition_iteration_out, 0, -1)
+
+
+@event_scope
+def _solver_iteration(
+  m: types.Model,
+  d: types.Data,
+  condition_iteration: wp.array(dtype=wp.int32),
+  n_solver_iterations: wp.array(dtype=wp.int32),
+):
+  _linesearch(m, d)
+
+  if m.opt.solver == types.SolverType.CG:
+    wp.launch(
+      solve_prev_grad_Mgrad,
+      dim=(d.nworld, m.nv),
+      inputs=[d.efc.grad, d.efc.Mgrad, d.efc.done],
+      outputs=[d.efc.prev_grad, d.efc.prev_Mgrad],
+    )
+
+  _update_constraint(m, d)
+  _update_gradient(m, d)
+
+  # polak-ribiere
+  if m.opt.solver == types.SolverType.CG:
+    wp.launch(
+      solve_zero_beta_num_den,
+      dim=(d.nworld),
+      inputs=[d.efc.done],
+      outputs=[d.efc.beta_num, d.efc.beta_den],
+    )
+
+    wp.launch(
+      solve_beta_num_den,
+      dim=(d.nworld, m.nv),
+      inputs=[d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
+      outputs=[d.efc.beta_num, d.efc.beta_den],
+    )
+
+    wp.launch(
+      solve_beta,
+      dim=(d.nworld,),
+      inputs=[d.efc.beta_num, d.efc.beta_den, d.efc.done],
+      outputs=[d.efc.beta],
+    )
+
+  wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot])
+
+  wp.launch(
+    solve_search_update,
+    dim=(d.nworld, m.nv),
+    inputs=[m.opt.solver, d.efc.Mgrad, d.efc.search, d.efc.beta, d.efc.done],
+    outputs=[d.efc.search, d.efc.search_dot],
+  )
+
+  wp.launch(
+    solve_done,
+    dim=(d.nworld,),
+    inputs=[
+      m.nv,
+      m.opt.tolerance,
+      m.stat.meaninertia,
+      d.efc.grad_dot,
+      d.efc.cost,
+      d.efc.prev_cost,
+      d.efc.done,
+    ],
+    outputs=[d.efc.done, condition_iteration, n_solver_iterations],
+  )
 
 
 @event_scope
@@ -2491,65 +2570,23 @@ def solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
-  for i in range(m.opt.iterations):
-    _linesearch(m, d)
-
-    if m.opt.solver == types.SolverType.CG:
-      wp.launch(
-        solve_prev_grad_Mgrad,
-        dim=(d.nworld, m.nv),
-        inputs=[d.efc.grad, d.efc.Mgrad, d.efc.done],
-        outputs=[d.efc.prev_grad, d.efc.prev_Mgrad],
-      )
-
-    _update_constraint(m, d)
-    _update_gradient(m, d)
-
-    # polak-ribiere
-    if m.opt.solver == types.SolverType.CG:
-      wp.launch(
-        solve_zero_beta_num_den,
-        dim=(d.nworld),
-        inputs=[d.efc.done],
-        outputs=[d.efc.beta_num, d.efc.beta_den],
-      )
-
-      wp.launch(
-        solve_beta_num_den,
-        dim=(d.nworld, m.nv),
-        inputs=[d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
-        outputs=[d.efc.beta_num, d.efc.beta_den],
-      )
-
-      wp.launch(
-        solve_beta,
-        dim=(d.nworld,),
-        inputs=[d.efc.beta_num, d.efc.beta_den, d.efc.done],
-        outputs=[d.efc.beta],
-      )
-
-    wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot])
-
-    wp.launch(
-      solve_search_update,
-      dim=(d.nworld, m.nv),
-      inputs=[m.opt.solver, d.efc.Mgrad, d.efc.search, d.efc.beta, d.efc.done],
-      outputs=[d.efc.search, d.efc.search_dot],
-    )
-
-    wp.launch(
-      solve_done,
-      dim=(d.nworld,),
-      inputs=[
-        m.nv,
-        m.opt.tolerance,
-        m.stat.meaninertia,
-        d.efc.grad_dot,
-        d.efc.cost,
-        d.efc.prev_cost,
-        d.efc.done,
-      ],
-      outputs=[d.efc.done],
+  if m.opt.iterations != 0:
+    # Note: the iteration kernel (indicated by while_body) is repeatedly launched
+    # as long as condition_iteration is not zero.
+    # condition_iteration is a warp array of size 1 and type int, it counts the number
+    # of worlds that are not converged, it becomes 0 when all worlds are converged.
+    # When the number of iterations reaches m.opt.iterations, n_solver_iterations
+    # becomes zero and all worlds are marked as converged to avoid an infinite loop.
+    # note: we only launch the iteration kernel if everything is not done
+    condition_iteration = wp.array([d.nworld], dtype=wp.int32)
+    n_solver_iterations = wp.full(shape=d.nworld, value=m.opt.iterations, dtype=wp.int32)
+    wp.capture_while(
+      condition_iteration,
+      while_body=_solver_iteration,
+      m=m,
+      d=d,
+      condition_iteration=condition_iteration,
+      n_solver_iterations=n_solver_iterations,
     )
 
   wp.copy(d.qacc_warmstart, d.qacc)
