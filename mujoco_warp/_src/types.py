@@ -236,6 +236,30 @@ class SolverType(enum.IntEnum):
   # unsupported: PGS
 
 
+class ConstraintType(enum.IntEnum):
+  """Type of constraint.
+
+  Members:
+    EQUALITY: equality constraint
+    FRICTION_DOF: dof friction
+    FRICTION_TENDON: tendon friction
+    LIMIT_JOINT: joint limit
+    LIMIT_TENDON: tendon limit
+    CONTACT_FRICTIONLESS: frictionless contact
+    CONTACT_PYRAMIDAL: frictional contact, pyramidal friction cone
+    CONTACT_ELLIPTIC: frictional contact, elliptic friction cone
+  """
+
+  EQUALITY = mujoco.mjtConstraint.mjCNSTR_EQUALITY
+  FRICTION_DOF = mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+  FRICTION_TENDON = mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON
+  LIMIT_JOINT = mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT
+  LIMIT_TENDON = mujoco.mjtConstraint.mjCNSTR_LIMIT_TENDON
+  CONTACT_FRICTIONLESS = mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS
+  CONTACT_PYRAMIDAL = mujoco.mjtConstraint.mjCNSTR_CONTACT_PYRAMIDAL
+  CONTACT_ELLIPTIC = mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC
+
+
 class SensorType(enum.IntEnum):
   """Type of sensor.
 
@@ -447,6 +471,7 @@ class Constraint:
 
   Attributes:
     worldid: world id                                 (njmax,)
+    type: constraint type (mjtConstraint)             (njmax,)
     id: id of object of specific type                 (njmax,)
     J: constraint Jacobian                            (njmax, nv)
     pos: constraint position (equality, contact)      (njmax,)
@@ -502,6 +527,7 @@ class Constraint:
   """
 
   worldid: wp.array(dtype=int)
+  type: wp.array(dtype=int)
   id: wp.array(dtype=int)
   J: wp.array2d(dtype=float)
   pos: wp.array(dtype=float)

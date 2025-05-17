@@ -677,6 +677,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ),
     efc=types.Constraint(
       worldid=wp.zeros((njmax,), dtype=int),
+      type=wp.zeros((njmax,), dtype=int),
       id=wp.zeros((njmax,), dtype=int),
       J=wp.zeros((njmax, mjm.nv), dtype=float),
       pos=wp.zeros((njmax,), dtype=float),
@@ -969,6 +970,7 @@ def put_data(
     ),
     efc=types.Constraint(
       worldid=arr(efc_worldid),
+      type=padtile(mjd.efc_type, njmax),
       id=padtile(mjd.efc_id, njmax),
       J=padtile(efc_J, njmax),
       pos=padtile(mjd.efc_pos, njmax),

@@ -128,6 +128,7 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
       _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
       _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
 
   def test_limit_tendon(self):
     """Test limit tendon constraints."""
@@ -146,6 +147,7 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
       _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
       _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
 
   def test_equality_tendon(self):
     """Test equality tendon constraints."""
@@ -201,6 +203,7 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
     _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
     _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
 
 
 if __name__ == "__main__":
