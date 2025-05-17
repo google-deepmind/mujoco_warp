@@ -513,6 +513,8 @@ class Constraint:
   Jaref: wp.array(dtype=float)
   Ma: wp.array2d(dtype=float)
   grad: wp.array2d(dtype=float)
+  cholesky_L_tmp: wp.array3d(dtype=float)
+  cholesky_y_tmp: wp.array2d(dtype=float)
   grad_dot: wp.array(dtype=float)
   Mgrad: wp.array2d(dtype=float)
   search: wp.array2d(dtype=float)

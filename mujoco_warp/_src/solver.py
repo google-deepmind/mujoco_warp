@@ -19,6 +19,8 @@ from . import math
 from . import smooth
 from . import support
 from . import types
+from .block_cholesky import create_blocked_cholesky_func
+from .block_cholesky import create_blocked_cholesky_solve_func
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -2211,6 +2213,33 @@ def update_gradient_cholesky(tile_size: int):
   return kernel
 
 
+def update_gradient_cholesky_blocked(tile_size: int):
+  @nested_kernel
+  def kernel(
+    # Data in:
+    efc_grad_in: wp.array2d(dtype=float),
+    efc_h_in: wp.array3d(dtype=float),
+    efc_done_in: wp.array(dtype=bool),
+    matrix_size: int,
+    cholesky_L_tmp: wp.array3d(dtype=float),
+    cholesky_y_tmp: wp.array2d(dtype=float),
+    # Data out:
+    efc_Mgrad_out: wp.array2d(dtype=float),
+  ):
+    worldid, tid_block = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+
+    if efc_done_in[worldid]:
+      return
+
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, efc_h_in[worldid], matrix_size, 0, 0, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
+      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, 0, 0, efc_Mgrad_out[worldid]
+    )
+
+  return kernel
+
+
 def _update_gradient(m: types.Model, d: types.Data):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.grad_dot])
@@ -2316,14 +2345,23 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
 
-    # TODO(team): support cholesky on larger nv, using tiles here limits the max matrix size
-    wp.launch_tiled(
-      update_gradient_cholesky(m.nv),
-      dim=(d.nworld,),
-      inputs=[d.efc.grad, d.efc.h, d.efc.done],
-      outputs=[d.efc.Mgrad],
-      block_dim=32,
-    )
+    # TODO(team): Define good threshold for blocked vs non-blocked cholesky
+    if m.nv < 1:
+      wp.launch_tiled(
+        update_gradient_cholesky(m.nv),
+        dim=(d.nworld,),
+        inputs=[d.efc.grad, d.efc.h, d.efc.done],
+        outputs=[d.efc.Mgrad],
+        block_dim=32,
+      )
+    else:
+      wp.launch_tiled(
+        update_gradient_cholesky_blocked(32),
+        dim=(d.nworld,),
+        inputs=[d.efc.grad, d.efc.h, d.efc.done, m.nv, d.efc.cholesky_L_tmp, d.efc.cholesky_y_tmp],
+        outputs=[d.efc.Mgrad],
+        block_dim=32,
+      )
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")
 
