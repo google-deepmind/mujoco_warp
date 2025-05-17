@@ -500,7 +500,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tendon_adr=wp.array(mjm.tendon_adr, dtype=int),
     tendon_num=wp.array(mjm.tendon_num, dtype=int),
     tendon_limited=wp.array(mjm.tendon_limited, dtype=int),
-    tendon_limited_adr=wp.array(np.nonzero(mjm.tendon_limited)[0], dtype=wp.int32, ndim=1),
+    tendon_limited_adr=wp.array(np.nonzero(mjm.tendon_limited)[0], dtype=int),
     tendon_solref_lim=create_nmodel_batched_array(mjm.tendon_solref_lim, dtype=wp.vec2f),
     tendon_solimp_lim=create_nmodel_batched_array(mjm.tendon_solimp_lim, dtype=types.vec5),
     tendon_solref_fri=create_nmodel_batched_array(mjm.tendon_solref_fri, dtype=wp.vec2f),
@@ -534,7 +534,17 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_adr=wp.array(mjm.sensor_adr, dtype=int),
     sensor_cutoff=wp.array(mjm.sensor_cutoff, dtype=float),
     sensor_pos_adr=wp.array(
-      np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0],
+      np.nonzero(
+        (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)
+        & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITPOS)
+        & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITPOS)
+      )[0],
+      dtype=int,
+    ),
+    sensor_limitpos_adr=wp.array(
+      np.nonzero(
+        (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITPOS) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITPOS)
+      )[0],
       dtype=int,
     ),
     sensor_vel_adr=wp.array(

@@ -97,7 +97,35 @@ class SensorTest(parameterized.TestCase):
           </body>
           <camera name="camera"/>
           <site name="camera_site" pos="0 0 -1"/>
+          <!-- limit pos: slide -->
+          <body pos="1 1 1">
+            <joint name="limitslide" type="slide" limited="true" range="-.5 .5" margin=".1"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <!-- limit pos: hinge -->
+          <body pos="2 2 2">
+            <joint name="limithinge" type="hinge" limited="true" range="-.4 .4" margin=".09"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <!-- limit pos: ball -->
+          <body pos="3 3 3">
+            <joint name="limitball" type="ball" limited="true" range="0 .1" margin=".05"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <!-- tendon limit pos -->
+          <site name="sitetendon0" pos="5 4 4"/>
+          <body pos="4 4 4">
+            <joint type="slide" axis="1 0 0"/>
+            <geom type="sphere" size=".1"/>
+            <site name="sitetendon1"/>
+          </body>
         </worldbody>
+        <tendon>
+          <spatial name="limittendon" limited="true" range="0 .5" margin=".1">
+            <site site="sitetendon0"/>
+            <site site="sitetendon1"/>
+          </spatial>
+        </tendon>
         <actuator>
           <motor name="slide" joint="slide"/>
         </actuator>
@@ -109,6 +137,14 @@ class SensorTest(parameterized.TestCase):
           <actuatorpos actuator="slide"/>
           <actuatorpos actuator="slide" cutoff=".001"/>
           <ballquat joint="ballquat"/>
+          <jointlimitpos joint="limitslide"/>
+          <jointlimitpos joint="limitslide" cutoff=".001"/>
+          <jointlimitpos joint="limithinge"/>
+          <jointlimitpos joint="limithinge" cutoff=".001"/>
+          <jointlimitpos joint="limitball"/>
+          <jointlimitpos joint="limitball" cutoff=".001"/>
+          <tendonlimitpos tendon="limittendon"/>
+          <tendonlimitpos tendon="limittendon" cutoff=".001"/>
           <framepos objtype="body" objname="body1"/>
           <framepos objtype="body" objname="body1" cutoff=".001"/>      
           <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>
@@ -217,7 +253,7 @@ class SensorTest(parameterized.TestCase):
           <frameangacc objtype="camera" objname="cam0"/>
         </sensor>
         <keyframe>
-          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2" ctrl="3"/>
+          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1 .6 .5 1 2 3 4 .5" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2 0 0 0 0 0 0" ctrl="3"/>
         </keyframe>
       </mujoco>
     """,

@@ -23,6 +23,7 @@ from . import smooth
 from . import support
 from .types import MJ_MINVAL
 from .types import ConeType
+from .types import ConstraintType
 from .types import Data
 from .types import DataType
 from .types import DisableBit
@@ -180,6 +181,45 @@ def _ball_quat(jnt_qposadr: wp.array(dtype=int), qpos_in: wp.array2d(dtype=float
     qpos_in[worldid, adr + 3],
   )
   return wp.normalize(quat)
+
+
+@wp.kernel
+def _limit_pos(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_limitpos_adr: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  efc_worldid_in: wp.array(dtype=int),
+  efc_type_in: wp.array(dtype=int),
+  efc_id_in: wp.array(dtype=int),
+  efc_pos_in: wp.array(dtype=float),
+  efc_margin_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  efcid, limitposid = wp.tid()
+
+  ne = ne_in[0]
+  nf = nf_in[0]
+  nl = nl_in[0]
+
+  # skip if not limit
+  if efcid < ne + nf or efcid >= ne + nf + nl:
+    return
+
+  sensorid = sensor_limitpos_adr[limitposid]
+  if efc_id_in[efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[efcid]
+    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+      val = efc_pos_in[efcid] - efc_margin_in[efcid]
+      worldid = efc_worldid_in[efcid]
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
 
 @wp.func
@@ -495,53 +535,79 @@ def _sensor_pos(
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
 
-  if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  wp.launch(
-    _sensor_pos,
-    dim=(d.nworld, m.sensor_pos_adr.size),
-    inputs=[
-      m.body_iquat,
-      m.jnt_qposadr,
-      m.geom_bodyid,
-      m.geom_quat,
-      m.site_bodyid,
-      m.site_quat,
-      m.cam_bodyid,
-      m.cam_quat,
-      m.cam_fovy,
-      m.cam_resolution,
-      m.cam_sensorsize,
-      m.cam_intrinsic,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_reftype,
-      m.sensor_refid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_pos_adr,
-      d.time,
-      d.qpos,
-      d.xpos,
-      d.xquat,
-      d.xmat,
-      d.xipos,
-      d.ximat,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.site_xpos,
-      d.site_xmat,
-      d.cam_xpos,
-      d.cam_xmat,
-      d.subtree_com,
-      d.actuator_length,
-      d.ten_length,
-    ],
-    outputs=[d.sensordata],
-  )
+  if m.sensor_pos_adr.size > 0:
+    wp.launch(
+      _sensor_pos,
+      dim=(d.nworld, m.sensor_pos_adr.size),
+      inputs=[
+        m.body_iquat,
+        m.jnt_qposadr,
+        m.geom_bodyid,
+        m.geom_quat,
+        m.site_bodyid,
+        m.site_quat,
+        m.cam_bodyid,
+        m.cam_quat,
+        m.cam_fovy,
+        m.cam_resolution,
+        m.cam_sensorsize,
+        m.cam_intrinsic,
+        m.sensor_type,
+        m.sensor_datatype,
+        m.sensor_objtype,
+        m.sensor_objid,
+        m.sensor_reftype,
+        m.sensor_refid,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_pos_adr,
+        d.time,
+        d.qpos,
+        d.xpos,
+        d.xquat,
+        d.xmat,
+        d.xipos,
+        d.ximat,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.site_xpos,
+        d.site_xmat,
+        d.cam_xpos,
+        d.cam_xmat,
+        d.subtree_com,
+        d.actuator_length,
+        d.ten_length,
+      ],
+      outputs=[d.sensordata],
+    )
+
+  # jointlimitpos and tendonlimitpos
+  if m.sensor_limitpos_adr.size > 0:
+    wp.launch(
+      _limit_pos,
+      dim=(d.njmax, m.sensor_limitpos_adr.size),
+      inputs=[
+        m.sensor_datatype,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_limitpos_adr,
+        d.ne,
+        d.nf,
+        d.nl,
+        d.efc.worldid,
+        d.efc.type,
+        d.efc.id,
+        d.efc.pos,
+        d.efc.margin,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
 
 
 @wp.func

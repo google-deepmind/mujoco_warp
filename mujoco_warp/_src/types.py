@@ -245,6 +245,8 @@ class SensorType(enum.IntEnum):
     TENDONPOS: scalar tendon position
     ACTUATORPOS: actuator position
     BALLQUAT: ball joint orientation
+    JOINTLIMITPOS: joint limit distance-margin
+    TENDONLIMITPOS: tendon limit distance-margin
     FRAMEPOS: frame position
     FRAMEXAXIS: frame x-axis
     FRAMEYAXIS: frame y-axis
@@ -277,6 +279,8 @@ class SensorType(enum.IntEnum):
   TENDONPOS = mujoco.mjtSensor.mjSENS_TENDONPOS
   ACTUATORPOS = mujoco.mjtSensor.mjSENS_ACTUATORPOS
   BALLQUAT = mujoco.mjtSensor.mjSENS_BALLQUAT
+  JOINTLIMITPOS = mujoco.mjtSensor.mjSENS_JOINTLIMITPOS
+  TENDONLIMITPOS = mujoco.mjtSensor.mjSENS_TENDONLIMITPOS
   FRAMEPOS = mujoco.mjtSensor.mjSENS_FRAMEPOS
   FRAMEXAXIS = mujoco.mjtSensor.mjSENS_FRAMEXAXIS
   FRAMEYAXIS = mujoco.mjtSensor.mjSENS_FRAMEYAXIS
@@ -804,6 +808,7 @@ class Model:
     sensor_adr: address in sensor array                      (nsensor,)
     sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
+    sensor_limitpos_adr: address for limit position sensors  (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
                     (excluding touch sensors)
@@ -1054,6 +1059,7 @@ class Model:
   sensor_adr: wp.array(dtype=int)
   sensor_cutoff: wp.array(dtype=float)
   sensor_pos_adr: wp.array(dtype=int)  # warp only
+  sensor_limitpos_adr: wp.array(dtype=int)  # warp only
   sensor_vel_adr: wp.array(dtype=int)  # warp only
   sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_touch_adr: wp.array(dtype=int)  # warp only
