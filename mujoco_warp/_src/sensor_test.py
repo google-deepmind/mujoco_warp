@@ -97,9 +97,20 @@ class SensorTest(parameterized.TestCase):
           </body>
           <camera name="camera"/>
           <site name="camera_site" pos="0 0 -1"/>
+          <body pos="3 3 3">
+            <joint name="tendonjoint" type="hinge"/>
+            <geom type="sphere" size=".1"/>
+          </body>
         </worldbody>
+        <tendon>
+          <fixed name="tendon">
+            <joint joint="tendonjoint" coef=".123"/>
+          </fixed>
+        </tendon>
         <actuator>
           <motor name="slide" joint="slide"/>
+          <motor tendon="tendon"/>
+          <motor tendon="tendon" gear="2"/>
         </actuator>
         <sensor>
           <camprojection camera="camera" site="camera_site"/>
@@ -202,7 +213,9 @@ class SensorTest(parameterized.TestCase):
           <actuatorfrc actuator="slide"/>
           <actuatorfrc actuator="slide" cutoff=".001"/>
           <jointactuatorfrc joint="slide"/>
-          <jointactuatorfrc joint="slide" cutoff=".001"/>            
+          <jointactuatorfrc joint="slide" cutoff=".001"/>
+          <tendonactuatorfrc tendon="tendon"/>
+          <tendonactuatorfrc tendon="tendon" cutoff=".001"/>          
           <framelinacc objtype="body" objname="body9"/>
           <framelinacc objtype="body" objname="body9" cutoff=".001"/>
           <frameangacc objtype="body" objname="body9"/>
@@ -217,7 +230,7 @@ class SensorTest(parameterized.TestCase):
           <frameangacc objtype="camera" objname="cam0"/>
         </sensor>
         <keyframe>
-          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2" ctrl="3"/>
+          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1 0" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2 0" ctrl="3 .1 .2"/>
         </keyframe>
       </mujoco>
     """,

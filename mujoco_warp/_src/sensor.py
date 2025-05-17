@@ -30,6 +30,7 @@ from .types import JointType
 from .types import Model
 from .types import ObjType
 from .types import SensorType
+from .types import TrnType
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -1112,6 +1113,61 @@ def _joint_actuator_force(
   return qfrc_actuator_in[worldid, jnt_dofadr[objid]]
 
 
+@wp.kernel
+def _tendon_actuator_force_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_tendonactfrc_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, tenactfrcid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+  adr = sensor_adr[sensorid]
+  sensordata_out[worldid, adr] = 0.0
+
+
+@wp.kernel
+def _tendon_actuator_force(
+  # Model:
+  actuator_trntype: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_tendonactfrc_adr: wp.array(dtype=int),
+  # Data in:
+  actuator_force_in: wp.array2d(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, tenactfrcid, actid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+
+  if actuator_trntype[actid] == int(TrnType.TENDON.value) and actuator_trnid[actid][0] == sensor_objid[sensorid]:
+    adr = sensor_adr[sensorid]
+    sensordata_out[worldid, adr] += actuator_force_in[worldid, actid]
+
+
+@wp.kernel
+def _tendon_actuator_force_cutoff(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_tendonactfrc_adr: wp.array(dtype=int),
+  # Data in:
+  sensordata_in: wp.array2d(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, tenactfrcid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+  adr = sensor_adr[sensorid]
+  val = sensordata_in[worldid, adr]
+
+  _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
+
+
 @wp.func
 def _framelinacc(
   # Model:
@@ -1453,6 +1509,50 @@ def sensor_acc(m: Model, d: Data):
         d.cfrc_int,
       ],
       outputs=[d.sensordata],
+    )
+
+  if m.sensor_tendonactfrc_adr.size > 0:
+    wp.launch(
+      _tendon_actuator_force_zero,
+      dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
+      inputs=[
+        m.sensor_adr,
+        m.sensor_tendonactfrc_adr,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
+
+    wp.launch(
+      _tendon_actuator_force,
+      dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nu),
+      inputs=[
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_tendonactfrc_adr,
+        d.actuator_force,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
+
+    wp.launch(
+      _tendon_actuator_force_cutoff,
+      dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
+      inputs=[
+        m.sensor_datatype,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_tendonactfrc_adr,
+        d.sensordata,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
     )
 
 
