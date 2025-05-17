@@ -1529,10 +1529,11 @@ def capsule_box(
 ):
   """Calculates contacts between a capsule and a box."""
   # Based on the mjc implementation
-  pos = wp.transpose(box.rot) @ (cap.pos - box.pos)
-  axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
+  boxmatT = wp.transpose(box.rot)
+  pos = boxmatT @ (cap.pos - box.pos)
+  axis = boxmatT @ wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
   halfaxis = axis * cap.size[1]  # halfaxis is the capsule direction
-  axisdir = wp.int32(axis[0] > 0.0) + 2 * wp.int32(axis[1] > 0.0) + 4 * wp.int32(axis[2] > 0.0)
+  axisdir = wp.int32(halfaxis[0] > 0.0) + 2 * wp.int32(halfaxis[1] > 0.0) + 4 * wp.int32(halfaxis[2] > 0.0)
 
   bestdistmax = margin + 2.0 * (cap.size[0] + cap.size[1] + box.size[0] + box.size[1] + box.size[2])
 
