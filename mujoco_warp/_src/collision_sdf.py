@@ -260,36 +260,10 @@ def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, niter
 
 @wp.func
 def sphere_ellipsoid(
-   # Data in:
-  nconmax_in: int,
-  # In:
   s: Geom,
   e: Geom,
   aabb1: AABB,
-  aabb2: AABB,
-  worldid: int,
-  margin: float,
-  gap: float,
-  condim: int,
-  friction: vec5,
-  solref: wp.vec2f,
-  solreffriction: wp.vec2f,
-  solimp: vec5,
-  geoms: wp.vec2i,
-  # Data out:
-  ncon_out: wp.array(dtype=int),
-  contact_dist_out: wp.array(dtype=float),
-  contact_pos_out: wp.array(dtype=wp.vec3),
-  contact_frame_out: wp.array(dtype=wp.mat33),
-  contact_includemargin_out: wp.array(dtype=float),
-  contact_friction_out: wp.array(dtype=vec5),
-  contact_solref_out: wp.array(dtype=wp.vec2),
-  contact_solreffriction_out: wp.array(dtype=wp.vec2),
-  contact_solimp_out: wp.array(dtype=vec5),
-  contact_dim_out: wp.array(dtype=int),
-  contact_geom_out: wp.array(dtype=wp.vec2i),
-  contact_worldid_out: wp.array(dtype=int),): 
-    
+  aabb2: AABB) -> tuple[float, wp.vec3, wp.vec3]:
     
     params = OptimizationParams()
     static_type1 =  wp.static(GeomType.SPHERE.value)
@@ -322,40 +296,12 @@ def sphere_ellipsoid(
     n = e.rot * n
     f = wp.normalize(n)
     pos3 = pos - f* dist/2.0
-    write_contact(
-    nconmax_in,
-    dist,
-    pos3,
-    make_frame(n),
-    margin,
-    gap,
-    condim,
-    friction,
-    solref,
-    solreffriction,
-    solimp,
-    geoms,
-    worldid,
-    ncon_out,
-    contact_dist_out,
-    contact_pos_out,
-    contact_frame_out,
-    contact_includemargin_out,
-    contact_friction_out,
-    contact_solref_out,
-    contact_solreffriction_out,
-    contact_solimp_out,
-    contact_dim_out,
-    contact_geom_out,
-    contact_worldid_out,
-  )
+    return  dist, pos3, n
+    
 
 def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):  
   @wp.func
   def _sdf_sdf (
-    # Data in:
-    nconmax_in: int,
-    # In:
     s1: Geom,
     s2: Geom,
     aabb1: AABB,
@@ -365,29 +311,7 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
     geom_pos1: wp.vec3,
     geom_mat1: wp.mat33,
     geom_pos2: wp.vec3,
-    geom_mat2: wp.mat33,
-    worldid: int,
-    margin: float,
-    gap: float,
-    condim: int,
-    friction: vec5,
-    solref: wp.vec2f,
-    solreffriction: wp.vec2f,
-    solimp: vec5,
-    geoms: wp.vec2i,
-    # Data out:
-    ncon_out: wp.array(dtype=int),
-    contact_dist_out: wp.array(dtype=float),
-    contact_pos_out: wp.array(dtype=wp.vec3),
-    contact_frame_out: wp.array(dtype=wp.mat33),
-    contact_includemargin_out: wp.array(dtype=float),
-    contact_friction_out: wp.array(dtype=vec5),
-    contact_solref_out: wp.array(dtype=wp.vec2),
-    contact_solreffriction_out: wp.array(dtype=wp.vec2),
-    contact_solimp_out: wp.array(dtype=vec5),
-    contact_dim_out: wp.array(dtype=int),
-    contact_geom_out: wp.array(dtype=wp.vec2i),
-    contact_worldid_out: wp.array(dtype=int),):
+    geom_mat2: wp.mat33) -> tuple[float, wp.vec3, wp.vec3]:
 
       rot1 = math.mul(s1.rot, math.transpose(geom_mat1))
       pos1 = wp.sub(s1.pos, math.mul(rot1, geom_pos1))
@@ -420,38 +344,13 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
       n = rot2 * n
       f = wp.normalize(n)
       pos3 = pos - f* dist/2.0
+      wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos[2]) #  -0.100208,-0.050679,0.461308,0.373223
+      return  dist, pos3, n
       
-      write_contact(
-      nconmax_in,
-      dist,
-      pos3,
-      make_frame(n),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      ncon_out,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-    )
   return _sdf_sdf
 
 @wp.kernel
-def _sdf_narrowphase6(
+def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
@@ -571,13 +470,35 @@ def _sdf_narrowphase6(
   rot2 = math.quat_to_mat(quat2)
 
   if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.ELLIPSOID.value):
-    sphere_ellipsoid(
-      nconmax_in,
+     dist, pos, n = sphere_ellipsoid(
       geom1,
       geom2,
       aabb1,
-      aabb2,
-      worldid,
+      aabb2
+    )
+  else:
+      type1s = wp.static(GeomType.SDF.value)
+      sdf_type1s = wp.static(SDFType.NUT.value)
+      type2s = wp.static(GeomType.SDF.value)
+      sdf_type2s = wp.static(SDFType.NUT.value)
+      dist, pos, n = wp.static(sdf_sdf(type1s, type2s, sdf_type1s, sdf_type2s))(
+        geom1,
+        geom2,
+        aabb1,
+        aabb2,
+        attr1,
+        attr2,
+        pos1,
+        rot1,
+        pos2, 
+        rot2
+      )
+
+  write_contact(
+      nconmax_in,
+      dist,
+      pos,
+      make_frame(n),
       margin,
       gap,
       condim,
@@ -586,6 +507,7 @@ def _sdf_narrowphase6(
       solreffriction,
       solimp,
       geoms,
+      worldid,
       ncon_out,
       contact_dist_out,
       contact_pos_out,
@@ -599,49 +521,10 @@ def _sdf_narrowphase6(
       contact_geom_out,
       contact_worldid_out,
     )
-  else:
-      type1s = wp.static(GeomType.SDF.value)
-      sdf_type1s = wp.static(SDFType.NUT.value)
-      type2s = wp.static(GeomType.SDF.value)
-      sdf_type2s = wp.static(SDFType.NUT.value)
-      wp.static(sdf_sdf(type1s, type2s, sdf_type1s, sdf_type2s))(
-        nconmax_in,
-        geom1,
-        geom2,
-        aabb1,
-        aabb2,
-        attr1,
-        attr2,
-        pos1,
-        rot1,
-        pos2, 
-        rot2,
-        worldid,
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        ncon_out,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-      )
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase6,
+    _sdf_narrowphase,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
