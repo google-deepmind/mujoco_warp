@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import warp as wp
-from .types import GeomType
+from .types import GeomType, SDFType
 from .collision_primitive import Geom
 from .collision_primitive import _geom
 from .collision_primitive import contact_params
@@ -36,7 +36,6 @@ class OptimizationParams:
   rel_pos: wp.vec3
   size1: wp.vec3
   size2: wp.vec3
-
 @wp.struct
 class AABB:
   min: wp.vec3
@@ -161,7 +160,7 @@ def grad_nut(
     grad[2] = (f_plus - f_original) / eps
     return grad
 
-def sdf(type: int):
+def sdf(type: int, sdf_type: int = 0):
   @wp.func
   def _sdf(p: wp.vec3, size: wp.vec3) -> float:
     if wp.static(type == GeomType.SPHERE.value):
@@ -169,12 +168,12 @@ def sdf(type: int):
     elif wp.static(type == GeomType.ELLIPSOID.value):
         return ellipsoid(p, size)
     elif wp.static(type == GeomType.SDF.value):
-        return nut(p)
-    else:
-      wp.printf("not supported")
+        if wp.static(sdf_type == SDFType.NUT.value):
+          return nut(p)
   return _sdf
 
-def sdf_grad(type: int):
+
+def sdf_grad(type: int, sdf_type: int = 0):
   @wp.func
   def _sdf_grad(p: wp.vec3, size: wp.vec3) -> wp.vec3:
     if wp.static(type == GeomType.SPHERE.value):
@@ -182,31 +181,31 @@ def sdf_grad(type: int):
     elif wp.static(type == GeomType.ELLIPSOID.value):
         return grad_ellipsoid(p, size)
     elif wp.static(type == GeomType.SDF.value):
-        return grad_nut(p)
-    else:
-      wp.printf("not supported")
+        if wp.static(sdf_type == SDFType.NUT.value):
+          return grad_nut(p)
+
   return _sdf_grad
 
-def clearance(type1: int, type2: int, sfd_intersection: bool = False):
+def clearance(type1: int, type2: int, sdf_type1: int, sdf_type2: int, sfd_intersection: bool = False):
     @wp.func
     def _clearance(p1: wp.vec3, p2: wp.vec3, s1: wp.vec3, s2: wp.vec3) -> float:
-        s = wp.static(sdf(type1))(p1, s1)
-        e = wp.static(sdf(type2))(p2, s2)
+        s = wp.static(sdf(type1, sdf_type1))(p1, s1)
+        e = wp.static(sdf(type2, sdf_type2))(p2, s2)
         if sfd_intersection:
             return wp.max(s, e)
         else:
             return s + e + wp.abs(wp.max(s, e))
     return _clearance
 
-def compute_grad(type1: int, type2: int, sfd_intersection: bool = False):
+def compute_grad(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, sfd_intersection: bool = False):
     @wp.func
     def _compute_grad(
         p1: wp.vec3, p2: wp.vec3, params: OptimizationParams
     ) -> wp.vec3:
-        A = wp.static(sdf(type1))(p1, params.size1)
-        B = wp.static(sdf(type2))(p2, params.size2)
-        grad1 = wp.static(sdf_grad(type1))(p1, params.size1)
-        grad2 = wp.static(sdf_grad(type2))(p2, params.size2)
+        A = wp.static(sdf(type1, sdf_type1))(p1, params.size1)
+        B = wp.static(sdf(type2, sdf_type2))(p2, params.size2)
+        grad1 = wp.static(sdf_grad(type1, sdf_type1))(p1, params.size1)
+        grad2 = wp.static(sdf_grad(type2, sdf_type2))(p2, params.size2)
         grad1_transformed = params.rel_mat * grad1
         if sfd_intersection:
             # Only return the gradient of the maximum SDF
@@ -226,7 +225,7 @@ def compute_grad(type1: int, type2: int, sfd_intersection: bool = False):
             return gradient
     return _compute_grad
 
-def gradient_step(type1: int, type2: int, sfd_intersection: bool = False):
+def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, sfd_intersection: bool = False):
     @wp.func
     def _gradient_step(
         state: GradientState,
@@ -239,8 +238,8 @@ def gradient_step(type1: int, type2: int, sfd_intersection: bool = False):
 
         x0 = state.x
         x1 = params.rel_mat * x0 + params.rel_pos
-        grad = wp.static(compute_grad(type1, type2, sfd_intersection))(x1, x0, params)
-        dist0 = wp.static(clearance(type1, type2, sfd_intersection))(
+        grad = wp.static(compute_grad(type1, type2, sdf_type1, sdf_type2,  sfd_intersection))(x1, x0, params)
+        dist0 = wp.static(clearance(type1, type2, sdf_type1, sdf_type2, sfd_intersection))(
             x1, x0, params.size1, params.size2
         )
         grad_dot = wp.dot(grad, grad)
@@ -258,7 +257,7 @@ def gradient_step(type1: int, type2: int, sfd_intersection: bool = False):
 
             candidate = x0 - grad * alpha
             x1_candidate = params.rel_mat * candidate + params.rel_pos
-            value = wp.static(clearance(type1, type2, sfd_intersection))(
+            value = wp.static(clearance(type1, type2, sdf_type1, sdf_type2, sfd_intersection))(
                 x1_candidate, candidate, params.size1, params.size2
             )
 
@@ -279,7 +278,7 @@ def gradient_step(type1: int, type2: int, sfd_intersection: bool = False):
             return original_state
     return _gradient_step
 
-def gradient_descent(type1: int, type2: int):
+def gradient_descent(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
   @wp.func
   def _gradient_descent(
     x: wp.vec3,
@@ -290,10 +289,10 @@ def gradient_descent(type1: int, type2: int):
     state = GradientState(1e10, x)
 
     for _ in range(niter):
-      state = wp.static(gradient_step(type1, type2))(state, params)
+      state = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2,))(state, params)
       #todo early break
 
-    state = wp.static(gradient_step(type1, type2, True))(state, params)
+    state = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, True))(state, params)
     return state.dist, state.x
 
   return _gradient_descent
@@ -385,100 +384,103 @@ def sphere_ellipsoid(
     contact_worldid_out,
   )
 
-@wp.func
-def sdf_sdf (
-   # Data in:
-  nconmax_in: int,
-  # In:
-  s1: Geom,
-  s2: Geom,
-  aabb1: AABB,
-  aabb2:AABB,
-  geom_pos1: wp.vec3,
-  geom_mat1: wp.mat33,
-  geom_pos2: wp.vec3,
-  geom_mat2: wp.mat33,
-  worldid: int,
-  margin: float,
-  gap: float,
-  condim: int,
-  friction: vec5,
-  solref: wp.vec2f,
-  solreffriction: wp.vec2f,
-  solimp: vec5,
-  geoms: wp.vec2i,
-  # Data out:
-  ncon_out: wp.array(dtype=int),
-  contact_dist_out: wp.array(dtype=float),
-  contact_pos_out: wp.array(dtype=wp.vec3),
-  contact_frame_out: wp.array(dtype=wp.mat33),
-  contact_includemargin_out: wp.array(dtype=float),
-  contact_friction_out: wp.array(dtype=vec5),
-  contact_solref_out: wp.array(dtype=wp.vec2),
-  contact_solreffriction_out: wp.array(dtype=wp.vec2),
-  contact_solimp_out: wp.array(dtype=vec5),
-  contact_dim_out: wp.array(dtype=int),
-  contact_geom_out: wp.array(dtype=wp.vec2i),
-  contact_worldid_out: wp.array(dtype=int),):
+def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):  
+  @wp.func
+  def _sdf_sdf (
+    # Data in:
+    nconmax_in: int,
+    # In:
+    s1: Geom,
+    s2: Geom,
+    aabb1: AABB,
+    aabb2:AABB,
+    geom_pos1: wp.vec3,
+    geom_mat1: wp.mat33,
+    geom_pos2: wp.vec3,
+    geom_mat2: wp.mat33,
+    worldid: int,
+    margin: float,
+    gap: float,
+    condim: int,
+    friction: vec5,
+    solref: wp.vec2f,
+    solreffriction: wp.vec2f,
+    solimp: vec5,
+    geoms: wp.vec2i,
+    # Data out:
+    ncon_out: wp.array(dtype=int),
+    contact_dist_out: wp.array(dtype=float),
+    contact_pos_out: wp.array(dtype=wp.vec3),
+    contact_frame_out: wp.array(dtype=wp.mat33),
+    contact_includemargin_out: wp.array(dtype=float),
+    contact_friction_out: wp.array(dtype=vec5),
+    contact_solref_out: wp.array(dtype=wp.vec2),
+    contact_solreffriction_out: wp.array(dtype=wp.vec2),
+    contact_solimp_out: wp.array(dtype=vec5),
+    contact_dim_out: wp.array(dtype=int),
+    contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_worldid_out: wp.array(dtype=int),):
 
-    rot1 = math.mul(s1.rot, math.transpose(geom_mat1))
-    pos1 = wp.sub(s1.pos, math.mul(rot1, geom_pos1))
-    rot2 = math.mul(s2.rot, math.transpose(geom_mat2))
-    pos2 = wp.sub(s2.pos, math.mul(rot2, geom_pos2))
-   
-    params = OptimizationParams()
-    params.rel_mat = wp.transpose(rot1) * rot2
-    params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
-    params.size1 = s1.size
-    params.size2 = s2.size
-    static_type1 = wp.static(GeomType.SDF.value)
-    static_type2 =  wp.static(GeomType.SDF.value)
-    x1 = aabb1.min
-    x2 = aabb2.min
-    x = wp.vec3(wp.max(x1[0], x2[0]),wp.max(x1[1], x2[1]),wp.max(x1[2], x2[2]))
-    x0_transformed = wp.transpose(rot2) * (x - pos2)
-    dist, pos = wp.static(gradient_descent(static_type1, static_type2))(x0_transformed, 10, params)
-    pos_s = params.rel_mat * pos + params.rel_pos
-    grad1 = wp.static(sdf_grad(static_type1))(pos_s, params.size1)
-    grad2 = wp.static(sdf_grad(static_type1))(pos, params.size2) 
-    n = grad1 - grad2
-    pos = rot2 * pos + pos2
-    n = rot2 * n
-    f = wp.normalize(n)
-    pos3 = pos - f* dist/2.0 #todo
+      rot1 = math.mul(s1.rot, math.transpose(geom_mat1))
+      pos1 = wp.sub(s1.pos, math.mul(rot1, geom_pos1))
+      rot2 = math.mul(s2.rot, math.transpose(geom_mat2))
+      pos2 = wp.sub(s2.pos, math.mul(rot2, geom_pos2))
+    
+      params = OptimizationParams()
+      params.rel_mat = wp.transpose(rot1) * rot2
+      params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
+      params.size1 = s1.size
+      params.size2 = s2.size
 
-    write_contact(
-    nconmax_in,
-    dist,
-    pos3,
-    make_frame(n),
-    margin,
-    gap,
-    condim,
-    friction,
-    solref,
-    solreffriction,
-    solimp,
-    geoms,
-    worldid,
-    ncon_out,
-    contact_dist_out,
-    contact_pos_out,
-    contact_frame_out,
-    contact_includemargin_out,
-    contact_friction_out,
-    contact_solref_out,
-    contact_solreffriction_out,
-    contact_solimp_out,
-    contact_dim_out,
-    contact_geom_out,
-    contact_worldid_out,
-  )
+      x1 = aabb1.min
+      x2 = aabb2.min
+      x = wp.vec3(wp.max(x1[0], x2[0]),wp.max(x1[1], x2[1]),wp.max(x1[2], x2[2]))
+      x0_transformed = wp.transpose(rot2) * (x - pos2)
+      dist, pos = wp.static(gradient_descent(type1, type2, sdf_type1, sdf_type2))(x0_transformed, 10, params)
+      pos_s = params.rel_mat * pos + params.rel_pos
+      grad1 = wp.static(sdf_grad(type1, sdf_type1))(pos_s, params.size1)
+      grad2 = wp.static(sdf_grad(type1, sdf_type2))(pos, params.size2) 
+      n = grad1 - grad2
+      pos = rot2 * pos + pos2
+      n = rot2 * n
+      f = wp.normalize(n)
+      pos3 = pos - f* dist/2.0 #todo
+      
+      write_contact(
+      nconmax_in,
+      dist,
+      pos3,
+      make_frame(n),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+    )
+  return _sdf_sdf
+
 
 @wp.kernel
 def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
+  sdf_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
@@ -575,6 +577,8 @@ def _sdf_narrowphase(
 
   type1 = geom_type[g1]
   type2 = geom_type[g2]
+  sdf_type1 = sdf_type[g1]
+  sdf_type2 = sdf_type[g2]
 
   aabb_pos = geom_aabb[g1, 0]
   aabb_size = geom_aabb[g1, 1]
@@ -588,7 +592,6 @@ def _sdf_narrowphase(
   pos2 = geom_pos[g2]
   quat2 = geom_quat[g2]
   rot2 = math.quat_to_mat(quat2)
-
 
   if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.ELLIPSOID.value):
     sphere_ellipsoid(
@@ -619,39 +622,43 @@ def _sdf_narrowphase(
       contact_geom_out,
       contact_worldid_out,
     )
-  elif type1 == int(GeomType.SDF.value) and type2 == int(GeomType.SDF.value):
-    sdf_sdf(
-      nconmax_in,
-      geom1,
-      geom2,
-      aabb1,
-      aabb2,
-      pos1,
-      rot1,
-      pos2, 
-      rot2,
-      worldid,
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      ncon_out,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-    )
+  else:
+      type1s = wp.static(GeomType.SDF.value)
+      sdf_type1s = wp.static(SDFType.NUT.value)
+      type2s = wp.static(GeomType.SDF.value)
+      sdf_type2s = wp.static(SDFType.NUT.value)
+      wp.static(sdf_sdf(type1s, type2s, sdf_type1s, sdf_type2s))(
+        nconmax_in,
+        geom1,
+        geom2,
+        aabb1,
+        aabb2,
+        pos1,
+        rot1,
+        pos2, 
+        rot2,
+        worldid,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        ncon_out,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+      )
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
@@ -659,6 +666,7 @@ def sdf_narrowphase(m: Model, d: Data):
     dim=d.nconmax,
     inputs=[
       m.geom_type,
+      m.geom_sdf_plugin_type,
       m.geom_condim,
       m.geom_dataid,
       m.geom_priority,
