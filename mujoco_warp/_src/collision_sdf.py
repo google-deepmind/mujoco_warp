@@ -26,11 +26,6 @@ from .math import make_frame
 from . import math
 
 @wp.struct
-class GradientState:
-  dist: float
-  x: wp.vec3
-
-@wp.struct
 class OptimizationParams:
   rel_mat: wp.mat33
   rel_pos: wp.vec3
@@ -257,9 +252,9 @@ def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, niter
               )
 
               if alpha <= amin or (dist - dist0) <= wolfe:
-                  if dist > dist0:
-                     return dist, x
-                  break       
+                  break  
+          if dist > dist0:
+                  return dist, x
         return dist, x
     return _gradient_step
 
@@ -456,7 +451,7 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
   return _sdf_sdf
 
 @wp.kernel
-def _sdf_narrowphase5(
+def _sdf_narrowphase6(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
@@ -646,7 +641,7 @@ def _sdf_narrowphase5(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase5,
+    _sdf_narrowphase6,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
