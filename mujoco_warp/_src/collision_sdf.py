@@ -34,8 +34,9 @@ class GradientState:
 class OptimizationParams:
   rel_mat: wp.mat33
   rel_pos: wp.vec3
-  size1: wp.vec3
-  size2: wp.vec3
+  attr1: wp.vec3
+  attr2: wp.vec3
+
 @wp.struct
 class AABB:
   min: wp.vec3
@@ -81,9 +82,9 @@ def ellipsoid(p: wp.vec3, size: wp.vec3) -> float:
   return k0 * (k0 - 1.0) / denom
 
 @wp.func
-def nut(p: wp.vec3) -> float:
+def nut(p: wp.vec3, attr: wp.vec3) -> float:
     screw = 12.0
-    radius2 = wp.sqrt(p[0]*p[0] + p[1]*p[1]) - 0.27 #todo
+    radius2 = wp.sqrt(p[0]*p[0] + p[1]*p[1]) - attr[0]
     sqrt12 = wp.sqrt(2.0)/2.0
 
     azimuth = wp.atan2(p[1], p[0])
@@ -141,48 +142,48 @@ def grad_ellipsoid(p: wp.vec3, size: wp.vec3) -> wp.vec3:
 
 @wp.func
 def grad_nut(
-    x: wp.vec3,
+    x: wp.vec3, attr: wp.vec3
 ) -> wp.vec3:
     grad = wp.vec3()
     eps = 1e-4
     
-    f_original =  nut(x)
+    f_original =  nut(x, attr)
     x_plus = wp.vec3(x[0] + eps, x[1], x[2])
-    f_plus =  nut(x_plus)
+    f_plus =  nut(x_plus, attr)
     grad[0] = (f_plus - f_original) / eps
 
     x_plus = wp.vec3(x[0], x[1] + eps, x[2])
-    f_plus =  nut(x_plus)
+    f_plus =  nut(x_plus, attr)
     grad[1] = (f_plus - f_original) / eps
 
     x_plus = wp.vec3(x[0], x[1], x[2] + eps)
-    f_plus =  nut(x_plus)
+    f_plus =  nut(x_plus, attr)
     grad[2] = (f_plus - f_original) / eps
     return grad
 
 def sdf(type: int, sdf_type: int = 0):
   @wp.func
-  def _sdf(p: wp.vec3, size: wp.vec3) -> float:
+  def _sdf(p: wp.vec3, attr: wp.vec3) -> float:
     if wp.static(type == GeomType.SPHERE.value):
-        return sphere(p, size)
+        return sphere(p, attr)
     elif wp.static(type == GeomType.ELLIPSOID.value):
-        return ellipsoid(p, size)
+        return ellipsoid(p, attr)
     elif wp.static(type == GeomType.SDF.value):
         if wp.static(sdf_type == SDFType.NUT.value):
-          return nut(p)
+          return nut(p, attr)
   return _sdf
 
 
 def sdf_grad(type: int, sdf_type: int = 0):
   @wp.func
-  def _sdf_grad(p: wp.vec3, size: wp.vec3) -> wp.vec3:
+  def _sdf_grad(p: wp.vec3, attr: wp.vec3) -> wp.vec3:
     if wp.static(type == GeomType.SPHERE.value):
         return grad_sphere(p)
     elif wp.static(type == GeomType.ELLIPSOID.value):
-        return grad_ellipsoid(p, size)
+        return grad_ellipsoid(p, attr)
     elif wp.static(type == GeomType.SDF.value):
         if wp.static(sdf_type == SDFType.NUT.value):
-          return grad_nut(p)
+          return grad_nut(p, attr)
 
   return _sdf_grad
 
@@ -202,13 +203,12 @@ def compute_grad(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, sfd_in
     def _compute_grad(
         p1: wp.vec3, p2: wp.vec3, params: OptimizationParams
     ) -> wp.vec3:
-        A = wp.static(sdf(type1, sdf_type1))(p1, params.size1)
-        B = wp.static(sdf(type2, sdf_type2))(p2, params.size2)
-        grad1 = wp.static(sdf_grad(type1, sdf_type1))(p1, params.size1)
-        grad2 = wp.static(sdf_grad(type2, sdf_type2))(p2, params.size2)
+        A = wp.static(sdf(type1, sdf_type1))(p1, params.attr1)
+        B = wp.static(sdf(type2, sdf_type2))(p2, params.attr2)
+        grad1 = wp.static(sdf_grad(type1, sdf_type1))(p1, params.attr1)
+        grad2 = wp.static(sdf_grad(type2, sdf_type2))(p2, params.attr2)
         grad1_transformed = params.rel_mat * grad1
         if sfd_intersection:
-            # Only return the gradient of the maximum SDF
             if A > B:
                 return grad1_transformed
             else:
@@ -240,7 +240,7 @@ def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, sfd_i
         x1 = params.rel_mat * x0 + params.rel_pos
         grad = wp.static(compute_grad(type1, type2, sdf_type1, sdf_type2,  sfd_intersection))(x1, x0, params)
         dist0 = wp.static(clearance(type1, type2, sdf_type1, sdf_type2, sfd_intersection))(
-            x1, x0, params.size1, params.size2
+            x1, x0, params.attr1, params.attr2
         )
         grad_dot = wp.dot(grad, grad)
 
@@ -258,7 +258,7 @@ def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, sfd_i
             candidate = x0 - grad * alpha
             x1_candidate = params.rel_mat * candidate + params.rel_pos
             value = wp.static(clearance(type1, type2, sdf_type1, sdf_type2, sfd_intersection))(
-                x1_candidate, candidate, params.size1, params.size2
+                x1_candidate, candidate, params.attr1, params.attr2
             )
 
             if alpha <= amin or (value - dist0) <= wolfe:
@@ -335,8 +335,8 @@ def sphere_ellipsoid(
     static_type2 =  wp.static(GeomType.ELLIPSOID.value)
     params.rel_mat = wp.transpose(s.rot) * e.rot
     params.rel_pos = wp.transpose(s.rot) * (e.pos - s.pos)
-    params.size1 = s.size #todo
-    params.size2 = e.size
+    params.attr1 = s.size 
+    params.attr2 = e.size
 
     # min of the first AABB
     x1 = aabb1.min
@@ -349,8 +349,8 @@ def sphere_ellipsoid(
     dist, pos = wp.static(gradient_descent(static_type1, static_type2))(x0_transformed, 10, params)
 
     pos_s = params.rel_mat * pos + params.rel_pos
-    grad1 = wp.static(sdf_grad(static_type1))(pos_s, params.size1)
-    grad2 = wp.static(sdf_grad(static_type1))(pos, params.size2) 
+    grad1 = wp.static(sdf_grad(static_type1))(pos_s, params.attr1)
+    grad2 = wp.static(sdf_grad(static_type1))(pos, params.attr2) 
     n = grad1 - grad2
     pos = e.rot * pos + e.pos
     n = e.rot * n
@@ -393,7 +393,9 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
     s1: Geom,
     s2: Geom,
     aabb1: AABB,
-    aabb2:AABB,
+    aabb2: AABB,
+    attr1: wp.vec3f,
+    attr2: wp.vec3f,
     geom_pos1: wp.vec3,
     geom_mat1: wp.mat33,
     geom_pos2: wp.vec3,
@@ -429,8 +431,8 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
       params = OptimizationParams()
       params.rel_mat = wp.transpose(rot1) * rot2
       params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
-      params.size1 = s1.size
-      params.size2 = s2.size
+      params.attr1 = attr1
+      params.attr2 = attr2
 
       x1 = aabb1.min
       x2 = aabb2.min
@@ -438,8 +440,8 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
       x0_transformed = wp.transpose(rot2) * (x - pos2)
       dist, pos = wp.static(gradient_descent(type1, type2, sdf_type1, sdf_type2))(x0_transformed, 10, params)
       pos_s = params.rel_mat * pos + params.rel_pos
-      grad1 = wp.static(sdf_grad(type1, sdf_type1))(pos_s, params.size1)
-      grad2 = wp.static(sdf_grad(type1, sdf_type2))(pos, params.size2) 
+      grad1 = wp.static(sdf_grad(type1, sdf_type1))(pos_s, params.attr1)
+      grad2 = wp.static(sdf_grad(type1, sdf_type2))(pos, params.attr2) 
       n = grad1 - grad2
       pos = rot2 * pos + pos2
       n = rot2 * n
@@ -481,6 +483,7 @@ def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
+  geom_sdf_plugin_attr: wp.array(dtype=wp.vec3f),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
@@ -579,6 +582,8 @@ def _sdf_narrowphase(
   type2 = geom_type[g2]
   sdf_type1 = sdf_type[g1]
   sdf_type2 = sdf_type[g2]
+  attr1 = geom_sdf_plugin_attr[g1]
+  attr2 = geom_sdf_plugin_attr[g2]
 
   aabb_pos = geom_aabb[g1, 0]
   aabb_size = geom_aabb[g1, 1]
@@ -633,6 +638,8 @@ def _sdf_narrowphase(
         geom2,
         aabb1,
         aabb2,
+        attr1,
+        attr2,
         pos1,
         rot1,
         pos2, 
@@ -667,6 +674,7 @@ def sdf_narrowphase(m: Model, d: Data):
     inputs=[
       m.geom_type,
       m.geom_sdf_plugin_type,
+      m.geom_sdf_plugin_attr,
       m.geom_condim,
       m.geom_dataid,
       m.geom_priority,
