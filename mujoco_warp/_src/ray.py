@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Tuple
+
 import warp as wp
 
 from .types import MJ_MINVAL
@@ -361,7 +363,7 @@ def _ray_map(
   mat: wp.mat33,
   pnt: wp.vec3,
   vec: wp.vec3,
-) -> any:
+) -> Tuple[wp.vec3, wp.vec3]:
   """Maps ray to local geom frame coordinates.
 
   Args:
@@ -384,7 +386,7 @@ def _ray_map(
 
 
 @wp.func
-def _ray_geom(
+def ray_geom(
   # In:
   pos: wp.vec3,  # Position of geom frame
   mat: wp.mat33,  # Orientation of geom frame

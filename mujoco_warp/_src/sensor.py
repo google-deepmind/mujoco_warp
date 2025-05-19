@@ -18,15 +18,20 @@ from typing import Any, Tuple
 import warp as wp
 
 from . import math
+from . import ray
 from . import smooth
+from . import support
 from .types import MJ_MINVAL
+from .types import ConeType
 from .types import Data
 from .types import DataType
 from .types import DisableBit
+from .types import JointType
 from .types import Model
 from .types import ObjType
 from .types import SensorType
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 
 @wp.func
@@ -1273,44 +1278,403 @@ def _sensor_acc(
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
 
 
+@wp.kernel
+def _sensor_touch_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_touch_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, sensortouchadrid = wp.tid()
+  sensorid = sensor_touch_adr[sensortouchadrid]
+  adr = sensor_adr[sensorid]
+  sensordata_out[worldid, adr] = 0.0
+
+
+@wp.kernel
+def _sensor_touch(
+  # Model:
+  opt_cone: int,
+  geom_bodyid: wp.array(dtype=int),
+  site_type: wp.array(dtype=int),
+  site_bodyid: wp.array(dtype=int),
+  site_size: wp.array(dtype=wp.vec3),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_touch_adr: wp.array(dtype=int),
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  contact_pos_in: wp.array(dtype=wp.vec3),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_dim_in: wp.array(dtype=int),
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_force_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  conid, sensortouchadrid = wp.tid()
+
+  if conid > ncon_in[0]:
+    return
+
+  sensorid = sensor_touch_adr[sensortouchadrid]
+
+  objid = sensor_objid[sensorid]
+  bodyid = site_bodyid[objid]
+
+  # find contact in sensor zone, add normal force
+
+  # contacting bodies
+  geom = contact_geom_in[conid]
+  conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
+
+  # select contacts involving sensorized body
+  efc_address0 = contact_efc_address_in[conid, 0]
+  if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
+    # get contact normal force
+    normalforce = efc_force_in[efc_address0]
+
+    if opt_cone == int(ConeType.PYRAMIDAL.value):
+      dim = contact_dim_in[conid]
+      for i in range(1, 2 * (dim - 1)):
+        normalforce += efc_force_in[contact_efc_address_in[conid, i]]
+
+    if normalforce <= 0.0:
+      return
+
+    # convert contact normal force to global frame, normalize
+    frame = contact_frame_in[conid]
+    conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
+    conray, _ = math.normalize_with_norm(conray)
+
+    # flip ray direction if sensor is on body2
+    if bodyid == conbody[1]:
+      conray = -conray
+
+    # add if ray-zone intersection (always true when contact.pos inside zone)
+    worldid = contact_worldid_in[conid]
+    if (
+      ray.ray_geom(
+        site_xpos_in[worldid, objid],
+        site_xmat_in[worldid, objid],
+        site_size[objid],
+        contact_pos_in[conid],
+        conray,
+        site_type[objid],
+      )
+      >= 0.0
+    ):
+      adr = sensor_adr[sensorid]
+      wp.atomic_add(sensordata_out[worldid], adr, normalforce)
+
+
 @event_scope
 def sensor_acc(m: Model, d: Data):
   """Compute acceleration-dependent sensor values."""
-
-  if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  if m.sensor_rne_postconstraint:
-    smooth.rne_postconstraint(m, d)
+  if m.sensor_touch_adr.size > 0:
+    wp.launch(
+      _sensor_touch_zero,
+      dim=(d.nworld, m.sensor_touch_adr.size),
+      inputs=[
+        m.sensor_adr,
+        m.sensor_touch_adr,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
+    wp.launch(
+      _sensor_touch,
+      dim=(d.nconmax, m.sensor_touch_adr.size),
+      inputs=[
+        m.opt.cone,
+        m.geom_bodyid,
+        m.site_type,
+        m.site_bodyid,
+        m.site_size,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_touch_adr,
+        d.ncon,
+        d.site_xpos,
+        d.site_xmat,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.efc.force,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
 
-  wp.launch(
-    _sensor_acc,
-    dim=(d.nworld, m.sensor_acc_adr.size),
-    inputs=[
-      m.body_rootid,
-      m.jnt_dofadr,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.cam_bodyid,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_acc_adr,
-      d.xpos,
-      d.xipos,
-      d.geom_xpos,
-      d.site_xpos,
-      d.site_xmat,
-      d.cam_xpos,
-      d.subtree_com,
-      d.cvel,
-      d.actuator_force,
-      d.qfrc_actuator,
-      d.cacc,
-      d.cfrc_int,
-    ],
-    outputs=[d.sensordata],
+  if m.sensor_acc_adr.size > 0:
+    if m.sensor_rne_postconstraint:
+      smooth.rne_postconstraint(m, d)
+
+    wp.launch(
+      _sensor_acc,
+      dim=(d.nworld, m.sensor_acc_adr.size),
+      inputs=[
+        m.body_rootid,
+        m.jnt_dofadr,
+        m.geom_bodyid,
+        m.site_bodyid,
+        m.cam_bodyid,
+        m.sensor_type,
+        m.sensor_datatype,
+        m.sensor_objtype,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_acc_adr,
+        d.xpos,
+        d.xipos,
+        d.geom_xpos,
+        d.site_xpos,
+        d.site_xmat,
+        d.cam_xpos,
+        d.subtree_com,
+        d.cvel,
+        d.actuator_force,
+        d.qfrc_actuator,
+        d.cacc,
+        d.cfrc_int,
+      ],
+      outputs=[d.sensordata],
+    )
+
+
+@wp.kernel
+def _energy_pos_gravity(
+  # Model:
+  opt_gravity: wp.vec3,
+  body_mass: wp.array2d(dtype=float),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, bodyid = wp.tid()
+  bodyid += 1  # skip world body
+
+  energy = wp.vec2(
+    body_mass[worldid, bodyid] * wp.dot(opt_gravity, xipos_in[worldid, bodyid]),
+    0.0,
+  )
+
+  wp.atomic_sub(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_passive_joint(
+  # Model:
+  qpos_spring: wp.array2d(dtype=float),
+  jnt_type: wp.array(dtype=int),
+  jnt_qposadr: wp.array(dtype=int),
+  jnt_stiffness: wp.array2d(dtype=float),
+  # Data in:
+  qpos_in: wp.array2d(dtype=float),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, jntid = wp.tid()
+  stiffness = jnt_stiffness[worldid, jntid]
+
+  if stiffness == 0.0:
+    return
+
+  padr = jnt_qposadr[jntid]
+  jnttype = jnt_type[jntid]
+
+  if jnttype == int(JointType.FREE.value):
+    dif0 = wp.vec3(
+      qpos_in[worldid, padr + 0] - qpos_spring[worldid, padr + 0],
+      qpos_in[worldid, padr + 1] - qpos_spring[worldid, padr + 1],
+      qpos_in[worldid, padr + 2] - qpos_spring[worldid, padr + 2],
+    )
+
+    # convert quaternion difference into angular "velocity"
+    quat1 = wp.quat(
+      qpos_in[worldid, padr + 3],
+      qpos_in[worldid, padr + 4],
+      qpos_in[worldid, padr + 5],
+      qpos_in[worldid, padr + 6],
+    )
+    quat1 = wp.normalize(quat1)
+
+    quat_spring = wp.quat(
+      qpos_spring[worldid, padr + 3],
+      qpos_spring[worldid, padr + 4],
+      qpos_spring[worldid, padr + 5],
+      qpos_spring[worldid, padr + 6],
+    )
+
+    dif1 = math.quat_sub(quat1, quat_spring)
+
+    energy = wp.vec2(
+      0.5 * stiffness * (wp.dot(dif0, dif0) + wp.dot(dif1, dif1)),
+      0.0,
+    )
+
+    wp.atomic_add(energy_out, worldid, energy)
+
+  elif jnttype == int(JointType.BALL.value):
+    quat = wp.quat(
+      qpos_in[worldid, padr + 0],
+      qpos_in[worldid, padr + 1],
+      qpos_in[worldid, padr + 2],
+      qpos_in[worldid, padr + 3],
+    )
+    quat = wp.normalize(quat)
+
+    quat_spring = wp.quat(
+      qpos_spring[worldid, padr + 0],
+      qpos_spring[worldid, padr + 1],
+      qpos_spring[worldid, padr + 2],
+      qpos_spring[worldid, padr + 3],
+    )
+
+    dif = math.quat_sub(quat, quat_spring)
+    energy = wp.vec2(
+      0.5 * stiffness * wp.dot(dif, dif),
+      0.0,
+    )
+    wp.atomic_add(energy_out, worldid, energy)
+  elif jnttype == int(JointType.SLIDE.value) or jnttype == int(JointType.HINGE.value):
+    dif_ = qpos_in[worldid, padr] - qpos_spring[worldid, padr]
+    energy = wp.vec2(
+      0.5 * stiffness * dif_ * dif_,
+      0.0,
+    )
+    wp.atomic_add(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_passive_tendon(
+  # Model:
+  tendon_stiffness: wp.array2d(dtype=float),
+  tendon_lengthspring: wp.array2d(dtype=wp.vec2),
+  # Data in:
+  ten_length_in: wp.array2d(dtype=float),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, tenid = wp.tid()
+
+  stiffness = tendon_stiffness[worldid, tenid]
+
+  if stiffness == 0.0:
+    return
+
+  length = ten_length_in[worldid, tenid]
+
+  # compute spring displacement
+  lengthspring = tendon_lengthspring[worldid, tenid]
+  lower = lengthspring[0]
+  upper = lengthspring[1]
+
+  if length > upper:
+    displacement = upper - length
+  elif length < lower:
+    displacement = lower - length
+  else:
+    displacement = 0.0
+
+  energy = wp.vec2(0.5 * stiffness * displacement * displacement, 0.0)
+  wp.atomic_add(energy_out, worldid, energy)
+
+
+def energy_pos(m: Model, d: Data):
+  """Position-dependent energy (potential)."""
+
+  # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
+  if not m.opt.disableflags & DisableBit.GRAVITY:
+    wp.launch(
+      _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
+    )
+
+  if not m.opt.disableflags & DisableBit.PASSIVE:
+    # add joint-level springs
+    wp.launch(
+      _energy_pos_passive_joint,
+      dim=(d.nworld, m.njnt),
+      inputs=[
+        m.qpos_spring,
+        m.jnt_type,
+        m.jnt_qposadr,
+        m.jnt_stiffness,
+        d.qpos,
+      ],
+      outputs=[d.energy],
+    )
+
+    # add tendon-level springs
+    if m.ntendon:
+      wp.launch(
+        _energy_pos_passive_tendon,
+        dim=(d.nworld, m.ntendon),
+        inputs=[
+          m.tendon_stiffness,
+          m.tendon_lengthspring,
+          d.ten_length,
+        ],
+        outputs=[d.energy],
+      )
+
+    # TODO(team): flex
+
+
+def _energy_vel_kinetic(nv: int):
+  @nested_kernel
+  def energy_vel_kinetic(
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    # In:
+    Mqvel: wp.array2d(dtype=float),
+    # Out:
+    energy_out: wp.array(dtype=wp.vec2),
+  ):
+    worldid = wp.tid()
+
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
+    Mqvel_tile = wp.tile_load(Mqvel[worldid], shape=wp.static(nv))
+
+    # qvel * (M @ qvel)
+    qvelMqvel_tile = wp.tile_map(wp.mul, qvel_tile, Mqvel_tile)
+
+    # sum(qvel * (M @ qvel))
+    quadratic_tile = wp.tile_reduce(wp.add, qvelMqvel_tile)
+
+    energy_out[worldid][1] = 0.5 * quadratic_tile[0]
+
+  return energy_vel_kinetic
+
+
+def energy_vel(m: Model, d: Data):
+  """Velocity-dependent energy (kinetic)."""
+
+  # kinetic energy: 0.5 * qvel.T @ M @ qvel
+
+  # M @ qvel
+  skip = wp.zeros(d.nworld, dtype=bool)
+  support.mul_m(m, d, d.efc.mv, d.qvel, skip)
+
+  wp.launch_tiled(
+    _energy_vel_kinetic(m.nv),
+    dim=(d.nworld,),
+    inputs=[d.qvel, d.efc.mv],
+    outputs=[d.energy],
+    block_dim=32,
   )

@@ -2013,6 +2013,7 @@ def update_gradient_JTDAJ(
   dof_tri_row: wp.array(dtype=int),
   dof_tri_col: wp.array(dtype=int),
   # Data in:
+  njmax_in: int,
   nefc_in: wp.array(dtype=int),
   efc_worldid_in: wp.array(dtype=int),
   efc_J_in: wp.array2d(dtype=float),
@@ -2033,7 +2034,7 @@ def update_gradient_JTDAJ(
   for i in range(nblocks_perblock):
     efcid = efcid_temp + i * dim_x
 
-    if efcid >= nefc:
+    if efcid >= min(nefc, njmax_in):
       return
 
     worldid = efc_worldid_in[efcid]
@@ -2256,6 +2257,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       inputs=[
         m.dof_tri_row,
         m.dof_tri_col,
+        d.njmax,
         d.nefc,
         d.efc.worldid,
         d.efc.J,

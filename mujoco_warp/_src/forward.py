@@ -1131,8 +1131,10 @@ def forward(m: Model, d: Data):
 
   fwd_position(m, d)
   sensor.sensor_pos(m, d)
+  # TODO(team): energy_pos
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
+  # TODO(team): energy_vel
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
   sensor.sensor_acc(m, d)

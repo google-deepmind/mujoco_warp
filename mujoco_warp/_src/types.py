@@ -263,6 +263,7 @@ class SensorType(enum.IntEnum):
     FRAMEANGVEL: 3D angular velocity
     SUBTREELINVEL: subtree linear velocity
     SUBTREEANGMOM: subtree angular momentum
+    TOUCH: scalar contact normal forces summed over sensor zone
     ACCELEROMETER: accelerometer
     FORCE: force
     TORQUE: torque
@@ -294,6 +295,7 @@ class SensorType(enum.IntEnum):
   FRAMEANGVEL = mujoco.mjtSensor.mjSENS_FRAMEANGVEL
   SUBTREELINVEL = mujoco.mjtSensor.mjSENS_SUBTREELINVEL
   SUBTREEANGMOM = mujoco.mjtSensor.mjSENS_SUBTREEANGMOM
+  TOUCH = mujoco.mjtSensor.mjSENS_TOUCH
   ACCELEROMETER = mujoco.mjtSensor.mjSENS_ACCELEROMETER
   FORCE = mujoco.mjtSensor.mjSENS_FORCE
   TORQUE = mujoco.mjtSensor.mjSENS_TORQUE
@@ -345,11 +347,15 @@ class WrapType(enum.IntEnum):
   Members:
     JOINT: constant moment arm
     SITE: pass through site
+    SPHERE: wrap around sphere
+    CYLINDER: wrap around (infinite) cylinder
   """
 
   JOINT = mujoco.mjtWrap.mjWRAP_JOINT
   SITE = mujoco.mjtWrap.mjWRAP_SITE
-  # unsupported: PULLEY, SPHERE, CYLINDER
+  SPHERE = mujoco.mjtWrap.mjWRAP_SPHERE
+  CYLINDER = mujoco.mjtWrap.mjWRAP_CYLINDER
+  # unsupported: PULLEY
 
 
 class vec5f(wp.types.vector(length=5, dtype=float)):
@@ -695,6 +701,7 @@ class Model:
     hfield_ncol: number of columns in grid                   (nhfield,)
     hfield_size: (x, y, z_top, z_bottom)                     (nhfield, 4)
     hfield_data: elevation data                              (nhfielddata,)
+    site_type: geom type for rendering (mjtGeom)             (nsite,)
     site_bodyid: id of site's body                           (nsite,)
     site_pos: local position offset rel. to body             (nworld, nsite, 3)
     site_quat: local orientation offset rel. to body         (nworld, nsite, 4)
@@ -774,8 +781,14 @@ class Model:
     tendon_limited_adr: addresses for limited tendons        (<=ntendon,)
     tendon_solref_lim: constraint solver reference: limit    (nworld, ntendon, mjNREF)
     tendon_solimp_lim: constraint solver impedance: limit    (nworld, ntendon, mjNIMP)
+    tendon_solref_fri: constraint solver reference: friction (nworld, ntendon, mjNREF)
+    tendon_solimp_fri: constraint solver impedance: friction (nworld, ntendon, mjNIMP)
     tendon_range: tendon length limits                       (nworld, ntendon, 2)
     tendon_margin: min distance for limit detection          (nworld, ntendon,)
+    tendon_stiffness: stiffness coefficient                  (nworld, ntendon,)
+    tendon_damping: damping coefficient                      (nworld, ntendon,)
+    tendon_frictionloss: loss due to friction                (nworld, ntendon,)
+    tendon_lengthspring: spring resting length range         (nworld, ntendon, 2)
     tendon_length0: tendon length in qpos0                   (nworld, ntendon,)
     tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
@@ -801,6 +814,8 @@ class Model:
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+                    (excluding touch sensors)
+    sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     mocap_bodyid: id of body for mocap                       (nmocap,)
@@ -930,7 +945,9 @@ class Model:
   hfield_ncol: wp.array(dtype=int)
   hfield_size: wp.array(dtype=wp.vec4)
   hfield_data: wp.array(dtype=float)
+  site_type: wp.array(dtype=int)
   site_bodyid: wp.array(dtype=int)
+  site_size: wp.array(dtype=wp.vec3)
   site_pos: wp.array2d(dtype=wp.vec3)
   site_quat: wp.array2d(dtype=wp.quat)
   cam_mode: wp.array(dtype=int)
@@ -1021,8 +1038,14 @@ class Model:
   tendon_limited_adr: wp.array(dtype=int)
   tendon_solref_lim: wp.array2d(dtype=wp.vec2)
   tendon_solimp_lim: wp.array2d(dtype=vec5)
+  tendon_solref_fri: wp.array2d(dtype=wp.vec2)
+  tendon_solimp_fri: wp.array2d(dtype=vec5)
   tendon_range: wp.array2d(dtype=wp.vec2)
   tendon_margin: wp.array2d(dtype=float)
+  tendon_stiffness: wp.array2d(dtype=float)
+  tendon_damping: wp.array2d(dtype=float)
+  tendon_frictionloss: wp.array2d(dtype=float)
+  tendon_lengthspring: wp.array2d(dtype=wp.vec2)
   tendon_length0: wp.array2d(dtype=float)
   tendon_invweight0: wp.array2d(dtype=float)
   wrap_objid: wp.array(dtype=int)
@@ -1048,6 +1071,7 @@ class Model:
   sensor_pos_adr: wp.array(dtype=int)  # warp only
   sensor_vel_adr: wp.array(dtype=int)  # warp only
   sensor_acc_adr: wp.array(dtype=int)  # warp only
+  sensor_touch_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
@@ -1105,6 +1129,7 @@ class Data:
     nl: number of limit constraints                             ()
     nefc: number of constraints                                 (1,)
     time: simulation time                                       (nworld,)
+    energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
     qvel: velocity                                              (nworld, nv)
     act: actuator activation                                    (nworld, na)
@@ -1214,6 +1239,7 @@ class Data:
   nl: wp.array(dtype=int)
   nefc: wp.array(dtype=int)
   time: wp.array(dtype=float)
+  energy: wp.array(dtype=wp.vec2)
   qpos: wp.array2d(dtype=float)
   qvel: wp.array2d(dtype=float)
   act: wp.array2d(dtype=float)

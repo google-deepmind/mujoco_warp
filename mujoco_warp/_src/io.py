@@ -38,14 +38,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
+  if np.isin(mjm.wrap_type, [types.WrapType.SPHERE, types.WrapType.CYLINDER]).any():
+    raise NotImplementedError("Tendon geom wrapping not supported.")
+
   if mjm.nplugin > 0:
     raise NotImplementedError("Plugins are unsupported.")
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
-
-  if mjm.tendon_frictionloss.any():
-    raise NotImplementedError("Tendon frictionloss is unsupported.")
 
   if mjm.geom_fluid.any():
     raise NotImplementedError("Ellipsoid fluid model not implemented.")
@@ -405,7 +405,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_margin=create_nmodel_batched_array(mjm.geom_margin, dtype=float),
     geom_gap=create_nmodel_batched_array(mjm.geom_gap, dtype=float),
     geom_rgba=create_nmodel_batched_array(mjm.geom_rgba, dtype=wp.vec4),
+    site_type=wp.array(mjm.site_type, dtype=int),
     site_bodyid=wp.array(mjm.site_bodyid, dtype=int),
+    site_size=wp.array(mjm.site_size, dtype=wp.vec3),
     site_pos=create_nmodel_batched_array(mjm.site_pos, dtype=wp.vec3),
     site_quat=create_nmodel_batched_array(mjm.site_quat, dtype=wp.quat),
     cam_mode=wp.array(mjm.cam_mode, dtype=int),
@@ -508,8 +510,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tendon_limited_adr=wp.array(np.nonzero(mjm.tendon_limited)[0], dtype=wp.int32, ndim=1),
     tendon_solref_lim=create_nmodel_batched_array(mjm.tendon_solref_lim, dtype=wp.vec2f),
     tendon_solimp_lim=create_nmodel_batched_array(mjm.tendon_solimp_lim, dtype=types.vec5),
+    tendon_solref_fri=create_nmodel_batched_array(mjm.tendon_solref_fri, dtype=wp.vec2f),
+    tendon_solimp_fri=create_nmodel_batched_array(mjm.tendon_solimp_fri, dtype=types.vec5),
     tendon_range=create_nmodel_batched_array(mjm.tendon_range, dtype=wp.vec2f),
     tendon_margin=create_nmodel_batched_array(mjm.tendon_margin, dtype=float),
+    tendon_stiffness=create_nmodel_batched_array(mjm.tendon_stiffness, dtype=float),
+    tendon_damping=create_nmodel_batched_array(mjm.tendon_damping, dtype=float),
+    tendon_frictionloss=create_nmodel_batched_array(mjm.tendon_frictionloss, dtype=float),
+    tendon_lengthspring=create_nmodel_batched_array(mjm.tendon_lengthspring, dtype=wp.vec2),
     tendon_length0=create_nmodel_batched_array(mjm.tendon_length0, dtype=float),
     tendon_invweight0=create_nmodel_batched_array(mjm.tendon_invweight0, dtype=float),
     wrap_objid=wp.array(mjm.wrap_objid, dtype=int),
@@ -541,7 +549,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       dtype=int,
     ),
     sensor_acc_adr=wp.array(
-      np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0],
+      np.nonzero((mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC) & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH))[0],
+      dtype=int,
+    ),
+    sensor_touch_adr=wp.array(
+      np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TOUCH)[0],
       dtype=int,
     ),
     sensor_subtree_vel=np.isin(
@@ -594,6 +606,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     nl=wp.zeros(1, dtype=int),
     nefc=wp.zeros(1, dtype=int),
     time=wp.zeros(nworld, dtype=float),
+    energy=wp.zeros(nworld, dtype=wp.vec2),
     qpos=wp.zeros((nworld, mjm.nq), dtype=float),
     qvel=wp.zeros((nworld, mjm.nv), dtype=float),
     act=wp.zeros((nworld, mjm.na), dtype=float),
@@ -889,6 +902,7 @@ def put_data(
     nl=arr([mjd.nl * nworld]),
     nefc=arr([mjd.nefc * nworld]),
     time=arr(mjd.time * np.ones(nworld)),
+    energy=tile(mjd.energy, dtype=wp.vec2),
     qpos=tile(mjd.qpos),
     qvel=tile(mjd.qvel),
     act=tile(mjd.act),
@@ -1076,6 +1090,7 @@ def get_data_into(
     mujoco._functions._realloc_con_efc(result, ncon=ncon, nefc=nefc)
 
   result.time = d.time.numpy()[0]
+  result.energy = d.energy.numpy()[0]
   result.ne = d.ne.numpy()[0]
   result.qpos[:] = d.qpos.numpy()[0]
   result.qvel[:] = d.qvel.numpy()[0]

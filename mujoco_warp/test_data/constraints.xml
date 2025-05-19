@@ -77,6 +77,13 @@
     </body>
   </worldbody>
 
+  <tendon>
+    <fixed name="tendon_1" stiffness=".1" damping=".2" frictionloss=".1">
+      <joint joint="joint3" coef=".1"/>
+      <joint joint="joint4" coef="-.2"/>
+    </fixed>
+  </tendon>
+
   <equality>
     <connect name="c_site"   site1="site0"      site2="site1"/>
     <connect name="connect"  body1="anchor1"    body2="beam1"   anchor="1 0 -1" />
