@@ -448,4 +448,6 @@ def collision(m: Model, d: Data):
   gjk_narrowphase(m, d)
   primitive_narrowphase(m, d)
   sdf_narrowphase(m, d)
+
+
 #  box_box_narrowphase(m, d)

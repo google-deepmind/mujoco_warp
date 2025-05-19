@@ -223,12 +223,13 @@ class GeomType(enum.IntEnum):
   # unsupported: HFIELD,
   # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
+
 class SDFType(enum.IntEnum):
   BOLT = 3
   BOWL = 4
   GEAR = 5
   NUT = 6
-  TORUS= 7
+  TORUS = 7
 
 
 class SolverType(enum.IntEnum):
