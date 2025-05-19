@@ -38,7 +38,7 @@ def _update_efc_row(
   solref: wp.vec2,
   solimp: vec5,
   margin: float,
-  Jqvel: float,
+  vel: float,
   frictionloss: float,
   id: int,
   # Data out:
@@ -46,6 +46,7 @@ def _update_efc_row(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -84,7 +85,8 @@ def _update_efc_row(
 
   # Update constraints
   efc_D_out[efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)
-  efc_aref_out[efcid] = -k * imp * pos_aref - b * Jqvel
+  efc_vel_out[efcid] = vel
+  efc_aref_out[efcid] = -k * imp * pos_aref - b * vel
   efc_pos_out[efcid] = pos_aref + margin
   efc_margin_out[efcid] = margin
   efc_frictionloss_out[efcid] = frictionloss
@@ -129,6 +131,7 @@ def _efc_equality_connect(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -226,6 +229,7 @@ def _efc_equality_connect(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -263,6 +267,7 @@ def _efc_equality_joint(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -325,6 +330,7 @@ def _efc_equality_joint(
     efc_pos_out,
     efc_margin_out,
     efc_D_out,
+    efc_vel_out,
     efc_aref_out,
     efc_frictionloss_out,
   )
@@ -363,6 +369,7 @@ def _efc_equality_tendon(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -431,6 +438,7 @@ def _efc_equality_tendon(
     efc_pos_out,
     efc_margin_out,
     efc_D_out,
+    efc_vel_out,
     efc_aref_out,
     efc_frictionloss_out,
   )
@@ -458,6 +466,7 @@ def _efc_friction_dof(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -494,6 +503,7 @@ def _efc_friction_dof(
     efc_pos_out,
     efc_margin_out,
     efc_D_out,
+    efc_vel_out,
     efc_aref_out,
     efc_frictionloss_out,
   )
@@ -522,6 +532,7 @@ def _efc_friction_tendon(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -560,6 +571,7 @@ def _efc_friction_tendon(
     efc_pos_out,
     efc_margin_out,
     efc_D_out,
+    efc_vel_out,
     efc_aref_out,
     efc_frictionloss_out,
   )
@@ -606,6 +618,7 @@ def _efc_equality_weld(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -726,6 +739,7 @@ def _efc_equality_weld(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -750,6 +764,7 @@ def _efc_equality_weld(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -782,6 +797,7 @@ def _efc_limit_slide_hinge(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -827,6 +843,7 @@ def _efc_limit_slide_hinge(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -859,6 +876,7 @@ def _efc_limit_ball(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -913,6 +931,7 @@ def _efc_limit_ball(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -950,6 +969,7 @@ def _efc_limit_tendon(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -1006,6 +1026,7 @@ def _efc_limit_tendon(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -1048,6 +1069,7 @@ def _efc_contact_pyramidal(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
 ):
@@ -1157,6 +1179,7 @@ def _efc_contact_pyramidal(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -1200,6 +1223,7 @@ def _efc_contact_elliptic(
   efc_pos_out: wp.array(dtype=float),
   efc_margin_out: wp.array(dtype=float),
   efc_D_out: wp.array(dtype=float),
+  efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
   # Out:
@@ -1314,6 +1338,7 @@ def _efc_contact_elliptic(
       efc_pos_out,
       efc_margin_out,
       efc_D_out,
+      efc_vel_out,
       efc_aref_out,
       efc_frictionloss_out,
     )
@@ -1402,6 +1427,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.pos,
           d.efc.margin,
           d.efc.D,
+          d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
         ],
@@ -1447,6 +1473,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.pos,
           d.efc.margin,
           d.efc.D,
+          d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
         ],
@@ -1483,6 +1510,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.pos,
           d.efc.margin,
           d.efc.D,
+          d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
         ],
@@ -1520,6 +1548,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.pos,
           d.efc.margin,
           d.efc.D,
+          d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
         ],
@@ -1563,6 +1592,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.pos,
           d.efc.margin,
           d.efc.D,
+          d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
         ],
@@ -1591,6 +1621,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.pos,
           d.efc.margin,
           d.efc.D,
+          d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
         ],
@@ -1627,6 +1658,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.pos,
             d.efc.margin,
             d.efc.D,
+            d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
           ],
@@ -1661,6 +1693,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.pos,
             d.efc.margin,
             d.efc.D,
+            d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
           ],
@@ -1700,6 +1733,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.pos,
             d.efc.margin,
             d.efc.D,
+            d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
           ],
@@ -1753,6 +1787,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.pos,
             d.efc.margin,
             d.efc.D,
+            d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
           ],
@@ -1796,6 +1831,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.pos,
             d.efc.margin,
             d.efc.D,
+            d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
             d.contact.efc_address,
