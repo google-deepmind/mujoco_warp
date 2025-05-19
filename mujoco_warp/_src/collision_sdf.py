@@ -258,45 +258,6 @@ def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, niter
         return dist, x
     return _gradient_step
 
-@wp.func
-def sphere_ellipsoid(
-  s: Geom,
-  e: Geom,
-  aabb1: AABB,
-  aabb2: AABB) -> tuple[float, wp.vec3, wp.vec3]:
-    
-    params = OptimizationParams()
-    static_type1 =  wp.static(GeomType.SPHERE.value)
-    static_type2 =  wp.static(GeomType.ELLIPSOID.value)
-    params.rel_mat = wp.transpose(s.rot) * e.rot
-    params.rel_pos = wp.transpose(s.rot) * (e.pos - s.pos)
-    params.attr1 = s.size 
-    params.attr2 = e.size
-
-
-    x1 = aabb1.min
-    x2 = aabb2.min 
-    x = wp.vec3(wp.max(x1[0], x2[0]),wp.max(x1[1], x2[1]),wp.max(x1[2], x2[2])
-                )
-    x0_transformed = wp.transpose(e.rot) * (x - e.pos)    
-    
-    # mjSDFTYPE_COLLISION;
-    dist, pos = wp.static(gradient_step(static_type1, static_type2, 0, 0, 10, False))(x0_transformed, params)
-    # mjSDFTYPE_INTERSECTION;
-    dist, pos = wp.static(gradient_step(static_type1, static_type2, 0, 0, 1, True))(pos, params)
-
-    pos_s = params.rel_mat * pos + params.rel_pos
-    grad1 = wp.static(sdf_grad(static_type1))(pos_s, params.attr1)
-    grad2 = wp.static(sdf_grad(static_type1))(pos, params.attr2) 
-    n = grad1 - grad2
-    pos = e.rot * pos + e.pos
-    n = e.rot * n
-    f = wp.normalize(n)
-    pos3 = pos + f* dist/2.0
-    wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos3[2])
-    return  dist, pos3, n
-    
-
 def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):  
   @wp.func
   def _sdf_sdf (
@@ -336,13 +297,13 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
       n = rot2 * n
       f = wp.normalize(n)
       pos3 = pos - f* dist/2.0
-      wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos[2]) #  -0.100208,-0.050679,0.461308,0.373223
+      wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos3[2])
       return  dist, pos3, n
       
   return _sdf_sdf
 
 @wp.kernel
-def _sdf_narrowphase12(
+def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
@@ -468,12 +429,18 @@ def _sdf_narrowphase12(
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
   if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.ELLIPSOID.value):
-     dist, pos, n = sphere_ellipsoid(
-      geom1,
-      geom2,
-      aabb1,
-      aabb2
-    )
+      type1s = wp.static(GeomType.SPHERE.value)
+      type2s = wp.static(GeomType.ELLIPSOID.value)
+      dist, pos, n = wp.static(sdf_sdf(type1s, type2s, 0, 0))(
+        aabb1,
+        aabb2,
+        geom1.size,
+        geom2.size,
+        geom1.pos,
+        geom1.rot,
+        geom2.pos, 
+        geom2.rot
+      )
   else:
       type1s = wp.static(GeomType.SDF.value)
       sdf_type1s = wp.static(SDFType.NUT.value)
@@ -520,7 +487,7 @@ def _sdf_narrowphase12(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase12,
+    _sdf_narrowphase,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
