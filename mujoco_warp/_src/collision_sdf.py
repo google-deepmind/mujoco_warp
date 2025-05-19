@@ -132,27 +132,6 @@ def grad_ellipsoid(p: wp.vec3, size: wp.vec3) -> wp.vec3:
   raw_grad = gk0 * df_dk0 - gk1 * df_dk1
   return raw_grad / wp.length(raw_grad)
 
-@wp.func
-def grad_nut(
-    x: wp.vec3, attr: wp.vec3
-) -> wp.vec3:
-    grad = wp.vec3()
-    eps = 1e-4
-    
-    f_original =  nut(x, attr)
-    x_plus = wp.vec3(x[0] + eps, x[1], x[2])
-    f_plus =  nut(x_plus, attr)
-    grad[0] = (f_plus - f_original) / eps
-
-    x_plus = wp.vec3(x[0], x[1] + eps, x[2])
-    f_plus =  nut(x_plus, attr)
-    grad[1] = (f_plus - f_original) / eps
-
-    x_plus = wp.vec3(x[0], x[1], x[2] + eps)
-    f_plus =  nut(x_plus, attr)
-    grad[2] = (f_plus - f_original) / eps
-    return grad
-
 def sdf(type: int, sdf_type: int = 0):
   @wp.func
   def _sdf(p: wp.vec3, attr: wp.vec3) -> float:
@@ -173,9 +152,22 @@ def sdf_grad(type: int, sdf_type: int = 0):
     elif wp.static(type == GeomType.ELLIPSOID.value):
         return grad_ellipsoid(p, attr)
     elif wp.static(type == GeomType.SDF.value):
-        if wp.static(sdf_type == SDFType.NUT.value):
-          return grad_nut(p, attr)
+          # finite differences
+          grad = wp.vec3()
+          eps = 1e-4 
+          f_original =  wp.static(sdf(GeomType.SDF.value, sdf_type))(p, attr)
+          x_plus = wp.vec3(p[0] + eps, p[1], p[2])
+          f_plus =   wp.static(sdf(GeomType.SDF.value, sdf_type))(x_plus, attr)
+          grad[0] = (f_plus - f_original) / eps
 
+          x_plus = wp.vec3(p[0], p[1] + eps, p[2])
+          f_plus =   wp.static(sdf(GeomType.SDF.value, sdf_type))(x_plus, attr)
+          grad[1] = (f_plus - f_original) / eps
+
+          x_plus = wp.vec3(p[0], p[1], p[2] + eps)
+          f_plus =   wp.static(sdf(GeomType.SDF.value, sdf_type))(x_plus, attr)
+          grad[2] = (f_plus - f_original) / eps
+          return grad
   return _sdf_grad
 
 def clearance(type1: int, type2: int, sdf_type1: int, sdf_type2: int, sfd_intersection: bool = False):
@@ -289,15 +281,15 @@ def gradient_descent(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int 
       dist, x = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, 1, True))(x, params)
 
       # mjSDFTYPE_MIDSURFACE
-      pos_s = params.rel_mat * x + params.rel_pos
-      grad1 = wp.static(sdf_grad(type1, sdf_type1))(pos_s, params.attr1)
+      x_1 = params.rel_mat * x + params.rel_pos
+      grad1 = wp.static(sdf_grad(type1, sdf_type1))(x_1, params.attr1)
       grad2 = wp.static(sdf_grad(type1, sdf_type2))(x, params.attr2) 
+      grad1 = params.rel_mat * grad1
       n = grad1 - grad2
       pos = rot2 * x + pos2
       n = rot2 * n
-      f = wp.normalize(n)
-      pos3 = pos - f* dist/2.0
-      wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos3[2])
+      n = wp.normalize(n)
+      pos3 = pos - n* dist/2.0
       return  dist, pos3, n
       
   return _gradient_descent
@@ -322,6 +314,7 @@ def sdf_sdf( aabb1: AABB,
           rot1,
           pos2, 
           rot2)
+    wp.printf("normal is  %f %f %f", n[0], n[1], n[2])
     return dist, pos, n
 
 @wp.func
@@ -365,10 +358,9 @@ def ellipsoid_sdf( aabb1: AABB,
           pos2, 
           rot2)
     return dist, pos, n
-  
-           
+          
 @wp.kernel
-def _sdf_narrowphase(
+def _sdf_narrowphase3(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
@@ -471,6 +463,8 @@ def _sdf_narrowphase(
   type2 = geom_type[g2]
   attr1 = geom_sdf_plugin_attr[g1]
   attr2 = geom_sdf_plugin_attr[g2]
+  if type2 != int(GeomType.SDF.value):
+     return
 
   aabb_pos = geom_aabb[g1, 0]
   aabb_size = geom_aabb[g1, 1]
@@ -491,7 +485,7 @@ def _sdf_narrowphase(
   rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
-  if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.SDF.value):
+  if type1 == int(GeomType.SPHERE.value):
         dist, pos, n = sphere_sdf(
           aabb1,
           aabb2,
@@ -503,7 +497,7 @@ def _sdf_narrowphase(
           geom2.rot,
           sdf_type[g2]
         )
-  elif type1 == int(GeomType.ELLIPSOID.value) and type2 == int(GeomType.SDF.value):
+  elif type1 == int(GeomType.ELLIPSOID.value):
         dist, pos, n = ellipsoid_sdf(
           aabb1,
           aabb2,
@@ -515,7 +509,7 @@ def _sdf_narrowphase(
           geom2.rot,
           sdf_type[g2]
         )
-  elif type1 == int(GeomType.SDF.value) and type2 == int(GeomType.SDF.value):
+  elif type1 == int(GeomType.SDF.value):
       dist, pos, n = sdf_sdf(
         aabb1,
         aabb2,
@@ -559,7 +553,7 @@ def _sdf_narrowphase(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase,
+    _sdf_narrowphase3,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
