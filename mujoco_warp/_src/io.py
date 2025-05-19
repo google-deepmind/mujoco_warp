@@ -38,6 +38,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
+  sdf_types = np.zeros_like(mjm.geom_type)
+  attr = np.zeros((mjm.geom_type.shape[0], 3), dtype=float)
   if mjm.nplugin > 0:
     sdf_types = []
     attr = []
@@ -62,7 +64,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
                     current.append(v)
             # Pad with zeros if less than 3
             attr_values += [0.0] * (3 - len(attr_values))
-            attr.append(attr_values[:3])  # Ensure only 3 elements
+            attr.append(attr_values[:3])
     sdf_types = np.array(sdf_types)
     attr = np.array(attr)
 

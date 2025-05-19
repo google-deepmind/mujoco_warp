@@ -273,18 +273,15 @@ def sphere_ellipsoid(
     params.attr1 = s.size 
     params.attr2 = e.size
 
-    # min of the first AABB
+
     x1 = aabb1.min
-    # min of the second AABB
-    x2 = aabb2.min
-    # min of the intersection
+    x2 = aabb2.min 
     x = wp.vec3(wp.max(x1[0], x2[0]),wp.max(x1[1], x2[1]),wp.max(x1[2], x2[2])
                 )
     x0_transformed = wp.transpose(e.rot) * (x - e.pos)    
     
     # mjSDFTYPE_COLLISION;
     dist, pos = wp.static(gradient_step(static_type1, static_type2, 0, 0, 10, False))(x0_transformed, params)
-      
     # mjSDFTYPE_INTERSECTION;
     dist, pos = wp.static(gradient_step(static_type1, static_type2, 0, 0, 1, True))(pos, params)
 
@@ -295,28 +292,23 @@ def sphere_ellipsoid(
     pos = e.rot * pos + e.pos
     n = e.rot * n
     f = wp.normalize(n)
-    pos3 = pos - f* dist/2.0
+    pos3 = pos + f* dist/2.0
+    wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos3[2])
     return  dist, pos3, n
     
 
 def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):  
   @wp.func
   def _sdf_sdf (
-    s1: Geom,
-    s2: Geom,
     aabb1: AABB,
     aabb2: AABB,
     attr1: wp.vec3f,
     attr2: wp.vec3f,
-    geom_pos1: wp.vec3,
-    geom_mat1: wp.mat33,
-    geom_pos2: wp.vec3,
-    geom_mat2: wp.mat33) -> tuple[float, wp.vec3, wp.vec3]:
+    pos1: wp.vec3,
+    rot1: wp.mat33,
+    pos2: wp.vec3,
+    rot2: wp.mat33) -> tuple[float, wp.vec3, wp.vec3]:
 
-      rot1 = math.mul(s1.rot, math.transpose(geom_mat1))
-      pos1 = wp.sub(s1.pos, math.mul(rot1, geom_pos1))
-      rot2 = math.mul(s2.rot, math.transpose(geom_mat2))
-      pos2 = wp.sub(s2.pos, math.mul(rot2, geom_pos2))
     
       params = OptimizationParams()
       params.rel_mat = wp.transpose(rot1) * rot2
@@ -350,7 +342,7 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
   return _sdf_sdf
 
 @wp.kernel
-def _sdf_narrowphase(
+def _sdf_narrowphase12(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
@@ -462,12 +454,18 @@ def _sdf_narrowphase(
   aabb_pos = geom_aabb[g2, 0]
   aabb_size = geom_aabb[g2, 1]
   aabb2 = transform_aabb(aabb_pos, aabb_size, geom2.pos, geom2.rot)
-  pos1 = geom_pos[g1]
+
+  geom_pos1 = geom_pos[g1]
   quat1 = geom_quat[g1]
-  rot1 = math.quat_to_mat(quat1)
-  pos2 = geom_pos[g2]
+  geom_mat1 = math.quat_to_mat(quat1)
+  geom_pos2 = geom_pos[g2]
   quat2 = geom_quat[g2]
-  rot2 = math.quat_to_mat(quat2)
+  geom_mat2 = math.quat_to_mat(quat2)
+
+  rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
+  pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
+  rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
+  pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
   if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.ELLIPSOID.value):
      dist, pos, n = sphere_ellipsoid(
@@ -482,8 +480,6 @@ def _sdf_narrowphase(
       type2s = wp.static(GeomType.SDF.value)
       sdf_type2s = wp.static(SDFType.NUT.value)
       dist, pos, n = wp.static(sdf_sdf(type1s, type2s, sdf_type1s, sdf_type2s))(
-        geom1,
-        geom2,
         aabb1,
         aabb2,
         attr1,
@@ -493,7 +489,6 @@ def _sdf_narrowphase(
         pos2, 
         rot2
       )
-
   write_contact(
       nconmax_in,
       dist,
@@ -521,10 +516,11 @@ def _sdf_narrowphase(
       contact_geom_out,
       contact_worldid_out,
     )
+  
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase,
+    _sdf_narrowphase12,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
