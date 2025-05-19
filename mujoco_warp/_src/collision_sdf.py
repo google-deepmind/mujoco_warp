@@ -258,9 +258,9 @@ def gradient_step(type1: int, type2: int,  sdf_type1: int, sdf_type2: int, niter
         return dist, x
     return _gradient_step
 
-def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):  
+def gradient_descent(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):  
   @wp.func
-  def _sdf_sdf (
+  def _gradient_descent (
     aabb1: AABB,
     aabb2: AABB,
     attr1: wp.vec3f,
@@ -300,8 +300,73 @@ def sdf_sdf(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int = 0):
       wp.printf("RESULTING DISTANCE %f,%f,%f,%f", dist, pos3[0], pos3[1], pos3[2])
       return  dist, pos3, n
       
-  return _sdf_sdf
+  return _gradient_descent
 
+@wp.func
+def sdf_sdf( aabb1: AABB,
+    aabb2: AABB,
+    attr1: wp.vec3f,
+    attr2: wp.vec3f,
+    pos1: wp.vec3,
+    rot1: wp.mat33,
+    pos2: wp.vec3,
+    rot2: wp.mat33,
+    type1: int,
+    type2: int):
+    if type1 == wp.static(SDFType.NUT.value) and type2 == wp.static(SDFType.NUT.value):
+        dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value,GeomType.SDF.value, SDFType.NUT, SDFType.NUT))( aabb1,
+          aabb2,
+          attr1,
+          attr2,
+          pos1,
+          rot1,
+          pos2, 
+          rot2)
+    return dist, pos, n
+
+@wp.func
+def sphere_sdf( aabb1: AABB,
+    aabb2: AABB,
+    attr1: wp.vec3f,
+    attr2: wp.vec3f,
+    pos1: wp.vec3,
+    rot1: wp.mat33,
+    pos2: wp.vec3,
+    rot2: wp.mat33,
+    type2: int):
+    if  type2 == wp.static(SDFType.NUT.value):
+        dist, pos, n = wp.static(gradient_descent(GeomType.SPHERE.value,GeomType.SDF.value, 0, SDFType.NUT.value))( aabb1,
+          aabb2,
+          attr1,
+          attr2,
+          pos1,
+          rot1,
+          pos2, 
+          rot2)
+    return dist, pos, n
+
+@wp.func
+def ellipsoid_sdf( aabb1: AABB,
+    aabb2: AABB,
+    attr1: wp.vec3f,
+    attr2: wp.vec3f,
+    pos1: wp.vec3,
+    rot1: wp.mat33,
+    pos2: wp.vec3,
+    rot2: wp.mat33,
+    type2: int):
+    if  type2 == wp.static(SDFType.NUT.value):
+        dist, pos, n = wp.static(gradient_descent(GeomType.ELLIPSOID.value, GeomType.SDF.value, 0, SDFType.NUT.value))( aabb1,
+          aabb2,
+          attr1,
+          attr2,
+          pos1,
+          rot1,
+          pos2, 
+          rot2)
+    return dist, pos, n
+  
+           
 @wp.kernel
 def _sdf_narrowphase(
   # Model:
@@ -404,8 +469,6 @@ def _sdf_narrowphase(
 
   type1 = geom_type[g1]
   type2 = geom_type[g2]
-  sdf_type1 = sdf_type[g1]
-  sdf_type2 = sdf_type[g2]
   attr1 = geom_sdf_plugin_attr[g1]
   attr2 = geom_sdf_plugin_attr[g2]
 
@@ -428,25 +491,32 @@ def _sdf_narrowphase(
   rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
-  if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.ELLIPSOID.value):
-      type1s = wp.static(GeomType.SPHERE.value)
-      type2s = wp.static(GeomType.ELLIPSOID.value)
-      dist, pos, n = wp.static(sdf_sdf(type1s, type2s, 0, 0))(
-        aabb1,
-        aabb2,
-        geom1.size,
-        geom2.size,
-        geom1.pos,
-        geom1.rot,
-        geom2.pos, 
-        geom2.rot
-      )
-  else:
-      type1s = wp.static(GeomType.SDF.value)
-      sdf_type1s = wp.static(SDFType.NUT.value)
-      type2s = wp.static(GeomType.SDF.value)
-      sdf_type2s = wp.static(SDFType.NUT.value)
-      dist, pos, n = wp.static(sdf_sdf(type1s, type2s, sdf_type1s, sdf_type2s))(
+  if type1 == int(GeomType.SPHERE.value) and type2 == int(GeomType.SDF.value):
+        dist, pos, n = sphere_sdf(
+          aabb1,
+          aabb2,
+          geom1.size,
+          geom2.size,
+          geom1.pos,
+          geom1.rot,
+          geom2.pos, 
+          geom2.rot,
+          sdf_type[g2]
+        )
+  elif type1 == int(GeomType.ELLIPSOID.value) and type2 == int(GeomType.SDF.value):
+        dist, pos, n = ellipsoid_sdf(
+          aabb1,
+          aabb2,
+          geom1.size,
+          geom2.size,
+          geom1.pos,
+          geom1.rot,
+          geom2.pos, 
+          geom2.rot,
+          sdf_type[g2]
+        )
+  elif type1 == int(GeomType.SDF.value) and type2 == int(GeomType.SDF.value):
+      dist, pos, n = sdf_sdf(
         aabb1,
         aabb2,
         attr1,
@@ -454,7 +524,9 @@ def _sdf_narrowphase(
         pos1,
         rot1,
         pos2, 
-        rot2
+        rot2,
+        sdf_type[g1],
+        sdf_type[g2]
       )
   write_contact(
       nconmax_in,
