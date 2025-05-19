@@ -215,6 +215,12 @@ class ForwardTest(parameterized.TestCase):
 
       self.assertTrue(d.time.numpy()[0] > 0.0)
 
+  def test_forward_energy(self):
+    _, mjd, _, d = test_util.fixture("humanoid/humanoid.xml", kick=True, energy=True)
+
+    _assert_eq(d.energy.numpy()[0], mjd.energy[0], "potential energy")
+    _assert_eq(d.energy.numpy()[1], mjd.energy[1], "kinetic energy")
+
 
 if __name__ == "__main__":
   wp.init()
