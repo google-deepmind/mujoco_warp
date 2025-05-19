@@ -229,10 +229,12 @@ def _sap_broadphase(
     # get geom indices and swap if necessary
     geom1 = sap_sort_index_in[worldid, i]
     geom2 = sap_sort_index_in[worldid, j]
+
+    # find linear index of (geom1, geom2) in upper triangular nxn_pairid
     if geom2 < geom1:
-      tmp = geom1
-      geom1 = geom2
-      geom2 = tmp
+      idx = _upper_tri_index(ngeom, geom2, geom1)
+    else:
+      idx = _upper_tri_index(ngeom, geom1, geom2)
 
     # find linear index of (geom1, geom2) in upper triangular nxn_pairid
     idx = _upper_tri_index(ngeom, geom1, geom2)

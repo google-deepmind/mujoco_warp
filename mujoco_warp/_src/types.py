@@ -552,7 +552,7 @@ class Constraint:
   cost_candidate: wp.array2d(dtype=float)
   quad_total_candidate: wp.array2d(dtype=wp.vec3)
   # elliptic cone
-  u: wp.array2d(dtype=float)
+  u: wp.array(dtype=vec6)
   uu: wp.array(dtype=float)
   uv: wp.array(dtype=float)
   vv: wp.array(dtype=float)
