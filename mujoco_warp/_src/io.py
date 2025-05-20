@@ -152,6 +152,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       else:
         for i in range(mjm.nv):
           bodyid.append(mjm.dof_bodyid[i])
+    elif trntype == mujoco.mjtTrn.mjTRN_SITE:
+      siteid = mjm.actuator_trnid[i, 0]
+      bid = mjm.site_bodyid[siteid]
+      while bid > 0:
+        bodyid.append(bid)
+        bid = mjm.body_parentid[bid]
     else:
       raise NotImplementedError(f"Transmission type {trntype} not implemented.")
   tree = mjm.body_treeid[np.array(bodyid, dtype=int)]

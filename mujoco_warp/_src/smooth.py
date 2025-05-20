@@ -1543,9 +1543,18 @@ def com_vel(m: Model, d: Data):
 def _transmission(
   # Model:
   nv: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  dof_parentid: wp.array(dtype=int),
+  site_bodyid: wp.array(dtype=int),
+  site_quat: wp.array2d(dtype=wp.quat),
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
   actuator_gear: wp.array2d(dtype=wp.spatial_vector),
@@ -1555,11 +1564,16 @@ def _transmission(
   wrap_type: wp.array(dtype=int),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
+  xquat_in: wp.array2d(dtype=wp.quat),
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
   ten_length_in: wp.array2d(dtype=float),
   ten_J_in: wp.array3d(dtype=float),
-  # Out:
-  length_out: array2df,
-  moment_out: array3df,
+  # Data out:
+  actuator_length_out: wp.array2d(dtype=float),
+  actuator_moment_out: wp.array3d(dtype=float),
 ):
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
@@ -1571,7 +1585,7 @@ def _transmission(
     qadr = jnt_qposadr[jntid]
     vadr = jnt_dofadr[jntid]
     if jnt_typ == wp.static(JointType.FREE.value):
-      length_out[worldid, actid] = 0.0
+      actuator_length_out[worldid, actid] = 0.0
       if trntype == wp.static(TrnType.JOINTINPARENT.value):
         quat = wp.normalize(
           wp.quat(
@@ -1583,15 +1597,15 @@ def _transmission(
         )
         quat_neg = math.quat_inv(quat)
         gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
-        moment_out[worldid, actid, vadr + 0] = gear[0]
-        moment_out[worldid, actid, vadr + 1] = gear[1]
-        moment_out[worldid, actid, vadr + 2] = gear[2]
-        moment_out[worldid, actid, vadr + 3] = gearaxis[0]
-        moment_out[worldid, actid, vadr + 4] = gearaxis[1]
-        moment_out[worldid, actid, vadr + 5] = gearaxis[2]
+        actuator_moment_out[worldid, actid, vadr + 0] = gear[0]
+        actuator_moment_out[worldid, actid, vadr + 1] = gear[1]
+        actuator_moment_out[worldid, actid, vadr + 2] = gear[2]
+        actuator_moment_out[worldid, actid, vadr + 3] = gearaxis[0]
+        actuator_moment_out[worldid, actid, vadr + 4] = gearaxis[1]
+        actuator_moment_out[worldid, actid, vadr + 5] = gearaxis[2]
       else:
         for i in range(6):
-          moment_out[worldid, actid, vadr + i] = gear[i]
+          actuator_moment_out[worldid, actid, vadr + i] = gear[i]
     elif jnt_typ == wp.static(JointType.BALL.value):
       q = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
       q = wp.normalize(q)
@@ -1600,19 +1614,19 @@ def _transmission(
       if trntype == wp.static(TrnType.JOINTINPARENT.value):
         quat_neg = math.quat_inv(q)
         gearaxis = math.rot_vec_quat(gearaxis, quat_neg)
-      length_out[worldid, actid] = wp.dot(axis_angle, gearaxis)
+      actuator_length_out[worldid, actid] = wp.dot(axis_angle, gearaxis)
       for i in range(3):
-        moment_out[worldid, actid, vadr + i] = gearaxis[i]
+        actuator_moment_out[worldid, actid, vadr + i] = gearaxis[i]
     elif jnt_typ == wp.static(JointType.SLIDE.value) or jnt_typ == wp.static(JointType.HINGE.value):
-      length_out[worldid, actid] = qpos[qadr] * gear[0]
-      moment_out[worldid, actid, vadr] = gear[0]
+      actuator_length_out[worldid, actid] = qpos[qadr] * gear[0]
+      actuator_moment_out[worldid, actid, vadr] = gear[0]
     else:
       wp.printf("unrecognized joint type")
   elif trntype == wp.static(TrnType.TENDON.value):
     tenid = actuator_trnid[actid][0]
 
     gear0 = gear[0]
-    length_out[worldid, actid] = ten_length_in[worldid, tenid] * gear0
+    actuator_length_out[worldid, actid] = ten_length_in[worldid, tenid] * gear0
 
     # fixed
     adr = tendon_adr[tenid]
@@ -1620,10 +1634,147 @@ def _transmission(
       ten_num = tendon_num[tenid]
       for i in range(ten_num):
         dofadr = jnt_dofadr[wrap_objid[adr + i]]
-        moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
+        actuator_moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
     else:  # spatial
       for dofadr in range(nv):
-        moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
+        actuator_moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
+  elif trntype == int(TrnType.SITE.value):
+    trnid = actuator_trnid[actid]
+    siteid = trnid[0]
+    refid = trnid[1]
+
+    gear = actuator_gear[worldid, actid]
+    gear_translation = wp.spatial_top(gear)
+    gear_rotational = wp.spatial_bottom(gear)
+
+    # reference site undefined
+    if refid == -1:
+      # wrench: gear expressed in global frame
+      site_xmat = site_xmat_in[worldid, siteid]
+      wrench_translation = site_xmat @ gear_translation
+      wrench_rotation = site_xmat @ gear_rotational
+
+      # moment: global Jacobian projected on wrench
+      # TODO(team): parallelize
+      for i in range(nv):
+        jacp, jacr = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          site_xpos_in[worldid, siteid],
+          site_bodyid[siteid],
+          i,
+          worldid,
+        )
+        actuator_length_out[worldid, actid] = 0.0
+        actuator_moment_out[worldid, actid, i] = wp.dot(jacp, wrench_translation) + wp.dot(jacr, wrench_rotation)
+    # reference site defined
+    else:
+      # initialize last dof address for each body
+      bodyid = site_bodyid[siteid]
+      bodyrefid = site_bodyid[refid]
+      b0 = body_weldid[bodyid]
+      b1 = body_weldid[bodyrefid]
+      dofadr0 = body_dofadr[b0] + body_dofnum[b0] - 1
+      dofadr1 = body_dofadr[b1] + body_dofnum[b1] - 1
+
+      # find common ancestral dof, if any
+      dofadr_common = -1
+      if dofadr0 >= 0 and dofadr1 >= 0:
+        # traverse up the tree until common ancestral dof is found
+        while dofadr0 != dofadr1:
+          if dofadr0 < dofadr1:
+            dofadr1 = dof_parentid[dofadr1]
+          else:
+            dofadr0 = dof_parentid[dofadr0]
+
+          if dofadr0 == -1 or dofadr1 == -1:
+            # reached tree root, no common ancestral dof
+            break
+
+        # found common ancestral dof
+        if dofadr0 == dofadr1:
+          dofadr_common = dofadr0
+
+      translational_transmission = not (gear[0] == 0.0 and gear[1] == 0.0 and gear[2] == 0.0)
+      rotational_transmission = not (gear[3] == 0.0 and gear[4] == 0.0 and gear[5] == 0.0)
+
+      site_xpos = site_xpos_in[worldid, siteid]
+      ref_xpos = site_xpos_in[worldid, refid]
+      ref_xmat = site_xmat_in[worldid, refid]
+
+      length = float(0.0)
+
+      if translational_transmission:
+        # vec: site position in reference site frame
+        vec = wp.transpose(ref_xmat) @ (site_xpos - ref_xpos)
+        length += wp.dot(vec, gear_translation)
+
+        wrench_translation = ref_xmat @ gear_translation
+
+      if rotational_transmission:
+        # get site and refsite quats from parent bodies (avoiding converting matrix to quaternion)
+        quat = math.mul_quat(site_quat[worldid, siteid], xquat_in[worldid, bodyid])
+        refquat = math.mul_quat(site_quat[worldid, refid], xquat_in[worldid, bodyrefid])
+
+        # convert difference to expmap (axis-angle)
+        vec = math.quat_sub(quat, refquat)
+        length += wp.dot(vec, gear_rotational)
+
+        wrench_rotation = ref_xmat @ gear_rotational
+
+      actuator_length_out[worldid, actid] = length
+
+      # TODO(team): parallelize
+      for i in range(nv):
+        jacp, jacr = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          site_xpos,
+          site_bodyid[siteid],
+          i,
+          worldid,
+        )
+
+        # jacref: global Jacobian of reference site
+        jacpref, jacrref = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          ref_xpos,
+          site_bodyid[refid],
+          i,
+          worldid,
+        )
+
+        jacpdif = jacp - jacpref
+        jacrdif = jacr - jacrref
+
+        # if common ancestral dof was found, clear the columns of its parental chain
+        da = dofadr_common
+        while da >= 0:
+          if da == i:
+            jacpdif = wp.vec3(0.0)
+            jacrdif = wp.vec3(0.0)
+            break
+          da = dof_parentid[da]
+
+        # moment: global Jacobian projected on wrench
+        moment = float(0.0)
+
+        if translational_transmission:
+          moment += wp.dot(jacpdif, wrench_translation)
+        if rotational_transmission:
+          moment += wp.dot(jacrdif, wrench_rotation)
+
+        actuator_moment_out[worldid, actid, i] = moment
   else:
     # TODO(team): site, slidercrank, body
     wp.printf("unhandled transmission type %d\n", trntype)
@@ -1640,9 +1791,18 @@ def transmission(m: Model, d: Data):
     dim=[d.nworld, m.nu],
     inputs=[
       m.nv,
+      m.body_parentid,
+      m.body_rootid,
+      m.body_weldid,
+      m.body_dofnum,
+      m.body_dofadr,
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_dofadr,
+      m.dof_bodyid,
+      m.dof_parentid,
+      m.site_bodyid,
+      m.site_quat,
       m.actuator_trntype,
       m.actuator_trnid,
       m.actuator_gear,
@@ -1651,6 +1811,11 @@ def transmission(m: Model, d: Data):
       m.wrap_objid,
       m.wrap_type,
       d.qpos,
+      d.xquat,
+      d.site_xpos,
+      d.site_xmat,
+      d.subtree_com,
+      d.cdof,
       d.ten_length,
       d.ten_J,
     ],

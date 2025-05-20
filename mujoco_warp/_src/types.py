@@ -99,12 +99,14 @@ class TrnType(enum.IntEnum):
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
     TENDON: force on tendon
+    SITE: force on site
   """
 
   JOINT = mujoco.mjtTrn.mjTRN_JOINT
   JOINTINPARENT = mujoco.mjtTrn.mjTRN_JOINTINPARENT
   TENDON = mujoco.mjtTrn.mjTRN_TENDON
-  # unsupported: SITE, SLIDERCRANK, BODY
+  SITE = mujoco.mjtTrn.mjTRN_SITE
+  # unsupported: SLIDERCRANK, BODY
 
 
 class DynType(enum.IntEnum):
