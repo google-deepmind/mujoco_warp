@@ -12,23 +12,7 @@
       </default>
 
       <default class="collision">
-        <geom group="2" type="mesh" contype="0" conaffinity="0"/>
-        <default class="primitive_collision">
-          <geom group="3" type="box" contype="0" conaffinity="0"
-           condim="3" solimp="0.99 0.995 0.01" solref="0.01 1" friction="1 0.005 0.0001"/>
-          <default class="fingertip_pad_collision_1">
-            <geom type="box" size="0.011 0.0075 0.01" pos="0 0.0185 0.011"/>
-          </default>
-          <default class="fingertip_pad_collision_2">
-            <geom type="box" size="0.011 0.0044 0.0019" pos="0 0.0068 0.0022"/>
-          </default>
-          <default class="fingertip_pad_collision_3">
-            <geom type="box" size="0.00875 0.0035 0.01175" pos="0 0.0159 0.02835" quat="1 0.25 0 0"/>
-          </default>
-          <default class="fingertip_pad_collision_4">
-            <geom type="box" size="0.00875 0.0076 0.00825" pos="0 0.00758 0.04525" conaffinity="3"/>
-          </default>
-        </default>
+        <geom group="2" type="mesh" contype="1" conaffinity="1"/>
       </default>
     </default>
   </default>
@@ -101,27 +85,16 @@
                     <body name="hand" pos="0 0 0.107" quat="0.9238795 0 0 -0.3826834">
                       <inertial mass="0.73" pos="-0.01 0 0.03" diaginertia="0.001 0.0025 0.0017"/>
                       <geom mesh="hand_c" class="collision" material="off_white"/>
-                      <geom name="hand_capsule" type="capsule"
-                       class="collision" conaffinity="1" size="0.04 0.06"
-                       quat="1 1 0 0" pos="0 0 0.03"/>
                       <site name="gripper" pos="0 0 0.1"/>
                       <body name="left_finger" pos="0 0 0.0584">
                         <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
                         <joint name="finger_joint1" class="finger" damping="10"/>
                         <geom mesh="finger_0" class="collision" material="off_white"/>
-                        <geom class="fingertip_pad_collision_1"/>
-                        <geom class="fingertip_pad_collision_2"/>
-                        <geom class="fingertip_pad_collision_3"/>
-                        <geom name="left_finger_pad" class="fingertip_pad_collision_4"/>
                       </body>
                       <body name="right_finger" pos="0 0 0.0584" quat="0 0 0 1">
                         <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
                         <joint name="finger_joint2" class="finger" damping="10"/>
                         <geom mesh="finger_0" class="collision" material="off_white"/>
-                        <geom class="fingertip_pad_collision_1"/>
-                        <geom class="fingertip_pad_collision_2"/>
-                        <geom class="fingertip_pad_collision_3"/>
-                        <geom name="right_finger_pad" class="fingertip_pad_collision_4"/>
                       </body>
                     </body>
                   </body>
