@@ -808,7 +808,7 @@ def _gjk_epa_pipeline(
     geom1 = _geom(
       geom_type,
       geom_dataid,
-      geom_size[worldid],
+      geom_size,
       hfield_adr,
       hfield_nrow,
       hfield_ncol,
@@ -827,7 +827,7 @@ def _gjk_epa_pipeline(
     geom2 = _geom(
       geom_type,
       geom_dataid,
-      geom_size[worldid],
+      geom_size,
       hfield_adr,
       hfield_nrow,
       hfield_ncol,
