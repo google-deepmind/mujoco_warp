@@ -276,7 +276,6 @@ def gradient_descent(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int 
 
     # mjSDFTYPE_COLLISION;
     dist, x = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, 10, False))(x0_transformed, params)
-
     # mjSDFTYPE_INTERSECTION;
     dist, x = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, 1, True))(x, params)
 
@@ -285,6 +284,8 @@ def gradient_descent(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int 
     grad1 = wp.static(sdf_grad(type1, sdf_type1))(x_1, params.attr1)
     grad2 = wp.static(sdf_grad(type1, sdf_type2))(x, params.attr2)
     grad1 = params.rel_mat * grad1
+    grad1 = wp.normalize(grad1)
+    grad2 = wp.normalize(grad2)
     n = grad1 - grad2
     pos = rot2 * x + pos2
     n = rot2 * n
@@ -312,7 +313,6 @@ def sdf_sdf(
     dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT, SDFType.NUT))(
       aabb1, aabb2, attr1, attr2, pos1, rot1, pos2, rot2
     )
-  wp.printf("normal is  %f %f %f", n[0], n[1], n[2])
   return dist, pos, n
 
 
@@ -355,7 +355,7 @@ def ellipsoid_sdf(
 
 
 @wp.kernel
-def _sdf_narrowphase3(
+def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
@@ -474,16 +474,16 @@ def _sdf_narrowphase3(
   quat2 = geom_quat[g2]
   geom_mat2 = math.quat_to_mat(quat2)
 
-  rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
-  pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
   rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
   if type1 == int(GeomType.SPHERE.value):
-    dist, pos, n = sphere_sdf(aabb1, aabb2, geom1.size, geom2.size, geom1.pos, geom1.rot, geom2.pos, geom2.rot, sdf_type[g2])
+    dist, pos, n = sphere_sdf(aabb1, aabb2, geom1.size, geom2.size, geom1.pos, geom1.rot, pos2, rot2, sdf_type[g2])
   elif type1 == int(GeomType.ELLIPSOID.value):
-    dist, pos, n = ellipsoid_sdf(aabb1, aabb2, geom1.size, geom2.size, geom1.pos, geom1.rot, geom2.pos, geom2.rot, sdf_type[g2])
+    dist, pos, n = ellipsoid_sdf(aabb1, aabb2, geom1.size, geom2.size, geom1.pos, geom1.rot, pos2, rot2, sdf_type[g2])
   elif type1 == int(GeomType.SDF.value):
+    rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
+    pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
     dist, pos, n = sdf_sdf(aabb1, aabb2, attr1, attr2, pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2])
   write_contact(
     nconmax_in,
@@ -516,7 +516,7 @@ def _sdf_narrowphase3(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase3,
+    _sdf_narrowphase8,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
