@@ -103,6 +103,34 @@ def nut(p: wp.vec3, attr: wp.vec3) -> float:
 
   return wp.max(head, -hole)
 
+@wp.func
+def bolt(p: wp.vec3, attr: wp.vec3) -> float:
+    screw = 12.0
+    radius = wp.sqrt(p[0]*p[0] + p[1]*p[1]) - attr[0]
+    sqrt12 = wp.sqrt(2.0) / 2.0
+
+    azimuth = wp.atan2(p[1], p[0])
+    triangle = wp.abs((p[2] * screw - azimuth / (wp.pi * 2.0)) 
+               - wp.floor(p[2] * screw - azimuth / (wp.pi * 2.0)) - 0.5)
+    thread = (radius - triangle / screw) * sqrt12
+
+    bolt = thread - (0.5 - wp.abs(p[2] + 0.5))
+    cone = (p[2] - radius) * sqrt12
+    bolt = wp.max(bolt, -(cone + 1.0 * sqrt12))
+
+    k = 6.0 / (wp.pi * 2.0)
+    angle = -wp.floor((wp.atan2(p[1], p[0])) * k + 0.5) / k
+    s = wp.vec2(wp.sin(angle), wp.sin(angle + wp.pi * 0.5))
+    rot_point = wp.vec2(
+        s[1] * p[0] - s[0] * p[1],
+        s[0] * p[0] + s[1] * p[1]
+    )
+
+    head = rot_point[0] - 0.5
+    head = wp.max(head, wp.abs(rot_point[1] + 0.25) - 0.25)
+    head = wp.max(head, (rot_point[1] + radius - 0.22) * sqrt12)
+
+    return wp.max(bolt, head)
 
 @wp.func
 def grad_sphere(p: wp.vec3) -> wp.vec3:
@@ -145,6 +173,8 @@ def sdf(type: int, sdf_type: int = 0):
       return ellipsoid(p, attr)
     elif wp.static(type == GeomType.SDF.value):
       if wp.static(sdf_type == SDFType.NUT.value):
+        return nut(p, attr)
+      if wp.static(sdf_type == SDFType.BOLT.value):
         return nut(p, attr)
 
   return _sdf
@@ -311,6 +341,14 @@ def sdf_sdf(
 ):
   if type1 == wp.static(SDFType.NUT.value) and type2 == wp.static(SDFType.NUT.value):
     dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT, SDFType.NUT))(
+      aabb1, aabb2, attr1, attr2, pos1, rot1, pos2, rot2
+    )
+  elif type1 == wp.static(SDFType.NUT.value) and type2 == wp.static(SDFType.BOLT.value):
+    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT, SDFType.BOLT))(
+      aabb1, aabb2, attr1, attr2, pos1, rot1, pos2, rot2
+    )
+  elif type1 == wp.static(SDFType.BOLT.value) and type2 == wp.static(SDFType.BOLT.value):
+    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.BOLT, SDFType.BOLT))(
       aabb1, aabb2, attr1, attr2, pos1, rot1, pos2, rot2
     )
   return dist, pos, n
