@@ -554,7 +554,7 @@ def _sdf_narrowphase(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase8,
+    _sdf_narrowphase,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
