@@ -236,9 +236,6 @@ def _sap_broadphase(
     else:
       idx = _upper_tri_index(ngeom, geom1, geom2)
 
-    # find linear index of (geom1, geom2) in upper triangular nxn_pairid
-    idx = _upper_tri_index(ngeom, geom1, geom2)
-
     if nxn_pairid[idx] < -1:
       worldgeomid += nsweep_in
       continue
