@@ -458,7 +458,8 @@ def collision(m: Model, d: Data):
     sap_broadphase(m, d)
 
   # Process heightfield collisions
-  hfield_midphase(m, d)
+  if m.nhfield > 0:
+    hfield_midphase(m, d)
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
