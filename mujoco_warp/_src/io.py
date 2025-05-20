@@ -549,6 +549,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TOUCH)[0],
       dtype=int,
     ),
+    sensor_e_potential=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_POTENTIAL).any(),
     sensor_subtree_vel=np.isin(
       mjm.sensor_type,
       [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],
