@@ -563,6 +563,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         mujoco.mjtSensor.mjSENS_FRAMEANGACC,
       ],
     ).any(),
+    sensor_e_kinetic=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_KINETIC).any(),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
   )
 
@@ -771,6 +772,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     wrap_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=wp.zeros((nworld, mjm.nsensordata), dtype=float),
+    # energy
+    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
   )
 
 
@@ -1062,6 +1065,8 @@ def put_data(
     wrap_xpos=tile(mjd.wrap_xpos, dtype=wp.spatial_vector),
     # sensors
     sensordata=tile(mjd.sensordata),
+    # energy
+    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
   )
 
 

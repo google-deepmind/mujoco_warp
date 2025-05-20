@@ -381,6 +381,7 @@ def _sensor_pos(
   sensor_pos_adr: wp.array(dtype=int),
   # Data in:
   time_in: wp.array(dtype=float),
+  energy_in: wp.array(dtype=wp.vec2),
   qpos_in: wp.array2d(dtype=float),
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -486,6 +487,9 @@ def _sensor_pos(
   elif sensortype == int(SensorType.SUBTREECOM.value):
     vec3 = _subtree_com(subtree_com_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+  elif sensortype == int(SensorType.E_KINETIC.value):
+    val = energy_in[worldid][1]
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == int(SensorType.CLOCK.value):
     val = _clock(time_in, worldid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
@@ -497,6 +501,9 @@ def sensor_pos(m: Model, d: Data):
 
   if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
+
+  if m.sensor_e_kinetic:
+    energy_vel(m, d)
 
   wp.launch(
     _sensor_pos,
@@ -524,6 +531,7 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_cutoff,
       m.sensor_pos_adr,
       d.time,
+      d.energy,
       d.qpos,
       d.xpos,
       d.xquat,

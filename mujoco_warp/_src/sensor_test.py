@@ -157,6 +157,8 @@ class SensorTest(parameterized.TestCase):
           <framequat objtype="camera" objname="cam0"/>
           <subtreecom body="body3"/>
           <subtreecom body="body3" cutoff=".001"/>
+          <e_kinetic/>
+          <e_kinetic cutoff=".001"/>
           <clock/>
           <clock cutoff=".001"/>
           <velocimeter site="site2"/> 
