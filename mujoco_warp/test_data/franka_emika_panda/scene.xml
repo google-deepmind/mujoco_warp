@@ -3,13 +3,9 @@
 
   <statistic center="0.3 0 0.4" extent="1"/>
 
-  <option timestep="0.005" iterations="5" ls_iterations="8" integrator="implicitfast">
+  <option timestep="0.005" integrator="implicitfast">
     <flag eulerdamp="disable"/>
   </option>
-
-  <custom>
-    <numeric data="12" name="max_contact_points"/>
-  </custom>
 
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
