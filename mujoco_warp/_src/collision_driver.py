@@ -447,7 +447,6 @@ def collision(m: Model, d: Data):
   # TODO(team) switch between collision functions and GJK/EPA here
   gjk_narrowphase(m, d)
   primitive_narrowphase(m, d)
+  box_box_narrowphase(m, d)
   sdf_narrowphase(m, d)
 
-
-#  box_box_narrowphase(m, d)
