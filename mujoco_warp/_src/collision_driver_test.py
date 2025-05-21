@@ -29,7 +29,7 @@ class CollisionTest(parameterized.TestCase):
   """Tests the collision contact functions."""
 
   _SDF_SDF = {
-      "_NUT_NUT": """
+    "_NUT_NUT": """
 <mujoco>
   <extension>
     <plugin plugin="mujoco.sdf.nut">

@@ -57,7 +57,7 @@ def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.
     c = corner + aabb_pos
     aabb.max = wp.max(aabb.max, c)
     aabb.min = wp.min(aabb.min, c)
-  aabb.min =  ori * aabb.min + pos
+  aabb.min = ori * aabb.min + pos
 
   return aabb
 
@@ -78,72 +78,78 @@ def ellipsoid(p: wp.vec3, size: wp.vec3) -> float:
     denom = 1e-12
   return k0 * (k0 - 1.0) / denom
 
+
 @wp.func
 def Fract(x: float) -> float:
-    return x - wp.floor(x)
+  return x - wp.floor(x)
+
+
 @wp.func
 def Subtraction(a: float, b: float) -> float:
-    return wp.max(a, -b)
+  return wp.max(a, -b)
+
+
 @wp.func
 def Union(a: float, b: float) -> float:
-    return wp.min(a, b)
+  return wp.min(a, b)
+
+
 @wp.func
 def Intersection(a: float, b: float) -> float:
-    return wp.max(a, b)
+  return wp.max(a, b)
+
+
 @wp.func
-def nut(p: wp.vec3,  attr: wp.vec3) -> float:
-    screw = 12.0
-    radius2 = wp.sqrt(p[0]*p[0] + p[1]*p[1]) - attr[0]
-    sqrt12 = wp.sqrt(2.0)/2.0
-    azimuth = wp.atan2(p[1], p[0])
-    triangle = wp.abs(Fract(p[2] * screw - azimuth / (wp.pi * 2.0)) - 0.5)
-    thread2 = (radius2 - triangle / screw) * sqrt12
-    cone2 = (p[2] - radius2) * sqrt12
-    hole = Subtraction(thread2, cone2 + 0.5 * sqrt12)
-    hole = Union(hole, -cone2 - 0.05 * sqrt12)
-    k = 6.0 / wp.pi / 2.0
-    angle = -wp.floor((wp.atan2(p[1], p[0])) * k + 0.5) / k
-    s0 = wp.sin(angle)
-    s1 = wp.sin(angle + wp.pi * 0.5)
-    res0 = s1 * p[0] - s0 * p[1]
-    res1 = s0 * p[0] + s1 * p[1]
-    point3D0 = res0
-    point3D1 = res1
-    point3D2 = p[2]
-    head = point3D0 - 0.5
-    head = Intersection(head, wp.abs(point3D2 + 0.25) - 0.25)
-    head = Intersection(head, (point3D2 + radius2 - 0.22) * sqrt12)
-    return Subtraction(head, hole)
+def nut(p: wp.vec3, attr: wp.vec3) -> float:
+  screw = 12.0
+  radius2 = wp.sqrt(p[0] * p[0] + p[1] * p[1]) - attr[0]
+  sqrt12 = wp.sqrt(2.0) / 2.0
+  azimuth = wp.atan2(p[1], p[0])
+  triangle = wp.abs(Fract(p[2] * screw - azimuth / (wp.pi * 2.0)) - 0.5)
+  thread2 = (radius2 - triangle / screw) * sqrt12
+  cone2 = (p[2] - radius2) * sqrt12
+  hole = Subtraction(thread2, cone2 + 0.5 * sqrt12)
+  hole = Union(hole, -cone2 - 0.05 * sqrt12)
+  k = 6.0 / wp.pi / 2.0
+  angle = -wp.floor((wp.atan2(p[1], p[0])) * k + 0.5) / k
+  s0 = wp.sin(angle)
+  s1 = wp.sin(angle + wp.pi * 0.5)
+  res0 = s1 * p[0] - s0 * p[1]
+  res1 = s0 * p[0] + s1 * p[1]
+  point3D0 = res0
+  point3D1 = res1
+  point3D2 = p[2]
+  head = point3D0 - 0.5
+  head = Intersection(head, wp.abs(point3D2 + 0.25) - 0.25)
+  head = Intersection(head, (point3D2 + radius2 - 0.22) * sqrt12)
+  return Subtraction(head, hole)
 
 
 @wp.func
 def bolt(p: wp.vec3, attr: wp.vec3) -> float:
-    screw = 12.0
-    radius = wp.sqrt(p[0]*p[0] + p[1]*p[1]) - attr[0]
-    sqrt12 = wp.sqrt(2.0) / 2.0
+  screw = 12.0
+  radius = wp.sqrt(p[0] * p[0] + p[1] * p[1]) - attr[0]
+  sqrt12 = wp.sqrt(2.0) / 2.0
 
-    azimuth = wp.atan2(p[1], p[0])
-    triangle = wp.abs((p[2] * screw - azimuth / (wp.pi * 2.0)) 
-               - wp.floor(p[2] * screw - azimuth / (wp.pi * 2.0)) - 0.5)
-    thread = (radius - triangle / screw) * sqrt12
+  azimuth = wp.atan2(p[1], p[0])
+  triangle = wp.abs((p[2] * screw - azimuth / (wp.pi * 2.0)) - wp.floor(p[2] * screw - azimuth / (wp.pi * 2.0)) - 0.5)
+  thread = (radius - triangle / screw) * sqrt12
 
-    bolt = thread - (0.5 - wp.abs(p[2] + 0.5))
-    cone = (p[2] - radius) * sqrt12
-    bolt = wp.max(bolt, -(cone + 1.0 * sqrt12))
+  bolt = thread - (0.5 - wp.abs(p[2] + 0.5))
+  cone = (p[2] - radius) * sqrt12
+  bolt = wp.max(bolt, -(cone + 1.0 * sqrt12))
 
-    k = 6.0 / (wp.pi * 2.0)
-    angle = -wp.floor((wp.atan2(p[1], p[0])) * k + 0.5) / k
-    s = wp.vec2(wp.sin(angle), wp.sin(angle + wp.pi * 0.5))
-    rot_point = wp.vec2(
-        s[1] * p[0] - s[0] * p[1],
-        s[0] * p[0] + s[1] * p[1]
-    )
+  k = 6.0 / (wp.pi * 2.0)
+  angle = -wp.floor((wp.atan2(p[1], p[0])) * k + 0.5) / k
+  s = wp.vec2(wp.sin(angle), wp.sin(angle + wp.pi * 0.5))
+  rot_point = wp.vec2(s[1] * p[0] - s[0] * p[1], s[0] * p[0] + s[1] * p[1])
 
-    head = rot_point[0] - 0.5
-    head = wp.max(head, wp.abs(rot_point[1] + 0.25) - 0.25)
-    head = wp.max(head, (rot_point[1] + radius - 0.22) * sqrt12)
+  head = rot_point[0] - 0.5
+  head = wp.max(head, wp.abs(rot_point[1] + 0.25) - 0.25)
+  head = wp.max(head, (rot_point[1] + radius - 0.22) * sqrt12)
 
-    return wp.max(bolt, head)
+  return wp.max(bolt, head)
+
 
 @wp.func
 def grad_sphere(p: wp.vec3) -> wp.vec3:
@@ -329,7 +335,7 @@ def gradient_descent(type1: int, type2: int, sdf_type1: int = 0, sdf_type2: int 
     grad1 = params.rel_mat * grad1
     grad1 = wp.normalize(grad1)
     grad2 = wp.normalize(grad2)
-    n =  grad2 - grad1
+    n = grad2 - grad1
     pos = rot2 * x + pos2
     n = rot2 * n
     n = wp.normalize(n)
