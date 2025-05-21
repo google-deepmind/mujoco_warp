@@ -20,6 +20,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
+from .types import SDFType
 
 from . import test_util
 
@@ -27,6 +28,49 @@ from . import test_util
 class CollisionTest(parameterized.TestCase):
   """Tests the collision contact functions."""
 
+  _SDF_SDF = {
+      "_NUT_NUT": """
+<mujoco>
+  <extension>
+    <plugin plugin="mujoco.sdf.nut">
+      <instance name="nut1">
+        <config key="radius" value="0.27"/>
+      </instance>
+      <instance name="nut2">
+        <config key="radius" value="0.27"/>
+      </instance>
+    </plugin>
+  </extension>
+  <compiler autolimits="true"/>
+  <option sdf_iterations="10"/> <!-- Increased for better collision accuracy -->
+  <asset>
+    <mesh name="nut_mesh1">
+      <plugin instance="nut1"/>
+    </mesh>
+    <mesh name="nut_mesh2">
+      <plugin instance="nut2"/>
+    </mesh>
+  </asset>
+  <worldbody>
+    <!-- First nut (floating) -->
+    <body pos="0 0 0.5">
+      <joint type="free"/>
+      <geom type="sdf" name="nut1" mesh="nut_mesh1" rgba="0.83 0.68 0.4 1">
+        <plugin instance="nut1"/>
+      </geom>
+    </body>
+    <!-- Second nut (positioned to intersect) -->
+    <body pos="0 0 0.4">
+      <geom type="sdf" name="nut2" mesh="nut_mesh2" rgba="0.9 0.4 0.2 1">
+        <plugin instance="nut2"/>
+      </geom>
+    </body>
+    <light name="left" pos="-1 0 2" cutoff="80"/>
+    <light name="right" pos="1 0 2" cutoff="80"/>
+  </worldbody>
+</mujoco>
+"""
+  }
   _FIXTURES = {
     "box_plane": """
         <mujoco>
@@ -287,6 +331,36 @@ class CollisionTest(parameterized.TestCase):
   #        </worldbody>
   #      </mujoco>
   #    """,
+
+  @parameterized.parameters(_SDF_SDF.keys())
+  def test_sdf_collision(self, fixture):
+    """Tests collisions with different geometries."""
+    mjm, mjd, m, d = test_util.fixture(xml=self._SDF_SDF[fixture])
+
+    # Exempt GJK collisions from exact contact count check
+    # because GJK generates more contacts
+    allow_different_contact_count = True
+    mujoco.mj_collision(mjm, mjd)
+    mjwarp.collision(m, d)
+    for i in range(1):
+      actual_dist = mjd.contact.dist[i]
+      actual_pos = mjd.contact.pos[i]
+      actual_frame = mjd.contact.frame[i][0:3]
+      result = False
+      for j in range(d.ncon.numpy()[0]):
+        test_dist = d.contact.dist.numpy()[j]
+        test_pos = d.contact.pos.numpy()[j, :]
+        test_frame = d.contact.frame.numpy()[j].flatten()[0:3]
+        check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
+        check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-2)
+        check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-2)
+        if check_dist and check_pos and check_frame:
+          result = True
+          break
+      np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+
+    if not allow_different_contact_count:
+      self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
