@@ -267,6 +267,29 @@ def _sap_broadphase(
     worldgeomid += nsweep_in
 
 
+def create_segmented_sort_kernel(tile_size: int):
+  @wp.kernel
+  def segmented_sort_kernel(
+    # Data in:
+    sap_projection_lower_in: wp.array2d(dtype=float),
+    sap_sort_index_in: wp.array2d(dtype=int),
+  ):
+    worldid = wp.tid()
+
+    # Load input into shared memory
+    keys = wp.tile_load(sap_projection_lower_in[worldid], shape=tile_size, storage="shared")
+    values = wp.tile_load(sap_sort_index_in[worldid], shape=tile_size, storage="shared")
+
+    # Perform in-place sorting
+    wp.tile_sort(keys, values)
+
+    # Store sorted shared memory into output arrays
+    wp.tile_store(sap_projection_lower_in[worldid], keys)
+    wp.tile_store(sap_sort_index_in[worldid], values)
+
+  return segmented_sort_kernel
+
+
 def sap_broadphase(m: Model, d: Data):
   """Broadphase collision detection via sweep-and-prune."""
 
@@ -294,14 +317,19 @@ def sap_broadphase(m: Model, d: Data):
     ],
   )
 
-  # TODO(team): tile sort
-
-  wp.utils.segmented_sort_pairs(
-    d.sap_projection_lower,
-    d.sap_sort_index,
-    nworldgeom,
-    d.sap_segment_index,
-  )
+  # TODO(team): Find the right threshold for tile sort - tile sort required that all nworldgeom values to sort can fit into shared memory
+  if m.ngeom > 1000:
+    wp.utils.segmented_sort_pairs(
+      d.sap_projection_lower,
+      d.sap_sort_index,
+      nworldgeom,
+      d.sap_segment_index,
+    )
+  else:
+    segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
+    wp.launch_tiled(
+      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[d.sap_projection_lower, d.sap_sort_index], block_dim=128
+    )
 
   wp.launch(
     kernel=_sap_range,
