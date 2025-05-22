@@ -422,6 +422,47 @@ def _flex_elasticity(
       wp.atomic_add(qfrc_spring_out, worldid, body_dofadr[bodyid] + x, force[v, x])
 
 
+@wp.kernel
+def _flex_bending(
+  # Model:
+  body_dofadr: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_edgeadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
+  flex_edge: wp.array(dtype=wp.vec2i),
+  flex_edgeflap: wp.array(dtype=wp.vec2i),
+  flex_bending: wp.array(dtype=float),
+  # Data in:
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  qfrc_spring_out: wp.array2d(dtype=float),
+):
+  worldid, edgeid = wp.tid()
+  nvert = 4
+  f = 0  # TODO(quaglino): this should become a function of t
+
+  v = wp.vec4i(
+    flex_edge[edgeid + flex_edgeadr[f]][0],
+    flex_edge[edgeid + flex_edgeadr[f]][1],
+    flex_edgeflap[edgeid + flex_edgeadr[f]][0],
+    flex_edgeflap[edgeid + flex_edgeadr[f]][1],
+  )
+
+  if v[3] == -1:
+    return
+
+  force = wp.mat(0.0, shape=(nvert, 3))
+  for i in range(nvert):
+    for j in range(nvert):
+      for x in range(3):
+        force[i, x] -= flex_bending[16 * edgeid + 4 * i + j] * flexvert_xpos_in[worldid, v[j]][x]
+
+  for i in range(nvert):
+    bodyid = flex_vertbodyid[flex_vertadr[f] + v[i]]
+    for x in range(3):
+      wp.atomic_add(qfrc_spring_out, worldid, body_dofadr[bodyid] + x, force[i, x])
+
+
 @event_scope
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
@@ -488,6 +529,21 @@ def passive(m: Model, d: Data):
       d.flexvert_xpos,
       d.flexedge_length,
       d.flexedge_velocity,
+    ],
+    outputs=[d.qfrc_spring],
+  )
+  wp.launch(
+    _flex_bending,
+    dim=(d.nworld, m.nflexedge),
+    inputs=[
+      m.body_dofadr,
+      m.flex_vertadr,
+      m.flex_edgeadr,
+      m.flex_vertbodyid,
+      m.flex_edge,
+      m.flex_edgeflap,
+      m.flex_bending,
+      d.flexvert_xpos,
     ],
     outputs=[d.qfrc_spring],
   )

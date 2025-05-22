@@ -49,10 +49,6 @@ def key_callback(key: int) -> None:
 
 def _load_model():
   spec = mujoco.MjSpec.from_file(_MODEL_PATH.value)
-  # TODO: this will be done not necessary from MuJoCo 3.3.3
-  for flex in spec.flexes:
-    for v in flex.vertbody:
-      spec.body(v).add_geom(size=[flex.radius, 0, 0], group=4)
   return spec.compile()
 
 
