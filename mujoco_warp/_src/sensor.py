@@ -625,6 +625,43 @@ def _ball_ang_vel(jnt_dofadr: wp.array(dtype=int), qvel_in: wp.array2d(dtype=flo
   return wp.vec3(qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2])
 
 
+@wp.kernel
+def _limit_vel(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_limitvel_adr: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  efc_worldid_in: wp.array(dtype=int),
+  efc_type_in: wp.array(dtype=int),
+  efc_id_in: wp.array(dtype=int),
+  efc_vel_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  efcid, limitvelid = wp.tid()
+
+  ne = ne_in[0]
+  nf = nf_in[0]
+  nl = nl_in[0]
+
+  # skip if not limit
+  if efcid < ne + nf or efcid >= ne + nf + nl:
+    return
+
+  sensorid = sensor_limitvel_adr[limitvelid]
+  if efc_id_in[efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[efcid]
+    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+      worldid = efc_worldid_in[efcid]
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[efcid], sensordata_out[worldid])
+
+
 @wp.func
 def _cvel_offset(
   # Model:
@@ -995,50 +1032,74 @@ def _sensor_vel(
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
 
-  if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  if m.sensor_subtree_vel:
-    smooth.subtree_vel(m, d)
+  if m.sensor_vel_adr.size > 0:
+    if m.sensor_subtree_vel:
+      smooth.subtree_vel(m, d)
 
-  wp.launch(
-    _sensor_vel,
-    dim=(d.nworld, m.sensor_vel_adr.size),
-    inputs=[
-      m.body_rootid,
-      m.jnt_dofadr,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.cam_bodyid,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_reftype,
-      m.sensor_refid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_vel_adr,
-      d.qvel,
-      d.xpos,
-      d.xmat,
-      d.xipos,
-      d.ximat,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.site_xpos,
-      d.site_xmat,
-      d.cam_xpos,
-      d.cam_xmat,
-      d.subtree_com,
-      d.ten_velocity,
-      d.actuator_velocity,
-      d.cvel,
-      d.subtree_linvel,
-      d.subtree_angmom,
-    ],
-    outputs=[d.sensordata],
-  )
+    wp.launch(
+      _sensor_vel,
+      dim=(d.nworld, m.sensor_vel_adr.size),
+      inputs=[
+        m.body_rootid,
+        m.jnt_dofadr,
+        m.geom_bodyid,
+        m.site_bodyid,
+        m.cam_bodyid,
+        m.sensor_type,
+        m.sensor_datatype,
+        m.sensor_objtype,
+        m.sensor_objid,
+        m.sensor_reftype,
+        m.sensor_refid,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_vel_adr,
+        d.qvel,
+        d.xpos,
+        d.xmat,
+        d.xipos,
+        d.ximat,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.site_xpos,
+        d.site_xmat,
+        d.cam_xpos,
+        d.cam_xmat,
+        d.subtree_com,
+        d.ten_velocity,
+        d.actuator_velocity,
+        d.cvel,
+        d.subtree_linvel,
+        d.subtree_angmom,
+      ],
+      outputs=[d.sensordata],
+    )
+
+  if m.sensor_limitvel_adr.size > 0:
+    wp.launch(
+      _limit_vel,
+      dim=(d.njmax, m.sensor_limitvel_adr.size),
+      inputs=[
+        m.sensor_datatype,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_limitvel_adr,
+        d.ne,
+        d.nf,
+        d.nl,
+        d.efc.worldid,
+        d.efc.type,
+        d.efc.id,
+        d.efc.vel,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
 
 
 @wp.func

@@ -566,7 +566,19 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       dtype=int,
     ),
     sensor_vel_adr=wp.array(
-      np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0],
+      np.nonzero(
+        (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)
+        & (
+          (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITVEL)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+        )
+      )[0],
+      dtype=int,
+    ),
+    sensor_limitvel_adr=wp.array(
+      np.nonzero(
+        (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+      )[0],
       dtype=int,
     ),
     sensor_acc_adr=wp.array(
