@@ -4,6 +4,12 @@
 MUJOCO_LOG.TXT
 
 
+## Cloned repositories
+## -------------------
+
+mujoco_warp/test_data/mujoco_menagerie
+
+
 # Language-specific files
 # =======================
 
