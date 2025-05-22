@@ -276,6 +276,8 @@ class SensorType(enum.IntEnum):
     TORQUE: torque
     ACTUATORFRC: scalar actuator force
     JOINTACTFRC: scalar actuator force, measured at the joint
+    JOINTLIMITFRC: joint limit force
+    TENDONLIMITFRC: tendon limit force
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
   """
@@ -309,6 +311,8 @@ class SensorType(enum.IntEnum):
   TORQUE = mujoco.mjtSensor.mjSENS_TORQUE
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
   JOINTACTFRC = mujoco.mjtSensor.mjSENS_JOINTACTFRC
+  JOINTLIMITFRC = mujoco.mjtSensor.mjSENS_JOINTLIMITFRC
+  TENDONLIMITFRC = mujoco.mjtSensor.mjSENS_TENDONLIMITFRC
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
 
@@ -832,7 +836,9 @@ class Model:
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
                     (excluding touch sensors)
+                    (excluding limit force sensors)
     sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
+    sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     mocap_bodyid: id of body for mocap                       (nmocap,)
@@ -1095,6 +1101,7 @@ class Model:
   sensor_vel_adr: wp.array(dtype=int)  # warp only
   sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_touch_adr: wp.array(dtype=int)  # warp only
+  sensor_limitfrc_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only

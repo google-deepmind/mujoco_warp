@@ -110,6 +110,14 @@ class SensorTest(parameterized.TestCase):
           <actuatorpos actuator="slide"/>
           <actuatorpos actuator="slide" cutoff=".001"/>
           <ballquat joint="ballquat"/>
+          <jointlimitfrc joint="limitslide"/>
+          <jointlimitfrc joint="limitslide" cutoff=".001"/>
+          <jointlimitfrc joint="limithinge"/>
+          <jointlimitfrc joint="limithinge" cutoff=".001"/>
+          <jointlimitfrc joint="limitball"/>
+          <jointlimitfrc joint="limitball" cutoff=".001"/>
+          <tendonlimitfrc tendon="limittendon"/>
+          <tendonlimitfrc tendon="limittendon" cutoff=".001"/>
           <framepos objtype="body" objname="body1"/>
           <framepos objtype="body" objname="body1" cutoff=".001"/>      
           <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>
