@@ -1088,6 +1088,35 @@ def linesearch_init_jv(
   search = efc_search_in[worldid, dofid]
   wp.atomic_add(efc_jv_out, efcid, j * search)
 
+@wp.kernel
+def linesearch_jv_fused(
+  # Model:
+  nv: int,
+  # Data in:
+  nefc_in: wp.array(dtype=int),
+  efc_worldid_in: wp.array(dtype=int),
+  efc_J_in: wp.array2d(dtype=float),
+  efc_search_in: wp.array2d(dtype=float),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_jv_out: wp.array(dtype=float),
+):
+  efcid = wp.tid()
+
+  if efcid >= nefc_in[0]:
+    return
+
+  worldid = efc_worldid_in[efcid]
+
+  if efc_done_in[worldid]:
+    return
+
+  jv_out = float(0.0)
+
+  for i in range(nv):
+    jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
+
+  efc_jv_out[efcid] = jv_out
 
 @wp.kernel
 def linesearch_zero_quad_gauss(
@@ -1128,6 +1157,33 @@ def linesearch_init_quad_gauss(
   quad_gauss[1] = search * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
   quad_gauss[2] = 0.5 * search * efc_mv_in[worldid, dofid]
   wp.atomic_add(efc_quad_gauss_out, worldid, quad_gauss)
+
+@wp.kernel
+def linesearch_quad_gauss_fused(
+  # Model:
+  nv: int,
+  # Data in:
+  qfrc_smooth_in: wp.array2d(dtype=float),
+  efc_Ma_in: wp.array2d(dtype=float),
+  efc_search_in: wp.array2d(dtype=float),
+  efc_gauss_in: wp.array(dtype=float),
+  efc_mv_in: wp.array2d(dtype=float),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_quad_gauss_out: wp.array(dtype=wp.vec3),
+):
+  worldid = wp.tid()
+  if efc_done_in[worldid]:
+    return
+
+  for i in range(nv):
+    search = efc_search_in[worldid, i]
+    quad_gauss = wp.vec3()
+    quad_gauss[0] = efc_gauss_in[worldid] / float(nv)
+    quad_gauss[1] = search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
+    quad_gauss[2] = 0.5 * search * efc_mv_in[worldid, i]
+
+  efc_quad_gauss_out[worldid] = quad_gauss
 
 
 @wp.kernel
@@ -1266,38 +1322,54 @@ def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
   support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
 
-  # jv = efc_J @ search
-  # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
-  wp.launch(
-    linesearch_zero_jv,
-    dim=(d.njmax),
-    inputs=[d.nefc, d.efc.worldid, d.efc.done],
-    outputs=[d.efc.jv],
-  )
+  if m.nv < 50:
+    wp.launch(
+      linesearch_jv_fused,
+      dim=(d.njmax),
+      inputs=[m.nv, d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
+      outputs=[d.efc.jv],
+    )
+  else:
+    # jv = efc_J @ search
+    # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
+    wp.launch(
+      linesearch_zero_jv,
+      dim=(d.njmax),
+      inputs=[d.nefc, d.efc.worldid, d.efc.done],
+      outputs=[d.efc.jv],
+    )
 
-  wp.launch(
-    linesearch_init_jv,
-    dim=(d.njmax, m.nv),
-    inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
-    outputs=[d.efc.jv],
-  )
+    wp.launch(
+      linesearch_init_jv,
+      dim=(d.njmax, m.nv),
+      inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
+      outputs=[d.efc.jv],
+    )
 
-  # prepare quadratics
-  # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-  # TOOD(team): is zero_() better here?
-  wp.launch(
-    linesearch_zero_quad_gauss,
-    dim=(d.nworld),
-    inputs=[d.efc.done],
-    outputs=[d.efc.quad_gauss],
-  )
+  if m.nv < 50:
+    wp.launch(
+      linesearch_quad_gauss_fused,
+      dim=(d.nworld),
+      inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
+      outputs=[d.efc.quad_gauss],
+    )
+  else:
+    # prepare quadratics
+    # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+    # TOOD(team): is zero_() better here?
+    wp.launch(
+      linesearch_zero_quad_gauss,
+      dim=(d.nworld),
+      inputs=[d.efc.done],
+      outputs=[d.efc.quad_gauss],
+    )
 
-  wp.launch(
-    linesearch_init_quad_gauss,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
-    outputs=[d.efc.quad_gauss],
-  )
+    wp.launch(
+      linesearch_init_quad_gauss,
+      dim=(d.nworld, m.nv),
+      inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
+      outputs=[d.efc.quad_gauss],
+    )
 
   # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
 
