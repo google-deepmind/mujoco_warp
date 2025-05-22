@@ -19,6 +19,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from . import collision_driver
 from . import types
 
 
@@ -230,37 +231,42 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT.value)
-  exclude_signature = set(mjm.exclude_signature)
-  predefined_pairs = {(mjm.pair_geom1[i], mjm.pair_geom2[i]): i for i in range(mjm.npair)}
 
-  nxn_geom_pair, nxn_pairid = [], []
-  for geom1, geom2 in zip(*np.triu_indices(mjm.ngeom, k=1)):  # k=1 skip diagonal
-    bodyid1, bodyid2 = mjm.geom_bodyid[geom1], mjm.geom_bodyid[geom2]
-    contype1, contype2 = mjm.geom_contype[geom1], mjm.geom_contype[geom2]
-    conaffinity1 = mjm.geom_conaffinity[geom1]
-    conaffinity2 = mjm.geom_conaffinity[geom2]
-    weldid1, weldid2 = mjm.body_weldid[bodyid1], mjm.body_weldid[bodyid2]
-    weld_parentid1 = mjm.body_weldid[mjm.body_parentid[weldid1]]
-    weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
+  geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
+  nxn_geom_pair = np.stack((geom1, geom2), axis=1)
 
-    self_collision = weldid1 == weldid2
-    parent_child_collision = (
-      filterparent and (weldid1 != 0) and (weldid2 != 0) and ((weldid1 == weld_parentid2) or (weldid2 == weld_parentid1))
-    )
-    mask = (contype1 & conaffinity2) or (contype2 & conaffinity1)
-    exclude = (bodyid1 << 16) + (bodyid2) in exclude_signature
+  bodyid1 = mjm.geom_bodyid[geom1]
+  bodyid2 = mjm.geom_bodyid[geom2]
+  contype1 = mjm.geom_contype[geom1]
+  contype2 = mjm.geom_contype[geom2]
+  conaffinity1 = mjm.geom_conaffinity[geom1]
+  conaffinity2 = mjm.geom_conaffinity[geom2]
+  weldid1 = mjm.body_weldid[bodyid1]
+  weldid2 = mjm.body_weldid[bodyid2]
+  weld_parentid1 = mjm.body_weldid[mjm.body_parentid[weldid1]]
+  weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
 
-    if mask and (not self_collision) and (not parent_child_collision) and (not exclude):
-      pairid = -1
+  self_collision = weldid1 == weldid2
+  parent_child_collision = (
+    filterparent & (weldid1 != 0) & (weldid2 != 0) & ((weldid1 == weld_parentid2) | (weldid2 == weld_parentid1))
+  )
+  mask = np.array((contype1 & conaffinity2) | (contype2 & conaffinity1), dtype=bool)
+  exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
+
+  nxn_pairid = -1 * np.ones(len(geom1), dtype=int)
+  nxn_pairid[~(mask & ~self_collision & ~parent_child_collision & ~exclude)] = -2
+
+  # contact pairs
+  for i in range(mjm.npair):
+    pair_geom1 = mjm.pair_geom1[i]
+    pair_geom2 = mjm.pair_geom2[i]
+
+    if pair_geom2 < pair_geom1:
+      pairid = np.int32(collision_driver._upper_tri_index(mjm.ngeom, int(pair_geom2), int(pair_geom1)))
     else:
-      pairid = -2
+      pairid = np.int32(collision_driver._upper_tri_index(mjm.ngeom, int(pair_geom1), int(pair_geom2)))
 
-    # check for predefined geom pair
-    pairid = predefined_pairs.get((geom1, geom2), pairid)
-    pairid = predefined_pairs.get((geom2, geom1), pairid)
-
-    nxn_geom_pair.append((geom1, geom2))
-    nxn_pairid.append(pairid)
+    nxn_pairid[pairid] = i
 
   def create_nmodel_batched_array(mjm_array, dtype):
     array = wp.array(mjm_array, dtype=dtype)
