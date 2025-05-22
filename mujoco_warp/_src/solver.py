@@ -1176,9 +1176,10 @@ def linesearch_quad_gauss_fused(
   if efc_done_in[worldid]:
     return
 
+  quad_gauss = wp.vec3(0.0)
+
   for i in range(nv):
     search = efc_search_in[worldid, i]
-    quad_gauss = wp.vec3()
     quad_gauss[0] = efc_gauss_in[worldid] / float(nv)
     quad_gauss[1] = search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
     quad_gauss[2] = 0.5 * search * efc_mv_in[worldid, i]
