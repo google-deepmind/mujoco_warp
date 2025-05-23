@@ -1318,7 +1318,6 @@ def _linesearch(m: types.Model, d: types.Data):
       outputs=[d.efc.jv],
     )
 
-
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   # TOOD(team): is zero_() better here?
