@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from math import ceil
 import warp as wp
 
 from . import math
@@ -1088,8 +1089,8 @@ def linesearch_init_jv(
   search = efc_search_in[worldid, dofid]
   wp.atomic_add(efc_jv_out, efcid, j * search)
 
-def linesearch_jv_fused(nv: int):
-  @wp.kernel # nested_kernel here is a 15ns perf penalty per step.
+def linesearch_jv_fused(nv: int, dofs_per_thread: int):
+  @nested_kernel # nested_kernel here is a 15ns perf penalty per step.
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1100,7 +1101,7 @@ def linesearch_jv_fused(nv: int):
     # Data out:
     efc_jv_out: wp.array(dtype=float),
   ):
-    efcid = wp.tid()
+    efcid, dofstart = wp.tid()
 
     if efcid >= nefc_in[0]:
       return
@@ -1112,10 +1113,19 @@ def linesearch_jv_fused(nv: int):
 
     jv_out = float(0.0)
 
-    for i in range(wp.static(nv)):
-      jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
+    if wp.static(dofs_per_thread <= nv):
 
-    efc_jv_out[efcid] = jv_out
+      for i in range(wp.static(dofs_per_thread)):
+        jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
+      efc_jv_out[efcid] = jv_out
+    
+    else:
+
+      for i in range(wp.static(dofs_per_thread)):
+        ii = dofstart * wp.static(dofs_per_thread) + i
+        if ii < nv:
+          jv_out += efc_J_in[efcid, ii] * efc_search_in[worldid, ii]
+      wp.atomic_add(efc_jv_out, efcid, jv_out)
 
   return kernel
 
@@ -1295,16 +1305,14 @@ def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
   support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
 
-  if m.nv < 50:
-    wp.launch(
-      linesearch_jv_fused(m.nv),
-      dim=(d.njmax),
-      inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
-      outputs=[d.efc.jv],
-    )
-  else:
-    # jv = efc_J @ search
-    # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
+  # jv = efc_J @ search
+  # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
+  dofs_per_thread = 50
+
+  threads_per_efc = ceil(m.nv / dofs_per_thread)
+  
+  # we need to clear the jv array if we're doing atomic adds.
+  if threads_per_efc > 1:
     wp.launch(
       linesearch_zero_jv,
       dim=(d.njmax),
@@ -1312,12 +1320,12 @@ def _linesearch(m: types.Model, d: types.Data):
       outputs=[d.efc.jv],
     )
 
-    wp.launch(
-      linesearch_init_jv,
-      dim=(d.njmax, m.nv),
-      inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
-      outputs=[d.efc.jv],
-    )
+  wp.launch(
+    linesearch_jv_fused(m.nv, dofs_per_thread),
+    dim=(d.njmax, threads_per_efc),
+    inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
+    outputs=[d.efc.jv],
+  )
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
