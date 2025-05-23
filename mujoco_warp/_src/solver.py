@@ -14,6 +14,7 @@
 # ==============================================================================
 
 from math import ceil
+
 import warp as wp
 
 from . import math
@@ -1065,7 +1066,7 @@ def linesearch_zero_jv(
 
 
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
-  @nested_kernel # nested_kernel here is a 15ns perf penalty per step.
+  @nested_kernel  # nested_kernel here is a 15ns perf penalty per step.
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1089,13 +1090,11 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
     jv_out = float(0.0)
 
     if wp.static(dofs_per_thread >= nv):
-
       for i in range(wp.static(min(dofs_per_thread, nv))):
         jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
       efc_jv_out[efcid] = jv_out
-    
-    else:
 
+    else:
       for i in range(wp.static(dofs_per_thread)):
         ii = dofstart * wp.static(dofs_per_thread) + i
         if ii < nv:
@@ -1103,6 +1102,7 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
       wp.atomic_add(efc_jv_out, efcid, jv_out)
 
   return kernel
+
 
 @wp.kernel
 def linesearch_zero_quad_gauss(
@@ -1143,6 +1143,7 @@ def linesearch_init_quad_gauss(
   quad_gauss[1] = search * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
   quad_gauss[2] = 0.5 * search * efc_mv_in[worldid, dofid]
   wp.atomic_add(efc_quad_gauss_out, worldid, quad_gauss)
+
 
 @wp.kernel
 def linesearch_init_quad(
@@ -1282,8 +1283,8 @@ def _linesearch(m: types.Model, d: types.Data):
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
-  
-  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the 
+
+  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
   # init kernel. If we use more than 1 thread, dofs_per_thread is lower for better load balancing.
 
   if m.nv > 50:
