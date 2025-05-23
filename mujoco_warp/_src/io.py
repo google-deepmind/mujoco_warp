@@ -618,6 +618,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     nworld=nworld,
     nconmax=nconmax,
     njmax=njmax,
+    solver_niter=wp.zeros(nworld, dtype=int),
     ncon=wp.zeros(1, dtype=int),
     ne=wp.zeros(1, dtype=int),
     ne_connect=wp.zeros(1, dtype=int),  # warp only
@@ -726,7 +727,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       gauss=wp.zeros((nworld,), dtype=float),
       cost=wp.zeros((nworld,), dtype=float),
       prev_cost=wp.zeros((nworld,), dtype=float),
-      solver_niter=wp.zeros((nworld,), dtype=int),
       active=wp.zeros((njmax,), dtype=bool),
       gtol=wp.zeros((nworld,), dtype=float),
       mv=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -918,6 +918,7 @@ def put_data(
     nworld=nworld,
     nconmax=nconmax,
     njmax=njmax,
+    solver_niter=tile(mjd.solver_niter[0]),
     ncon=arr([mjd.ncon * nworld]),
     ne=arr([mjd.ne * nworld]),
     ne_connect=arr([3 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active, dtype=int)]),
@@ -1023,7 +1024,6 @@ def put_data(
       gauss=wp.empty(shape=(nworld,), dtype=float),
       cost=wp.empty(shape=(nworld,), dtype=float),
       prev_cost=wp.empty(shape=(nworld,), dtype=float),
-      solver_niter=wp.empty(shape=(nworld,), dtype=int),
       active=wp.empty(shape=(njmax,), dtype=bool),
       gtol=wp.empty(shape=(nworld,), dtype=float),
       mv=wp.empty(shape=(nworld, mjm.nv), dtype=float),
@@ -1112,6 +1112,8 @@ def get_data_into(
   """Gets Data from a device into an existing mujoco.MjData."""
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
+
+  result.solver_niter[0] = d.solver_niter.numpy()[0]
 
   ncon = d.ncon.numpy()[0]
   nefc = d.nefc.numpy()[0]

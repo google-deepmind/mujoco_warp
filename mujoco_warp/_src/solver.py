@@ -1360,14 +1360,14 @@ def _linesearch(m: types.Model, d: types.Data):
 @wp.kernel
 def solve_init_efc(
   # Data out:
+  solver_niter_out: wp.array(dtype=int),
   efc_search_dot_out: wp.array(dtype=float),
   efc_cost_out: wp.array(dtype=float),
-  efc_solver_niter_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
 ):
   worldid = wp.tid()
   efc_cost_out[worldid] = wp.inf
-  efc_solver_niter_out[worldid] = 0
+  solver_niter_out[worldid] = 0
   efc_done_out[worldid] = False
   efc_search_dot_out[worldid] = 0.0
 
@@ -2461,6 +2461,7 @@ def solve_done(
   efc_prev_cost_in: wp.array(dtype=float),
   efc_done_in: wp.array(dtype=bool),
   # Data out:
+  solver_niter_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
 ):
   # TODO(team): static m?
@@ -2468,6 +2469,8 @@ def solve_done(
 
   if efc_done_in[worldid]:
     return
+
+  solver_niter_out[worldid] += 1
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
@@ -2479,7 +2482,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   wp.launch(
     solve_init_efc,
     dim=(d.nworld),
-    outputs=[d.efc.search_dot, d.efc.cost, d.efc.solver_niter, d.efc.done],
+    outputs=[d.solver_niter, d.efc.search_dot, d.efc.cost, d.efc.done],
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
@@ -2575,7 +2578,7 @@ def solve(m: types.Model, d: types.Data):
         d.efc.prev_cost,
         d.efc.done,
       ],
-      outputs=[d.efc.done],
+      outputs=[d.solver_niter, d.efc.done],
     )
 
   wp.copy(d.qacc_warmstart, d.qacc)

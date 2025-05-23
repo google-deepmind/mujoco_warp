@@ -490,7 +490,6 @@ class Constraint:
     gauss: gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
-    solver_niter: number of solver iterations         (nworld,)
     active: active (quadratic) constraints            (njmax,)
     gtol: linesearch termination tolerance            (nworld,)
     mv: qM @ search                                   (nworld, nv)
@@ -545,7 +544,6 @@ class Constraint:
   gauss: wp.array(dtype=float)
   cost: wp.array(dtype=float)
   prev_cost: wp.array(dtype=float)
-  solver_niter: wp.array(dtype=int)
   active: wp.array(dtype=bool)
   gtol: wp.array(dtype=float)
   mv: wp.array2d(dtype=float)
@@ -1155,6 +1153,7 @@ class Data:
     nworld: number of worlds                                    ()
     nconmax: maximum number of contacts                         ()
     njmax: maximum number of constraints                        ()
+    solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts                           ()
     ne: number of equality constraints                          ()
     ne_connect: number of equality connect constraints          ()
@@ -1269,7 +1268,7 @@ class Data:
   nworld: int  # warp only
   nconmax: int  # warp only
   njmax: int  # warp only
-
+  solver_niter: wp.array(dtype=int)
   ncon: wp.array(dtype=int)
   ne: wp.array(dtype=int)
   ne_connect: wp.array(dtype=int)  # warp only
