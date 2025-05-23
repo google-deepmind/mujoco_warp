@@ -1064,31 +1064,6 @@ def linesearch_zero_jv(
   efc_jv_out[efcid] = 0.0
 
 
-@wp.kernel
-def linesearch_init_jv(
-  # Data in:
-  nefc_in: wp.array(dtype=int),
-  efc_worldid_in: wp.array(dtype=int),
-  efc_J_in: wp.array2d(dtype=float),
-  efc_search_in: wp.array2d(dtype=float),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_jv_out: wp.array(dtype=float),
-):
-  efcid, dofid = wp.tid()
-
-  if efcid >= nefc_in[0]:
-    return
-
-  worldid = efc_worldid_in[efcid]
-
-  if efc_done_in[worldid]:
-    return
-
-  j = efc_J_in[efcid, dofid]
-  search = efc_search_in[worldid, dofid]
-  wp.atomic_add(efc_jv_out, efcid, j * search)
-
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
   @nested_kernel # nested_kernel here is a 15ns perf penalty per step.
   def kernel(
