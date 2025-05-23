@@ -1088,35 +1088,36 @@ def linesearch_init_jv(
   search = efc_search_in[worldid, dofid]
   wp.atomic_add(efc_jv_out, efcid, j * search)
 
-@wp.kernel
-def linesearch_jv_fused(
-  # Model:
-  nv: int,
-  # Data in:
-  nefc_in: wp.array(dtype=int),
-  efc_worldid_in: wp.array(dtype=int),
-  efc_J_in: wp.array2d(dtype=float),
-  efc_search_in: wp.array2d(dtype=float),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_jv_out: wp.array(dtype=float),
-):
-  efcid = wp.tid()
+def linesearch_jv_fused(nv: int):
+  @wp.kernel # nested_kernel here is a 15ns perf penalty per step.
+  def kernel(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    efc_worldid_in: wp.array(dtype=int),
+    efc_J_in: wp.array2d(dtype=float),
+    efc_search_in: wp.array2d(dtype=float),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_jv_out: wp.array(dtype=float),
+  ):
+    efcid = wp.tid()
 
-  if efcid >= nefc_in[0]:
-    return
+    if efcid >= nefc_in[0]:
+      return
 
-  worldid = efc_worldid_in[efcid]
+    worldid = efc_worldid_in[efcid]
 
-  if efc_done_in[worldid]:
-    return
+    if efc_done_in[worldid]:
+      return
 
-  jv_out = float(0.0)
+    jv_out = float(0.0)
 
-  for i in range(nv):
-    jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
+    for i in range(wp.static(nv)):
+      jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
 
-  efc_jv_out[efcid] = jv_out
+    efc_jv_out[efcid] = jv_out
+
+  return kernel
 
 @wp.kernel
 def linesearch_zero_quad_gauss(
@@ -1296,9 +1297,9 @@ def _linesearch(m: types.Model, d: types.Data):
 
   if m.nv < 50:
     wp.launch(
-      linesearch_jv_fused,
+      linesearch_jv_fused(m.nv),
       dim=(d.njmax),
-      inputs=[m.nv, d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
+      inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
       outputs=[d.efc.jv],
     )
   else:
