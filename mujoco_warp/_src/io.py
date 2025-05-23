@@ -61,6 +61,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
+  is_sparse = mujoco.mj_isSparse(mjm)
+
+  if mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST and is_sparse:
+    raise NotImplementedError("implicitfast integrator and sparse option is unsupported.")
+
   # calculate some fields that cannot be easily computed inline
   nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
 
@@ -315,7 +320,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       disableflags=mjm.opt.disableflags,
       enableflags=mjm.opt.enableflags,
       impratio=mjm.opt.impratio,
-      is_sparse=mujoco.mj_isSparse(mjm),
+      is_sparse=is_sparse,
       ls_parallel=False,
       gjk_iterations=1,
       epa_iterations=12,

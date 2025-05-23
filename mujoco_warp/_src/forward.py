@@ -604,8 +604,6 @@ def implicit(m: Model, d: Data):
   # It would also need a different data layout for the biasprm/gainprm arrays
   # to be tileable.
 
-  # assumptions
-  assert not m.opt.is_sparse  # unsupported
   # TODO(team): add sparse version
 
   # compile-time constants
