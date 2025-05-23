@@ -1113,7 +1113,7 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
     jv_out = float(0.0)
 
-    if wp.static(dofs_per_thread <= nv):
+    if wp.static(dofs_per_thread >= nv):
 
       for i in range(wp.static(dofs_per_thread)):
         jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
@@ -1122,6 +1122,47 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
     else:
 
       for i in range(wp.static(dofs_per_thread)):
+        ii = dofstart * wp.static(dofs_per_thread) + i
+        if ii < nv:
+          jv_out += efc_J_in[efcid, ii] * efc_search_in[worldid, ii]
+      wp.atomic_add(efc_jv_out, efcid, jv_out)
+
+  return kernel
+
+def linesearch_jv_fused_1d(nv: int, dofs_per_thread: int):
+  @nested_kernel # nested_kernel here is a 15ns perf penalty per step.
+  def kernel(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    efc_worldid_in: wp.array(dtype=int),
+    efc_J_in: wp.array2d(dtype=float),
+    efc_search_in: wp.array2d(dtype=float),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_jv_out: wp.array(dtype=float),
+  ):
+    efcid = wp.tid()
+
+    if efcid >= nefc_in[0]:
+      return
+
+    worldid = efc_worldid_in[efcid]
+
+    if efc_done_in[worldid]:
+      return
+
+    jv_out = float(0.0)
+
+    if wp.static(dofs_per_thread >= nv):
+
+      for i in range(wp.static(dofs_per_thread)):
+        jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
+      efc_jv_out[efcid] = jv_out
+    
+    else:
+
+      for i in range(wp.static(dofs_per_thread)):
+        dofstart = 1
         ii = dofstart * wp.static(dofs_per_thread) + i
         if ii < nv:
           jv_out += efc_J_in[efcid, ii] * efc_search_in[worldid, ii]
@@ -1310,7 +1351,6 @@ def _linesearch(m: types.Model, d: types.Data):
   dofs_per_thread = 50
 
   threads_per_efc = ceil(m.nv / dofs_per_thread)
-  
   # we need to clear the jv array if we're doing atomic adds.
   if threads_per_efc > 1:
     wp.launch(
@@ -1320,12 +1360,21 @@ def _linesearch(m: types.Model, d: types.Data):
       outputs=[d.efc.jv],
     )
 
-  wp.launch(
-    linesearch_jv_fused(m.nv, dofs_per_thread),
-    dim=(d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
-    outputs=[d.efc.jv],
-  )
+    wp.launch(
+      linesearch_jv_fused(m.nv, dofs_per_thread),
+      dim=(d.njmax, threads_per_efc),
+      inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
+      outputs=[d.efc.jv],
+    )
+  else:
+    wp.launch(
+      linesearch_jv_fused_1d(m.nv, dofs_per_thread),
+      dim=(d.njmax),
+      inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
+      outputs=[d.efc.jv],
+    )
+
+  
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
