@@ -1129,47 +1129,6 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
   return kernel
 
-def linesearch_jv_fused_1d(nv: int, dofs_per_thread: int):
-  @nested_kernel # nested_kernel here is a 15ns perf penalty per step.
-  def kernel(
-    # Data in:
-    nefc_in: wp.array(dtype=int),
-    efc_worldid_in: wp.array(dtype=int),
-    efc_J_in: wp.array2d(dtype=float),
-    efc_search_in: wp.array2d(dtype=float),
-    efc_done_in: wp.array(dtype=bool),
-    # Data out:
-    efc_jv_out: wp.array(dtype=float),
-  ):
-    efcid = wp.tid()
-
-    if efcid >= nefc_in[0]:
-      return
-
-    worldid = efc_worldid_in[efcid]
-
-    if efc_done_in[worldid]:
-      return
-
-    jv_out = float(0.0)
-
-    if wp.static(dofs_per_thread >= nv):
-
-      for i in range(wp.static(min(dofs_per_thread, nv))):
-        jv_out += efc_J_in[efcid, i] * efc_search_in[worldid, i]
-      efc_jv_out[efcid] = jv_out
-    
-    else:
-
-      for i in range(wp.static(dofs_per_thread)):
-        dofstart = 1
-        ii = dofstart * wp.static(dofs_per_thread) + i
-        if ii < nv:
-          jv_out += efc_J_in[efcid, ii] * efc_search_in[worldid, ii]
-      wp.atomic_add(efc_jv_out, efcid, jv_out)
-
-  return kernel
-
 @wp.kernel
 def linesearch_zero_quad_gauss(
   # Data in:
