@@ -1282,6 +1282,10 @@ def _linesearch(m: types.Model, d: types.Data):
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
+  
+  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the 
+  # init kernel. If we use more than 1 thread, dofs_per_thread is lower for better load balancing.
+
   if m.nv > 50:
     dofs_per_thread = 20
   else:
