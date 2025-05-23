@@ -1282,7 +1282,10 @@ def _linesearch(m: types.Model, d: types.Data):
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
-  dofs_per_thread = 50
+  if m.nv > 50:
+    dofs_per_thread = 20
+  else:
+    dofs_per_thread = 50
 
   threads_per_efc = ceil(m.nv / dofs_per_thread)
   # we need to clear the jv array if we're doing atomic adds.
