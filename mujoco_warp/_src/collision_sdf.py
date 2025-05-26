@@ -312,10 +312,27 @@ def gradient_step(type1: int, type2: int, sdf_type1: int, sdf_type2: int, niter:
   return _gradient_step
 
 
+@wp.func
+def halton(index: int, base: int) -> float:
+  """Generate Halton sequence value for given index and base."""
+  n0 = index
+  b = float(base)
+  f = float(1.0) / b
+  hn = float(0.0)
+  
+  while n0 > 0:
+    n1 = n0 // base
+    r = n0 - n1 * base
+    hn += f * float(r)
+    f /= b
+    n0 = n1
+  
+  return hn
+
+
 def gradient_descent(type1: int, type2: int, sdf_type1: int, sdf_type2: int, sfd_intersection: bool = False):
   @wp.func
-  def _gradient_descent(
-    aabb1: AABB, aabb2: AABB, x0_passed: wp.vec3, attr1: wp.vec3f, attr2: wp.vec3f, pos1: wp.vec3, rot1: wp.mat33, pos2: wp.vec3, rot2: wp.mat33
+  def _gradient_descent( x0_initial: wp.vec3, attr1: wp.vec3f, attr2: wp.vec3f, pos1: wp.vec3, rot1: wp.mat33, pos2: wp.vec3, rot2: wp.mat33
   ) -> Tuple[float, wp.vec3, wp.vec3]:
     params = OptimizationParams()
     params.rel_mat = wp.transpose(rot1) * rot2
@@ -323,14 +340,8 @@ def gradient_descent(type1: int, type2: int, sdf_type1: int, sdf_type2: int, sfd
     params.attr1 = attr1
     params.attr2 = attr2
 
-    x1 = aabb1.min
-    x2 = aabb2.min
-    x_computed = wp.vec3(wp.max(x1[0], x2[0]), wp.max(x1[1], x2[1]), wp.max(x1[2], x2[2]))
-    x0_computed = wp.transpose(rot2) * (x_computed - pos2)
-    
-
     # mjSDFTYPE_COLLISION;
-    dist, x = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, 10, False))(x0_computed, params)
+    dist, x = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, 10, False))(x0_initial, params)
     # mjSDFTYPE_INTERSECTION;
     dist, x = wp.static(gradient_step(type1, type2, sdf_type1, sdf_type2, 1, True))(x, params)
 
@@ -356,9 +367,7 @@ def gradient_descent(type1: int, type2: int, sdf_type1: int, sdf_type2: int, sfd
 
 @wp.func
 def sdf_sdf(
-    aabb1: AABB,
-    aabb2: AABB,
-    x0_passed: wp.vec3,
+    x0_initial: wp.vec3,
     attr1: wp.vec3f,
     attr2: wp.vec3f,
     pos1: wp.vec3,
@@ -368,27 +377,33 @@ def sdf_sdf(
     type1: int,
     type2: int,
 ):
+  dist = float(1e10)
+  pos = wp.vec3(0.0, 0.0, 0.0)
+  n = wp.vec3(0.0, 0.0, 1.0)
   
   if type1 == wp.static(SDFType.NUT.value) and type2 == wp.static(SDFType.NUT.value):
-    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT, SDFType.NUT))(
-      aabb1, aabb2, x0_passed, attr1, attr2, pos1, rot1, pos2, rot2
+    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT.value, SDFType.NUT.value))(
+      x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
     )
   elif type1 == wp.static(SDFType.NUT.value) and type2 == wp.static(SDFType.BOLT.value):
-    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT, SDFType.BOLT))(
-      aabb1, aabb2, x0_passed, attr1, attr2, pos1, rot1, pos2, rot2
+    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.NUT.value, SDFType.BOLT.value))(
+      x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
+    )
+  elif type1 == wp.static(SDFType.BOLT.value) and type2 == wp.static(SDFType.NUT.value):
+    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.BOLT.value, SDFType.NUT.value))(
+      x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
     )
   elif type1 == wp.static(SDFType.BOLT.value) and type2 == wp.static(SDFType.BOLT.value):
-    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.BOLT, SDFType.BOLT))(
-      aabb1, aabb2, x0_passed, attr1, attr2, pos1, rot1, pos2, rot2
+    dist, pos, n = wp.static(gradient_descent(GeomType.SDF.value, GeomType.SDF.value, SDFType.BOLT.value, SDFType.BOLT.value))(
+      x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
     )
   return dist, pos, n
 
 
 @wp.func
 def sphere_sdf(
-  aabb1: AABB,
-  aabb2: AABB,
-  x0_passed: wp.vec3,
+
+  x0_initial: wp.vec3,
   attr1: wp.vec3f,
   attr2: wp.vec3f,
   pos1: wp.vec3,
@@ -397,18 +412,25 @@ def sphere_sdf(
   rot2: wp.mat33,
   type2: int,
 ):
+  dist = float(1e10)
+  pos = wp.vec3(0.0, 0.0, 0.0)
+  n = wp.vec3(0.0, 0.0, 1.0)
+  
   if type2 == wp.static(SDFType.NUT.value):
     dist, pos, n = wp.static(gradient_descent(GeomType.SPHERE.value, GeomType.SDF.value, 0, SDFType.NUT.value))(
-      aabb1, aabb2, x0_passed, attr1, attr2, pos1, rot1, pos2, rot2
+      x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
+    )
+  elif type2 == wp.static(SDFType.BOLT.value):
+    dist, pos, n = wp.static(gradient_descent(GeomType.SPHERE.value, GeomType.SDF.value, 0, SDFType.BOLT.value))(
+     x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
     )
   return dist, pos, n
 
 
 @wp.func
 def ellipsoid_sdf(
-  aabb1: AABB,
-  aabb2: AABB,
-  x0_passed: wp.vec3,
+
+  x0_initial: wp.vec3,
   attr1: wp.vec3f,
   attr2: wp.vec3f,
   pos1: wp.vec3,
@@ -417,9 +439,17 @@ def ellipsoid_sdf(
   rot2: wp.mat33,
   type2: int,
 ):
+  dist = float(1e10)
+  pos = wp.vec3(0.0, 0.0, 0.0)
+  n = wp.vec3(0.0, 0.0, 1.0)
+  
   if type2 == wp.static(SDFType.NUT.value):
     dist, pos, n = wp.static(gradient_descent(GeomType.ELLIPSOID.value, GeomType.SDF.value, 0, SDFType.NUT.value))(
-      aabb1, aabb2, x0_passed, attr1, attr2, pos1, rot1, pos2, rot2
+       x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
+    )
+  elif type2 == wp.static(SDFType.BOLT.value):
+    dist, pos, n = wp.static(gradient_descent(GeomType.ELLIPSOID.value, GeomType.SDF.value, 0, SDFType.BOLT.value))(
+      x0_initial, attr1, attr2, pos1, rot1, pos2, rot2
     )
   return dist, pos, n
 
@@ -547,47 +577,54 @@ def _sdf_narrowphase6(
   rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
-  # Precompute x0 from AABBs (same computation as in gradient_descent)
-  x1 = aabb1.min
-  x2 = aabb2.min
-  x_initial = wp.vec3(wp.max(x1[0], x2[0]), wp.max(x1[1], x2[1]), wp.max(x1[2], x2[2]))
-  x0_precomputed = wp.transpose(rot2) * (x_initial - pos2)
+  sdf_initpoints = 10  
 
-  if type1 == int(GeomType.SPHERE.value):
-    dist, pos, n = sphere_sdf(aabb1, aabb2, x0_precomputed, geom1.size, geom2.size, geom1.pos, geom1.rot, pos2, rot2, sdf_type[g2])
-  elif type1 == int(GeomType.ELLIPSOID.value):
-    dist, pos, n = ellipsoid_sdf(aabb1, aabb2, x0_precomputed, geom1.size, geom2.size, geom1.pos, geom1.rot, pos2, rot2, sdf_type[g2])
-  elif type1 == int(GeomType.SDF.value):
-    rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
-    pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
-    dist, pos, n = sdf_sdf(aabb1, aabb2, x0_precomputed, attr1, attr2, pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2])
-  write_contact(
-    nconmax_in,
-    dist,
-    pos,
-    make_frame(n),
-    margin,
-    gap,
-    condim,
-    friction,
-    solref,
-    solreffriction,
-    solimp,
-    geoms,
-    worldid,
-    ncon_out,
-    contact_dist_out,
-    contact_pos_out,
-    contact_frame_out,
-    contact_includemargin_out,
-    contact_friction_out,
-    contact_solref_out,
-    contact_solreffriction_out,
-    contact_solimp_out,
-    contact_dim_out,
-    contact_geom_out,
-    contact_worldid_out,
-  )
+  for i in range(sdf_initpoints):
+    # Generate initial point using Halton sequence within AABB2 bounds
+    x = wp.vec3(
+      aabb2.min[0] + (aabb2.max[0] - aabb2.min[0]) * halton(i, 2),
+      aabb2.min[1] + (aabb2.max[1] - aabb2.min[1]) * halton(i, 3),
+      aabb2.min[2] + (aabb2.max[2] - aabb2.min[2]) * halton(i, 5)
+    )
+    
+    x0_initial = wp.transpose(rot2) * (x - pos2)
+
+    if type1 == int(GeomType.SPHERE.value):
+      dist, pos, n = sphere_sdf(x0_initial, geom1.size, geom2.size, geom1.pos, geom1.rot, pos2, rot2, sdf_type[g2])
+    elif type1 == int(GeomType.ELLIPSOID.value):
+      dist, pos, n = ellipsoid_sdf(x0_initial, geom1.size, geom2.size, geom1.pos, geom1.rot, pos2, rot2, sdf_type[g2])
+    elif type1 == int(GeomType.SDF.value):
+      rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
+      pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
+      dist, pos, n = sdf_sdf(x0_initial, attr1, attr2, pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2])
+    
+    write_contact(
+      nconmax_in,
+      dist,
+      pos,
+      make_frame(n),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+    )
 
 
 def sdf_narrowphase(m: Model, d: Data):
