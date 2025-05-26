@@ -29,6 +29,7 @@ from ._src.forward import fwd_velocity as fwd_velocity
 from ._src.forward import implicit as implicit
 from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import step as step
+from ._src.inverse import inverse as inverse
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
 from ._src.io import put_data as put_data
@@ -62,6 +63,7 @@ from ._src.types import Contact as Contact
 from ._src.types import Data as Data
 from ._src.types import DisableBit as DisableBit
 from ._src.types import DynType as DynType
+from ._src.types import EnableBit as EnableBit
 from ._src.types import JointType as JointType
 from ._src.types import Model as Model
 from ._src.types import Option as Option

@@ -53,6 +53,8 @@ def fixture(
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
   disableflags: Optional[int] = None,
+  applied: bool = False,
+  nstep: int = 3,
   seed: int = 42,
   nworld: int = None,
   nconmax: int = None,
@@ -110,8 +112,12 @@ def fixture(
   if kick:
     # give the system a little kick to ensure we have non-identity rotations
     mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
-    mjd.ctrl = np.random.normal(scale=0.01, size=mjm.nu)
-    mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
+    mjd.ctrl = np.random.uniform(-0.1, 0.1, size=mjm.nu)
+  if applied:
+    mjd.qfrc_applied = np.random.uniform(-0.1, 0.1, size=mjm.nv)
+    mjd.xfrc_applied = np.random.uniform(-0.1, 0.1, size=mjd.xfrc_applied.shape)
+  if kick or applied:
+    mujoco.mj_step(mjm, mjd, nstep)  # let dynamics get state significantly non-zero
 
   if mjm.nmocap:
     mjd.mocap_pos = np.random.random(mjd.mocap_pos.shape)

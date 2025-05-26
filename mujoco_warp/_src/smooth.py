@@ -30,8 +30,6 @@ from .types import ObjType
 from .types import TileSet
 from .types import TrnType
 from .types import WrapType
-from .types import array2df
-from .types import array3df
 from .types import vec5
 from .types import vec10
 from .types import vec11
@@ -847,9 +845,9 @@ def _qLD_acc_legacy(
   dof_Madr: wp.array(dtype=int),
   # In:
   qLD_updates_: wp.array(dtype=wp.vec3i),
-  L_in: array3df,
+  L_in: wp.array3d(dtype=float),
   # Out:
-  L_out: array3df,
+  L_out: wp.array3d(dtype=float),
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
@@ -869,15 +867,17 @@ def _qLDiag_div_legacy(
   # Model:
   dof_Madr: wp.array(dtype=int),
   # In:
-  L_in: array3df,
+  L_in: wp.array3d(dtype=float),
   # Out:
-  D_out: array2df,
+  D_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
   D_out[worldid, dofid] = 1.0 / L_in[worldid, 0, dof_Madr[dofid]]
 
 
-def _factor_i_sparse_legacy(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
+def _factor_i_sparse_legacy(
+  m: Model, d: Data, M: wp.array3d(dtype=float), L: wp.array3d(dtype=float), D: wp.array2d(dtype=float)
+):
   """Sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd."""
 
   wp.copy(L, M)
@@ -899,9 +899,9 @@ def _copy_CSR(
   # Model:
   mapM2M: wp.array(dtype=int),
   # In:
-  M_in: array3df,
+  M_in: wp.array3d(dtype=float),
   # Out:
-  L_out: array3df,
+  L_out: wp.array3d(dtype=float),
 ):
   worldid, ind = wp.tid()
   L_out[worldid, 0, ind] = M_in[worldid, 0, mapM2M[ind]]
@@ -914,9 +914,9 @@ def _qLD_acc(
   M_rowadr: wp.array(dtype=int),
   # In:
   qLD_updates_: wp.array(dtype=wp.vec3i),
-  L_in: array3df,
+  L_in: wp.array3d(dtype=float),
   # Out:
-  L_out: array3df,
+  L_out: wp.array3d(dtype=float),
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
@@ -938,16 +938,16 @@ def _qLDiag_div(
   M_rownnz: wp.array(dtype=int),
   M_rowadr: wp.array(dtype=int),
   # In:
-  L_in: array3df,
+  L_in: wp.array3d(dtype=float),
   # Out:
-  D_out: array2df,
+  D_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
   diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
   D_out[worldid, dofid] = 1.0 / L_in[worldid, 0, diag_i]
 
 
-def _factor_i_sparse(m: Model, d: Data, M: array3df, L: array3df, D: array2df):
+def _factor_i_sparse(m: Model, d: Data, M: wp.array3d(dtype=float), L: wp.array3d(dtype=float), D: wp.array2d(dtype=float)):
   """Sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd."""
   if version.parse(mujoco.__version__) <= version.parse("3.2.7"):
     return _factor_i_sparse_legacy(m, d, M, L, D)
@@ -1559,8 +1559,8 @@ def _transmission(
   ten_length_in: wp.array2d(dtype=float),
   ten_J_in: wp.array3d(dtype=float),
   # Out:
-  length_out: array2df,
-  moment_out: array3df,
+  length_out: wp.array2d(dtype=float),
+  moment_out: wp.array3d(dtype=float),
 ):
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
@@ -1662,10 +1662,10 @@ def transmission(m: Model, d: Data):
 @wp.kernel
 def solve_LD_sparse_x_acc_up(
   # In:
-  L: array3df,
+  L: wp.array3d(dtype=float),
   qLD_updates_: wp.array(dtype=wp.vec3i),
   # Out:
-  x: array2df,
+  x: wp.array2d(dtype=float),
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
@@ -1676,9 +1676,9 @@ def solve_LD_sparse_x_acc_up(
 @wp.kernel
 def solve_LD_sparse_qLDiag_mul(
   # In:
-  D: array2df,
+  D: wp.array2d(dtype=float),
   # Out:
-  out: array2df,
+  out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
   out[worldid, dofid] *= D[worldid, dofid]
@@ -1687,10 +1687,10 @@ def solve_LD_sparse_qLDiag_mul(
 @wp.kernel
 def solve_LD_sparse_x_acc_down(
   # In:
-  L: array3df,
+  L: wp.array3d(dtype=float),
   qLD_updates_: wp.array(dtype=wp.vec3i),
   # Out:
-  x: array2df,
+  x: wp.array2d(dtype=float),
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
@@ -1698,7 +1698,14 @@ def solve_LD_sparse_x_acc_down(
   wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
 
 
-def _solve_LD_sparse(m: Model, d: Data, L: array3df, D: array2df, x: array2df, y: array2df):
+def _solve_LD_sparse(
+  m: Model,
+  d: Data,
+  L: wp.array3d(dtype=float),
+  D: wp.array2d(dtype=float),
+  x: wp.array2d(dtype=float),
+  y: wp.array2d(dtype=float),
+):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y"""
 
   wp.copy(x, y)
@@ -1717,11 +1724,11 @@ def _tile_cho_solve(tile: TileSet):
   @nested_kernel
   def cho_solve(
     # In:
-    L: array3df,
-    y: array2df,
+    L: wp.array3d(dtype=float),
+    y: wp.array2d(dtype=float),
     adr: wp.array(dtype=int),
     # Out:
-    x: array2df,
+    x: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
     TILE_SIZE = wp.static(tile.size)
@@ -1735,7 +1742,7 @@ def _tile_cho_solve(tile: TileSet):
   return cho_solve
 
 
-def _solve_LD_dense(m: Model, d: Data, L: array3df, x: array2df, y: array2df):
+def _solve_LD_dense(m: Model, d: Data, L: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
   """Computes dense backsubstitution: x = inv(L'*L)*y"""
 
   # TODO(team): develop heuristic for block dim, or make configurable
@@ -1751,7 +1758,14 @@ def _solve_LD_dense(m: Model, d: Data, L: array3df, x: array2df, y: array2df):
     )
 
 
-def solve_LD(m: Model, d: Data, L: array3df, D: array2df, x: array2df, y: array2df):
+def solve_LD(
+  m: Model,
+  d: Data,
+  L: wp.array3d(dtype=float),
+  D: wp.array2d(dtype=float),
+  x: wp.array2d(dtype=float),
+  y: wp.array2d(dtype=float),
+):
   """Computes backsubstitution: x = qLD * y."""
 
   if m.opt.is_sparse:
@@ -1761,7 +1775,7 @@ def solve_LD(m: Model, d: Data, L: array3df, D: array2df, x: array2df, y: array2
 
 
 @event_scope
-def solve_m(m: Model, d: Data, x: array2df, y: array2df):
+def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
   """Computes backsubstitution: x = qLD * y."""
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
 
@@ -1772,11 +1786,11 @@ def _tile_cho_solve_full(tile: TileSet):
   @nested_kernel
   def cholesky(
     # In:
-    M: array3df,
-    y: array2df,
+    M: wp.array3d(dtype=float),
+    y: wp.array2d(dtype=float),
     adr: wp.array(dtype=int),
     # Out:
-    x: array2df,
+    x: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
     TILE_SIZE = wp.static(tile.size)
@@ -1792,7 +1806,9 @@ def _tile_cho_solve_full(tile: TileSet):
   return cholesky
 
 
-def _factor_solve_i_dense(m: Model, d: Data, M: array3df, x: array2df, y: array2df):
+def _factor_solve_i_dense(
+  m: Model, d: Data, M: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)
+):
   # TODO(team): develop heuristic for block dim, or make configurable
   block_dim = 32
 

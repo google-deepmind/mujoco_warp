@@ -92,6 +92,17 @@ class DisableBit(enum.IntFlag):
   # unsupported: MIDPHASE, WARMSTART
 
 
+class EnableBit(enum.IntFlag):
+  """Enable optional feature bitflags.
+
+  Members:
+    INVDISCRETE: discrete-time inverse dynamics
+  """
+
+  INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+  # unsupported: OVERRIDE, ENERGY, FWDINV, MULTICCD, ISLAND
+
+
 class TrnType(enum.IntEnum):
   """Type of actuator transmission.
 
@@ -247,6 +258,7 @@ class SensorType(enum.IntEnum):
   """Type of sensor.
 
   Members:
+    MAGNETOMETER: magnetometer
     CAMPROJECTION: camera projection
     JOINTPOS: joint position
     TENDONPOS: scalar tendon position
@@ -279,6 +291,7 @@ class SensorType(enum.IntEnum):
     FRAMEANGACC: 3D angular acceleration
   """
 
+  MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
   CAMPROJECTION = mujoco.mjtSensor.mjSENS_CAMPROJECTION
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   TENDONPOS = mujoco.mjtSensor.mjSENS_TENDONPOS
@@ -385,8 +398,6 @@ vec5 = vec5f
 vec6 = vec6f
 vec10 = vec10f
 vec11 = vec11f
-array2df = wp.array2d(dtype=float)
-array3df = wp.array3d(dtype=float)
 
 
 @dataclasses.dataclass
@@ -399,12 +410,14 @@ class Option:
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
     gravity: gravitational acceleration
+    magnetic: global magnetic flux
     integrator: integration mode (mjtIntegrator)
     cone: type of friction cone (mjtCone)
     solver: solver algorithm (mjtSolver)
     iterations: number of main solver iterations
     ls_iterations: maximum number of CG/Newton linesearch iterations
     disableflags: bit flags for disabling standard features
+    enableflags: bit flags for enabling optional features
     is_sparse: whether to use sparse representations
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
@@ -421,12 +434,14 @@ class Option:
   tolerance: float
   ls_tolerance: float
   gravity: wp.vec3
+  magnetic: wp.vec3
   integrator: int
   cone: int
   solver: int
   iterations: int
   ls_iterations: int
   disableflags: int
+  enableflags: int
   is_sparse: bool
   gjk_iterations: int  # warp only
   epa_iterations: int  # warp only
@@ -473,7 +488,6 @@ class Constraint:
     gauss: gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
-    solver_niter: number of solver iterations         (nworld,)
     active: active (quadratic) constraints            (njmax,)
     gtol: linesearch termination tolerance            (nworld,)
     mv: qM @ search                                   (nworld, nv)
@@ -528,7 +542,6 @@ class Constraint:
   gauss: wp.array(dtype=float)
   cost: wp.array(dtype=float)
   prev_cost: wp.array(dtype=float)
-  solver_niter: wp.array(dtype=int)
   active: wp.array(dtype=bool)
   gtol: wp.array(dtype=float)
   mv: wp.array2d(dtype=float)
@@ -1138,6 +1151,7 @@ class Data:
     nworld: number of worlds                                    ()
     nconmax: maximum number of contacts                         ()
     njmax: maximum number of constraints                        ()
+    solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts                           ()
     ne: number of equality constraints                          ()
     ne_connect: number of equality connect constraints          ()
@@ -1153,6 +1167,7 @@ class Data:
     qvel: velocity                                              (nworld, nv)
     act: actuator activation                                    (nworld, na)
     qacc_warmstart: acceleration used for warmstart             (nworld, nv)
+    qacc_discrete: discrete-time acceleration                   (nworld, nv)
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
     xfrc_applied: applied Cartesian force/torque                (nworld, nbody, 6)
@@ -1204,6 +1219,8 @@ class Data:
     qfrc_smooth: net unconstrained force                        (nworld, nv)
     qacc_smooth: unconstrained acceleration                     (nworld, nv)
     qfrc_constraint: constraint force                           (nworld, nv)
+    qfrc_inverse: net external force; should equal:             (nworld, nv)
+              qfrc_applied + J.T @ xfrc_applied + qfrc_actuator
     contact: contact data
     efc: constraint data
     rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
@@ -1249,7 +1266,7 @@ class Data:
   nworld: int  # warp only
   nconmax: int  # warp only
   njmax: int  # warp only
-
+  solver_niter: wp.array(dtype=int)
   ncon: wp.array(dtype=int)
   ne: wp.array(dtype=int)
   ne_connect: wp.array(dtype=int)  # warp only
@@ -1265,6 +1282,7 @@ class Data:
   qvel: wp.array2d(dtype=float)
   act: wp.array2d(dtype=float)
   qacc_warmstart: wp.array2d(dtype=float)
+  qacc_discrete: wp.array2d(dtype=float)  # warp only
   ctrl: wp.array2d(dtype=float)
   qfrc_applied: wp.array2d(dtype=float)
   xfrc_applied: wp.array2d(dtype=wp.spatial_vector)
@@ -1319,6 +1337,7 @@ class Data:
   qfrc_smooth: wp.array2d(dtype=float)
   qacc_smooth: wp.array2d(dtype=float)
   qfrc_constraint: wp.array2d(dtype=float)
+  qfrc_inverse: wp.array2d(dtype=float)
   contact: Contact
   efc: Constraint
 

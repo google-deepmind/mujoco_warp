@@ -89,6 +89,19 @@ def _write_vector(
 
 
 @wp.func
+def _magnetometer(
+  # Model:
+  opt_magnetic: wp.vec3,
+  # Data in:
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  worldid: int,
+  objid: int,
+) -> wp.vec3:
+  return wp.transpose(site_xmat_in[worldid, objid]) @ opt_magnetic
+
+
+@wp.func
 def _cam_projection(
   # Model:
   cam_fovy: wp.array(dtype=float),
@@ -358,6 +371,7 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
+  opt_magnetic: wp.vec3,
   body_iquat: wp.array2d(dtype=wp.quat),
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
@@ -405,7 +419,10 @@ def _sensor_pos(
   objid = sensor_objid[sensorid]
   out = sensordata_out[worldid]
 
-  if sensortype == int(SensorType.CAMPROJECTION.value):
+  if sensortype == int(SensorType.MAGNETOMETER.value):
+    vec3 = _magnetometer(opt_magnetic, site_xmat_in, worldid, objid)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+  elif sensortype == int(SensorType.CAMPROJECTION.value):
     refid = sensor_refid[sensorid]
     vec2 = _cam_projection(
       cam_fovy, cam_resolution, cam_sensorsize, cam_intrinsic, site_xpos_in, cam_xpos_in, cam_xmat_in, worldid, objid, refid
@@ -494,7 +511,6 @@ def _sensor_pos(
 @event_scope
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
-
   if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
     return
 
@@ -502,6 +518,7 @@ def sensor_pos(m: Model, d: Data):
     _sensor_pos,
     dim=(d.nworld, m.sensor_pos_adr.size),
     inputs=[
+      m.opt.magnetic,
       m.body_iquat,
       m.jnt_qposadr,
       m.geom_bodyid,
