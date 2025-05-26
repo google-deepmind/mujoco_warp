@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .collision_hfield import get_hfield_triangle_prism
 from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
@@ -46,6 +47,7 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+  hfprism: wp.mat33
   vertadr: int
   vertnum: int
   vert: wp.array(dtype=wp.vec3)
@@ -56,7 +58,12 @@ def _geom(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -66,16 +73,18 @@ def _geom(
   # In:
   worldid: int,
   gid: int,
+  hftri_index: int,
 ) -> Geom:
   geom = Geom()
   geom.pos = geom_xpos_in[worldid, gid]
   rot = geom_xmat_in[worldid, gid]
   geom.rot = rot
-  geom.size = geom_size[gid]
+  geom.size = geom_size[worldid, gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = geom_dataid[gid]
 
-  if dataid >= 0:
+  # If geom is MESH, get mesh verts
+  if dataid >= 0 and geom_type[gid] == int(GeomType.MESH.value):
     geom.vertadr = mesh_vertadr[dataid]
     geom.vertnum = mesh_vertnum[dataid]
   else:
@@ -84,6 +93,12 @@ def _geom(
 
   if geom_type[gid] == int(GeomType.MESH.value):
     geom.vert = mesh_vert
+
+  # If geom is HFIELD triangle, compute triangle prism verts
+  if geom_type[gid] == int(GeomType.HFIELD.value):
+    geom.hfprism = get_hfield_triangle_prism(
+      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
+    )
 
   return geom
 
@@ -1268,36 +1283,37 @@ def contact_params(
   # Model:
   geom_condim: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array(dtype=float),
-  geom_solref: wp.array(dtype=wp.vec2),
-  geom_solimp: wp.array(dtype=vec5),
-  geom_friction: wp.array(dtype=wp.vec3),
-  geom_margin: wp.array(dtype=float),
-  geom_gap: wp.array(dtype=float),
+  geom_solmix: wp.array2d(dtype=float),
+  geom_solref: wp.array2d(dtype=wp.vec2),
+  geom_solimp: wp.array2d(dtype=vec5),
+  geom_friction: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  geom_gap: wp.array2d(dtype=float),
   pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array(dtype=wp.vec2),
-  pair_solreffriction: wp.array(dtype=wp.vec2),
-  pair_solimp: wp.array(dtype=vec5),
-  pair_margin: wp.array(dtype=float),
-  pair_gap: wp.array(dtype=float),
-  pair_friction: wp.array(dtype=vec5),
+  pair_solref: wp.array2d(dtype=wp.vec2),
+  pair_solreffriction: wp.array2d(dtype=wp.vec2),
+  pair_solimp: wp.array2d(dtype=vec5),
+  pair_margin: wp.array2d(dtype=float),
+  pair_gap: wp.array2d(dtype=float),
+  pair_friction: wp.array2d(dtype=vec5),
   # Data in:
   collision_pair_in: wp.array(dtype=wp.vec2i),
   collision_pairid_in: wp.array(dtype=int),
   # In:
   cid: int,
+  worldid: int,
 ):
   geoms = collision_pair_in[cid]
   pairid = collision_pairid_in[cid]
 
   if pairid > -1:
-    margin = pair_margin[pairid]
-    gap = pair_gap[pairid]
+    margin = pair_margin[worldid, pairid]
+    gap = pair_gap[worldid, pairid]
     condim = pair_dim[pairid]
-    friction = pair_friction[pairid]
-    solref = pair_solref[pairid]
-    solreffriction = pair_solreffriction[pairid]
-    solimp = pair_solimp[pairid]
+    friction = pair_friction[worldid, pairid]
+    solref = pair_solref[worldid, pairid]
+    solreffriction = pair_solreffriction[worldid, pairid]
+    solimp = pair_solimp[worldid, pairid]
   else:
     g1 = geoms[0]
     g2 = geoms[1]
@@ -1305,8 +1321,8 @@ def contact_params(
     p1 = geom_priority[g1]
     p2 = geom_priority[g2]
 
-    solmix1 = geom_solmix[g1]
-    solmix2 = geom_solmix[g2]
+    solmix1 = geom_solmix[worldid, g1]
+    solmix2 = geom_solmix[worldid, g2]
 
     mix = solmix1 / (solmix1 + solmix2)
     mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
@@ -1314,14 +1330,14 @@ def contact_params(
     mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
     mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
-    margin = wp.max(geom_margin[g1], geom_margin[g2])
-    gap = wp.max(geom_gap[g1], geom_gap[g2])
+    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
+    gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
 
     condim1 = geom_condim[g1]
     condim2 = geom_condim[g2]
     condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
 
-    max_geom_friction = wp.max(geom_friction[g1], geom_friction[g2])
+    max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
     friction = vec5(
       max_geom_friction[0],
       max_geom_friction[0],
@@ -1330,14 +1346,14 @@ def contact_params(
       max_geom_friction[2],
     )
 
-    if geom_solref[g1].x > 0.0 and geom_solref[g2].x > 0.0:
-      solref = mix * geom_solref[g1] + (1.0 - mix) * geom_solref[g2]
+    if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
+      solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
     else:
-      solref = wp.min(geom_solref[g1], geom_solref[g2])
+      solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
 
     solreffriction = wp.vec2(0.0, 0.0)
 
-    solimp = mix * geom_solimp[g1] + (1.0 - mix) * geom_solimp[g2]
+    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -1528,10 +1544,11 @@ def capsule_box(
 ):
   """Calculates contacts between a capsule and a box."""
   # Based on the mjc implementation
-  pos = wp.transpose(box.rot) @ (cap.pos - box.pos)
-  axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
+  boxmatT = wp.transpose(box.rot)
+  pos = boxmatT @ (cap.pos - box.pos)
+  axis = boxmatT @ wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
   halfaxis = axis * cap.size[1]  # halfaxis is the capsule direction
-  axisdir = wp.int32(axis[0] > 0.0) + 2 * wp.int32(axis[1] > 0.0) + 4 * wp.int32(axis[2] > 0.0)
+  axisdir = wp.int32(halfaxis[0] > 0.0) + 2 * wp.int32(halfaxis[1] > 0.0) + 4 * wp.int32(halfaxis[2] > 0.0)
 
   bestdistmax = margin + 2.0 * (cap.size[0] + cap.size[1] + box.size[0] + box.size[1] + box.size[2])
 
@@ -2380,28 +2397,34 @@ def _primitive_narrowphase(
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array(dtype=float),
-  geom_solref: wp.array(dtype=wp.vec2),
-  geom_solimp: wp.array(dtype=vec5),
-  geom_size: wp.array(dtype=wp.vec3),
-  geom_friction: wp.array(dtype=wp.vec3),
-  geom_margin: wp.array(dtype=float),
-  geom_gap: wp.array(dtype=float),
+  geom_solmix: wp.array2d(dtype=float),
+  geom_solref: wp.array2d(dtype=wp.vec2),
+  geom_solimp: wp.array2d(dtype=vec5),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_friction: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  geom_gap: wp.array2d(dtype=float),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array(dtype=wp.vec2),
-  pair_solreffriction: wp.array(dtype=wp.vec2),
-  pair_solimp: wp.array(dtype=vec5),
-  pair_margin: wp.array(dtype=float),
-  pair_gap: wp.array(dtype=float),
-  pair_friction: wp.array(dtype=vec5),
+  pair_solref: wp.array2d(dtype=wp.vec2),
+  pair_solreffriction: wp.array2d(dtype=wp.vec2),
+  pair_solimp: wp.array2d(dtype=vec5),
+  pair_margin: wp.array2d(dtype=float),
+  pair_gap: wp.array2d(dtype=float),
+  pair_friction: wp.array2d(dtype=vec5),
   # Data in:
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   collision_pair_in: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
@@ -2424,6 +2447,8 @@ def _primitive_narrowphase(
   if tid >= ncollision_in[0]:
     return
 
+  worldid = collision_worldid_in[tid]
+
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
     geom_condim,
     geom_priority,
@@ -2443,16 +2468,22 @@ def _primitive_narrowphase(
     collision_pair_in,
     collision_pairid_in,
     tid,
+    worldid,
   )
   g1 = geoms[0]
   g2 = geoms[1]
 
-  worldid = collision_worldid_in[tid]
+  hftri_index = collision_hftri_index_in[tid]
 
   geom1 = _geom(
     geom_type,
     geom_dataid,
     geom_size,
+    hfield_adr,
+    hfield_nrow,
+    hfield_ncol,
+    hfield_size,
+    hfield_data,
     mesh_vertadr,
     mesh_vertnum,
     mesh_vert,
@@ -2460,11 +2491,17 @@ def _primitive_narrowphase(
     geom_xmat_in,
     worldid,
     g1,
+    hftri_index,
   )
   geom2 = _geom(
     geom_type,
     geom_dataid,
     geom_size,
+    hfield_adr,
+    hfield_nrow,
+    hfield_ncol,
+    hfield_size,
+    hfield_data,
     mesh_vertadr,
     mesh_vertnum,
     mesh_vert,
@@ -2472,6 +2509,7 @@ def _primitive_narrowphase(
     geom_xmat_in,
     worldid,
     g2,
+    hftri_index,
   )
 
   type1 = geom_type[g1]
@@ -2822,6 +2860,11 @@ def primitive_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
+      m.hfield_adr,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_size,
+      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_vert,
@@ -2836,6 +2879,7 @@ def primitive_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
+      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,

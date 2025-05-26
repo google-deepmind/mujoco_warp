@@ -7,7 +7,7 @@ MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deep
 
 MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). Once MJWarp exits Alpha, it will be integrated into both MJX and [Newton](https://developer.nvidia.com/blog/announcing-newton-an-open-source-physics-engine-for-robotics-simulation).
 
-MJWarp is maintained by [Google Deepmind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
+MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
 # Installing for development
 
@@ -50,23 +50,24 @@ The following features are implemented:
 | Category          | Feature                                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------------------------|
 | Dynamics          | Forward only                                                                                             |
-| Transmission      | `JOINT`, `JOINTINPARENT`                                                                                 |
-| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`                                                            |
-| Actuator Gain     | `FIXED`, `AFFINE`                                                                                        |
-| Actuator Bias     | `NONE`, `AFFINE`                                                                                         |
+| Transmission      | `JOINT`, `JOINTINPARENT`, `TENDON`                                                                       |
+| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`, `MUSCLE`                                                  |
+| Actuator Gain     | `FIXED`, `AFFINE`, `MUSCLE`                                                                              |
+| Actuator Bias     | `NONE`, `AFFINE`, `MUSCLE`                                                                               |
 | Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `MESH`                                     |
-| Constraint        | `FRICTION (JOINT)`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`, `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC` |
+| Constraint        | `FRICTION JOINT`, `FRICTION TENDON`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`,                        |
+|                   | `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC`                                                                  |
 | Equality          | `CONNECT`, `WELD`, `JOINT`, `TENDON`                                                                     |
 | Integrator        | `EULER`, `IMPLICITFAST`, `RK4`                                                                           |
 | Cone              | `PYRAMIDAL`, `ELLIPTIC`                                                                                  |
 | Condim            | 1, 3, 4, 6                                                                                               |
 | Solver            | `CG`, `NEWTON`                                                                                           |
-| Fluid Model       | None                                                                                                     |
+| Fluid Model       | `BOX`                                                                                                    |
 | Tendons           | `FIXED`, `SITE`                                                                                          |
-| Sensors           | `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`, `FRAMEPOS`, `FRAMEXAXIS`, `FRAMEYAXIS`, `FRAMEZAXIS` |
-|                   | `FRAMEQUAT`, `SUBTREECOM`, `VELOCIMETER`, `GYRO`, `JOINTVEL`, `TENDONVEL`, `ACTUATORVEL`, `BALLANGVEL`,  |
-|                   | `SUBTREELINVEL`, `SUBTREEANGMOM`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`, `JOINTACTFRC`,      |
-|                   | `FRAMELINACC`, `FRAMEANGACC`                                                                             |
+| Sensors           | `CAMPROJECTION`, `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`, `FRAMEPOS`, `FRAMEXAXIS`,           |
+|                   | `FRAMEYAXIS`, `FRAMEZAXIS`, `FRAMEQUAT`, `SUBTREECOM`, `CLOCK`, `VELOCIMETER`, `GYRO`, `JOINTVEL`,       |
+|                   | `TENDONVEL`, `ACTUATORVEL`, `BALLANGVEL`, `FRAMELINVEL`, `FRAMEANGVEL`, `SUBTREELINVEL`, `SUBTREEANGMOM`,|
+|                   | `TOUCH`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`, `JOINTACTFRC`,`FRAMELINACC`, `FRAMEANGACC`   |
 
 # Benchmarking
 

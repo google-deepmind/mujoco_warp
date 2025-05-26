@@ -357,7 +357,7 @@ class CollisionTest(parameterized.TestCase):
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
     """Tests collisions with different geometries."""
-    mjm, mjd, m, d = test_util.fixture(xml=self._FIXTURES[fixture])
+    mjm, mjd, m, d = test_util.fixture(xml=self._FIXTURES[fixture], qpos0=True)
 
     # Exempt GJK collisions from exact contact count check
     # because GJK generates more contacts
@@ -385,6 +385,35 @@ class CollisionTest(parameterized.TestCase):
 
     if not allow_different_contact_count:
       self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
+
+  _HFIELD_FIXTURES = {
+    "hfield_box": """
+        <mujoco>
+          <asset>
+            <hfield name="terrain" nrow="2" ncol="2" size="1 1 0.1 0.1"
+            elevation="0 0
+                       0 0"/>
+          </asset>
+          <worldbody>
+            <geom type="hfield" hfield="terrain" pos="0 0 0"/>
+            <body pos=".0 .0 .1">
+              <freejoint/>
+              <geom type="box" size=".1 .1 .11"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+  }
+
+  @parameterized.parameters(_HFIELD_FIXTURES.keys())
+  def test_hfield_collision(self, fixture):
+    """Tests hfield collision with different geometries."""
+    mjm, mjd, m, d = test_util.fixture(xml=self._HFIELD_FIXTURES[fixture])
+
+    mujoco.mj_collision(mjm, mjd)
+    mjwarp.collision(m, d)
+
+    self.assertEqual(mjd.ncon > 0, d.ncon.numpy()[0] > 0, "If MJ collides, MJW should too")
 
   def test_contact_exclude(self):
     """Tests contact exclude."""
@@ -449,7 +478,8 @@ class CollisionTest(parameterized.TestCase):
           <pair geom1="geom1" geom2="geom2" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
-    """
+    """,
+      qpos0=True,
     )
     self.assertTrue((m.nxn_pairid.numpy() == 0).all())
 
@@ -492,7 +522,8 @@ class CollisionTest(parameterized.TestCase):
           <pair geom1="geom1" geom2="geom2" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
-    """
+    """,
+      qpos0=True,
     )
     self.assertTrue((m.nxn_pairid.numpy() == 0).all())
 
@@ -536,7 +567,8 @@ class CollisionTest(parameterized.TestCase):
           <pair geom1="geom1" geom2="geom2" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
-    """
+    """,
+      qpos0=True,
     )
     self.assertTrue((m.nxn_pairid.numpy() == 0).all())
 
@@ -584,7 +616,8 @@ class CollisionTest(parameterized.TestCase):
           <pair geom1="geom2" geom2="geom3" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
-    """
+    """,
+      qpos0=True,
     )
     np.testing.assert_equal(m.nxn_pairid.numpy(), np.array([-2, -1, 0]))
 

@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .collision_hfield import get_hfield_prism_vertex
 from .collision_primitive import Geom
 from .collision_primitive import _geom
 from .collision_primitive import contact_params
@@ -59,7 +60,7 @@ VECI2 = vec6(1, 2, 3, 2, 3, 3)
 
 
 @wp.func
-def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3, verts: wp.array(dtype=wp.vec3)):
+def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3):
   local_dir = wp.transpose(geom.rot) @ dir
   if geomtype == int(GeomType.SPHERE.value):
     support_pt = geom.pos + geom.size[0] * dir
@@ -93,7 +94,16 @@ def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3, verts: wp.array(d
     # exhaustive search over all vertices
     # TODO(team): consider hill-climb over graph data
     for i in range(geom.vertnum):
-      vert = verts[geom.vertadr + i]
+      vert = geom.vert[geom.vertadr + i]
+      dist = wp.dot(vert, local_dir)
+      if dist > max_dist:
+        max_dist = dist
+        support_pt = vert
+    support_pt = geom.rot @ support_pt + geom.pos
+  elif geomtype == int(GeomType.HFIELD.value):
+    max_dist = float(FLOAT_MIN)
+    for i in range(6):
+      vert = get_hfield_prism_vertex(geom.hfprism, i)
       dist = wp.dot(vert, local_dir)
       if dist > max_dist:
         max_dist = dist
@@ -111,20 +121,25 @@ def _gjk_support(
   geomtype1: int,
   geomtype2: int,
   dir: wp.vec3,
-  verts: wp.array(dtype=wp.vec3),
 ):
   # Returns the distance between support points on two geoms, and the support point.
   # Negative distance means objects are not intersecting along direction `dir`.
   # Positive distance means objects are intersecting along the given direction `dir`.
 
-  dist1, s1 = _gjk_support_geom(geom1, geomtype1, dir, verts)
-  dist2, s2 = _gjk_support_geom(geom2, geomtype2, -dir, verts)
+  dist1, s1 = _gjk_support_geom(geom1, geomtype1, dir)
+  dist2, s2 = _gjk_support_geom(geom2, geomtype2, -dir)
 
   support_pt = s1 - s2
   return dist1 + dist2, support_pt
 
 
 _CONVEX_COLLISION_FUNC = {
+  (GeomType.HFIELD.value, GeomType.SPHERE.value),
+  (GeomType.HFIELD.value, GeomType.CAPSULE.value),
+  (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
+  (GeomType.HFIELD.value, GeomType.CYLINDER.value),
+  (GeomType.HFIELD.value, GeomType.BOX.value),
+  (GeomType.HFIELD.value, GeomType.MESH.value),
   (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
   (GeomType.SPHERE.value, GeomType.MESH.value),
   (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
@@ -183,8 +198,6 @@ def _gjk_epa_pipeline(
   # determines if two objects intersect, returns simplex and normal
   @wp.func
   def _gjk(
-    # Model:
-    mesh_vert: wp.array(dtype=wp.vec3),
     # In:
     geom1: Geom,
     geom2: Geom,
@@ -193,8 +206,8 @@ def _gjk_epa_pipeline(
     dir_n = -dir
     depth = float(FLOAT_MAX)
 
-    dist_max, simplex0 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir, mesh_vert)
-    dist_min, simplex1 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir_n, mesh_vert)
+    dist_max, simplex0 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir)
+    dist_min, simplex1 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir_n)
 
     if dist_max < dist_min:
       depth = dist_max
@@ -206,7 +219,7 @@ def _gjk_epa_pipeline(
     sd = simplex0 - simplex1
     dir = orthonormal(sd)
 
-    dist_max, simplex3 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir, mesh_vert)
+    dist_max, simplex3 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir)
 
     # Initialize a 2-simplex with simplex[2]==simplex[1]. This ensures the
     # correct winding order for face normals defined below. Face 0 and face 3
@@ -270,7 +283,7 @@ def _gjk_epa_pipeline(
         break
 
       # add new support point to the simplex
-      dist, simplex_i = _gjk_support(geom1, geom2, geomtype1, geomtype2, plane[index], mesh_vert)
+      dist, simplex_i = _gjk_support(geom1, geom2, geomtype1, geomtype2, plane[index])
       simplex[index] = simplex_i
 
       if dist < depth:
@@ -292,8 +305,6 @@ def _gjk_epa_pipeline(
   # compute contact normal and depth
   @wp.func
   def _epa(
-    # Model:
-    mesh_vert: wp.array(dtype=wp.vec3),
     # In:
     geom1: Geom,
     geom2: Geom,
@@ -301,7 +312,7 @@ def _gjk_epa_pipeline(
     normal: wp.vec3,
   ):
     # get the support, if depth < 0: objects do not intersect
-    depth, _ = _gjk_support(geom1, geom2, geomtype1, geomtype2, normal, mesh_vert)
+    depth, _ = _gjk_support(geom1, geom2, geomtype1, geomtype2, normal)
 
     if depth < -depth_extension:
       # Objects are not intersecting, and we do not obtain the closest points as
@@ -328,7 +339,7 @@ def _gjk_epa_pipeline(
           p0, pf = gjk_normalize(p0)
 
           if pf:
-            depth2, _ = _gjk_support(geom1, geom2, geomtype1, geomtype2, p0, mesh_vert)
+            depth2, _ = _gjk_support(geom1, geom2, geomtype1, geomtype2, p0)
 
             if depth2 < depth:
               depth = depth2
@@ -379,7 +390,7 @@ def _gjk_epa_pipeline(
           dists[i * 3 + j] = wp.static(float(2 * FLOAT_MAX))
         continue
 
-      dist, pi = _gjk_support(geom1, geom2, geomtype1, geomtype2, n, mesh_vert)
+      dist, pi = _gjk_support(geom1, geom2, geomtype1, geomtype2, n)
       p[i] = pi
 
       if dist < depth:
@@ -399,7 +410,7 @@ def _gjk_epa_pipeline(
             p0, pf = gjk_normalize(p0)
 
             if pf:
-              dist2, v = _gjk_support(geom1, geom2, geomtype1, geomtype2, p0, mesh_vert)
+              dist2, v = _gjk_support(geom1, geom2, geomtype1, geomtype2, p0)
 
               if dist2 < depth:
                 depth = dist2
@@ -434,8 +445,6 @@ def _gjk_epa_pipeline(
 
   @wp.func
   def _multiple_contacts(
-    # Model:
-    mesh_vert: wp.array(dtype=wp.vec3),
     # In:
     geom1: Geom,
     geom2: Geom,
@@ -505,7 +514,7 @@ def _gjk_epa_pipeline(
         mat8 * normal[0] + mat9 * normal[1] + mat10 * normal[2],
       )
 
-      _, p = _gjk_support_geom(geom1, geomtype1, n, mesh_vert)
+      _, p = _gjk_support_geom(geom1, geomtype1, n)
       v1[v1count] = wp.vec3(wp.dot(p, dir), wp.dot(p, dir2), wp.dot(p, normal))
 
       if i == 0:
@@ -514,7 +523,7 @@ def _gjk_epa_pipeline(
         v1count += 1
 
       n = -n
-      _, p = _gjk_support_geom(geom2, geomtype2, n, mesh_vert)
+      _, p = _gjk_support_geom(geom2, geomtype2, n)
       v2[v2count] = wp.vec3(wp.dot(p, dir), wp.dot(p, dir2), wp.dot(p, normal))
 
       if i == 0:
@@ -709,28 +718,34 @@ def _gjk_epa_pipeline(
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
     geom_priority: wp.array(dtype=int),
-    geom_solmix: wp.array(dtype=float),
-    geom_solref: wp.array(dtype=wp.vec2),
-    geom_solimp: wp.array(dtype=vec5),
-    geom_size: wp.array(dtype=wp.vec3),
-    geom_friction: wp.array(dtype=wp.vec3),
-    geom_margin: wp.array(dtype=float),
-    geom_gap: wp.array(dtype=float),
+    geom_solmix: wp.array2d(dtype=float),
+    geom_solref: wp.array2d(dtype=wp.vec2),
+    geom_solimp: wp.array2d(dtype=vec5),
+    geom_size: wp.array2d(dtype=wp.vec3),
+    geom_friction: wp.array2d(dtype=wp.vec3),
+    geom_margin: wp.array2d(dtype=float),
+    geom_gap: wp.array2d(dtype=float),
+    hfield_adr: wp.array(dtype=int),
+    hfield_nrow: wp.array(dtype=int),
+    hfield_ncol: wp.array(dtype=int),
+    hfield_size: wp.array(dtype=wp.vec4),
+    hfield_data: wp.array(dtype=float),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
     mesh_vert: wp.array(dtype=wp.vec3),
     pair_dim: wp.array(dtype=int),
-    pair_solref: wp.array(dtype=wp.vec2),
-    pair_solreffriction: wp.array(dtype=wp.vec2),
-    pair_solimp: wp.array(dtype=vec5),
-    pair_margin: wp.array(dtype=float),
-    pair_gap: wp.array(dtype=float),
-    pair_friction: wp.array(dtype=vec5),
+    pair_solref: wp.array2d(dtype=wp.vec2),
+    pair_solreffriction: wp.array2d(dtype=wp.vec2),
+    pair_solimp: wp.array2d(dtype=vec5),
+    pair_margin: wp.array2d(dtype=float),
+    pair_gap: wp.array2d(dtype=float),
+    pair_friction: wp.array2d(dtype=vec5),
     # Data in:
     nconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
+    collision_hftri_index_in: wp.array(dtype=int),
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
@@ -772,6 +787,7 @@ def _gjk_epa_pipeline(
       collision_pair_in,
       collision_pairid_in,
       tid,
+      worldid,
     )
 
     g1 = geoms[0]
@@ -780,10 +796,17 @@ def _gjk_epa_pipeline(
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
 
+    hftri_index = collision_hftri_index_in[tid]
+
     geom1 = _geom(
       geom_type,
       geom_dataid,
       geom_size,
+      hfield_adr,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_data,
       mesh_vertadr,
       mesh_vertnum,
       mesh_vert,
@@ -791,12 +814,18 @@ def _gjk_epa_pipeline(
       geom_xmat_in,
       worldid,
       g1,
+      hftri_index,
     )
 
     geom2 = _geom(
       geom_type,
       geom_dataid,
       geom_size,
+      hfield_adr,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_data,
       mesh_vertadr,
       mesh_vertnum,
       mesh_vert,
@@ -804,14 +833,15 @@ def _gjk_epa_pipeline(
       geom_xmat_in,
       worldid,
       g2,
+      hftri_index,
     )
 
-    margin = wp.max(geom_margin[g1], geom_margin[g2])
+    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
 
-    simplex, normal = _gjk(mesh_vert, geom1, geom2)
+    simplex, normal = _gjk(geom1, geom2)
 
     # TODO(btaba): get depth from GJK, conditionally run EPA.
-    depth, normal = _epa(mesh_vert, geom1, geom2, simplex, normal)
+    depth, normal = _epa(geom1, geom2, simplex, normal)
     dist = -depth
 
     if (dist - margin) >= 0.0 or depth != depth:
@@ -819,7 +849,7 @@ def _gjk_epa_pipeline(
 
     # TODO(btaba): split get_multiple_contacts into a separate kernel.
     # TODO(team): multiccd enablebit
-    count, points = _multiple_contacts(mesh_vert, geom1, geom2, depth, normal)
+    count, points = _multiple_contacts(geom1, geom2, depth, normal)
 
     frame = make_frame(normal)
     for i in range(count):
@@ -887,6 +917,11 @@ def gjk_narrowphase(m: Model, d: Data):
         m.geom_friction,
         m.geom_margin,
         m.geom_gap,
+        m.hfield_adr,
+        m.hfield_nrow,
+        m.hfield_ncol,
+        m.hfield_size,
+        m.hfield_data,
         m.mesh_vertadr,
         m.mesh_vertnum,
         m.mesh_vert,
@@ -901,6 +936,7 @@ def gjk_narrowphase(m: Model, d: Data):
         d.geom_xpos,
         d.geom_xmat,
         d.collision_pair,
+        d.collision_hftri_index,
         d.collision_pairid,
         d.collision_worldid,
         d.ncollision,

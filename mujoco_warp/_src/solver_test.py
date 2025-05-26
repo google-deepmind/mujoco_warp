@@ -28,7 +28,7 @@ from . import test_util
 from .types import ConeType
 from .types import SolverType
 
-# tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
+# tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-3
 
@@ -40,17 +40,12 @@ def _assert_eq(a, b, name):
 
 
 class SolverTest(parameterized.TestCase):
-  @parameterized.parameters(
-    (ConeType.PYRAMIDAL, SolverType.CG),
-    (ConeType.ELLIPTIC, SolverType.CG),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON),
-    (ConeType.ELLIPTIC, SolverType.NEWTON),
-  )
+  @parameterized.product(cone=tuple(ConeType), solver_=tuple(SolverType))
   def test_cost(self, cone, solver_):
     """Tests cost function is correct."""
     for keyframe in range(3):
       mjm, mjd, m, d = test_util.fixture(
-        "humanoid/humanoid.xml",
+        "constraints.xml",
         keyframe=keyframe,
         cone=cone,
         solver=solver_,
@@ -75,18 +70,17 @@ class SolverTest(parameterized.TestCase):
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 5, 5, False, False),
-    # TODO(erikfrey): determine why this used to work as 5,5
-    (ConeType.ELLIPTIC, SolverType.CG, 20, 20, False, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 5, 5, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, False, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 4, False, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 5, False, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, True, True),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 4, True, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 3, 16, True, True),
   )
   def test_solve(self, cone, solver_, iterations, ls_iterations, sparse, ls_parallel):
     """Tests solve."""
     for keyframe in range(3):
       mjm, mjd, m, d = test_util.fixture(
-        "humanoid/humanoid.xml",
+        "constraints.xml",
         keyframe=keyframe,
         sparse=sparse,
         cone=cone,
@@ -130,8 +124,6 @@ class SolverTest(parameterized.TestCase):
   )
   def test_solve_batch(self, cone, solver_, iterations, ls_iterations):
     """Tests solve (batch)."""
-
-    # TODO(team): elliptic
 
     mjm0, mjd0, _, _ = test_util.fixture(
       "humanoid/humanoid.xml",
@@ -379,18 +371,16 @@ class SolverTest(parameterized.TestCase):
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
-  @parameterized.parameters(1, 2)
-  def test_frictionloss(self, keyframe):
+  def test_frictionloss(self):
     """Tests solver with frictionloss."""
-    # TODO(team): test tendon frictionloss
-    # TODO(team): test keyframe 2
-    _, mjd, m, d = test_util.fixture("constraints.xml", keyframe=keyframe)
-    mjwarp.solve(m, d)
+    for keyframe in range(3):
+      _, mjd, m, d = test_util.fixture("constraints.xml", keyframe=keyframe)
+      mjwarp.solve(m, d)
 
-    _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
-    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
-    _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
-    _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
+      _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
+      _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
 
 
 if __name__ == "__main__":

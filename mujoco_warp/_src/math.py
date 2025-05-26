@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import warp as wp
 
@@ -158,6 +158,7 @@ def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
   angle = dt * norm_
 
   q_res = axis_angle_to_quat(v, angle)
+  q = wp.normalize(q)
   q_res = mul_quat(q, q_res)
 
   return wp.normalize(q_res)
@@ -212,7 +213,7 @@ def make_frame(a: wp.vec3):
 
 
 @wp.func
-def normalize_with_norm(x: wp.vec3):
+def normalize_with_norm(x: Any):
   norm = wp.length(x)
   if norm == 0.0:
     return x, 0.0
