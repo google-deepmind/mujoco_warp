@@ -1066,7 +1066,7 @@ def linesearch_zero_jv(
 
 
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
-  @nested_kernel 
+  @nested_kernel
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
