@@ -2551,7 +2551,7 @@ def _solver_iteration(
       d.efc.prev_cost,
       d.efc.done,
     ],
-    outputs=[d.solver_niter, d.efc.done, d.nsolving],
+    outputs=[d.solver_niter, d.nsolving, d.efc.done],
   )
 
 
