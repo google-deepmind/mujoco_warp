@@ -1732,7 +1732,7 @@ def update_constraint_zero_qfrc_constraint(
 
 @wp.kernel
 def update_constraint_init_qfrc_constraint(
-  # Model
+  # Model:
   nv: int,
   # Data in:
   nefc_in: wp.array(dtype=int),
