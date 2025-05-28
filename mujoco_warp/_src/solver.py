@@ -2465,9 +2465,8 @@ def solve_done(
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   solver_niter_out: wp.array(dtype=int),
-  efc_done_out: wp.array(dtype=bool),
-  # Out:
   nsolving_out: wp.array(dtype=int),
+  efc_done_out: wp.array(dtype=bool),
 ):
   # TODO(team): static m?
   worldid = wp.tid()
