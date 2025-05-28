@@ -640,6 +640,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     nf=wp.zeros(1, dtype=int),
     nl=wp.zeros(1, dtype=int),
     nefc=wp.zeros(1, dtype=int),
+    nsolving=wp.zeros(1, dtype=int),  # warp only
     time=wp.zeros(nworld, dtype=float),
     energy=wp.zeros(nworld, dtype=wp.vec2),
     qpos=wp.zeros((nworld, mjm.nq), dtype=float),
@@ -940,6 +941,7 @@ def put_data(
     nf=arr([mjd.nf * nworld]),
     nl=arr([mjd.nl * nworld]),
     nefc=arr([mjd.nefc * nworld]),
+    nsolving=arr([nworld]),
     time=arr(mjd.time * np.ones(nworld)),
     energy=tile(mjd.energy, dtype=wp.vec2),
     qpos=tile(mjd.qpos),

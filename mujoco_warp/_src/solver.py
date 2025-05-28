@@ -2467,7 +2467,7 @@ def solve_done(
   solver_niter_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
   # Out:
-  condition_iteration_out: wp.array(dtype=int),
+  nsolving_out: wp.array(dtype=int),
 ):
   # TODO(team): static m?
   worldid = wp.tid()
@@ -2484,7 +2484,7 @@ def solve_done(
     # if the simulation has converged or if the maximum number of iterations has been reached then
     # marks this world as done and remove it from the number of unconverged worlds in condition_iteration
     efc_done_out[worldid] = True
-    wp.atomic_add(condition_iteration_out, 0, -1)
+    wp.atomic_add(nsolving_out, 0, -1)
     # Adjust the number of iterations
     solver_niter_out[worldid] = opt_iterations - solver_niter_out[worldid]
 
@@ -2493,7 +2493,6 @@ def solve_done(
 def _solver_iteration(
   m: types.Model,
   d: types.Data,
-  condition_iteration: wp.array(dtype=wp.int32),
 ):
   _linesearch(m, d)
 
@@ -2553,7 +2552,7 @@ def _solver_iteration(
       d.efc.prev_cost,
       d.efc.done,
     ],
-    outputs=[d.solver_niter, d.efc.done, condition_iteration],
+    outputs=[d.solver_niter, d.efc.done, d.nsolving],
   )
 
 
@@ -2608,19 +2607,18 @@ def solve(m: types.Model, d: types.Data):
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    condition_iteration = wp.array([d.nworld], dtype=wp.int32)
+    d.nsolving.fill_(d.nworld)
     wp.capture_while(
-      condition_iteration,
+      d.nsolving,
       while_body=_solver_iteration,
       m=m,
       d=d,
-      condition_iteration=condition_iteration,
     )
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for i in range(m.opt.iterations):
-      _solver_iteration(m, d, None)
+      _solver_iteration(m, d)
 
   wp.copy(d.qacc_warmstart, d.qacc)
