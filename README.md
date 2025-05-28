@@ -19,10 +19,11 @@ source env/bin/activate
 pip install --upgrade pip
 ```
 
-During early development, MJWarp is on the bleeding edge - you should install Warp nightly:
+During early development, MJWarp is on the bleeding edge - you should install Warp and MuJoCo nightly:
 
 ```bash
 pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
+pip install mujoco --pre --upgrade -f https://py.mujoco.org/
 ```
 
 Then install MJWarp in editable mode for local development:
