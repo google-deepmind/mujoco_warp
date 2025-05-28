@@ -2600,7 +2600,7 @@ def solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
-  if m.opt.iterations != 0:
+  if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
     # condition_iteration is a warp array of size 1 and type int, it counts the number
@@ -2616,5 +2616,11 @@ def solve(m: types.Model, d: types.Data):
       d=d,
       condition_iteration=condition_iteration,
     )
+  else:
+    # This branch is mostly for when JAX is used as it is currently not compatible
+    # with CUDA graph conditional.
+    # It should be removed when JAX becomes compatible.
+    for i in range(m.opt.iterations):
+      _solver_iteration(m, d, None)
 
   wp.copy(d.qacc_warmstart, d.qacc)

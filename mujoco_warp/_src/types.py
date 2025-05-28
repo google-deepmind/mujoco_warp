@@ -427,6 +427,7 @@ class Option:
     wind: wind (for lift, drag, and viscosity)
     density: density of medium
     viscosity: viscosity of medium
+    graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
   """
 
   timestep: float
@@ -451,6 +452,7 @@ class Option:
   wind: wp.vec3
   density: float
   viscosity: float
+  graph_conditional: bool  # warp only
 
 
 @dataclasses.dataclass

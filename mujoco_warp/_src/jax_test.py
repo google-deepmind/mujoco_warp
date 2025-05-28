@@ -75,6 +75,9 @@ class JAXTest(absltest.TestCase):
         kick=True,
       )
 
+      # Disable CUDA graph conditional
+      m.opt.graph_conditional = False
+
       warp_step_fn = jax_callable(
         warp_step,
         num_outputs=2,
