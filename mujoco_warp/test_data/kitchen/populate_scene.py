@@ -53,6 +53,7 @@ _MENAGERIE_ROBOTS = {
   "t1": "booster_t1/t1.xml",
   "h1": "unitree_h1/h1.xml",
   "g1": "unitree_g1/g1.xml",
+  # TODO(team): Investigate why the robot is crashing
   #"talos": "pal_talos/talos.xml",
   "op3": "robotis_op3/op3.xml",
   "spot": "boston_dynamics_spot/spot.xml",
@@ -62,6 +63,7 @@ _MENAGERIE_ROBOTS = {
   "a1": "unitree_a1/a1.xml",
   "go1": "unitree_go1/go1.xml",
   "go2": "unitree_go2/go2.xml",
+  # TODO(team): Comment this out after the magnetometer sensor has been implemented
   #"cassie": "agility_cassie/cassie.xml",
 }
 
@@ -81,14 +83,15 @@ def main(argv: Sequence[str]):
 
   # create directory with kitchen + robot assets
   input_dir = input_path.parents[0]
-  subprocess.run(f"mkdir -p {input_dir}/{_ROBOT.value}/assets", shell=True, text=True)
-  subprocess.run(f"cp -r {input_dir}/assets {input_dir}/{_ROBOT.value}", shell=True, text=True)
+  combined_assets_path = f"{input_dir}/combined_assets/{_ROBOT.value}"
+  subprocess.run(f"mkdir -p {combined_assets_path}", shell=True, text=True)
+  subprocess.run(f"cp -r {input_dir}/assets {combined_assets_path}", shell=True, text=True)
   # TODO(team): robot without assets (eg, humanoid)
-  subprocess.run(f"cp -r {os.path.dirname(robot_path)}/assets {input_dir}/{_ROBOT.value}", shell=True, text=True)
+  subprocess.run(f"cp -r {os.path.dirname(robot_path)}/assets {combined_assets_path}", shell=True, text=True)
 
   # create xml
   spec = mujoco.MjSpec.from_file(input_path.as_posix())
-  spec_xml = spec.to_xml().replace("assets/", f"{input_dir}/{_ROBOT.value}/assets/")
+  spec_xml = spec.to_xml().replace("assets/", f"{combined_assets_path}/assets/")
   spec = mujoco.MjSpec.from_string(spec_xml)
   robot = mujoco.MjSpec.from_file(robot_path.as_posix())
 

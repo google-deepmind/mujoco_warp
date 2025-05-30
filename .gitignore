@@ -9,6 +9,10 @@ MUJOCO_LOG.TXT
 
 mujoco_warp/test_data/mujoco_menagerie
 
+## Created directories
+## --------------------
+
+mujoco_warp/test_data/kitchen/combined_assets/
 
 # Language-specific files
 # =======================
