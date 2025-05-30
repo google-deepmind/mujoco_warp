@@ -23,6 +23,7 @@ from .collision_primitive import contact_params
 from .collision_primitive import write_contact
 from .math import make_frame
 from .types import Data
+from .types import EnableBit
 from .types import GeomType
 from .types import Model
 from .types import vec5
@@ -186,6 +187,10 @@ def face_axis_alignment(a: wp.vec3, R: wp.mat33) -> wp.int32:
 @wp.kernel(enable_backward=False)
 def _box_box(
   # Model:
+  opt_o_margin: float,
+  opt_o_solref: wp.vec2,
+  opt_o_solimp: vec5,
+  opt_o_friction: vec5,
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
@@ -213,6 +218,7 @@ def _box_box(
   ncollision_in: wp.array(dtype=int),
   # In:
   num_kernels_in: int,
+  enable_contact_override: bool,
   # Data out:
   ncon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
@@ -241,6 +247,10 @@ def _box_box(
     worldid = collision_worldid_in[bp_idx]
 
     geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+      opt_o_margin,
+      opt_o_solref,
+      opt_o_solimp,
+      opt_o_friction,
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -260,6 +270,7 @@ def _box_box(
       collision_pairid_in,
       tid,
       worldid,
+      enable_contact_override,
     )
 
     # transformations
@@ -605,6 +616,10 @@ def box_box_narrowphase(
     kernel=_box_box,
     dim=nthread,
     inputs=[
+      m.opt.o_margin,
+      m.opt.o_solref,
+      m.opt.o_solimp,
+      m.opt.o_friction,
       m.geom_type,
       m.geom_condim,
       m.geom_priority,
@@ -630,6 +645,7 @@ def box_box_narrowphase(
       d.collision_worldid,
       d.ncollision,
       nthread,
+      m.opt.enableflags & EnableBit.OVERRIDE,
     ],
     outputs=[
       d.ncon,

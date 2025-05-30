@@ -22,6 +22,7 @@ from .math import make_frame
 from .math import normalize_with_norm
 from .types import MJ_MINVAL
 from .types import Data
+from .types import EnableBit
 from .types import GeomType
 from .types import Model
 from .types import vec5
@@ -1288,6 +1289,10 @@ def plane_cylinder(
 @wp.func
 def contact_params(
   # Model:
+  opt_o_margin: float,
+  opt_o_solref: wp.vec2,
+  opt_o_solimp: vec5,
+  opt_o_friction: vec5,
   geom_condim: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
   geom_solmix: wp.array2d(dtype=float),
@@ -1309,18 +1314,27 @@ def contact_params(
   # In:
   cid: int,
   worldid: int,
+  enable_contact_override: bool,
 ):
   geoms = collision_pair_in[cid]
   pairid = collision_pairid_in[cid]
 
+  if enable_contact_override:
+    margin = opt_o_margin
+    solref = opt_o_solref
+    solreffriction = opt_o_solref
+    solimp = opt_o_solimp
+    friction = opt_o_friction
+
   if pairid > -1:
-    margin = pair_margin[worldid, pairid]
     gap = pair_gap[worldid, pairid]
     condim = pair_dim[pairid]
-    friction = pair_friction[worldid, pairid]
-    solref = pair_solref[worldid, pairid]
-    solreffriction = pair_solreffriction[worldid, pairid]
-    solimp = pair_solimp[worldid, pairid]
+    if not enable_contact_override:
+      margin = pair_margin[worldid, pairid]
+      solref = pair_solref[worldid, pairid]
+      solreffriction = pair_solreffriction[worldid, pairid]
+      solimp = pair_solimp[worldid, pairid]
+      friction = pair_friction[worldid, pairid]
   else:
     g1 = geoms[0]
     g2 = geoms[1]
@@ -1328,39 +1342,40 @@ def contact_params(
     p1 = geom_priority[g1]
     p2 = geom_priority[g2]
 
-    solmix1 = geom_solmix[worldid, g1]
-    solmix2 = geom_solmix[worldid, g2]
-
-    mix = solmix1 / (solmix1 + solmix2)
-    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-    mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
-    mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
-
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
     gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
 
     condim1 = geom_condim[g1]
     condim2 = geom_condim[g2]
     condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
 
-    max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
-    friction = vec5(
-      max_geom_friction[0],
-      max_geom_friction[0],
-      max_geom_friction[1],
-      max_geom_friction[2],
-      max_geom_friction[2],
-    )
+    if not enable_contact_override:
+      solmix1 = geom_solmix[worldid, g1]
+      solmix2 = geom_solmix[worldid, g2]
 
-    if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
-      solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
-    else:
-      solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
+      mix = solmix1 / (solmix1 + solmix2)
+      mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
+      mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
+      mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
 
-    solreffriction = wp.vec2(0.0, 0.0)
+      mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
+      margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
+      max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+      friction = vec5(
+        max_geom_friction[0],
+        max_geom_friction[0],
+        max_geom_friction[1],
+        max_geom_friction[2],
+        max_geom_friction[2],
+      )
 
-    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
+      if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
+        solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
+      else:
+        solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
+
+      solreffriction = wp.vec2(0.0, 0.0)
+
+      solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -2400,6 +2415,10 @@ def box_box(
 @wp.kernel
 def _primitive_narrowphase(
   # Model:
+  opt_o_margin: float,
+  opt_o_solref: wp.vec2,
+  opt_o_solimp: vec5,
+  opt_o_friction: vec5,
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
@@ -2437,6 +2456,8 @@ def _primitive_narrowphase(
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
+  # In:
+  enable_contact_override: bool,
   # Data out:
   ncon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
@@ -2459,6 +2480,10 @@ def _primitive_narrowphase(
   worldid = collision_worldid_in[tid]
 
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+    opt_o_margin,
+    opt_o_solref,
+    opt_o_solimp,
+    opt_o_friction,
     geom_condim,
     geom_priority,
     geom_solmix,
@@ -2478,6 +2503,7 @@ def _primitive_narrowphase(
     collision_pairid_in,
     tid,
     worldid,
+    enable_contact_override,
   )
   g1 = geoms[0]
   g2 = geoms[1]
@@ -2862,6 +2888,10 @@ def primitive_narrowphase(m: Model, d: Data):
     _primitive_narrowphase,
     dim=d.nconmax,
     inputs=[
+      m.opt.o_margin,
+      m.opt.o_solref,
+      m.opt.o_solimp,
+      m.opt.o_friction,
       m.geom_type,
       m.geom_condim,
       m.geom_dataid,
@@ -2898,6 +2928,7 @@ def primitive_narrowphase(m: Model, d: Data):
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
+      m.opt.enableflags & EnableBit.OVERRIDE,
     ],
     outputs=[
       d.ncon,

@@ -29,6 +29,7 @@ from .support import any_different
 from .types import MJ_MAXCONPAIR
 from .types import MJ_MINVAL
 from .types import Data
+from .types import EnableBit
 from .types import GeomType
 from .types import Model
 from .types import vec5
@@ -747,6 +748,10 @@ def _gjk_epa_pipeline(
   def gjk_epa_sparse(
     # Model:
     ngeom: int,
+    opt_o_margin: float,
+    opt_o_solref: wp.vec2,
+    opt_o_solimp: vec5,
+    opt_o_friction: vec5,
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -785,6 +790,8 @@ def _gjk_epa_pipeline(
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
+    # In:
+    enable_contact_override: bool,
     # Data out:
     ncon_out: wp.array(dtype=int),
     ncon_hfield_out: wp.array2d(dtype=int),
@@ -806,6 +813,10 @@ def _gjk_epa_pipeline(
 
     worldid = collision_worldid_in[tid]
     geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+      opt_o_margin,
+      opt_o_solref,
+      opt_o_solimp,
+      opt_o_friction,
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -825,6 +836,7 @@ def _gjk_epa_pipeline(
       collision_pairid_in,
       tid,
       worldid,
+      enable_contact_override,
     )
 
     g1 = geoms[0]
@@ -876,8 +888,6 @@ def _gjk_epa_pipeline(
       g2,
       hftri_index,
     )
-
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
 
     simplex, normal = _gjk(geom1, geom2)
 
@@ -958,6 +968,10 @@ def gjk_narrowphase(m: Model, d: Data):
       dim=d.nconmax,
       inputs=[
         m.ngeom,
+        m.opt.o_margin,
+        m.opt.o_solref,
+        m.opt.o_solimp,
+        m.opt.o_friction,
         m.geom_type,
         m.geom_condim,
         m.geom_dataid,
@@ -995,6 +1009,7 @@ def gjk_narrowphase(m: Model, d: Data):
         d.collision_pairid,
         d.collision_worldid,
         d.ncollision,
+        m.opt.enableflags & EnableBit.OVERRIDE,
       ],
       outputs=[
         d.ncon,

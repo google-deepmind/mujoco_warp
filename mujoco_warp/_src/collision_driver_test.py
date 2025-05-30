@@ -666,6 +666,40 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
+  @parameterized.parameters(("sphere", ".1"), ("box", ".1 .1 .1"), ("ellipsoid", ".1 .1 .1"))
+  def test_contact_override(self, geomtype, geomsize):
+    _, _, m, d = test_util.fixture(
+      xml=f"""
+    <mujoco>
+      <option o_margin=".1" o_solref=".2 .3" o_solimp="1 3 5 7 9" o_friction="2 4 6 8 10">
+        <flag override="enable"/>
+      </option>
+      <worldbody>
+        <geom type="{geomtype}" size="{geomsize}" margin=".001"/>
+        <body>
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="{geomtype}" size="{geomsize}" margin=".002"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos=".2"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    for arr in (d.contact.includemargin, d.contact.solref, d.contact.solimp, d.contact.friction):
+      arr.zero_()
+
+    mjwarp.collision(m, d)
+
+    ncon = d.ncon.numpy()[0]
+    np.testing.assert_allclose(d.contact.includemargin.numpy()[:ncon], np.repeat(m.opt.o_margin, ncon), err_msg="margin")
+    np.testing.assert_allclose(d.contact.solref.numpy()[:ncon], np.tile(m.opt.o_solref, (ncon, 1)), err_msg="solref")
+    np.testing.assert_allclose(d.contact.solimp.numpy()[:ncon], np.tile(m.opt.o_solimp, (ncon, 1)), err_msg="solimp")
+    np.testing.assert_allclose(d.contact.friction.numpy()[:ncon], np.tile(m.opt.o_friction, (ncon, 1)), err_msg="friction")
+
   def test_hfield_maxconpair(self):
     _XML = f"""
     <mujoco>

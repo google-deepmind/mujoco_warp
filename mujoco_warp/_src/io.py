@@ -360,6 +360,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       epa_iterations=12,
       epa_exact_neg_distance=wp.bool(False),
       depth_extension=0.1,
+      o_margin=mjm.opt.o_margin,
+      o_solref=wp.vec2(mjm.opt.o_solref[0], mjm.opt.o_solref[1]),
+      o_solimp=types.vec5(
+        mjm.opt.o_solimp[0], mjm.opt.o_solimp[1], mjm.opt.o_solimp[2], mjm.opt.o_solimp[3], mjm.opt.o_solimp[4]
+      ),
+      o_friction=types.vec5(
+        mjm.opt.o_friction[0], mjm.opt.o_friction[1], mjm.opt.o_friction[2], mjm.opt.o_friction[3], mjm.opt.o_friction[4]
+      ),
       graph_conditional=True,
     ),
     stat=types.Statistic(
