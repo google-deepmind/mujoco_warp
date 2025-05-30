@@ -452,6 +452,7 @@ class Option:
   wind: wp.vec3
   density: float
   viscosity: float
+  broad_phase_tile_sort_threshold: int
 
 
 @dataclasses.dataclass

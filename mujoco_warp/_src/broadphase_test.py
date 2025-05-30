@@ -91,65 +91,76 @@ class BroadphaseTest(parameterized.TestCase):
       </mujoco>
     """
 
-    # one world and zero collisions
-    mjm, _, m, d0 = test_util.fixture(xml=_XML, keyframe=0)
-    broadphase(m, d0)
-    np.testing.assert_allclose(d0.ncollision.numpy()[0], 0)
+    num_sub_cases = 1
+    if broadphase == collision_driver.sap_broadphase:
+      num_sub_cases = 2
 
-    # one world and one collision
-    _, mjd1, _, d1 = test_util.fixture(xml=_XML, keyframe=1)
-    broadphase(m, d1)
+    for i in range(num_sub_cases):
+      # one world and zero collisions
+      mjm, _, m, d0 = test_util.fixture(xml=_XML, keyframe=0)
 
-    np.testing.assert_allclose(d1.ncollision.numpy()[0], 1)
-    np.testing.assert_allclose(d1.collision_pair.numpy()[0][0], 0)
-    np.testing.assert_allclose(d1.collision_pair.numpy()[0][1], 1)
+      if i == 0:
+        m.opt.broad_phase_tile_sort_threshold = 1000
+      else:
+        m.opt.broad_phase_tile_sort_threshold = 0
 
-    # one world and three collisions
-    _, mjd2, _, d2 = test_util.fixture(xml=_XML, keyframe=2)
-    broadphase(m, d2)
+      broadphase(m, d0)
+      np.testing.assert_allclose(d0.ncollision.numpy()[0], 0)
 
-    ncollision = d2.ncollision.numpy()[0]
-    np.testing.assert_allclose(ncollision, 3)
+      # one world and one collision
+      _, mjd1, _, d1 = test_util.fixture(xml=_XML, keyframe=1)
+      broadphase(m, d1)
 
-    collision_pairs = [[0, 1], [0, 2], [1, 2]]
-    for i in range(ncollision):
-      self.assertTrue([d2.collision_pair.numpy()[i][0], d2.collision_pair.numpy()[i][1]] in collision_pairs)
+      np.testing.assert_allclose(d1.ncollision.numpy()[0], 1)
+      np.testing.assert_allclose(d1.collision_pair.numpy()[0][0], 0)
+      np.testing.assert_allclose(d1.collision_pair.numpy()[0][1], 1)
 
-    # two worlds and four collisions
-    d3 = mjwarp.make_data(mjm, nworld=2, nconmax=512, njmax=512)
-    d3.geom_xpos = wp.array(
-      np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
-      dtype=wp.vec3,
-    )
-    broadphase(m, d3)
+      # one world and three collisions
+      _, mjd2, _, d2 = test_util.fixture(xml=_XML, keyframe=2)
+      broadphase(m, d2)
 
-    ncollision = d3.ncollision.numpy()[0]
-    np.testing.assert_allclose(ncollision, 4)
+      ncollision = d2.ncollision.numpy()[0]
+      np.testing.assert_allclose(ncollision, 3)
 
-    collision_pairs = [[[0, 1]], [[0, 1], [0, 2], [1, 2]]]
-    worldids = [0, 1, 1, 1]
-    for i in range(ncollision):
-      worldid = d3.collision_worldid.numpy()[i]
-      self.assertTrue(worldid == worldids[i])
-      self.assertTrue([d3.collision_pair.numpy()[i][0], d3.collision_pair.numpy()[i][1]] in collision_pairs[worldid])
+      collision_pairs = [[0, 1], [0, 2], [1, 2]]
+      for i in range(ncollision):
+        self.assertTrue([d2.collision_pair.numpy()[i][0], d2.collision_pair.numpy()[i][1]] in collision_pairs)
 
-    # one world and zero collisions: contype and conaffinity incompatibility
-    mjm4, _, m4, d4 = test_util.fixture(xml=_XML, keyframe=1)
-    mjm4.geom_contype[:3] = 0
-    m4 = mjwarp.put_model(mjm4)
+      # two worlds and four collisions
+      d3 = mjwarp.make_data(mjm, nworld=2, nconmax=512, njmax=512)
+      d3.geom_xpos = wp.array(
+        np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
+        dtype=wp.vec3,
+      )
+      broadphase(m, d3)
 
-    broadphase(m4, d4)
-    np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)
+      ncollision = d3.ncollision.numpy()[0]
+      np.testing.assert_allclose(ncollision, 4)
 
-    # one world and one collision: geomtype ordering
-    _, _, _, d5 = test_util.fixture(xml=_XML, keyframe=3)
-    broadphase(m, d5)
-    np.testing.assert_allclose(d5.ncollision.numpy()[0], 1)
-    np.testing.assert_allclose(d5.collision_pair.numpy()[0][0], 3)
-    np.testing.assert_allclose(d5.collision_pair.numpy()[0][1], 2)
+      collision_pairs = [[[0, 1]], [[0, 1], [0, 2], [1, 2]]]
+      worldids = [0, 1, 1, 1]
+      for i in range(ncollision):
+        worldid = d3.collision_worldid.numpy()[i]
+        self.assertTrue(worldid == worldids[i])
+        self.assertTrue([d3.collision_pair.numpy()[i][0], d3.collision_pair.numpy()[i][1]] in collision_pairs[worldid])
 
-    # TODO(team): test margin
-    # TODO(team): test DisableBit.FILTERPARENT
+      # one world and zero collisions: contype and conaffinity incompatibility
+      mjm4, _, m4, d4 = test_util.fixture(xml=_XML, keyframe=1)
+      mjm4.geom_contype[:3] = 0
+      m4 = mjwarp.put_model(mjm4)
+
+      broadphase(m4, d4)
+      np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)
+
+      # one world and one collision: geomtype ordering
+      _, _, _, d5 = test_util.fixture(xml=_XML, keyframe=3)
+      broadphase(m, d5)
+      np.testing.assert_allclose(d5.ncollision.numpy()[0], 1)
+      np.testing.assert_allclose(d5.collision_pair.numpy()[0][0], 3)
+      np.testing.assert_allclose(d5.collision_pair.numpy()[0][1], 2)
+
+      # TODO(team): test margin
+      # TODO(team): test DisableBit.FILTERPARENT
 
 
 if __name__ == "__main__":
