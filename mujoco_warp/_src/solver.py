@@ -1359,8 +1359,6 @@ def _linesearch(m: types.Model, d: types.Data):
 
 @wp.kernel
 def solve_init_efc(
-  # Model:
-  opt_iterations: int,
   # Data out:
   solver_niter_out: wp.array(dtype=int),
   efc_search_dot_out: wp.array(dtype=float),
@@ -1369,7 +1367,7 @@ def solve_init_efc(
 ):
   worldid = wp.tid()
   efc_cost_out[worldid] = wp.inf
-  solver_niter_out[worldid] = opt_iterations
+  solver_niter_out[worldid] = 0
   efc_done_out[worldid] = False
   efc_search_dot_out[worldid] = 0.0
 
@@ -2474,18 +2472,16 @@ def solve_done(
   if efc_done_in[worldid]:
     return
 
-  solver_niter_out[worldid] -= 1
+  solver_niter_out[worldid] += 1
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
   done = (improvement < opt_tolerance) or (gradient < opt_tolerance)
-  if done or solver_niter_out[worldid] == 0:
+  if done or solver_niter_out[worldid] == opt_iterations:
     # if the simulation has converged or if the maximum number of iterations has been reached then
     # marks this world as done and remove it from the number of unconverged worlds in condition_iteration
     efc_done_out[worldid] = True
     wp.atomic_add(nsolving_out, 0, -1)
-    # Adjust the number of iterations
-    solver_niter_out[worldid] = opt_iterations - solver_niter_out[worldid]
 
 
 @event_scope
@@ -2560,7 +2556,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   wp.launch(
     solve_init_efc,
     dim=(d.nworld),
-    outputs=[m.opt.iterations, d.solver_niter, d.efc.search_dot, d.efc.cost, d.efc.done],
+    outputs=[d.solver_niter, d.efc.search_dot, d.efc.cost, d.efc.done],
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
