@@ -54,7 +54,7 @@ _MENAGERIE_ROBOTS = {
   "h1": "unitree_h1/h1.xml",
   "g1": "unitree_g1/g1.xml",
   # TODO(team): Investigate why the robot is crashing
-  #"talos": "pal_talos/talos.xml",
+  # "talos": "pal_talos/talos.xml",
   "op3": "robotis_op3/op3.xml",
   "spot": "boston_dynamics_spot/spot.xml",
   "anymal_b": "anybotics_anymal_b/anymal_b.xml",
@@ -64,7 +64,7 @@ _MENAGERIE_ROBOTS = {
   "go1": "unitree_go1/go1.xml",
   "go2": "unitree_go2/go2.xml",
   # TODO(team): Comment this out after the magnetometer sensor has been implemented
-  #"cassie": "agility_cassie/cassie.xml",
+  # "cassie": "agility_cassie/cassie.xml",
 }
 
 _INPUT = flags.DEFINE_string("input", _SCRIPT_DIR + "/kitchen.xml", "the input scene to populate")
