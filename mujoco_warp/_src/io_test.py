@@ -27,7 +27,7 @@ from . import test_util
 
 class IOTest(absltest.TestCase):
   def test_make_put_data(self):
-    """Tests that make_data and put_data are producing the same shapes for all warp arrays."""
+    """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_util.fixture("pendula.xml")
     md = mjwarp.make_data(mjm, nconmax=512, njmax=512)
 
@@ -45,25 +45,25 @@ class IOTest(absltest.TestCase):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
-          <body name="body">          
+          <body name="body">
             <geom type="sphere" size=".1"/>
             <site name="site0"/>
             <joint type="slide"/>
           </body>
           <site name="site1"/>
-        </worldbody>  
+        </worldbody>
         <tendon>
           <spatial name="tendon">
             <site site="site0"/>
             <site site="site1"/>
-          </spatial>                      
+          </spatial>
         </tendon>
         <actuator>
           <general cranksite="site0" slidersite="site1" cranklength=".1"/>
           <general tendon="tendon"/>
           <general site="site0" refsite="site1"/>
           <general body="body" ctrlrange="0 1"/>
-        </actuator>           
+        </actuator>
       </mujoco>
     """)
 
@@ -125,12 +125,12 @@ class IOTest(absltest.TestCase):
         <option jacobian="auto"/>
         <worldbody>
           <replicate count="11">
-          <body>          
+          <body>
             <geom type="sphere" size=".1"/>
             <freejoint/>
             </body>
           </replicate>
-        </worldbody> 
+        </worldbody>
       </mujoco>
     """)
     mjwarp.put_model(mjm)

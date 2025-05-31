@@ -316,7 +316,8 @@ def sap_broadphase(m: Model, d: Data):
   # scan is used for load balancing among the threads
   wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
 
-  # estimate number of overlap checks - assumes each geom has 5 other geoms (batched over all worlds)
+  # estimate number of overlap checks
+  # assumes each geom has 5 other geoms (batched over all worlds)
   nsweep = 5 * nworldgeom
   wp.launch(
     kernel=_sap_broadphase,

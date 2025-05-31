@@ -415,7 +415,7 @@ def _ray_mesh(
 
 @wp.func
 def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> float:
-  """Returns distance along ray to intersection with geom, or infinity if no intersection."""
+  """Returns distance along ray to intersection with geom, or infinity if none."""
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if geomtype == int(GeomType.PLANE.value):
@@ -500,7 +500,7 @@ def _ray_geom_mesh(
 snippet = """
 #if defined(__CUDA_ARCH__)
     return blockDim.x;
-#else    
+#else
     return 1;
 #endif
     """

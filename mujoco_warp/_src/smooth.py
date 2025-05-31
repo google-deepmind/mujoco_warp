@@ -265,11 +265,11 @@ def _mocap(
 @event_scope
 def kinematics(m: Model, d: Data):
   """
-  Computes forward kinematics for all bodies, sites, geoms, and flexible elements in the model.
+  Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
 
-  This function updates the global positions and orientations of all bodies, as well as the derived
-  positions and orientations of geoms, sites, and flexible elements, based on the current joint positions
-  and any attached mocap bodies.
+  This function updates the global positions and orientations of all bodies, as well as the
+  derived positions and orientations of geoms, sites, and flexible elements, based on the
+  current joint positions and any attached mocap bodies.
   """
   wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat])
 
@@ -465,10 +465,11 @@ def _cdof(
 @event_scope
 def com_pos(m: Model, d: Data):
   """
-  Computes subtree center of mass positions.  Transforms inertia and motion to global frame centered at subtree CoM.
+  Computes subtree center of mass positions.  Transforms inertia and motion to global frame
+  centered at subtree CoM.
 
-  Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and computes composite inertias
-  and motion degrees of freedom in the subtree CoM frame.
+  Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
+  computes composite inertias and motion degrees of freedom in the subtree CoM frame.
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos, d.subtree_com])
 
@@ -636,8 +637,8 @@ def camlight(m: Model, d: Data):
   """
   Computes camera and light positions and orientations.
 
-  Updates the global positions and orientations for all cameras and lights in the model, including special handling for
-  tracking and target modes.
+  Updates the global positions and orientations for all cameras and lights in the model,
+  including special handling for tracking and target modes.
   """
   wp.launch(
     _cam_local_to_global,
@@ -760,10 +761,10 @@ def _qM_dense(
 @event_scope
 def crb(m: Model, d: Data):
   """
-  Computes the composite rigid body inertia for each body and the joint-space inertia matrix.
+  Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
-  Accumulates composite rigid body inertias up the kinematic tree and computes the joint-space inertia matrix in either
-  sparse or dense format, depending on model options.
+  Accumulates composite rigid body inertias up the kinematic tree and computes the
+  joint-space inertia matrix in either sparse or dense format, depending on model options.
   """
   wp.copy(d.crb, d.cinert)
 
@@ -1035,8 +1036,8 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   """
   Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
-  Computes the bias forces (qfrc_bias) and internal forces (cfrc_int) for the current state, including the effects of
-  gravity and optionally joint accelerations.
+  Computes the bias forces (qfrc_bias) and internal forces (cfrc_int) for the current state,
+  including the effects of gravity and optionally joint accelerations.
 
   Args:
     m (Model): The model containing kinematic and dynamic information.
@@ -1245,7 +1246,8 @@ def rne_postconstraint(m: Model, d: Data):
   """
   Computes the recursive Newton-Euler algorithm after constraints are applied.
 
-  Computes cacc, cfrc_ext, and cfrc_int, including the effects of applied forces, equality constraints, and contacts.
+  Computes cacc, cfrc_ext, and cfrc_int, including the effects of applied forces, equality
+  constraints, and contacts.
   """
   # cfrc_ext = perturb
   wp.launch(
@@ -1391,7 +1393,8 @@ def com_vel(m: Model, d: Data):
   """
   Computes the spatial velocities (cvel) and the derivative cdof_dot for all bodies.
 
-  Propagates velocities down the kinematic tree, updating the spatial velocity and derivative for each body.
+  Propagates velocities down the kinematic tree, updating the spatial velocity and
+  derivative for each body.
   """
   wp.launch(_comvel_root, dim=(d.nworld, 6), inputs=[], outputs=[d.cvel])
 
@@ -1580,7 +1583,7 @@ def _transmission(
         wrench_translation = ref_xmat @ gear_translation
 
       if rotational_transmission:
-        # get site and refsite quats from parent bodies (avoiding converting matrix to quaternion)
+        # get site and refsite quats from parent bodies (avoid converting matrix to quat)
         quat = math.mul_quat(site_quat[worldid, siteid], xquat_in[worldid, bodyid])
         refquat = math.mul_quat(site_quat[worldid, refid], xquat_in[worldid, bodyrefid])
 
@@ -1650,7 +1653,8 @@ def transmission(m: Model, d: Data):
   """
   Computes actuator/transmission lengths and moments.
 
-  Updates the actuator length and moments for all actuators in the model, including joint and tendon transmissions.
+  Updates the actuator length and moments for all actuators in the model, including joint
+  and tendon transmissions.
   """
   wp.launch(
     _transmission,
@@ -1796,7 +1800,7 @@ def solve_LD(
   Computes backsubstitution to solve a linear system of the form x = inv(L'*D*L) * y,
   where L and D are the factors from the Cholesky factorization of the inertia matrix.
 
-  This function dispatches to either a sparse or dense solver depending on the model options.
+  This function dispatches to either a sparse or dense solver depending on Model options.
 
   Args:
     m (Model): The model containing factorization and sparsity information.
@@ -1867,11 +1871,11 @@ def _factor_solve_i_dense(
 
 def factor_solve_i(m, d, M, L, D, x, y):
   """
-  Factorizes and solves a linear system of the form x = inv(L'*D*L) * y or x = inv(L'*L) * y,
+  Factorizes and solves the linear system: x = inv(L'*D*L) * y or x = inv(L'*L) * y,
   where M is an inertia-like matrix and L, D are its Cholesky-like factors.
 
-  This function first factorizes the matrix M (sparse or dense depending on model options), then solves
-  the system for x given right-hand side y.
+  This function first factorizes the matrix M (sparse or dense depending on model options),
+  then solves the system for x given right-hand side y.
 
   Args:
     m (Model): The model containing factorization and sparsity information.
@@ -2003,7 +2007,8 @@ def subtree_vel(m: Model, d: Data):
   """
   Computes subtree linear velocity and angular momentum.
 
-  Computes the linear momentum and angular momentum for each subtree, accumulating contributions up the kinematic tree.
+  Computes the linear momentum and angular momentum for each subtree, accumulating
+  contributions up the kinematic tree.
   """
 
   # bodywise quantities
@@ -2430,7 +2435,8 @@ def tendon(m: Model, d: Data):
   """
   Computes tendon lengths and moments.
 
-  Updates the tendon length and moment arrays for all tendons in the model, including joint, site, and geom tendons.
+  Updates the tendon length and moment arrays for all tendons in the model, including joint,
+  site, and geom tendons.
   """
   if not m.ntendon:
     return

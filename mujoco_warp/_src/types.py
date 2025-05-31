@@ -487,8 +487,8 @@ class Option:
     is_sparse: whether to use sparse representations
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
-    epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
-    depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
+    epa_exact_neg_distance: calculate distances for non-intersecting convex geoms
+    depth_extension: distance past which closest point is not calculated for convex geoms
     ls_parallel: evaluate engine solver step sizes in parallel
     wind: wind (for lift, drag, and viscosity)
     density: density of medium

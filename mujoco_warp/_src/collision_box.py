@@ -514,7 +514,7 @@ def _clip_quad(subject_quad: mat43f, subject_normal: wp.vec3, clipping_quad: mat
 # TODO(ca): tiling variant
 @wp.func
 def _manifold_points(poly: Any, mask: Any, clipping_norm: wp.vec3) -> wp.vec4b:
-  """Chooses four points on the polygon with approximately maximal area. Return the indices"""
+  """Chooses four points on the polygon with approximately maximal area. Returns indices."""
   n = len(poly)
 
   a_idx = wp.int32(0)

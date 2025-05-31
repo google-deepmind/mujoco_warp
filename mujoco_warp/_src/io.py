@@ -68,7 +68,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if opt not in set(opt_types):
       raise NotImplementedError(f"{msg} {opt} is unsupported.")
 
-  # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
+  # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")

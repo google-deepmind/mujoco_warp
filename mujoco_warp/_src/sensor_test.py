@@ -53,12 +53,12 @@ class SensorTest(parameterized.TestCase):
           <body name="body1" pos=".5 .6 .7">
             <joint name="ballquat" type="ball"/>
             <geom type="sphere" size="0.1"/>
-            <site name="site1" pos=".1 .2 .3"/>                         
+            <site name="site1" pos=".1 .2 .3"/>
           </body>
           <body name="body2" pos="1 1 1">
             <freejoint/>
             <geom type="sphere" size="0.1"/>
-            <site name="site2"/>                         
+            <site name="site2"/>
           </body>
           <body name="body3" pos="2 2 2">
             <joint name="hinge0" type="hinge" axis="1 0 0"/>
@@ -92,7 +92,7 @@ class SensorTest(parameterized.TestCase):
             <body name="body9">
               <joint type="hinge"/>
               <geom name="geom9" type="sphere" size="0.1" pos="1 2 3"/>
-              <site name="site9" pos=".2 .4 .6"/>        
+              <site name="site9" pos=".2 .4 .6"/>
             </body>
           </body>
           <camera name="camera"/>
@@ -147,49 +147,49 @@ class SensorTest(parameterized.TestCase):
           <tendonlimitpos tendon="limittendon"/>
           <tendonlimitpos tendon="limittendon" cutoff=".001"/>
           <framepos objtype="body" objname="body1"/>
-          <framepos objtype="body" objname="body1" cutoff=".001"/>      
+          <framepos objtype="body" objname="body1" cutoff=".001"/>
           <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>
           <framepos objtype="body" objname="body1" reftype="geom" refname="geom0"/>
           <framepos objtype="body" objname="body1" reftype="site" refname="site0"/>
           <framepos objtype="body" objname="body1" reftype="cam" refname="cam0"/>
-          <framepos objtype="xbody" objname="body1"/> 
-          <framepos objtype="geom" objname="geom0"/>    
+          <framepos objtype="xbody" objname="body1"/>
+          <framepos objtype="geom" objname="geom0"/>
           <framepos objtype="site" objname="site0"/>
           <framepos objtype="camera" objname="cam0"/>
           <framexaxis objtype="body" objname="body1"/>
-          <framexaxis objtype="body" objname="body1" reftype="body" refname="body0"/>   
-          <framexaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>    
-          <framexaxis objtype="body" objname="body1" reftype="site" refname="site0"/>    
-          <framexaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>    
-          <framexaxis objtype="xbody" objname="body1"/> 
-          <framexaxis objtype="geom" objname="geom0"/>    
+          <framexaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <framexaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framexaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framexaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framexaxis objtype="xbody" objname="body1"/>
+          <framexaxis objtype="geom" objname="geom0"/>
           <framexaxis objtype="site" objname="site0"/>
           <framexaxis objtype="camera" objname="cam0"/>
-          <frameyaxis objtype="body" objname="body1"/> 
-          <frameyaxis objtype="body" objname="body1" reftype="body" refname="body0"/>  
-          <frameyaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>    
-          <frameyaxis objtype="body" objname="body1" reftype="site" refname="site0"/>    
-          <frameyaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>   
-          <frameyaxis objtype="xbody" objname="body1"/> 
-          <frameyaxis objtype="geom" objname="geom0"/>    
-          <frameyaxis objtype="site" objname="site0"/> 
-          <frameyaxis objtype="camera" objname="cam0"/> 
-          <framezaxis objtype="body" objname="body1"/>  
+          <frameyaxis objtype="body" objname="body1"/>
+          <frameyaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <frameyaxis objtype="xbody" objname="body1"/>
+          <frameyaxis objtype="geom" objname="geom0"/>
+          <frameyaxis objtype="site" objname="site0"/>
+          <frameyaxis objtype="camera" objname="cam0"/>
+          <framezaxis objtype="body" objname="body1"/>
           <framezaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
-          <framezaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>    
-          <framezaxis objtype="body" objname="body1" reftype="site" refname="site0"/>    
-          <framezaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>     
-          <framezaxis objtype="xbody" objname="body1"/> 
-          <framezaxis objtype="geom" objname="geom0"/>    
-          <framezaxis objtype="site" objname="site0"/> 
+          <framezaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framezaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framezaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framezaxis objtype="xbody" objname="body1"/>
+          <framezaxis objtype="geom" objname="geom0"/>
+          <framezaxis objtype="site" objname="site0"/>
           <framezaxis objtype="camera" objname="cam0"/>
-          <framequat objtype="body" objname="body1"/>   
+          <framequat objtype="body" objname="body1"/>
           <framequat objtype="body" objname="body1" reftype="body" refname="body0"/>
-          <framequat objtype="body" objname="body1" reftype="geom" refname="geom0"/>    
-          <framequat objtype="body" objname="body1" reftype="site" refname="site0"/>    
-          <framequat objtype="body" objname="body1" reftype="cam" refname="cam0"/>    
-          <framequat objtype="xbody" objname="body1"/> 
-          <framequat objtype="geom" objname="geom0"/>    
+          <framequat objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framequat objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framequat objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framequat objtype="xbody" objname="body1"/>
+          <framequat objtype="geom" objname="geom0"/>
           <framequat objtype="site" objname="site0"/>
           <framequat objtype="camera" objname="cam0"/>
           <subtreecom body="body3"/>
@@ -198,10 +198,10 @@ class SensorTest(parameterized.TestCase):
           <e_potential cutoff=".001"/>
           <clock/>
           <clock cutoff=".001"/>
-          <velocimeter site="site2"/> 
-          <velocimeter site="site2" cutoff=".001"/>                           
-          <gyro site="site2"/> 
-          <gyro site="site2" cutoff=".001"/>       
+          <velocimeter site="site2"/>
+          <velocimeter site="site2" cutoff=".001"/>
+          <gyro site="site2"/>
+          <gyro site="site2" cutoff=".001"/>
           <jointvel joint="slide"/>
           <jointvel joint="slide" cutoff=".001"/>
           <actuatorvel actuator="slide"/>
@@ -241,7 +241,7 @@ class SensorTest(parameterized.TestCase):
           <actuatorfrc actuator="slide"/>
           <actuatorfrc actuator="slide" cutoff=".001"/>
           <jointactuatorfrc joint="slide"/>
-          <jointactuatorfrc joint="slide" cutoff=".001"/>            
+          <jointactuatorfrc joint="slide" cutoff=".001"/>
           <framelinacc objtype="body" objname="body9"/>
           <framelinacc objtype="body" objname="body9" cutoff=".001"/>
           <frameangacc objtype="body" objname="body9"/>

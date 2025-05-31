@@ -39,7 +39,7 @@ def _hfield_overlap_range(
   geomid: int,
   worldid: int,
 ) -> Tuple[int, int, int, int]:
-  """Returns min/max grid coordinates of height field cells overlapped by other geom's bounds.
+  """Returns min/max grid coordinates of height field cells overlapped by a geom's bounds.
 
   Args:
     geom_dataid: Array of geom data IDs
@@ -261,7 +261,8 @@ def _hfield_midphase(
     geom_xpos_in: Array of geometry positions
     geom_xmat_in: Array of geometry orientation matrices
     collision_pair_in: Array of collision pairs
-    collision_hftri_index_in: Array of heightfield triangle indices (-1 for heightfield pairs)
+    collision_hftri_index_in: Array of heightfield triangle indices, -1 for heightfield
+                              pairs
     collision_pairid_in: Array of collision pair IDs
     collision_worldid_in: Array of collision world IDs
 
@@ -342,9 +343,9 @@ def _hfield_midphase(
 def hfield_midphase(m: Model, d: Data):
   """Midphase collision detection for heightfield triangles with other geoms.
 
-  This function processes collision pairs from the broadphase where one geom is a heightfield
-  and expands them into multiple collision pairs, one for each potentially colliding triangle.
-  The function directly writes to the same collision buffers used by _add_geom_pair.
+  Processes collision pairs from the broadphase where one geom is a heightfield and expands
+  them into multiple collision pairs, one for each potentially colliding triangle. The
+  function directly writes to the same collision buffers used by _add_geom_pair.
 
   Args:
     m: Model containing geometry and heightfield data
