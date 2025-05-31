@@ -216,6 +216,12 @@ class ForwardTest(parameterized.TestCase):
 
       self.assertTrue(d.time.numpy()[0] > 0.0)
 
+  def test_forward_energy(self):
+    _, mjd, _, d = test_util.fixture("humanoid/humanoid.xml", kick=True, energy=True)
+
+    _assert_eq(d.energy.numpy()[0][0], mjd.energy[0], "potential energy")
+    _assert_eq(d.energy.numpy()[0][1], mjd.energy[1], "kinetic energy")
+
   def test_tendon_actuator_force_limits(self):
     for keyframe in range(7):
       _, mjd, m, d = test_util.fixture("actuation/tendon_force_limit.xml", keyframe=keyframe)

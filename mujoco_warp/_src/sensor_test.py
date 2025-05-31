@@ -196,6 +196,8 @@ class SensorTest(parameterized.TestCase):
           <subtreecom body="body3" cutoff=".001"/>
           <e_potential/>
           <e_potential cutoff=".001"/>
+          <e_kinetic/>
+          <e_kinetic cutoff=".001"/>
           <clock/>
           <clock cutoff=".001"/>
           <velocimeter site="site2"/>
@@ -208,6 +210,10 @@ class SensorTest(parameterized.TestCase):
           <actuatorvel actuator="slide" cutoff=".001"/>
           <ballangvel joint="ballquat"/>
           <ballangvel joint="ballquat" cutoff=".001"/>
+          <jointlimitvel joint="limithinge"/>
+          <jointlimitvel joint="limithinge" cutoff=".001"/>
+          <tendonlimitvel tendon="limittendon"/>
+          <tendonlimitvel tendon="limittendon" cutoff=".001"/>
           <framelinvel objtype="body" objname="body9"/>
           <framelinvel objtype="body" objname="body9" cutoff=".001"/>
           <frameangvel objtype="body" objname="body9"/>
@@ -242,6 +248,14 @@ class SensorTest(parameterized.TestCase):
           <actuatorfrc actuator="slide" cutoff=".001"/>
           <jointactuatorfrc joint="slide"/>
           <jointactuatorfrc joint="slide" cutoff=".001"/>
+          <jointlimitfrc joint="limitslide"/>
+          <jointlimitfrc joint="limitslide" cutoff=".001"/>
+          <jointlimitfrc joint="limithinge"/>
+          <jointlimitfrc joint="limithinge" cutoff=".001"/>
+          <jointlimitfrc joint="limitball"/>
+          <jointlimitfrc joint="limitball" cutoff=".001"/>
+          <tendonlimitfrc tendon="limittendon"/>
+          <tendonlimitfrc tendon="limittendon" cutoff=".001"/>
           <framelinacc objtype="body" objname="body9"/>
           <framelinacc objtype="body" objname="body9" cutoff=".001"/>
           <frameangacc objtype="body" objname="body9"/>

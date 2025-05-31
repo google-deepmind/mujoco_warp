@@ -360,7 +360,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       epa_iterations=12,
       epa_exact_neg_distance=wp.bool(False),
       depth_extension=0.1,
-      graph_conditional=True,
+      graph_conditional=False,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
@@ -621,11 +621,30 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       dtype=int,
     ),
     sensor_vel_adr=wp.array(
-      np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0],
+      np.nonzero(
+        (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)
+        & (
+          (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITVEL)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+        )
+      )[0],
+      dtype=int,
+    ),
+    sensor_limitvel_adr=wp.array(
+      np.nonzero(
+        (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+      )[0],
       dtype=int,
     ),
     sensor_acc_adr=wp.array(
-      np.nonzero((mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC) & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH))[0],
+      np.nonzero(
+        (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)
+        & (
+          (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITFRC)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
+        )
+      )[0],
       dtype=int,
     ),
     sensor_rangefinder_adr=wp.array(sensor_rangefinder_adr, dtype=int),
@@ -634,7 +653,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TOUCH)[0],
       dtype=int,
     ),
+    sensor_limitfrc_adr=wp.array(
+      np.nonzero(
+        (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITFRC) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
+      )[0],
+      dtype=int,
+    ),
     sensor_e_potential=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_POTENTIAL).any(),
+    sensor_e_kinetic=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_KINETIC).any(),
     sensor_subtree_vel=np.isin(
       mjm.sensor_type,
       [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],
@@ -884,6 +910,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ray_dist=wp.zeros((nworld, 1), dtype=float),
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
     # mul_m
+    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     discrete_acc_mul_m_skip=wp.array((nworld,), dtype=bool),
   )
 
@@ -1198,6 +1225,7 @@ def put_data(
     ray_dist=wp.zeros((nworld, 1), dtype=float),
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
     # mul_m
+    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     discrete_acc_mul_m_skip=wp.zeros((nworld,), dtype=bool),
   )
 

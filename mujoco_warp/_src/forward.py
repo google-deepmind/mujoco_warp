@@ -32,6 +32,7 @@ from .types import BiasType
 from .types import Data
 from .types import DisableBit
 from .types import DynType
+from .types import EnableBit
 from .types import GainType
 from .types import IntegratorType
 from .types import JointType
@@ -1045,13 +1046,24 @@ def fwd_acceleration(m: Model, d: Data):
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
+  energy = m.opt.enableflags & EnableBit.ENERGY
 
   fwd_position(m, d)
   sensor.sensor_pos(m, d)
-  # TODO(team): energy_pos
+
+  if energy:
+    if m.sensor_e_potential == 0:  # not computed by sensor
+      sensor.energy_pos(m, d)
+  else:
+    d.energy.zero_()
+
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
-  # TODO(team): energy_vel
+
+  if energy:
+    if m.sensor_e_kinetic == 0:  # not computed by sensor
+      sensor.energy_vel(m, d)
+
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
   sensor.sensor_acc(m, d)
