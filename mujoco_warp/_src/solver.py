@@ -2656,8 +2656,10 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
 @event_scope
 def solve(m: types.Model, d: types.Data):
   """Finds forces that satisfy constraints."""
-  # warmstart
-  wp.copy(d.qacc, d.qacc_warmstart)
+  if not (m.opt.disableflags & types.DisableBit.WARMSTART):
+    wp.copy(d.qacc, d.qacc_warmstart)
+  else:
+    wp.copy(d.qacc, d.qacc_smooth)
 
   # create context
   create_context(m, d, grad=True)
