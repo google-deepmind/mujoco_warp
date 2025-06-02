@@ -2059,7 +2059,6 @@ def update_gradient_JTDAJ(
   # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
-  # TODO(team): static m?
   efcid_temp, elementid = wp.tid()
 
   nefc = nefc_in[0]
@@ -2542,7 +2541,6 @@ def solve_done(
   nsolving_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
 ):
-  # TODO(team): static m?
   worldid = wp.tid()
 
   if efc_done_in[worldid]:
