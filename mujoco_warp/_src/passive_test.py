@@ -36,11 +36,10 @@ def _assert_eq(a, b, name):
 
 
 class PassiveTest(parameterized.TestCase):
-  @parameterized.parameters(True, False)
-  def test_passive(self, gravity):
+  @parameterized.product(passive=[True, False], gravity=[True, False])
+  def test_passive(self, passive, gravity):
     """Tests passive."""
-    # TODO(taylorhowell): remove qpos0=True once tendon spring dampers are implemented
-    _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity, qpos0=True)
+    _, mjd, m, d = test_util.fixture("pendula.xml", passive=passive, gravity=gravity)
 
     for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_gravcomp, d.qfrc_passive):
       arr.zero_()
@@ -51,8 +50,6 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, "qfrc_damper")
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
-
-  # TODO(team): test DisableBit.PASSIVE
 
   @parameterized.parameters(
     (1, 0, 0, 0, 0),
