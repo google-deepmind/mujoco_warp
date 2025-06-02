@@ -2656,7 +2656,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if m.opt.graph_conditional:
-    wp.capture_if(d.nefc, _solve, None, m, d)
+    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=None, m=m, d=d)
   else:
     _solve(m, d)
 
