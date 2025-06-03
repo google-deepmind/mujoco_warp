@@ -43,6 +43,7 @@ def fixture(
   constraint: bool = True,
   equality: bool = True,
   gravity: bool = True,
+  clampctrl: bool = True,
   qpos0: bool = False,
   kick: bool = False,
   energy: bool = False,
@@ -82,6 +83,8 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.EQUALITY
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
+  if not clampctrl:
+    mjm.opt.disableflags |= DisableBit.CLAMPCTRL
   if not eulerdamp:
     mjm.opt.disableflags |= DisableBit.EULERDAMP
 
