@@ -175,6 +175,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       while bid > 0:
         bodyid.append(bid)
         bid = mjm.body_parentid[bid]
+    elif trntype == mujoco.mjtTrn.mjTRN_SLIDERCRANK:
+      for i in range(mjm.nv):
+        bodyid.append(mjm.dof_bodyid[i])
     else:
       raise NotImplementedError(f"Transmission type {trntype} not implemented.")
   tree = mjm.body_treeid[np.array(bodyid, dtype=int)]
@@ -546,6 +549,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_forcerange=create_nmodel_batched_array(mjm.actuator_forcerange, dtype=wp.vec2),
     actuator_actrange=create_nmodel_batched_array(mjm.actuator_actrange, dtype=wp.vec2),
     actuator_gear=create_nmodel_batched_array(mjm.actuator_gear, dtype=wp.spatial_vector),
+    actuator_cranklength=wp.array(mjm.actuator_cranklength, dtype=float),
     actuator_acc0=wp.array(mjm.actuator_acc0, dtype=float),
     actuator_lengthrange=wp.array(mjm.actuator_lengthrange, dtype=wp.vec2),
     exclude_signature=wp.array(mjm.exclude_signature, dtype=int),

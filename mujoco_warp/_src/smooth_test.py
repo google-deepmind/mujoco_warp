@@ -252,7 +252,7 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cvel.numpy()[0], mjd.cvel, "cvel")
     _assert_eq(d.cdof_dot.numpy()[0], mjd.cdof_dot, "cdof_dot")
 
-  @parameterized.parameters("pendula.xml", "actuation/site.xml")
+  @parameterized.parameters("pendula.xml", "actuation/site.xml", "actuation/slidercrank.xml")
   def test_transmission(self, xml):
     """Tests transmission."""
     mjm, mjd, m, d = test_util.fixture(xml)
