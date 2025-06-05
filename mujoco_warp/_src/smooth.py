@@ -787,6 +787,47 @@ def crb(m: Model, d: Data):
 
 
 @wp.kernel
+def _tendon_armature(
+  # Model:
+  dof_parentid: wp.array(dtype=int),
+  tendon_armature: wp.array2d(dtype=float),
+  # Data in:
+  ten_J_in: wp.array3d(dtype=float),
+  # Data out:
+  qM_out: wp.array3d(dtype=float),
+):
+  worldid, tenid, dofid = wp.tid()
+
+  armature = tendon_armature[worldid, tenid]
+  ten_Ji = ten_J_in[worldid, tenid, dofid]
+
+  wp.atomic_add(qM_out[worldid, dofid], dofid, armature * ten_Ji * ten_Ji)
+
+  # sparse backward pass over ancestors
+  dofidi = dofid
+  dofid = dof_parentid[dofid]
+  while dofid >= 0:
+    ten_Jj = ten_J_in[worldid, tenid, dofid]
+    qMij = armature * ten_Jj * ten_Ji
+
+    wp.atomic_add(qM_out[worldid, dofidi], dofid, qMij)
+    wp.atomic_add(qM_out[worldid, dofid], dofidi, qMij)
+
+    dofid = dof_parentid[dofid]
+
+
+@event_scope
+def tendon_armature(m: Model, d: Data):
+  """Add tendon armature to qM."""
+  wp.launch(
+    _tendon_armature,
+    dim=(d.nworld, m.ntendon, m.nv),
+    inputs=[m.dof_parentid, m.tendon_armature, d.ten_J],
+    outputs=[d.qM],
+  )
+
+
+@wp.kernel
 def _copy_CSR(
   # Model:
   mapM2M: wp.array(dtype=int),
@@ -1304,6 +1345,284 @@ def rne_postconstraint(m: Model, d: Data):
 
   # backward pass over bodies: accumulate cfrc_int from children
   _rne_cfrc_backward(m, d)
+
+
+@wp.kernel
+def _tendon_dot(
+  # Model:
+  nv: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  jnt_type: wp.array(dtype=int),
+  jnt_dofadr: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  dof_jntid: wp.array(dtype=int),
+  site_bodyid: wp.array(dtype=int),
+  tendon_adr: wp.array(dtype=int),
+  tendon_num: wp.array(dtype=int),
+  tendon_armature: wp.array2d(dtype=float),
+  wrap_objid: wp.array(dtype=int),
+  wrap_prm: wp.array(dtype=float),
+  wrap_type: wp.array(dtype=int),
+  # Data in:
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
+  # Data out:
+  ten_Jdot_out: wp.array3d(dtype=float),
+):
+  worldid, tenid = wp.tid()
+
+  armature = tendon_armature[worldid, tenid]
+  if armature == 0.0:
+    return
+
+  # fixed tendon has zero Jdot
+  adr = tendon_adr[tenid]
+  if wrap_type[adr] == int(WrapType.JOINT.value):
+    return
+
+  # process spatial tendon
+  divisor = float(1.0)
+  num = tendon_num[tenid]
+  j = int(0)
+  while j < num - 1:
+    # get 1st and 2nd object
+    type0 = wrap_type[adr + j + 0]
+    type1 = wrap_type[adr + j + 1]
+    id0 = wrap_objid[adr + j + 0]
+    id1 = wrap_objid[adr + j + 1]
+
+    # pulley
+    pulley = int(WrapType.PULLEY.value)
+    if (type0 == pulley) or (type1 == pulley):
+      # get divisor
+      if type0 == pulley:
+        divisor = wrap_prm[adr + j]
+
+      j += 1
+      continue
+
+    # init sequence; assume it start with site
+    wpnt0 = site_xpos_in[worldid, id0]
+
+    bodyid0 = site_bodyid[id0]
+    pos0 = site_xpos_in[worldid, id0]
+    cvel0 = cvel_in[worldid, bodyid0]
+    subtree_com0 = subtree_com_in[worldid, body_rootid[bodyid0]]
+    dif0 = pos0 - subtree_com0
+    wvel0 = wp.spatial_bottom(cvel0) - wp.cross(dif0, wp.spatial_top(cvel0))
+    wbody0 = site_bodyid[id0]
+
+    # second object is geom: process site-geom-site
+    if (type1 == int(WrapType.SPHERE.value)) or (type1 == int(WrapType.CYLINDER.value)):
+      # TODO(team): derivatives of util_misc.wrap
+      return
+
+    # complete sequence
+    wbody1 = site_bodyid[id1]
+    wpnt1 = site_xpos_in[worldid, id1]
+
+    bodyid1 = site_bodyid[id1]
+    pos1 = site_xpos_in[worldid, id1]
+    cvel1 = cvel_in[worldid, bodyid1]
+    subtree_com1 = subtree_com_in[worldid, body_rootid[bodyid1]]
+    dif1 = pos1 - subtree_com1
+    wvel1 = wp.spatial_bottom(cvel1) - wp.cross(dif1, wp.spatial_top(cvel1))
+
+    # accumulate moments if consecutive points are in different bodies
+    if wbody0 != wbody1:
+      # dpnt = 3D position difference, normalize
+      dpnt, norm = math.normalize_with_norm(wpnt1 - wpnt0)
+
+      # dvel = d / dt (dpnt)
+      dvel = wvel1 - wvel0
+      dot = wp.dot(dpnt, dvel)
+      dvel += dpnt * (-dot)
+      if norm > MJ_MINVAL:
+        dvel /= norm
+      else:
+        dvel = wp.vec3(0.0)
+
+      # get endpoint Jacobian time derivatives, subtract
+      # TODO(team): parallelize?
+      for i in range(nv):
+        jac1, _ = support.jac_dot(
+          body_parentid,
+          body_rootid,
+          jnt_type,
+          jnt_dofadr,
+          dof_bodyid,
+          dof_jntid,
+          subtree_com_in,
+          cdof_in,
+          cvel_in,
+          cdof_dot_in,
+          wpnt0,
+          wbody0,
+          i,
+          worldid,
+        )
+        jac2, _ = support.jac_dot(
+          body_parentid,
+          body_rootid,
+          jnt_type,
+          jnt_dofadr,
+          dof_bodyid,
+          dof_jntid,
+          subtree_com_in,
+          cdof_in,
+          cvel_in,
+          cdof_dot_in,
+          wpnt1,
+          wbody1,
+          i,
+          worldid,
+        )
+        jacdif = jac2 - jac1
+
+        # chain rule, first term: Jdot += d / dt (jac2 - jac1) * dpnt
+        Jdot = wp.dot(jacdif, dpnt)
+
+        # get endpoint Jacobians, subtract
+        jac1, _ = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          wpnt0,
+          wbody0,
+          i,
+          worldid,
+        )
+        jac2, _ = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          wpnt1,
+          wbody1,
+          i,
+          worldid,
+        )
+        jacdif = jac2 - jac1
+
+        # chain rule, second term: Jdot += (jac2 - jac1) * d / dt (dpnt)
+        Jdot += wp.dot(jacdif, dvel)
+
+        ten_Jdot_out[worldid, tenid, i] += Jdot / divisor
+
+    # TODO(team): j += 2 if geom wrapping
+    j += 1
+
+
+@wp.kernel
+def _tendon_bias_coef(
+  # Model:
+  tendon_armature: wp.array2d(dtype=float),
+  # Data in:
+  qvel_in: wp.array2d(dtype=float),
+  ten_Jdot_in: wp.array3d(dtype=float),
+  # Data out:
+  ten_bias_coef_out: wp.array2d(dtype=float),
+):
+  worldid, tenid, dofid = wp.tid()
+
+  armature = tendon_armature[worldid, tenid]
+  if armature == 0.0:
+    return
+
+  ten_Jdot = ten_Jdot_in[worldid, tenid, dofid]
+  if ten_Jdot == 0.0:
+    return
+
+  wp.atomic_add(ten_bias_coef_out[worldid], tenid, ten_Jdot * qvel_in[worldid, dofid])
+
+
+@wp.kernel
+def _tendon_bias_qfrc(
+  # Model:
+  tendon_armature: wp.array2d(dtype=float),
+  # Data in:
+  ten_J_in: wp.array3d(dtype=float),
+  ten_bias_coef_in: wp.array2d(dtype=float),
+  # Out:
+  qfrc_out: wp.array2d(dtype=float),
+):
+  worldid, tenid, dofid = wp.tid()
+
+  armature = tendon_armature[worldid, tenid]
+  if armature == 0.0:
+    return
+
+  ten_J = ten_J_in[worldid, tenid, dofid]
+  if ten_J == 0.0:
+    return
+
+  wp.atomic_add(qfrc_out[worldid], dofid, ten_J * armature * ten_bias_coef_in[worldid, tenid])
+
+
+@event_scope
+def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+  """Add bias force due to tendon armature."""
+  wp.launch(
+    _tendon_dot,
+    dim=(d.nworld, m.ntendon),
+    inputs=[
+      m.nv,
+      m.body_parentid,
+      m.body_rootid,
+      m.jnt_type,
+      m.jnt_dofadr,
+      m.dof_bodyid,
+      m.dof_jntid,
+      m.site_bodyid,
+      m.tendon_adr,
+      m.tendon_num,
+      m.tendon_armature,
+      m.wrap_objid,
+      m.wrap_prm,
+      m.wrap_type,
+      d.site_xpos,
+      d.subtree_com,
+      d.cdof,
+      d.cvel,
+      d.cdof_dot,
+    ],
+    outputs=[
+      d.ten_Jdot,
+    ],
+  )
+
+  wp.launch(
+    _tendon_bias_coef,
+    dim=(d.nworld, m.ntendon, m.nv),
+    inputs=[
+      m.tendon_armature,
+      d.qvel,
+      d.ten_Jdot,
+    ],
+    outputs=[
+      d.ten_bias_coef,
+    ],
+  )
+
+  wp.launch(
+    _tendon_bias_qfrc,
+    dim=(d.nworld, m.ntendon, m.nv),
+    inputs=[
+      m.tendon_armature,
+      d.ten_J,
+      d.ten_bias_coef,
+    ],
+    outputs=[
+      qfrc,
+    ],
+  )
 
 
 @wp.kernel
@@ -2330,7 +2649,7 @@ def _spatial_tendon_wrap(
         j += 1
         continue
 
-      # init sequence; assume it start with site
+      # init sequence; assume it starts with site
       wpnt_site0 = site_xpos_in[worldid, id0]
 
       # second object is geom: process site-geom-site

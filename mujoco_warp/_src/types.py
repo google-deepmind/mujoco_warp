@@ -903,6 +903,7 @@ class Model:
     tendon_margin: min distance for limit detection          (nworld, ntendon,)
     tendon_stiffness: stiffness coefficient                  (nworld, ntendon,)
     tendon_damping: damping coefficient                      (nworld, ntendon,)
+    tendon_armature: inertia associated with tendon velocity (nworld, ntendon,)
     tendon_frictionloss: loss due to friction                (nworld, ntendon,)
     tendon_lengthspring: spring resting length range         (nworld, ntendon, 2)
     tendon_length0: tendon length in qpos0                   (nworld, ntendon,)
@@ -1186,6 +1187,7 @@ class Model:
   tendon_margin: wp.array2d(dtype=float)
   tendon_stiffness: wp.array2d(dtype=float)
   tendon_damping: wp.array2d(dtype=float)
+  tendon_armature: wp.array2d(dtype=float)
   tendon_frictionloss: wp.array2d(dtype=float)
   tendon_lengthspring: wp.array2d(dtype=wp.vec2)
   tendon_length0: wp.array2d(dtype=float)
@@ -1379,6 +1381,8 @@ class Data:
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
     ten_length: tendon lengths                                  (nworld, ntendon)
     ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
+    ten_Jdot: time derivative of tendon Jacobian                (nworld, ntendon, nv)
+    ten_bias_coef: tendon bias force coefficient                (nworld, ntendon)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
     ten_actfrc: total actuator force at tendon                  (nworld, ntendon)
@@ -1516,6 +1520,8 @@ class Data:
   # tendon
   ten_length: wp.array2d(dtype=float)
   ten_J: wp.array3d(dtype=float)
+  ten_Jdot: wp.array3d(dtype=float)  # warp only
+  ten_bias_coef: wp.array2d(dtype=float)  # warp only
   ten_wrapadr: wp.array2d(dtype=int)
   ten_wrapnum: wp.array2d(dtype=int)
   ten_actfrc: wp.array2d(dtype=float)  # warp only

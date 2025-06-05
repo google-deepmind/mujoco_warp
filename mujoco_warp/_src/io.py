@@ -580,6 +580,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     tendon_margin=create_nmodel_batched_array(mjm.tendon_margin, dtype=float),
     tendon_stiffness=create_nmodel_batched_array(mjm.tendon_stiffness, dtype=float),
     tendon_damping=create_nmodel_batched_array(mjm.tendon_damping, dtype=float),
+    tendon_armature=create_nmodel_batched_array(mjm.tendon_armature, dtype=float),
     tendon_frictionloss=create_nmodel_batched_array(mjm.tendon_frictionloss, dtype=float),
     tendon_lengthspring=create_nmodel_batched_array(mjm.tendon_lengthspring, dtype=wp.vec2),
     tendon_length0=create_nmodel_batched_array(mjm.tendon_length0, dtype=float),
@@ -898,6 +899,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     # tendon
     ten_length=wp.zeros((nworld, mjm.ntendon), dtype=float),
     ten_J=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
+    ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
+    ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
     ten_wrapadr=wp.zeros((nworld, mjm.ntendon), dtype=int),
     ten_wrapnum=wp.zeros((nworld, mjm.ntendon), dtype=int),
     ten_actfrc=wp.zeros((nworld, mjm.ntendon), dtype=float),
@@ -1213,6 +1216,8 @@ def put_data(
     # tendon
     ten_length=tile(mjd.ten_length),
     ten_J=tile(ten_J),
+    ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
+    ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
     ten_wrapadr=tile(mjd.ten_wrapadr),
     ten_wrapnum=tile(mjd.ten_wrapnum),
     ten_actfrc=wp.zeros((nworld, mjm.ntendon), dtype=float),
