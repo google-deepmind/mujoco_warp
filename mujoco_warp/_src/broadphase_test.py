@@ -22,12 +22,12 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 
-from . import collision_driver
 from . import test_util
+from .types import BroadphaseType
 
 
 class BroadphaseTest(parameterized.TestCase):
-  @parameterized.parameters(collision_driver.nxn_broadphase, collision_driver.sap_broadphase)
+  @parameterized.parameters(BroadphaseType.NXN, BroadphaseType.SAP_TILE, BroadphaseType.SAP_SEGMENTED)
   def test_broadphase(self, broadphase):
     """Tests collision broadphase algorithms."""
 
@@ -93,6 +93,9 @@ class BroadphaseTest(parameterized.TestCase):
 
     # one world and zero collisions
     mjm, _, m, d0 = test_util.fixture(xml=_XML, keyframe=0)
+
+    m.opt.broadphase = broadphase
+
     broadphase(m, d0)
     np.testing.assert_allclose(d0.ncollision.numpy()[0], 0)
 

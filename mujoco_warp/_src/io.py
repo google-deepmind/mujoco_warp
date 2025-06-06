@@ -360,6 +360,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       epa_iterations=12,
       epa_exact_neg_distance=wp.bool(False),
       depth_extension=0.1,
+      broadphase=types.BroadphaseType.NXN,
       graph_conditional=False,
     ),
     stat=types.Statistic(
