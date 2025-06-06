@@ -627,7 +627,7 @@ def sensor_pos(m: Model, d: Data):
       d,
       d.sensor_rangefinder_pnt,
       d.sensor_rangefinder_vec,
-      vec6(0, 0, 0, 0, 0, 0),
+      vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
       True,
       m.sensor_rangefinder_bodyid,
       d.sensor_rangefinder_dist,
