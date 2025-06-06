@@ -14,5 +14,6 @@
     <geom name="box" pos="1 0 1" quat="0 0.3826834 0 0.9238795" size="0.5 0.25 0.3" type="box" rgba="0 0 1 1"/>
     <geom name="mesh" pos="1 1 1" quat="0 0 0.3826834 0.9238795" type="mesh" mesh="tetrahedron" rgba="1 1 0 1"/>
     <geom name="mesh2" pos="2 1 1" type="mesh" mesh="dodecahedron" rgba="1 0 1 1"/>
+    <geom name="cylinder" pos="2 0 1" quat=" 0 0 .3826834 .9238796" type="cylinder" size=".25 .5" rgba="1 1 1 1"/>
   </worldbody>
 </mujoco>
