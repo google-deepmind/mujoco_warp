@@ -374,14 +374,17 @@ def _flex_elasticity(
   worldid, elemid = wp.tid()
   f = 0  # TODO(quaglino): this should become a function of t
 
-  # TODO(quaglino): support dim != 2
   dim = flex_dim[f]
-  nedge = 3
-  nvert = 3
+  nvert = dim + 1
+  nedge = nvert * (nvert - 1) / 2
+  edges = (
+    wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int)
+    if dim == 3
+    else wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int)
+  )
   kD = flex_damping[f] / opt_timestep
 
-  edges = wp.mat(1, 2, 2, 0, 0, 1, shape=(3, 2), dtype=int)
-  gradient = wp.mat(0.0, shape=(3, 6))
+  gradient = wp.mat(0.0, shape=(6, 6))
   for e in range(nedge):
     vert0 = flex_elem[(dim + 1) * elemid + edges[e, 0]]
     vert1 = flex_elem[(dim + 1) * elemid + edges[e, 1]]
@@ -391,7 +394,7 @@ def _flex_elasticity(
       gradient[e, 0 + i] = xpos0[i] - xpos1[i]
       gradient[e, 3 + i] = xpos1[i] - xpos0[i]
 
-  elongation = wp.vec3(0.0)
+  elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
     idx = flex_elemedge[flex_elemedgeadr[f] + elemid * nedge + e]
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
@@ -400,15 +403,15 @@ def _flex_elasticity(
     previous = deformed - vel * opt_timestep
     elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
 
-  metric = wp.mat33(0.0)
-  id = 0
+  metric = wp.mat(0.0, shape=(6, 6))
+  id = int(0)
   for ed1 in range(nedge):
     for ed2 in range(ed1, nedge):
       metric[ed1, ed2] = flex_stiffness[21 * elemid + id]
       metric[ed2, ed1] = flex_stiffness[21 * elemid + id]
       id += 1
 
-  force = wp.mat33(0.0)
+  force = wp.mat(0.0, shape=(6, 3))
   for ed1 in range(nedge):
     for ed2 in range(nedge):
       for i in range(2):
@@ -426,6 +429,7 @@ def _flex_elasticity(
 def _flex_bending(
   # Model:
   body_dofadr: wp.array(dtype=int),
+  flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_edgeadr: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
@@ -440,6 +444,9 @@ def _flex_bending(
   worldid, edgeid = wp.tid()
   nvert = 4
   f = 0  # TODO(quaglino): this should become a function of t
+
+  if flex_dim[f] != 2:
+    return
 
   v = wp.vec4i(
     flex_edge[edgeid + flex_edgeadr[f]][0],
@@ -537,6 +544,7 @@ def passive(m: Model, d: Data):
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.body_dofadr,
+      m.flex_dim,
       m.flex_vertadr,
       m.flex_edgeadr,
       m.flex_vertbodyid,
