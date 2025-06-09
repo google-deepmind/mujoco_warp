@@ -19,6 +19,7 @@ import warp as wp
 
 from . import collision_driver
 from . import constraint
+from . import derivative
 from . import math
 from . import passive
 from . import sensor
@@ -31,6 +32,7 @@ from .types import BiasType
 from .types import Data
 from .types import DisableBit
 from .types import DynType
+from .types import EnableBit
 from .types import GainType
 from .types import IntegratorType
 from .types import JointType
@@ -477,132 +479,9 @@ def rungekutta4(m: Model, d: Data):
   _advance(m, d, d.qacc_rk, d.qvel_rk)
 
 
-@wp.kernel
-def _implicit_actuator_bias_gain_vel(
-  # Model:
-  actuator_dyntype: wp.array(dtype=int),
-  actuator_gaintype: wp.array(dtype=int),
-  actuator_biastype: wp.array(dtype=int),
-  actuator_gainprm: wp.array2d(dtype=vec10f),
-  actuator_biasprm: wp.array2d(dtype=vec10f),
-  # Data in:
-  act_in: wp.array2d(dtype=float),
-  ctrl_in: wp.array2d(dtype=float),
-  # Data out:
-  act_vel_integration_out: wp.array2d(dtype=float),
-):
-  worldid, actid = wp.tid()
-
-  if actuator_biastype[actid] == wp.static(BiasType.AFFINE.value):
-    bias_vel = actuator_biasprm[worldid, actid][2]
-  else:
-    bias_vel = 0.0
-
-  if actuator_gaintype[actid] == wp.static(GainType.AFFINE.value):
-    gain_vel = actuator_gainprm[worldid, actid][2]
-  else:
-    gain_vel = 0.0
-
-  if actuator_dyntype[actid] != wp.static(DynType.NONE.value):
-    ctrl = act_in[worldid, actid]
-  else:
-    ctrl = ctrl_in[worldid, actid]
-
-  act_vel_integration_out[worldid, actid] = bias_vel + gain_vel * ctrl
-
-
-def _tile_implicit_actuator_qderiv(
-  tile_nu: TileSet,
-  tile_nv: TileSet,
-  opt_timestep: float,
-  actuation_enabled: bool,
-  passive_enabled: bool,
-):
-  @wp.func
-  def subtract_multiply(x: float, y: float):
-    return x - y * wp.static(opt_timestep)
-
-  @nested_kernel
-  def implicit_actuator_qderiv(
-    # Model:
-    dof_damping: wp.array2d(dtype=float),
-    # Data in:
-    actuator_moment_in: wp.array3d(dtype=float),
-    qM_in: wp.array3d(dtype=float),
-    qfrc_smooth_in: wp.array2d(dtype=float),
-    qfrc_constraint_in: wp.array2d(dtype=float),
-    act_vel_integration_in: wp.array2d(dtype=float),
-    qM_integration_in: wp.array3d(dtype=float),
-    # In:
-    tile_nu_adr: wp.array(dtype=int),
-    tile_nv_adr: wp.array(dtype=int),
-    # Data out:
-    qfrc_integration_out: wp.array2d(dtype=float),
-  ):
-    worldid, nodeid = wp.tid()
-
-    TILE_NU_SIZE = wp.static(int(tile_nu.size))
-    TILE_NV_SIZE = wp.static(int(tile_nv.size))
-
-    offset_nv = tile_nv_adr[nodeid]
-
-    # skip tree with no actuators.
-    if wp.static(actuation_enabled and TILE_NU_SIZE != 0):
-      offset_nu = tile_nu_adr[nodeid]
-      actuator_moment_tile = wp.tile_load(
-        actuator_moment_in[worldid],
-        shape=(TILE_NU_SIZE, TILE_NV_SIZE),
-        offset=(offset_nu, offset_nv),
-      )
-      zeros = wp.tile_zeros(shape=(TILE_NU_SIZE, TILE_NU_SIZE), dtype=wp.float32)
-      vel_tile = wp.tile_load(act_vel_integration_in[worldid], shape=(TILE_NU_SIZE), offset=offset_nu)
-      diag = wp.tile_diag_add(zeros, vel_tile)
-      actuator_moment_T = wp.tile_transpose(actuator_moment_tile)
-      amTVel = wp.tile_matmul(actuator_moment_T, diag)
-      qderiv_tile = wp.tile_matmul(amTVel, actuator_moment_tile)
-    else:
-      qderiv_tile = wp.tile_zeros(shape=(TILE_NV_SIZE, TILE_NV_SIZE), dtype=wp.float32)
-
-    if wp.static(passive_enabled):
-      dof_damping_tile = wp.tile_load(dof_damping[worldid], shape=TILE_NV_SIZE, offset=offset_nv)
-      negative = wp.neg(dof_damping_tile)
-      qderiv_tile = wp.tile_diag_add(qderiv_tile, negative)
-
-    # add to qM
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_NV_SIZE, TILE_NV_SIZE), offset=(offset_nv, offset_nv))
-    qderiv_tile = wp.tile_map(subtract_multiply, qM_tile, qderiv_tile)
-    wp.tile_store(qM_integration_in[worldid], qderiv_tile, offset=(offset_nv, offset_nv))
-
-    # sum qfrc
-    qfrc_smooth_tile = wp.tile_load(qfrc_smooth_in[worldid], shape=TILE_NV_SIZE, offset=offset_nv)
-    qfrc_constraint_tile = wp.tile_load(qfrc_constraint_in[worldid], shape=TILE_NV_SIZE, offset=offset_nv)
-    qfrc_combined = wp.add(qfrc_smooth_tile, qfrc_constraint_tile)
-    wp.tile_store(qfrc_integration_out[worldid], qfrc_combined, offset=offset_nv)
-
-  return implicit_actuator_qderiv
-
-
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
-
-  # optimization comments (AD)
-  # I went from small kernels for every step to a relatively big single
-  # kernel using tile API because it kept improving performance -
-  # 30M to 50M FPS on an A6000.
-  #
-  # The main benefit is reduced global memory roundtrips, but I assume
-  # there is also some benefit to loading data as early as possible.
-  #
-  # I further tried fusing in the cholesky factor/solve but the high
-  # storage requirements led to low occupancy and thus worse performance.
-  #
-  # The _implicit_actuator_bias_gain_vel kernel could theoretically be fused in as well,
-  # but it's pretty clean straight-line code that loads a lot of data but
-  # only stores one array, so I think the benefit of keeping that one on-chip
-  # is likely not worth it compared to the compromises we're making with tile API.
-  # It would also need a different data layout for the biasprm/gainprm arrays
-  # to be tileable.
 
   # TODO(team): add sparse version
 
@@ -611,53 +490,8 @@ def implicit(m: Model, d: Data):
   actuation_enabled = (not m.opt.disableflags & DisableBit.ACTUATION.value) and m.actuator_affine_bias_gain
 
   if passive_enabled or actuation_enabled:
-    if actuation_enabled:
-      wp.launch(
-        _implicit_actuator_bias_gain_vel,
-        dim=(d.nworld, m.nu),
-        inputs=[
-          m.actuator_dyntype,
-          m.actuator_gaintype,
-          m.actuator_biastype,
-          m.actuator_gainprm,
-          m.actuator_biasprm,
-          d.act,
-          d.ctrl,
-        ],
-        outputs=[
-          d.act_vel_integration,
-        ],
-      )
-
-    for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      wp.launch_tiled(
-        _tile_implicit_actuator_qderiv(
-          tile_nu,
-          tile_nv,
-          m.opt.timestep,
-          actuation_enabled,
-          passive_enabled,
-        ),
-        dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
-        inputs=[
-          m.dof_damping,
-          d.actuator_moment,
-          d.qM,
-          d.qfrc_smooth,
-          d.qfrc_constraint,
-          d.act_vel_integration,
-          d.qM_integration,
-          tile_nu.adr,
-          tile_nv.adr,
-        ],
-        outputs=[
-          d.qfrc_integration,
-        ],
-        block_dim=m.block_dim.implicit_actuator_qderiv[0] if actuation_enabled else m.block_dim.implicit_actuator_qderiv[1],
-      )
-
+    derivative.deriv_smooth_vel(m, d)
     smooth._factor_solve_i_dense(m, d, d.qM_integration, d.qacc_integration, d.qfrc_integration)
-
     _advance(m, d, d.qacc_integration)
   else:
     _advance(m, d, d.qacc)
@@ -1212,13 +1046,24 @@ def fwd_acceleration(m: Model, d: Data):
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
+  energy = m.opt.enableflags & EnableBit.ENERGY
 
   fwd_position(m, d)
   sensor.sensor_pos(m, d)
-  # TODO(team): energy_pos
+
+  if energy:
+    if m.sensor_e_potential == 0:  # not computed by sensor
+      sensor.energy_pos(m, d)
+  else:
+    d.energy.zero_()
+
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
-  # TODO(team): energy_vel
+
+  if energy:
+    if m.sensor_e_kinetic == 0:  # not computed by sensor
+      sensor.energy_vel(m, d)
+
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
   sensor.sensor_acc(m, d)

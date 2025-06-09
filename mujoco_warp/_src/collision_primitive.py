@@ -815,7 +815,8 @@ def plane_convex(
   # Store indices in vec4
   indices = wp.vec4i(-1, -1, -1, -1)
 
-  # TODO(team): Explore faster methods like tile_min or even fast pass kernels if the upper bound of vertices in all convexes is small enough such that all vertices fit into shared memory
+  # TODO(team): Explore faster methods like tile_min or fast pass kernels if the upper bound
+  # of vertices in all convexes is small enough that all vertices fit into shared memory
   # Find point a (first support point)
   a_dist = wp.float32(-_HUGE_VAL)
   for i in range(convex.vertnum):
@@ -1783,7 +1784,7 @@ def capsule_box(
         ax2 = 1
       ax = cledge
 
-      # Then it finds with which face the capsule has a lower angle and switches the axis names
+      # find which face the capsule has a lower angle, and switch the axis
       if wp.abs(axis[ax1]) > wp.abs(axis[ax2]):
         ax1 = ax2
       ax2 = 3 - ax - ax1
@@ -1796,8 +1797,8 @@ def capsule_box(
         mul = -1
         secondpos = 1.0 + bestsegmentpos
 
-      # now we have to find out whether we point towards the opposite side or towards one of the
-      # sides and also find the farthest point along the capsule that is above the box
+      # now find out whether we point towards the opposite side or towards one of the sides
+      # and also find the farthest point along the capsule that is above the box
 
       e1 = 2.0 * box.size[ax2] / wp.abs(halfaxis[ax2])
       secondpos = min(e1, secondpos)

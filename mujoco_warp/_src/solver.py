@@ -853,9 +853,9 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     outputs=[d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha])  # fmt: skip
 
   for _ in range(m.opt.ls_iterations):
-    # note: we always launch ls_iterations kernels, but the kernels may early exit if done is true
-    # this allows us to preserve cudagraph requirements (no dynamic kernel launching) at the expense
-    # of extra launches
+    # NOTE: we always launch ls_iterations kernels, but the kernels may early exit if done
+    # is true. this preserves cudagraph requirements (no dynamic kernel launching) at the
+    # expense of extra launches
     wp.launch(
       linesearch_iterative_next_alpha_gauss,
       dim=(d.nworld,),
@@ -1287,7 +1287,7 @@ def _linesearch(m: types.Model, d: types.Data):
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
 
   # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
-  # init kernel. If we use more than 1 thread, dofs_per_thread is lower for better load balancing.
+  # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
 
   if m.nv > 50:
     dofs_per_thread = 20
@@ -2314,7 +2314,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     # of SMs on the GPU. We can now query the SM count:
     # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
 
-    # make dim_x and nblocks_perblock static arguments for _JTDAJ to allow unrolling the loop
+    # make dim_x and nblocks_perblock static arguments for _JTDAJ to allow loop unrolling
     if wp.get_device().is_cuda:
       sm_count = wp.get_device().sm_count
 
@@ -2554,8 +2554,8 @@ def solve_done(
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
   done = (improvement < opt_tolerance) or (gradient < opt_tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
-    # if the simulation has converged or if the maximum number of iterations has been reached then
-    # marks this world as done and remove it from the number of unconverged worlds in condition_iteration
+    # if the solver has converged or the maximum number of iterations has been reached then
+    # mark this world as done and remove it from the number of unconverged worlds
     efc_done_out[worldid] = True
     wp.atomic_add(nsolving_out, 0, -1)
 

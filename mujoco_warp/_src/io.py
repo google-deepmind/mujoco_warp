@@ -68,7 +68,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if opt not in set(opt_types):
       raise NotImplementedError(f"{msg} {opt} is unsupported.")
 
-  # TODO(team): remove after solver._update_gradient for Newton solver utilizes tile operations for islands
+  # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
@@ -169,6 +169,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       else:
         for i in range(mjm.nv):
           bodyid.append(mjm.dof_bodyid[i])
+    elif trntype == mujoco.mjtTrn.mjTRN_SITE:
+      siteid = mjm.actuator_trnid[i, 0]
+      bid = mjm.site_bodyid[siteid]
+      while bid > 0:
+        bodyid.append(bid)
+        bid = mjm.body_parentid[bid]
     else:
       raise NotImplementedError(f"Transmission type {trntype} not implemented.")
   tree = mjm.body_treeid[np.array(bodyid, dtype=int)]
@@ -294,6 +300,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array.strides = (0,) + array.strides
     return array
 
+  # rangefinder
+  is_rangefinder = mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER
+  sensor_rangefinder_adr = np.nonzero(is_rangefinder)[0]
+  rangefinder_sensor_adr = np.full(mjm.nsensor, -1)
+  rangefinder_sensor_adr[sensor_rangefinder_adr] = np.arange(len(sensor_rangefinder_adr))
+
   m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,
@@ -348,7 +360,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       epa_iterations=12,
       epa_exact_neg_distance=wp.bool(False),
       depth_extension=0.1,
-      graph_conditional=True,
+      graph_conditional=False,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
@@ -609,15 +621,49 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       dtype=int,
     ),
     sensor_vel_adr=wp.array(
-      np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0],
+      np.nonzero(
+        (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)
+        & (
+          (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITVEL)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+        )
+      )[0],
+      dtype=int,
+    ),
+    sensor_limitvel_adr=wp.array(
+      np.nonzero(
+        (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+      )[0],
       dtype=int,
     ),
     sensor_acc_adr=wp.array(
-      np.nonzero((mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC) & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH))[0],
+      np.nonzero(
+        (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)
+        & (
+          (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITFRC)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONACTFRC)
+        )
+      )[0],
       dtype=int,
     ),
+    sensor_rangefinder_adr=wp.array(sensor_rangefinder_adr, dtype=int),
+    rangefinder_sensor_adr=wp.array(rangefinder_sensor_adr, dtype=int),
     sensor_touch_adr=wp.array(
       np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TOUCH)[0],
+      dtype=int,
+    ),
+    sensor_limitfrc_adr=wp.array(
+      np.nonzero(
+        (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITFRC) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
+      )[0],
+      dtype=int,
+    ),
+    sensor_e_potential=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_POTENTIAL).any(),
+    sensor_e_kinetic=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_KINETIC).any(),
+    sensor_tendonactfrc_adr=wp.array(
+      np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONACTFRC)[0],
       dtype=int,
     ),
     sensor_subtree_vel=np.isin(
@@ -634,6 +680,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         mujoco.mjtSensor.mjSENS_FRAMEANGACC,
       ],
     ).any(),
+    sensor_rangefinder_bodyid=wp.array(
+      mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
+    ),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
@@ -657,6 +706,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   else:
     qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   return types.Data(
     nworld=nworld,
@@ -855,9 +906,17 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=wp.zeros((nworld, mjm.nsensordata), dtype=float),
+    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
+    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
     # ray
+    ray_bodyexclude=wp.zeros(1, dtype=int),
     ray_dist=wp.zeros((nworld, 1), dtype=float),
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
+    # mul_m
+    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
+    discrete_acc_mul_m_skip=wp.array((nworld,), dtype=bool),
   )
 
 
@@ -941,6 +1000,8 @@ def put_data(
 
   contact_worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon))
   efc_worldid = np.pad(np.repeat(np.arange(nworld), mjd.nefc), (0, njmax - nworld * mjd.nefc))
+
+  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   # some helper functions to simplify the data field definitions below
 
@@ -1160,9 +1221,17 @@ def put_data(
     wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
     # sensors
     sensordata=tile(mjd.sensordata),
+    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
+    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
+    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
     # ray
+    ray_bodyexclude=wp.zeros(1, dtype=int),
     ray_dist=wp.zeros((nworld, 1), dtype=float),
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
+    # mul_m
+    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
+    discrete_acc_mul_m_skip=wp.zeros((nworld,), dtype=bool),
   )
 
 

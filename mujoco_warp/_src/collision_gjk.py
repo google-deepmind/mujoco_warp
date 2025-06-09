@@ -198,7 +198,7 @@ def _S3D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3, s4: wp.vec3):
   C43 = -_det3(s1, s2, s4)
   C44 = _det3(s1, s2, s3)
 
-  # note that m_det = 6*SignVol(simplex) with C4i corresponding to the volume of the 3-simplex
+  # NOTE: m_det = 6*SignVol(simplex) with C4i corresponding to the volume of the 3-simplex
   # with vertices {s1, s2, s3, 0} - si
   m_det = C41 + C42 + C43 + C44
 

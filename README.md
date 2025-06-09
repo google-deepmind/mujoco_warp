@@ -19,10 +19,11 @@ source env/bin/activate
 pip install --upgrade pip
 ```
 
-During early development, MJWarp is on the bleeding edge - you should install Warp nightly:
+During early development, MJWarp is on the bleeding edge - you should install Warp and MuJoCo nightly:
 
 ```bash
 pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
+pip install mujoco --pre --upgrade -f https://py.mujoco.org/
 ```
 
 Then install MJWarp in editable mode for local development:
@@ -49,12 +50,12 @@ The following features are implemented:
 
 | Category          | Feature                                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------------------------|
-| Dynamics          | Forward only                                                                                             |
-| Transmission      | `JOINT`, `JOINTINPARENT`, `TENDON`                                                                       |
+| Dynamics          | Forward, Inverse                                                                                         |
+| Transmission      | `JOINT`, `JOINTINPARENT`, `TENDON`, `SITE`                                                               |
 | Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`, `MUSCLE`                                                  |
 | Actuator Gain     | `FIXED`, `AFFINE`, `MUSCLE`                                                                              |
 | Actuator Bias     | `NONE`, `AFFINE`, `MUSCLE`                                                                               |
-| Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `MESH`                                     |
+| Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `HFIELD`, `MESH`                           |
 | Constraint        | `FRICTION JOINT`, `FRICTION TENDON`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`,                        |
 |                   | `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC`                                                                  |
 | Equality          | `CONNECT`, `WELD`, `JOINT`, `TENDON`                                                                     |
@@ -63,11 +64,13 @@ The following features are implemented:
 | Condim            | 1, 3, 4, 6                                                                                               |
 | Solver            | `CG`, `NEWTON`                                                                                           |
 | Fluid Model       | `BOX`                                                                                                    |
-| Tendons           | `FIXED`, `SITE`                                                                                          |
-| Sensors           | `CAMPROJECTION`, `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`, `FRAMEPOS`, `FRAMEXAXIS`,           |
-|                   | `FRAMEYAXIS`, `FRAMEZAXIS`, `FRAMEQUAT`, `SUBTREECOM`, `CLOCK`, `VELOCIMETER`, `GYRO`, `JOINTVEL`,       |
-|                   | `TENDONVEL`, `ACTUATORVEL`, `BALLANGVEL`, `FRAMELINVEL`, `FRAMEANGVEL`, `SUBTREELINVEL`, `SUBTREEANGMOM`,|
-|                   | `TOUCH`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`, `JOINTACTFRC`,`FRAMELINACC`, `FRAMEANGACC`   |
+| Tendons           | `FIXED`, `SITE`, `SPHERE`, `CYLINDER`, `PULLEY`                                                          |
+| Sensors           | `MAGNETOMETER`, `CAMPROJECTION`, `RANGEFINDER`, `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`,      |
+|                   | `JOINTLIMITPOS`, `TENDONLIMITPOS`, `FRAMEPOS`, `FRAMEXAXIS`, `FRAMEYAXIS`, `FRAMEZAXIS`, `FRAMEQUAT`,    |
+|                   | `SUBTREECOM`, `E_POTENTIAL`, `E_KINETIC`, `CLOCK`, `VELOCIMETER`, `GYRO`, `JOINTVEL`, `TENDONVEL`,       |
+|                   | `ACTUATORVEL`, `BALLANGVEL`, `JOINTLIMITVEL`, `TENDONLIMITVEL`, `FRAMELINVEL`, `FRAMEANGVEL`,            |
+|                   | `SUBTREELINVEL`, `SUBTREEANGMOM`,`TOUCH`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`,             |
+|                   | `TENDONACTFRC`, `JOINTACTFRC`, `JOINTLIMITFRC`, `TENDONLIMITFRC`, `FRAMELINACC`, `FRAMEANGACC`           |
 
 # Benchmarking
 

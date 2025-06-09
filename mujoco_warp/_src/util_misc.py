@@ -498,7 +498,9 @@ def muscle_gain(len: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: 
 
 @wp.func
 def muscle_bias(len: float, lengthrange: wp.vec2, acc0: float, prm: vec10) -> float:
-  """Muscle passive force, prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax)."""
+  """Calculates muscle passive force.
+
+  prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax)."""
 
   # unpack parameters
   range_ = wp.vec2(prm[0], prm[1])

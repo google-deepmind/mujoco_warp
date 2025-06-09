@@ -73,8 +73,9 @@ def _ray_eliminate(
     return True
 
   # invisible material exclusion
-  if matid >= 0 and mat_rgba[matid][3] == 0.0:
-    return True
+  if matid >= 0:
+    if mat_rgba[matid][3] == 0.0:
+      return True
 
   # static exclusion
   if not flg_static and body_weldid[bodyid] == 0:
@@ -414,7 +415,7 @@ def _ray_mesh(
 
 @wp.func
 def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> float:
-  """Returns distance along ray to intersection with geom, or infinity if no intersection."""
+  """Returns distance along ray to intersection with geom, or infinity if none."""
 
   # TODO(team): static loop unrolling to remove unnecessary branching
   if geomtype == int(GeomType.PLANE.value):
@@ -499,7 +500,7 @@ def _ray_geom_mesh(
 snippet = """
 #if defined(__CUDA_ARCH__)
     return blockDim.x;
-#else    
+#else
     return 1;
 #endif
     """
@@ -531,11 +532,11 @@ def _ray(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
-  pnt: wp.array(dtype=wp.vec3),
-  vec: wp.array(dtype=wp.vec3),
+  pnt: wp.array2d(dtype=wp.vec3),
+  vec: wp.array2d(dtype=wp.vec3),
   geomgroup: vec6,
   flg_static: bool,
-  bodyexclude: int,
+  bodyexclude: wp.array(dtype=int),
   # Out:
   dist_out: wp.array(dtype=float, ndim=2),
   geomid_out: wp.array(dtype=int, ndim=2),
@@ -568,11 +569,11 @@ def _ray(
         geom_xpos_in,
         geom_xmat_in,
         worldid,
-        pnt[rayid],
-        vec[rayid],
+        pnt[worldid, rayid],
+        vec[worldid, rayid],
         geomgroup,
         flg_static,
-        bodyexclude,
+        bodyexclude[rayid],
         geomid,
       )
     else:
@@ -598,12 +599,12 @@ def _ray(
 def ray(
   m: Model,
   d: Data,
-  pnt: wp.array(dtype=wp.vec3),
-  vec: wp.array(dtype=wp.vec3),
+  pnt: wp.array2d(dtype=wp.vec3),
+  vec: wp.array2d(dtype=wp.vec3),
   geomgroup: vec6 = None,
   flg_static: bool = True,
   bodyexclude: int = -1,
-) -> Tuple[wp.array, wp.array]:
+) -> Tuple[wp.array2d(dtype=float), wp.array2d(dtype=int)]:
   """Returns the distance at which rays intersect with primitive geoms.
 
   Args:
@@ -627,9 +628,27 @@ def ray(
   if geomgroup is None:
     geomgroup = vec6(-1, -1, -1, -1, -1, -1)
 
+  d.ray_bodyexclude.fill_(bodyexclude)
+
+  rays(m, d, pnt, vec, geomgroup, flg_static, d.ray_bodyexclude, d.ray_dist, d.ray_geomid)
+
+  return d.ray_dist, d.ray_geomid
+
+
+def rays(
+  m: Model,
+  d: Data,
+  pnt: wp.array2d(dtype=wp.vec3),
+  vec: wp.array2d(dtype=wp.vec3),
+  geomgroup: vec6,
+  flg_static: bool,
+  bodyexclude: wp.array(dtype=int),
+  dist: wp.array2d(dtype=wp.vec3),
+  geomid: wp.array2d(dtype=int),
+):
   wp.launch_tiled(
     _ray,
-    dim=(d.nworld, d.ray_dist.shape[1]),
+    dim=(d.nworld, pnt.shape[1]),
     inputs=[
       m.ngeom,
       m.nmeshface,
@@ -653,9 +672,8 @@ def ray(
       geomgroup,
       flg_static,
       bodyexclude,
-      d.ray_dist,
-      d.ray_geomid,
+      dist,
+      geomid,
     ],
     block_dim=m.block_dim.ray,
   )
-  return d.ray_dist, d.ray_geomid

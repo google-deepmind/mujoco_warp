@@ -125,7 +125,7 @@ class PassiveTest(parameterized.TestCase):
           <motor joint="joint0"/>
           <motor joint="joint1"/>
         </actuator>
-      </mujoco>                        
+      </mujoco>
     """,
       gravity=gravity,
       sparse=sparse,

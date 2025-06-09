@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 
+from . import inverse
 from . import support
 from . import test_util
 from .types import IntegratorType
@@ -34,34 +35,39 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+_XML = """
+<mujoco>
+  <option timestep=".01" gravity="-1 -1 -1"/>
+  <worldbody>
+    <body>
+      <geom type="sphere" size=".1" pos=".5 0 0"/>
+      <joint name="joint1" type="hinge" axis="0 1 0" damping=".1"/>
+      <body>
+        <geom type="sphere" size=".2" pos="1 0 0"/>
+        <joint name="joint2" type="hinge" axis="0 1 0" damping=".2"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="joint1"/>
+  </actuator>
+  <equality>
+    <joint joint1="joint1" joint2="joint2"/>
+  </equality>
+</mujoco>
+"""
+
+
 class InverseTest(parameterized.TestCase):
-  @parameterized.product(integrator=[IntegratorType.EULER], invdiscrete=[True, False], eulerdamp=[True, False])
-  def test_inverse(self, integrator, invdiscrete, eulerdamp):
+  @parameterized.product(
+    integrator=[IntegratorType.EULER, IntegratorType.IMPLICITFAST],
+    invdiscrete=[True, False],
+  )
+  def test_inverse(self, integrator, invdiscrete):
     """Tests inverse dynamics."""
     mjm, mjd, m, d = test_util.fixture(
-      xml="""
-      <mujoco>
-        <option timestep=".01" gravity="-1 -1 -1"/>
-        <worldbody>
-          <body>
-            <geom type="sphere" size=".1" pos=".5 0 0"/>
-            <joint name="joint1" type="hinge" axis="0 1 0" damping=".1"/>
-            <body>
-              <geom type="sphere" size=".2" pos="1 0 0"/>
-              <joint name="joint2" type="hinge" axis="0 1 0" damping=".2"/>
-            </body>
-          </body>
-        </worldbody>
-        <actuator>
-          <motor joint="joint1"/>
-        </actuator>
-        <equality>
-          <joint joint1="joint1" joint2="joint2"/>
-        </equality>
-      </mujoco>
-      """,
+      xml=_XML,
       contact=False,
-      eulerdamp=eulerdamp,
       integrator=integrator,
       kick=True,
       applied=True,
@@ -108,6 +114,23 @@ class InverseTest(parameterized.TestCase):
     _assert_eq(d.qfrc_constraint.numpy()[0], qfrc_constraint, "qfrc_constraint")
     _assert_eq(d.qfrc_inverse.numpy()[0], qfrc_inverse, "qfrc_inverse")
     _assert_eq(d.qacc.numpy()[0], qacc, "qacc")
+
+  def test_discrete_acc_eulerdamp(self):
+    _, _, m, d = test_util.fixture(
+      xml=_XML, integrator=IntegratorType.EULER, eulerdamp=False, kick=True, applied=True, nstep=10
+    )
+    qacc = wp.zeros((1, m.nv), dtype=float)
+    qfrc = wp.zeros((1, m.nv), dtype=float)
+    inverse.discrete_acc(m, d, qacc, qfrc)
+    _assert_eq(qacc.numpy()[0], d.qacc.numpy()[0], "qacc")
+
+  def test_discrete_acc_rk4(self):
+    _, _, m, d = test_util.fixture(xml=_XML, integrator=IntegratorType.RK4)
+    qacc = wp.zeros((1, m.nv), dtype=float)
+    qfrc = wp.zeros((1, m.nv), dtype=float)
+
+    with self.assertRaises(NotImplementedError):
+      inverse.discrete_acc(m, d, qacc, qfrc)
 
 
 if __name__ == "__main__":

@@ -161,8 +161,6 @@ class SmoothTest(parameterized.TestCase):
     mjwarp.rne(m, d)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
-    # TODO(team): test DisableBit.GRAVITY
-
   @parameterized.parameters(True, False)
   def test_rne_postconstraint(self, gravity):
     """Tests rne_postconstraint."""
@@ -254,9 +252,10 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cvel.numpy()[0], mjd.cvel, "cvel")
     _assert_eq(d.cdof_dot.numpy()[0], mjd.cdof_dot, "cdof_dot")
 
-  def test_transmission(self):
+  @parameterized.parameters("pendula.xml", "actuation/site.xml")
+  def test_transmission(self, xml):
     """Tests transmission."""
-    mjm, mjd, m, d = test_util.fixture("pendula.xml")
+    mjm, mjd, m, d = test_util.fixture(xml)
 
     for arr in (d.actuator_length, d.actuator_moment):
       arr.zero_()
@@ -325,13 +324,11 @@ class SmoothTest(parameterized.TestCase):
     )
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
-  # TODO(team): test factor_solve_i
-
-  def test_solve_LD_sparse(self):
+  @parameterized.parameters(True, False)
+  def test_factor_solve_i(self, sparse):
     mjm, mjd, m, d = test_util.fixture(
       xml="""
     <mujoco>
-      <option jacobian="sparse"/>
       <worldbody>
         <body>
           <geom type="sphere" size=".1"/>
@@ -339,16 +336,21 @@ class SmoothTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """
+    """,
+      sparse=sparse,
     )
 
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
 
+    d.qLD.zero_()
+    if sparse:
+      d.qLDiagInv.zero_()
+
     res = wp.zeros((1, mjm.nv), dtype=float)
     vec = wp.ones((1, mjm.nv), dtype=float)
 
-    mjwarp._src.smooth.solve_LD(m, d, d.qLD, d.qLDiagInv, res, vec)
+    mjwarp._src.smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, res, vec)
 
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "qM \\ 1")
 

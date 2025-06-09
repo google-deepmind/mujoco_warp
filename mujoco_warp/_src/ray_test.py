@@ -40,12 +40,12 @@ class RayTest(absltest.TestCase):
     """Tests that ray returns -1 when nothing is hit."""
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
-    pnt = wp.array([wp.vec3(12.146, 1.865, 3.895)], dtype=wp.vec3)
-    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(12.146, 1.865, 3.895)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]  # Extract from [[-1]]
-    dist_np = dist.numpy()[0][0]  # Extract from [[-1.]]
+    geomid_np = geomid.numpy()[0, 0]  # Extract from [[-1]]
+    dist_np = dist.numpy()[0, 0]  # Extract from [[-1.]]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
 
@@ -54,24 +54,24 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # looking down at a slight angle
-    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 0, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
     # looking on wrong side of plane
-    pnt = wp.array([wp.vec3(0.0, 0.0, -0.5)], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(0.0, 0.0, -0.5)], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
 
@@ -80,14 +80,14 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # looking down at sphere at a slight angle
-    pnt = wp.array([wp.vec3(0.0, 0.0, 1.6)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(0.0, 0.0, 1.6)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 1, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
@@ -97,40 +97,40 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # looking down at capsule at a slight angle
-    pnt = wp.array([wp.vec3(0.5, 1.0, 1.6)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(0.5, 1.0, 1.6)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 2, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
     # looking up at capsule from below
-    pnt = wp.array([wp.vec3(-0.5, 1.0, 0.05)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(-0.5, 1.0, 0.05)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 2, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
     # looking at cylinder of capsule from the side
-    pnt = wp.array([wp.vec3(0.0, 1.0, 0.75)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(1.0, 0.0, 0.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(0.0, 1.0, 0.75)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(1.0, 0.0, 0.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 2, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
@@ -140,27 +140,27 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # looking down at box at a slight angle
-    pnt = wp.array([wp.vec3(1.0, 0.0, 1.6)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(1.0, 0.0, 1.6)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 3, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
     # looking up at box from below
-    pnt = wp.array([wp.vec3(1.0, 0.0, 0.05)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(1.0, 0.0, 0.05)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 3, "geom_id")
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
@@ -170,37 +170,37 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # look at the tetrahedron
-    pnt = wp.array([wp.vec3(2.0, 2.0, 2.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(-1.0, -1.0, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(-1.0, -1.0, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 4, "geom_id")
 
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist-tetrahedron")
 
     # look away from the dodecahedron
-    pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(2.0, 1.0, 1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(2.0, 1.0, 1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
 
     # look at the dodecahedron
-    pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(-2.0, -1.0, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(-2.0, -1.0, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 5, "geom_id")
 
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist-dodecahedron")
@@ -210,28 +210,28 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # hits plane with geom_group[0] = 1
-    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     geomgroup = vec6(1, 0, 0, 0, 0, 0)
     dist, geomid = mjwarp.ray(m, d, pnt, vec, geomgroup=geomgroup)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, 0, "geom_id")
 
-    pnt_np, vec_np = pnt.numpy()[0], vec.numpy()[0]
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
     # nothing hit with geom_group[0] = 0
-    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     geomgroup = vec6(0, 0, 0, 0, 0, 0)
     dist, geomid = mjwarp.ray(m, d, pnt, vec, geomgroup=geomgroup)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
 
@@ -240,12 +240,12 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # nothing hit with flg_static = False
-    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec, flg_static=False)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
 
@@ -254,12 +254,12 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # nothing hit with bodyexclude = 0 (world body)
-    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec, bodyexclude=0)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
 
@@ -271,12 +271,12 @@ class RayTest(absltest.TestCase):
     m.geom_rgba = wp.array2d([[wp.vec4(0.0, 0.0, 0.0, 0.0)]], dtype=wp.vec4)
     mujoco.mj_forward(mjm, mjd)
 
-    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3)
-    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3)
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     dist, geomid = mjwarp.ray(m, d, pnt, vec)
     wp.synchronize()
-    geomid_np = geomid.numpy()[0][0]
-    dist_np = dist.numpy()[0][0]
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
 

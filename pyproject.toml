@@ -64,11 +64,12 @@ Changelog = "https://mujoco.readthedocs.io/en/stable/changelog.html"
 [tool.ruff]
 line-length = 128
 indent-width = 2
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = [
-    # isort
-    "I",
+    "I",  # isort
+    "W",  # pycodestyle
 ]
 
 [tool.ruff.lint.isort]

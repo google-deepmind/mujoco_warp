@@ -128,11 +128,13 @@ class EnableBit(enum.IntFlag):
   """Enable optional feature bitflags.
 
   Members:
+    ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
   """
 
+  ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
-  # unsupported: OVERRIDE, ENERGY, FWDINV, MULTICCD, ISLAND
+  # unsupported: OVERRIDE, FWDINV, MULTICCD, ISLAND
 
 
 class TrnType(enum.IntEnum):
@@ -142,12 +144,14 @@ class TrnType(enum.IntEnum):
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
     TENDON: force on tendon
+    SITE: force on site
   """
 
   JOINT = mujoco.mjtTrn.mjTRN_JOINT
   JOINTINPARENT = mujoco.mjtTrn.mjTRN_JOINTINPARENT
   TENDON = mujoco.mjtTrn.mjTRN_TENDON
-  # unsupported: SITE, SLIDERCRANK, BODY
+  SITE = mujoco.mjtTrn.mjTRN_SITE
+  # unsupported: SLIDERCRANK, BODY
 
 
 class DynType(enum.IntEnum):
@@ -316,6 +320,7 @@ class SensorType(enum.IntEnum):
   Members:
     MAGNETOMETER: magnetometer
     CAMPROJECTION: camera projection
+    RANGEFINDER: scalar distance to nearest geom or site along z-axis
     JOINTPOS: joint position
     TENDONPOS: scalar tendon position
     ACTUATORPOS: actuator position
@@ -328,6 +333,8 @@ class SensorType(enum.IntEnum):
     FRAMEZAXIS: frame z-axis
     FRAMEQUAT: frame orientation, represented as quaternion
     SUBTREECOM: subtree center of mass
+    E_POTENTIAL: potential energy
+    E_KINETIC: kinetic energy
     CLOCK: simulation time
     VELOCIMETER: 3D linear velocity, in local frame
     GYRO: 3D angular velocity, in local frame
@@ -335,6 +342,8 @@ class SensorType(enum.IntEnum):
     TENDONVEL: scalar tendon velocity
     ACTUATORVEL: actuator velocity
     BALLANGVEL: ball joint angular velocity
+    JOINTLIMITVEL: joint limit velocity
+    TENDONLIMITVEL: tendon limit velocity
     FRAMELINVEL: 3D linear velocity
     FRAMEANGVEL: 3D angular velocity
     SUBTREELINVEL: subtree linear velocity
@@ -343,14 +352,18 @@ class SensorType(enum.IntEnum):
     ACCELEROMETER: accelerometer
     FORCE: force
     TORQUE: torque
-    ACTUATORFRC: scalar actuator force
+    ACTUATORFRC: scalar actuator force, measured at the joint
+    TENDONACTFRC: scalar actuator force, measured at the tendon
     JOINTACTFRC: scalar actuator force, measured at the joint
+    JOINTLIMITFRC: joint limit force
+    TENDONLIMITFRC: tendon limit force
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
   """
 
   MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
   CAMPROJECTION = mujoco.mjtSensor.mjSENS_CAMPROJECTION
+  RANGEFINDER = mujoco.mjtSensor.mjSENS_RANGEFINDER
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   TENDONPOS = mujoco.mjtSensor.mjSENS_TENDONPOS
   ACTUATORPOS = mujoco.mjtSensor.mjSENS_ACTUATORPOS
@@ -363,6 +376,8 @@ class SensorType(enum.IntEnum):
   FRAMEZAXIS = mujoco.mjtSensor.mjSENS_FRAMEZAXIS
   FRAMEQUAT = mujoco.mjtSensor.mjSENS_FRAMEQUAT
   SUBTREECOM = mujoco.mjtSensor.mjSENS_SUBTREECOM
+  E_POTENTIAL = mujoco.mjtSensor.mjSENS_E_POTENTIAL
+  E_KINETIC = mujoco.mjtSensor.mjSENS_E_KINETIC
   CLOCK = mujoco.mjtSensor.mjSENS_CLOCK
   VELOCIMETER = mujoco.mjtSensor.mjSENS_VELOCIMETER
   GYRO = mujoco.mjtSensor.mjSENS_GYRO
@@ -370,6 +385,8 @@ class SensorType(enum.IntEnum):
   TENDONVEL = mujoco.mjtSensor.mjSENS_TENDONVEL
   ACTUATORVEL = mujoco.mjtSensor.mjSENS_ACTUATORVEL
   BALLANGVEL = mujoco.mjtSensor.mjSENS_BALLANGVEL
+  JOINTLIMITVEL = mujoco.mjtSensor.mjSENS_JOINTLIMITVEL
+  TENDONLIMITVEL = mujoco.mjtSensor.mjSENS_TENDONLIMITVEL
   FRAMELINVEL = mujoco.mjtSensor.mjSENS_FRAMELINVEL
   FRAMEANGVEL = mujoco.mjtSensor.mjSENS_FRAMEANGVEL
   SUBTREELINVEL = mujoco.mjtSensor.mjSENS_SUBTREELINVEL
@@ -379,7 +396,10 @@ class SensorType(enum.IntEnum):
   FORCE = mujoco.mjtSensor.mjSENS_FORCE
   TORQUE = mujoco.mjtSensor.mjSENS_TORQUE
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
+  TENDONACTFRC = mujoco.mjtSensor.mjSENS_TENDONACTFRC
   JOINTACTFRC = mujoco.mjtSensor.mjSENS_JOINTACTFRC
+  JOINTLIMITFRC = mujoco.mjtSensor.mjSENS_JOINTLIMITFRC
+  TENDONLIMITFRC = mujoco.mjtSensor.mjSENS_TENDONLIMITFRC
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
 
@@ -481,8 +501,8 @@ class Option:
     is_sparse: whether to use sparse representations
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
-    epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
-    depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
+    epa_exact_neg_distance: calculate distances for non-intersecting convex geoms
+    depth_extension: distance past which closest point is not calculated for convex geoms
     ls_parallel: evaluate engine solver step sizes in parallel
     wind: wind (for lift, drag, and viscosity)
     density: density of medium
@@ -912,11 +932,21 @@ class Model:
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_limitpos_adr: address for limit position sensors  (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
+                    (excluding limit velocity sensors)
+    sensor_limitvel_adr: address for limit velocity sensors  (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+    sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
+    rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
+                    (excluding limit force sensors)
     sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
+    sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
+    sensor_e_potential: evaluate energy_pos
+    sensor_e_kinetic: evaluate energy_vel
+    sensor_tendonactfrc_adr: address for tendonactfrc sensor (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
+    sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     mat_rgba: rgba                                           (nworld, nmat, 4)
     geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
@@ -1185,10 +1215,18 @@ class Model:
   sensor_pos_adr: wp.array(dtype=int)  # warp only
   sensor_limitpos_adr: wp.array(dtype=int)  # warp only
   sensor_vel_adr: wp.array(dtype=int)  # warp only
+  sensor_limitvel_adr: wp.array(dtype=int)  # warp only
   sensor_acc_adr: wp.array(dtype=int)  # warp only
+  sensor_rangefinder_adr: wp.array(dtype=int)  # warp only
+  rangefinder_sensor_adr: wp.array(dtype=int)  # warp only
   sensor_touch_adr: wp.array(dtype=int)  # warp only
+  sensor_limitfrc_adr: wp.array(dtype=int)  # warp only
+  sensor_e_potential: bool  # warp only
+  sensor_e_kinetic: bool  # warp only
+  sensor_tendonactfrc_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
+  sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
   mat_rgba: wp.array2d(dtype=wp.vec4)
   geompair2hfgeompair: wp.array(dtype=int)  # warp only
@@ -1348,8 +1386,15 @@ class Data:
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     wrap_geom_xpos: Cartesian 3D points for geom wrap points    (nworld, <=nwrap, 6)
     sensordata: sensor data array                               (nsensordata,)
+    discrete_acc_mul_m_skip: skip mul_m computation             (nworld,)
+    sensor_rangefinder_pnt: points for rangefinder              (nworld, nrangefinder, 3)
+    sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
+    sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
+    sensor_rangefinder_geomid: geomids for rangefinder          (nworld, nrangefinder)
+    ray_bodyexclude: id of body to exclude from ray computation ()
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
+    energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
   """
 
   nworld: int  # warp only
@@ -1480,7 +1525,16 @@ class Data:
 
   # sensors
   sensordata: wp.array2d(dtype=float)
+  sensor_rangefinder_pnt: wp.array2d(dtype=wp.vec3)  # warp only
+  sensor_rangefinder_vec: wp.array2d(dtype=wp.vec3)  # warp only
+  sensor_rangefinder_dist: wp.array2d(dtype=float)  # warp only
+  sensor_rangefinder_geomid: wp.array2d(dtype=int)  # warp only
 
   # ray
+  ray_bodyexclude: wp.array(dtype=int)  # warp only
   ray_dist: wp.array2d(dtype=float)  # warp only
   ray_geomid: wp.array2d(dtype=int)  # warp only
+
+  # mul_m
+  energy_vel_mul_m_skip: wp.array(dtype=bool)
+  discrete_acc_mul_m_skip: wp.array(dtype=bool)  # warp only
