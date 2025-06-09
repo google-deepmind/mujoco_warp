@@ -40,6 +40,61 @@ class GJKResult:
   simplex2: mat43
 
 
+@wp.struct
+class Polytope:
+  status: int
+  verts: wp.array(dtype=wp.vec3)
+  verts1: wp.array(dtype=wp.vec3)
+  verts2: wp.array(dtype=wp.vec3)
+  nverts: int
+  face_verts: wp.array(dtype=wp.vec3i)
+  face_v: wp.array(dtype=wp.vec3)
+  face_dist2: wp.array(dtype=float)
+  face_index: wp.array(dtype=int)
+  nfaces: int
+  map: wp.array(dtype=int)
+  nmap: int
+  nedges: int
+  edges: wp.array(dtype=int)
+
+
+@wp.func
+def _insertVertex(pt: Polytope, v1: wp.vec3, v2: wp.vec3, v: wp.vec3):
+  n = pt.nverts
+  pt.verts[n] = v
+  pt.verts1[n] = v1
+  pt.verts2[n] = v2
+  return n
+
+@wp.func
+def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int):
+  # compute witness point v
+  r, ret = _project_origin_plane(pt.verts[v3], pt.verts[v2], pt.verts[v1])
+  if ret:
+    return 0.0
+  
+  face_verts = wp.vec3i(v1, v2, v3)
+  pt.face_verts[idx] = face_verts
+  pt.face_v[idx] = r
+
+  pt.face_dist2[idx] = wp.dot(r, r)
+  pt.face_index[idx] = -1
+  return pt.face_dist2[idx]
+
+
+@wp.func
+def _epa_support(pt: Polytope, idx: int, geom1: Geom, geom2: Geom,
+               geom1_type: int, geom2_type: int, dir: wp.vec3):
+
+  s1 = gjk_support_geom(geom1, geom1_type, dir)
+  s2 = gjk_support_geom(geom2, geom2_type, -dir)
+
+  pt.verts[idx] = s1 - s2
+  pt.verts1[idx] = s1
+  pt.verts2[idx]= s2
+
+
+
 @wp.func
 def _linear_combine(n: int, coefs: wp.vec4, mat: mat43):
   v = wp.vec3(0.0)
@@ -450,3 +505,500 @@ def gjk(
   result.simplex2 = simplex2
   result.simplex = simplex
   return result
+
+
+@wp.func
+def _sameSide(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3):
+    n = wp.cross(p1 - p0, p2 - p0)
+    dot1 = wp.dot(n, p3 - p0)
+    dot2 = wp.dot(n, -p0)
+    if dot1 > 0 and dot2 > 0: return 1
+    if dot1 < 0 and dot2 < 0: return 1
+    return 0
+
+
+@wp.func
+def _testTetra(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3):
+  return (_sameSide(p0, p1, p2, p3) 
+          and _sameSide(p1, p2, p3, p0)
+          and _sameSide(p2, p3, p0, p1)
+          and _sameSide(p3, p0, p1, p2))
+
+
+@wp.func
+def _triAffineCoord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3):
+  # compute minors as in S2D
+  M_14 = v2[1]*v3[2] - v2[2]*v3[1] - v1[1]*v3[2] + v1[2]*v3[1] + v1[1]*v2[2] - v1[2]*v2[1]
+  M_24 = v2[0]*v3[2] - v2[2]*v3[0] - v1[0]*v3[2] + v1[2]*v3[0] + v1[0]*v2[2] - v1[2]*v2[0]
+  M_34 = v2[0]*v3[1] - v2[1]*v3[0] - v1[0]*v3[1] + v1[1]*v3[0] + v1[0]*v2[1] - v1[1]*v2[0]
+
+  # exclude one of the axes with the largest projection of the simplex using the computed minors
+  M_max = 0.0
+  x = 0
+  y = 0
+
+  mu1 = wp.abs(M_14)
+  mu2 = wp.abs(M_24)
+  mu3 = wp.abs(M_34)
+
+  if mu1 >= mu2 and mu1 >= mu3:
+    M_max = M_14
+    x = 1
+    y = 2
+  elif mu2 >= mu3:
+    M_max = M_24
+    x = 0
+    y = 2
+  else:
+    M_max = M_34
+    x = 0
+    y = 1
+
+  # C31 corresponds to the signed area of 2-simplex: (v, s2, s3)
+  C31 = p[x]*v2[y] + p[y]*v3[x] + v2[x]*v3[y] - p[x]*v3[y] - p[y]*v2[x] - v3[x]*v2[y]
+
+  # C32 corresponds to the signed area of 2-simplex: (v, s1, s3)
+  C32 = p[x]*v3[y] + p[y]*v1[x] + v3[x]*v1[y] - p[x]*v1[y] - p[y]*v3[x] - v1[x]*v3[y]
+
+  # C33 corresponds to the signed area of 2-simplex: (v, s1, s2)
+  C33 = p[x]*v1[y] + p[y]*v2[x] + v1[x]*v2[y] - p[x]*v2[y] - p[y]*v1[x] - v2[x]*v1[y]
+
+  # compute affine coordinates
+  return wp.vec3(C31 / M_max, C32 / M_max, C33 / M_max)
+
+
+@wp.func
+def _triPointIntersect(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3):
+  coordinates = _triAffineCoord(v1, v2, v3, p)
+  l1 = coordinates[0]
+  l2 = coordinates[1]
+  l3 = coordinates[2]
+
+  if (l1 < 0 or l2 < 0 or l3 < 0):
+    return False
+
+  pr = wp.vec3()
+  pr[0] = v1[0]*l1 + v2[0]*l2 + v3[0]*l3
+  pr[1] = v1[1]*l1 + v2[1]*l2 + v3[1]*l3
+  pr[2] = v1[2]*l1 + v2[2]*l2 + v3[2]*l3
+  return wp.norm_l2(pr - p) < MJ_MINVAL
+
+
+@wp.func
+def _replaceSimplex3(pt: Polytope, v1: int, v2: int, v3: int):
+  # reset GJK simplex
+  simplex = mat43()
+  simplex[0] = pt.verts[v1]
+  simplex[1] = pt.verts[v2]
+  simplex[2] = pt.verts[v3]
+
+  simplex1 = mat43()
+  simplex1[0] = pt.verts1[v1]
+  simplex1[1] = pt.verts1[v2]
+  simplex1[2] = pt.verts1[v3]
+
+  simplex2 = mat43()
+  simplex2[0] = pt.verts2[v1]
+  simplex2[1] = pt.verts2[v2]
+  simplex2[2] = pt.verts2[v3]
+
+  return simplex, simplex1, simplex2
+
+
+@wp.func
+def _rotmat(axis: wp.vec3):
+  n = wp.norm_l2(axis)
+  u1 = axis[0] / n
+  u2 = axis[1] / n
+  u3 = axis[2] / n
+
+  sin = 0.86602540378  # sin(120 deg)
+  cos = -0.5           # cos(120 deg)
+  R = wp.mat33()
+  R[0, 0] = cos + u1*u1*(1. - cos)
+  R[0, 1] = u1*u2*(1. - cos) - u3*sin
+  R[0, 2] = u1*u3*(1. - cos) + u2*sin
+  R[1, 0] = u2*u1*(1. - cos) + u3*sin
+  R[1, 1] = cos + u2*u2*(1. - cos)
+  R[1, 2] = u2*u3*(1. - cos) - u1*sin
+  R[2, 0] = u1*u3*(1. - cos) - u2*sin
+  R[2, 1] = u2*u3*(1. - cos) + u1*sin
+  R[2, 2] = cos + u3*u3*(1. - cos)
+  return R
+
+
+@wp.func
+def _rayTriangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec3):
+  vol1 = _det3(v3 - v1, v4 - v1, v2 - v1)
+  vol2 = _det3(v4 - v1, v5 - v1, v2 - v1)
+  vol3 = _det3(v5 - v1, v3 - v1, v2 - v1)
+
+  if vol1 >= 0 and vol2 >= 0 and vol3 >= 0: return 1
+  if vol1 <= 0 and vol2 <= 0 and vol3 <= 0: return -1
+  return 0
+
+
+@wp.func
+def _addEdgeIfUnique(pt: Polytope, e1: int, e2: int):
+  for i in range(pt.nedges):
+    old_e1 = pt.edges[2 * i + 0]
+    old_e2 = pt.edges[2 * i + 1]
+    if (old_e1 == e1 and old_e2 == e2) or (old_e1 == e2 and old_e2 == e1):
+      pt.edges[2 * i + 0] = pt.edges[2 * pt.nedges + 0]
+      pt.edges[2 * i + 1] = pt.edges[2 * pt.nedges + 1]
+      return n
+
+  n = pt.nedges
+  pt.edges[2 * n + 0] = e1
+  pt.edges[2 * n + 1] = e2
+  return n + 1
+
+
+@wp.func
+def _deleteFace(pt: Polytope, face_id: int):
+  index = pt.face_index[face_id]
+  if index >= 0:
+    pt.map[index] = pt.map[pt.nmap - 1]
+    pt.face_index[pt.map[index]] = index
+    pt.nmap -= 1
+  pt.face_index[face_id] = -2;  # mark face as deleted from map and polytope
+  return pt.nmap
+
+
+@wp.func
+def _epa_witness(pt: Polytope, face_idx: int):
+  # compute affine coordinates for witness points on plane defined by face
+  v1 = pt.verts[pt.face_verts[3 * face_idx + 0]]
+  v2 = pt.verts[pt.face_verts[3 * face_idx + 1]]
+  v3 = pt.verts[pt.face_verts[3 * face_idx + 2]]
+  l1, l2, l3 = _triAffineCoord(v1, v2, v3, pt.face_v[3 * face_idx])
+
+  # face on geom 1
+  v1 = pt.verts1[pt.face_verts[3 * face_idx + 0]]
+  v2 = pt.verts1[pt.face_verts[3 * face_idx + 1]]
+  v3 = pt.verts1[pt.face_verts[3 * face_idx + 2]]
+  x1 = wp.vec3()
+  x1[0] = v1[0]*l1 + v2[0]*l2 + v3[0]*l3
+  x1[1] = v1[1]*l1 + v2[1]*l2 + v3[1]*l3
+  x1[2] = v1[2]*l1 + v2[2]*l2 + v3[2]*l3
+
+  # face on geom 2
+  v1 = pt.verts2[pt.face_verts[3 * face_idx + 0]]
+  v2 = pt.verts2[pt.face_verts[3 * face_idx + 1]]
+  v3 = pt.verts2[pt.face_verts[3 * face_idx + 2]]
+  x2 = wp.vec3()
+  x2[0] = v1[0]*l1 + v2[0]*l2 + v3[0]*l3
+  x2[1] = v1[1]*l1 + v2[1]*l2 + v3[1]*l3
+  x2[2] = v1[2]*l1 + v2[2]*l2 + v3[2]*l3
+
+  return x1, x2
+
+
+@wp.func
+def _polytope2(pt: Polytope,
+               dist: float,
+               simplex: mat43,
+               simplex1: mat43,
+               simplex2: mat43,
+               geom1: Geom, geom2: Geom, 
+               geomtype1: int,
+               geomtype2: int):
+  v1 = simplex[0]
+  v2 = simplex[1]
+  diff = v2 - v1
+
+  # find component with smallest magnitude (so cross product is largest)
+  value = FLOAT_MAX
+  index = 0
+  for i in range(3):
+    if wp.abs(diff[i]) < value:
+      value = wp.abs(diff[i])
+      index = i
+
+  # cross product with best coordinate axis
+  e = wp.vec(0., 0., 0.)
+  e[index] = 1.0
+  d1 = wp.cross(e, diff)
+
+  # rotate around the line segment to get three more points spaced 120 degrees apart
+  R = _rotmat(diff)
+  d2 = R @ d1
+  d3 = R @ d2
+
+  # save vertices and get indices for each one
+  pt.vert[0] = simplex[0]
+  pt.vert[1] = simplex[1]
+
+  pt.vert1[0] = simplex1[0]
+  pt.vert1[1] = simplex1[1]
+
+  pt.vert1[0] = simplex2[0]
+  pt.vert1[1] = simplex2[1]
+  
+  _epa_support(pt, 2, geom1, geom2, geomtype1, geomtype2, d1 / wp.norm_l2(d1))
+  _epa_support(pt, 3, geom1, geom2, geomtype1, geomtype2, d2 / wp.norm_l2(d2))
+  _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
+  pt.nvert = 5
+
+  v3 = pt.verts[2]
+  v4 = pt.verts[3]
+  v5 = pt.verts[4]
+
+  # build hexahedron
+  if _attach_face(pt, 0, 0, 2, 3) < MJ_MINVAL:
+    simplex, simplex1, simplex2 =_replaceSimplex3(pt, 0, 2, 3)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  if _attach_face(pt, 1, 0, 4, 2) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 0, 4, 2)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  if _attach_face(pt, 2, 0, 3, 4) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 0, 3, 4)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  if _attach_face(pt, 3, 1, 3, 2) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 1, 3, 2)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  if _attach_face(pt, 4, 1, 2, 4) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 1, 2, 4)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  if _attach_face(pt, 5, 1, 4, 3) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 1, 4, 3)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  # check hexahedron is convex
+  if not _rayTriangle(v1, v2, v3, v4, v5):
+    pt.status = 1
+    return pt
+  
+  for i in range(6):
+    pt.map[i] = i
+    pt.face_index[i] = i
+  pt.nmap = 6
+  pt.nface = 6
+  pt.status = 0
+
+  # valid hexahedron for EPA
+  return pt
+ 
+
+@wp.func
+def _polytope3(pt: Polytope,
+               dist: float,
+               simplex: mat43,
+               simplex1: mat43,
+               simplex2: mat43,
+               geom1: Geom,
+               geom2: Geom, 
+               geomtype1: int,
+               geomtype2: int):
+  # get normals in both directions
+  n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
+  if wp.norm_l2(n) < MJ_MINVAL:
+    pt.status = 2
+    return pt
+
+  pt.vert[0] = simplex[0]
+  pt.vert[1] = simplex[1]
+  pt.vert[2] = simplex[2]
+
+  pt.vert1[0] = simplex1[0]
+  pt.vert1[1] = simplex1[1]
+  pt.vert1[2] = simplex1[2]
+
+  pt.vert1[0] = simplex2[0]
+  pt.vert1[1] = simplex2[1]
+  pt.vert1[2] = simplex2[2]
+
+  _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, -n)
+  _epa_support(pt, 5, geom2, geom2, geomtype1, geomtype2, n)
+  pt.nvert = 5
+
+  v1 = simplex[0]
+  v2 = simplex[1]
+  v3 = simplex[2]
+  v4 = pt.verts[4]
+  v5 = pt.verts[3]
+
+  # check that v4 is not contained in the 2-simplex
+  if _triPointIntersect(v1, v2, v3, v4):
+    pt.status = 3
+    return pt
+
+  # check that v5 is not contained in the 2-simplex
+  if _triPointIntersect(v1, v2, v3, v5):
+    pt.status = 4
+    return pt
+
+  # if origin does not lie on simplex then we need to check that the hexahedron contains the
+  # origin
+  if (dist > 10.0 * MJ_MINVAL 
+      and not _testTetra(v1, v2, v3, v4)
+      and not _testTetra(v1, v2, v3, v5)):
+    pt.status = 5
+    return pt
+
+  # create hexahedron for EPA
+  if _attach_face(pt, 0, 4, 0, 1) < MJ_MINVAL2:
+    pt.status = 6
+    return pt
+  if _attach_face(pt, 1, 4, 2, 0) < MJ_MINVAL2:
+    pt.status = 7
+    return pt
+  if _attach_face(pt, 2, 4, 1, 2) < MJ_MINVAL2:
+    pt.status = 8
+    return pt
+  if _attach_face(pt, 3, 3, 1, 0) < MJ_MINVAL2:
+    pt.status = 9
+    return pt
+  if _attach_face(pt, 4, 3, 0, 2) < MJ_MINVAL2:
+    pt.status = 10
+    return pt
+  if _attach_face(pt, 5, 3, 2, 1) < MJ_MINVAL2:
+    pt.status = 11
+    return pt
+  
+  # populate face map
+  for i in range(6):
+    pt.map[i] = i
+    pt.face_index[i] = i
+  pt.nmap = 6
+  pt.nface = 6
+  pt.status = 0
+  return pt
+  
+
+@wp.func
+def _polytope4(pt: Polytope,
+               dist: float,
+               simplex: mat43,
+               simplex1: mat43,
+               simplex2: mat43,
+               geom1: Geom,
+               geom2: Geom,
+               geomtype1: int,
+               geomtype2: int):
+  pt.vert[0] = simplex[0]
+  pt.vert[1] = simplex[1]
+  pt.vert[2] = simplex[2]
+  pt.vert[3] = simplex[3]
+
+  pt.vert1[0] = simplex1[0]
+  pt.vert1[1] = simplex1[1]
+  pt.vert1[2] = simplex1[2]
+  pt.vert1[3] = simplex1[3]
+
+  pt.vert1[0] = simplex2[0]
+  pt.vert1[1] = simplex2[1]
+  pt.vert1[2] = simplex2[2]
+  pt.vert1[3] = simplex2[3]
+
+  # if the origin is on a face, replace the 3-simplex with a 2-simplex
+  if _attach_face(pt, 0, 0, 1, 2) < MJ_MINVAL2:
+    simplex, simplex1, simplex2, _replaceSimplex3(pt, 0, 1, 2)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+    
+  if _attach_face(pt, 1, 0, 3, 1) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 0, 3, 1)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+    
+  if _attach_face(pt, 2, 0, 2, 3) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 0, 2, 3)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+    
+  if _attach_face(pt, 3, 3, 2, 1) < MJ_MINVAL2:
+    simplex, simplex1, simplex2 = _replaceSimplex3(pt, 3, 2, 1)
+    return _polytope3(pt, dist, simplex, simplex1, simplex2, geom1, geom2, geomtype1, geomtype2)
+
+  if not _testTetra(pt.verts[0], pt.verts[1], pt.verts[2], pt.verts[3]):
+    pt.status = 12
+    return pt
+
+  # populate face map
+  for i in range(4):
+    pt.map[i] = i
+    pt.face_index[i] = i
+    pt.nmap = 4
+  pt.status = 0
+  pt.nface = 4
+  return pt
+
+
+@wp.func
+def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int):
+  upper = FLOAT_MAX
+  upper2 = FLOAT_MAX
+  idx = int(-1)
+  pidx = int(-1)
+
+  for k in range(epa_iterations):
+    pidx = int(idx)
+    idx = int(-1)
+
+    # find the face closest to the origin (lower bound for penetration depth)
+    lower2 = float(FLOAT_MAX)
+    for i in range(pt.nmap):
+      face_idx = pt.map[i]
+      if pt.face_dist2[face_idx] < lower2:
+        idx = int(face_idx)
+        lower2 = float(pt.face_dist2[face_idx])
+
+    # face not valid, return previous face
+    if lower2 > upper2 or idx < 0:
+      idx = pidx
+      break
+
+    # check if lower bound is 0
+    if lower2 <= 0:
+      break
+
+    # compute support point w from the closest face's normal
+    lower = wp.sqrt(lower2)
+    wi = _epa_support(pt, geom1, geom2, geomtype1, geomtype2, pt.face_v[idx] / lower)
+  
+    # upper bound for kth iteration
+    upper_k = wp.dot(pt.face_v[idx], pt.verts[wi]) / lower
+    if upper_k < upper:
+      upper = upper_k
+      upper2 = upper * upper
+
+    if upper - lower < tolerance2:
+      break
+
+    # compute horizon for w
+    for i in range(pt.nfaces):
+      if (pt.face_index[i] < -1):
+        continue
+
+      if wp.dot(pt.facev[i], pt.verts[wi]) - pt.face_dist2[i] > MJ_MINVAL:
+        _deleteFace(pt, i)
+        _addEdgeIfUnique(pt, pt.face_verts[3 * i + 0], pt.face_verts[3 * i + 1])
+        _addEdgeIfUnique(pt, pt.face_verts[3 * i + 1], pt.face_verts[3 * i + 2])
+        _addEdgeIfUnique(pt, pt.face_verts[3 * i + 2], pt.face_verts[3 * i + 0])
+
+    # insert w as new vertex and attach faces along the horizon
+    for i in range(pt.nedges):
+      dist2 = _attach_face(pt, wi, pt.edges[2 * i + 0], pt.edges[2 * i + 1])
+      if dist2 == 0:
+        idx = -1
+
+      # store face in map
+      if dist2 >= lower2 and dist2 <= upper2:
+        pt.map[pt.nmap] = pt.nfaces - 1
+        pt.face_index[pt.nfaces - 1] = pt.nmap
+        pt.nmap += 1
+    
+    # clear horizon
+    pt.nedges = 0  # clear horizon
+    # no face candidates left
+    if pt.nmap == 0 or idx == -1:
+      break
+  
+  if idx > -1:
+    x1, x2 = _epa_witness(pt, idx)
+    return -wp.sqrt(pt.face_dist2[idx]), x1, x2
+  return 0.0, wp.vec3(), wp.vec3()
+  
