@@ -897,12 +897,12 @@ def factor_m(m: Model, d: Data):
 @wp.kernel
 def _cacc_world(
   # In:
-  gravity: wp.vec3,
+  gravity: wp.array(dtype=wp.vec3),
   # Data out:
   cacc_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid = wp.tid()
-  cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity)
+  cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity[worldid])
 
 
 def _rne_cacc_world(m: Model, d: Data):

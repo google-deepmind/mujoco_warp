@@ -505,6 +505,7 @@ class Option:
     depth_extension: distance past which closest point is not calculated for convex geoms
     ls_parallel: evaluate engine solver step sizes in parallel
     wind: wind (for lift, drag, and viscosity)
+    has_wind: True if any wind component is greater than 0 at put_model time
     density: density of medium
     viscosity: viscosity of medium
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
@@ -514,8 +515,8 @@ class Option:
   impratio: float
   tolerance: float
   ls_tolerance: float
-  gravity: wp.vec3
-  magnetic: wp.vec3
+  gravity: wp.array(dtype=wp.vec3)
+  magnetic: wp.array(dtype=wp.vec3)
   integrator: int
   cone: int
   solver: int
@@ -529,7 +530,8 @@ class Option:
   epa_exact_neg_distance: bool  # warp only
   depth_extension: float  # warp only
   ls_parallel: bool
-  wind: wp.vec3
+  wind: wp.array(dtype=wp.vec3)
+  has_wind: bool
   density: float
   viscosity: float
   graph_conditional: bool  # warp only
