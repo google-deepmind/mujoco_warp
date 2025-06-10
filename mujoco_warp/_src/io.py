@@ -297,7 +297,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array = wp.array(mjm_array, dtype=dtype)
     array.strides = (0,) + array.strides
     if type(mjm_array) in wp.types.vector_types:
-      return array
+      return array  # array of vector type already has a leading dim
     array.ndim += 1
     array.shape = (1,) + array.shape
     return array
