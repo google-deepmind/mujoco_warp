@@ -204,7 +204,6 @@ def _gravity_force(
 def _box_fluid(
   # Model:
   opt_wind: wp.array(dtype=wp.vec3),
-  opt_has_wind: bool,
   opt_density: float,
   opt_viscosity: float,
   body_rootid: wp.array(dtype=int),
@@ -241,7 +240,7 @@ def _box_fluid(
   lvel_torque = rotT @ torque
   lvel_force = rotT @ force
 
-  if opt_has_wind:
+  if wind[0] or wind[1] or wind[2]:
     # subtract translational component from body velocity
     lvel_force -= rotT @ wind
 
@@ -301,7 +300,6 @@ def _fluid(m: Model, d: Data):
     dim=(d.nworld, m.nbody),
     inputs=[
       m.opt.wind,
-      m.opt.has_wind,
       m.opt.density,
       m.opt.viscosity,
       m.body_rootid,
