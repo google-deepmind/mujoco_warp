@@ -17,15 +17,15 @@ import os
 
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp._src.test_util import fixture
 
-# TODO(team): JAX test is temporary, remove after we land MJX:Warp
 
-
-class JAXTest(absltest.TestCase):
-  def test_jax(self):
+class JAXTest(parameterized.TestCase):
+  @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml")
+  def test_jax(self, xml):
     os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
     # Force JAX to allocate memory on demand and deallocate when not needed (slow)
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -38,59 +38,59 @@ class JAXTest(absltest.TestCase):
     from jax import numpy as jp
     from warp.jax_experimental.ffi import jax_callable
 
-    if jax.default_backend() == "gpu":
-      NWORLDS = 1
-      NCONTACTS = 16
-      UNROLL_LENGTH = 1
-
-      def warp_step(
-        qpos_in: wp.array(dtype=wp.float32, ndim=2),
-        qvel_in: wp.array(dtype=wp.float32, ndim=2),
-        qpos_out: wp.array(dtype=wp.float32, ndim=2),
-        qvel_out: wp.array(dtype=wp.float32, ndim=2),
-      ):
-        wp.copy(d.qpos, qpos_in)
-        wp.copy(d.qvel, qvel_in)
-        mjwarp.step(m, d)
-        wp.copy(qpos_out, d.qpos)
-        wp.copy(qvel_out, d.qvel)
-
-      def unroll(qpos, qvel):
-        def step(carry, _):
-          qpos, qvel = carry
-          qpos, qvel = warp_step_fn(qpos, qvel)
-          return (qpos, qvel), None
-
-        (qpos, qvel), _ = jax.lax.scan(step, (qpos, qvel), length=UNROLL_LENGTH)
-
-        return qpos, qvel
-
-      mjm, mjd, m, d = fixture(
-        "humanoid/humanoid.xml",
-        nworld=NWORLDS,
-        nconmax=NWORLDS * NCONTACTS,
-        njmax=NWORLDS * NCONTACTS * 4,
-        iterations=1,
-        ls_iterations=4,
-        kick=True,
-      )
-
-      # Disable CUDA graph conditional
-      m.opt.graph_conditional = False
-
-      warp_step_fn = jax_callable(
-        warp_step,
-        num_outputs=2,
-        output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
-      )
-
-      jax_qpos = jp.tile(jp.array(m.qpos0.numpy()), (NWORLDS, 1))
-      jax_qvel = jp.zeros((NWORLDS, m.nv))
-
-      jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
-      jax_unroll_fn(jax_qpos, jax_qvel)
-    else:
+    if jax.default_backend() != "gpu":
       self.skipTest("JAX default backend is not GPU")
+
+    NWORLDS = 2
+    NCONTACTS = 16
+    UNROLL_LENGTH = 1
+
+    mjm, _, m, d = fixture(
+      xml,
+      nworld=NWORLDS,
+      nconmax=NWORLDS * NCONTACTS,
+      njmax=NWORLDS * NCONTACTS * 4,
+      iterations=1,
+      ls_iterations=4,
+      kick=True,
+    )
+
+    # Disable CUDA graph conditional
+    m.opt.graph_conditional = False
+
+    def warp_step(
+      qpos_in: wp.array(dtype=wp.float32, ndim=2),
+      qvel_in: wp.array(dtype=wp.float32, ndim=2),
+      qpos_out: wp.array(dtype=wp.float32, ndim=2),
+      qvel_out: wp.array(dtype=wp.float32, ndim=2),
+    ):
+      wp.copy(d.qpos, qpos_in)
+      wp.copy(d.qvel, qvel_in)
+      mjwarp.step(m, d)
+      wp.copy(qpos_out, d.qpos)
+      wp.copy(qvel_out, d.qvel)
+
+    def unroll(qpos, qvel):
+      def step(carry, _):
+        qpos, qvel = carry
+        qpos, qvel = warp_step_fn(qpos, qvel)
+        return (qpos, qvel), None
+
+      (qpos, qvel), _ = jax.lax.scan(step, (qpos, qvel), length=UNROLL_LENGTH)
+
+      return qpos, qvel
+
+    warp_step_fn = jax_callable(
+      warp_step,
+      num_outputs=2,
+      output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
+    )
+
+    jax_qpos = jp.tile(jp.array(m.qpos0.numpy()), (NWORLDS, 1))
+    jax_qvel = jp.zeros((NWORLDS, m.nv))
+
+    jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
+    jax_unroll_fn(jax_qpos, jax_qvel)
 
 
 if __name__ == "__main__":
