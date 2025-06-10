@@ -716,14 +716,14 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     solver_niter=wp.zeros(nworld, dtype=int),
     ncon=wp.zeros(1, dtype=int),
     ncon_hfield=wp.zeros((nworld, _hfield_geom_pair(mjm)[0]), dtype=int),  # warp only
-    ne=wp.zeros(1, dtype=int),
-    ne_connect=wp.zeros(1, dtype=int),  # warp only
-    ne_weld=wp.zeros(1, dtype=int),  # warp only
-    ne_jnt=wp.zeros(1, dtype=int),  # warp only
-    ne_ten=wp.zeros(1, dtype=int),  # warp only
-    nf=wp.zeros(1, dtype=int),
-    nl=wp.zeros(1, dtype=int),
-    nefc=wp.zeros(1, dtype=int),
+    ne=wp.zeros(nworld, dtype=int),
+    ne_connect=wp.zeros(nworld, dtype=int),  # warp only
+    ne_weld=wp.zeros(nworld, dtype=int),  # warp only
+    ne_jnt=wp.zeros(nworld, dtype=int),  # warp only
+    ne_ten=wp.zeros(nworld, dtype=int),  # warp only
+    nf=wp.zeros(nworld, dtype=int),
+    nl=wp.zeros(nworld, dtype=int),
+    nefc=wp.zeros(nworld, dtype=int),
     nsolving=wp.zeros(1, dtype=int),  # warp only
     time=wp.zeros(nworld, dtype=float),
     energy=wp.zeros(nworld, dtype=wp.vec2),
@@ -805,18 +805,17 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       worldid=wp.zeros((nconmax,), dtype=int),
     ),
     efc=types.Constraint(
-      worldid=wp.zeros((njmax,), dtype=int),
       type=wp.zeros((njmax,), dtype=int),
       id=wp.zeros((njmax,), dtype=int),
-      J=wp.zeros((njmax, mjm.nv), dtype=float),
-      pos=wp.zeros((njmax,), dtype=float),
-      margin=wp.zeros((njmax,), dtype=float),
-      D=wp.zeros((njmax,), dtype=float),
-      vel=wp.zeros((njmax,), dtype=float),
-      aref=wp.zeros((njmax,), dtype=float),
-      frictionloss=wp.zeros((njmax,), dtype=float),
-      force=wp.zeros((njmax,), dtype=float),
-      Jaref=wp.zeros((njmax,), dtype=float),
+      J=wp.zeros((nworld, njmax, mjm.nv), dtype=float),
+      pos=wp.zeros((nworld, njmax,), dtype=float),
+      margin=wp.zeros((nworld, njmax,), dtype=float),
+      D=wp.zeros((nworld, njmax,), dtype=float),
+      vel=wp.zeros((nworld, njmax,), dtype=float),
+      aref=wp.zeros((nworld, njmax,), dtype=float),
+      frictionloss=wp.zeros((nworld, njmax,), dtype=float),
+      force=wp.zeros((nworld, njmax,), dtype=float),
+      Jaref=wp.zeros((nworld, njmax,), dtype=float),
       Ma=wp.zeros((nworld, mjm.nv), dtype=float),
       grad=wp.zeros((nworld, mjm.nv), dtype=float),
       cholesky_L_tmp=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
@@ -828,11 +827,11 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       gauss=wp.zeros((nworld,), dtype=float),
       cost=wp.zeros((nworld,), dtype=float),
       prev_cost=wp.zeros((nworld,), dtype=float),
-      active=wp.zeros((njmax,), dtype=bool),
+      active=wp.zeros((nworld, njmax,), dtype=bool),
       gtol=wp.zeros((nworld,), dtype=float),
       mv=wp.zeros((nworld, mjm.nv), dtype=float),
-      jv=wp.zeros((njmax,), dtype=float),
-      quad=wp.zeros((njmax,), dtype=wp.vec3f),
+      jv=wp.zeros((nworld, njmax,), dtype=float),
+      quad=wp.zeros((nworld, njmax,), dtype=wp.vec3f),
       quad_gauss=wp.zeros((nworld,), dtype=wp.vec3f),
       h=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
       alpha=wp.zeros((njmax,), dtype=float),
@@ -862,7 +861,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       uu=wp.zeros((nconmax,), dtype=float),
       uv=wp.zeros((nconmax,), dtype=float),
       vv=wp.zeros((nconmax,), dtype=float),
-      condim=wp.zeros((njmax,), dtype=int),
+      condim=wp.zeros((nworld, njmax,), dtype=int),
     ),
     # RK4
     qpos_t0=wp.zeros((nworld, mjm.nq), dtype=float),
@@ -950,8 +949,8 @@ def put_data(
   if nworld * mjd.ncon > nconmax:
     raise ValueError(f"nconmax overflow (nconmax must be >= {nworld * mjd.ncon})")
 
-  if nworld * mjd.nefc > njmax:
-    raise ValueError(f"njmax overflow (njmax must be >= {nworld * mjd.nefc})")
+  if mjd.nefc > njmax:
+    raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   # calculate some fields that cannot be easily computed inline:
   if mujoco.mj_isSparse(mjm):
@@ -999,7 +998,35 @@ def put_data(
         contact_efc_address[i * mjd.ncon + j, k] = mjd.nefc * i + mjd.contact.efc_address[j] + k
 
   contact_worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon))
-  efc_worldid = np.pad(np.repeat(np.arange(nworld), mjd.nefc), (0, njmax - nworld * mjd.nefc))
+
+  ne_connect = int(3 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active))
+  ne_weld = int(6 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active))
+  ne_jnt = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active))
+  ne_ten = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active))
+
+  efc_type_fill = np.zeros((nworld, njmax))
+  efc_id_fill = np.zeros((nworld, njmax))
+  efc_J_fill = np.zeros((nworld, njmax, mjm.nv))
+  efc_D_fill = np.zeros((nworld, njmax))
+  efc_vel_fill = np.zeros((nworld, njmax))
+  efc_pos_fill = np.zeros((nworld, njmax))
+  efc_aref_fill = np.zeros((nworld, njmax))
+  efc_frictionloss_fill = np.zeros((nworld, njmax))
+  efc_force_fill = np.zeros((nworld, njmax))
+  efc_margin_fill = np.zeros((nworld, njmax))
+
+  nefc = mjd.nefc
+  for i in range(nworld):
+    efc_type_fill[i, :nefc] = mjd.efc_type
+    efc_id_fill[i, :nefc] = mjd.efc_id
+    efc_J_fill[i, :nefc, :] = efc_J
+    efc_D_fill[i, :nefc] = mjd.efc_D
+    efc_vel_fill[i, :nefc] = mjd.efc_vel
+    efc_pos_fill[i, :nefc] = mjd.efc_pos
+    efc_aref_fill[i, :nefc] = mjd.efc_aref
+    efc_frictionloss_fill[i, :nefc] = mjd.efc_frictionloss
+    efc_force_fill[i, :nefc] = mjd.efc_force
+    efc_margin_fill[i, :nefc] = mjd.efc_margin
 
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
@@ -1035,14 +1062,14 @@ def put_data(
     solver_niter=tile(mjd.solver_niter[0]),
     ncon=arr([mjd.ncon * nworld]),
     ncon_hfield=wp.zeros((nworld, _hfield_geom_pair(mjm)[0]), dtype=int),  # warp only
-    ne=arr([mjd.ne * nworld]),
-    ne_connect=arr([3 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active, dtype=int)]),
-    ne_weld=arr([6 * nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active, dtype=int)]),
-    ne_jnt=arr([nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active, dtype=int)]),
-    ne_ten=arr([nworld * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active, dtype=int)]),
-    nf=arr([mjd.nf * nworld]),
-    nl=arr([mjd.nl * nworld]),
-    nefc=arr([mjd.nefc * nworld]),
+    ne=wp.full(shape=(nworld), value=mjd.ne),
+    ne_connect=wp.full(shape=(nworld), value=ne_connect),
+    ne_weld=wp.full(shape=(nworld), value=ne_weld),
+    ne_jnt=wp.full(shape=(nworld), value=ne_jnt),
+    ne_ten=wp.full(shape=(nworld), value=ne_ten),
+    nf=wp.full(shape=(nworld), value=mjd.nf),
+    nl=wp.full(shape=(nworld), value=mjd.nl),
+    nefc=wp.full(shape=(nworld), value=mjd.nefc),
     nsolving=arr([nworld]),
     time=arr(mjd.time * np.ones(nworld)),
     energy=tile(mjd.energy, dtype=wp.vec2),
@@ -1121,18 +1148,17 @@ def put_data(
       worldid=arr(contact_worldid),
     ),
     efc=types.Constraint(
-      worldid=arr(efc_worldid),
-      type=padtile(mjd.efc_type, njmax),
-      id=padtile(mjd.efc_id, njmax),
-      J=padtile(efc_J, njmax),
-      pos=padtile(mjd.efc_pos, njmax),
-      margin=padtile(mjd.efc_margin, njmax),
-      D=padtile(mjd.efc_D, njmax),
-      vel=padtile(mjd.efc_vel, njmax),
-      aref=padtile(mjd.efc_aref, njmax),
-      frictionloss=padtile(mjd.efc_frictionloss, njmax),
-      force=padtile(mjd.efc_force, njmax),
-      Jaref=wp.empty(shape=(njmax,), dtype=float),
+      type=wp.array(efc_type_fill, dtype=int, ndim=2),
+      id=wp.array(efc_id_fill, dtype=int, ndim=2),
+      J=wp.array(efc_J_fill, dtype=float, ndim=3),
+      pos=wp.array(efc_pos_fill, dtype=float, ndim=2),
+      margin=wp.array(efc_margin_fill, dtype=float, ndim=2),
+      D=wp.array(efc_D_fill, dtype=float, ndim=2),
+      vel=wp.array(efc_vel_fill, dtype=float, ndim=2),
+      aref=wp.array(efc_aref_fill, dtype=float, ndim=2),
+      frictionloss=wp.array(efc_frictionloss_fill, dtype=float, ndim=2),
+      force=wp.array(efc_force_fill, dtype=float, ndim=2),
+      Jaref=wp.empty(shape=(nworld, njmax), dtype=float),
       Ma=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       grad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       cholesky_L_tmp=wp.empty(shape=(nworld, mjm.nv, mjm.nv), dtype=float),
@@ -1144,11 +1170,11 @@ def put_data(
       gauss=wp.empty(shape=(nworld,), dtype=float),
       cost=wp.empty(shape=(nworld,), dtype=float),
       prev_cost=wp.empty(shape=(nworld,), dtype=float),
-      active=wp.empty(shape=(njmax,), dtype=bool),
+      active=wp.empty(shape=(nworld, njmax), dtype=bool),
       gtol=wp.empty(shape=(nworld,), dtype=float),
       mv=wp.empty(shape=(nworld, mjm.nv), dtype=float),
-      jv=wp.empty(shape=(njmax,), dtype=float),
-      quad=wp.empty(shape=(njmax,), dtype=wp.vec3f),
+      jv=wp.empty(shape=(nworld, njmax), dtype=float),
+      quad=wp.empty(shape=(nworld, njmax), dtype=wp.vec3f),
       quad_gauss=wp.empty(shape=(nworld,), dtype=wp.vec3f),
       h=wp.empty(shape=(nworld, mjm.nv, mjm.nv), dtype=float),
       alpha=wp.empty(shape=(nworld,), dtype=float),
@@ -1177,7 +1203,7 @@ def put_data(
       uu=wp.empty((nconmax,), dtype=float),
       uv=wp.empty((nconmax,), dtype=float),
       vv=wp.empty((nconmax,), dtype=float),
-      condim=wp.empty((njmax,), dtype=int),
+      condim=wp.empty((nworld, njmax), dtype=int),
     ),
     # TODO(team): skip allocation if integrator != RK4
     qpos_t0=wp.empty((nworld, mjm.nq), dtype=float),

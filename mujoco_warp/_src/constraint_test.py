@@ -89,11 +89,11 @@ class ConstraintTest(parameterized.TestCase):
 
     mjwarp.make_constraint(m, d)
 
-    _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-    _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-    _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-    _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-    _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+    _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
+    _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
+    _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
+    _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
 
   @parameterized.parameters(
     mujoco.mjtCone.mjCONE_PYRAMIDAL,
@@ -123,13 +123,13 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-      _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-      _assert_eq(d.efc.vel.numpy()[: mjd.nefc], mjd.efc_vel, "efc_vel")
-      _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-      _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-      _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
-      _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
+      _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+      _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
+      _assert_eq(d.efc.vel.numpy()[0, : mjd.nefc], mjd.efc_vel, "efc_vel")
+      _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
+      _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
+      _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.efc.type.numpy()[0, : mjd.nefc], mjd.efc_type, "efc_type")
 
   def test_limit_tendon(self):
     """Test limit tendon constraints."""
@@ -143,13 +143,13 @@ class ConstraintTest(parameterized.TestCase):
 
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-      _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-      _assert_eq(d.efc.vel.numpy()[: mjd.nefc], mjd.efc_vel, "efc_vel")
-      _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-      _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-      _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
-      _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
+      _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+      _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
+      _assert_eq(d.efc.vel.numpy()[0, : mjd.nefc], mjd.efc_vel, "efc_vel")
+      _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
+      _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
+      _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.efc.type.numpy()[0, : mjd.nefc], mjd.efc_type, "efc_type")
 
   def test_equality_tendon(self):
     """Test equality tendon constraints."""
@@ -200,13 +200,13 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
-    _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-    _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-    _assert_eq(d.efc.vel.numpy()[: mjd.nefc], mjd.efc_vel, "efc_vel")
-    _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-    _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-    _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
-    _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
+    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+    _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
+    _assert_eq(d.efc.vel.numpy()[0, : mjd.nefc], mjd.efc_vel, "efc_vel")
+    _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
+    _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
+    _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_eq(d.efc.type.numpy()[0, : mjd.nefc], mjd.efc_type, "efc_type")
 
 
 if __name__ == "__main__":
