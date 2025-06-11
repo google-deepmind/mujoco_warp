@@ -2636,11 +2636,34 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
     outputs=[d.solver_niter, d.efc.search_dot, d.efc.cost, d.efc.done],
   )
 
+  @wp.kernel
+  def solve_init_jaref(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    qacc_in: wp.array2d(dtype=float),
+    efc_worldid_in: wp.array(dtype=int),
+    efc_J_in: wp.array2d(dtype=float),
+    efc_aref_in: wp.array(dtype=float),
+    # Data out:
+    efc_Jaref_out: wp.array(dtype=float),
+  ):
+    efcid = wp.tid()
+
+    if efcid >= nefc_in[0]:
+      return
+  
+    worldid = efc_worldid_in[efcid]
+    jaref = float(0.0)
+    for i in range(wp.static(m.nv)):
+      jaref += efc_J_in[efcid, i] * qacc_in[worldid, i]
+
+    efc_Jaref_out[efcid] = jaref - efc_aref_in[efcid]
+
   # jaref = d.efc_J @ d.qacc - d.efc_aref
   wp.launch(
     solve_init_jaref,
     dim=(d.njmax),
-    inputs=[m.nv, d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
+    inputs=[d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
     outputs=[d.efc.Jaref],
   )
 
