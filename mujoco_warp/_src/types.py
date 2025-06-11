@@ -39,7 +39,6 @@ class BlockDim:
   box_box: int = 32
   # forward
   euler_dense: int = 32
-  implicit_actuator_qderiv: wp.vec2i = wp.vec2i(64, 256)
   actuator_velocity_sparse: int = 32
   actuator_velocity_dense: int = 32
   tendon_velocity: int = 32
