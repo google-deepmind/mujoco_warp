@@ -25,6 +25,7 @@ from .types import Model
 
 MAX_ITERATIONS = 10
 
+
 # TODO(kbayes): Use sensors when available instead of calling GJK directly
 def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
   @wp.kernel
