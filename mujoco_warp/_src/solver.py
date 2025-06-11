@@ -1424,7 +1424,7 @@ def solve_init_jaref(
   for i in range(nv):
     jaref += efc_J_in[efcid, i] * qacc_in[worldid, i]
 
-  efc_Jaref_out[efcid] = jaref - efc_aref_in[efcid] / float(nv)
+  efc_Jaref_out[efcid] = jaref - efc_aref_in[efcid]
 
 
 @wp.kernel
@@ -2637,7 +2637,6 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
-  d.efc.Jaref.zero_()
   wp.launch(
     solve_init_jaref,
     dim=(d.njmax),
