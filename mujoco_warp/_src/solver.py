@@ -1132,19 +1132,25 @@ def linesearch_init_quad_gauss(
   efc_gauss_in: wp.array(dtype=float),
   efc_mv_in: wp.array2d(dtype=float),
   efc_done_in: wp.array(dtype=bool),
+  # In:
+  nv_inverse: float,
   # Data out:
   efc_quad_gauss_out: wp.array(dtype=wp.vec3),
 ):
-  worldid, dofid = wp.tid()
+  worldid = wp.tid()
   if efc_done_in[worldid]:
     return
 
-  search = efc_search_in[worldid, dofid]
-  quad_gauss = wp.vec3()
-  quad_gauss[0] = efc_gauss_in[worldid] / float(nv)
-  quad_gauss[1] = search * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
-  quad_gauss[2] = 0.5 * search * efc_mv_in[worldid, dofid]
-  wp.atomic_add(efc_quad_gauss_out, worldid, quad_gauss)
+  quad_gauss_0 = float(0.0)
+  quad_gauss_1 = float(0.0)
+  quad_gauss_2 = float(0.0)
+  for i in range(nv):
+    search = efc_search_in[worldid, i]
+    quad_gauss_0 += efc_gauss_in[worldid] * nv_inverse
+    quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
+    quad_gauss_2 += 0.5 * search * efc_mv_in[worldid, i]
+ 
+  efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
 
 
 @wp.kernel
@@ -1315,16 +1321,9 @@ def _linesearch(m: types.Model, d: types.Data):
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   # TOOD(team): is zero_() better here?
   wp.launch(
-    linesearch_zero_quad_gauss,
-    dim=(d.nworld),
-    inputs=[d.efc.done],
-    outputs=[d.efc.quad_gauss],
-  )
-
-  wp.launch(
     linesearch_init_quad_gauss,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
+    dim=(d.nworld),
+    inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done, 1 / float(m.nv)],
     outputs=[d.efc.quad_gauss],
   )
 
