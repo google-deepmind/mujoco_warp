@@ -1414,14 +1414,17 @@ def solve_init_jaref(
   # Data out:
   efc_Jaref_out: wp.array(dtype=float),
 ):
-  efcid, dofid = wp.tid()
+  efcid = wp.tid()
 
   if efcid >= nefc_in[0]:
     return
-
+  
   worldid = efc_worldid_in[efcid]
-  jaref = efc_J_in[efcid, dofid] * qacc_in[worldid, dofid] - efc_aref_in[efcid] / float(nv)
-  wp.atomic_add(efc_Jaref_out, efcid, jaref)
+  jaref = float(0.0)
+  for i in range(nv):
+    jaref += efc_J_in[efcid, i] * qacc_in[worldid, i]
+
+  efc_Jaref_out[efcid] = jaref - efc_aref_in[efcid] / float(nv)
 
 
 @wp.kernel
@@ -2637,7 +2640,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   d.efc.Jaref.zero_()
   wp.launch(
     solve_init_jaref,
-    dim=(d.njmax, m.nv),
+    dim=(d.njmax),
     inputs=[m.nv, d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
     outputs=[d.efc.Jaref],
   )
