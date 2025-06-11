@@ -1315,6 +1315,7 @@ class Data:
     ximat: Cartesian orientation of body inertia                (nworld, nbody, 3, 3)
     xanchor: Cartesian position of joint anchor                 (nworld, njnt, 3)
     xaxis: Cartesian joint axis                                 (nworld, njnt, 3)
+    geom_sameframe: Indicate whether to compute geom pose       (ngeom,)
     geom_xpos: Cartesian geom position                          (nworld, ngeom, 3)
     geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
