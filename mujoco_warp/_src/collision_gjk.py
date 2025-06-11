@@ -66,6 +66,9 @@ class Polytope:
   edges: wp.array(dtype=int)
 
 
+# kernel_analyzer: off
+
+
 @wp.func
 def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int):
   # compute witness point v
@@ -1078,3 +1081,6 @@ def ccd(
       return _epa(tolerance * tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
 
   return result.dist, result.x1, result.x2
+
+
+# kernel_analyzer: on
