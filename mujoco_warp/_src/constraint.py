@@ -498,7 +498,7 @@ def _efc_friction_dof(
 
   if efcid >= njmax_in:
     return
-  
+
   for i in range(nv):
     efc_J_out[efcid, i] = 0.0
 
@@ -855,7 +855,6 @@ def _efc_limit_slide_hinge(
     for i in range(nv):
       efc_J_out[efcid, i] = 0.0
 
-
     efc_worldid_out[efcid] = worldid
 
     dofadr = jnt_dofadr[jntid]
@@ -943,7 +942,7 @@ def _efc_limit_ball(
 
     if efcid >= njmax_in:
       return
-    
+
     for i in range(nv):
       efc_J_out[efcid, i] = 0.0
 
@@ -1453,7 +1452,6 @@ def make_constraint(m: types.Model, d: types.Data):
   d.nl.zero_()
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
-
     refsafe = m.opt.disableflags & types.DisableBit.REFSAFE
 
     if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):

@@ -243,7 +243,7 @@ class SolverTest(parameterized.TestCase):
         ineq_J0,
         ineq_J1,
         ineq_J2,  # All inequality constraints
-        np.zeros((nefc_fill, mjm.nv)),  # Padding
+        np.full((nefc_fill, mjm.nv), np.nan),  # Padding
       ]
     )
 

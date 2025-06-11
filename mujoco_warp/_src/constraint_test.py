@@ -17,6 +17,7 @@
 
 import mujoco
 import numpy as np
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
@@ -79,13 +80,15 @@ class ConstraintTest(parameterized.TestCase):
     _, mjd, m, d = test_util.fixture(xml=xml, cone=cone)
 
     for arr in (
-      d.efc.J,
       d.efc.D,
       d.efc.aref,
       d.efc.pos,
       d.efc.margin,
     ):
       arr.zero_()
+
+    # fill with nan to check whether we are not reading uninitialized values
+    d.efc.J.fill_(wp.nan)
 
     mjwarp.make_constraint(m, d)
 
@@ -105,7 +108,6 @@ class ConstraintTest(parameterized.TestCase):
       mjm, mjd, m, d = test_util.fixture("constraints.xml", sparse=False, cone=cone, keyframe=key)
 
       for arr in (
-        d.efc.J,
         d.efc.D,
         d.efc.aref,
         d.efc.pos,
@@ -116,6 +118,8 @@ class ConstraintTest(parameterized.TestCase):
         d.nl,
       ):
         arr.zero_()
+
+      d.efc.J.fill_(wp.nan)
 
       mjwarp.make_constraint(m, d)
 
