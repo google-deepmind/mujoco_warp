@@ -848,7 +848,7 @@ def _polytope3(
 
   # if origin does not lie on simplex then we need to check that the hexahedron contains the
   # origin
-  if dist > 10.0 * MJ_MINVAL and not _test_tetra(v1, v2, v3, v4) and not _test_tetra(v1, v2, v3, v5):
+  if dist > 1e-7 and not _test_tetra(v1, v2, v3, v4) and not _test_tetra(v1, v2, v3, v5):
     pt.status = 5
     return pt
 
