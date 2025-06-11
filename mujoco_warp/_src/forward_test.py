@@ -88,8 +88,32 @@ class ForwardTest(parameterized.TestCase):
 
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-    # TODO(team): test DisableBit.CLAMPCTRL
     # TODO(team): test actearly
+
+  @parameterized.parameters(True, False)
+  def test_clampctrl(self, clampctrl):
+    _, mjd, _, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide"/>
+          <geom type="sphere" size=".1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="joint" ctrlrange="-1 1"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="2"/>
+      </keyframe>
+    </mujoco>
+    """,
+      clampctrl=clampctrl,
+      keyframe=0,
+    )
+
+    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
 
   def test_fwd_acceleration(self):
     _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)

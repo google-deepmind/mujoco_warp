@@ -897,12 +897,12 @@ def factor_m(m: Model, d: Data):
 @wp.kernel
 def _cacc_world(
   # In:
-  gravity: wp.vec3,
+  gravity: wp.array(dtype=wp.vec3),
   # Data out:
   cacc_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid = wp.tid()
-  cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity)
+  cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity[worldid])
 
 
 def _rne_cacc_world(m: Model, d: Data):
@@ -1419,6 +1419,7 @@ def _transmission(
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
   actuator_gear: wp.array2d(dtype=wp.spatial_vector),
+  actuator_cranklength: wp.array(dtype=float),
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
@@ -1483,6 +1484,79 @@ def _transmission(
       actuator_moment_out[worldid, actid, vadr] = gear[0]
     else:
       wp.printf("unrecognized joint type")
+  elif trntype == wp.static(TrnType.SLIDERCRANK.value):
+    # get data
+    trnid = actuator_trnid[actid]
+    id = trnid[0]
+    idslider = trnid[1]
+    gear0 = gear[0]
+    rod = actuator_cranklength[actid]
+    site_xmat = site_xmat_in[worldid, idslider]
+    axis = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+    site_xpos_id = site_xpos_in[worldid, id]
+    site_xpos_idslider = site_xpos_in[worldid, idslider]
+    vec = site_xpos_id - site_xpos_idslider
+
+    # compute length and determinant
+    #  length = a' * v - sqrt(det);  det = (a' * v)^2 + r^2 - v' * v
+    av = wp.dot(vec, axis)
+    det = av * av + rod * rod - wp.dot(vec, vec)
+    ok = 1
+    if det <= 0.0:
+      ok = 0
+      sdet = 0.0
+      length = av
+    else:
+      sdet = wp.sqrt(det)
+      length = av - sdet
+
+    actuator_length_out[worldid, actid] = length * gear0
+
+    # compute derivatives of length w.r.t. vec and axis
+    if ok == 1:
+      scale = 1.0 - av / sdet
+      dldv = axis * scale + vec / sdet
+      dlda = vec * scale
+    else:
+      dldv = axis
+      dlda = vec
+
+    # apply chain rule
+    # TODO(team): parallelize?
+    for i in range(nv):
+      # get Jacobians of axis(jacA) and vec(jac)
+      # mj_jacPointAxis
+      jacp, jacr = support.jac(
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        subtree_com_in,
+        cdof_in,
+        site_xpos_idslider,
+        site_bodyid[idslider],
+        i,
+        worldid,
+      )
+      jacS = jacp
+      jacA = wp.cross(jacr, axis)
+
+      # mj_jacSite
+      jac, _ = support.jac(
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        subtree_com_in,
+        cdof_in,
+        site_xpos_id,
+        site_bodyid[id],
+        i,
+        worldid,
+      )
+      jac -= jacS
+
+      # apply the chain rule
+      moment = wp.dot(dlda, jacA) + wp.dot(dldv, jac)
+      actuator_moment_out[worldid, actid, i] = moment * gear0
   elif trntype == wp.static(TrnType.TENDON.value):
     tenid = actuator_trnid[actid][0]
 
@@ -1669,6 +1743,7 @@ def transmission(m: Model, d: Data):
       m.actuator_trntype,
       m.actuator_trnid,
       m.actuator_gear,
+      m.actuator_cranklength,
       m.tendon_adr,
       m.tendon_num,
       m.wrap_objid,

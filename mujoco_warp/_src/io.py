@@ -175,6 +175,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       while bid > 0:
         bodyid.append(bid)
         bid = mjm.body_parentid[bid]
+    elif trntype == mujoco.mjtTrn.mjTRN_SLIDERCRANK:
+      for i in range(mjm.nv):
+        bodyid.append(mjm.dof_bodyid[i])
     else:
       raise NotImplementedError(f"Transmission type {trntype} not implemented.")
   tree = mjm.body_treeid[np.array(bodyid, dtype=int)]
@@ -295,9 +298,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   def create_nmodel_batched_array(mjm_array, dtype):
     array = wp.array(mjm_array, dtype=dtype)
+    array.strides = (0,) + array.strides
+    if type(mjm_array) in wp.types.vector_types:
+      return array  # array of vector type already has a leading dim
     array.ndim += 1
     array.shape = (1,) + array.shape
-    array.strides = (0,) + array.strides
     return array
 
   # rangefinder
@@ -341,9 +346,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       timestep=mjm.opt.timestep,
       tolerance=mjm.opt.tolerance,
       ls_tolerance=mjm.opt.ls_tolerance,
-      gravity=wp.vec3(mjm.opt.gravity),
-      magnetic=wp.vec3(mjm.opt.magnetic),
-      wind=wp.vec3(mjm.opt.wind[0], mjm.opt.wind[1], mjm.opt.wind[2]),
+      gravity=create_nmodel_batched_array(wp.vec3(mjm.opt.gravity), dtype=wp.vec3),
+      magnetic=create_nmodel_batched_array(wp.vec3(mjm.opt.magnetic), dtype=wp.vec3),
+      wind=create_nmodel_batched_array(wp.vec3(mjm.opt.wind), dtype=wp.vec3),
+      has_fluid=mjm.opt.wind.any() or mjm.opt.density or mjm.opt.viscosity,
       density=mjm.opt.density,
       viscosity=mjm.opt.viscosity,
       cone=mjm.opt.cone,
@@ -546,6 +552,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_forcerange=create_nmodel_batched_array(mjm.actuator_forcerange, dtype=wp.vec2),
     actuator_actrange=create_nmodel_batched_array(mjm.actuator_actrange, dtype=wp.vec2),
     actuator_gear=create_nmodel_batched_array(mjm.actuator_gear, dtype=wp.spatial_vector),
+    actuator_cranklength=wp.array(mjm.actuator_cranklength, dtype=float),
     actuator_acc0=wp.array(mjm.actuator_acc0, dtype=float),
     actuator_lengthrange=wp.array(mjm.actuator_lengthrange, dtype=wp.vec2),
     exclude_signature=wp.array(mjm.exclude_signature, dtype=int),
@@ -643,6 +650,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH)
           | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITFRC)
           | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
+          | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONACTFRC)
         )
       )[0],
       dtype=int,
@@ -661,6 +669,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ),
     sensor_e_potential=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_POTENTIAL).any(),
     sensor_e_kinetic=(mjm.sensor_type == mujoco.mjtSensor.mjSENS_E_KINETIC).any(),
+    sensor_tendonactfrc_adr=wp.array(
+      np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONACTFRC)[0],
+      dtype=int,
+    ),
     sensor_subtree_vel=np.isin(
       mjm.sensor_type,
       [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],

@@ -70,7 +70,7 @@ The following features are implemented:
 |                   | `SUBTREECOM`, `E_POTENTIAL`, `E_KINETIC`, `CLOCK`, `VELOCIMETER`, `GYRO`, `JOINTVEL`, `TENDONVEL`,       |
 |                   | `ACTUATORVEL`, `BALLANGVEL`, `JOINTLIMITVEL`, `TENDONLIMITVEL`, `FRAMELINVEL`, `FRAMEANGVEL`,            |
 |                   | `SUBTREELINVEL`, `SUBTREEANGMOM`,`TOUCH`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`,             |
-|                   | `JOINTACTFRC`, `JOINTLIMITFRC`, `TENDONLIMITFRC`, `FRAMELINACC`, `FRAMEANGACC`                           |
+|                   | `TENDONACTFRC`, `JOINTACTFRC`, `JOINTLIMITFRC`, `TENDONLIMITFRC`, `FRAMELINACC`, `FRAMEANGACC`           |
 
 # Benchmarking
 

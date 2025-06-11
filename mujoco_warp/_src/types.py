@@ -143,15 +143,17 @@ class TrnType(enum.IntEnum):
   Members:
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
+    SLIDERCRANK: force via slider-crank linkage
     TENDON: force on tendon
     SITE: force on site
   """
 
   JOINT = mujoco.mjtTrn.mjTRN_JOINT
   JOINTINPARENT = mujoco.mjtTrn.mjTRN_JOINTINPARENT
+  SLIDERCRANK = mujoco.mjtTrn.mjTRN_SLIDERCRANK
   TENDON = mujoco.mjtTrn.mjTRN_TENDON
   SITE = mujoco.mjtTrn.mjTRN_SITE
-  # unsupported: SLIDERCRANK, BODY
+  # unsupported: BODY
 
 
 class DynType(enum.IntEnum):
@@ -352,7 +354,8 @@ class SensorType(enum.IntEnum):
     ACCELEROMETER: accelerometer
     FORCE: force
     TORQUE: torque
-    ACTUATORFRC: scalar actuator force
+    ACTUATORFRC: scalar actuator force, measured at the joint
+    TENDONACTFRC: scalar actuator force, measured at the tendon
     JOINTACTFRC: scalar actuator force, measured at the joint
     JOINTLIMITFRC: joint limit force
     TENDONLIMITFRC: tendon limit force
@@ -395,6 +398,7 @@ class SensorType(enum.IntEnum):
   FORCE = mujoco.mjtSensor.mjSENS_FORCE
   TORQUE = mujoco.mjtSensor.mjSENS_TORQUE
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
+  TENDONACTFRC = mujoco.mjtSensor.mjSENS_TENDONACTFRC
   JOINTACTFRC = mujoco.mjtSensor.mjSENS_JOINTACTFRC
   JOINTLIMITFRC = mujoco.mjtSensor.mjSENS_JOINTLIMITFRC
   TENDONLIMITFRC = mujoco.mjtSensor.mjSENS_TENDONLIMITFRC
@@ -503,6 +507,7 @@ class Option:
     depth_extension: distance past which closest point is not calculated for convex geoms
     ls_parallel: evaluate engine solver step sizes in parallel
     wind: wind (for lift, drag, and viscosity)
+    has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     density: density of medium
     viscosity: viscosity of medium
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
@@ -512,8 +517,8 @@ class Option:
   impratio: float
   tolerance: float
   ls_tolerance: float
-  gravity: wp.vec3
-  magnetic: wp.vec3
+  gravity: wp.array(dtype=wp.vec3)
+  magnetic: wp.array(dtype=wp.vec3)
   integrator: int
   cone: int
   solver: int
@@ -527,7 +532,8 @@ class Option:
   epa_exact_neg_distance: bool  # warp only
   depth_extension: float  # warp only
   ls_parallel: bool
-  wind: wp.vec3
+  wind: wp.array(dtype=wp.vec3)
+  has_fluid: bool
   density: float
   viscosity: float
   graph_conditional: bool  # warp only
@@ -872,6 +878,7 @@ class Model:
     actuator_forcerange: range of forces                     (nworld, nu, 2)
     actuator_actrange: range of activations                  (nworld, nu, 2)
     actuator_gear: scale length and transmitted force        (nworld, nu, 6)
+    actuator_cranklength: crank length for slider-crank      (nu,)
     actuator_acc0: acceleration from unit force in qpos0     (nu,)
     actuator_lengthrange: feasible actuator length range     (nu, 2)
     nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
@@ -941,6 +948,7 @@ class Model:
     sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
     sensor_e_potential: evaluate energy_pos
     sensor_e_kinetic: evaluate energy_vel
+    sensor_tendonactfrc_adr: address for tendonactfrc sensor (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
@@ -1154,6 +1162,7 @@ class Model:
   actuator_forcerange: wp.array2d(dtype=wp.vec2)
   actuator_actrange: wp.array2d(dtype=wp.vec2)
   actuator_gear: wp.array2d(dtype=wp.spatial_vector)
+  actuator_cranklength: wp.array(dtype=float)
   actuator_acc0: wp.array(dtype=float)
   actuator_lengthrange: wp.array(dtype=wp.vec2)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
@@ -1220,6 +1229,7 @@ class Model:
   sensor_limitfrc_adr: wp.array(dtype=int)  # warp only
   sensor_e_potential: bool  # warp only
   sensor_e_kinetic: bool  # warp only
+  sensor_tendonactfrc_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only

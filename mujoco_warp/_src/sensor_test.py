@@ -119,15 +119,24 @@ class SensorTest(parameterized.TestCase):
             <geom type="sphere" size=".1"/>
             <site name="sitetendon1"/>
           </body>
+          <body pos="3 3 3">
+            <joint name="tendonjoint" type="hinge"/>
+            <geom type="sphere" size=".1"/>
+          </body>
         </worldbody>
         <tendon>
           <spatial name="limittendon" limited="true" range="0 .5" margin=".1">
             <site site="sitetendon0"/>
             <site site="sitetendon1"/>
           </spatial>
+          <fixed name="tendon">
+            <joint joint="tendonjoint" coef=".123"/>
+          </fixed>
         </tendon>
         <actuator>
           <motor name="slide" joint="slide"/>
+          <motor tendon="tendon"/>
+          <motor tendon="tendon" gear="2"/>
         </actuator>
         <sensor>
           <magnetometer site="site0"/>
@@ -256,6 +265,8 @@ class SensorTest(parameterized.TestCase):
           <jointlimitfrc joint="limitball" cutoff=".001"/>
           <tendonlimitfrc tendon="limittendon"/>
           <tendonlimitfrc tendon="limittendon" cutoff=".001"/>
+          <tendonactuatorfrc tendon="tendon"/>
+          <tendonactuatorfrc tendon="tendon" cutoff=".001"/>
           <framelinacc objtype="body" objname="body9"/>
           <framelinacc objtype="body" objname="body9" cutoff=".001"/>
           <frameangacc objtype="body" objname="body9"/>
@@ -270,7 +281,7 @@ class SensorTest(parameterized.TestCase):
           <frameangacc objtype="camera" objname="cam0"/>
         </sensor>
         <keyframe>
-          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1 .6 .5 1 2 3 4 .5" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2 0 0 0 0 0 0" ctrl="3"/>
+          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1 .6 .5 1 2 3 4 .5 0" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2 0 0 0 0 0 0 0" ctrl="3 .1 .2"/>
         </keyframe>
       </mujoco>
     """,
