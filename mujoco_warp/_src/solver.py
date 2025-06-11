@@ -2640,7 +2640,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   wp.launch(
     solve_init_jaref,
     dim=(d.njmax),
-    inputs=[d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
+    inputs=[m.nv, d.nefc, d.qacc, d.efc.worldid, d.efc.J, d.efc.aref],
     outputs=[d.efc.Jaref],
   )
 
