@@ -22,6 +22,8 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 from mujoco_warp._src.test_util import fixture
 
+# TODO(team): JAX test is temporary, remove after we land MJX:Warp
+
 
 class JAXTest(parameterized.TestCase):
   @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml")
@@ -84,6 +86,7 @@ class JAXTest(parameterized.TestCase):
       warp_step,
       num_outputs=2,
       output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
+      graph_compatible=True,
     )
 
     jax_qpos = jp.tile(jp.array(m.qpos0.numpy()), (NWORLDS, 1))
