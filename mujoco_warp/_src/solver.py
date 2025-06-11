@@ -1418,7 +1418,7 @@ def solve_init_jaref(
 
   if efcid >= nefc_in[0]:
     return
-  
+
   worldid = efc_worldid_in[efcid]
   jaref = float(0.0)
   for i in range(nv):
