@@ -103,7 +103,7 @@ def _eval_pt_elliptic(
 
 
 @wp.kernel
-def linesearch_iterative_gtol(
+def linesearch_iterative_init_gtol_p0_gauss(
   # Model:
   nv: int,
   opt_tolerance: float,
@@ -111,9 +111,11 @@ def linesearch_iterative_gtol(
   stat_meaninertia: float,
   # Data in:
   efc_search_dot_in: wp.array(dtype=float),
+  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_gtol_out: wp.array(dtype=float),
+  efc_p0_out: wp.array(dtype=wp.vec3),
 ):
   worldid = wp.tid()
 
@@ -123,20 +125,6 @@ def linesearch_iterative_gtol(
   snorm = wp.math.sqrt(efc_search_dot_in[worldid])
   scale = stat_meaninertia * wp.float(wp.max(1, nv))
   efc_gtol_out[worldid] = opt_tolerance * opt_ls_tolerance * snorm * scale
-
-
-@wp.kernel
-def linesearch_iterative_init_p0_gauss(
-  # Data in:
-  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_p0_out: wp.array(dtype=wp.vec3),
-):
-  worldid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
 
   quad = efc_quad_gauss_in[worldid]
   efc_p0_out[worldid] = wp.vec3(quad[0], quad[1], 2.0 * quad[2])
@@ -747,22 +735,13 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
   d.efc.ls_done.zero_()
 
   wp.launch(
-    linesearch_iterative_gtol,
+    linesearch_iterative_init_gtol_p0_gauss,
     dim=(d.nworld,),
     inputs=[
       m.nv, m.opt.tolerance, m.opt.ls_tolerance, m.stat.meaninertia, d.efc.search_dot,
-      d.efc.done
+      d.efc.quad_gauss, d.efc.done
     ],
-    outputs=[d.efc.gtol])  # fmt: skip
-
-  wp.launch(
-    linesearch_iterative_init_p0_gauss,
-    dim=(d.nworld,),
-    inputs=[
-      d.efc.quad_gauss,
-      d.efc.done
-    ],
-    outputs=[d.efc.p0])  # fmt: skip
+    outputs=[d.efc.gtol, d.efc.p0])  # fmt: skip
 
   if m.opt.cone == types.ConeType.ELLIPTIC:
     wp.launch(
