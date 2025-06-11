@@ -301,7 +301,54 @@ def _ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec
   return sol
 
 
-# TODO(team): ray intersection with cylinder
+@wp.func
+def _ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+  """Returns the distance at which a ray intersects with a cylinder."""
+  # bounding sphere test
+  ssz = size[0] * size[0] + size[1] * size[1]
+  if _ray_sphere(pos, ssz, pnt, vec) < 0.0:
+    return wp.inf
+
+  # map to local frame
+  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+
+  # init solution
+  x = wp.inf
+
+  # flat sides
+  if wp.abs(lvec[2]) > MJ_MINVAL:
+    for side in range(-1, 2, 2):
+      # solution of: lpnt[2] + x * lvec[2] = side * height_size
+      sol = (float(side) * size[1] - lpnt[2]) / lvec[2]
+
+      # process if non-negative
+      if sol >= 0.0:
+        # intersection with horizontal face
+        p = wp.vec2(
+          lpnt[0] + sol * lvec[0],
+          lpnt[1] + sol * lvec[1],
+        )
+
+        # accept within radius
+        if wp.dot(p, p) <= size[0] * size[0]:
+          if x < 0.0 or sol < x:
+            x = sol
+
+  # (x * lvec + lpnt)' * (x * lvec + lpnt) = size[0] * size[0]
+  a = lvec[0] * lvec[0] + lvec[1] * lvec[1]
+  b = lvec[0] * lpnt[0] + lvec[1] * lpnt[1]
+  c = lpnt[0] * lpnt[0] + lpnt[1] * lpnt[1] - size[0] * size[0]
+
+  # solve a * x^2 + 2 * b * x + c = 0
+  sol, _ = _ray_quad(a, b, c)
+
+  # make sure round solution is between flat sides
+  if sol >= 0.0 and wp.abs(lpnt[2] + sol * lvec[2]) <= size[1]:
+    if x < 0.0 or sol < x:
+      x = sol
+
+  return x
+
 
 _IFACE = wp.types.matrix((3, 2), dtype=int)(1, 2, 0, 2, 0, 1)
 
@@ -426,7 +473,8 @@ def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.v
     return _ray_capsule(pos, mat, size, pnt, vec)
   elif geomtype == int(GeomType.ELLIPSOID.value):
     return _ray_ellipsoid(pos, mat, size, pnt, vec)
-  # TODO(team): cylinder
+  elif geomtype == int(GeomType.CYLINDER.value):
+    return _ray_cylinder(pos, mat, size, pnt, vec)
   elif geomtype == int(GeomType.BOX.value):
     return _ray_box(pos, mat, size, pnt, vec)
   else:

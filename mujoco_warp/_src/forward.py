@@ -506,6 +506,7 @@ def fwd_position(m: Model, d: Data):
   smooth.camlight(m, d)
   smooth.tendon(m, d)
   smooth.crb(m, d)
+  smooth.tendon_armature(m, d)
   smooth.factor_m(m, d)
   collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
@@ -639,6 +640,7 @@ def fwd_velocity(m: Model, d: Data):
   smooth.com_vel(m, d)
   passive.passive(m, d)
   smooth.rne(m, d)
+  smooth.tendon_bias(m, d, d.qfrc_bias)
 
 
 @wp.kernel

@@ -94,14 +94,15 @@ def _write_vector(
 @wp.func
 def _magnetometer(
   # Model:
-  opt_magnetic: wp.vec3,
+  opt_magnetic: wp.array(dtype=wp.vec3),
   # Data in:
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
   worldid: int,
   objid: int,
 ) -> wp.vec3:
-  return wp.transpose(site_xmat_in[worldid, objid]) @ opt_magnetic
+  magnetic = opt_magnetic[worldid]
+  return wp.transpose(site_xmat_in[worldid, objid]) @ magnetic
 
 
 @wp.func
@@ -445,7 +446,7 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
-  opt_magnetic: wp.vec3,
+  opt_magnetic: wp.array(dtype=wp.vec3),
   body_iquat: wp.array2d(dtype=wp.quat),
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
@@ -625,7 +626,7 @@ def sensor_pos(m: Model, d: Data):
       d,
       d.sensor_rangefinder_pnt,
       d.sensor_rangefinder_vec,
-      vec6(0, 0, 0, 0, 0, 0),
+      vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
       True,
       m.sensor_rangefinder_bodyid,
       d.sensor_rangefinder_dist,
@@ -1887,7 +1888,7 @@ def _energy_pos_zero(
 @wp.kernel
 def _energy_pos_gravity(
   # Model:
-  opt_gravity: wp.vec3,
+  opt_gravity: wp.array(dtype=wp.vec3),
   body_mass: wp.array2d(dtype=float),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
@@ -1895,10 +1896,11 @@ def _energy_pos_gravity(
   energy_out: wp.array(dtype=wp.vec2),
 ):
   worldid, bodyid = wp.tid()
+  gravity = opt_gravity[worldid]
   bodyid += 1  # skip world body
 
   energy = wp.vec2(
-    body_mass[worldid, bodyid] * wp.dot(opt_gravity, xipos_in[worldid, bodyid]),
+    body_mass[worldid, bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
     0.0,
   )
 

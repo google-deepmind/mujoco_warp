@@ -252,7 +252,7 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cvel.numpy()[0], mjd.cvel, "cvel")
     _assert_eq(d.cdof_dot.numpy()[0], mjd.cdof_dot, "cdof_dot")
 
-  @parameterized.parameters("pendula.xml", "actuation/site.xml")
+  @parameterized.parameters("pendula.xml", "actuation/site.xml", "actuation/slidercrank.xml")
   def test_transmission(self, xml):
     """Tests transmission."""
     mjm, mjd, m, d = test_util.fixture(xml)
@@ -353,6 +353,49 @@ class SmoothTest(parameterized.TestCase):
     mjwarp._src.smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, res, vec)
 
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "qM \\ 1")
+
+  def test_tendon_armature(self):
+    mjm, mjd, m, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint type="hinge" axis="0 1 0"/>
+          <geom type="sphere" size=".2" pos="1 0 0"/>
+          <site name="site0" pos="1 0 0"/>
+        </body>
+        <site name="site1" pos="1 0 0"/>
+      </worldbody>
+      <tendon>
+        <spatial armature="2">
+          <site site="site0"/>
+          <site site="site1"/>
+        </spatial>
+      </tendon>
+      <keyframe>
+        <key qpos="1" qvel=".5"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    # qM
+    d.qM.zero_()
+
+    mjwarp._src.smooth.crb(m, d)
+    mjwarp._src.smooth.tendon_armature(m, d)
+
+    qM = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mj_fullM(mjm, qM, mjd.qM)
+    _assert_eq(d.qM.numpy()[0], qM, "qM")
+
+    # qfrc_bias
+    d.qfrc_bias.zero_()
+
+    mjwarp._src.smooth.rne(m, d)
+    mjwarp._src.smooth.tendon_bias(m, d, d.qfrc_bias)
+    _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
 
 if __name__ == "__main__":

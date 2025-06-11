@@ -17,8 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
+from .math import motion_cross
 from .types import ConeType
 from .types import Data
+from .types import JointType
 from .types import Model
 from .types import TileSet
 from .types import vec5
@@ -469,5 +471,73 @@ def jac(
 
   jacp = cdof_lin + wp.cross(cdof_ang, offset)
   jacr = cdof_ang
+
+  return jacp, jacr
+
+
+@wp.func
+def jac_dot(
+  # Model:
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  jnt_type: wp.array(dtype=int),
+  jnt_dofadr: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  dof_jntid: wp.array(dtype=int),
+  # Data in:
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  point: wp.vec3,
+  bodyid: int,
+  dofid: int,
+  worldid: int,
+) -> Tuple[wp.vec3, wp.vec3]:
+  dof_bodyid_ = dof_bodyid[dofid]
+  in_tree = int(dof_bodyid_ == 0)
+  parentid = bodyid
+  while parentid != 0:
+    if parentid == dof_bodyid_:
+      in_tree = 1
+      break
+    parentid = body_parentid[parentid]
+
+  if not in_tree:
+    return wp.vec3(0.0), wp.vec3(0.0)
+
+  com = subtree_com_in[worldid, body_rootid[bodyid]]
+  offset = point - com
+
+  # transform spatial
+  cvel = cvel_in[worldid, bodyid]
+  pvel_lin = wp.spatial_bottom(cvel) - wp.cross(offset, wp.spatial_top(cvel))
+
+  cdof = cdof_in[worldid, dofid]
+  cdof_dot = cdof_dot_in[worldid, dofid]
+
+  # check for quaternion
+  dofjntid = dof_jntid[dofid]
+  jnttype = jnt_type[dofjntid]
+  jntdofadr = jnt_dofadr[dofjntid]
+
+  if (jnttype == int(JointType.BALL.value)) or ((jnttype == int(JointType.FREE.value)) and dofid >= jntdofadr + 3):
+    # compute cdof_dot for quaternion (use current body cvel)
+    cvel = cvel_in[worldid, dof_bodyid[dofid]]
+    cdof_dot = motion_cross(cvel, cdof)
+
+  cdof_dot_ang = wp.spatial_top(cdof_dot)
+  cdof_dot_lin = wp.spatial_bottom(cdof_dot)
+
+  # construct translational Jacobian (correct for rotation)
+  # first correction term, account for varying cdof
+  correction1 = wp.cross(cdof_dot_ang, offset)
+
+  # second correction term, account for point translational velocity
+  correction2 = wp.cross(wp.spatial_top(cdof), pvel_lin)
+
+  jacp = cdof_dot_lin + correction1 + correction2
+  jacr = cdof_dot_ang
 
   return jacp, jacr

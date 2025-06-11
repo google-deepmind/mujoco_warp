@@ -2416,7 +2416,6 @@ def solve_done(
   nsolving_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
 ):
-  # TODO(team): static m?
   worldid = wp.tid()
 
   if efc_done_in[worldid]:
@@ -2529,6 +2528,13 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
+  if m.opt.graph_conditional:
+    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=None, m=m, d=d)
+  else:
+    _solve(m, d)
+
+
+def _solve(m: types.Model, d: types.Data):
   """Finds forces that satisfy constraints."""
   # warmstart
   wp.copy(d.qacc, d.qacc_warmstart)
