@@ -364,8 +364,8 @@ def _efc_equality_tendon(
   # In:
   refsafe_in: int,
   # Data out:
-  nefc_out: wp.array(dtype=int),
   ne_ten_out: wp.array(dtype=int),
+  nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
   efc_J_out: wp.array3d(dtype=float),
