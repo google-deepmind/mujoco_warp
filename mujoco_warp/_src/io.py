@@ -346,7 +346,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       gravity=create_nmodel_batched_array(wp.vec3(mjm.opt.gravity), dtype=wp.vec3),
       magnetic=create_nmodel_batched_array(wp.vec3(mjm.opt.magnetic), dtype=wp.vec3),
       wind=create_nmodel_batched_array(wp.vec3(mjm.opt.wind), dtype=wp.vec3),
-      has_wind=(mjm.opt.wind > 0).any(),
+      has_fluid=mjm.opt.wind.any() or mjm.opt.density or mjm.opt.viscosity,
       density=mjm.opt.density,
       viscosity=mjm.opt.viscosity,
       cone=mjm.opt.cone,

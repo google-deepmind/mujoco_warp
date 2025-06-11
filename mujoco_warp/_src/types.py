@@ -505,7 +505,7 @@ class Option:
     depth_extension: distance past which closest point is not calculated for convex geoms
     ls_parallel: evaluate engine solver step sizes in parallel
     wind: wind (for lift, drag, and viscosity)
-    has_wind: True if any wind component is greater than 0 at put_model time
+    has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     density: density of medium
     viscosity: viscosity of medium
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
@@ -531,7 +531,7 @@ class Option:
   depth_extension: float  # warp only
   ls_parallel: bool
   wind: wp.array(dtype=wp.vec3)
-  has_wind: bool
+  has_fluid: bool
   density: float
   viscosity: float
   graph_conditional: bool  # warp only
