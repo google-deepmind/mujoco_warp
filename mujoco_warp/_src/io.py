@@ -755,6 +755,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ximat=wp.zeros((nworld, mjm.nbody), dtype=wp.mat33),
     xanchor=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
     xaxis=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
+    geom_sameframe=wp.zeros(mjm.ngeom, dtype=int),  # warp only
     geom_xpos=wp.zeros((nworld, mjm.ngeom), dtype=wp.vec3),
     geom_xmat=wp.zeros((nworld, mjm.ngeom), dtype=wp.mat33),
     site_xpos=wp.zeros((nworld, mjm.nsite), dtype=wp.vec3),
@@ -1074,6 +1075,7 @@ def put_data(
     ximat=tile(mjd.ximat, dtype=wp.mat33),
     xanchor=tile(mjd.xanchor, dtype=wp.vec3),
     xaxis=tile(mjd.xaxis, dtype=wp.vec3),
+    geom_sameframe=wp.zeros(mjm.ngeom, dtype=int),  # warp only
     geom_xpos=tile(mjd.geom_xpos, dtype=wp.vec3),
     geom_xmat=tile(mjd.geom_xmat, dtype=wp.mat33),
     site_xpos=tile(mjd.site_xpos, dtype=wp.vec3),

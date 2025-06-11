@@ -1441,6 +1441,7 @@ class Data:
   ximat: wp.array2d(dtype=wp.mat33)
   xanchor: wp.array2d(dtype=wp.vec3)
   xaxis: wp.array2d(dtype=wp.vec3)
+  geom_sameframe: wp.array(dtype=int)  # warp only
   geom_xpos: wp.array2d(dtype=wp.vec3)
   geom_xmat: wp.array2d(dtype=wp.mat33)
   site_xpos: wp.array2d(dtype=wp.vec3)
