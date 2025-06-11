@@ -32,33 +32,8 @@ def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
   return value / (stat_meaninertia * float(wp.max(1, nv)))
 
 
-@wp.func
-def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
-  return wp.vec3(
-    alpha * alpha * quad[2] + alpha * quad[1] + quad[0],
-    2.0 * alpha * quad[2] + quad[1],
-    2.0 * quad[2],
-  )
-
-
 @wp.kernel
-def linesearch_parallel_quad_total(
-  # Data in:
-  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_quad_total_candidate_out: wp.array2d(dtype=wp.vec3),
-):
-  worldid, alphaid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  efc_quad_total_candidate_out[worldid, alphaid] = efc_quad_gauss_in[worldid]
-
-
-@wp.kernel
-def linesearch_parallel_quad_total_candidate(
+def linesearch_parallel_kernel(
   # Model:
   nlsp: int,
   # Data in:
@@ -68,90 +43,55 @@ def linesearch_parallel_quad_total_candidate(
   efc_Jaref_in: wp.array2d(dtype=float),
   efc_jv_in: wp.array2d(dtype=float),
   efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
   efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_quad_total_candidate_out: wp.array2d(dtype=wp.vec3),
-):
-  worldid, efcid, alphaid = wp.tid()
-
-  if efcid >= nefc_in[worldid]:
-    return
-
-  if efc_done_in[worldid]:
-    return
-
-  Jaref = efc_Jaref_in[worldid, efcid]
-  jv = efc_jv_in[worldid, efcid]
-  quad = efc_quad_in[worldid, efcid]
-
-  alpha = float(alphaid) / float(nlsp - 1)
-
-  if (Jaref + alpha * jv) < 0.0 or (efcid < ne_in[worldid] + nf_in[worldid]):
-    wp.atomic_add(efc_quad_total_candidate_out, worldid, alphaid, quad)
-
-
-@wp.kernel
-def linesearch_parallel_cost_alpha(
-  # Model:
-  nlsp: int,
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  efc_quad_total_candidate_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   efc_cost_candidate_out: wp.array2d(dtype=float),
+  efc_alpha_out: wp.array(dtype=float),
 ):
   worldid, alphaid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
+  efc_quad_total_candidate = efc_quad_gauss_in[worldid]
+
   alpha = float(alphaid) / float(nlsp - 1)
+  ne = ne_in[worldid]
+  nf = nf_in[worldid]
+  for efcid in range(nefc_in[worldid]):
+    Jaref = efc_Jaref_in[worldid, efcid]
+    jv = efc_jv_in[worldid, efcid]
+    quad = efc_quad_in[worldid, efcid]
+
+    if (Jaref + alpha * jv) < 0.0 or (efcid < ne + nf):
+      efc_quad_total_candidate += quad
+
   alpha_sq = alpha * alpha
-  quad_total0 = efc_quad_total_candidate_in[worldid, alphaid][0]
-  quad_total1 = efc_quad_total_candidate_in[worldid, alphaid][1]
-  quad_total2 = efc_quad_total_candidate_in[worldid, alphaid][2]
+  quad_total0 = efc_quad_total_candidate[0]
+  quad_total1 = efc_quad_total_candidate[1]
+  quad_total2 = efc_quad_total_candidate[2]
 
   efc_cost_candidate_out[worldid, alphaid] = alpha_sq * quad_total2 + alpha * quad_total1 + quad_total0
 
+  if alphaid == 0:
+    # TODO(team): investigate alternatives to wp.argmin
+    # TODO(thowell): how did this use to work?
+    bestid = int(0)
+    best_cost = float(wp.inf)
+    for i in range(nlsp):
+      cost = efc_cost_candidate_out[worldid, i]
+      if cost < best_cost:
+        best_cost = cost
+        bestid = i
 
-@wp.kernel
-def linesearch_parallel_best_alpha(
-  # Model:
-  nlsp: int,
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  efc_cost_candidate_in: wp.array2d(dtype=float),
-  # Data out:
-  efc_alpha_out: wp.array(dtype=float),
-):
-  worldid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  # TODO(team): investigate alternatives to wp.argmin
-  # TODO(thowell): how did this use to work?
-  bestid = int(0)
-  best_cost = float(wp.inf)
-  for i in range(nlsp):
-    cost = efc_cost_candidate_in[worldid, i]
-    if cost < best_cost:
-      best_cost = cost
-      bestid = i
-
-  efc_alpha_out[worldid] = float(bestid) / float(nlsp - 1)
+    efc_alpha_out[worldid] = float(bestid) / float(nlsp - 1)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
-  wp.launch(
-    linesearch_parallel_quad_total,
+    wp.launch(
+    linesearch_parallel_kernel,
     dim=(d.nworld, m.nlsp),
-    inputs=[d.efc.quad_gauss, d.efc.done],
-    outputs=[d.efc.quad_total_candidate],
-  )
-  wp.launch(
-    linesearch_parallel_quad_total_candidate,
-    dim=(d.nworld, d.njmax, m.nlsp),
     inputs=[
       m.nlsp,
       d.ne,
@@ -160,21 +100,10 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
       d.efc.Jaref,
       d.efc.jv,
       d.efc.quad,
+      d.efc.quad_gauss,
       d.efc.done,
     ],
-    outputs=[d.efc.quad_total_candidate],
-  )
-  wp.launch(
-    linesearch_parallel_cost_alpha,
-    dim=(d.nworld, m.nlsp),
-    inputs=[m.nlsp, d.efc.done, d.efc.quad_total_candidate],
-    outputs=[d.efc.cost_candidate],
-  )
-  wp.launch(
-    linesearch_parallel_best_alpha,
-    dim=(d.nworld),
-    inputs=[m.nlsp, d.efc.done, d.efc.cost_candidate],
-    outputs=[d.efc.alpha],
+    outputs=[d.efc.cost_candidate, d.efc.alpha],
   )
 
 
@@ -349,7 +278,7 @@ def linesearch_quad_elliptic(
   efcid = contact_efc_address_in[conid, dimid]
 
   # complete vector quadratic (for bottom zone)
-  wp.atomic_add(efc_quad_out, worldid. efcid0, efc_quad_in[worldid, efcid])
+  wp.atomic_add(efc_quad_out, worldid, efcid0, efc_quad_in[worldid, efcid])
 
   # rescale to make primal cone circular
   u = efc_u_in[conid][dimid]
@@ -1170,7 +1099,7 @@ def update_gradient_JTDAJ(
   efc_h_out: wp.array3d(dtype=float),
 ):
   # TODO(team): static m?
-  worldid, efcid_temp, elementid = wp.tid()
+  worldid, elementid = wp.tid()
 
   if efc_done_in[worldid]:
     return
@@ -1180,11 +1109,9 @@ def update_gradient_JTDAJ(
   dofi = dof_tri_row[elementid]
   dofj = dof_tri_col[elementid]
 
-  for i in range(nblocks_perblock):
-    efcid = efcid_temp + i * dim_x
-
-    if efcid >= min(nefc, njmax_in):
-      return
+  for efcid in range(nefc):
+    # if efcid >= min(nefc, njmax_in):
+    #   return
 
     efc_D = efc_D_in[worldid, efcid]
     active = efc_active_in[worldid, efcid]
@@ -1443,7 +1370,7 @@ def _update_gradient(m: types.Model, d: types.Data):
 
     wp.launch(
       update_gradient_JTDAJ,
-      dim=(d.nworld, dim_x, m.dof_tri_row.size),
+      dim=(d.nworld, m.dof_tri_row.size),
       inputs=[
         m.dof_tri_row,
         m.dof_tri_col,
