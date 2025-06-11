@@ -57,6 +57,33 @@ _OUTPUT = flags.DEFINE_enum("output", "text", ["text", "tsv"], "format to print 
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "Provide a full event trace")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of nconmax, njmax is used.")
+_MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "Measure the number of solver iterations.")
+_NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to summarize measurements.")
+
+
+def _print_table(matrix, headers):
+  num_cols = len(headers)
+  col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
+  col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
+
+  print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))
+  print("-" * sum(col_widths) + "--" * 3)  # Separator line
+  for row in matrix:
+    print("  ".join(f"{row[i]:{col_widths[i]}g}" for i in range(num_cols)))
+
+
+def _print_trace(trace, indent, steps):
+  for k, v in trace.items():
+    times, sub_trace = v
+    if len(times) == 1:
+      print("  " * indent + f"{k}: {1e6 * times[0] / steps:.2f}")
+    else:
+      print("  " * indent + f"{k}: [ ", end="")
+      for i in range(len(times)):
+        print(f"{1e6 * times[i] / steps:.2f}", end="")
+        print(", " if i < len(times) - 1 else " ", end="")
+      print("]")
+    _print_trace(sub_trace, indent + 1, steps)
 
 
 def _main(argv: Sequence[str]):
@@ -117,13 +144,14 @@ def _main(argv: Sequence[str]):
   )
   print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
   print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...")
-  jit_time, run_time, trace, ncon, nefc = mjwarp.benchmark(
+  jit_time, run_time, trace, ncon, nefc, solver_niter = mjwarp.benchmark(
     mjwarp.__dict__[_FUNCTION.value],
     m,
     d,
     _NSTEP.value,
     _EVENT_TRACE.value,
     _MEASURE_ALLOC.value,
+    _MEASURE_SOLVER.value,
   )
   steps = _BATCH_SIZE.value * _NSTEP.value
 
@@ -137,49 +165,38 @@ Summary for {_BATCH_SIZE.value} parallel rollouts
  Total steps per second: {steps / run_time:,.0f}
  Total realtime factor: {steps * m.opt.timestep / run_time:,.2f} x
  Total time per step: {1e9 * run_time / steps:.2f} ns""")
+
     if trace:
       print("\nEvent trace:\n")
+      _print_trace(trace, 0, steps)
 
-      def _print_trace(trace, indent):
-        for k, v in trace.items():
-          times, sub_trace = v
-          if len(times) == 1:
-            print("  " * indent + f"{k}: {1e6 * times[0] / steps:.2f}")
-          else:
-            print("  " * indent + f"{k}: [ ", end="")
-            for i in range(len(times)):
-              print(f"{1e6 * times[i] / steps:.2f}", end="")
-              print(", " if i < len(times) - 1 else " ", end="")
-            print("]")
-          _print_trace(sub_trace, indent + 1)
-
-      _print_trace(trace, 0)
     if ncon and nefc:
-      num_buckets = 10
       idx = 0
       ncon_matrix, nefc_matrix = [], []
-      for i in range(num_buckets):
-        size = _NSTEP.value // num_buckets + (i < (_NSTEP.value % num_buckets))
+      for i in range(_NUM_BUCKETS.value):
+        size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
         ncon_arr = np.array(ncon[idx : idx + size])
         nefc_arr = np.array(nefc[idx : idx + size])
         ncon_matrix.append([np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)])
         nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
         idx += size
 
-      def _print_table(matrix, headers):
-        num_cols = len(headers)
-        col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
-        col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
-
-        print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))
-        print("-" * sum(col_widths) + "--" * 3)  # Separator line
-        for row in matrix:
-          print("  ".join(f"{row[i]:{col_widths[i]}g}" for i in range(num_cols)))
-
       print("\nncon alloc:\n")
       _print_table(ncon_matrix, ("mean", "std", "min", "max"))
       print("\nnefc alloc:\n")
       _print_table(nefc_matrix, ("mean", "std", "min", "max"))
+
+    if solver_niter:
+      idx = 0
+      matrix = []
+      for i in range(_NUM_BUCKETS.value):
+        size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
+        arr = np.array(solver_niter[idx : idx + size])
+        matrix.append([np.mean(arr), np.std(arr), np.min(arr), np.max(arr)])
+        idx += size
+
+      print("\nsolver niter:\n")
+      _print_table(matrix, ("mean", "std", "min", "max"))
 
   elif _OUTPUT.value == "tsv":
     name = name.split("/")[-1].replace("testspeed_", "")
