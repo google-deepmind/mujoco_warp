@@ -1105,6 +1105,7 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
   return kernel
 
+
 @wp.kernel
 def linesearch_init_quad_gauss(
   # Model:
@@ -1130,7 +1131,7 @@ def linesearch_init_quad_gauss(
     search = efc_search_in[worldid, i]
     quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
     quad_gauss_2 += 0.5 * search * efc_mv_in[worldid, i]
- 
+
   efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
 
 
