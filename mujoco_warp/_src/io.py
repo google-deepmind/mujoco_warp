@@ -293,10 +293,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     nxn_pairid[pairid] = i
 
-  # skip contact generation if there are no potential contact pairs
-  if np.all(nxn_pairid == -2):
-    mjm.opt.disableflags |= types.DisableBit.CONTACT.value
-
   def create_nmodel_batched_array(mjm_array, dtype):
     array = wp.array(mjm_array, dtype=dtype)
     array.ndim += 1
