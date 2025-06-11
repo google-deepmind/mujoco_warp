@@ -32,6 +32,862 @@ def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
   return value / (stat_meaninertia * float(wp.max(1, nv)))
 
 
+@wp.func
+def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
+  return (x[1] < y[1] and y[1] < 0.0) or (x[1] > y[1] and y[1] > 0.0)
+
+
+@wp.func
+def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
+  return wp.vec3(
+    alpha * alpha * quad[2] + alpha * quad[1] + quad[0],
+    2.0 * alpha * quad[2] + quad[1],
+    2.0 * quad[2],
+  )
+
+
+@wp.func
+def _eval_pt_elliptic(
+  # Model:
+  opt_impratio: float,
+  # In:
+  friction: types.vec5,
+  u0: float,
+  uu: float,
+  uv: float,
+  vv: float,
+  jv: float,
+  D: float,
+  quad: wp.vec3,
+  alpha: float,
+) -> wp.vec3:
+  mu = friction[0] / wp.sqrt(opt_impratio)
+  v0 = jv * mu
+  n = u0 + alpha * v0
+  tsqr = uu + alpha * (2.0 * uv + alpha * vv)
+  t = wp.sqrt(tsqr)  # tangential force
+
+  bottom_zone = ((tsqr <= 0.0) and (n < 0)) or ((tsqr > 0.0) and ((mu * n + t) <= 0.0))
+  middle_zone = (tsqr > 0) and (n < (mu * t)) and ((mu * n + t) > 0.0)
+
+  # elliptic bottom zone: quadratic cose
+  if bottom_zone:
+    pt = _eval_pt(quad, alpha)
+  else:
+    pt = wp.vec3(0.0)
+
+  # elliptic middle zone
+  if t == 0.0:
+    t += types.MJ_MINVAL
+
+  if tsqr == 0.0:
+    tsqr += types.MJ_MINVAL
+
+  n1 = v0
+  t1 = (uv + alpha * vv) / t
+  t2 = vv / t - (uv + alpha * vv) * t1 / tsqr
+
+  if middle_zone:
+    mu2 = mu * mu
+    dm = D / wp.max(mu2 * (1.0 + mu2), types.MJ_MINVAL)
+    nmt = n - mu * t
+    n1mut1 = n1 - mu * t1
+
+    pt += wp.vec3(
+      0.5 * dm * nmt * nmt,
+      dm * nmt * n1mut1,
+      dm * (n1mut1 * n1mut1 - nmt * mu * t2),
+    )
+
+  return pt
+
+
+@wp.kernel
+def linesearch_iterative_gtol(
+  # Model:
+  nv: int,
+  opt_tolerance: float,
+  opt_ls_tolerance: float,
+  stat_meaninertia: float,
+  # Data in:
+  efc_search_dot_in: wp.array(dtype=float),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_gtol_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  snorm = wp.math.sqrt(efc_search_dot_in[worldid])
+  scale = stat_meaninertia * wp.float(wp.max(1, nv))
+  efc_gtol_out[worldid] = opt_tolerance * opt_ls_tolerance * snorm * scale
+
+
+@wp.kernel
+def linesearch_iterative_init_p0_gauss(
+  # Data in:
+  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_p0_out: wp.array(dtype=wp.vec3),
+):
+  worldid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  quad = efc_quad_gauss_in[worldid]
+  efc_p0_out[worldid] = wp.vec3(quad[0], quad[1], 2.0 * quad[2])
+
+
+@wp.kernel
+def linesearch_iterative_init_p0_elliptic0(
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_condim_in: wp.array2d(dtype=int),
+  # Data out:
+  efc_p0_out: wp.array(dtype=wp.vec3),
+):
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  active = efc_Jaref_in[worldid, efcid] < 0.0
+
+  nef = ne_in[worldid] + nf_in[worldid]
+  nefl = nef + nl_in[worldid]
+  if efcid < nef:
+    active = True
+  elif efcid >= nefl and efc_condim_in[worldid, efcid] > 1:
+    active = False
+
+  if active:
+    quad = efc_quad_in[worldid, efcid]
+    wp.atomic_add(efc_p0_out, worldid, wp.vec3(quad[0], quad[1], 2.0 * quad[2]))
+
+
+@wp.kernel
+def linesearch_iterative_init_p0_elliptic1(
+  # Model:
+  opt_impratio: float,
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  contact_friction_in: wp.array(dtype=types.vec5),
+  contact_dim_in: wp.array(dtype=int),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_u_in: wp.array(dtype=types.vec6),
+  efc_uu_in: wp.array(dtype=float),
+  efc_uv_in: wp.array(dtype=float),
+  efc_vv_in: wp.array(dtype=float),
+  # Data out:
+  efc_p0_out: wp.array(dtype=wp.vec3),
+):
+  conid = wp.tid()
+
+  if conid >= ncon_in[0]:
+    return
+
+  worldid = contact_worldid_in[conid]
+  if efc_done_in[worldid]:
+    return
+
+  if contact_dim_in[conid] < 2:
+    return
+
+  efcid = contact_efc_address_in[conid, 0]
+
+  pt = _eval_pt_elliptic(
+    opt_impratio,
+    contact_friction_in[conid],
+    efc_u_in[conid][0],
+    efc_uu_in[conid],
+    efc_uv_in[conid],
+    efc_vv_in[conid],
+    efc_jv_in[worldid, efcid],
+    efc_D_in[worldid, efcid],
+    efc_quad_in[worldid, efcid],
+    0.0,
+  )
+
+  wp.atomic_add(efc_p0_out, worldid, pt)
+
+
+@wp.kernel
+def linesearch_iterative_init_p0_pyramidal(
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_p0_out: wp.array(dtype=wp.vec3),
+):
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  if efc_Jaref_in[worldid, efcid] >= 0.0 and efcid >= ne_in[worldid] + nf_in[worldid]:
+    return
+
+  quad = efc_quad_in[worldid, efcid]
+
+  wp.atomic_add(efc_p0_out, worldid, wp.vec3(quad[0], quad[1], 2.0 * quad[2]))
+
+
+@wp.kernel
+def linesearch_iterative_init_lo_gauss(
+  # Data in:
+  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_p0_in: wp.array(dtype=wp.vec3),
+  # Data out:
+  efc_lo_out: wp.array(dtype=wp.vec3),
+  efc_lo_alpha_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  p0 = efc_p0_in[worldid]
+  alpha = -math.safe_div(p0[1], p0[2])
+  efc_lo_out[worldid] = _eval_pt(efc_quad_gauss_in[worldid], alpha)
+  efc_lo_alpha_out[worldid] = alpha
+
+
+@wp.kernel
+def linesearch_iterative_init_lo_elliptic0(
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_lo_alpha_in: wp.array(dtype=float),
+  efc_condim_in: wp.array2d(dtype=int),
+  # Data out:
+  efc_lo_out: wp.array(dtype=wp.vec3),
+):
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  alpha = efc_lo_alpha_in[worldid]
+
+  active = efc_Jaref_in[worldid, efcid] + alpha * efc_jv_in[worldid, efcid] < 0.0
+
+  nef = ne_in[worldid] + nf_in[worldid]
+  nefl = nef + nl_in[worldid]
+  if efcid < nef:
+    active = True
+  elif efcid >= nefl and efc_condim_in[worldid, efcid] > 1:
+    active = False
+
+  if active:
+    wp.atomic_add(efc_lo_out, worldid, _eval_pt(efc_quad_in[worldid, efcid], alpha))
+
+
+@wp.kernel
+def linesearch_iterative_init_lo_elliptic1(
+  # Model:
+  opt_impratio: float,
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  contact_friction_in: wp.array(dtype=types.vec5),
+  contact_dim_in: wp.array(dtype=int),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_lo_alpha_in: wp.array(dtype=float),
+  efc_u_in: wp.array(dtype=types.vec6),
+  efc_uu_in: wp.array(dtype=float),
+  efc_uv_in: wp.array(dtype=float),
+  efc_vv_in: wp.array(dtype=float),
+  # Data out:
+  efc_lo_out: wp.array(dtype=wp.vec3),
+):
+  conid = wp.tid()
+
+  if conid >= ncon_in[0]:
+    return
+
+  worldid = contact_worldid_in[conid]
+  if efc_done_in[worldid]:
+    return
+
+  if contact_dim_in[conid] < 2:
+    return
+
+  efcid = contact_efc_address_in[conid, 0]
+  alpha = efc_lo_alpha_in[worldid]
+  pt = _eval_pt_elliptic(
+    opt_impratio,
+    contact_friction_in[conid],
+    efc_u_in[conid][0],
+    efc_uu_in[conid],
+    efc_uv_in[conid],
+    efc_vv_in[conid],
+    efc_jv_in[worldid, efcid],
+    efc_D_in[worldid, efcid],
+    efc_quad_in[worldid, efcid],
+    alpha,
+  )
+  wp.atomic_add(efc_lo_out, worldid, pt)
+
+
+@wp.kernel
+def linesearch_iterative_init_lo_pyramidal(
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_lo_alpha_in: wp.array(dtype=float),
+  # Data out:
+  efc_lo_out: wp.array(dtype=wp.vec3),
+):
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  alpha = efc_lo_alpha_in[worldid]
+
+  if efc_Jaref_in[worldid, efcid] + alpha * efc_jv_in[worldid, efcid] < 0.0 or (efcid < ne_in[worldid] + nf_in[worldid]):
+    wp.atomic_add(efc_lo_out, worldid, _eval_pt(efc_quad_in[worldid, efcid], alpha))
+
+
+@wp.kernel
+def linesearch_iterative_init_bounds(
+  # Data in:
+  efc_done_in: wp.array(dtype=bool),
+  efc_p0_in: wp.array(dtype=wp.vec3),
+  efc_lo_in: wp.array(dtype=wp.vec3),
+  efc_lo_alpha_in: wp.array(dtype=float),
+  # Data out:
+  efc_lo_out: wp.array(dtype=wp.vec3),
+  efc_lo_alpha_out: wp.array(dtype=float),
+  efc_hi_out: wp.array(dtype=wp.vec3),
+  efc_hi_alpha_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  p0 = efc_p0_in[worldid]
+  lo = efc_lo_in[worldid]
+  lo_alpha = efc_lo_alpha_in[worldid]
+  lo_less = lo[1] < p0[1]
+
+  efc_lo_out[worldid] = wp.where(lo_less, lo, p0)
+  efc_lo_alpha_out[worldid] = wp.where(lo_less, lo_alpha, 0.0)
+  efc_hi_out[worldid] = wp.where(lo_less, p0, lo)
+  efc_hi_alpha_out[worldid] = wp.where(lo_less, 0.0, lo_alpha)
+
+
+@wp.kernel
+def linesearch_iterative_next_alpha_gauss(
+  # Data in:
+  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_ls_done_in: wp.array(dtype=bool),
+  efc_lo_in: wp.array(dtype=wp.vec3),
+  efc_lo_alpha_in: wp.array(dtype=float),
+  efc_hi_in: wp.array(dtype=wp.vec3),
+  efc_hi_alpha_in: wp.array(dtype=float),
+  # Data out:
+  efc_lo_next_out: wp.array(dtype=wp.vec3),
+  efc_lo_next_alpha_out: wp.array(dtype=float),
+  efc_hi_next_out: wp.array(dtype=wp.vec3),
+  efc_hi_next_alpha_out: wp.array(dtype=float),
+  efc_mid_out: wp.array(dtype=wp.vec3),
+  efc_mid_alpha_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+
+  if efc_ls_done_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  quad = efc_quad_gauss_in[worldid]
+
+  lo = efc_lo_in[worldid]
+  lo_alpha = efc_lo_alpha_in[worldid]
+  lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
+  efc_lo_next_out[worldid] = _eval_pt(quad, lo_next_alpha)
+  efc_lo_next_alpha_out[worldid] = lo_next_alpha
+
+  hi = efc_hi_in[worldid]
+  hi_alpha = efc_hi_alpha_in[worldid]
+  hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
+  efc_hi_next_out[worldid] = _eval_pt(quad, hi_next_alpha)
+  efc_hi_next_alpha_out[worldid] = hi_next_alpha
+
+  mid_alpha = 0.5 * (lo_alpha + hi_alpha)
+  efc_mid_out[worldid] = _eval_pt(quad, mid_alpha)
+  efc_mid_alpha_out[worldid] = mid_alpha
+
+
+@wp.kernel
+def linesearch_iterative_next_quad_elliptic0(
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_ls_done_in: wp.array(dtype=bool),
+  efc_lo_next_alpha_in: wp.array(dtype=float),
+  efc_hi_next_alpha_in: wp.array(dtype=float),
+  efc_mid_alpha_in: wp.array(dtype=float),
+  efc_condim_in: wp.array2d(dtype=int),
+  # Data out:
+  efc_lo_next_out: wp.array(dtype=wp.vec3),
+  efc_hi_next_out: wp.array(dtype=wp.vec3),
+  efc_mid_out: wp.array(dtype=wp.vec3),
+):
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  if efc_ls_done_in[worldid]:
+    return
+
+  nef = ne_in[worldid] + nf_in[worldid]
+  nefl = nef + nl_in[worldid]
+
+  quad = efc_quad_in[worldid, efcid]
+  jaref = efc_Jaref_in[worldid, efcid]
+  jv = efc_jv_in[worldid, efcid]
+
+  alpha = efc_lo_next_alpha_in[worldid]
+
+  active = jaref + alpha * jv < 0.0
+  if efcid < nef:
+    active = True
+  elif efcid >= nefl and efc_condim_in[worldid, efcid] > 1:
+    active = False
+
+  if active:
+    wp.atomic_add(efc_lo_next_out, worldid, _eval_pt(quad, alpha))
+
+  alpha = efc_hi_next_alpha_in[worldid]
+
+  active = jaref + alpha * jv < 0.0
+  if efcid < nef:
+    active = True
+  elif efcid >= nefl and efc_condim_in[worldid, efcid] > 1:
+    active = False
+
+  if active:
+    wp.atomic_add(efc_hi_next_out, worldid, _eval_pt(quad, alpha))
+
+  alpha = efc_mid_alpha_in[worldid]
+
+  active = jaref + alpha * jv < 0.0
+  if efcid < nef:
+    active = True
+  elif efcid >= nefl and efc_condim_in[worldid, efcid] > 1:
+    active = False
+
+  if active:
+    wp.atomic_add(efc_mid_out, worldid, _eval_pt(quad, alpha))
+
+
+@wp.kernel
+def linesearch_iterative_next_quad_elliptic1(
+  # Model:
+  opt_impratio: float,
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  contact_friction_in: wp.array(dtype=types.vec5),
+  contact_dim_in: wp.array(dtype=int),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_lo_next_alpha_in: wp.array(dtype=float),
+  efc_hi_next_alpha_in: wp.array(dtype=float),
+  efc_mid_alpha_in: wp.array(dtype=float),
+  efc_u_in: wp.array(dtype=types.vec6),
+  efc_uu_in: wp.array(dtype=float),
+  efc_uv_in: wp.array(dtype=float),
+  efc_vv_in: wp.array(dtype=float),
+  # Data out:
+  efc_lo_next_out: wp.array(dtype=wp.vec3),
+  efc_hi_next_out: wp.array(dtype=wp.vec3),
+  efc_mid_out: wp.array(dtype=wp.vec3),
+):
+  conid = wp.tid()
+
+  if conid >= ncon_in[0]:
+    return
+
+  worldid = contact_worldid_in[conid]
+
+  if efc_done_in[worldid]:
+    return
+
+  if contact_dim_in[conid] < 2:
+    return
+
+  efcid = contact_efc_address_in[conid, 0]
+
+  friction = contact_friction_in[conid]
+  u = efc_u_in[conid][0]
+  uu = efc_uu_in[conid]
+  uv = efc_uv_in[conid]
+  vv = efc_vv_in[conid]
+  jv = efc_jv_in[worldid, efcid]
+  d = efc_D_in[worldid, efcid]
+  quad = efc_quad_in[worldid, efcid]
+
+  alpha = efc_lo_next_alpha_in[worldid]
+  pt = _eval_pt_elliptic(opt_impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
+  wp.atomic_add(efc_lo_next_out, worldid, pt)
+
+  alpha = efc_hi_next_alpha_in[worldid]
+  pt = _eval_pt_elliptic(opt_impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
+  wp.atomic_add(efc_hi_next_out, worldid, pt)
+
+  alpha = efc_mid_alpha_in[worldid]
+  pt = _eval_pt_elliptic(opt_impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
+  wp.atomic_add(efc_mid_out, worldid, pt)
+
+
+@wp.kernel
+def linesearch_iterative_next_quad_pyramidal(
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_jv_in: wp.array2d(dtype=float),
+  efc_quad_in: wp.array2d(dtype=wp.vec3),
+  efc_done_in: wp.array(dtype=bool),
+  efc_ls_done_in: wp.array(dtype=bool),
+  efc_lo_next_alpha_in: wp.array(dtype=float),
+  efc_hi_next_alpha_in: wp.array(dtype=float),
+  efc_mid_alpha_in: wp.array(dtype=float),
+  # Data out:
+  efc_lo_next_out: wp.array(dtype=wp.vec3),
+  efc_hi_next_out: wp.array(dtype=wp.vec3),
+  efc_mid_out: wp.array(dtype=wp.vec3),
+):
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if efc_done_in[worldid]:
+    return
+
+  if efc_ls_done_in[worldid]:
+    return
+
+  nef_active = efcid < ne_in[worldid] + nf_in[worldid]
+
+  quad = efc_quad_in[worldid, efcid]
+  jaref = efc_Jaref_in[worldid, efcid]
+  jv = efc_jv_in[worldid, efcid]
+
+  alpha = efc_lo_next_alpha_in[worldid]
+  if jaref + alpha * jv < 0.0 or nef_active:
+    wp.atomic_add(efc_lo_next_out, worldid, _eval_pt(quad, alpha))
+
+  alpha = efc_hi_next_alpha_in[worldid]
+  if jaref + alpha * jv < 0.0 or nef_active:
+    wp.atomic_add(efc_hi_next_out, worldid, _eval_pt(quad, alpha))
+
+  alpha = efc_mid_alpha_in[worldid]
+  if jaref + alpha * jv < 0.0 or nef_active:
+    wp.atomic_add(efc_mid_out, worldid, _eval_pt(quad, alpha))
+
+
+@wp.kernel
+def linesearch_iterative_swap(
+  # Data in:
+  efc_gtol_in: wp.array(dtype=float),
+  efc_done_in: wp.array(dtype=bool),
+  efc_ls_done_in: wp.array(dtype=bool),
+  efc_p0_in: wp.array(dtype=wp.vec3),
+  efc_lo_in: wp.array(dtype=wp.vec3),
+  efc_lo_alpha_in: wp.array(dtype=float),
+  efc_hi_in: wp.array(dtype=wp.vec3),
+  efc_hi_alpha_in: wp.array(dtype=float),
+  efc_lo_next_in: wp.array(dtype=wp.vec3),
+  efc_lo_next_alpha_in: wp.array(dtype=float),
+  efc_hi_next_in: wp.array(dtype=wp.vec3),
+  efc_hi_next_alpha_in: wp.array(dtype=float),
+  efc_mid_in: wp.array(dtype=wp.vec3),
+  efc_mid_alpha_in: wp.array(dtype=float),
+  # Data out:
+  efc_alpha_out: wp.array(dtype=float),
+  efc_ls_done_out: wp.array(dtype=bool),
+  efc_lo_out: wp.array(dtype=wp.vec3),
+  efc_lo_alpha_out: wp.array(dtype=float),
+  efc_hi_out: wp.array(dtype=wp.vec3),
+  efc_hi_alpha_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  if efc_ls_done_in[worldid]:
+    return
+
+  lo = efc_lo_in[worldid]
+  lo_alpha = efc_lo_alpha_in[worldid]
+  hi = efc_hi_in[worldid]
+  hi_alpha = efc_hi_alpha_in[worldid]
+  lo_next = efc_lo_next_in[worldid]
+  lo_next_alpha = efc_lo_next_alpha_in[worldid]
+  hi_next = efc_hi_next_in[worldid]
+  hi_next_alpha = efc_hi_next_alpha_in[worldid]
+  mid = efc_mid_in[worldid]
+  mid_alpha = efc_mid_alpha_in[worldid]
+
+  # swap lo:
+  swap_lo_lo_next = _in_bracket(lo, lo_next)
+  lo = wp.where(swap_lo_lo_next, lo_next, lo)
+  lo_alpha = wp.where(swap_lo_lo_next, lo_next_alpha, lo_alpha)
+  swap_lo_mid = _in_bracket(lo, mid)
+  lo = wp.where(swap_lo_mid, mid, lo)
+  lo_alpha = wp.where(swap_lo_mid, mid_alpha, lo_alpha)
+  swap_lo_hi_next = _in_bracket(lo, hi_next)
+  lo = wp.where(swap_lo_hi_next, hi_next, lo)
+  lo_alpha = wp.where(swap_lo_hi_next, hi_next_alpha, lo_alpha)
+  efc_lo_out[worldid] = lo
+  efc_lo_alpha_out[worldid] = lo_alpha
+  swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
+
+  # swap hi:
+  swap_hi_hi_next = _in_bracket(hi, hi_next)
+  hi = wp.where(swap_hi_hi_next, hi_next, hi)
+  hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
+  swap_hi_mid = _in_bracket(hi, mid)
+  hi = wp.where(swap_hi_mid, mid, hi)
+  hi_alpha = wp.where(swap_hi_mid, mid_alpha, hi_alpha)
+  swap_hi_lo_next = _in_bracket(hi, lo_next)
+  hi = wp.where(swap_hi_lo_next, lo_next, hi)
+  hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
+  efc_hi_out[worldid] = hi
+  efc_hi_alpha_out[worldid] = hi_alpha
+  swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
+
+  # if we did not adjust the interval, we are done
+  # also done if either low or hi slope is nearly flat
+  gtol = efc_gtol_in[worldid]
+  efc_ls_done_out[worldid] = (not swap_lo and not swap_hi) or (lo[1] < 0 and lo[1] > -gtol) or (hi[1] > 0 and hi[1] < gtol)
+
+  # update alpha if we have an improvement
+  p0 = efc_p0_in[worldid]
+  alpha = 0.0
+  improved = lo[0] < p0[0] or hi[0] < p0[0]
+  lo_better = lo[0] < hi[0]
+  alpha = wp.where(improved and lo_better, lo_alpha, alpha)
+  alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
+  efc_alpha_out[worldid] = alpha
+
+
+def _linesearch_iterative(m: types.Model, d: types.Data):
+  """Iterative linesearch."""
+  d.efc.ls_done.zero_()
+
+  wp.launch(
+    linesearch_iterative_gtol,
+    dim=(d.nworld,),
+    inputs=[
+      m.nv, m.opt.tolerance, m.opt.ls_tolerance, m.stat.meaninertia, d.efc.search_dot,
+      d.efc.done
+    ],
+    outputs=[d.efc.gtol])  # fmt: skip
+
+  wp.launch(
+    linesearch_iterative_init_p0_gauss,
+    dim=(d.nworld,),
+    inputs=[
+      d.efc.quad_gauss,
+      d.efc.done
+    ],
+    outputs=[d.efc.p0])  # fmt: skip
+
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    wp.launch(
+      linesearch_iterative_init_p0_elliptic0,
+      dim=(d.nworld, d.njmax,),
+      inputs=[
+        d.ne, d.nf, d.nl, d.nefc, d.efc.Jaref, d.efc.quad, d.efc.done,
+        d.efc.condim
+      ],
+      outputs=[d.efc.p0])  # fmt: skip
+    wp.launch(
+      linesearch_iterative_init_p0_elliptic1,
+      dim=(d.nconmax),
+      inputs=[
+        m.opt.impratio, d.ncon, d.contact.friction, d.contact.dim,
+        d.contact.efc_address, d.contact.worldid, d.efc.D, d.efc.jv, d.efc.quad,
+        d.efc.done, d.efc.u, d.efc.uu, d.efc.uv, d.efc.vv
+      ],
+      outputs=[d.efc.p0])  # fmt: skip
+  else:
+    wp.launch(
+      linesearch_iterative_init_p0_pyramidal,
+      dim=(d.nworld, d.njmax,),
+      inputs=[
+        d.ne, d.nf, d.nefc, d.efc.Jaref, d.efc.quad, d.efc.done
+      ], outputs=[d.efc.p0])  # fmt: skip
+
+  wp.launch(
+    linesearch_iterative_init_lo_gauss,
+    dim=(d.nworld,),
+    inputs=[
+      d.efc.quad_gauss, d.efc.done, d.efc.p0
+    ],
+    outputs=[d.efc.lo, d.efc.lo_alpha])  # fmt: skip
+
+  if m.opt.cone == types.ConeType.ELLIPTIC:
+    wp.launch(
+      linesearch_iterative_init_lo_elliptic0,
+      dim=(d.nworld, d.njmax,),
+      inputs=[
+        d.ne, d.nf, d.nl, d.nefc, d.efc.Jaref, d.efc.jv, d.efc.quad,
+        d.efc.done, d.efc.lo_alpha, d.efc.condim
+      ],
+      outputs=[d.efc.lo])  # fmt: skip
+    wp.launch(
+      linesearch_iterative_init_lo_elliptic1,
+      dim=(d.nconmax),
+      inputs=[
+        m.opt.impratio, d.ncon, d.contact.friction, d.contact.dim,
+        d.contact.efc_address, d.contact.worldid, d.efc.D, d.efc.jv, d.efc.quad,
+        d.efc.done, d.efc.lo_alpha, d.efc.u, d.efc.uu, d.efc.uv, d.efc.vv
+      ],
+      outputs=[d.efc.lo])  # fmt: skip
+  else:
+    wp.launch(
+      linesearch_iterative_init_lo_pyramidal,
+      dim=(d.nworld, d.njmax,),
+      inputs=[
+        d.ne, d.nf, d.nefc, d.efc.Jaref, d.efc.jv,
+        d.efc.quad, d.efc.done, d.efc.lo_alpha
+      ],
+      outputs=[d.efc.lo])  # fmt: skip
+
+  # set the lo/hi interval bounds
+
+  wp.launch(
+    linesearch_iterative_init_bounds,
+    dim=(d.nworld,),
+    inputs=[d.efc.done, d.efc.p0, d.efc.lo, d.efc.lo_alpha],
+    outputs=[d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha])  # fmt: skip
+
+  for _ in range(m.opt.ls_iterations):
+    # NOTE: we always launch ls_iterations kernels, but the kernels may early exit if done
+    # is true. this preserves cudagraph requirements (no dynamic kernel launching) at the
+    # expense of extra launches
+    wp.launch(
+      linesearch_iterative_next_alpha_gauss,
+      dim=(d.nworld,),
+      inputs=[
+        d.efc.quad_gauss, d.efc.done, d.efc.ls_done, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha
+      ],
+      outputs=[
+        d.efc.lo_next, d.efc.lo_next_alpha, d.efc.hi_next, d.efc.hi_next_alpha, d.efc.mid, d.efc.mid_alpha
+      ])  # fmt: skip
+
+    if m.opt.cone == types.ConeType.ELLIPTIC:
+      wp.launch(
+        linesearch_iterative_next_quad_elliptic0,
+        dim=(d.nworld, d.njmax,),
+        inputs=[
+          d.ne, d.nf, d.nl, d.nefc, d.efc.Jaref, d.efc.jv, d.efc.quad, d.efc.done, d.efc.ls_done,
+          d.efc.lo_next_alpha, d.efc.hi_next_alpha, d.efc.mid_alpha, d.efc.condim
+        ],
+        outputs=[d.efc.lo_next, d.efc.hi_next, d.efc.mid])  # fmt: skip
+      wp.launch(
+        linesearch_iterative_next_quad_elliptic1,
+        dim=(d.nconmax),
+        inputs=[
+          m.opt.impratio, d.ncon, d.contact.friction, d.contact.dim, d.contact.efc_address, d.contact.worldid, d.efc.D,
+          d.efc.jv, d.efc.quad, d.efc.done, d.efc.lo_next_alpha, d.efc.hi_next_alpha, d.efc.mid_alpha, d.efc.u, d.efc.uu,
+          d.efc.uv, d.efc.vv
+        ],
+        outputs=[d.efc.lo_next, d.efc.hi_next, d.efc.mid])  # fmt: skip
+    else:
+      wp.launch(
+        linesearch_iterative_next_quad_pyramidal,
+        dim=(d.nworld, d.njmax,),
+        inputs=[
+          d.ne, d.nf, d.nefc, d.efc.Jaref, d.efc.jv, d.efc.quad, d.efc.done, d.efc.ls_done,
+          d.efc.lo_next_alpha, d.efc.hi_next_alpha, d.efc.mid_alpha
+        ],
+        outputs=[d.efc.lo_next, d.efc.hi_next, d.efc.mid])  # fmt: skip
+
+    wp.launch(
+      linesearch_iterative_swap,
+      dim=(d.nworld,),
+      inputs=[
+        d.efc.gtol, d.efc.done, d.efc.ls_done, d.efc.p0, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha,
+        d.efc.lo_next, d.efc.lo_next_alpha, d.efc.hi_next, d.efc.hi_next_alpha, d.efc.mid, d.efc.mid_alpha
+      ],
+      outputs=[
+        d.efc.alpha, d.efc.ls_done, d.efc.lo, d.efc.lo_alpha, d.efc.hi, d.efc.hi_alpha
+      ])  # fmt: skip
+
+
 @wp.kernel
 def linesearch_parallel_kernel(
   # Model:
@@ -417,7 +1273,10 @@ def _linesearch(m: types.Model, d: types.Data):
       outputs=[d.efc.quad, d.efc.uv, d.efc.vv],
     )
 
-  _linesearch_parallel(m, d)
+  if m.opt.ls_parallel:
+    _linesearch_parallel(m, d)
+  else:
+    _linesearch_iterative(m, d)
 
   wp.launch(
     linesearch_qacc_ma,
