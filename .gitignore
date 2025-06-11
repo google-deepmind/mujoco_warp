@@ -7,12 +7,14 @@ MUJOCO_LOG.TXT
 ## Cloned repositories
 ## -------------------
 
-mujoco_warp/test_data/mujoco_menagerie
+benchmark/mujoco_menagerie/
+
 
 ## Created directories
 ## --------------------
 
-mujoco_warp/test_data/kitchen/combined_assets/
+benchmark/kitchen/combined_assets/
+benchmark/kitchen/kitchen_robot.xml
 
 # Language-specific files
 # =======================
