@@ -112,7 +112,7 @@ def gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3):
       while True:
         prev = int(imax)
         i = int(geom.graph[vert_edgeadr + imax])
-        while (geom.graph[edge_localid + i] >= 0):
+        while geom.graph[edge_localid + i] >= 0:
           subidx = geom.graph[edge_localid + i]
           idx = geom.graph[vert_globalid + subidx]
           dist = wp.dot(local_dir, geom.vert[geom.vertadr + idx])
