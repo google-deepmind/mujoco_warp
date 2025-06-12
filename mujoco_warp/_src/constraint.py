@@ -428,7 +428,6 @@ def _efc_equality_tendon(
     invweight = tendon_invweight0[worldid, obj1id]
     pos = pos1 - data[0]
     deriv = 0.0
-    jac2 = 0.0
 
   Jqvel = float(0.0)
   for i in range(nv):
