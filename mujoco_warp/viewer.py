@@ -86,9 +86,9 @@ def _main(argv: Sequence[str]) -> None:
     # double warmup to work around issues with compilation during graph capture:
     mjwarp.step(m, d)
     # capture the whole step function as a CUDA graph
-    # with wp.ScopedCapture() as capture:
-    #  mjwarp.step(m, d)
-    # graph = capture.graph
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+    graph = capture.graph
     elapsed = time.time() - start
     print(f"Compilation took {elapsed}s.")
 
@@ -109,14 +109,10 @@ def _main(argv: Sequence[str]) -> None:
         wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
 
         if _VIEWER_GLOBAL_STATE["running"]:
-          # wp.capture_launch(graph)
-          mjwarp.step(m, d)
-          wp.synchronize()
+          wp.capture_launch(graph)
         elif _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
-          # wp.capture_launch(graph)
-          mjwarp.step(m, d)
-          wp.synchronize()
+          wp.capture_launch(graph)
 
         mjwarp.get_data_into(mjd, mjm, d)
 
