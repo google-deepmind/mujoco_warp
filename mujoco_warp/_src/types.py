@@ -225,11 +225,8 @@ class GeomType(enum.IntEnum):
 
 
 class SDFType(enum.IntEnum):
-  BOLT = 3
-  BOWL = 4
-  GEAR = 5
-  NUT = 6
-  TORUS = 7
+  BOLT = 2
+  NUT = 5
 
 
 class SolverType(enum.IntEnum):
