@@ -2322,7 +2322,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       # can be change in future to fine-tune the perf. The optimal factor will
       # depend on the kernel's occupancy, which determines how many blocks can
       # simultaneously run on the SM. TODO: This factor can be tuned further.
-      dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+      dim_x = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
       dim_y = dim_x
     else:
       # fall back for CPU
