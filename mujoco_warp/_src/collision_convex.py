@@ -92,14 +92,39 @@ def gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3):
     support_pt = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.MESH.value):
     max_dist = float(FLOAT_MIN)
-    # exhaustive search over all vertices
-    # TODO(team): consider hill-climb over graph data
-    for i in range(geom.vertnum):
-      vert = geom.vert[geom.vertadr + i]
-      dist = wp.dot(vert, local_dir)
-      if dist > max_dist:
-        max_dist = dist
-        support_pt = vert
+    if geom.graphadr == -1 or geom.vertnum < 10:
+      # exhaustive search over all vertices
+      for i in range(geom.vertnum):
+        vert = geom.vert[geom.vertadr + i]
+        dist = wp.dot(vert, local_dir)
+        if dist > max_dist:
+          max_dist = dist
+          support_pt = vert
+    else:
+      numvert = geom.graph[geom.graphadr]
+      vert_edgeadr = geom.graphadr + 2
+      vert_globalid = geom.graphadr + 2 + numvert
+      edge_localid = geom.graphadr + 2 + 2 * numvert
+      # hillclimb until no change
+      prev = int(-1)
+      imax = int(0)
+
+      while True:
+        prev = int(imax)
+        i = int(geom.graph[vert_edgeadr + imax])
+        while (geom.graph[edge_localid + i] >= 0):
+          subidx = geom.graph[edge_localid + i]
+          idx = geom.graph[vert_globalid + subidx]
+          dist = wp.dot(local_dir, geom.vert[geom.vertadr + idx])
+          if dist > max_dist:
+            max_dist = dist
+            imax = int(subidx)
+          i += int(1)
+        if imax == prev:
+          break
+      imax = geom.graph[vert_globalid + imax]
+      support_pt = geom.vert[geom.vertadr + imax]
+
     support_pt = geom.rot @ support_pt + geom.pos
   elif geomtype == int(GeomType.HFIELD.value):
     max_dist = float(FLOAT_MIN)
