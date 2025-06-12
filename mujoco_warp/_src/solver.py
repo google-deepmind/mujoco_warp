@@ -881,8 +881,8 @@ def linesearch_parallel_fused(
   efc_quad_gauss_in: wp.array(dtype=wp.vec3),
   efc_done_in: wp.array(dtype=bool),
   # Data out:
-  efc_cost_candidate_out: wp.array2d(dtype=float),
   efc_alpha_out: wp.array(dtype=float),
+  efc_cost_candidate_out: wp.array2d(dtype=float),
 ):
   worldid, alphaid = wp.tid()
 
@@ -938,7 +938,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
       d.efc.quad_gauss,
       d.efc.done,
     ],
-    outputs=[d.efc.cost_candidate, d.efc.alpha],
+    outputs=[d.efc.alpha, d.efc.cost_candidate],
   )
 
 
