@@ -110,9 +110,11 @@ def _main(argv: Sequence[str]) -> None:
 
         if _VIEWER_GLOBAL_STATE["running"]:
           wp.capture_launch(graph)
+          wp.synchronize()
         elif _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
           wp.capture_launch(graph)
+          wp.synchronize()
 
         mjwarp.get_data_into(mjd, mjm, d)
 
