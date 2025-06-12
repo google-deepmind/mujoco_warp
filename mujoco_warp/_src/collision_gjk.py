@@ -66,9 +66,6 @@ class Polytope:
   edges: wp.array(dtype=int)
 
 
-# kernel_analyzer: off
-
-
 @wp.func
 def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int):
   # compute witness point v
@@ -706,6 +703,7 @@ def _epa_witness(pt: Polytope, face_idx: int):
 
 @wp.func
 def _polytope2(
+  # In:
   pt: Polytope,
   dist: float,
   simplex: mat43,
@@ -800,6 +798,7 @@ def _polytope2(
 
 @wp.func
 def _polytope3(
+  # In:
   pt: Polytope,
   dist: float,
   simplex: mat43,
@@ -887,6 +886,7 @@ def _polytope3(
 
 @wp.func
 def _polytope4(
+  # In:
   pt: Polytope,
   dist: float,
   simplex: mat43,
@@ -1035,6 +1035,7 @@ def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom
 
 @wp.func
 def ccd(
+  # In:
   tolerance: float,
   gjk_iterations: int,
   epa_iterations: int,
@@ -1086,6 +1087,3 @@ def ccd(
   # simplex not on boundary (objects are penetrating)
   if pt.status == 0:
     return _epa(tolerance * tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
-
-
-# kernel_analyzer: on
