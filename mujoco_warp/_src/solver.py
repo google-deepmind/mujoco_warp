@@ -1924,15 +1924,12 @@ def update_gradient_JTDAJ(
   dof_tri_row: wp.array(dtype=int),
   dof_tri_col: wp.array(dtype=int),
   # Data in:
-  njmax_in: int,
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_active_in: wp.array2d(dtype=bool),
   efc_done_in: wp.array(dtype=bool),
   # In:
-  nblocks_perblock: int,
-  dim_x: int,
   # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
@@ -1983,7 +1980,7 @@ def update_gradient_JTCJ(
   efc_uu_in: wp.array(dtype=float),
   # In:
   nblocks_perblock: int,
-  dim_y: int,
+  dim_block: int,
   # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
@@ -1993,7 +1990,7 @@ def update_gradient_JTCJ(
   dof2id = dof_tri_col[elementid]
 
   for i in range(nblocks_perblock):
-    conid = conid_start + i * dim_y
+    conid = conid_start + i * dim_block
 
     if conid >= min(ncon_in[0], nconmax_in):
       return
@@ -2189,7 +2186,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     # of SMs on the GPU. We can now query the SM count:
     # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
 
-    # make dim_x and nblocks_perblock static arguments for _JTDAJ to allow loop unrolling
+    # make dim_block and nblocks_perblock static arguments for _JTDAJ to allow loop unrolling
     if wp.get_device().is_cuda:
       sm_count = wp.get_device().sm_count
 
@@ -2197,14 +2194,12 @@ def _update_gradient(m: types.Model, d: types.Data):
       # can be change in future to fine-tune the perf. The optimal factor will
       # depend on the kernel's occupancy, which determines how many blocks can
       # simultaneously run on the SM. TODO: This factor can be tuned further.
-      dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
-      dim_y = dim_x
+      dim_block = int((sm_count * 6 * 256) / m.dof_tri_row.size)
     else:
       # fall back for CPU
-      dim_x = d.njmax
-      dim_y = d.nconmax
+      dim_block = d.nconmax
 
-    nblocks_perblock = int((d.njmax + dim_x - 1) / dim_x)
+    nblocks_perblock = int((d.nconmax + dim_block - 1) / dim_block)
 
     wp.launch(
       update_gradient_JTDAJ,
@@ -2212,23 +2207,19 @@ def _update_gradient(m: types.Model, d: types.Data):
       inputs=[
         m.dof_tri_row,
         m.dof_tri_col,
-        d.njmax,
         d.nefc,
         d.efc.J,
         d.efc.D,
         d.efc.active,
         d.efc.done,
-        nblocks_perblock,
-        dim_x,
       ],
       outputs=[d.efc.h],
     )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
-      nblocks_perblock = int((d.nconmax + dim_y - 1) / dim_y)
       wp.launch(
         update_gradient_JTCJ,
-        dim=(dim_y, m.dof_tri_row.size),
+        dim=(dim_block, m.dof_tri_row.size),
         inputs=[
           m.opt.impratio,
           m.dof_tri_row,
@@ -2245,7 +2236,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.u,
           d.efc.uu,
           nblocks_perblock,
-          dim_y,
+          dim_block,
         ],
         outputs=[d.efc.h],
       )
