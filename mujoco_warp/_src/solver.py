@@ -2189,7 +2189,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     # of SMs on the GPU. We can now query the SM count:
     # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
 
-    # make dim_block and nblocks_perblock static arguments for _JTDAJ to allow loop unrolling
+    # make dim_block and nblocks_perblock static for _JTDAJ to allow loop unrolling
     if wp.get_device().is_cuda:
       sm_count = wp.get_device().sm_count
 
