@@ -868,7 +868,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
 
 
 @wp.kernel
-def linesearch_parallel_kernel(
+def linesearch_parallel_fused(
   # Model:
   nlsp: int,
   # Data in:
@@ -925,7 +925,7 @@ def linesearch_parallel_kernel(
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
     wp.launch(
-    linesearch_parallel_kernel,
+    linesearch_parallel_fused,
     dim=(d.nworld, m.nlsp),
     inputs=[
       m.nlsp,
