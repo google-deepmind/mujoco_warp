@@ -57,7 +57,7 @@ class Polytope:
   face_index: wp.array(dtype=int)
   nfaces: int
 
-  # TODO(kbayes): look into if a linear map actually improve performance
+  # TODO(kbayes): look into if a linear map actually improves performance
   map: wp.array(dtype=int)
   nmap: int
 
@@ -428,9 +428,10 @@ def _S1D(s1: wp.vec3, s2: wp.vec3):
 
 
 @wp.func
-def gjk(
+def _gjk(
   tolerance: float, gjk_iterations: int, geom1: Geom, geom2: Geom, x1_0: wp.vec3, x2_0: wp.vec3, geomtype1: int, geomtype2: int
 ):
+  """Find distance within a tolerance between two geoms."""
   simplex = mat43()
   simplex1 = mat43()
   simplex2 = mat43()
@@ -942,6 +943,7 @@ def _polytope4(
 
 @wp.func
 def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int):
+  """Recover pentration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
   upper2 = FLOAT_MAX
   idx = int(-1)
@@ -1050,37 +1052,37 @@ def ccd(
   edges: wp.array(dtype=int),
 ):
   """General convex collision detection via GJK/EPA."""
-  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2)
+  result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2)
 
-  # recover contact data
-  if result.dist <= tolerance and result.dim > 1:
-    pt = Polytope()
-    pt.nfaces = 0
-    pt.nmap = 0
-    pt.nverts = 0
-    pt.nedges = 0
-    pt.verts = verts
-    pt.verts1 = verts1
-    pt.verts2 = verts2
-    pt.face_verts = face_verts
-    pt.face_v = face_v
-    pt.face_dist2 = face_dist2
-    pt.face_index = face_index
-    pt.map = map
-    pt.edges = edges
+  # no pentration depth to recover
+  if result.dist > tolerance or result.dim < 2:
+    return result.dist, result.x1, result.x2
 
-    if result.dim == 2:
-      pt = _polytope2(pt, result.dist, result.simplex, result.simplex1, result.simplex2, geom1, geom2, geomtype1, geomtype2)
-    elif result.dim == 3:
-      pt = _polytope3(pt, result.dist, result.simplex, result.simplex1, result.simplex2, geom1, geom2, geomtype1, geomtype2)
-    else:
-      pt = _polytope4(pt, result.dist, result.simplex, result.simplex1, result.simplex2, geom1, geom2, geomtype1, geomtype2)
+  pt = Polytope()
+  pt.nfaces = 0
+  pt.nmap = 0
+  pt.nverts = 0
+  pt.nedges = 0
+  pt.verts = verts
+  pt.verts1 = verts1
+  pt.verts2 = verts2
+  pt.face_verts = face_verts
+  pt.face_v = face_v
+  pt.face_dist2 = face_dist2
+  pt.face_index = face_index
+  pt.map = map
+  pt.edges = edges
 
-    # simplex not on boundary (objects are penetrating)
-    if pt.status == 0:
-      return _epa(tolerance * tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
+  if result.dim == 2:
+    pt = _polytope2(pt, result.dist, result.simplex, result.simplex1, result.simplex2, geom1, geom2, geomtype1, geomtype2)
+  elif result.dim == 3:
+    pt = _polytope3(pt, result.dist, result.simplex, result.simplex1, result.simplex2, geom1, geom2, geomtype1, geomtype2)
+  else:
+    pt = _polytope4(pt, result.dist, result.simplex, result.simplex1, result.simplex2, geom1, geom2, geomtype1, geomtype2)
 
-  return result.dist, result.x1, result.x2
+  # simplex not on boundary (objects are penetrating)
+  if pt.status == 0:
+    return _epa(tolerance * tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
 
 
 # kernel_analyzer: on
