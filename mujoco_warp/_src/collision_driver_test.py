@@ -18,11 +18,15 @@ import mujoco
 import numpy as np
 from absl.testing import absltest
 from absl.testing import parameterized
-
+from mujoco_warp.test_data.collision_sdf.nut import nut, nut_sdf_grad
+from mujoco_warp.test_data.collision_sdf.bolt import bolt, bolt_sdf_grad
 import mujoco_warp as mjwarp
 from .types import SDFType
-
+import warp as wp
 from . import test_util
+from . import collision_sdf
+
+
 
 
 class CollisionTest(parameterized.TestCase):
@@ -70,7 +74,7 @@ class CollisionTest(parameterized.TestCase):
   </worldbody>
 </mujoco>
 """,
-     "BOLT_BOLT": """<mujoco>
+     "NUT_BOLT": """<mujoco>
   <extension>
     <plugin plugin="mujoco.sdf.nut">
       <instance name="nut">
@@ -388,31 +392,55 @@ class CollisionTest(parameterized.TestCase):
 
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):
-    """Tests collisions with different geometries."""
-    mjm, mjd, m, d = test_util.fixture(xml=self._SDF_SDF[fixture])
+      
+      """Tests collisions with different geometries."""
 
-    # Exempt GJK collisions from exact contact count check
-    # because GJK generates more contacts
-    allow_different_contact_count = True
-    mujoco.mj_collision(mjm, mjd)
-    mjwarp.collision(m, d)
-    for i in range(10):
-        actual_dist = mjd.contact.dist[i]
-        actual_pos = mjd.contact.pos[i]
-        actual_frame = mjd.contact.frame[i][0:3]
-        result = False
-        test_dist = d.contact.dist.numpy()[i]
-        test_pos = d.contact.pos.numpy()[i, :]
-        test_frame = d.contact.frame.numpy()[i].flatten()[0:3] # frame is not computed always correctly (?)
-        check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
-        check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-1)
-        if check_dist and check_pos:
-          result = True
-          break
-        np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+      @wp.func
+      def user_sdf(p: wp.vec3, attr: wp.vec3,  sdf_type: int) -> float:
+          result = 0.0
+          if sdf_type == int(SDFType.NUT.value):
+              result = nut(p, attr)
+          elif sdf_type == int(SDFType.BOLT.value):
+              result = bolt(p, attr)
+          return result
 
-    if not allow_different_contact_count:
-      self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
+      @wp.func
+      def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
+            if sdf_type == int(SDFType.NUT.value):
+              return nut_sdf_grad(p, attr)
+            elif sdf_type == int(SDFType.BOLT.value):
+              return bolt_sdf_grad(p, attr)
+            return wp.vec3()
+
+
+      collision_sdf.user_sdf = user_sdf
+      collision_sdf.user_sdf_grad = user_sdf_grad
+      mjm, mjd, m, d = test_util.fixture(xml=self._SDF_SDF[fixture])
+
+      # Exempt GJK collisions from exact contact count check
+      # because GJK generates more contacts
+      allow_different_contact_count = True
+      mujoco.mj_collision(mjm, mjd)
+      mjwarp.collision(m, d)
+      for i in range(10):
+          actual_dist = mjd.contact.dist[i]
+          actual_pos = mjd.contact.pos[i]
+          actual_frame = mjd.contact.frame[i][0:3]
+          result = False
+          test_dist = d.contact.dist.numpy()[i]
+          test_pos = d.contact.pos.numpy()[i, :]
+          test_frame = d.contact.frame.numpy()[i].flatten()[0:3] # frame is not computed always correctly (?)
+          check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
+          print(check_dist, actual_dist, test_dist, actual_pos, test_pos, actual_frame, test_frame )
+
+          check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-1)
+          if check_dist and check_pos:
+            result = True
+            break
+          np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+
+      if not allow_different_contact_count:
+        self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
