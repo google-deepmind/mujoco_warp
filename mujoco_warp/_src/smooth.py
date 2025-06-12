@@ -1292,7 +1292,7 @@ def rne_postconstraint(m: Model, d: Data):
 
   wp.launch(
     _cfrc_ext_equality,
-    dim=(d.nworld, m.neq,),
+    dim=(d.nworld, m.neq),
     inputs=[
       m.body_rootid,
       m.site_bodyid,

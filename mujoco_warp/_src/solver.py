@@ -924,7 +924,7 @@ def linesearch_parallel_fused(
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
-    wp.launch(
+  wp.launch(
     linesearch_parallel_fused,
     dim=(d.nworld, m.nlsp),
     inputs=[
@@ -1266,7 +1266,7 @@ def _linesearch(m: types.Model, d: types.Data):
 
   wp.launch(
     linesearch_jaref,
-    dim=(d.nworld, d.njmax,),
+    dim=(d.nworld, d.njmax),
     inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
     outputs=[d.efc.Jaref],
   )
@@ -1715,7 +1715,7 @@ def _update_constraint(m: types.Model, d: types.Data):
   if m.opt.cone == types.ConeType.PYRAMIDAL:
     wp.launch(
       update_constraint_efc_pyramidal,
-      dim=(d.nworld, d.njmax,),
+      dim=(d.nworld, d.njmax),
       inputs=[
         d.ne,
         d.nf,
