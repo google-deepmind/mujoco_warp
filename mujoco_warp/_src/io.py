@@ -714,7 +714,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     nconmax = nworld * 20
   if njmax == -1:
     # TODO(team): heuristic for njmax
-    njmax = nworld * 20 * 6
+    njmax = 20 * 6
 
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
@@ -952,7 +952,7 @@ def put_data(
   # TODO(team): better heuristic for nconmax
   nconmax = nconmax or max(512, mjd.ncon * nworld)
   # TODO(team): better heuristic for njmax
-  njmax = njmax or max(512, mjd.nefc * nworld)
+  njmax = njmax or max(5, mjd.nefc)
 
   if nworld < 1:
     raise ValueError("nworld must be >= 1")
