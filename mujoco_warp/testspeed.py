@@ -107,8 +107,6 @@ def _main(argv: Sequence[str]):
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
 
-  wp.config.lineinfo = True
-
   solver_name = {1: "CG", 2: "Newton"}[mjm.opt.solver]
   linesearch_name = {True: "parallel", False: "iterative"}[m.opt.ls_parallel]
   print(
