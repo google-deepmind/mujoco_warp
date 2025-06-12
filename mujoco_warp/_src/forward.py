@@ -681,22 +681,23 @@ def _actuator_force(
     ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
 
   if na:
-    dyntype = actuator_dyntype[uid]
     actadr = actuator_actadr[uid]
 
-    act_dot = 0.0
-    if dyntype == int(DynType.INTEGRATOR.value):
-      act_dot = ctrl
-    elif dyntype == int(DynType.FILTER.value) or dyntype == int(DynType.FILTEREXACT.value):
-      dynprm = actuator_dynprm[worldid, uid]
-      act = act_in[worldid, actadr]
-      act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
-    elif dyntype == int(DynType.MUSCLE.value):
-      dynprm = actuator_dynprm[worldid, uid]
-      act = act_in[worldid, actadr]
-      act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
+    if actadr > -1:
+      dyntype = actuator_dyntype[uid]
+      act_dot = 0.0
+      if dyntype == int(DynType.INTEGRATOR.value):
+        act_dot = ctrl
+      elif dyntype == int(DynType.FILTER.value) or dyntype == int(DynType.FILTEREXACT.value):
+        dynprm = actuator_dynprm[worldid, uid]
+        act = act_in[worldid, actadr]
+        act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
+      elif dyntype == int(DynType.MUSCLE.value):
+        dynprm = actuator_dynprm[worldid, uid]
+        act = act_in[worldid, actadr]
+        act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
 
-    act_dot_out[worldid, actadr] = act_dot
+      act_dot_out[worldid, actadr] = act_dot
 
   ctrl_act = ctrl
   if na:
