@@ -402,7 +402,6 @@ def _efc_equality_tendon(
 
   efc_worldid_out[efcid] = worldid
 
-
   obj1id = eq_obj1id[eqid]
   obj2id = eq_obj2id[eqid]
 
