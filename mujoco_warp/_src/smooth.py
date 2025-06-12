@@ -2802,7 +2802,12 @@ def _spatial_tendon_wrap(
         j += 1
 
       # assign last site before pulley or tendon end
-      if j == tendonnum - 1 or wrap_type[adr + j + 1] == int(WrapType.PULLEY.value):
+      if adr + j + 1 < wrap_type.shape[0]:
+        last_before_pulley = wrap_type[adr + j + 1] == int(WrapType.PULLEY.value)
+      else:
+        last_before_pulley = False
+
+      if j == tendonnum - 1 or last_before_pulley:
         row0 = (wrapcount + 0) // 2
         col0 = (wrapcount + 0) % 2
 
