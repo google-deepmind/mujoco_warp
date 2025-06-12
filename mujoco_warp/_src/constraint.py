@@ -245,6 +245,7 @@ def _efc_equality_connect(
 @wp.kernel
 def _efc_equality_joint(
   # Model:
+  nv: int,
   opt_timestep: float,
   qpos0: wp.array2d(dtype=float),
   jnt_qposadr: wp.array(dtype=int),
@@ -286,6 +287,9 @@ def _efc_equality_joint(
 
   if efcid >= njmax_in:
     return
+
+  for i in range(nv):
+    efc_J_out[worldid, efcid, i] = 0.0
 
   jntid_1 = eq_obj1id[i_eq]
   jntid_2 = eq_obj2id[i_eq]
@@ -451,6 +455,7 @@ def _efc_equality_tendon(
 @wp.kernel
 def _efc_friction_dof(
   # Model:
+  nv: int,
   opt_timestep: float,
   dof_invweight0: wp.array2d(dtype=float),
   dof_frictionloss: wp.array2d(dtype=float),
@@ -485,6 +490,9 @@ def _efc_friction_dof(
     return
 
   wp.atomic_add(nf_out, worldid, 1)
+
+  for i in range(nv):
+    efc_J_out[worldid, efcid, i] = 0.0
 
   efc_J_out[worldid, efcid, dofid] = 1.0
   Jqvel = qvel_in[worldid, dofid]
@@ -783,6 +791,7 @@ def _efc_equality_weld(
 @wp.kernel
 def _efc_limit_slide_hinge(
   # Model:
+  nv: int,
   opt_timestep: float,
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
@@ -828,6 +837,9 @@ def _efc_limit_slide_hinge(
     if efcid >= njmax_in:
       return
 
+    for i in range(nv):
+      efc_J_out[worldid, efcid, i] = 0.0
+
     dofadr = jnt_dofadr[jntid]
 
     J = float(dist_min < dist_max) * 2.0 - 1.0
@@ -863,6 +875,7 @@ def _efc_limit_slide_hinge(
 @wp.kernel
 def _efc_limit_ball(
   # Model:
+  nv: int,
   opt_timestep: float,
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
@@ -912,6 +925,9 @@ def _efc_limit_ball(
 
     if efcid >= njmax_in:
       return
+
+    for i in range(nv):
+      efc_J_out[worldid, efcid, i] = 0.0
 
     dofadr = jnt_dofadr[jntid]
 
@@ -1001,6 +1017,9 @@ def _efc_limit_tendon(
 
     if efcid >= njmax_in:
       return
+
+    for i in range(nv):
+      efc_J_out[worldid, efcid, i] = 0.0
 
     Jqvel = float(0.0)
     scl = float(dist_min < dist_max) * 2.0 - 1.0
@@ -1399,8 +1418,6 @@ def make_constraint(m: types.Model, d: types.Data):
   d.nl.zero_()
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
-    d.efc.J.zero_()
-
     refsafe = m.opt.disableflags & types.DisableBit.REFSAFE
 
     if not (m.opt.disableflags & types.DisableBit.EQUALITY.value):
@@ -1496,6 +1513,7 @@ def make_constraint(m: types.Model, d: types.Data):
         _efc_equality_joint,
         dim=(d.nworld, m.eq_jnt_adr.size),
         inputs=[
+          m.nv,
           m.opt.timestep,
           m.qpos0,
           m.jnt_qposadr,
@@ -1582,6 +1600,7 @@ def make_constraint(m: types.Model, d: types.Data):
         _efc_friction_dof,
         dim=(d.nworld, m.nv),
         inputs=[
+          m.nv,
           m.opt.timestep,
           m.dof_invweight0,
           m.dof_frictionloss,
@@ -1643,6 +1662,7 @@ def make_constraint(m: types.Model, d: types.Data):
           _efc_limit_ball,
           dim=(d.nworld, m.jnt_limited_ball_adr.size),
           inputs=[
+            m.nv,
             m.opt.timestep,
             m.jnt_qposadr,
             m.jnt_dofadr,
@@ -1678,6 +1698,7 @@ def make_constraint(m: types.Model, d: types.Data):
           _efc_limit_slide_hinge,
           dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
           inputs=[
+            m.nv,
             m.opt.timestep,
             m.jnt_qposadr,
             m.jnt_dofadr,

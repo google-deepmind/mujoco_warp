@@ -234,18 +234,18 @@ class SolverTest(parameterized.TestCase):
   #   ineq_J1 = efc_J1[mjd1.ne :]
   #   ineq_J2 = efc_J2[mjd2.ne :]
 
-  #   # Stack all equality constraints first, then all inequality constraints
-  #   efc_J_fill = np.vstack(
-  #     [
-  #       eq_J0,
-  #       eq_J1,
-  #       eq_J2,  # All equality constraints grouped together
-  #       ineq_J0,
-  #       ineq_J1,
-  #       ineq_J2,  # All inequality constraints
-  #       np.zeros((nefc_fill, mjm.nv)),  # Padding
-  #     ]
-  #   )
+    # # Stack all equality constraints first, then all inequality constraints
+    # efc_J_fill = np.vstack(
+    #   [
+    #     eq_J0,
+    #     eq_J1,
+    #     eq_J2,  # All equality constraints grouped together
+    #     ineq_J0,
+    #     ineq_J1,
+    #     ineq_J2,  # All inequality constraints
+    #     np.full((nefc_fill, mjm.nv), np.nan),  # Padding
+    #   ]
+    # )
 
   #   # Similarly for D and aref values
   #   eq_D0 = mjd0.efc_D[: mjd0.ne]
