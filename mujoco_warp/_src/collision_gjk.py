@@ -716,6 +716,7 @@ def _polytope2(
   geomtype1: int,
   geomtype2: int,
 ):
+  """Create polytope for EPA given a 1-simplex from GJK"""
   v1 = simplex[0]
   v2 = simplex[1]
   diff = v2 - v1
@@ -809,6 +810,7 @@ def _polytope3(
   geomtype1: int,
   geomtype2: int,
 ):
+  """Create polytope for EPA given a 2-simplex from GJK"""
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
   if wp.norm_l2(n) < MJ_MINVAL:
@@ -895,6 +897,7 @@ def _polytope4(
   geomtype1: int,
   geomtype2: int,
 ):
+  """Create polytope for EPA given a 3-simplex from GJK"""
   pt.verts[0] = simplex[0]
   pt.verts[1] = simplex[1]
   pt.verts[2] = simplex[2]
