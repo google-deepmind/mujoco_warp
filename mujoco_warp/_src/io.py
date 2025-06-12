@@ -871,7 +871,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       mid=wp.zeros((nworld,), dtype=wp.vec3),
       mid_alpha=wp.zeros((nworld,), dtype=float),
       cost_candidate=wp.zeros((nworld,), dtype=float),
-      quad_total_candidate=wp.zeros((nworld,), dtype=wp.vec3f),
       # elliptic cone
       u=wp.zeros((nconmax,), dtype=types.vec6),
       uu=wp.zeros((nconmax,), dtype=float),
@@ -1215,7 +1214,6 @@ def put_data(
       mid=wp.empty(shape=(nworld,), dtype=wp.vec3),
       mid_alpha=wp.empty(shape=(nworld,), dtype=float),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
-      quad_total_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=wp.vec3f),
       # TODO(team): skip allocation if not ellpitic
       u=wp.empty((nconmax,), dtype=types.vec6),
       uu=wp.empty((nconmax,), dtype=float),
