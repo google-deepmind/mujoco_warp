@@ -1257,7 +1257,8 @@ def _cfrc_ext_contact(
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
-    efc_force_in[worldid],
+    efc_force_in,
+    worldid,
     contactid,
     to_world_frame=True,
   )

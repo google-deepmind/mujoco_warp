@@ -327,8 +327,9 @@ def contact_force_fn(
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
-  efc_force_in: wp.array(dtype=float),
+  efc_force_in: wp.array2d(dtype=float),
   # In:
+  worldid: int,
   contact_id: int,
   to_world_frame: bool,
 ) -> wp.spatial_vector:
@@ -340,14 +341,14 @@ def contact_force_fn(
   if contact_id >= 0 and contact_id <= ncon_in[0] and efc_address >= 0:
     if opt_cone == int(ConeType.PYRAMIDAL.value):
       force = _decode_pyramid(
-        efc_force_in,
+        efc_force_in[worldid],
         efc_address,
         contact_friction_in[contact_id],
         condim,
       )
     else:
       for i in range(condim):
-        force[i] = efc_force_in[contact_efc_address_in[contact_id, i]]
+        force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
 
   if to_world_frame:
     # Transform both top and bottom parts of spatial vector by the full contact frame matrix
@@ -392,7 +393,8 @@ def contact_force_kernel(
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
-    efc_force_in[worldid],
+    efc_force_in,
+    worldid,
     contactid,
     to_world_frame,
   )
