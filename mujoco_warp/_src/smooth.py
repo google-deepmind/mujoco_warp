@@ -158,14 +158,15 @@ def _geom_local_to_global(
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
+  geom_skip_in: wp.array(dtype=bool),
   # Data out:
-  geom_sameframe_out: wp.array(dtype=int),
+  geom_skip_out: wp.array(dtype=bool),
   geom_xpos_out: wp.array2d(dtype=wp.vec3),
   geom_xmat_out: wp.array2d(dtype=wp.mat33),
 ):
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
-  if geom_sameframe_out[geomid] == 0:
+  if not geom_skip_in[geomid]:
     # Calculate only if necessary
     xpos = xpos_in[worldid, bodyid]
     xquat = xquat_in[worldid, bodyid]
@@ -174,7 +175,7 @@ def _geom_local_to_global(
 
     if bodyid == 0:
       # static geom pose are calculated only once
-      geom_sameframe_out[geomid] = 1
+      geom_skip_out[geomid] = True
 
 
 @wp.kernel
@@ -317,8 +318,8 @@ def kinematics(m: Model, d: Data):
   wp.launch(
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
-    inputs=[m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
-    outputs=[d.geom_sameframe, d.geom_xpos, d.geom_xmat],
+    inputs=[m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat, d.geom_skip],
+    outputs=[d.geom_skip, d.geom_xpos, d.geom_xmat],
   )
 
   wp.launch(
