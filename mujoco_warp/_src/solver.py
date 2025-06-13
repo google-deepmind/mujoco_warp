@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from math import ceil
+from math import ceil, sqrt
 
 import warp as wp
 
@@ -1647,8 +1647,6 @@ def update_constraint_zero_qfrc_constraint(
 
 @wp.kernel
 def update_constraint_init_qfrc_constraint(
-  # Model:
-  nv: int,
   # Data in:
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
@@ -1657,21 +1655,18 @@ def update_constraint_init_qfrc_constraint(
   # Data out:
   qfrc_constraint_out: wp.array2d(dtype=float),
 ):
-  worldid, efcid = wp.tid()
-
-  if efcid >= nefc_in[worldid]:
-    return
+  worldid, dofid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
-  force = efc_force_in[worldid, efcid]
-  for i in range(nv):
-    wp.atomic_add(
-      qfrc_constraint_out[worldid],
-      i,
-      efc_J_in[worldid, efcid, i] * force,
-    )
+  sum_qfrc = float(0.0)
+  for efcid in range(nefc_in[worldid]):
+    efc_J = efc_J_in[worldid, efcid, dofid]
+    force = efc_force_in[worldid, efcid]
+    sum_qfrc += efc_J * force
+
+  qfrc_constraint_out[worldid, dofid] += sum_qfrc
 
 
 @wp.kernel
@@ -1809,8 +1804,8 @@ def _update_constraint(m: types.Model, d: types.Data):
 
   wp.launch(
     update_constraint_init_qfrc_constraint,
-    dim=(d.nworld, d.njmax),
-    inputs=[m.nv, d.nefc, d.efc.J, d.efc.force, d.efc.done],
+    dim=(d.nworld, m.nv),
+    inputs=[d.nefc, d.efc.J, d.efc.force, d.efc.done],
     outputs=[d.qfrc_constraint],
   )
 
@@ -1923,16 +1918,12 @@ def update_gradient_copy_lower_triangle(
 
 @wp.kernel
 def update_gradient_JTDAJ(
-  # Model:
-  dof_tri_row: wp.array(dtype=int),
-  dof_tri_col: wp.array(dtype=int),
   # Data in:
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_active_in: wp.array2d(dtype=bool),
   efc_done_in: wp.array(dtype=bool),
-  # In:
   # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
@@ -1944,13 +1935,11 @@ def update_gradient_JTDAJ(
 
   nefc = nefc_in[worldid]
 
-  dofi = dof_tri_row[elementid]
-  dofj = dof_tri_col[elementid]
+  dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
+  dofj = elementid - (dofi * (dofi + 1)) // 2
 
+  sum_h = float(0.0)
   for efcid in range(nefc):
-    # if efcid >= min(nefc, njmax_in):
-    #   return
-
     efc_D = efc_D_in[worldid, efcid]
     active = efc_active_in[worldid, efcid]
 
@@ -1958,9 +1947,9 @@ def update_gradient_JTDAJ(
       continue
 
     # TODO(team): sparse efc_J
-    value = efc_J_in[worldid, efcid, dofi] * efc_J_in[worldid, efcid, dofj] * efc_D
-    if value != 0.0:
-      wp.atomic_add(efc_h_out[worldid, dofi], dofj, value)
+    sum_h +=  efc_J_in[worldid, efcid, dofi] * efc_J_in[worldid, efcid, dofj] * efc_D
+
+  efc_h_out[worldid, dofi, dofj] += sum_h
 
 
 @wp.kernel
@@ -2208,8 +2197,8 @@ def _update_gradient(m: types.Model, d: types.Data):
       update_gradient_JTDAJ,
       dim=(d.nworld, m.dof_tri_row.size),
       inputs=[
-        m.dof_tri_row,
-        m.dof_tri_col,
+        # m.dof_tri_row,
+        # m.dof_tri_col,
         d.nefc,
         d.efc.J,
         d.efc.D,
