@@ -15,8 +15,6 @@
 
 """Public API for MJWarp."""
 
-from mujoco_warp._src.types import Constraint as Constraint
-
 from ._src.collision_driver import collision as collision
 from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase
