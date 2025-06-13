@@ -315,16 +315,16 @@ def sap_broadphase(m: Model, d: Data):
   )
 
   if m.opt.broadphase == int(BroadphaseType.SAP_TILE):
+    segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
+    wp.launch_tiled(
+      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[d.sap_projection_lower, d.sap_sort_index], block_dim=128
+    )
+  else:
     wp.utils.segmented_sort_pairs(
       d.sap_projection_lower,
       d.sap_sort_index,
       nworldgeom,
       d.sap_segment_index,
-    )
-  else:
-    segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
-    wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[d.sap_projection_lower, d.sap_sort_index], block_dim=128
     )
 
   wp.launch(
