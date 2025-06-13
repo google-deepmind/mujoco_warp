@@ -1649,6 +1649,8 @@ def update_constraint_init_qfrc_constraint(
 
 @wp.kernel
 def update_constraint_gauss_cost(
+  # Model in:
+  nv: int,
   # Data in:
   qacc_in: wp.array2d(dtype=float),
   qfrc_smooth_in: wp.array2d(dtype=float),
@@ -1659,18 +1661,19 @@ def update_constraint_gauss_cost(
   efc_gauss_out: wp.array(dtype=float),
   efc_cost_out: wp.array(dtype=float),
 ):
-  worldid, dofid = wp.tid()
+  worldid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
-  gauss_cost = (
-    0.5
-    * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
-    * (qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid])
-  )
-  wp.atomic_add(efc_gauss_out, worldid, gauss_cost)
-  wp.atomic_add(efc_cost_out, worldid, gauss_cost)
+  gauss_cost = float(0.0)
+  for dofid in range(nv):
+    gauss_cost += (
+      (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
+      * (qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid])
+    )
+  efc_gauss_out[worldid] += 0.5 * gauss_cost
+  efc_cost_out[worldid] += 0.5 * gauss_cost
 
 
 def _update_constraint(m: types.Model, d: types.Data):
@@ -1790,8 +1793,8 @@ def _update_constraint(m: types.Model, d: types.Data):
   # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
   wp.launch(
     update_constraint_gauss_cost,
-    dim=(d.nworld, m.nv),
-    inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
+    dim=(d.nworld),
+    inputs=[m.nv, d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
     outputs=[d.efc.gauss, d.efc.cost],
   )
 
