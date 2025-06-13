@@ -1130,16 +1130,15 @@ def _cfrc_ext_equality(
   xpos_in: wp.array2d(dtype=wp.vec3),
   xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
-  efc_worldid_in: wp.array(dtype=int),
-  efc_id_in: wp.array(dtype=int),
-  efc_force_in: wp.array(dtype=float),
+  efc_id_in: wp.array2d(dtype=int),
+  efc_force_in: wp.array2d(dtype=float),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
-  eqid = wp.tid()
+  worldid, eqid = wp.tid()
 
-  ne_connect = ne_connect_in[0]
-  ne_weld = ne_weld_in[0]
+  ne_connect = ne_connect_in[worldid]
+  ne_weld = ne_weld_in[worldid]
   num_connect = ne_connect // 3
 
   if eqid >= num_connect + ne_weld // 6:
@@ -1151,16 +1150,15 @@ def _cfrc_ext_equality(
     cfrc_torque = wp.vec3(0.0, 0.0, 0.0)  # no torque from connect
   else:
     efcid = 6 * eqid - ne_connect
-    cfrc_torque = wp.vec3(efc_force_in[efcid + 3], efc_force_in[efcid + 4], efc_force_in[efcid + 5])
+    cfrc_torque = wp.vec3(efc_force_in[worldid, efcid + 3], efc_force_in[worldid, efcid + 4], efc_force_in[worldid, efcid + 5])
 
   cfrc_force = wp.vec3(
-    efc_force_in[efcid + 0],
-    efc_force_in[efcid + 1],
-    efc_force_in[efcid + 2],
+    efc_force_in[worldid, efcid + 0],
+    efc_force_in[worldid, efcid + 1],
+    efc_force_in[worldid, efcid + 2],
   )
 
-  worldid = efc_worldid_in[efcid]
-  id = efc_id_in[efcid]
+  id = efc_id_in[worldid, efcid]
   eq_data_ = eq_data[worldid, id]
   body_semantic = eq_objtype[id] == wp.static(ObjType.BODY.value)
 
@@ -1241,7 +1239,7 @@ def _cfrc_ext_contact(
   contact_geom_in: wp.array(dtype=wp.vec2i),
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
-  efc_force_in: wp.array(dtype=float),
+  efc_force_in: wp.array2d(dtype=float),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
@@ -1257,6 +1255,8 @@ def _cfrc_ext_contact(
   if id1 == 0 and id2 == 0:
     return
 
+  worldid = contact_worldid_in[contactid]
+
   # contact force in world frame
   force = support.contact_force_fn(
     opt_cone,
@@ -1266,11 +1266,11 @@ def _cfrc_ext_contact(
     contact_dim_in,
     contact_efc_address_in,
     efc_force_in,
+    worldid,
     contactid,
     to_world_frame=True,
   )
 
-  worldid = contact_worldid_in[contactid]
   pos = contact_pos_in[contactid]
 
   # contact force on bodies
@@ -1301,7 +1301,7 @@ def rne_postconstraint(m: Model, d: Data):
 
   wp.launch(
     _cfrc_ext_equality,
-    dim=(d.nworld * m.neq,),
+    dim=(d.nworld, m.neq),
     inputs=[
       m.body_rootid,
       m.site_bodyid,
@@ -1315,7 +1315,6 @@ def rne_postconstraint(m: Model, d: Data):
       d.xpos,
       d.xmat,
       d.subtree_com,
-      d.efc.worldid,
       d.efc.id,
       d.efc.force,
     ],
