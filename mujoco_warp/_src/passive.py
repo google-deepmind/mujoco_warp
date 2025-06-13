@@ -379,11 +379,10 @@ def _flex_elasticity(
   dim = flex_dim[f]
   nvert = dim + 1
   nedge = nvert * (nvert - 1) / 2
-  edges = (
-    wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int)
-    if dim == 3
-    else wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int)
-  )
+  edges = wp.where(
+      dim == 3,
+      wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
+      wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int))
   kD = flex_damping[f] / opt_timestep
 
   gradient = wp.mat(0.0, shape=(6, 6))
