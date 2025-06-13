@@ -1020,7 +1020,7 @@ def linesearch_init_quad_gauss(
     search = efc_search_in[worldid, dofid]
     sum_quad_gauss[1] += search * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
     sum_quad_gauss[2] += 0.5 * search * efc_mv_in[worldid, dofid]
-  sum_quad_gauss[0] = nv * efc_gauss_in[worldid] / float(nv)
+  sum_quad_gauss[0] = efc_gauss_in[worldid]
   efc_quad_gauss_out[worldid] = sum_quad_gauss
 
 
