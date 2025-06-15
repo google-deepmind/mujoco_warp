@@ -52,6 +52,16 @@ def _load_model():
   return spec.compile()
 
 
+def _compile_step(m, d):
+  mjwarp.step(m, d)
+  # double warmup to work around issues with compilation during graph capture:
+  mjwarp.step(m, d)
+  # capture the whole step function as a CUDA graph
+  with wp.ScopedCapture() as capture:
+    mjwarp.step(m, d)
+  return capture.graph
+
+
 def _main(argv: Sequence[str]) -> None:
   """Launches MuJoCo passive viewer fed by MJWarp."""
   if len(argv) > 1:
@@ -80,15 +90,9 @@ def _main(argv: Sequence[str]) -> None:
     if _CLEAR_KERNEL_CACHE.value:
       wp.clear_kernel_cache()
 
-    start = time.time()
     print("Compiling the model physics step...")
-    mjwarp.step(m, d)
-    # double warmup to work around issues with compilation during graph capture:
-    mjwarp.step(m, d)
-    # capture the whole step function as a CUDA graph
-    with wp.ScopedCapture() as capture:
-      mjwarp.step(m, d)
-    graph = capture.graph
+    start = time.time()
+    graph = _compile_step(m, d)
     elapsed = time.time() - start
     print(f"Compilation took {elapsed}s.")
 
@@ -100,13 +104,36 @@ def _main(argv: Sequence[str]) -> None:
       if _ENGINE.value == "mjc":
         mujoco.mj_step(mjm, mjd)
       else:  # mjwarp
-        # TODO(robotics-simulation): recompile when changing disable flags, etc.
         wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
         wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
         wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
         wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
         wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
         wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
+
+        # on reset, update options and potentially recompile step
+        if mjd.time == 0.0:
+          recompile = False
+
+          for field in m.opt.__dataclass_fields__:
+            try:
+              mjm_option = getattr(mjm.opt, field)
+            except:
+              continue
+
+            m_option = getattr(m.opt, field)
+            if m_option != mjm_option:
+              m_option_type = type(m_option)
+              if m_option_type == int or m_option_type == float:
+                setattr(m.opt, field, mjm_option)
+              elif m_option_type == wp.vec3:
+                setattr(m.opt, field, wp.vec3(mjm_option[0], mjm_option[1], mjm_option[2]))
+              else:
+                raise NotImplementedError(f"Field {field} option type {m_option_type} is not supported.")
+              recompile = True
+
+          if recompile:
+            graph = _compile_step(m, d)
 
         if _VIEWER_GLOBAL_STATE["running"]:
           wp.capture_launch(graph)
