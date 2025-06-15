@@ -22,7 +22,6 @@ from .types import Data
 from .types import DisableBit
 from .types import JointType
 from .types import Model
-from .types import Option
 from .warp_util import event_scope
 
 
@@ -475,16 +474,15 @@ def _flex_bending(
 @event_scope
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
+  d.qfrc_spring.zero_()
+  d.qfrc_damper.zero_()
+  d.qfrc_gravcomp.zero_()
+  d.qfrc_fluid.zero_()
+
   if m.opt.disableflags & DisableBit.PASSIVE:
-    d.qfrc_spring.zero_()
-    d.qfrc_damper.zero_()
-    d.qfrc_gravcomp.zero_()
-    d.qfrc_fluid.zero_()
     d.qfrc_passive.zero_()
     return
 
-  d.qfrc_spring.zero_()
-  d.qfrc_damper.zero_()
   wp.launch(
     _spring_damper_dof_passive,
     dim=(d.nworld, m.njnt),
@@ -559,7 +557,6 @@ def passive(m: Model, d: Data):
   )
 
   gravcomp = m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY)
-  d.qfrc_gravcomp.zero_()
 
   if gravcomp:
     wp.launch(
