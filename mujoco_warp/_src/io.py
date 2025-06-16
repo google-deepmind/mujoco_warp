@@ -169,6 +169,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       else:
         for i in range(mjm.nv):
           bodyid.append(mjm.dof_bodyid[i])
+    elif trntype == mujoco.mjtTrn.mjTRN_BODY:
+      pass
     elif trntype == mujoco.mjtTrn.mjTRN_SITE:
       siteid = mjm.actuator_trnid[i, 0]
       bid = mjm.site_bodyid[siteid]
@@ -196,11 +198,16 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   actuator_moment_tiles_nv, actuator_moment_tiles_nu = tuple(), tuple()
 
-  for (nv, nu), adr in sorted(tiles.items()):
-    adr_nv = wp.array([nv for nv, _ in adr], dtype=int)
-    adr_nu = wp.array([nu for _, nu in adr], dtype=int)
-    actuator_moment_tiles_nv += (types.TileSet(adr=adr_nv, size=nv),)
-    actuator_moment_tiles_nu += (types.TileSet(adr=adr_nu, size=nu),)
+  # TODO(team): tile support
+  if (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).any():
+    actuator_moment_tiles_nv += (types.TileSet(adr=wp.zeros(1, dtype=int), size=mjm.nv),)
+    actuator_moment_tiles_nu += (types.TileSet(adr=wp.zeros(1, dtype=int), size=mjm.nu),)
+  else:
+    for (nv, nu), adr in sorted(tiles.items()):
+      adr_nv = wp.array([nv for nv, _ in adr], dtype=int)
+      adr_nu = wp.array([nu for _, nu in adr], dtype=int)
+      actuator_moment_tiles_nv += (types.TileSet(adr=adr_nv, size=nv),)
+      actuator_moment_tiles_nu += (types.TileSet(adr=adr_nu, size=nu),)
 
   # fixed tendon
   tendon_jnt_adr = []
@@ -580,7 +587,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     pair_margin=create_nmodel_batched_array(mjm.pair_margin, dtype=float),
     pair_gap=create_nmodel_batched_array(mjm.pair_gap, dtype=float),
     pair_friction=create_nmodel_batched_array(mjm.pair_friction, dtype=types.vec5),
-    condim_max=np.max(mjm.pair_dim) if mjm.npair else np.max(mjm.geom_condim),  # TODO(team): get max after filtering,
+    condim_max=np.max(np.concatenate((mjm.geom_condim, mjm.pair_dim))),  # TODO(team): get max after filtering,
     tendon_adr=wp.array(mjm.tendon_adr, dtype=int),
     tendon_num=wp.array(mjm.tendon_num, dtype=int),
     tendon_limited=wp.array(mjm.tendon_limited, dtype=int),
@@ -700,6 +707,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
     ),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
+    actuator_trntype_body_adr=wp.array(np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0], dtype=int),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
   )
@@ -816,7 +824,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       dim=wp.zeros((nconmax,), dtype=int),
       geom=wp.zeros((nconmax,), dtype=wp.vec2i),
       efc_address=wp.zeros(
-        (nconmax, np.max(mjm.pair_dim) if mjm.npair else np.max(mjm.geom_condim)),
+        (nconmax, 2 * (np.max(np.concatenate((mjm.geom_condim, mjm.pair_dim))) - 1)),
         dtype=int,
       ),
       worldid=wp.zeros((nconmax,), dtype=int),
@@ -936,6 +944,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     # mul_m
     energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     discrete_acc_mul_m_skip=wp.array((nworld,), dtype=bool),
+    # actuator
+    actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
 
 
@@ -1010,12 +1020,19 @@ def put_data(
     mjd.moment_colind,
   )
 
-  contact_efc_address = np.zeros((nconmax, np.max(mjm.pair_dim) if mjm.npair else np.max(mjm.geom_condim)), dtype=int)
+  contact_efc_address = np.zeros((nconmax, 2 * (np.max(np.concatenate((mjm.geom_condim, mjm.pair_dim)) - 1))), dtype=int)
   for i in range(nworld):
     for j in range(mjd.ncon):
       condim = mjd.contact.dim[j]
-      for k in range(condim):
-        contact_efc_address[i * mjd.ncon + j, k] = mjd.nefc * i + mjd.contact.efc_address[j] + k
+      efc_address = mjd.contact.efc_address[j]
+      if efc_address == -1:
+        continue
+      if condim == 1:
+        nconvar = 1
+      else:
+        nconvar = condim if mjm.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC else 2 * (condim - 1)
+      for k in range(nconvar):
+        contact_efc_address[i * mjd.ncon + j, k] = mjd.nefc * i + efc_address + k
 
   contact_worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon))
   efc_worldid = np.pad(np.repeat(np.arange(nworld), mjd.nefc), (0, njmax - nworld * mjd.nefc))
@@ -1254,6 +1271,8 @@ def put_data(
     # mul_m
     energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     discrete_acc_mul_m_skip=wp.zeros((nworld,), dtype=bool),
+    # actuator
+    actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
 
 

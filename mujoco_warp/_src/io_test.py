@@ -41,35 +41,6 @@ class IOTest(absltest.TestCase):
 
   # TODO(team): sensors
 
-  def test_actuator_trntype(self):
-    mjm = mujoco.MjModel.from_xml_string("""
-      <mujoco>
-        <worldbody>
-          <body name="body">
-            <geom type="sphere" size=".1"/>
-            <site name="site0"/>
-            <joint type="slide"/>
-          </body>
-          <site name="site1"/>
-        </worldbody>
-        <tendon>
-          <spatial name="tendon">
-            <site site="site0"/>
-            <site site="site1"/>
-          </spatial>
-        </tendon>
-        <actuator>
-          <general cranksite="site0" slidersite="site1" cranklength=".1"/>
-          <general tendon="tendon"/>
-          <general site="site0" refsite="site1"/>
-          <general body="body" ctrlrange="0 1"/>
-        </actuator>
-      </mujoco>
-    """)
-
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
-
   def test_get_data_into_m(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>

@@ -1117,6 +1117,7 @@ def _efc_contact_pyramidal(
   solimp_in: wp.array(dtype=vec5),
   # Data out:
   nefc_out: wp.array(dtype=int),
+  contact_efc_address_out: wp.array2d(dtype=int),
   efc_worldid_out: wp.array(dtype=int),
   efc_type_out: wp.array(dtype=int),
   efc_id_out: wp.array(dtype=int),
@@ -1152,6 +1153,7 @@ def _efc_contact_pyramidal(
 
     worldid = worldid_in[conid]
     efc_worldid_out[efcid] = worldid
+    contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
     body1 = geom_bodyid[geom[0]]
@@ -1279,6 +1281,7 @@ def _efc_contact_elliptic(
   solimp_in: wp.array(dtype=vec5),
   # Data out:
   nefc_out: wp.array(dtype=int),
+  contact_efc_address_out: wp.array2d(dtype=int),
   efc_worldid_out: wp.array(dtype=int),
   efc_type_out: wp.array(dtype=int),
   efc_id_out: wp.array(dtype=int),
@@ -1289,8 +1292,6 @@ def _efc_contact_elliptic(
   efc_vel_out: wp.array(dtype=float),
   efc_aref_out: wp.array(dtype=float),
   efc_frictionloss_out: wp.array(dtype=float),
-  # Out:
-  efc_address_out: wp.array2d(dtype=int),
 ):
   conid, dimid = wp.tid()
 
@@ -1314,7 +1315,7 @@ def _efc_contact_elliptic(
 
     worldid = worldid_in[conid]
     efc_worldid_out[efcid] = worldid
-    efc_address_out[conid, dimid] = efcid
+    contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
     body1 = geom_bodyid[geom[0]]
@@ -1862,6 +1863,7 @@ def make_constraint(m: types.Model, d: types.Data):
           ],
           outputs=[
             d.nefc,
+            d.contact.efc_address,
             d.efc.worldid,
             d.efc.type,
             d.efc.id,
@@ -1907,6 +1909,7 @@ def make_constraint(m: types.Model, d: types.Data):
           ],
           outputs=[
             d.nefc,
+            d.contact.efc_address,
             d.efc.worldid,
             d.efc.type,
             d.efc.id,
@@ -1917,6 +1920,5 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
-            d.contact.efc_address,
           ],
         )

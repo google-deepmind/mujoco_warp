@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 
 from . import test_util
+from . import types
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -272,6 +273,23 @@ class SmoothTest(parameterized.TestCase):
     mjwarp._src.smooth.transmission(m, d)
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+
+  @parameterized.product(keyframe=list(range(4)), cone=list(types.ConeType))
+  def test_actuator_adhesion(self, keyframe, cone):
+    """Tests adhesion actuator."""
+    mjm, mjd, m, d = test_util.fixture("actuation/adhesion.xml", keyframe=keyframe, cone=cone)
+
+    d.actuator_length.zero_()
+    d.actuator_moment.zero_()
+    mjwarp._src.collision_driver.collision(m, d)  # compute contact.includemargin
+    mjwarp._src.constraint.make_constraint(m, d)  # compute contact.efc_address
+    mjwarp._src.smooth.transmission(m, d)
+
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+
+    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
+    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "acutator_moment")
 
   def test_subtree_vel(self):
     """Tests subtree_vel."""

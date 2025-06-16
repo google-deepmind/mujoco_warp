@@ -20,6 +20,7 @@ from . import support
 from . import util_misc
 from .types import MJ_MINVAL
 from .types import CamLightType
+from .types import ConeType
 from .types import Data
 from .types import DisableBit
 from .types import JointType
@@ -1900,6 +1901,15 @@ def _transmission(
     else:  # spatial
       for dofadr in range(nv):
         actuator_moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
+  elif trntype == wp.static(TrnType.BODY.value):
+    # cannot compute meaningful length, set to zero
+    actuator_length_out[worldid, actid] = 0.0
+
+    # initialize moment
+    for i in range(nv):
+      actuator_moment_out[worldid, actid, i] = 0.0
+
+    # moment computed by _transmission_body_moment and _transmission_body_moment_scale
   elif trntype == int(TrnType.SITE.value):
     trnid = actuator_trnid[actid]
     siteid = trnid[0]
@@ -2038,8 +2048,139 @@ def _transmission(
 
         actuator_moment_out[worldid, actid, i] = moment
   else:
-    # TODO(team): slidercrank, body
     wp.printf("unhandled transmission type %d\n", trntype)
+
+
+@wp.kernel
+def _transmission_body_moment(
+  # Model:
+  opt_cone: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  geom_bodyid: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
+  actuator_trntype_body_adr: wp.array(dtype=int),
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  contact_dist_in: wp.array(dtype=float),
+  contact_pos_in: wp.array(dtype=wp.vec3),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_includemargin_in: wp.array(dtype=float),
+  contact_dim_in: wp.array(dtype=int),
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_J_in: wp.array2d(dtype=float),
+  # Data out:
+  actuator_moment_out: wp.array3d(dtype=float),
+  actuator_trntype_body_ncon_out: wp.array2d(dtype=int),
+):
+  trnbodyid, conid, dofid = wp.tid()
+  actid = actuator_trntype_body_adr[trnbodyid]
+  bodyid = actuator_trnid[actid][0]
+
+  if conid >= ncon_in[0]:
+    return
+
+  worldid = contact_worldid_in[conid]
+
+  # get geom ids
+  geom = contact_geom_in[conid]
+  g1 = geom[0]
+  g2 = geom[1]
+
+  # contact involving flex, continue
+  if g1 < 0 or g2 < 0:
+    return
+
+  # get body ids
+  b1 = geom_bodyid[g1]
+  b2 = geom_bodyid[g2]
+
+  # irrelevant contact, continue
+  if b1 != bodyid and b2 != bodyid:
+    return
+
+  contact_exclude = int(contact_dist_in[conid] >= contact_includemargin_in[conid])
+
+  # mark contact normals in efc_force
+  if contact_exclude == 0:
+    if dofid == 0:
+      wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
+
+    contact_dim = contact_dim_in[conid]
+    contact_efc_address = contact_efc_address_in[conid]
+
+    if contact_dim == 1 or opt_cone == int(ConeType.ELLIPTIC.value):
+      efc_force = 1.0
+      efcid0 = contact_efc_address[0]
+      wp.atomic_add(actuator_moment_out[worldid, actid], dofid, efc_J_in[efcid0, dofid] * efc_force)
+
+    else:
+      npyramid = contact_dim - 1  # number of frictional directions
+      efc_force = 0.5 / float(npyramid)
+
+      for j in range(2 * npyramid):
+        efcid = contact_efc_address[j]
+        wp.atomic_add(actuator_moment_out[worldid, actid], dofid, efc_J_in[efcid, dofid] * efc_force)
+
+  # excluded contact in gap: get Jacobian, accumulate
+  elif contact_exclude == 1:
+    if dofid == 0:
+      wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
+
+    contact_pos = contact_pos_in[conid]
+    contact_frame = contact_frame_in[conid]
+    normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
+
+    # get Jacobian difference
+    jacp1, _ = support.jac(
+      body_parentid,
+      body_rootid,
+      dof_bodyid,
+      subtree_com_in,
+      cdof_in,
+      contact_pos,
+      b1,
+      dofid,
+      worldid,
+    )
+    jacp2, _ = support.jac(
+      body_parentid,
+      body_rootid,
+      dof_bodyid,
+      subtree_com_in,
+      cdof_in,
+      contact_pos,
+      b2,
+      dofid,
+      worldid,
+    )
+    jacdif = jacp2 - jacp1
+
+    # project Jacobian along the normal of the contact frame
+    wp.atomic_add(actuator_moment_out[worldid, actid], dofid, wp.dot(normal, jacdif))
+
+
+@wp.kernel
+def _transmission_body_moment_scale(
+  # Model:
+  actuator_trntype_body_adr: wp.array(dtype=int),
+  # Data in:
+  actuator_trntype_body_ncon_in: wp.array2d(dtype=int),
+  # Data out:
+  actuator_moment_out: wp.array3d(dtype=float),
+):
+  worldid, trnbodyid, dofid = wp.tid()
+
+  ncon = actuator_trntype_body_ncon_in[worldid, trnbodyid]
+
+  if ncon > 0:
+    actid = actuator_trntype_body_adr[trnbodyid]
+    actuator_moment_out[worldid, actid, dofid] /= -float(ncon)
 
 
 @event_scope
@@ -2086,6 +2227,56 @@ def transmission(m: Model, d: Data):
     ],
     outputs=[d.actuator_length, d.actuator_moment],
   )
+
+  if m.actuator_trntype_body_adr.size > 0:
+    # reset number of active contacts
+    d.actuator_trntype_body_ncon.zero_()
+
+    # compute moments
+    wp.launch(
+      _transmission_body_moment,
+      dim=(
+        m.actuator_trntype_body_adr.size,
+        d.nconmax,
+        m.nv,
+      ),
+      inputs=[
+        m.opt.cone,
+        m.body_parentid,
+        m.body_rootid,
+        m.dof_bodyid,
+        m.geom_bodyid,
+        m.actuator_trnid,
+        m.actuator_trntype_body_adr,
+        d.ncon,
+        d.subtree_com,
+        d.cdof,
+        d.contact.dist,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.includemargin,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.efc.J,
+      ],
+      outputs=[
+        d.actuator_moment,
+        d.actuator_trntype_body_ncon,
+      ],
+    )
+
+    # scale moments
+    wp.launch(
+      _transmission_body_moment_scale,
+      dim=(d.nworld, m.actuator_trntype_body_adr.size, m.nv),
+      inputs=[
+        m.actuator_trntype_body_adr,
+        d.actuator_trntype_body_ncon,
+      ],
+      outputs=[d.actuator_moment],
+    )
 
 
 @wp.kernel
