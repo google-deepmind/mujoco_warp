@@ -212,6 +212,7 @@ def _apply_ft(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   ft_in: wp.array2d(dtype=wp.spatial_vector),
+  flg_add: bool,
   # Out:
   qfrc_out: wp.array2d(dtype=float),
 ):
@@ -235,21 +236,24 @@ def _apply_ft(
     ft_body = ft_in[worldid, bodyid]
     accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
 
-  qfrc_out[worldid, dofid] += accumul
+  if flg_add:
+    qfrc_out[worldid, dofid] += accumul
+  else:
+    qfrc_out[worldid, dofid] = accumul
 
 
-def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: wp.array2d(dtype=float)):
+def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: wp.array2d(dtype=float), flg_add: bool):
   wp.launch(
     kernel=_apply_ft,
     dim=(d.nworld, m.nv),
-    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft],
+    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
     outputs=[qfrc],
   )
 
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  apply_ft(m, d, d.xfrc_applied, qfrc)
+  apply_ft(m, d, d.xfrc_applied, qfrc, True)
 
 
 @wp.func
