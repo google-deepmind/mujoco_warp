@@ -31,7 +31,7 @@ from .types import Model
 @wp.kernel
 def _qfrc_eulerdamp(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   dof_damping: wp.array2d(dtype=float),
   # Data in:
   qacc_in: wp.array2d(dtype=float),
@@ -39,7 +39,8 @@ def _qfrc_eulerdamp(
   qfrc_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  qfrc_out[worldid, dofid] += opt_timestep * dof_damping[worldid, dofid] * qacc_in[worldid, dofid]
+  timestep = opt_timestep[worldid]
+  qfrc_out[worldid, dofid] += timestep * dof_damping[worldid, dofid] * qacc_in[worldid, dofid]
 
 
 @wp.kernel

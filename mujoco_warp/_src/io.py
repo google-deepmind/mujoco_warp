@@ -296,11 +296,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     nxn_pairid[pairid] = i
 
-  def create_nmodel_batched_array(mjm_array, dtype):
+  def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
     array.strides = (0,) + array.strides
-    if type(mjm_array) in wp.types.vector_types:
-      return array  # array of vector type already has a leading dim
+    if not expand_dim:
+      return array
     array.ndim += 1
     array.shape = (1,) + array.shape
     return array
@@ -350,12 +350,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nlsp=nlsp,
     npair=mjm.npair,
     opt=types.Option(
-      timestep=mjm.opt.timestep,
+      timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
       tolerance=mjm.opt.tolerance,
       ls_tolerance=mjm.opt.ls_tolerance,
-      gravity=create_nmodel_batched_array(wp.vec3(mjm.opt.gravity), dtype=wp.vec3),
-      magnetic=create_nmodel_batched_array(wp.vec3(mjm.opt.magnetic), dtype=wp.vec3),
-      wind=create_nmodel_batched_array(wp.vec3(mjm.opt.wind), dtype=wp.vec3),
+      gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
+      magnetic=create_nmodel_batched_array(mjm.opt.magnetic, dtype=wp.vec3, expand_dim=False),
+      wind=create_nmodel_batched_array(mjm.opt.wind, dtype=wp.vec3, expand_dim=False),
       has_fluid=mjm.opt.wind.any() or mjm.opt.density or mjm.opt.viscosity,
       density=mjm.opt.density,
       viscosity=mjm.opt.viscosity,

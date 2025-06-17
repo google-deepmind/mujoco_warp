@@ -58,7 +58,7 @@ _RK4_B = [1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0]
 @wp.kernel
 def _next_position(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
@@ -71,6 +71,7 @@ def _next_position(
   qpos_out: wp.array2d(dtype=float),
 ):
   worldid, jntid = wp.tid()
+  timestep = opt_timestep[worldid]
 
   jnttype = jnt_type[jntid]
   qpos_adr = jnt_qposadr[jntid]
@@ -83,7 +84,7 @@ def _next_position(
     qpos_pos = wp.vec3(qpos[qpos_adr], qpos[qpos_adr + 1], qpos[qpos_adr + 2])
     qvel_lin = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale_in
 
-    qpos_new = qpos_pos + opt_timestep * qvel_lin
+    qpos_new = qpos_pos + timestep * qvel_lin
 
     qpos_quat = wp.quat(
       qpos[qpos_adr + 3],
@@ -93,7 +94,7 @@ def _next_position(
     )
     qvel_ang = wp.vec3(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]) * qvel_scale_in
 
-    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, opt_timestep)
+    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
 
     qpos_next[qpos_adr + 0] = qpos_new[0]
     qpos_next[qpos_adr + 1] = qpos_new[1]
@@ -112,7 +113,7 @@ def _next_position(
     )
     qvel_ang = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale_in
 
-    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, opt_timestep)
+    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
 
     qpos_next[qpos_adr + 0] = qpos_quat_new[0]
     qpos_next[qpos_adr + 1] = qpos_quat_new[1]
@@ -120,13 +121,13 @@ def _next_position(
     qpos_next[qpos_adr + 3] = qpos_quat_new[3]
 
   else:  # if jnt_type in (JointType.HINGE, JointType.SLIDE):
-    qpos_next[qpos_adr] = qpos[qpos_adr] + opt_timestep * qvel[dof_adr] * qvel_scale_in
+    qpos_next[qpos_adr] = qpos[qpos_adr] + timestep * qvel[dof_adr] * qvel_scale_in
 
 
 @wp.kernel
 def _next_velocity(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   qacc_in: wp.array2d(dtype=float),
@@ -136,13 +137,14 @@ def _next_velocity(
   qvel_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * opt_timestep
+  timestep = opt_timestep[worldid]
+  qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
 
 
 @wp.kernel
 def _next_activation(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   actuator_dyntype: wp.array(dtype=int),
   actuator_actlimited: wp.array(dtype=bool),
   actuator_dynprm: wp.array2d(dtype=vec10f),
@@ -157,6 +159,7 @@ def _next_activation(
   act_out: wp.array2d(dtype=float),
 ):
   worldid, actid = wp.tid()
+  timestep = opt_timestep[worldid]
 
   act = act_in[worldid, actid]
   act_dot = act_dot_in[worldid, actid]
@@ -165,9 +168,9 @@ def _next_activation(
   if actuator_dyntype[actid] == wp.static(DynType.FILTEREXACT.value):
     dyn_prm = actuator_dynprm[worldid, actid]
     tau = wp.max(MJ_MINVAL, dyn_prm[0])
-    act += act_dot_scale_in * act_dot * tau * (1.0 - wp.exp(-opt_timestep / tau))
+    act += act_dot_scale_in * act_dot * tau * (1.0 - wp.exp(-timestep / tau))
   else:
-    act += act_dot_scale_in * act_dot * opt_timestep
+    act += act_dot_scale_in * act_dot * timestep
 
   # clamp to actrange
   if limit and actuator_actlimited[actid]:
@@ -180,14 +183,14 @@ def _next_activation(
 @wp.kernel
 def _next_time(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   # Data in:
   time_in: wp.array(dtype=float),
   # Data out:
   time_out: wp.array(dtype=float),
 ):
   worldid = wp.tid()
-  time_out[worldid] = time_in[worldid] + opt_timestep
+  time_out[worldid] = time_in[worldid] + opt_timestep[worldid]
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -269,7 +272,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 @wp.kernel
 def _euler_damp_qfrc_sparse(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   dof_Madr: wp.array(dtype=int),
   dof_damping: wp.array2d(dtype=float),
   # Data in:
@@ -280,9 +283,10 @@ def _euler_damp_qfrc_sparse(
   qM_integration_out: wp.array3d(dtype=float),
 ):
   worldid, tid = wp.tid()
+  timestep = opt_timestep[worldid]
 
   adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += opt_timestep * dof_damping[worldid, tid]
+  qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
   qfrc_integration_out[worldid, tid] = qfrc_smooth_in[worldid, tid] + qfrc_constraint_in[worldid, tid]
 
 
@@ -319,7 +323,7 @@ def _tile_euler_dense(tile: TileSet):
   def euler_dense(
     # Model:
     dof_damping: wp.array2d(dtype=float),
-    opt_timestep: float,
+    opt_timestep: wp.array(dtype=float),
     # Data in:
     qM_in: wp.array3d(dtype=float),
     qfrc_smooth_in: wp.array2d(dtype=float),
@@ -330,12 +334,13 @@ def _tile_euler_dense(tile: TileSet):
     qacc_integration_out: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
+    timestep = opt_timestep[worldid]
     TILE_SIZE = wp.static(tile.size)
 
     dofid = adr_in[nodeid]
     M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     damping_tile = wp.tile_load(dof_damping[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    damping_scaled = damping_tile * opt_timestep
+    damping_scaled = damping_tile * timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
     qfrc_smooth_tile = wp.tile_load(qfrc_smooth_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))

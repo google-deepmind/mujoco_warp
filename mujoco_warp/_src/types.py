@@ -531,7 +531,7 @@ class Option:
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
   """
 
-  timestep: float
+  timestep: wp.array(dtype=float)
   impratio: float
   tolerance: float
   ls_tolerance: float
