@@ -354,7 +354,7 @@ def _qfrc_passive(
 @wp.kernel
 def _flex_elasticity(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   body_dofadr: wp.array(dtype=int),
   flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
@@ -374,6 +374,7 @@ def _flex_elasticity(
   qfrc_spring_out: wp.array2d(dtype=float),
 ):
   worldid, elemid = wp.tid()
+  timestep = opt_timestep[worldid]
   f = 0  # TODO(quaglino): this should become a function of t
 
   dim = flex_dim[f]
@@ -384,7 +385,7 @@ def _flex_elasticity(
     wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
     wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
   )
-  kD = flex_damping[f] / opt_timestep
+  kD = flex_damping[f] / timestep
 
   gradient = wp.mat(0.0, shape=(6, 6))
   for e in range(nedge):
@@ -402,7 +403,7 @@ def _flex_elasticity(
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
     deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
     reference = flexedge_length0[flex_edgeadr[f] + idx]
-    previous = deformed - vel * opt_timestep
+    previous = deformed - vel * timestep
     elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
 
   metric = wp.mat(0.0, shape=(6, 6))

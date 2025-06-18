@@ -66,18 +66,14 @@ def _actuator_bias_gain_vel(
 def _tile_qderiv_actuator_passive(
   tile_nu: TileSet,
   tile_nv: TileSet,
-  opt_timestep: float,
   actuation_enabled: bool,
   passive_enabled: bool,
   flg_forward: bool,
 ):
-  @wp.func
-  def subtract_multiply(x: float, y: float):
-    return x - y * wp.static(opt_timestep)
-
   @nested_kernel
   def qderiv_actuator_passive(
     # Model:
+    opt_timestep: wp.array(dtype=float),
     dof_damping: wp.array2d(dtype=float),
     # Data in:
     qacc_in: wp.array3d(dtype=float),
@@ -94,6 +90,7 @@ def _tile_qderiv_actuator_passive(
     qM_integration_out: wp.array3d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
+    timestep = opt_timestep[worldid]
 
     TILE_NU_SIZE = wp.static(int(tile_nu.size))
     TILE_NV_SIZE = wp.static(int(tile_nv.size))
@@ -128,7 +125,7 @@ def _tile_qderiv_actuator_passive(
       shape=(TILE_NV_SIZE, TILE_NV_SIZE),
       offset=(offset_nv, offset_nv),
     )
-    qderiv_tile = wp.tile_map(subtract_multiply, qM_tile, qderiv_tile)
+    qderiv_tile = wp.tile_map(wp.sub, qM_tile, qderiv_tile * timestep)
     wp.tile_store(qM_integration_out[worldid], qderiv_tile, offset=(offset_nv, offset_nv))
 
     if wp.static(flg_forward):
@@ -197,13 +194,13 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
         _tile_qderiv_actuator_passive(
           tile_nu,
           tile_nv,
-          m.opt.timestep,
           actuation_enabled,
           passive_enabled,
           flg_forward,
         ),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[
+          m.opt.timestep,
           m.dof_damping,
           d.qacc.reshape(d.qacc.shape + (1,)),
           d.actuator_moment,
@@ -218,7 +215,9 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
           d.qfrc_integration.reshape(d.qfrc_integration.shape + (1,)),
           d.qM_integration,
         ],
-        block_dim=64 if actuation_enabled else 256,
+        block_dim=m.block_dim.qderiv_actuator_passive_actuation
+        if actuation_enabled
+        else m.block_dim.qderiv_actuator_passive_no_actuation,
       )
 
   # TODO(team): rne derivative

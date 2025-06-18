@@ -2245,9 +2245,9 @@ def update_gradient_cholesky_blocked(tile_size: int):
     if efc_done_in[worldid]:
       return
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, efc_h_in[worldid], matrix_size, 0, 0, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
     wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
-      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, 0, 0, efc_Mgrad_out[worldid]
+      tid_block, cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
 
   return kernel
@@ -2304,7 +2304,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       # can be change in future to fine-tune the perf. The optimal factor will
       # depend on the kernel's occupancy, which determines how many blocks can
       # simultaneously run on the SM. TODO: This factor can be tuned further.
-      dim_x = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+      dim_x = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
       dim_y = dim_x
     else:
       # fall back for CPU

@@ -28,6 +28,7 @@ MJ_NIMP = mujoco.mjNIMP
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
+@dataclasses.dataclass
 class BlockDim:
   """
   Block dimension 'block_dim' settings for wp.launch_tiled.
@@ -37,6 +38,11 @@ class BlockDim:
 
   # collision_box
   box_box: int = 32
+  # collision_driver
+  segmented_sort: int = 128
+  # derivative
+  qderiv_actuator_passive_actuation: int = 64
+  qderiv_actuator_passive_no_actuation: int = 256
   # forward
   euler_dense: int = 32
   actuator_velocity_sparse: int = 32
@@ -527,7 +533,7 @@ class Option:
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
   """
 
-  timestep: float
+  timestep: wp.array(dtype=float)
   impratio: float
   tolerance: float
   ls_tolerance: float

@@ -264,9 +264,9 @@ def _sap_broadphase(
     worldgeomid += nsweep_in
 
 
-def create_segmented_sort_kernel(tile_size: int):
+def _segmented_sort(tile_size: int):
   @wp.kernel
-  def segmented_sort_kernel(
+  def segmented_sort(
     # Data in:
     sap_projection_lower_in: wp.array2d(dtype=float),
     sap_sort_index_in: wp.array2d(dtype=int),
@@ -284,7 +284,7 @@ def create_segmented_sort_kernel(tile_size: int):
     wp.tile_store(sap_projection_lower_in[worldid], keys)
     wp.tile_store(sap_sort_index_in[worldid], values)
 
-  return segmented_sort_kernel
+  return segmented_sort
 
 
 def sap_broadphase(m: Model, d: Data):
@@ -315,16 +315,18 @@ def sap_broadphase(m: Model, d: Data):
   )
 
   if m.opt.broadphase == int(BroadphaseType.SAP_TILE):
+    wp.launch_tiled(
+      kernel=_segmented_sort(m.ngeom),
+      dim=(d.nworld),
+      inputs=[d.sap_projection_lower, d.sap_sort_index],
+      block_dim=m.block_dim.segmented_sort,
+    )
+  else:
     wp.utils.segmented_sort_pairs(
       d.sap_projection_lower,
       d.sap_sort_index,
       nworldgeom,
       d.sap_segment_index,
-    )
-  else:
-    segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
-    wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[d.sap_projection_lower, d.sap_sort_index], block_dim=128
     )
 
   wp.launch(
