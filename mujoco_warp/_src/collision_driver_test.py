@@ -499,10 +499,9 @@ class CollisionTest(parameterized.TestCase):
       test_frame = d.contact.frame.numpy()[i].flatten()[0:3]
       check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-1)
       check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-1)
-
       check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-1)
       result = check_dist
-      # print(result, check_dist, check_pos, check_frame, actual_dist, test_dist, actual_pos, test_pos, actual_frame, test_frame )
+      #print(result, check_dist, check_pos, check_frame, actual_dist, test_dist, actual_pos, test_pos, actual_frame, test_frame )
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
   @parameterized.parameters(_FIXTURES.keys())

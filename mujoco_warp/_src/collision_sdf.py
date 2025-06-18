@@ -123,7 +123,7 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 
 
 @wp.func
-def sdf_eval(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
+def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
   if type == int(GeomType.SPHERE.value):
     return sphere(p, attr)
   elif type == int(GeomType.ELLIPSOID.value):
@@ -135,7 +135,7 @@ def sdf_eval(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
 
 
 @wp.func
-def sdf_grad_eval(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
+def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
   if type == int(GeomType.SPHERE.value):
     return grad_sphere(p)
   elif type == int(GeomType.ELLIPSOID.value):
@@ -147,11 +147,11 @@ def sdf_grad_eval(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec
 
 
 @wp.func
-def clearance_eval(
+def clearance(
   type1: int, p1: wp.vec3, p2: wp.vec3, s1: wp.vec3, s2: wp.vec3, sdf_type1: int, sdf_type2: int, sfd_intersection: bool
 ) -> float:
-  sdf1 = sdf_eval(type1, p1, s1, sdf_type1)
-  sdf2 = sdf_eval(int(GeomType.SDF.value), p2, s2, sdf_type2)
+  sdf1 = sdf(type1, p1, s1, sdf_type1)
+  sdf2 = sdf(int(GeomType.SDF.value), p2, s2, sdf_type2)
   if sfd_intersection:
     return wp.max(sdf1, sdf2)
   else:
@@ -159,13 +159,13 @@ def clearance_eval(
 
 
 @wp.func
-def compute_grad_eval(
+def compute_grad(
   type1: int, p1: wp.vec3, p2: wp.vec3, params: OptimizationParams, sdf_type1: int, sdf_type2: int, sfd_intersection: bool
 ) -> wp.vec3:
-  A = sdf_eval(type1, p1, params.attr1, sdf_type1)
-  B = sdf_eval(int(GeomType.SDF.value), p2, params.attr2, sdf_type2)
-  grad1 = sdf_grad_eval(type1, p1, params.attr1, sdf_type1)
-  grad2 = sdf_grad_eval(int(GeomType.SDF.value), p2, params.attr2, sdf_type2)
+  A = sdf(type1, p1, params.attr1, sdf_type1)
+  B = sdf(int(GeomType.SDF.value), p2, params.attr2, sdf_type2)
+  grad1 = sdf_grad(type1, p1, params.attr1, sdf_type1)
+  grad2 = sdf_grad(int(GeomType.SDF.value), p2, params.attr2, sdf_type2)
   grad1_transformed = params.rel_mat * grad1
   if sfd_intersection:
     if A > B:
@@ -185,7 +185,7 @@ def compute_grad_eval(
 
 
 @wp.func
-def gradient_step_eval(
+def gradient_step(
   type1: int, x: wp.vec3, params: OptimizationParams, sdf_type1: int, sdf_type2: int, niter: int, sfd_intersection: bool
 ) -> Tuple[float, wp.vec3]:
   amin = 1e-4
@@ -197,8 +197,8 @@ def gradient_step_eval(
     alpha = float(2.0)
     x2 = wp.vec3(x[0], x[1], x[2])
     x1 = params.rel_mat * x2 + params.rel_pos
-    grad = compute_grad_eval(type1, x1, x2, params, sdf_type1, sdf_type2, sfd_intersection)
-    dist0 = clearance_eval(type1, x1, x, params.attr1, params.attr2, sdf_type1, sdf_type2, sfd_intersection)
+    grad = compute_grad(type1, x1, x2, params, sdf_type1, sdf_type2, sfd_intersection)
+    dist0 = clearance(type1, x1, x, params.attr1, params.attr2, sdf_type1, sdf_type2, sfd_intersection)
     grad_dot = wp.dot(grad, grad)
 
     if grad_dot < 1e-12:
@@ -211,7 +211,7 @@ def gradient_step_eval(
 
       x = x2 - grad * alpha
       x1 = params.rel_mat * x + params.rel_pos
-      dist = clearance_eval(type1, x1, x, params.attr1, params.attr2, sdf_type1, sdf_type2, sfd_intersection)
+      dist = clearance(type1, x1, x, params.attr1, params.attr2, sdf_type1, sdf_type2, sfd_intersection)
 
       if alpha <= amin or (dist - dist0) <= wolfe:
         break
@@ -221,7 +221,7 @@ def gradient_step_eval(
 
 
 @wp.func
-def gradient_descent_eval(
+def gradient_descent(
   type1: int,
   x0_initial: wp.vec3,
   attr1: wp.vec3,
@@ -240,19 +240,19 @@ def gradient_descent_eval(
   params.attr2 = attr2
 
   # Collision phase (10 iterations, sfd_intersection=False)
-  dist, x = gradient_step_eval(type1, x0_initial, params, sdf_type1, sdf_type2, 10, False)
+  dist, x = gradient_step(type1, x0_initial, params, sdf_type1, sdf_type2, 10, False)
 
   # Intersection phase (1 iteration, sfd_intersection=True)
-  dist, x = gradient_step_eval(type1, x, params, sdf_type1, sdf_type2, 1, True)
+  dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True)
 
   # Midsurface calculation
   x_1 = params.rel_mat * x + params.rel_pos
 
-  grad1 = sdf_grad_eval(type1, x_1, params.attr1, sdf_type1)
+  grad1 = sdf_grad(type1, x_1, params.attr1, sdf_type1)
   grad1 = wp.transpose(params.rel_mat) * grad1
   grad1 = wp.normalize(grad1)
 
-  grad2 = sdf_grad_eval(int(GeomType.SDF.value), x, params.attr2, sdf_type2)
+  grad2 = sdf_grad(int(GeomType.SDF.value), x, params.attr2, sdf_type2)
   grad2 = wp.normalize(grad2)
 
   n = grad1 - grad2
@@ -281,11 +281,11 @@ def halton(index: int, base: int) -> float:
 
 
 @wp.kernel
-def sdf_narrowphase_kernel40(
+def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
-  geom_sdf_plugin_attr: wp.array(dtype=wp.vec3f),
+  plugin_attr: wp.array(dtype=wp.vec3f),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
@@ -448,7 +448,7 @@ def sdf_narrowphase_kernel40(
     geom_mat1 = math.quat_to_mat(quat1)
     rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
     pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
-    attr1 = geom_sdf_plugin_attr[g1]
+    attr1 = plugin_attr[g1]
   else:
     pos1 = geom1.pos
     rot1 = geom1.rot
@@ -464,9 +464,8 @@ def sdf_narrowphase_kernel40(
     x = geom2.rot * x_g2 + geom2.pos
     x0_initial = wp.transpose(rot2) * (x - pos2)
 
-    # Single unified call for all geometry types
-    dist, pos, n = gradient_descent_eval(
-      type1, x0_initial, attr1, geom_sdf_plugin_attr[g2], pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2]
+    dist, pos, n = gradient_descent(
+      type1, x0_initial, attr1, plugin_attr[g2], pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2]
     )
 
     write_contact(
@@ -500,12 +499,12 @@ def sdf_narrowphase_kernel40(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    sdf_narrowphase_kernel40,
+    _sdf_narrowphase,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
       m.geom_sdf_plugin_type,
-      m.geom_sdf_plugin_attr,
+      m.plugin_attr,
       m.geom_condim,
       m.geom_dataid,
       m.geom_priority,
