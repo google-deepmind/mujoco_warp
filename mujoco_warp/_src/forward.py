@@ -185,12 +185,12 @@ def _next_time(
   # Model:
   opt_timestep: wp.array(dtype=float),
   # Data in:
-  njmax_in: int,
   nconmax_in: int,
-  time_in: wp.array(dtype=float),
-  nefc_in: wp.array(dtype=int),
-  ncollision_in: wp.array(dtype=int),
+  njmax_in: int,
   ncon_in: wp.array(dtype=int),
+  nefc_in: wp.array(dtype=int),
+  time_in: wp.array(dtype=float),
+  ncollision_in: wp.array(dtype=int),
   # Data out:
   time_out: wp.array(dtype=float),
 ):
@@ -276,12 +276,12 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=(d.nworld,),
     inputs=[
       m.opt.timestep,
-      d.njmax,
       d.nconmax,
-      d.time,
-      d.nefc,
-      d.ncollision,
+      d.njmax,
       d.ncon,
+      d.nefc,
+      d.time,
+      d.ncollision,
     ],
     outputs=[
       d.time,
