@@ -17,13 +17,16 @@ from typing import Any
 
 import warp as wp
 
-from .collision_box import box_box_narrowphase
 from .collision_convex import gjk_narrowphase
+from .collision_hfield import hfield_midphase
 from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
+from .math import upper_tri_index
 from .types import MJ_MAXVAL
+from .types import BroadphaseType
 from .types import Data
 from .types import DisableBit
+from .types import GeomType
 from .types import Model
 from .warp_util import event_scope
 
@@ -33,8 +36,8 @@ wp.set_module_options({"enable_backward": False})
 @wp.func
 def _sphere_filter(
   # Model:
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -43,12 +46,12 @@ def _sphere_filter(
   geom2: int,
   worldid: int,
 ) -> bool:
-  margin1 = geom_margin[geom1]
-  margin2 = geom_margin[geom2]
+  margin1 = geom_margin[worldid, geom1]
+  margin2 = geom_margin[worldid, geom2]
   pos1 = geom_xpos_in[worldid, geom1]
   pos2 = geom_xpos_in[worldid, geom2]
-  size1 = geom_rbound[geom1]
-  size2 = geom_rbound[geom2]
+  size1 = geom_rbound[worldid, geom1]
+  size2 = geom_rbound[worldid, geom2]
 
   bound = size1 + size2 + wp.max(margin1, margin2)
   dif = pos2 - pos1
@@ -83,6 +86,7 @@ def _add_geom_pair(
   nxnid: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
@@ -104,6 +108,12 @@ def _add_geom_pair(
   collision_pairid_out[pairid] = nxn_pairid[nxnid]
   collision_worldid_out[pairid] = worldid
 
+  # Writing -1 to collision_hftri_index_out[pairid] signals
+  # hfield_midphase to generate a collision pair for every
+  # potentially colliding triangle
+  if type1 == int(GeomType.HFIELD.value) or type2 == int(GeomType.HFIELD.value):
+    collision_hftri_index_out[pairid] = -1
+
 
 @wp.func
 def _binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: int) -> int:
@@ -117,16 +127,11 @@ def _binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: i
   return upper
 
 
-@wp.func
-def _upper_tri_index(n: int, i: int, j: int) -> int:
-  return (n * (n - 1) - (n - i) * (n - i - 1)) / 2 + j - i - 1
-
-
 @wp.kernel
 def _sap_project(
   # Model:
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
@@ -139,13 +144,13 @@ def _sap_project(
   worldid, geomid = wp.tid()
 
   xpos = geom_xpos_in[worldid, geomid]
-  rbound = geom_rbound[geomid]
+  rbound = geom_rbound[worldid, geomid]
 
   if rbound == 0.0:
     # geom is a plane
     rbound = MJ_MAXVAL
 
-  radius = rbound + geom_margin[geomid]
+  radius = rbound + geom_margin[worldid, geomid]
   center = wp.dot(direction_in, xpos)
 
   sap_projection_lower_out[worldid, geomid] = center - radius
@@ -183,8 +188,8 @@ def _sap_broadphase(
   # Model:
   ngeom: int,
   geom_type: wp.array(dtype=int),
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   nxn_pairid: wp.array(dtype=int),
   # Data in:
   nworld_in: int,
@@ -197,6 +202,7 @@ def _sap_broadphase(
   nsweep_in: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
@@ -221,13 +227,12 @@ def _sap_broadphase(
     # get geom indices and swap if necessary
     geom1 = sap_sort_index_in[worldid, i]
     geom2 = sap_sort_index_in[worldid, j]
-    if geom2 < geom1:
-      tmp = geom1
-      geom1 = geom2
-      geom2 = tmp
 
     # find linear index of (geom1, geom2) in upper triangular nxn_pairid
-    idx = _upper_tri_index(ngeom, geom1, geom2)
+    if geom2 < geom1:
+      idx = upper_tri_index(ngeom, geom2, geom1)
+    else:
+      idx = upper_tri_index(ngeom, geom1, geom2)
 
     if nxn_pairid[idx] < -1:
       worldgeomid += nsweep_in
@@ -251,12 +256,36 @@ def _sap_broadphase(
         worldid,
         idx,
         collision_pair_out,
+        collision_hftri_index_out,
         collision_pairid_out,
         collision_worldid_out,
         ncollision_out,
       )
 
     worldgeomid += nsweep_in
+
+
+def _segmented_sort(tile_size: int):
+  @wp.kernel
+  def segmented_sort(
+    # Data in:
+    sap_projection_lower_in: wp.array2d(dtype=float),
+    sap_sort_index_in: wp.array2d(dtype=int),
+  ):
+    worldid = wp.tid()
+
+    # Load input into shared memory
+    keys = wp.tile_load(sap_projection_lower_in[worldid], shape=tile_size, storage="shared")
+    values = wp.tile_load(sap_sort_index_in[worldid], shape=tile_size, storage="shared")
+
+    # Perform in-place sorting
+    wp.tile_sort(keys, values)
+
+    # Store sorted shared memory into output arrays
+    wp.tile_store(sap_projection_lower_in[worldid], keys)
+    wp.tile_store(sap_sort_index_in[worldid], values)
+
+  return segmented_sort
 
 
 def sap_broadphase(m: Model, d: Data):
@@ -286,14 +315,20 @@ def sap_broadphase(m: Model, d: Data):
     ],
   )
 
-  # TODO(team): tile sort
-
-  wp.utils.segmented_sort_pairs(
-    d.sap_projection_lower,
-    d.sap_sort_index,
-    nworldgeom,
-    d.sap_segment_index,
-  )
+  if m.opt.broadphase == int(BroadphaseType.SAP_TILE):
+    wp.launch_tiled(
+      kernel=_segmented_sort(m.ngeom),
+      dim=(d.nworld),
+      inputs=[d.sap_projection_lower, d.sap_sort_index],
+      block_dim=m.block_dim.segmented_sort,
+    )
+  else:
+    wp.utils.segmented_sort_pairs(
+      d.sap_projection_lower,
+      d.sap_sort_index,
+      nworldgeom,
+      d.sap_segment_index,
+    )
 
   wp.launch(
     kernel=_sap_range,
@@ -312,7 +347,8 @@ def sap_broadphase(m: Model, d: Data):
   # scan is used for load balancing among the threads
   wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
 
-  # estimate number of overlap checks - assumes each geom has 5 other geoms (batched over all worlds)
+  # estimate number of overlap checks
+  # assumes each geom has 5 other geoms (batched over all worlds)
   nsweep = 5 * nworldgeom
   wp.launch(
     kernel=_sap_broadphase,
@@ -333,6 +369,7 @@ def sap_broadphase(m: Model, d: Data):
     ],
     outputs=[
       d.collision_pair,
+      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
@@ -344,8 +381,8 @@ def sap_broadphase(m: Model, d: Data):
 def _nxn_broadphase(
   # Model:
   geom_type: wp.array(dtype=int),
-  geom_rbound: wp.array(dtype=float),
-  geom_margin: wp.array(dtype=float),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
   nxn_geom_pair: wp.array(dtype=wp.vec2i),
   nxn_pairid: wp.array(dtype=int),
   # Data in:
@@ -354,6 +391,7 @@ def _nxn_broadphase(
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
@@ -386,6 +424,7 @@ def _nxn_broadphase(
       worldid,
       elementid,
       collision_pair_out,
+      collision_hftri_index_out,
       collision_pairid_out,
       collision_worldid_out,
       ncollision_out,
@@ -411,6 +450,7 @@ def nxn_broadphase(m: Model, d: Data):
       ],
       outputs=[
         d.collision_pair,
+        d.collision_hftri_index,
         d.collision_pairid,
         d.collision_worldid,
         d.ncollision,
@@ -428,6 +468,10 @@ def collision(m: Model, d: Data):
 
   d.ncollision.zero_()
   d.ncon.zero_()
+  d.ncon_hfield.zero_()
+
+  # Clear the collision_hftri_index buffer
+  d.collision_hftri_index.zero_()
 
   if d.nconmax == 0:
     return
@@ -436,17 +480,19 @@ def collision(m: Model, d: Data):
   if (dsbl_flgs & DisableBit.CONSTRAINT) | (dsbl_flgs & DisableBit.CONTACT):
     return
 
-  # TODO(team): determine ngeom to switch from n^2 to sap
-  if m.ngeom <= 100:
+  if m.opt.broadphase == int(BroadphaseType.NXN):
     nxn_broadphase(m, d)
   else:
     sap_broadphase(m, d)
+
+  # Process heightfield collisions
+  if m.nhfield > 0:
+    hfield_midphase(m, d)
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
   # TODO(team) switch between collision functions and GJK/EPA here
   gjk_narrowphase(m, d)
   primitive_narrowphase(m, d)
-  box_box_narrowphase(m, d)
   sdf_narrowphase(m, d)
 

@@ -65,6 +65,8 @@ class ForwardTest(parameterized.TestCase):
     ("actuation/actuation.xml", False),
     ("actuation/actuators.xml", True),
     ("actuation/actuators.xml", False),
+    ("actuation/muscle.xml", True),
+    ("actuation/muscle.xml", False),
   )
   def test_actuation(self, xml, actuation):
     mjm, mjd, m, d = test_util.fixture(xml, actuation=actuation, keyframe=0)
@@ -86,9 +88,32 @@ class ForwardTest(parameterized.TestCase):
 
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-    # TODO(team): test DisableBit.CLAMPCTRL
-    # TODO(team): test muscle
     # TODO(team): test actearly
+
+  @parameterized.parameters(True, False)
+  def test_clampctrl(self, clampctrl):
+    _, mjd, _, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide"/>
+          <geom type="sphere" size=".1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="joint" ctrlrange="-1 1"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="2"/>
+      </keyframe>
+    </mujoco>
+    """,
+      clampctrl=clampctrl,
+      keyframe=0,
+    )
+
+    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
 
   def test_fwd_acceleration(self):
     _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
@@ -214,6 +239,22 @@ class ForwardTest(parameterized.TestCase):
       wp.capture_launch(capture.graph)
 
       self.assertTrue(d.time.numpy()[0] > 0.0)
+
+  def test_forward_energy(self):
+    _, mjd, _, d = test_util.fixture("humanoid/humanoid.xml", kick=True, energy=True)
+
+    _assert_eq(d.energy.numpy()[0][0], mjd.energy[0], "potential energy")
+    _assert_eq(d.energy.numpy()[0][1], mjd.energy[1], "kinetic energy")
+
+  def test_tendon_actuator_force_limits(self):
+    for keyframe in range(7):
+      _, mjd, m, d = test_util.fixture("actuation/tendon_force_limit.xml", keyframe=keyframe)
+
+      d.actuator_force.zero_()
+
+      mjwarp.forward(m, d)
+
+      _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
 
 
 if __name__ == "__main__":

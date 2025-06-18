@@ -18,15 +18,23 @@ from typing import Any, Tuple
 import warp as wp
 
 from . import math
+from . import ray
 from . import smooth
+from . import support
 from .types import MJ_MINVAL
+from .types import ConeType
+from .types import ConstraintType
 from .types import Data
 from .types import DataType
 from .types import DisableBit
+from .types import JointType
 from .types import Model
 from .types import ObjType
 from .types import SensorType
+from .types import TrnType
+from .types import vec6
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 
 @wp.func
@@ -81,6 +89,20 @@ def _write_vector(
   else:
     for i in range(sensordim):
       out[adr + i] = sensor[i]
+
+
+@wp.func
+def _magnetometer(
+  # Model:
+  opt_magnetic: wp.array(dtype=wp.vec3),
+  # Data in:
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  worldid: int,
+  objid: int,
+) -> wp.vec3:
+  magnetic = opt_magnetic[worldid]
+  return wp.transpose(site_xmat_in[worldid, objid]) @ magnetic
 
 
 @wp.func
@@ -150,6 +172,28 @@ def _cam_projection(
   return wp.vec2f(pixel_coord_hom[0], pixel_coord_hom[1]) / denom
 
 
+@wp.kernel
+def _sensor_rangefinder_init(
+  # Model:
+  sensor_objid: wp.array(dtype=int),
+  sensor_rangefinder_adr: wp.array(dtype=int),
+  # Data in:
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  # Data out:
+  sensor_rangefinder_pnt_out: wp.array2d(dtype=wp.vec3),
+  sensor_rangefinder_vec_out: wp.array2d(dtype=wp.vec3),
+):
+  worldid, rfid = wp.tid()
+  sensorid = sensor_rangefinder_adr[rfid]
+  objid = sensor_objid[sensorid]
+  site_xpos = site_xpos_in[worldid, objid]
+  site_xmat = site_xmat_in[worldid, objid]
+
+  sensor_rangefinder_pnt_out[worldid, rfid] = site_xpos
+  sensor_rangefinder_vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+
+
 @wp.func
 def _joint_pos(jnt_qposadr: wp.array(dtype=int), qpos_in: wp.array2d(dtype=float), worldid: int, objid: int) -> float:
   return qpos_in[worldid, jnt_qposadr[objid]]
@@ -175,6 +219,57 @@ def _ball_quat(jnt_qposadr: wp.array(dtype=int), qpos_in: wp.array2d(dtype=float
     qpos_in[worldid, adr + 3],
   )
   return wp.normalize(quat)
+
+
+@wp.kernel
+def _limit_pos_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_limitpos_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, limitposid = wp.tid()
+  sensordata_out[worldid, sensor_adr[sensor_limitpos_adr[limitposid]]] = 0.0
+
+
+@wp.kernel
+def _limit_pos(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_limitpos_adr: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  efc_worldid_in: wp.array(dtype=int),
+  efc_type_in: wp.array(dtype=int),
+  efc_id_in: wp.array(dtype=int),
+  efc_pos_in: wp.array(dtype=float),
+  efc_margin_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  efcid, limitposid = wp.tid()
+
+  ne = ne_in[0]
+  nf = nf_in[0]
+  nl = nl_in[0]
+
+  # skip if not limit
+  if efcid < ne + nf or efcid >= ne + nf + nl:
+    return
+
+  sensorid = sensor_limitpos_adr[limitposid]
+  if efc_id_in[efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[efcid]
+    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+      val = efc_pos_in[efcid] - efc_margin_in[efcid]
+      worldid = efc_worldid_in[efcid]
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
 
 @wp.func
@@ -292,13 +387,13 @@ def _frame_axis(
 @wp.func
 def _frame_quat(
   # Model:
-  body_iquat: wp.array(dtype=wp.quat),
+  body_iquat: wp.array2d(dtype=wp.quat),
   geom_bodyid: wp.array(dtype=int),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
-  site_quat: wp.array(dtype=wp.quat),
+  site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
-  cam_quat: wp.array(dtype=wp.quat),
+  cam_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   xquat_in: wp.array2d(dtype=wp.quat),
   # In:
@@ -309,15 +404,15 @@ def _frame_quat(
   reftype: int,
 ) -> wp.quat:
   if objtype == int(ObjType.BODY.value):
-    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[objid])
+    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[worldid, objid])
   elif objtype == int(ObjType.XBODY.value):
     quat = xquat_in[worldid, objid]
   elif objtype == int(ObjType.GEOM.value):
-    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[worldid, objid])
   elif objtype == int(ObjType.SITE.value):
-    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[worldid, objid])
   elif objtype == int(ObjType.CAMERA.value):
-    quat = math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[objid])
+    quat = math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[worldid, objid])
   else:  # UNKNOWN
     quat = wp.quat(1.0, 0.0, 0.0, 0.0)
 
@@ -325,15 +420,15 @@ def _frame_quat(
     return quat
 
   if reftype == int(ObjType.BODY.value):
-    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[worldid, refid])
   elif reftype == int(ObjType.XBODY.value):
     refquat = xquat_in[worldid, refid]
   elif reftype == int(ObjType.GEOM.value):
-    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid, refid])
   elif reftype == int(ObjType.SITE.value):
-    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[worldid, refid])
   elif reftype == int(ObjType.CAMERA.value):
-    refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[refid])
+    refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[worldid, refid])
   else:  # UNKNOWN
     refquat = wp.quat(1.0, 0.0, 0.0, 0.0)
 
@@ -353,14 +448,15 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
-  body_iquat: wp.array(dtype=wp.quat),
+  opt_magnetic: wp.array(dtype=wp.vec3),
+  body_iquat: wp.array2d(dtype=wp.quat),
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_quat: wp.array2d(dtype=wp.quat),
   site_bodyid: wp.array(dtype=int),
-  site_quat: wp.array(dtype=wp.quat),
+  site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
-  cam_quat: wp.array(dtype=wp.quat),
+  cam_quat: wp.array2d(dtype=wp.quat),
   cam_fovy: wp.array(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
@@ -374,8 +470,10 @@ def _sensor_pos(
   sensor_adr: wp.array(dtype=int),
   sensor_cutoff: wp.array(dtype=float),
   sensor_pos_adr: wp.array(dtype=int),
+  rangefinder_sensor_adr: wp.array(dtype=int),
   # Data in:
   time_in: wp.array(dtype=float),
+  energy_in: wp.array(dtype=wp.vec2),
   qpos_in: wp.array2d(dtype=float),
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -391,6 +489,7 @@ def _sensor_pos(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   actuator_length_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
+  sensor_rangefinder_dist_in: wp.array2d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
@@ -400,12 +499,18 @@ def _sensor_pos(
   objid = sensor_objid[sensorid]
   out = sensordata_out[worldid]
 
-  if sensortype == int(SensorType.CAMPROJECTION.value):
+  if sensortype == int(SensorType.MAGNETOMETER.value):
+    vec3 = _magnetometer(opt_magnetic, site_xmat_in, worldid, objid)
+    _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+  elif sensortype == int(SensorType.CAMPROJECTION.value):
     refid = sensor_refid[sensorid]
     vec2 = _cam_projection(
       cam_fovy, cam_resolution, cam_sensorsize, cam_intrinsic, site_xpos_in, cam_xpos_in, cam_xmat_in, worldid, objid, refid
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 2, vec2, out)
+  elif sensortype == int(SensorType.RANGEFINDER.value):
+    val = sensor_rangefinder_dist_in[worldid, rangefinder_sensor_adr[sensorid]]
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == int(SensorType.JOINTPOS.value):
     val = _joint_pos(jnt_qposadr, qpos_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
@@ -481,6 +586,12 @@ def _sensor_pos(
   elif sensortype == int(SensorType.SUBTREECOM.value):
     vec3 = _subtree_com(subtree_com_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
+  elif sensortype == int(SensorType.E_POTENTIAL.value):
+    val = energy_in[worldid][0]
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+  elif sensortype == int(SensorType.E_KINETIC.value):
+    val = energy_in[worldid][1]
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == int(SensorType.CLOCK.value):
     val = _clock(time_in, worldid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
@@ -490,13 +601,51 @@ def _sensor_pos(
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
 
-  if (m.sensor_pos_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
+
+  # rangefinder
+  if m.sensor_rangefinder_adr.size > 0:
+    # get position and direction
+    wp.launch(
+      _sensor_rangefinder_init,
+      dim=(d.nworld, m.sensor_rangefinder_adr.size),
+      inputs=[
+        m.sensor_objid,
+        m.sensor_rangefinder_adr,
+        d.site_xpos,
+        d.site_xmat,
+      ],
+      outputs=[
+        d.sensor_rangefinder_pnt,
+        d.sensor_rangefinder_vec,
+      ],
+    )
+
+    # get distances
+    ray.rays(
+      m,
+      d,
+      d.sensor_rangefinder_pnt,
+      d.sensor_rangefinder_vec,
+      vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
+      True,
+      m.sensor_rangefinder_bodyid,
+      d.sensor_rangefinder_dist,
+      d.sensor_rangefinder_geomid,
+    )
+
+  if m.sensor_e_potential:
+    energy_pos(m, d)
+
+  if m.sensor_e_kinetic:
+    energy_vel(m, d)
 
   wp.launch(
     _sensor_pos,
     dim=(d.nworld, m.sensor_pos_adr.size),
     inputs=[
+      m.opt.magnetic,
       m.body_iquat,
       m.jnt_qposadr,
       m.geom_bodyid,
@@ -518,7 +667,9 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_adr,
       m.sensor_cutoff,
       m.sensor_pos_adr,
+      m.rangefinder_sensor_adr,
       d.time,
+      d.energy,
       d.qpos,
       d.xpos,
       d.xquat,
@@ -534,8 +685,40 @@ def sensor_pos(m: Model, d: Data):
       d.subtree_com,
       d.actuator_length,
       d.ten_length,
+      d.sensor_rangefinder_dist,
     ],
     outputs=[d.sensordata],
+  )
+
+  # jointlimitpos and tendonlimitpos
+  wp.launch(
+    _limit_pos_zero,
+    dim=(d.nworld, m.sensor_limitpos_adr.size),
+    inputs=[m.sensor_adr, m.sensor_limitpos_adr],
+    outputs=[d.sensordata],
+  )
+
+  wp.launch(
+    _limit_pos,
+    dim=(d.njmax, m.sensor_limitpos_adr.size),
+    inputs=[
+      m.sensor_datatype,
+      m.sensor_objid,
+      m.sensor_adr,
+      m.sensor_cutoff,
+      m.sensor_limitpos_adr,
+      d.ne,
+      d.nf,
+      d.nl,
+      d.efc.worldid,
+      d.efc.type,
+      d.efc.id,
+      d.efc.pos,
+      d.efc.margin,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
   )
 
 
@@ -601,6 +784,55 @@ def _actuator_vel(actuator_velocity_in: wp.array2d(dtype=float), worldid: int, o
 def _ball_ang_vel(jnt_dofadr: wp.array(dtype=int), qvel_in: wp.array2d(dtype=float), worldid: int, objid: int) -> wp.vec3:
   adr = jnt_dofadr[objid]
   return wp.vec3(qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2])
+
+
+@wp.kernel
+def _limit_vel_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_limitvel_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, limitvelid = wp.tid()
+  sensordata_out[worldid, sensor_adr[sensor_limitvel_adr[limitvelid]]] = 0.0
+
+
+@wp.kernel
+def _limit_vel(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_limitvel_adr: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  efc_worldid_in: wp.array(dtype=int),
+  efc_type_in: wp.array(dtype=int),
+  efc_id_in: wp.array(dtype=int),
+  efc_vel_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  efcid, limitvelid = wp.tid()
+
+  ne = ne_in[0]
+  nf = nf_in[0]
+  nl = nl_in[0]
+
+  # skip if not limit
+  if efcid < ne + nf or efcid >= ne + nf + nl:
+    return
+
+  sensorid = sensor_limitvel_adr[limitvelid]
+  if efc_id_in[efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[efcid]
+    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+      worldid = efc_worldid_in[efcid]
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[efcid], sensordata_out[worldid])
 
 
 @wp.func
@@ -973,7 +1205,7 @@ def _sensor_vel(
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
 
-  if (m.sensor_vel_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
 
   if m.sensor_subtree_vel:
@@ -1016,6 +1248,35 @@ def sensor_vel(m: Model, d: Data):
       d.subtree_angmom,
     ],
     outputs=[d.sensordata],
+  )
+
+  wp.launch(
+    _limit_vel_zero,
+    dim=(d.nworld, m.sensor_limitvel_adr.size),
+    inputs=[m.sensor_adr, m.sensor_limitvel_adr],
+    outputs=[d.sensordata],
+  )
+
+  wp.launch(
+    _limit_vel,
+    dim=(d.njmax, m.sensor_limitvel_adr.size),
+    inputs=[
+      m.sensor_datatype,
+      m.sensor_objid,
+      m.sensor_adr,
+      m.sensor_cutoff,
+      m.sensor_limitvel_adr,
+      d.ne,
+      d.nf,
+      d.nl,
+      d.efc.worldid,
+      d.efc.type,
+      d.efc.id,
+      d.efc.vel,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
   )
 
 
@@ -1105,6 +1366,110 @@ def _joint_actuator_force(
   objid: int,
 ) -> float:
   return qfrc_actuator_in[worldid, jnt_dofadr[objid]]
+
+
+@wp.kernel
+def _tendon_actuator_force_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_tendonactfrc_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, tenactfrcid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+  adr = sensor_adr[sensorid]
+  sensordata_out[worldid, adr] = 0.0
+
+
+@wp.kernel
+def _tendon_actuator_force(
+  # Model:
+  actuator_trntype: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_tendonactfrc_adr: wp.array(dtype=int),
+  # Data in:
+  actuator_force_in: wp.array2d(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, tenactfrcid, actid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+
+  if actuator_trntype[actid] == int(TrnType.TENDON.value) and actuator_trnid[actid][0] == sensor_objid[sensorid]:
+    adr = sensor_adr[sensorid]
+    sensordata_out[worldid, adr] += actuator_force_in[worldid, actid]
+
+
+@wp.kernel
+def _tendon_actuator_force_cutoff(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_tendonactfrc_adr: wp.array(dtype=int),
+  # Data in:
+  sensordata_in: wp.array2d(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, tenactfrcid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+  adr = sensor_adr[sensorid]
+  val = sensordata_in[worldid, adr]
+
+  _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
+
+
+@wp.kernel
+def _limit_frc_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_limitfrc_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, limitfrcid = wp.tid()
+  sensordata_out[worldid, sensor_adr[sensor_limitfrc_adr[limitfrcid]]] = 0.0
+
+
+@wp.kernel
+def _limit_frc(
+  # Model:
+  sensor_datatype: wp.array(dtype=int),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_cutoff: wp.array(dtype=float),
+  sensor_limitfrc_adr: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  nf_in: wp.array(dtype=int),
+  nl_in: wp.array(dtype=int),
+  efc_worldid_in: wp.array(dtype=int),
+  efc_type_in: wp.array(dtype=int),
+  efc_id_in: wp.array(dtype=int),
+  efc_force_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  efcid, limitfrcid = wp.tid()
+
+  ne = ne_in[0]
+  nf = nf_in[0]
+  nl = nl_in[0]
+
+  # skip if not limit
+  if efcid < ne + nf or efcid >= ne + nf + nl:
+    return
+
+  sensorid = sensor_limitfrc_adr[limitfrcid]
+  if efc_id_in[efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[efcid]
+    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+      worldid = efc_worldid_in[efcid]
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[efcid], sensordata_out[worldid])
 
 
 @wp.func
@@ -1273,12 +1638,146 @@ def _sensor_acc(
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
 
 
+@wp.kernel
+def _sensor_touch_zero(
+  # Model:
+  sensor_adr: wp.array(dtype=int),
+  sensor_touch_adr: wp.array(dtype=int),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  worldid, sensortouchadrid = wp.tid()
+  sensorid = sensor_touch_adr[sensortouchadrid]
+  adr = sensor_adr[sensorid]
+  sensordata_out[worldid, adr] = 0.0
+
+
+@wp.kernel
+def _sensor_touch(
+  # Model:
+  opt_cone: int,
+  geom_bodyid: wp.array(dtype=int),
+  site_type: wp.array(dtype=int),
+  site_bodyid: wp.array(dtype=int),
+  site_size: wp.array(dtype=wp.vec3),
+  sensor_objid: wp.array(dtype=int),
+  sensor_adr: wp.array(dtype=int),
+  sensor_touch_adr: wp.array(dtype=int),
+  # Data in:
+  ncon_in: wp.array(dtype=int),
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  contact_pos_in: wp.array(dtype=wp.vec3),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_dim_in: wp.array(dtype=int),
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_force_in: wp.array(dtype=float),
+  # Data out:
+  sensordata_out: wp.array2d(dtype=float),
+):
+  conid, sensortouchadrid = wp.tid()
+
+  if conid > ncon_in[0]:
+    return
+
+  sensorid = sensor_touch_adr[sensortouchadrid]
+
+  objid = sensor_objid[sensorid]
+  bodyid = site_bodyid[objid]
+
+  # find contact in sensor zone, add normal force
+
+  # contacting bodies
+  geom = contact_geom_in[conid]
+  conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
+
+  # select contacts involving sensorized body
+  efc_address0 = contact_efc_address_in[conid, 0]
+  if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
+    # get contact normal force
+    normalforce = efc_force_in[efc_address0]
+
+    if opt_cone == int(ConeType.PYRAMIDAL.value):
+      dim = contact_dim_in[conid]
+      for i in range(1, 2 * (dim - 1)):
+        normalforce += efc_force_in[contact_efc_address_in[conid, i]]
+
+    if normalforce <= 0.0:
+      return
+
+    # convert contact normal force to global frame, normalize
+    frame = contact_frame_in[conid]
+    conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
+    conray, _ = math.normalize_with_norm(conray)
+
+    # flip ray direction if sensor is on body2
+    if bodyid == conbody[1]:
+      conray = -conray
+
+    # add if ray-zone intersection (always true when contact.pos inside zone)
+    worldid = contact_worldid_in[conid]
+    if (
+      ray.ray_geom(
+        site_xpos_in[worldid, objid],
+        site_xmat_in[worldid, objid],
+        site_size[objid],
+        contact_pos_in[conid],
+        conray,
+        site_type[objid],
+      )
+      >= 0.0
+    ):
+      adr = sensor_adr[sensorid]
+      wp.atomic_add(sensordata_out[worldid], adr, normalforce)
+
+
 @event_scope
 def sensor_acc(m: Model, d: Data):
   """Compute acceleration-dependent sensor values."""
-
-  if (m.sensor_acc_adr.size == 0) or (m.opt.disableflags & DisableBit.SENSOR):
+  if m.opt.disableflags & DisableBit.SENSOR:
     return
+
+  wp.launch(
+    _sensor_touch_zero,
+    dim=(d.nworld, m.sensor_touch_adr.size),
+    inputs=[
+      m.sensor_adr,
+      m.sensor_touch_adr,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
+  )
+
+  wp.launch(
+    _sensor_touch,
+    dim=(d.nconmax, m.sensor_touch_adr.size),
+    inputs=[
+      m.opt.cone,
+      m.geom_bodyid,
+      m.site_type,
+      m.site_bodyid,
+      m.site_size,
+      m.sensor_objid,
+      m.sensor_adr,
+      m.sensor_touch_adr,
+      d.ncon,
+      d.site_xpos,
+      d.site_xmat,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.dim,
+      d.contact.geom,
+      d.contact.efc_address,
+      d.contact.worldid,
+      d.efc.force,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
+  )
 
   if m.sensor_rne_postconstraint:
     smooth.rne_postconstraint(m, d)
@@ -1313,4 +1812,309 @@ def sensor_acc(m: Model, d: Data):
       d.cfrc_int,
     ],
     outputs=[d.sensordata],
+  )
+
+  wp.launch(
+    _tendon_actuator_force_zero,
+    dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
+    inputs=[
+      m.sensor_adr,
+      m.sensor_tendonactfrc_adr,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
+  )
+
+  wp.launch(
+    _tendon_actuator_force,
+    dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nu),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.sensor_objid,
+      m.sensor_adr,
+      m.sensor_tendonactfrc_adr,
+      d.actuator_force,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
+  )
+
+  wp.launch(
+    _tendon_actuator_force_cutoff,
+    dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
+    inputs=[
+      m.sensor_datatype,
+      m.sensor_adr,
+      m.sensor_cutoff,
+      m.sensor_tendonactfrc_adr,
+      d.sensordata,
+    ],
+    outputs=[d.sensordata],
+  )
+
+  wp.launch(
+    _limit_frc_zero,
+    dim=(d.nworld, m.sensor_limitfrc_adr.size),
+    inputs=[m.sensor_adr, m.sensor_limitfrc_adr],
+    outputs=[d.sensordata],
+  )
+
+  wp.launch(
+    _limit_frc,
+    dim=(d.njmax, m.sensor_limitfrc_adr.size),
+    inputs=[
+      m.sensor_datatype,
+      m.sensor_objid,
+      m.sensor_adr,
+      m.sensor_cutoff,
+      m.sensor_limitfrc_adr,
+      d.ne,
+      d.nf,
+      d.nl,
+      d.efc.worldid,
+      d.efc.type,
+      d.efc.id,
+      d.efc.force,
+    ],
+    outputs=[
+      d.sensordata,
+    ],
+  )
+
+
+@wp.kernel
+def _energy_pos_zero(
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid = wp.tid()
+  energy_out[worldid][0] = 0.0
+
+
+@wp.kernel
+def _energy_pos_gravity(
+  # Model:
+  opt_gravity: wp.array(dtype=wp.vec3),
+  body_mass: wp.array2d(dtype=float),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, bodyid = wp.tid()
+  gravity = opt_gravity[worldid]
+  bodyid += 1  # skip world body
+
+  energy = wp.vec2(
+    body_mass[worldid, bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
+    0.0,
+  )
+
+  wp.atomic_sub(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_passive_joint(
+  # Model:
+  qpos_spring: wp.array2d(dtype=float),
+  jnt_type: wp.array(dtype=int),
+  jnt_qposadr: wp.array(dtype=int),
+  jnt_stiffness: wp.array2d(dtype=float),
+  # Data in:
+  qpos_in: wp.array2d(dtype=float),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, jntid = wp.tid()
+  stiffness = jnt_stiffness[worldid, jntid]
+
+  if stiffness == 0.0:
+    return
+
+  padr = jnt_qposadr[jntid]
+  jnttype = jnt_type[jntid]
+
+  if jnttype == int(JointType.FREE.value):
+    dif0 = wp.vec3(
+      qpos_in[worldid, padr + 0] - qpos_spring[worldid, padr + 0],
+      qpos_in[worldid, padr + 1] - qpos_spring[worldid, padr + 1],
+      qpos_in[worldid, padr + 2] - qpos_spring[worldid, padr + 2],
+    )
+
+    # convert quaternion difference into angular "velocity"
+    quat1 = wp.quat(
+      qpos_in[worldid, padr + 3],
+      qpos_in[worldid, padr + 4],
+      qpos_in[worldid, padr + 5],
+      qpos_in[worldid, padr + 6],
+    )
+    quat1 = wp.normalize(quat1)
+
+    quat_spring = wp.quat(
+      qpos_spring[worldid, padr + 3],
+      qpos_spring[worldid, padr + 4],
+      qpos_spring[worldid, padr + 5],
+      qpos_spring[worldid, padr + 6],
+    )
+
+    dif1 = math.quat_sub(quat1, quat_spring)
+
+    energy = wp.vec2(
+      0.5 * stiffness * (wp.dot(dif0, dif0) + wp.dot(dif1, dif1)),
+      0.0,
+    )
+
+    wp.atomic_add(energy_out, worldid, energy)
+
+  elif jnttype == int(JointType.BALL.value):
+    quat = wp.quat(
+      qpos_in[worldid, padr + 0],
+      qpos_in[worldid, padr + 1],
+      qpos_in[worldid, padr + 2],
+      qpos_in[worldid, padr + 3],
+    )
+    quat = wp.normalize(quat)
+
+    quat_spring = wp.quat(
+      qpos_spring[worldid, padr + 0],
+      qpos_spring[worldid, padr + 1],
+      qpos_spring[worldid, padr + 2],
+      qpos_spring[worldid, padr + 3],
+    )
+
+    dif = math.quat_sub(quat, quat_spring)
+    energy = wp.vec2(
+      0.5 * stiffness * wp.dot(dif, dif),
+      0.0,
+    )
+    wp.atomic_add(energy_out, worldid, energy)
+  elif jnttype == int(JointType.SLIDE.value) or jnttype == int(JointType.HINGE.value):
+    dif_ = qpos_in[worldid, padr] - qpos_spring[worldid, padr]
+    energy = wp.vec2(
+      0.5 * stiffness * dif_ * dif_,
+      0.0,
+    )
+    wp.atomic_add(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_passive_tendon(
+  # Model:
+  tendon_stiffness: wp.array2d(dtype=float),
+  tendon_lengthspring: wp.array2d(dtype=wp.vec2),
+  # Data in:
+  ten_length_in: wp.array2d(dtype=float),
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  worldid, tenid = wp.tid()
+
+  stiffness = tendon_stiffness[worldid, tenid]
+
+  if stiffness == 0.0:
+    return
+
+  length = ten_length_in[worldid, tenid]
+
+  # compute spring displacement
+  lengthspring = tendon_lengthspring[worldid, tenid]
+  lower = lengthspring[0]
+  upper = lengthspring[1]
+
+  if length > upper:
+    displacement = upper - length
+  elif length < lower:
+    displacement = lower - length
+  else:
+    displacement = 0.0
+
+  energy = wp.vec2(0.5 * stiffness * displacement * displacement, 0.0)
+  wp.atomic_add(energy_out, worldid, energy)
+
+
+def energy_pos(m: Model, d: Data):
+  """Position-dependent energy (potential)."""
+  wp.launch(_energy_pos_zero, dim=(d.nworld,), outputs=[d.energy])
+
+  # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
+  if not m.opt.disableflags & DisableBit.GRAVITY:
+    wp.launch(
+      _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
+    )
+
+  if not m.opt.disableflags & DisableBit.PASSIVE:
+    # add joint-level springs
+    wp.launch(
+      _energy_pos_passive_joint,
+      dim=(d.nworld, m.njnt),
+      inputs=[
+        m.qpos_spring,
+        m.jnt_type,
+        m.jnt_qposadr,
+        m.jnt_stiffness,
+        d.qpos,
+      ],
+      outputs=[d.energy],
+    )
+
+    # add tendon-level springs
+    if m.ntendon:
+      wp.launch(
+        _energy_pos_passive_tendon,
+        dim=(d.nworld, m.ntendon),
+        inputs=[
+          m.tendon_stiffness,
+          m.tendon_lengthspring,
+          d.ten_length,
+        ],
+        outputs=[d.energy],
+      )
+
+    # TODO(team): flex
+
+
+def _energy_vel_kinetic(nv: int):
+  @nested_kernel
+  def energy_vel_kinetic(
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    # In:
+    Mqvel: wp.array2d(dtype=float),
+    # Out:
+    energy_out: wp.array(dtype=wp.vec2),
+  ):
+    worldid = wp.tid()
+
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
+    Mqvel_tile = wp.tile_load(Mqvel[worldid], shape=wp.static(nv))
+
+    # qvel * (M @ qvel)
+    qvelMqvel_tile = wp.tile_map(wp.mul, qvel_tile, Mqvel_tile)
+
+    # sum(qvel * (M @ qvel))
+    quadratic_tile = wp.tile_reduce(wp.add, qvelMqvel_tile)
+
+    energy_out[worldid][1] = 0.5 * quadratic_tile[0]
+
+  return energy_vel_kinetic
+
+
+def energy_vel(m: Model, d: Data):
+  """Velocity-dependent energy (kinetic)."""
+
+  # kinetic energy: 0.5 * qvel.T @ M @ qvel
+
+  # M @ qvel
+  skip = wp.zeros(d.nworld, dtype=bool)
+  support.mul_m(m, d, d.efc.mv, d.qvel, skip)
+
+  wp.launch_tiled(
+    _energy_vel_kinetic(m.nv),
+    dim=(d.nworld,),
+    inputs=[d.qvel, d.efc.mv],
+    outputs=[d.energy],
+    block_dim=m.block_dim.energy_vel_kinetic,
   )

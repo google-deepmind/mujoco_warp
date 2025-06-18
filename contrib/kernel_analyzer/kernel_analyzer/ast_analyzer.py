@@ -275,7 +275,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
 
       # paramater type must match field type (or generic types if no corresponding field)
       if expected_type is None:
-        # if the parameter does not correspond to a Model/Data fields, it has no expected type
+        # if the parameter does not correspond to Model/Data fields, it has no expected type
         # still, there are a few type conventions we stick to
         if "wp.int32" in param_type:
           expected_type = "int"

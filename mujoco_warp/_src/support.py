@@ -17,8 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
+from .math import motion_cross
 from .types import ConeType
 from .types import Data
+from .types import JointType
 from .types import Model
 from .types import TileSet
 from .types import vec5
@@ -154,8 +156,7 @@ def mul_m(
           skip,
         ],
         outputs=[res.reshape(res.shape + (1,))],
-        # TODO(team): develop heuristic for block dim, or make configurable
-        block_dim=32,
+        block_dim=m.block_dim.mul_m_dense,
       )
 
 
@@ -198,23 +199,57 @@ def xfrc_accumulate_kernel(
   out[worldid, dofid] += accumul
 
 
-@event_scope
-def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+@wp.kernel
+def _apply_ft(
+  # Model:
+  nbody: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  ft_in: wp.array2d(dtype=wp.spatial_vector),
+  # Out:
+  qfrc_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  cdof = cdof_in[worldid, dofid]
+  rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
+  jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
+
+  dofbodyid = dof_bodyid[dofid]
+  accumul = float(0.0)
+
+  for bodyid in range(dofbodyid, nbody):
+    # any body that is in the subtree of dofbodyid is part of the jacobian
+    parentid = bodyid
+    while parentid != 0 and parentid != dofbodyid:
+      parentid = body_parentid[parentid]
+    if parentid == 0:
+      continue  # body is not part of the subtree
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    cross_term = wp.cross(rotational_cdof, offset)
+    ft_body = ft_in[worldid, bodyid]
+    accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
+
+  qfrc_out[worldid, dofid] += accumul
+
+
+def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: wp.array2d(dtype=float)):
   wp.launch(
-    kernel=xfrc_accumulate_kernel,
+    kernel=_apply_ft,
     dim=(d.nworld, m.nv),
-    inputs=[
-      m.nbody,
-      m.body_parentid,
-      m.body_rootid,
-      m.dof_bodyid,
-      d.xfrc_applied,
-      d.xipos,
-      d.subtree_com,
-      d.cdof,
-    ],
+    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft],
     outputs=[qfrc],
   )
+
+
+@event_scope
+def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+  apply_ft(m, d, d.xfrc_applied, qfrc)
 
 
 @wp.func
@@ -432,5 +467,73 @@ def jac(
 
   jacp = cdof_lin + wp.cross(cdof_ang, offset)
   jacr = cdof_ang
+
+  return jacp, jacr
+
+
+@wp.func
+def jac_dot(
+  # Model:
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  jnt_type: wp.array(dtype=int),
+  jnt_dofadr: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
+  dof_jntid: wp.array(dtype=int),
+  # Data in:
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  point: wp.vec3,
+  bodyid: int,
+  dofid: int,
+  worldid: int,
+) -> Tuple[wp.vec3, wp.vec3]:
+  dof_bodyid_ = dof_bodyid[dofid]
+  in_tree = int(dof_bodyid_ == 0)
+  parentid = bodyid
+  while parentid != 0:
+    if parentid == dof_bodyid_:
+      in_tree = 1
+      break
+    parentid = body_parentid[parentid]
+
+  if not in_tree:
+    return wp.vec3(0.0), wp.vec3(0.0)
+
+  com = subtree_com_in[worldid, body_rootid[bodyid]]
+  offset = point - com
+
+  # transform spatial
+  cvel = cvel_in[worldid, bodyid]
+  pvel_lin = wp.spatial_bottom(cvel) - wp.cross(offset, wp.spatial_top(cvel))
+
+  cdof = cdof_in[worldid, dofid]
+  cdof_dot = cdof_dot_in[worldid, dofid]
+
+  # check for quaternion
+  dofjntid = dof_jntid[dofid]
+  jnttype = jnt_type[dofjntid]
+  jntdofadr = jnt_dofadr[dofjntid]
+
+  if (jnttype == int(JointType.BALL.value)) or ((jnttype == int(JointType.FREE.value)) and dofid >= jntdofadr + 3):
+    # compute cdof_dot for quaternion (use current body cvel)
+    cvel = cvel_in[worldid, dof_bodyid[dofid]]
+    cdof_dot = motion_cross(cvel, cdof)
+
+  cdof_dot_ang = wp.spatial_top(cdof_dot)
+  cdof_dot_lin = wp.spatial_bottom(cdof_dot)
+
+  # construct translational Jacobian (correct for rotation)
+  # first correction term, account for varying cdof
+  correction1 = wp.cross(cdof_dot_ang, offset)
+
+  # second correction term, account for point translational velocity
+  correction2 = wp.cross(wp.spatial_top(cdof), pvel_lin)
+
+  jacp = cdof_dot_lin + correction1 + correction2
+  jacr = cdof_dot_ang
 
   return jacp, jacr

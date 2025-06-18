@@ -27,9 +27,6 @@ from .types import GeomType
 from .types import Model
 from .types import vec5
 
-BOX_BOX_BLOCK_DIM = 32
-
-
 _HUGE_VAL = 1e6
 _TINY_VAL = 1e-6
 
@@ -192,20 +189,20 @@ def _box_box(
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array(dtype=float),
-  geom_solref: wp.array(dtype=wp.vec2),
-  geom_solimp: wp.array(dtype=vec5),
-  geom_size: wp.array(dtype=wp.vec3),
-  geom_friction: wp.array(dtype=wp.vec3),
-  geom_margin: wp.array(dtype=float),
-  geom_gap: wp.array(dtype=float),
+  geom_solmix: wp.array2d(dtype=float),
+  geom_solref: wp.array2d(dtype=wp.vec2),
+  geom_solimp: wp.array2d(dtype=vec5),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_friction: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  geom_gap: wp.array2d(dtype=float),
   pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array(dtype=wp.vec2),
-  pair_solreffriction: wp.array(dtype=wp.vec2),
-  pair_solimp: wp.array(dtype=vec5),
-  pair_margin: wp.array(dtype=float),
-  pair_gap: wp.array(dtype=float),
-  pair_friction: wp.array(dtype=vec5),
+  pair_solref: wp.array2d(dtype=wp.vec2),
+  pair_solreffriction: wp.array2d(dtype=wp.vec2),
+  pair_solimp: wp.array2d(dtype=vec5),
+  pair_margin: wp.array2d(dtype=float),
+  pair_gap: wp.array2d(dtype=float),
+  pair_friction: wp.array2d(dtype=vec5),
   # Data in:
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -262,6 +259,7 @@ def _box_box(
       collision_pair_in,
       collision_pairid_in,
       tid,
+      worldid,
     )
 
     # transformations
@@ -271,8 +269,8 @@ def _box_box(
     trans_atob = b_mat_inv @ (a_pos - b_pos)
     rot_atob = b_mat_inv @ a_mat
 
-    a_size = geom_size[ga]
-    b_size = geom_size[gb]
+    a_size = geom_size[worldid, ga]
+    b_size = geom_size[worldid, gb]
     a = box(rot_atob, trans_atob, a_size)
     b = box(wp.identity(3, wp.float32), wp.vec3(0.0), b_size)
 
@@ -363,7 +361,7 @@ def _box_box(
       for i in range(4):
         pos[i] = pos[idx]
 
-    margin = wp.max(geom_margin[ga], geom_margin[gb])
+    margin = wp.max(geom_margin[worldid, ga], geom_margin[worldid, gb])
     for i in range(4):
       pos_glob = b_mat @ pos[i] + b_pos
       n_glob = b_mat @ sep_axis
@@ -516,7 +514,7 @@ def _clip_quad(subject_quad: mat43f, subject_normal: wp.vec3, clipping_quad: mat
 # TODO(ca): tiling variant
 @wp.func
 def _manifold_points(poly: Any, mask: Any, clipping_norm: wp.vec3) -> wp.vec4b:
-  """Chooses four points on the polygon with approximately maximal area. Return the indices"""
+  """Chooses four points on the polygon with approximately maximal area. Returns indices."""
   n = len(poly)
 
   a_idx = wp.int32(0)
@@ -647,5 +645,5 @@ def box_box_narrowphase(
       d.contact.geom,
       d.contact.worldid,
     ],
-    block_dim=BOX_BOX_BLOCK_DIM,
+    block_dim=m.block_dim.box_box,
   )

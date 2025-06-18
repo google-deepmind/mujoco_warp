@@ -17,6 +17,7 @@
 
 import mujoco
 import numpy as np
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
@@ -79,13 +80,15 @@ class ConstraintTest(parameterized.TestCase):
     _, mjd, m, d = test_util.fixture(xml=xml, cone=cone)
 
     for arr in (
-      d.efc.J,
       d.efc.D,
       d.efc.aref,
       d.efc.pos,
       d.efc.margin,
     ):
       arr.zero_()
+
+    # fill with nan to check whether we are not reading uninitialized values
+    d.efc.J.fill_(wp.nan)
 
     mjwarp.make_constraint(m, d)
 
@@ -105,7 +108,6 @@ class ConstraintTest(parameterized.TestCase):
       mjm, mjd, m, d = test_util.fixture("constraints.xml", sparse=False, cone=cone, keyframe=key)
 
       for arr in (
-        d.efc.J,
         d.efc.D,
         d.efc.aref,
         d.efc.pos,
@@ -117,6 +119,8 @@ class ConstraintTest(parameterized.TestCase):
       ):
         arr.zero_()
 
+      d.efc.J.fill_(wp.nan)
+
       mjwarp.make_constraint(m, d)
 
       _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
@@ -125,9 +129,11 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
       _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
+      _assert_eq(d.efc.vel.numpy()[: mjd.nefc], mjd.efc_vel, "efc_vel")
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
       _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
       _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
 
   def test_limit_tendon(self):
     """Test limit tendon constraints."""
@@ -143,9 +149,11 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
       _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
+      _assert_eq(d.efc.vel.numpy()[: mjd.nefc], mjd.efc_vel, "efc_vel")
       _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
       _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
       _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
 
   def test_equality_tendon(self):
     """Test equality tendon constraints."""
@@ -198,9 +206,11 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
     _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
     _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
+    _assert_eq(d.efc.vel.numpy()[: mjd.nefc], mjd.efc_vel, "efc_vel")
     _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
     _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
     _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_eq(d.efc.type.numpy()[: mjd.nefc], mjd.efc_type, "efc_type")
 
 
 if __name__ == "__main__":

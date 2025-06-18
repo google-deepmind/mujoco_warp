@@ -28,6 +28,7 @@ from . import warp_util
 from .types import ConeType
 from .types import Data
 from .types import DisableBit
+from .types import EnableBit
 from .types import IntegratorType
 from .types import Model
 from .types import SolverType
@@ -41,7 +42,12 @@ def fixture(
   contact: bool = True,
   constraint: bool = True,
   equality: bool = True,
+  passive: bool = True,
   gravity: bool = True,
+  clampctrl: bool = True,
+  qpos0: bool = False,
+  kick: bool = False,
+  energy: bool = False,
   eulerdamp: Optional[bool] = None,
   cone: Optional[ConeType] = None,
   integrator: Optional[IntegratorType] = None,
@@ -51,7 +57,9 @@ def fixture(
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
   disableflags: Optional[int] = None,
-  kick: bool = False,
+  enableflags: Optional[int] = None,
+  applied: bool = False,
+  nstep: int = 3,
   seed: int = 42,
   nworld: int = None,
   nconmax: int = None,
@@ -74,10 +82,17 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.CONSTRAINT
   if not equality:
     mjm.opt.disableflags |= DisableBit.EQUALITY
+  if not passive:
+    mjm.opt.disableflags |= DisableBit.PASSIVE
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
+  if not clampctrl:
+    mjm.opt.disableflags |= DisableBit.CLAMPCTRL
   if not eulerdamp:
     mjm.opt.disableflags |= DisableBit.EULERDAMP
+
+  if energy:
+    mjm.opt.enableflags |= EnableBit.ENERGY
 
   if cone is not None:
     mjm.opt.cone = cone
@@ -85,6 +100,8 @@ def fixture(
     mjm.opt.integrator = integrator
   if disableflags is not None:
     mjm.opt.disableflags |= disableflags
+  if enableflags is not None:
+    mjm.opt.enableflags |= enableflags
   if solver is not None:
     mjm.opt.solver = solver
   if iterations is not None:
@@ -100,18 +117,26 @@ def fixture(
   mjd = mujoco.MjData(mjm)
   if keyframe > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, keyframe)
+  elif qpos0:
+    mjd.qpos[:] = mjm.qpos0
+  else:
+    # set random qpos, underlying code should gracefully handle un-normalized quats
+    mjd.qpos[:] = np.random.random(mjm.nq)
 
   if kick:
     # give the system a little kick to ensure we have non-identity rotations
     mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
-    mjd.ctrl = np.random.normal(scale=0.01, size=mjm.nu)
-    mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
+    mjd.ctrl = np.random.uniform(-0.1, 0.1, size=mjm.nu)
+  if applied:
+    mjd.qfrc_applied = np.random.uniform(-0.1, 0.1, size=mjm.nv)
+    mjd.xfrc_applied = np.random.uniform(-0.1, 0.1, size=mjd.xfrc_applied.shape)
+  if kick or applied:
+    mujoco.mj_step(mjm, mjd, nstep)  # let dynamics get state significantly non-zero
 
   if mjm.nmocap:
     mjd.mocap_pos = np.random.random(mjd.mocap_pos.shape)
     mocap_quat = np.random.random(mjd.mocap_quat.shape)
-    norms = np.linalg.norm(mocap_quat, axis=1, keepdims=True)
-    mjd.mocap_quat = mocap_quat / norms
+    mjd.mocap_quat = mocap_quat
 
   mujoco.mj_forward(mjm, mjd)
   m = io.put_model(mjm)
@@ -139,7 +164,8 @@ def benchmark(
   nstep: int,
   event_trace: bool = False,
   measure_alloc: bool = False,
-) -> Tuple[float, float, dict, list, list]:
+  measure_solver_niter: bool = False,
+) -> Tuple[float, float, dict, list, list, list]:
   """Benchmark a function of Model and Data."""
   jit_beg = time.perf_counter()
 
@@ -150,7 +176,7 @@ def benchmark(
   wp.synchronize()
 
   trace = {}
-  ncon, nefc = [], []
+  ncon, nefc, solver_niter = [], [], []
 
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
@@ -165,12 +191,16 @@ def benchmark(
         trace = _sum(trace, tracer.trace())
       else:
         trace = tracer.trace()
-      if measure_alloc:
+      if measure_alloc or measure_solver_niter:
         wp.synchronize()
+      if measure_alloc:
         ncon.append(d.ncon.numpy()[0])
         nefc.append(d.nefc.numpy()[0])
+      if measure_solver_niter:
+        solver_niter.append(d.solver_niter.numpy())
+
     wp.synchronize()
     run_end = time.perf_counter()
     run_duration = run_end - run_beg
 
-  return jit_duration, run_duration, trace, ncon, nefc
+  return jit_duration, run_duration, trace, ncon, nefc, solver_niter

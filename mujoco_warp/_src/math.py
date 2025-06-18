@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import warp as wp
 
@@ -158,6 +158,7 @@ def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
   angle = dt * norm_
 
   q_res = axis_angle_to_quat(v, angle)
+  q = wp.normalize(q)
   q_res = mul_quat(q, q_res)
 
   return wp.normalize(q_res)
@@ -212,7 +213,7 @@ def make_frame(a: wp.vec3):
 
 
 @wp.func
-def normalize_with_norm(x: wp.vec3):
+def normalize_with_norm(x: Any):
   norm = wp.length(x)
   if norm == 0.0:
     return x, 0.0
@@ -272,3 +273,8 @@ def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1:
 @wp.func
 def safe_div(x: float, y: float) -> float:
   return x / wp.where(y != 0.0, y, types.MJ_MINVAL)
+
+
+@wp.func
+def upper_tri_index(n: int, i: int, j: int) -> int:
+  return (n * (n - 1) - (n - i) * (n - i - 1)) / 2 + j - i - 1

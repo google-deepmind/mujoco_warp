@@ -4,6 +4,18 @@
 MUJOCO_LOG.TXT
 
 
+## Cloned repositories
+## -------------------
+
+benchmark/mujoco_menagerie/
+
+
+## Created directories
+## --------------------
+
+benchmark/kitchen/combined_assets/
+kitchen_robot.xml
+
 # Language-specific files
 # =======================
 

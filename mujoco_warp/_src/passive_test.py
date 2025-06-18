@@ -36,12 +36,12 @@ def _assert_eq(a, b, name):
 
 
 class PassiveTest(parameterized.TestCase):
-  @parameterized.parameters(True, False)
-  def test_passive(self, gravity):
+  @parameterized.product(passive=[True, False], gravity=[True, False])
+  def test_passive(self, passive, gravity):
     """Tests passive."""
-    _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity)
+    _, mjd, m, d = test_util.fixture("pendula.xml", passive=passive, gravity=gravity)
 
-    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_gravcomp, d.qfrc_passive):
       arr.zero_()
 
     mjwarp.passive(m, d)
@@ -51,7 +51,42 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
 
-  # TODO(team): test DisableBit.PASSIVE
+  @parameterized.parameters(
+    (1, 0, 0, 0, 0),
+    (0, 1, 0, 0, 0),
+    (0, 0, 1, 0, 0),
+    (0, 0, 0, 1, 0),
+    (0, 0, 0, 0, 1),
+    (1, 1, 1, 1, 1),
+  )
+  def test_fluid(self, density, viscosity, wind0, wind1, wind2):
+    """Tests fluid model."""
+
+    _, mjd, m, d = test_util.fixture(
+      xml=f"""
+      <mujoco>
+        <option density="{density}" viscosity="{viscosity}" wind="{wind0} {wind1} {wind2}"/>
+        <worldbody>
+          <body>
+            <geom type="box" size=".1 .1 .1"/>
+            <freejoint/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 1 1 1 1 1"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    for arr in (d.qfrc_passive, d.qfrc_fluid):
+      arr.zero_()
+
+    mjwarp.passive(m, d)
+
+    _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
+    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
 
   @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
   def test_gravcomp(self, sparse, gravity):
@@ -87,7 +122,7 @@ class PassiveTest(parameterized.TestCase):
           <motor joint="joint0"/>
           <motor joint="joint1"/>
         </actuator>
-      </mujoco>                        
+      </mujoco>
     """,
       gravity=gravity,
       sparse=sparse,
