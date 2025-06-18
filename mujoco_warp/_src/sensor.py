@@ -2101,6 +2101,7 @@ def _energy_vel_kinetic(nv: int):
 
   return energy_vel_kinetic
 
+ENERGY_VEL_KINETIC_KERNELS = {}
 
 def energy_vel(m: Model, d: Data):
   """Velocity-dependent energy (kinetic)."""
@@ -2111,8 +2112,11 @@ def energy_vel(m: Model, d: Data):
   skip = wp.zeros(d.nworld, dtype=bool)
   support.mul_m(m, d, d.efc.mv, d.qvel, skip)
 
+  if ENERGY_VEL_KINETIC_KERNELS.get(m.nv) is None:
+    ENERGY_VEL_KINETIC_KERNELS[m.nv] = _energy_vel_kinetic(m.nv)
+
   wp.launch_tiled(
-    _energy_vel_kinetic(m.nv),
+    ENERGY_VEL_KINETIC_KERNELS[m.nv],
     dim=(d.nworld,),
     inputs=[d.qvel, d.efc.mv],
     outputs=[d.energy],

@@ -921,12 +921,16 @@ def _tile_cholesky_factorize(tile: TileSet):
 
   return cholesky_factorize
 
+CHOL_FACTORIZE_KERNELS = {}
 
 def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
   """Dense Cholesky factorizaton of inertia-like matrix M, assumed spd."""
   for tile in m.qM_tiles:
+    if CHOL_FACTORIZE_KERNELS.get(tile.size) is None:
+      CHOL_FACTORIZE_KERNELS[tile.size] = _tile_cholesky_factorize(tile)
+
     wp.launch_tiled(
-      _tile_cholesky_factorize(tile),
+      CHOL_FACTORIZE_KERNELS[tile.size],
       dim=(d.nworld, tile.adr.size),
       inputs=[M, tile.adr],
       outputs=[L],
@@ -2170,12 +2174,16 @@ def _tile_cholesky_solve(tile: TileSet):
 
   return cholesky_solve
 
+CHOL_SOLVE_KERNELS = {}
 
 def _solve_LD_dense(m: Model, d: Data, L: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
   """Computes dense backsubstitution: x = inv(L'*L)*y"""
   for tile in m.qM_tiles:
+    if CHOL_SOLVE_KERNELS.get(tile.size) is None:
+      CHOL_SOLVE_KERNELS[tile.size] = _tile_cholesky_solve(tile)
+
     wp.launch_tiled(
-      _tile_cholesky_solve(tile),
+      CHOL_SOLVE_KERNELS[tile.size],
       dim=(d.nworld, tile.adr.size),
       inputs=[L, y, tile.adr],
       outputs=[x],
@@ -2250,13 +2258,17 @@ def _tile_cholesky_factorize_solve(tile: TileSet):
 
   return cholesky_factorize_solve
 
+CHOL_FACTORIZE_SOLVE_KERNELS = {}
 
 def _factor_solve_i_dense(
   m: Model, d: Data, M: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)
 ):
   for tile in m.qM_tiles:
+    if CHOL_FACTORIZE_SOLVE_KERNELS.get(tile.size) is None:
+      CHOL_FACTORIZE_SOLVE_KERNELS[tile.size] = _tile_cholesky_factorize_solve(tile)
+
     wp.launch_tiled(
-      _tile_cholesky_factorize_solve(tile),
+      CHOL_FACTORIZE_SOLVE_KERNELS[tile.size],
       dim=(d.nworld, tile.adr.size),
       inputs=[M, y, tile.adr],
       outputs=[x],

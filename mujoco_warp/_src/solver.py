@@ -1266,6 +1266,8 @@ def linesearch_jaref(
   efc_Jaref_out[efcid] += efc_alpha_in[worldid] * efc_jv_in[efcid]
 
 
+LINESERACH_JV_FUSED_KERNELS = {}
+
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
@@ -1292,8 +1294,11 @@ def _linesearch(m: types.Model, d: types.Data):
       outputs=[d.efc.jv],
     )
 
+  if LINESERACH_JV_FUSED_KERNELS.get(m.nv) is None:
+    LINESERACH_JV_FUSED_KERNELS[m.nv] = linesearch_jv_fused(m.nv, dofs_per_thread)
+
   wp.launch(
-    linesearch_jv_fused(m.nv, dofs_per_thread),
+    LINESERACH_JV_FUSED_KERNELS[m.nv],
     dim=(d.njmax, threads_per_efc),
     inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
     outputs=[d.efc.jv],
@@ -2252,6 +2257,8 @@ def update_gradient_cholesky_blocked(tile_size: int):
 
   return kernel
 
+UPDATE_GRADIENT_CHOL_KERNELS = {}
+UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS = {}
 
 def _update_gradient(m: types.Model, d: types.Data):
   # grad = Ma - qfrc_smooth - qfrc_constraint
@@ -2360,16 +2367,22 @@ def _update_gradient(m: types.Model, d: types.Data):
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
     if m.nv < 32:
+      if UPDATE_GRADIENT_CHOL_KERNELS.get(m.nv) is None:
+        UPDATE_GRADIENT_CHOL_KERNELS[m.nv] = update_gradient_cholesky(m.nv)
+
       wp.launch_tiled(
-        update_gradient_cholesky(m.nv),
+        UPDATE_GRADIENT_CHOL_KERNELS[m.nv],
         dim=(d.nworld,),
         inputs=[d.efc.grad, d.efc.h, d.efc.done],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
     else:
+      if UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS.get(32) is None:
+        UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS[32] = update_gradient_cholesky_blocked(32)
+
       wp.launch_tiled(
-        update_gradient_cholesky_blocked(32),
+        UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS[32],
         dim=(d.nworld,),
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),

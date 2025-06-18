@@ -109,6 +109,7 @@ def mul_m_dense(tile: TileSet):
 
   return kernel
 
+MUL_M_DENSE_KERNELS = {}
 
 @event_scope
 def mul_m(
@@ -145,8 +146,11 @@ def mul_m(
 
   else:
     for tile in m.qM_tiles:
+      if MUL_M_DENSE_KERNELS.get(tile.size) is None:
+        MUL_M_DENSE_KERNELS[tile.size] = mul_m_dense(tile)
+
       wp.launch_tiled(
-        mul_m_dense(tile),
+        MUL_M_DENSE_KERNELS[tile.size],
         dim=(d.nworld, tile.adr.size),
         inputs=[
           d.qM,

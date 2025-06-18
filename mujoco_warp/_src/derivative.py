@@ -141,6 +141,7 @@ def _tile_qderiv_actuator_passive(
 
   return qderiv_actuator_passive
 
+DERIV_SMOOTH_VEL_KERNELS = {}
 
 @event_scope
 def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
@@ -190,14 +191,18 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
     # TODO(team): sparse version
 
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      wp.launch_tiled(
-        _tile_qderiv_actuator_passive(
+
+      if DERIV_SMOOTH_VEL_KERNELS.get((tile_nu.size, tile_nv.size)) is None:
+        DERIV_SMOOTH_VEL_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_qderiv_actuator_passive(
           tile_nu,
           tile_nv,
           actuation_enabled,
           passive_enabled,
-          flg_forward,
-        ),
+          flg_forward
+        )
+
+      wp.launch_tiled(
+        DERIV_SMOOTH_VEL_KERNELS[(tile_nu.size, tile_nv.size)],
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[
           m.opt.timestep,

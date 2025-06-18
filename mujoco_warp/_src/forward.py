@@ -354,6 +354,7 @@ def _tile_euler_dense(tile: TileSet):
 
   return euler_dense
 
+EULER_DENSE_KERNELS = {}
 
 @event_scope
 def euler(m: Model, d: Data):
@@ -365,8 +366,12 @@ def euler(m: Model, d: Data):
       _euler_sparse(m, d)
     else:
       for tile in m.qM_tiles:
+
+        if EULER_DENSE_KERNELS.get((tile.size)) is None:
+          EULER_DENSE_KERNELS[tile.size] = _tile_euler_dense(tile)
+
         wp.launch_tiled(
-          _tile_euler_dense(tile),
+          EULER_DENSE_KERNELS[tile.size],
           dim=(d.nworld, tile.adr.size),
           inputs=[m.dof_damping, m.opt.timestep, d.qM, d.qfrc_smooth, d.qfrc_constraint, tile.adr],
           outputs=[d.qacc_integration],
@@ -618,6 +623,7 @@ def _tendon_velocity(m: Model, d: Data):
     block_dim=m.block_dim.tendon_velocity,
   )
 
+ACTUATOR_VELOCITY_DENSE_KERNELS = {}
 
 @event_scope
 def fwd_velocity(m: Model, d: Data):
@@ -630,8 +636,12 @@ def fwd_velocity(m: Model, d: Data):
       # TODO(team): avoid creating invalid tiles
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
+
+      if ACTUATOR_VELOCITY_DENSE_KERNELS.get((tile_nu.size, tile_nv.size)) is None: 
+        ACTUATOR_VELOCITY_DENSE_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_actuator_velocity_dense(tile_nu, tile_nv)
+
       wp.launch_tiled(
-        _tile_actuator_velocity_dense(tile_nu, tile_nv),
+        ACTUATOR_VELOCITY_DENSE_KERNELS[(tile_nu.size, tile_nv.size)],
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[d.qvel.reshape(d.qvel.shape + (1,)), d.actuator_moment, tile_nu.adr, tile_nv.adr],
         outputs=[d.actuator_velocity.reshape(d.actuator_velocity.shape + (1,))],
@@ -891,6 +901,7 @@ def _tile_qfrc_actuator(tile_nu: TileSet, tile_nv: TileSet):
 
   return qfrc_actuator
 
+QFRC_ACTUATOR_KERNELS = {}
 
 @event_scope
 def fwd_actuation(m: Model, d: Data):
@@ -977,8 +988,12 @@ def fwd_actuation(m: Model, d: Data):
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
+
+      if QFRC_ACTUATOR_KERNELS.get((tile_nu.size, tile_nv.size)) is None:
+        QFRC_ACTUATOR_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_qfrc_actuator(tile_nu, tile_nv)
+
       wp.launch_tiled(
-        _tile_qfrc_actuator(tile_nu, tile_nv),
+        QFRC_ACTUATOR_KERNELS[(tile_nu.size, tile_nv.size)],
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[
           d.actuator_force.reshape(d.actuator_force.shape + (1,)),
