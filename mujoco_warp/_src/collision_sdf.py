@@ -44,17 +44,16 @@ def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.
   aabb.min = wp.vec3(1000000000.0, 1000000000.0, 1000000000.0)
 
   for i in range(8):
-    corner = wp.vec3(aabb_size.x, aabb_size.y, aabb_size.z)
-    if i % 2 == 0:
-      corner.x = -corner.x
-    if (i // 2) % 2 == 0:
-      corner.y = -corner.y
-    if i < 4:
-      corner.z = -corner.z
-    c = corner + aabb_pos
-    aabb.max = wp.max(aabb.max, c)
-    aabb.min = wp.min(aabb.min, c)
-  aabb.min = ori * aabb.min + pos
+    vec = wp.vec3(
+      aabb_size.x * (1.0 if (i & 1) else -1.0),
+      aabb_size.y * (1.0 if (i & 2) else -1.0),
+      aabb_size.z * (1.0 if (i & 4) else -1.0)
+    )
+    
+    frame_vec = ori * (vec + aabb_pos) + pos
+    
+    aabb.min = wp.min(aabb.min, frame_vec)
+    aabb.max = wp.max(aabb.max, frame_vec)
 
   return aabb
 
@@ -243,7 +242,7 @@ def gradient_descent_eval(
   grad2 = sdf_grad_eval(int(GeomType.SDF.value), x, params.attr2, sdf_type2)
   grad2 = wp.normalize(grad2)
   
-  n = grad2 - grad1
+  n = grad1 - grad2
   n = wp.normalize(n)
   pos = rot2 * x + pos2
   n = rot2 * n
@@ -276,30 +275,39 @@ def sdf_narrowphase_kernel(
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array(dtype=float),
-  geom_solref: wp.array(dtype=wp.vec2),
-  geom_solimp: wp.array(dtype=vec5),
-  geom_size: wp.array(dtype=wp.vec3),
-  geom_friction: wp.array(dtype=wp.vec3),
-  geom_margin: wp.array(dtype=float),
-  geom_gap: wp.array(dtype=float),
+  geom_solmix: wp.array2d(dtype=float),
+  geom_solref: wp.array2d(dtype=wp.vec2),
+  geom_solimp: wp.array2d(dtype=vec5),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_friction: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  geom_gap: wp.array2d(dtype=float),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
+  mesh_graphadr: wp.array(dtype=int),
+  mesh_graph: wp.array(dtype=int),
   pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array(dtype=wp.vec2),
-  pair_solreffriction: wp.array(dtype=wp.vec2),
-  pair_solimp: wp.array(dtype=vec5),
-  pair_margin: wp.array(dtype=float),
-  pair_gap: wp.array(dtype=float),
-  pair_friction: wp.array(dtype=vec5),
+  pair_solref: wp.array2d(dtype=wp.vec2),
+  pair_solreffriction: wp.array2d(dtype=wp.vec2),
+  pair_solimp: wp.array2d(dtype=vec5),
+  pair_margin: wp.array2d(dtype=float),
+  pair_gap: wp.array2d(dtype=float),
+  pair_friction: wp.array2d(dtype=vec5),
   geom_aabb: wp.array2d(dtype=wp.vec3),
-  geom_pos: wp.array(dtype=wp.vec3),
-  geom_quat: wp.array(dtype=wp.quat),
+  geom_pos: wp.array2d(dtype=wp.vec3),
+  geom_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   collision_pair_in: wp.array(dtype=wp.vec2i),
+  collision_hftri_index_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
@@ -318,10 +326,12 @@ def sdf_narrowphase_kernel(
   contact_worldid_out: wp.array(dtype=int),
 ):
   tid = wp.tid()
-  
+
   if tid >= ncollision_in[0]:
     return
-    
+
+  worldid = collision_worldid_in[tid]
+
   geoms, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
     geom_condim,
     geom_priority,
@@ -341,53 +351,78 @@ def sdf_narrowphase_kernel(
     collision_pair_in,
     collision_pairid_in,
     tid,
+    worldid,
   )
   g1 = geoms[0]
   g2 = geoms[1]
 
-  type1 = geom_type[g1]
-  type2 = geom_type[g2]
-  
-  worldid = collision_worldid_in[tid]
+  hftri_index = collision_hftri_index_in[tid]
 
   geom1 = _geom(
+    geom_type,
     geom_dataid,
     geom_size,
+    hfield_adr,
+    hfield_nrow,
+    hfield_ncol,
+    hfield_size,
+    hfield_data,
     mesh_vertadr,
     mesh_vertnum,
+    mesh_vert,
+    mesh_graphadr,
+    mesh_graph,
     geom_xpos_in,
     geom_xmat_in,
     worldid,
     g1,
+    hftri_index,
   )
   geom2 = _geom(
+    geom_type,
     geom_dataid,
     geom_size,
+    hfield_adr,
+    hfield_nrow,
+    hfield_ncol,
+    hfield_size,
+    hfield_data,
     mesh_vertadr,
     mesh_vertnum,
+    mesh_vert,
+    mesh_graphadr,
+    mesh_graph,
     geom_xpos_in,
     geom_xmat_in,
     worldid,
     g2,
+    hftri_index,
   )
+
+  type1 = geom_type[g1]
+  type2 = geom_type[g2]
 
   if type2 != int(GeomType.SDF.value):
     return
   
+
+  g2_to_g1_rot = wp.transpose(geom2.rot) * geom1.rot
+  g2_to_g1_pos = wp.transpose(geom2.rot) * (geom1.pos - geom2.pos)
+  
   aabb_pos = geom_aabb[g1, 0]
   aabb_size = geom_aabb[g1, 1]
-  aabb1 = transform_aabb(aabb_pos, aabb_size, geom1.pos, geom1.rot)
+  aabb1 = transform_aabb(aabb_pos, aabb_size, g2_to_g1_pos, g2_to_g1_rot)
+  
   aabb_pos = geom_aabb[g2, 0]
   aabb_size = geom_aabb[g2, 1]
-  aabb2 = transform_aabb(aabb_pos, aabb_size, geom2.pos, geom2.rot)
-  
+  aabb2 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), wp.mat33(1.0))
 
   aabb_intersection = AABB()
   aabb_intersection.min = wp.max(aabb1.min, aabb2.min)
   aabb_intersection.max = wp.min(aabb1.max, aabb2.max)
 
-  geom_pos2 = geom_pos[g2]
-  quat2 = geom_quat[g2]
+  geom_pos2 = geom_pos[worldid, g2]
+  quat2 = geom_quat[worldid, g2]
   geom_mat2 = math.quat_to_mat(quat2)
   rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
@@ -396,8 +431,8 @@ def sdf_narrowphase_kernel(
   
   
   if type1 == int(GeomType.SDF.value):
-    geom_pos1 = geom_pos[g1]
-    quat1 = geom_quat[g1]
+    geom_pos1 = geom_pos[worldid, g1]
+    quat1 = geom_quat[worldid, g1]
     geom_mat1 = math.quat_to_mat(quat1)
     rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
     pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
@@ -408,12 +443,13 @@ def sdf_narrowphase_kernel(
     attr1 = geom1.size
 
   for i in range(sdf_initpoints):
-    x = wp.vec3(
+    x_g2 = wp.vec3(
       aabb_intersection.min[0] + (aabb_intersection.max[0] - aabb_intersection.min[0]) * halton(i, 2),
       aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
       aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5)
     )
     
+    x = geom2.rot * x_g2 + geom2.pos
     x0_initial = wp.transpose(rot2) * (x - pos2)
 
     # Single unified call for all geometry types
@@ -468,8 +504,16 @@ def sdf_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
+      m.hfield_adr,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_size,
+      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vertnum,
+      m.mesh_vert,
+      m.mesh_graphadr,
+      m.mesh_graph,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,
@@ -484,6 +528,7 @@ def sdf_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
+      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,

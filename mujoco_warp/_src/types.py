@@ -285,11 +285,6 @@ class GeomType(enum.IntEnum):
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
-class SDFType(enum.IntEnum):
-  BOLT = 2
-  NUT = 5
-
-
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
 
