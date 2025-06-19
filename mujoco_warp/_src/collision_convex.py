@@ -769,7 +769,7 @@ def _gjk_epa_pipeline(
 
   # runs GJK and EPA on a set of sparse geom pairs per env
   @wp.kernel
-  def gjk_epa_sparse(
+  def gjk_epa(
     # Model:
     ngeom: int,
     geom_type: wp.array(dtype=int),
@@ -957,18 +957,18 @@ def _gjk_epa_pipeline(
         contact_worldid_out,
       )
 
-  return gjk_epa_sparse
+  return gjk_epa
 
 
-_collision_kernels = {}
+_convex_collision_kernel = {}
 
 
-def gjk_narrowphase(m: Model, d: Data):
-  if len(_collision_kernels) == 0:
+def convex_narrowphase(m: Model, d: Data):
+  if len(_convex_collision_kernel) == 0:
     for types in _CONVEX_COLLISION_FUNC:
       t1 = types[0]
       t2 = types[1]
-      _collision_kernels[(t1, t2)] = _gjk_epa_pipeline(
+      _convex_collision_kernel[(t1, t2)] = _gjk_epa_pipeline(
         t1,
         t2,
         m.opt.gjk_iterations,
@@ -977,7 +977,7 @@ def gjk_narrowphase(m: Model, d: Data):
         m.opt.depth_extension,
       )
 
-  for collision_kernel in _collision_kernels.values():
+  for collision_kernel in _convex_collision_kernel.values():
     wp.launch(
       collision_kernel,
       dim=d.nconmax,
