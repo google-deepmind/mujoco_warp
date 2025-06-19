@@ -55,12 +55,13 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   geom_plugin_index = np.full_like(mjm.geom_type, -1)
 
   if mjm.nplugin > 0:
-    for i in mjm.geom_plugin:
-      if i != -1:
+    for i in range(len(mjm.geom_plugin)):
+      if mjm.geom_plugin[i] != -1:
+        p =mjm.geom_plugin[i]
         geom_plugin_index[i] = len(plugin_id)
-        plugin_id.append(mjm.plugin[i])
-        start = mjm.plugin_attradr[i]
-        end = mjm.plugin_attradr[i + 1] if i + 1 < mjm.nplugin else len(mjm.plugin_attr)
+        plugin_id.append(mjm.plugin[p])
+        start = mjm.plugin_attradr[p]
+        end = mjm.plugin_attradr[p + 1] if p + 1 < mjm.nplugin else len(mjm.plugin_attr)
         values = mjm.plugin_attr[start:end]
         attr_values = []
         current = []
