@@ -402,6 +402,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       depth_extension=0.1,
       broadphase=broadphase,
       graph_conditional=False,
+      sdf_initpoints=mjm.opt.sdf_initpoints,
+      sdf_iterations=mjm.opt.sdf_iterations,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,

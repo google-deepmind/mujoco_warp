@@ -54,7 +54,7 @@ def bolt(p: wp.vec3, attr: wp.vec3) -> float:
 @wp.func
 def bolt_sdf_grad(p: wp.vec3, attr: wp.vec3) -> wp.vec3:
   grad = wp.vec3()
-  eps = 1e-4
+  eps = 1e-6
   f_original = bolt(p, attr)
   x_plus = wp.vec3(p[0] + eps, p[1], p[2])
   f_plus = bolt(x_plus, attr)

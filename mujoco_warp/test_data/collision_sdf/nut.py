@@ -49,7 +49,7 @@ def nut(p: wp.vec3, attr: wp.vec3) -> float:
 @wp.func
 def nut_sdf_grad(p: wp.vec3, attr: wp.vec3) -> wp.vec3:
   grad = wp.vec3()
-  eps = 1e-4
+  eps = 1e-6
   f_original = nut(p, attr)
   x_plus = wp.vec3(p[0] + eps, p[1], p[2])
   f_plus = nut(x_plus, attr)

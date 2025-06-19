@@ -235,6 +235,7 @@ def gradient_descent(
   rot2: wp.mat33,
   sdf_type1: int,
   sdf_type2: int,
+  sdf_iterations: int,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   params = OptimizationParams()
   params.rel_mat = wp.transpose(rot1) * rot2
@@ -243,7 +244,7 @@ def gradient_descent(
   params.attr2 = attr2
 
   # Collision phase (10 iterations, sfd_intersection=False)
-  dist, x = gradient_step(type1, x0_initial, params, sdf_type1, sdf_type2, 10, False)
+  dist, x = gradient_step(type1, x0_initial, params, sdf_type1, sdf_type2, sdf_iterations, False)
 
   # Intersection phase (1 iteration, sfd_intersection=True)
   dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True)
@@ -284,7 +285,7 @@ def halton(index: int, base: int) -> float:
 
 
 @wp.kernel
-def _sdf_narrowphase(
+def _sdf_narrowphase7(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
@@ -317,6 +318,8 @@ def _sdf_narrowphase(
   pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array2d(dtype=float),
   pair_friction: wp.array2d(dtype=vec5),
+  sdf_initpoints: int,
+  sdf_iterations: int,
   # In:
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
@@ -447,8 +450,6 @@ def _sdf_narrowphase(
   rot2 = math.mul(geom2.rot, math.transpose(geom_mat2))
   pos2 = wp.sub(geom2.pos, math.mul(rot2, geom_pos2))
 
-  sdf_initpoints = 10
-
   if type1 == int(GeomType.SDF.value):
     geom_pos1 = geom_pos[worldid, g1]
     quat1 = geom_quat[worldid, g1]
@@ -474,7 +475,7 @@ def _sdf_narrowphase(
     x0_initial = wp.transpose(rot2) * (x - pos2)
 
     dist, pos, n = gradient_descent(
-      type1, x0_initial, attr1, plugin_attr[g2_plugin], pos1, rot1, pos2, rot2, g1_plugin_id, plugin[g2_plugin]
+      type1, x0_initial, attr1, plugin_attr[g2_plugin], pos1, rot1, pos2, rot2, g1_plugin_id, plugin[g2_plugin], sdf_iterations
     )
 
     write_contact(
@@ -508,7 +509,7 @@ def _sdf_narrowphase(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase,
+    _sdf_narrowphase7,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
@@ -542,6 +543,8 @@ def sdf_narrowphase(m: Model, d: Data):
       m.pair_margin,
       m.pair_gap,
       m.pair_friction,
+      m.opt.sdf_initpoints,
+      m.opt.sdf_iterations,
       m.plugin,
       m.plugin_attr,
       m.geom_plugin_index,
