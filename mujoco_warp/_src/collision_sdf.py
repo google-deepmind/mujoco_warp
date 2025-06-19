@@ -132,7 +132,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
     return ellipsoid(p, attr)
   elif type == int(GeomType.SDF.value):
     return user_sdf(p, attr, sdf_type)
-  wp.printf("ERROR: Not implemented\n")
+  wp.printf("ERROR: SDF type not implemented\n")
   return 0.0
 
 
@@ -144,7 +144,7 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
     return grad_ellipsoid(p, attr)
   elif type == int(GeomType.SDF.value):
     return user_sdf_grad(p, attr, sdf_type)
-  wp.printf("ERROR: Not implemented\n")
+  wp.printf("ERROR: SDF grad type not implemented\n")
   return wp.vec3(0.0)
 
 
@@ -285,7 +285,7 @@ def halton(index: int, base: int) -> float:
 
 
 @wp.kernel
-def _sdf_narrowphase7(
+def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
@@ -318,8 +318,6 @@ def _sdf_narrowphase7(
   pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array2d(dtype=float),
   pair_friction: wp.array2d(dtype=vec5),
-  sdf_initpoints: int,
-  sdf_iterations: int,
   # In:
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
@@ -333,6 +331,9 @@ def _sdf_narrowphase7(
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
+  # In:
+  sdf_initpoints: int,
+  sdf_iterations: int,
   # Data out:
   ncon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
@@ -509,7 +510,7 @@ def _sdf_narrowphase7(
 
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
-    _sdf_narrowphase7,
+    _sdf_narrowphase,
     dim=d.nconmax,
     inputs=[
       m.geom_type,
@@ -543,8 +544,6 @@ def sdf_narrowphase(m: Model, d: Data):
       m.pair_margin,
       m.pair_gap,
       m.pair_friction,
-      m.opt.sdf_initpoints,
-      m.opt.sdf_iterations,
       m.plugin,
       m.plugin_attr,
       m.geom_plugin_index,
@@ -556,6 +555,8 @@ def sdf_narrowphase(m: Model, d: Data):
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
+      m.opt.sdf_initpoints,
+      m.opt.sdf_iterations,
     ],
     outputs=[
       d.ncon,
