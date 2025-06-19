@@ -21,6 +21,7 @@ import warp as wp
 
 from . import math
 from . import types
+from .collision_convex import _CONVEX_COLLISION_FUNC
 
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
@@ -295,6 +296,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       pairid = np.int32(math.upper_tri_index(mjm.ngeom, int(pair_geom1), int(pair_geom2)))
 
     nxn_pairid[pairid] = i
+
+  convex_collision_pair = _CONVEX_COLLISION_FUNC & set(zip(mjm.geom_type[geom1], mjm.geom_type[geom2]))
+  convex_collision_pair = np.array([collision_pair for collision_pair in convex_collision_pair])
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
@@ -702,6 +706,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
+    convex_collision_pair=convex_collision_pair,
   )
 
   return m

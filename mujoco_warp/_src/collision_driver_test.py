@@ -685,6 +685,7 @@ class CollisionTest(parameterized.TestCase):
     </mujoco>
     """
 
+    mjwarp._src.collision_convex._collision_kernels.clear()
     _, _, m, d = test_util.fixture(xml=_XML, keyframe=0)
 
     mjwarp.collision(m, d)

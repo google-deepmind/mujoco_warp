@@ -965,9 +965,10 @@ _collision_kernels = {}
 
 def gjk_narrowphase(m: Model, d: Data):
   if len(_collision_kernels) == 0:
-    for types in _CONVEX_COLLISION_FUNC:
-      t1 = types[0]
-      t2 = types[1]
+    for i in range(m.convex_collision_pair.shape[0]):
+      convex_collision_pair = m.convex_collision_pair[i]
+      t1 = int(convex_collision_pair[0])
+      t2 = int(convex_collision_pair[1])
       _collision_kernels[(t1, t2)] = _gjk_epa_pipeline(
         t1,
         t2,
