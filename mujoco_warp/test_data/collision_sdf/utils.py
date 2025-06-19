@@ -20,8 +20,10 @@ from typing import Dict
 import mujoco
 import warp as wp
 
-from .bolt import bolt, bolt_sdf_grad
-from .nut import nut, nut_sdf_grad
+from .bolt import bolt
+from .bolt import bolt_sdf_grad
+from .nut import nut
+from .nut import nut_sdf_grad
 
 
 class SDFType(enum.Enum):

@@ -26,6 +26,7 @@ import numpy as np
 import warp as wp
 from absl import app
 from absl import flags
+
 import mujoco_warp as mjwarp
 from mujoco_warp import register_sdf_plugins
 
