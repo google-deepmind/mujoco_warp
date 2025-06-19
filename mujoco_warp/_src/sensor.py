@@ -33,6 +33,7 @@ from .types import ObjType
 from .types import SensorType
 from .types import TrnType
 from .types import vec6
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -2076,6 +2077,7 @@ def energy_pos(m: Model, d: Data):
     # TODO(team): flex
 
 
+@cache_kernel
 def _energy_vel_kinetic(nv: int):
   @nested_kernel
   def energy_vel_kinetic(
@@ -2102,9 +2104,6 @@ def _energy_vel_kinetic(nv: int):
   return energy_vel_kinetic
 
 
-ENERGY_VEL_KINETIC_KERNELS = {}
-
-
 def energy_vel(m: Model, d: Data):
   """Velocity-dependent energy (kinetic)."""
 
@@ -2114,11 +2113,8 @@ def energy_vel(m: Model, d: Data):
   skip = wp.zeros(d.nworld, dtype=bool)
   support.mul_m(m, d, d.efc.mv, d.qvel, skip)
 
-  if ENERGY_VEL_KINETIC_KERNELS.get(m.nv) is None:
-    ENERGY_VEL_KINETIC_KERNELS[m.nv] = _energy_vel_kinetic(m.nv)
-
   wp.launch_tiled(
-    ENERGY_VEL_KINETIC_KERNELS[m.nv],
+    _energy_vel_kinetic(m.nv),
     dim=(d.nworld,),
     inputs=[d.qvel, d.efc.mv],
     outputs=[d.energy],

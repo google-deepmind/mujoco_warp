@@ -40,6 +40,7 @@ from .types import Model
 from .types import TileSet
 from .types import TrnType
 from .types import vec10f
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel
 from .warp_util import kernel as nested_kernel
@@ -338,6 +339,7 @@ def _euler_sparse(m: Model, d: Data):
   )
 
 
+@cache_kernel
 def _tile_euler_dense(tile: TileSet):
   @nested_kernel
   def euler_dense(
@@ -375,9 +377,6 @@ def _tile_euler_dense(tile: TileSet):
   return euler_dense
 
 
-EULER_DENSE_KERNELS = {}
-
-
 @event_scope
 def euler(m: Model, d: Data):
   """Euler integrator, semi-implicit in velocity."""
@@ -388,11 +387,8 @@ def euler(m: Model, d: Data):
       _euler_sparse(m, d)
     else:
       for tile in m.qM_tiles:
-        if EULER_DENSE_KERNELS.get((tile.size)) is None:
-          EULER_DENSE_KERNELS[tile.size] = _tile_euler_dense(tile)
-
         wp.launch_tiled(
-          EULER_DENSE_KERNELS[tile.size],
+          _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
           inputs=[m.dof_damping, m.opt.timestep, d.qM, d.qfrc_smooth, d.qfrc_constraint, tile.adr],
           outputs=[d.qacc_integration],
@@ -577,6 +573,7 @@ def _actuator_velocity_sparse(m: Model, d: Data):
   )
 
 
+@cache_kernel
 def _tile_actuator_velocity_dense(
   tile_nu: TileSet,
   tile_nv: TileSet,
@@ -645,9 +642,6 @@ def _tendon_velocity(m: Model, d: Data):
   )
 
 
-ACTUATOR_VELOCITY_DENSE_KERNELS = {}
-
-
 @event_scope
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
@@ -660,11 +654,8 @@ def fwd_velocity(m: Model, d: Data):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
 
-      if ACTUATOR_VELOCITY_DENSE_KERNELS.get((tile_nu.size, tile_nv.size)) is None:
-        ACTUATOR_VELOCITY_DENSE_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_actuator_velocity_dense(tile_nu, tile_nv)
-
       wp.launch_tiled(
-        ACTUATOR_VELOCITY_DENSE_KERNELS[(tile_nu.size, tile_nv.size)],
+        _tile_actuator_velocity_dense(tile_nu, tile_nv),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[d.qvel.reshape(d.qvel.shape + (1,)), d.actuator_moment, tile_nu.adr, tile_nv.adr],
         outputs=[d.actuator_velocity.reshape(d.actuator_velocity.shape + (1,))],
@@ -893,6 +884,7 @@ def _qfrc_actuator_limited(
   qfrc_actuator_out[worldid, dofid] = qfrc_dof
 
 
+@cache_kernel
 def _tile_qfrc_actuator(tile_nu: TileSet, tile_nv: TileSet):
   @nested_kernel
   def qfrc_actuator(
@@ -923,9 +915,6 @@ def _tile_qfrc_actuator(tile_nu: TileSet, tile_nv: TileSet):
     wp.tile_store(qfrc_actuator_out[worldid], qfrc_tile, offset=(offset_nv, 0))
 
   return qfrc_actuator
-
-
-QFRC_ACTUATOR_KERNELS = {}
 
 
 @event_scope
@@ -1014,11 +1003,8 @@ def fwd_actuation(m: Model, d: Data):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
 
-      if QFRC_ACTUATOR_KERNELS.get((tile_nu.size, tile_nv.size)) is None:
-        QFRC_ACTUATOR_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_qfrc_actuator(tile_nu, tile_nv)
-
       wp.launch_tiled(
-        QFRC_ACTUATOR_KERNELS[(tile_nu.size, tile_nv.size)],
+        _tile_qfrc_actuator(tile_nu, tile_nv),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[
           d.actuator_force.reshape(d.actuator_force.shape + (1,)),

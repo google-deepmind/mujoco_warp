@@ -23,6 +23,7 @@ from . import support
 from . import types
 from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -1067,6 +1068,7 @@ def linesearch_zero_jv(
   efc_jv_out[efcid] = 0.0
 
 
+@cache_kernel
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
   @nested_kernel
   def kernel(
@@ -1266,9 +1268,6 @@ def linesearch_jaref(
   efc_Jaref_out[efcid] += efc_alpha_in[worldid] * efc_jv_in[efcid]
 
 
-LINESERACH_JV_FUSED_KERNELS = {}
-
-
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
@@ -1295,11 +1294,8 @@ def _linesearch(m: types.Model, d: types.Data):
       outputs=[d.efc.jv],
     )
 
-  if LINESERACH_JV_FUSED_KERNELS.get(m.nv) is None:
-    LINESERACH_JV_FUSED_KERNELS[m.nv] = linesearch_jv_fused(m.nv, dofs_per_thread)
-
   wp.launch(
-    LINESERACH_JV_FUSED_KERNELS[m.nv],
+    linesearch_jv_fused(m.nv, dofs_per_thread),
     dim=(d.njmax, threads_per_efc),
     inputs=[d.nefc, d.efc.worldid, d.efc.J, d.efc.search, d.efc.done],
     outputs=[d.efc.jv],
@@ -2207,6 +2203,7 @@ def update_gradient_JTCJ(
     efc_h_out[worldid, dof1id, dof2id] += efc_h
 
 
+@cache_kernel
 def update_gradient_cholesky(tile_size: int):
   @nested_kernel
   def kernel(
@@ -2232,6 +2229,7 @@ def update_gradient_cholesky(tile_size: int):
   return kernel
 
 
+@cache_kernel
 def update_gradient_cholesky_blocked(tile_size: int):
   @nested_kernel
   def kernel(
@@ -2257,10 +2255,6 @@ def update_gradient_cholesky_blocked(tile_size: int):
     )
 
   return kernel
-
-
-UPDATE_GRADIENT_CHOL_KERNELS = {}
-UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS = {}
 
 
 def _update_gradient(m: types.Model, d: types.Data):
@@ -2370,22 +2364,16 @@ def _update_gradient(m: types.Model, d: types.Data):
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
     if m.nv < 32:
-      if UPDATE_GRADIENT_CHOL_KERNELS.get(m.nv) is None:
-        UPDATE_GRADIENT_CHOL_KERNELS[m.nv] = update_gradient_cholesky(m.nv)
-
       wp.launch_tiled(
-        UPDATE_GRADIENT_CHOL_KERNELS[m.nv],
+        update_gradient_cholesky(m.nv),
         dim=(d.nworld,),
         inputs=[d.efc.grad, d.efc.h, d.efc.done],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
     else:
-      if UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS.get(32) is None:
-        UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS[32] = update_gradient_cholesky_blocked(32)
-
       wp.launch_tiled(
-        UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS[32],
+        update_gradient_cholesky_blocked(32),
         dim=(d.nworld,),
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),

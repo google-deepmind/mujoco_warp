@@ -23,6 +23,7 @@ from .types import GainType
 from .types import Model
 from .types import TileSet
 from .types import vec10f
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -63,6 +64,7 @@ def _actuator_bias_gain_vel(
   act_vel_integration_out[worldid, actid] = bias_vel + gain_vel * ctrl
 
 
+@cache_kernel
 def _tile_qderiv_actuator_passive(
   tile_nu: TileSet,
   tile_nv: TileSet,
@@ -142,9 +144,6 @@ def _tile_qderiv_actuator_passive(
   return qderiv_actuator_passive
 
 
-DERIV_SMOOTH_VEL_KERNELS = {}
-
-
 @event_scope
 def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
   """Analytical derivative of smooth forces w.r.t velocities."""
@@ -193,13 +192,8 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
     # TODO(team): sparse version
 
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      if DERIV_SMOOTH_VEL_KERNELS.get((tile_nu.size, tile_nv.size)) is None:
-        DERIV_SMOOTH_VEL_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_qderiv_actuator_passive(
-          tile_nu, tile_nv, actuation_enabled, passive_enabled, flg_forward
-        )
-
       wp.launch_tiled(
-        DERIV_SMOOTH_VEL_KERNELS[(tile_nu.size, tile_nv.size)],
+        _tile_qderiv_actuator_passive(tile_nu, tile_nv, actuation_enabled, passive_enabled, flg_forward),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
         inputs=[
           m.opt.timestep,
