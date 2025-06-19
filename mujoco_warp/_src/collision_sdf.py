@@ -14,16 +14,18 @@
 # ==============================================================================
 
 from typing import Tuple
+
 import warp as wp
-from .types import GeomType
+
+from . import math
 from .collision_primitive import _geom
 from .collision_primitive import contact_params
 from .collision_primitive import write_contact
+from .math import make_frame
 from .types import Data
+from .types import GeomType
 from .types import Model
 from .types import vec5
-from .math import make_frame
-from . import math
 
 
 @wp.struct
@@ -285,7 +287,7 @@ def _sdf_narrowphase(
   # Model:
   geom_type: wp.array(dtype=int),
   sdf_type: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
+  geom_plugin_attr: wp.array(dtype=wp.vec3f),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_priority: wp.array(dtype=int),
@@ -448,7 +450,7 @@ def _sdf_narrowphase(
     geom_mat1 = math.quat_to_mat(quat1)
     rot1 = math.mul(geom1.rot, math.transpose(geom_mat1))
     pos1 = wp.sub(geom1.pos, math.mul(rot1, geom_pos1))
-    attr1 = plugin_attr[g1]
+    attr1 = geom_plugin_attr[g1]
   else:
     pos1 = geom1.pos
     rot1 = geom1.rot
@@ -465,7 +467,7 @@ def _sdf_narrowphase(
     x0_initial = wp.transpose(rot2) * (x - pos2)
 
     dist, pos, n = gradient_descent(
-      type1, x0_initial, attr1, plugin_attr[g2], pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2]
+      type1, x0_initial, attr1, geom_plugin_attr[g2], pos1, rot1, pos2, rot2, sdf_type[g1], sdf_type[g2]
     )
 
     write_contact(
@@ -503,8 +505,8 @@ def sdf_narrowphase(m: Model, d: Data):
     dim=d.nconmax,
     inputs=[
       m.geom_type,
-      m.geom_sdf_plugin_type,
-      m.plugin_attr,
+      m.geom_plugin_global_id,
+      m.geom_plugin_attr,
       m.geom_condim,
       m.geom_dataid,
       m.geom_priority,

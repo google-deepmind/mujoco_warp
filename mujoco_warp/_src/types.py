@@ -975,6 +975,8 @@ class Model:
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
+    geom_plugin_global_id: global id of the geom plugin      (ngeom,)
+    geom_plugin_attr: config attributes of geom plugin       (ngeom, 3)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     mat_rgba: rgba                                           (nworld, nmat, 4)
     geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
@@ -1082,8 +1084,6 @@ class Model:
   dof_tri_row: wp.array(dtype=int)  # warp only
   dof_tri_col: wp.array(dtype=int)  # warp only
   geom_type: wp.array(dtype=int)
-  geom_sdf_plugin_type: wp.array(dtype=int)
-  plugin_attr: wp.array(dtype=wp.vec3f)
   geom_contype: wp.array(dtype=int)
   geom_conaffinity: wp.array(dtype=int)
   geom_condim: wp.array(dtype=int)
@@ -1259,6 +1259,8 @@ class Model:
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only
+  geom_plugin_global_id: wp.array(dtype=int)  # warp only
+  geom_plugin_attr: wp.array(dtype=wp.vec3f) # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
   mat_rgba: wp.array2d(dtype=wp.vec4)
   geompair2hfgeompair: wp.array(dtype=int)  # warp only

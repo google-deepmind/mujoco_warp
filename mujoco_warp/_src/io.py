@@ -482,8 +482,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     dof_tri_row=wp.array(dof_tri_row, dtype=int),
     dof_tri_col=wp.array(dof_tri_col, dtype=int),
     geom_type=wp.array(mjm.geom_type, dtype=int),
-    geom_sdf_plugin_type=wp.array(sdf_types, dtype=int),
-    plugin_attr=wp.array(attr, dtype=wp.vec3f),
     geom_contype=wp.array(mjm.geom_contype, dtype=int),
     geom_conaffinity=wp.array(mjm.geom_conaffinity, dtype=int),
     geom_condim=wp.array(mjm.geom_condim, dtype=int),
@@ -728,6 +726,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_rangefinder_bodyid=wp.array(
       mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
     ),
+    geom_plugin_global_id=wp.array(sdf_types, dtype=int),
+    geom_plugin_attr=wp.array(attr, dtype=wp.vec3f),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),

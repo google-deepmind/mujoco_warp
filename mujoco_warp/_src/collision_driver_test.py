@@ -15,17 +15,22 @@
 """Tests the collision driver."""
 
 import enum
+
 import mujoco
 import numpy as np
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
-from mujoco_warp.test_data.collision_sdf.nut import nut, nut_sdf_grad
-from mujoco_warp.test_data.collision_sdf.bolt import bolt, bolt_sdf_grad
+
 import mujoco_warp as mjwarp
-import warp as wp
+from mujoco_warp.test_data.collision_sdf.bolt import bolt
+from mujoco_warp.test_data.collision_sdf.bolt import bolt_sdf_grad
+from mujoco_warp.test_data.collision_sdf.nut import nut
+from mujoco_warp.test_data.collision_sdf.nut import nut_sdf_grad
+
+from . import collision_sdf
 from . import test_util
 from . import types
-from . import collision_sdf
 
 
 class CollisionTest(parameterized.TestCase):
@@ -455,26 +460,47 @@ class CollisionTest(parameterized.TestCase):
   #        </worldbody>
   #      </mujoco>
   #    """,
-  class SDFType(enum.IntEnum):
-    BOLT = 2
-    NUT = 5
 
   @classmethod
   def setUpClass(cls):
+    xml = """<mujoco>
+          <extension>
+          <plugin plugin="mujoco.sdf.nut"><instance name="n"/></plugin>
+          <plugin plugin="mujoco.sdf.bolt"><instance name="b"/></plugin>
+          </extension>
+          <asset>
+          <mesh name="nm"><plugin instance="n"/></mesh>
+          <mesh name="bm"><plugin instance="b"/></mesh>
+          </asset>
+          <worldbody>
+          <body><geom type="sdf" name="ng" mesh="nm"><plugin instance="n"/></geom></body>
+          <body><geom type="sdf" name="bg" mesh="bm"><plugin instance="b"/></geom></body>
+          </worldbody>
+          </mujoco>"""
+
+    m = mujoco.MjModel.from_xml_string(xml)
+
+    for i in range(m.ngeom):
+      name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i)
+      if name == "ng":
+        cls.NUT_SDF_TYPE = int(m.plugin[i])
+      elif name == "bg":
+        cls.BOLT_SDF_TYPE = int(m.plugin[i])
+
     @wp.func
     def user_sdf(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
       result = 0.0
-      if sdf_type == int(cls.SDFType.NUT.value):
+      if sdf_type == cls.NUT_SDF_TYPE:
         result = nut(p, attr)
-      elif sdf_type == int(cls.SDFType.BOLT.value):
+      elif sdf_type == cls.BOLT_SDF_TYPE:
         result = bolt(p, attr)
       return result
 
     @wp.func
     def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
-      if sdf_type == int(cls.SDFType.NUT.value):
+      if sdf_type == cls.NUT_SDF_TYPE:
         return nut_sdf_grad(p, attr)
-      elif sdf_type == int(cls.SDFType.BOLT.value):
+      elif sdf_type == cls.BOLT_SDF_TYPE:
         return bolt_sdf_grad(p, attr)
       return wp.vec3()
 
@@ -501,7 +527,6 @@ class CollisionTest(parameterized.TestCase):
       check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-1)
       check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-1)
       result = check_dist
-      #print(result, check_dist, check_pos, check_frame, actual_dist, test_dist, actual_pos, test_pos, actual_frame, test_frame )
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
   @parameterized.parameters(_FIXTURES.keys())
