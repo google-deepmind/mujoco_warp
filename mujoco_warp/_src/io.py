@@ -50,17 +50,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
-  sdf_types = np.zeros_like(mjm.geom_type)
-  attr = np.zeros((mjm.geom_type.shape[0], 3), dtype=float)
+  plugin_id = []
+  plugin_attr = []
+  geom_plugin_index = np.full_like(mjm.geom_type, -1)
+
   if mjm.nplugin > 0:
-    sdf_types = []
-    attr = []
     for i in mjm.geom_plugin:
-      if i == -1:
-        sdf_types.append(-1)
-        attr.append([0.0, 0.0, 0.0])
-      else:
-        sdf_types.append(mjm.plugin[i])
+      if i != -1:
+        geom_plugin_index[i] = len(plugin_id)
+        plugin_id.append(mjm.plugin[i])
         start = mjm.plugin_attradr[i]
         end = mjm.plugin_attradr[i + 1] if i + 1 < mjm.nplugin else len(mjm.plugin_attr)
         values = mjm.plugin_attr[start:end]
@@ -76,9 +74,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
             current.append(v)
         # Pad with zeros if less than 3
         attr_values += [0.0] * (3 - len(attr_values))
-        attr.append(attr_values[:3])
-    sdf_types = np.array(sdf_types)
-    attr = np.array(attr)
+        plugin_attr.append(attr_values[:3])
+
+  plugin_id = np.array(plugin_id)
+  plugin_attr = np.array(plugin_attr)
+
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
@@ -726,8 +726,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_rangefinder_bodyid=wp.array(
       mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
     ),
-    geom_plugin_global_id=wp.array(sdf_types, dtype=int),
-    geom_plugin_attr=wp.array(attr, dtype=wp.vec3f),
+    plugin=wp.array(plugin_id, dtype=int),
+    plugin_attr=wp.array(plugin_attr, dtype=wp.vec3f),
+    geom_plugin_index = wp.array(geom_plugin_index, dtype=int),
+
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
