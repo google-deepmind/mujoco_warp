@@ -1096,10 +1096,7 @@ def forward(m: Model, d: Data):
   fwd_acceleration(m, d)
   sensor.sensor_acc(m, d)
 
-  if d.njmax == 0:
-    wp.copy(d.qacc, d.qacc_smooth)
-  else:
-    solver.solve(m, d)
+  solver.solve(m, d)
 
 
 @event_scope
