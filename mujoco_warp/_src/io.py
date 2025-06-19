@@ -57,7 +57,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.nplugin > 0:
     for i in range(len(mjm.geom_plugin)):
       if mjm.geom_plugin[i] != -1:
-        p =mjm.geom_plugin[i]
+        p = mjm.geom_plugin[i]
         geom_plugin_index[i] = len(plugin_id)
         plugin_id.append(mjm.plugin[p])
         start = mjm.plugin_attradr[p]
