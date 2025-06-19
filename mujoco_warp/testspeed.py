@@ -26,6 +26,7 @@ from absl import flags
 from etils import epath
 
 import mujoco_warp as mjwarp
+from mujoco_warp import register_sdf_plugins
 
 _FUNCTION = flags.DEFINE_enum(
   "function",
@@ -89,7 +90,7 @@ def _print_trace(trace, indent, steps):
 def _main(argv: Sequence[str]):
   """Runs testpeed function."""
   wp.init()
-
+  register_sdf_plugins(mjwarp.collision_sdf)
   path = epath.Path(_MJCF.value)
   if not path.exists():
     path = epath.resource_path("mujoco_warp") / _MJCF.value

@@ -281,6 +281,7 @@ class GeomType(enum.IntEnum):
   CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
   BOX = mujoco.mjtGeom.mjGEOM_BOX
   MESH = mujoco.mjtGeom.mjGEOM_MESH
+  SDF = mujoco.mjtGeom.mjGEOM_SDF
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -531,6 +532,8 @@ class Option:
     viscosity: viscosity of medium
     broadphase: broadphase type, 0: nxn, 1: sap_tile, 2: sap_segmented
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
+    sdf_initpoints: number of starting points for gradient descent
+    sdf_iterations: max number of iterations for gradient descent
   """
 
   timestep: wp.array(dtype=float)
@@ -558,6 +561,8 @@ class Option:
   viscosity: float
   broadphase: int
   graph_conditional: bool  # warp only
+  sdf_initpoints: int
+  sdf_iterations: int
 
 
 @dataclasses.dataclass
@@ -974,6 +979,9 @@ class Model:
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
+    plugin: globally registered plugin slot number           (nplugin,)
+    plugin_attr: config attributes of geom plugin            (nplugin, 3)
+    geom_plugin_index: geom index in plugin array            (ngeom, )
     mocap_bodyid: id of body for mocap                       (nmocap,)
     mat_rgba: rgba                                           (nworld, nmat, 4)
     geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
@@ -1093,7 +1101,7 @@ class Model:
   geom_solref: wp.array2d(dtype=wp.vec2)
   geom_solimp: wp.array2d(dtype=vec5)
   geom_size: wp.array2d(dtype=wp.vec3)
-  geom_aabb: wp.array(dtype=wp.vec3)
+  geom_aabb: wp.array2d(dtype=wp.vec3)
   geom_rbound: wp.array2d(dtype=float)
   geom_pos: wp.array2d(dtype=wp.vec3)
   geom_quat: wp.array2d(dtype=wp.quat)
@@ -1256,6 +1264,9 @@ class Model:
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only
+  plugin: wp.array(dtype=int)
+  plugin_attr: wp.array(dtype=wp.vec3f)
+  geom_plugin_index: wp.array(dtype=int)  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
   mat_rgba: wp.array2d(dtype=wp.vec4)
   geompair2hfgeompair: wp.array(dtype=int)  # warp only

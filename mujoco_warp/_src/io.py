@@ -50,8 +50,35 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported.any():
       raise NotImplementedError(f"{field_str} {field[unsupported]} not supported.")
 
+  plugin_id = []
+  plugin_attr = []
+  geom_plugin_index = np.full_like(mjm.geom_type, -1)
+
   if mjm.nplugin > 0:
-    raise NotImplementedError("Plugins are unsupported.")
+    for i in range(len(mjm.geom_plugin)):
+      if mjm.geom_plugin[i] != -1:
+        p = mjm.geom_plugin[i]
+        geom_plugin_index[i] = len(plugin_id)
+        plugin_id.append(mjm.plugin[p])
+        start = mjm.plugin_attradr[p]
+        end = mjm.plugin_attradr[p + 1] if p + 1 < mjm.nplugin else len(mjm.plugin_attr)
+        values = mjm.plugin_attr[start:end]
+        attr_values = []
+        current = []
+        for v in values:
+          if v == 0:
+            if current:
+              s = "".join(chr(int(x)) for x in current)
+              attr_values.append(float(s))
+              current = []
+          else:
+            current.append(v)
+        # Pad with zeros if less than 3
+        attr_values += [0.0] * (3 - len(attr_values))
+        plugin_attr.append(attr_values[:3])
+
+  plugin_id = np.array(plugin_id)
+  plugin_attr = np.array(plugin_attr)
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
@@ -375,6 +402,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       depth_extension=0.1,
       broadphase=broadphase,
       graph_conditional=False,
+      sdf_initpoints=mjm.opt.sdf_initpoints,
+      sdf_iterations=mjm.opt.sdf_iterations,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
@@ -699,6 +728,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_rangefinder_bodyid=wp.array(
       mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
     ),
+    plugin=wp.array(plugin_id, dtype=int),
+    plugin_attr=wp.array(plugin_attr, dtype=wp.vec3f),
+    geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
