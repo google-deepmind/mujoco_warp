@@ -296,7 +296,6 @@ def _sdf_narrowphase(
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_aabb: wp.array2d(dtype=wp.vec3),
   geom_pos: wp.array2d(dtype=wp.vec3),
-  geom_plugin_index: wp.array(dtype=int),
   geom_quat: wp.array2d(dtype=wp.quat),
   geom_friction: wp.array2d(dtype=wp.vec3),
   geom_margin: wp.array2d(dtype=float),
@@ -318,6 +317,10 @@ def _sdf_narrowphase(
   pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array2d(dtype=float),
   pair_friction: wp.array2d(dtype=vec5),
+  # In:
+  plugin: wp.array(dtype=int),
+  plugin_attr: wp.array(dtype=wp.vec3f),
+  geom_plugin_index: wp.array(dtype=int),
   # Data in:
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -327,9 +330,6 @@ def _sdf_narrowphase(
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
-  # In:
-  plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
   # Data out:
   ncon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
@@ -422,7 +422,6 @@ def _sdf_narrowphase(
   type2 = geom_type[g2]
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
-
 
   if type2 != int(GeomType.SDF.value):
     return
@@ -522,7 +521,6 @@ def sdf_narrowphase(m: Model, d: Data):
       m.geom_size,
       m.geom_aabb,
       m.geom_pos,
-      m.geom_plugin_index,
       m.geom_quat,
       m.geom_friction,
       m.geom_margin,
@@ -544,6 +542,9 @@ def sdf_narrowphase(m: Model, d: Data):
       m.pair_margin,
       m.pair_gap,
       m.pair_friction,
+      m.plugin,
+      m.plugin_attr,
+      m.geom_plugin_index,
       d.nconmax,
       d.geom_xpos,
       d.geom_xmat,
@@ -552,8 +553,6 @@ def sdf_narrowphase(m: Model, d: Data):
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
-      m.plugin,
-      m.plugin_attr,
     ],
     outputs=[
       d.ncon,

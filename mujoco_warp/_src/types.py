@@ -1262,7 +1262,7 @@ class Model:
   sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only
   plugin: wp.array(dtype=int)
   plugin_attr: wp.array(dtype=wp.vec3f)
-  geom_plugin_index: wp.array(dtype=wp.vec3f) # warp only
+  geom_plugin_index: wp.array(dtype=int)  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
   mat_rgba: wp.array2d(dtype=wp.vec4)
   geompair2hfgeompair: wp.array(dtype=int)  # warp only

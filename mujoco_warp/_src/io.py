@@ -79,7 +79,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   plugin_id = np.array(plugin_id)
   plugin_attr = np.array(plugin_attr)
 
-
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
 
@@ -728,8 +727,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ),
     plugin=wp.array(plugin_id, dtype=int),
     plugin_attr=wp.array(plugin_attr, dtype=wp.vec3f),
-    geom_plugin_index = wp.array(geom_plugin_index, dtype=int),
-
+    geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
