@@ -143,7 +143,7 @@ def _main(argv: Sequence[str]):
     f"linesearch: {linesearch_name}"
   )
   print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
-  print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...")
+  print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
   jit_time, run_time, trace, ncon, nefc, solver_niter = mjwarp.benchmark(
     mjwarp.__dict__[_FUNCTION.value],
     m,
@@ -163,7 +163,7 @@ Summary for {_BATCH_SIZE.value} parallel rollouts
  Total JIT time: {jit_time:.2f} s
  Total simulation time: {run_time:.2f} s
  Total steps per second: {steps / run_time:,.0f}
- Total realtime factor: {steps * m.opt.timestep / run_time:,.2f} x
+ Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
  Total time per step: {1e9 * run_time / steps:.2f} ns""")
 
     if trace:
