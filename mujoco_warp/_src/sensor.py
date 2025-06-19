@@ -2101,7 +2101,9 @@ def _energy_vel_kinetic(nv: int):
 
   return energy_vel_kinetic
 
+
 ENERGY_VEL_KINETIC_KERNELS = {}
+
 
 def energy_vel(m: Model, d: Data):
   """Velocity-dependent energy (kinetic)."""

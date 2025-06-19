@@ -109,7 +109,9 @@ def mul_m_dense(tile: TileSet):
 
   return kernel
 
+
 MUL_M_DENSE_KERNELS = {}
+
 
 @event_scope
 def mul_m(

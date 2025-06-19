@@ -921,7 +921,9 @@ def _tile_cholesky_factorize(tile: TileSet):
 
   return cholesky_factorize
 
+
 CHOL_FACTORIZE_KERNELS = {}
+
 
 def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
   """Dense Cholesky factorizaton of inertia-like matrix M, assumed spd."""
@@ -2174,7 +2176,9 @@ def _tile_cholesky_solve(tile: TileSet):
 
   return cholesky_solve
 
+
 CHOL_SOLVE_KERNELS = {}
+
 
 def _solve_LD_dense(m: Model, d: Data, L: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
   """Computes dense backsubstitution: x = inv(L'*L)*y"""
@@ -2258,7 +2262,9 @@ def _tile_cholesky_factorize_solve(tile: TileSet):
 
   return cholesky_factorize_solve
 
+
 CHOL_FACTORIZE_SOLVE_KERNELS = {}
+
 
 def _factor_solve_i_dense(
   m: Model, d: Data, M: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)

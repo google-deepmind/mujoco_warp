@@ -1268,6 +1268,7 @@ def linesearch_jaref(
 
 LINESERACH_JV_FUSED_KERNELS = {}
 
+
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
@@ -2257,8 +2258,10 @@ def update_gradient_cholesky_blocked(tile_size: int):
 
   return kernel
 
+
 UPDATE_GRADIENT_CHOL_KERNELS = {}
 UPDATE_GRADIENT_CHOL_BLOCKED_KERNELS = {}
+
 
 def _update_gradient(m: types.Model, d: types.Data):
   # grad = Ma - qfrc_smooth - qfrc_constraint

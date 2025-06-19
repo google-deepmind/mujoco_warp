@@ -374,7 +374,9 @@ def _tile_euler_dense(tile: TileSet):
 
   return euler_dense
 
+
 EULER_DENSE_KERNELS = {}
+
 
 @event_scope
 def euler(m: Model, d: Data):
@@ -386,7 +388,6 @@ def euler(m: Model, d: Data):
       _euler_sparse(m, d)
     else:
       for tile in m.qM_tiles:
-
         if EULER_DENSE_KERNELS.get((tile.size)) is None:
           EULER_DENSE_KERNELS[tile.size] = _tile_euler_dense(tile)
 
@@ -643,7 +644,9 @@ def _tendon_velocity(m: Model, d: Data):
     block_dim=m.block_dim.tendon_velocity,
   )
 
+
 ACTUATOR_VELOCITY_DENSE_KERNELS = {}
+
 
 @event_scope
 def fwd_velocity(m: Model, d: Data):
@@ -657,7 +660,7 @@ def fwd_velocity(m: Model, d: Data):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
 
-      if ACTUATOR_VELOCITY_DENSE_KERNELS.get((tile_nu.size, tile_nv.size)) is None: 
+      if ACTUATOR_VELOCITY_DENSE_KERNELS.get((tile_nu.size, tile_nv.size)) is None:
         ACTUATOR_VELOCITY_DENSE_KERNELS[(tile_nu.size, tile_nv.size)] = _tile_actuator_velocity_dense(tile_nu, tile_nv)
 
       wp.launch_tiled(
@@ -921,7 +924,9 @@ def _tile_qfrc_actuator(tile_nu: TileSet, tile_nv: TileSet):
 
   return qfrc_actuator
 
+
 QFRC_ACTUATOR_KERNELS = {}
+
 
 @event_scope
 def fwd_actuation(m: Model, d: Data):
