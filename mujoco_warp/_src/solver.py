@@ -2637,12 +2637,21 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
     _update_gradient(m, d)
 
 
+def _copy_acc(m: types.Model, d: types.Data):
+  wp.copy(d.qacc, d.qacc_smooth)
+  wp.copy(d.qacc_warmstart, d.qacc_smooth)
+  d.solver_niter.fill_(0)
+
+
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if m.opt.graph_conditional:
-    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=None, m=m, d=d)
+    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=_copy_acc, m=m, d=d)
   else:
-    _solve(m, d)
+    if d.njmax == 0:
+      _copy_acc(m, d)
+    else:
+      _solve(m, d)
 
 
 def _solve(m: types.Model, d: types.Data):
