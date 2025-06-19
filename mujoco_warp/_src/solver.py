@@ -2632,10 +2632,12 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   if grad:
     _update_gradient(m, d)
 
+
 def _copy_acc(m: types.Model, d: types.Data):
   wp.copy(d.qacc, d.qacc_smooth)
   wp.copy(d.qacc_warmstart, d.qacc_smooth)
   d.solver_niter.fill_(0)
+
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
