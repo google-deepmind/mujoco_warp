@@ -14,8 +14,6 @@
 # ==============================================================================
 """Tests the collision driver."""
 
-import enum
-
 import mujoco
 import numpy as np
 import warp as wp
@@ -23,12 +21,8 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
-from mujoco_warp.test_data.collision_sdf.bolt import bolt
-from mujoco_warp.test_data.collision_sdf.bolt import bolt_sdf_grad
-from mujoco_warp.test_data.collision_sdf.nut import nut
-from mujoco_warp.test_data.collision_sdf.nut import nut_sdf_grad
+from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
-from . import collision_sdf
 from . import test_util
 from . import types
 
@@ -460,52 +454,9 @@ class CollisionTest(parameterized.TestCase):
   #        </worldbody>
   #      </mujoco>
   #    """,
-
   @classmethod
   def setUpClass(cls):
-    xml = """<mujoco>
-          <extension>
-          <plugin plugin="mujoco.sdf.nut"><instance name="n"/></plugin>
-          <plugin plugin="mujoco.sdf.bolt"><instance name="b"/></plugin>
-          </extension>
-          <asset>
-          <mesh name="nm"><plugin instance="n"/></mesh>
-          <mesh name="bm"><plugin instance="b"/></mesh>
-          </asset>
-          <worldbody>
-          <body><geom type="sdf" name="ng" mesh="nm"><plugin instance="n"/></geom></body>
-          <body><geom type="sdf" name="bg" mesh="bm"><plugin instance="b"/></geom></body>
-          </worldbody>
-          </mujoco>"""
-
-    m = mujoco.MjModel.from_xml_string(xml)
-
-    for i in range(m.ngeom):
-      name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i)
-      if name == "ng":
-        cls.NUT_SDF_TYPE = int(m.plugin[i])
-      elif name == "bg":
-        cls.BOLT_SDF_TYPE = int(m.plugin[i])
-
-    @wp.func
-    def user_sdf(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
-      result = 0.0
-      if sdf_type == cls.NUT_SDF_TYPE:
-        result = nut(p, attr)
-      elif sdf_type == cls.BOLT_SDF_TYPE:
-        result = bolt(p, attr)
-      return result
-
-    @wp.func
-    def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
-      if sdf_type == cls.NUT_SDF_TYPE:
-        return nut_sdf_grad(p, attr)
-      elif sdf_type == cls.BOLT_SDF_TYPE:
-        return bolt_sdf_grad(p, attr)
-      return wp.vec3()
-
-    collision_sdf.user_sdf = user_sdf
-    collision_sdf.user_sdf_grad = user_sdf_grad
+    register_sdf_plugins(mjwarp._src.collision_sdf)
 
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):

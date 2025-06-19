@@ -26,8 +26,8 @@ import numpy as np
 import warp as wp
 from absl import app
 from absl import flags
-
 import mujoco_warp as mjwarp
+from mujoco_warp import register_sdf_plugins
 
 _MODEL_PATH = flags.DEFINE_string("mjcf", None, "Path to a MuJoCo MJCF file.", required=True)
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
@@ -84,6 +84,7 @@ def _main(argv: Sequence[str]) -> None:
     print("Engine: MuJoCo C")
   else:  # mjwarp
     print("Engine: MuJoCo Warp")
+    register_sdf_plugins(mjwarp.collision_sdf)
     mjm_hash = pickle.dumps(mjm)
     m = mjwarp.put_model(mjm)
     m.opt.ls_parallel = _LS_PARALLEL.value
