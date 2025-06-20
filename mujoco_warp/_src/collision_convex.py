@@ -686,7 +686,6 @@ def _gjk_epa_pipeline(
                 out[3] = m0
               candCount += 1
 
-    var_rx = wp.vec3(0.0)
     contact_count = int(0)
     if candCount > 0:
       # Polygon intersection was found.
@@ -704,66 +703,6 @@ def _gjk_epa_pipeline(
         contact_points[contact_count] = pt
         last_pt = pt
         contact_count += 1
-
-    else:
-      # Polygon intersection was not found. Loop through all vertex pairs and
-      # calculate an approximate contact point.
-      minDist = float(0.0)
-      for i in range(v1count):
-        for j in range(v2count):
-          # Find the closest vertex pair. Calculate a contact point var_rx as the
-          # midpoint between the closest vertex pair.
-          m1 = v1[i]
-          m2 = v2[j]
-          dd = (m1[0] - m2[0]) * (m1[0] - m2[0]) + (m1[1] - m2[1]) * (m1[1] - m2[1])
-
-          if i != 0 and j != 0 or dd < minDist:
-            minDist = dd
-            var_rx = ((m1[0] + m2[0]) * dir + (m1[1] + m2[1]) * dir2 + (m1[2] + m2[2]) * normal) * 0.5
-
-          # Check for a closer point between a point on v2 and an edge on v1.
-          m1b = v1[(i + 1) % v1count]
-          m2b = v2[(j + 1) % v2count]
-
-          if v1count > 1:
-            dd = (m1b[0] - m1[0]) * (m1b[0] - m1[0]) + (m1b[1] - m1[1]) * (m1b[1] - m1[1])
-            t = ((m2[1] - m1[1]) * (m1b[0] - m1[0]) - (m2[0] - m1[0]) * (m1b[1] - m1[1])) / dd
-            dx = m2[0] + (m1b[1] - m1[1]) * t
-            dy = m2[1] - (m1b[0] - m1[0]) * t
-            dist = (dx - m2[0]) * (dx - m2[0]) + (dy - m2[1]) * (dy - m2[1])
-
-            if (
-              (dist < minDist)
-              and ((dx - m1[0]) * (m1b[0] - m1[0]) + (dy - m1[1]) * (m1b[1] - m1[1]) >= 0)
-              and ((dx - m1b[0]) * (m1[0] - m1b[0]) + (dy - m1b[1]) * (m1[1] - m1b[1]) >= 0)
-            ):
-              alpha = wp.sqrt(((dx - m1[0]) * (dx - m1[0]) + (dy - m1[1]) * (dy - m1[1])) / dd)
-              minDist = dist
-              w = ((1.0 - alpha) * m1 + alpha * m1b + m2) * 0.5
-              var_rx = w[0] * dir + w[1] * dir2 + w[2] * normal
-
-          # check for a closer point between a point on v1 and an edge on v2
-          if v2count > 1:
-            dd = (m2b[0] - m2[0]) * (m2b[0] - m2[0]) + (m2b[1] - m2[1]) * (m2b[1] - m2[1])
-            t = ((m1[1] - m2[1]) * (m2b[0] - m2[0]) - (m1[0] - m2[0]) * (m2b[1] - m2[1])) / dd
-            dx = m1[0] + (m2b[1] - m2[1]) * t
-            dy = m1[1] - (m2b[0] - m2[0]) * t
-            dist = (dx - m1[0]) * (dx - m1[0]) + (dy - m1[1]) * (dy - m1[1])
-
-            if (
-              dist < minDist
-              and (dx - m2[0]) * (m2b[0] - m2[0]) + (dy - m2[1]) * (m2b[1] - m2[1]) >= 0
-              and (dx - m2b[0]) * (m2[0] - m2b[0]) + (dy - m2b[1]) * (m2[1] - m2b[1]) >= 0
-            ):
-              alpha = wp.sqrt(((dx - m2[0]) * (dx - m2[0]) + (dy - m2[1]) * (dy - m2[1])) / dd)
-              minDist = dist
-              w = (m1 + (1.0 - alpha) * m2 + alpha * m2b) * 0.5
-              var_rx = w[0] * dir + w[1] * dir2 + w[2] * normal
-
-      for k in range(ncontact):
-        contact_points[k] = var_rx
-
-      contact_count = 1
 
     return contact_count, contact_points
 

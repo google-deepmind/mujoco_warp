@@ -372,7 +372,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       impratio=mjm.opt.impratio,
       is_sparse=is_sparse,
       ls_parallel=False,
-      gjk_iterations=1,
+      gjk_iterations=8,
       epa_iterations=12,
       epa_exact_neg_distance=wp.bool(False),
       depth_extension=0.1,
