@@ -40,6 +40,7 @@ from .types import Model
 from .types import TileSet
 from .types import TrnType
 from .types import vec10f
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel
 from .warp_util import kernel as nested_kernel
@@ -338,6 +339,7 @@ def _euler_sparse(m: Model, d: Data):
   )
 
 
+@cache_kernel
 def _tile_euler_dense(tile: TileSet):
   @nested_kernel
   def euler_dense(
@@ -571,6 +573,7 @@ def _actuator_velocity_sparse(m: Model, d: Data):
   )
 
 
+@cache_kernel
 def _tile_actuator_velocity_dense(
   tile_nu: TileSet,
   tile_nv: TileSet,
@@ -650,6 +653,7 @@ def fwd_velocity(m: Model, d: Data):
       # TODO(team): avoid creating invalid tiles
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
+
       wp.launch_tiled(
         _tile_actuator_velocity_dense(tile_nu, tile_nv),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
@@ -880,6 +884,7 @@ def _qfrc_actuator_limited(
   qfrc_actuator_out[worldid, dofid] = qfrc_dof
 
 
+@cache_kernel
 def _tile_qfrc_actuator(tile_nu: TileSet, tile_nv: TileSet):
   @nested_kernel
   def qfrc_actuator(
@@ -997,6 +1002,7 @@ def fwd_actuation(m: Model, d: Data):
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
+
       wp.launch_tiled(
         _tile_qfrc_actuator(tile_nu, tile_nv),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),

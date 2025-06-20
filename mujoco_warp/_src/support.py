@@ -24,6 +24,7 @@ from .types import JointType
 from .types import Model
 from .types import TileSet
 from .types import vec5
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -81,6 +82,7 @@ def mul_m_sparse_ij(
   wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
 
 
+@cache_kernel
 def mul_m_dense(tile: TileSet):
   """Returns a matmul kernel for some tile size"""
 

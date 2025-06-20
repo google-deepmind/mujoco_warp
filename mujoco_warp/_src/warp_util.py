@@ -170,3 +170,18 @@ def kernel(
     module = get_module(".".join([f.__module__] + outer_functions))
 
   return wp.kernel(f, enable_backward=enable_backward, module=module)
+
+
+_KERNEL_CACHE = {}
+
+
+def cache_kernel(func):
+  # caching kernels to avoid crashes in graph_conditional code
+  @functools.wraps(func)
+  def wrapper(*args):
+    key = tuple(a.size if hasattr(a, "size") else hash(a) for a in args) + (hash(func.__name__),)
+    if key not in _KERNEL_CACHE:
+      _KERNEL_CACHE[key] = func(*args)
+    return _KERNEL_CACHE[key]
+
+  return wrapper
