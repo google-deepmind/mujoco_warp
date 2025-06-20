@@ -382,7 +382,7 @@ def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3):
 
   if not comp2:
     subcoord = _S1D(s1, s3)
-    x = subcoord[0] * s1 + subcoord[1] * s2
+    x = subcoord[0] * s1 + subcoord[1] * s3
     d = wp.dot(x, x)
     if d < dmin:
       coordinates[0] = subcoord[0]
@@ -683,7 +683,7 @@ def _epa_witness(pt: Polytope, face_idx: int):
   # face on geom 1
   v1 = pt.verts1[pt.face_verts[face_idx][0]]
   v2 = pt.verts1[pt.face_verts[face_idx][1]]
-  v3 = pt.verts1[pt.face_verts[face_idx][1]]
+  v3 = pt.verts1[pt.face_verts[face_idx][2]]
   x1 = wp.vec3()
   x1[0] = v1[0] * l1 + v2[0] * l2 + v3[0] * l3
   x1[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
@@ -855,22 +855,22 @@ def _polytope3(
     return pt
 
   # create hexahedron for EPA
-  if _attach_face(pt, 0, 4, 0, 1) < MJ_MINVAL2:
+  if _attach_face(pt, 0, 3, 0, 1) < MJ_MINVAL2:
     pt.status = 6
     return pt
-  if _attach_face(pt, 1, 4, 2, 0) < MJ_MINVAL2:
+  if _attach_face(pt, 1, 3, 2, 0) < MJ_MINVAL2:
     pt.status = 7
     return pt
-  if _attach_face(pt, 2, 4, 1, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 2, 3, 1, 2) < MJ_MINVAL2:
     pt.status = 8
     return pt
-  if _attach_face(pt, 3, 3, 1, 0) < MJ_MINVAL2:
+  if _attach_face(pt, 3, 4, 1, 0) < MJ_MINVAL2:
     pt.status = 9
     return pt
-  if _attach_face(pt, 4, 3, 0, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 4, 4, 0, 2) < MJ_MINVAL2:
     pt.status = 10
     return pt
-  if _attach_face(pt, 5, 3, 2, 1) < MJ_MINVAL2:
+  if _attach_face(pt, 5, 4, 2, 1) < MJ_MINVAL2:
     pt.status = 11
     return pt
 
@@ -913,6 +913,8 @@ def _polytope4(
   pt.verts2[2] = simplex2[2]
   pt.verts2[3] = simplex2[3]
 
+  pt.nverts = 4
+
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
   if _attach_face(pt, 0, 0, 1, 2) < MJ_MINVAL2:
     simplex, simplex1, simplex2 = _replace_simplex3(pt, 0, 1, 2)
@@ -938,7 +940,7 @@ def _polytope4(
   for i in range(4):
     pt.map[i] = i
     pt.face_index[i] = i
-    pt.nmap = 4
+  pt.nmap = 4
   pt.status = 0
   pt.nfaces = 4
   return pt
@@ -1087,3 +1089,5 @@ def ccd(
   # simplex not on boundary (objects are penetrating)
   if pt.status == 0:
     return _epa(tolerance * tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
+  else:
+    return result.dist, result.x1, result.x2
