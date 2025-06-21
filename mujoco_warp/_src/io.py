@@ -949,7 +949,6 @@ def put_data(
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
 ) -> types.Data:
-  # TODO(team): confirm that Data is set correctly for solver with elliptic friction cones
   # TODO(team): move nconmax and njmax to Model?
   # TODO(team): decide what to do about unintialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
@@ -1195,7 +1194,7 @@ def put_data(
       mid_alpha=wp.empty(shape=(nworld,), dtype=float),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
       quad_total_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=wp.vec3f),
-      # TODO(team): skip allocation if not ellpitic
+      # TODO(team): skip allocation if not elliptic
       u=wp.empty((nconmax,), dtype=types.vec6),
       uu=wp.empty((nconmax,), dtype=float),
       uv=wp.empty((nconmax,), dtype=float),

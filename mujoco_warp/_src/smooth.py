@@ -2038,7 +2038,7 @@ def _transmission(
 
         actuator_moment_out[worldid, actid, i] = moment
   else:
-    # TODO(team): slidercrank, body
+    # TODO(team): body
     wp.printf("unhandled transmission type %d\n", trntype)
 
 
