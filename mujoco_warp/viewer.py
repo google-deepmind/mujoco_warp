@@ -55,6 +55,7 @@ def _load_model():
   # check if the file has any mujoco.sdf test plugins
   if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
     from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+
     register_sdf_plugins(mjwarp.collision_sdf)
   return spec.compile()
 
