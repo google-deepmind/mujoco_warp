@@ -30,7 +30,7 @@
     </mesh>
   </asset>
 
-  <option sdf_iterations="10" sdf_initpoints="20"/>
+  <option sdf_iterations="10" sdf_initpoints="40"/>
 
   <default>
     <geom solref="0.01 1" solimp=".95 .99 .0001" friction="0.01"/>
