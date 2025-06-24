@@ -72,4 +72,3 @@ from ._src.types import Model as Model
 from ._src.types import Option as Option
 from ._src.types import Statistic as Statistic
 from ._src.types import TrnType as TrnType
-from .test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins

@@ -28,7 +28,6 @@ from absl import app
 from absl import flags
 
 import mujoco_warp as mjwarp
-from mujoco_warp import register_sdf_plugins
 
 _MODEL_PATH = flags.DEFINE_string("mjcf", None, "Path to a MuJoCo MJCF file.", required=True)
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
@@ -53,6 +52,10 @@ def key_callback(key: int) -> None:
 
 def _load_model():
   spec = mujoco.MjSpec.from_file(_MODEL_PATH.value)
+  # check if the file has any mujoco.sdf test plugins
+  if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+    from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+    register_sdf_plugins(mjwarp.collision_sdf)
   return spec.compile()
 
 
@@ -87,7 +90,6 @@ def _main(argv: Sequence[str]) -> None:
     print("Engine: MuJoCo C")
   else:  # mjwarp
     print("Engine: MuJoCo Warp")
-    register_sdf_plugins(mjwarp.collision_sdf)
     mjm_hash = pickle.dumps(mjm)
     m = mjwarp.put_model(mjm)
     m.opt.ls_parallel = _LS_PARALLEL.value

@@ -26,7 +26,6 @@ from absl import flags
 from etils import epath
 
 import mujoco_warp as mjwarp
-from mujoco_warp import register_sdf_plugins
 
 _FUNCTION = flags.DEFINE_enum(
   "function",
@@ -90,7 +89,6 @@ def _print_trace(trace, indent, steps):
 def _main(argv: Sequence[str]):
   """Runs testpeed function."""
   wp.init()
-  register_sdf_plugins(mjwarp.collision_sdf)
   path = epath.Path(_MJCF.value)
   if not path.exists():
     path = epath.resource_path("mujoco_warp") / _MJCF.value
@@ -99,7 +97,12 @@ def _main(argv: Sequence[str]):
   if path.suffix == ".mjb":
     mjm = mujoco.MjModel.from_binary_path(path.as_posix())
   else:
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+    spec = mujoco.MjSpec.from_file(path.as_posix())
+    # check if the file has any mujoco.sdf test plugins
+    if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+      from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+      register_sdf_plugins(mjwarp.collision_sdf)
+    mjm = spec.compile()
 
   if _CONE.value == "pyramidal":
     mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
