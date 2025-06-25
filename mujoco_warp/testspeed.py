@@ -86,6 +86,16 @@ def _print_trace(trace, indent, steps):
     _print_trace(sub_trace, indent + 1, steps)
 
 
+def _load_model(path):
+  spec = mujoco.MjSpec.from_file(path)
+  # check if the file has any mujoco.sdf test plugins
+  if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+    from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+
+    register_sdf_plugins(mjwarp.collision_sdf)
+  return spec.compile()
+
+
 def _main(argv: Sequence[str]):
   """Runs testpeed function."""
   wp.init()
@@ -97,13 +107,7 @@ def _main(argv: Sequence[str]):
   if path.suffix == ".mjb":
     mjm = mujoco.MjModel.from_binary_path(path.as_posix())
   else:
-    spec = mujoco.MjSpec.from_file(path.as_posix())
-    # check if the file has any mujoco.sdf test plugins
-    if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
-      from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
-
-      register_sdf_plugins(mjwarp.collision_sdf)
-    mjm = spec.compile()
+    mjm = _load_model(path.as_posix())
 
   if _CONE.value == "pyramidal":
     mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
