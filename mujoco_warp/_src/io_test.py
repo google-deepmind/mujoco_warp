@@ -176,10 +176,10 @@ def _check_annotations(
     if v in wp.types.vector_types:
       raise AssertionError(f"Vector types are not allowed. {info_str}")
 
-    if typing.get_origin(v) == tuple:
-      if in_cls or in_tuple:
-        raise AssertionError(f"Nested args in Model/Data must not be tuple. {info_str}")
+    if typing.get_origin(v) == tuple and (in_cls or in_tuple):
+      raise AssertionError(f"Nested args in Model/Data must not be tuple. {info_str}")
 
+    if typing.get_origin(v) == tuple:
       tuple_args = typing.get_args(v)
       if len(tuple_args) != 2 and tuple_args[1] != ...:
         raise AssertionError(f"Tuple args must be variadic. {info_str}")
