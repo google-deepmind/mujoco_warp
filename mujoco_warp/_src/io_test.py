@@ -205,7 +205,7 @@ def _check_annotations(
       _check_annotations(v.__annotations__, prefix=f"{prefix}{v.__name__}.", in_cls=True, in_tuple=in_tuple)
       continue
 
-    raise NotImplementedError(f"Model/Data annotation is not supported. {info_str}")
+    raise AssertionError(f"Model/Data annotation is not supported. {info_str}")
 
 
 if __name__ == "__main__":
