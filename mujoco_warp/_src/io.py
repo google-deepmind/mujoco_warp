@@ -337,6 +337,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nxn_pairid[pairid] = i
 
   geom_type_pair = tuple(set(zip(mjm.geom_type[geom1], mjm.geom_type[geom2])))
+  geom_type_pair = tuple(t for pair in geom_type_pair for t in pair)
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)

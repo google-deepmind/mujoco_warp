@@ -15,6 +15,10 @@
 
 """Tests for io functions."""
 
+import dataclasses
+import typing
+from typing import Any, Dict
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -150,6 +154,58 @@ class IOTest(absltest.TestCase):
       </mujoco>
       """
       )
+
+  def test_public_api_jax_compat(self):
+    _check_annotations(mjwarp.Model.__annotations__, "Model.")
+    _check_annotations(mjwarp.Data.__annotations__, "Data.")
+
+
+def _check_annotations(
+  annotations: Dict[str, Any], prefix: str = "", in_cls: bool = False, in_tuple: bool = False
+) -> Dict[str, Any]:
+  for k, v in annotations.items():
+    full_key = f"{prefix}{k}"
+    info_str = f"Found {v} for annotation {full_key}."
+
+    if v in (int, bool, float):
+      continue
+
+    if isinstance(v, wp.types.array):
+      continue
+
+    if v in wp.types.vector_types:
+      raise AssertionError(f"Vector types are not allowed. {info_str}")
+
+    if typing.get_origin(v) == tuple:
+      if in_cls or in_tuple:
+        raise AssertionError(f"Nested args in Model/Data must not be tuple. {info_str}")
+
+      tuple_args = typing.get_args(v)
+      if len(tuple_args) != 2 and tuple_args[1] != ...:
+        raise AssertionError(f"Tuple args must be variadic. {info_str}")
+
+      _check_annotations(
+        {"[]": tuple_args[0]},
+        prefix=f"{full_key}.tuple",
+        in_cls=in_cls,
+        in_tuple=True,
+      )
+      continue
+
+    if hasattr(v, "__class__") and in_cls:
+      raise AssertionError(f"Nested object args in Model/Data are not allowed. {info_str}")
+
+    if hasattr(v, "__class__") and not dataclasses.is_dataclass(v):
+      raise AssertionError(f"Args that are objects must be dataclass. {info_str}")
+
+    if hasattr(v, "__class__") and not v.__module__.startswith("mujoco_warp"):
+      raise AssertionError(f"dataclass args must be within the mujoco_warp module. {info_str}")
+
+    if hasattr(v, "__class__"):
+      _check_annotations(v.__annotations__, prefix=f"{prefix}{v.__name__}.", in_cls=True, in_tuple=in_tuple)
+      continue
+
+    raise NotImplementedError(f"Model/Data annotation is not supported. {info_str}")
 
 
 if __name__ == "__main__":
