@@ -510,6 +510,7 @@ def _sdf_narrowphase(
       contact_worldid_out,
     )
 
+
 @event_scope
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(

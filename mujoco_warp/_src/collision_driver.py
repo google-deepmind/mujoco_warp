@@ -287,6 +287,7 @@ def _segmented_sort(tile_size: int):
 
   return segmented_sort
 
+
 @event_scope
 def sap_broadphase(m: Model, d: Data):
   """Broadphase collision detection via sweep-and-prune."""
@@ -429,6 +430,7 @@ def _nxn_broadphase(
       collision_worldid_out,
       ncollision_out,
     )
+
 
 @event_scope
 def nxn_broadphase(m: Model, d: Data):

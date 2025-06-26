@@ -1001,6 +1001,7 @@ def ccd_kernel_builder(
 
   return gjk_epa_sparse
 
+
 @event_scope
 def convex_narrowphase(m: Model, d: Data):
   for geom_pair in zip(m.geom_type_pair[::2], m.geom_type_pair[1::2]):
