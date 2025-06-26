@@ -202,7 +202,7 @@ def _check_annotations(
       raise AssertionError(f"dataclass args must be within the mujoco_warp module. {info_str}")
 
     if hasattr(v, "__class__"):
-      _check_annotations(v.__annotations__, prefix=f"{prefix}{v.__name__}.", in_cls=True, in_tuple=in_tuple)
+      _check_annotations(v.__annotations__, prefix=f"{full_key}{v.__name__}.", in_cls=True, in_tuple=in_tuple)
       continue
 
     raise AssertionError(f"Model/Data annotation is not allowed. {info_str}")
