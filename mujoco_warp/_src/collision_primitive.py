@@ -25,6 +25,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -2858,7 +2859,7 @@ def _primitive_narrowphase(
       contact_worldid_out,
     )
 
-
+@event_scope
 def primitive_narrowphase(m: Model, d: Data):
   # we need to figure out how to keep the overhead of this small - not launching anything
   # for pair types without collisions, as well as updating the launch dimensions.

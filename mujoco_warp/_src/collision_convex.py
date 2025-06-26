@@ -33,6 +33,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .warp_util import event_scope
 
 # TODO(team): improve compile time to enable backward pass
 wp.config.enable_backward = False
@@ -1000,7 +1001,7 @@ def ccd_kernel_builder(
 
   return gjk_epa_sparse
 
-
+@event_scope
 def convex_narrowphase(m: Model, d: Data):
   for geom_pair in zip(m.geom_type_pair[::2], m.geom_type_pair[1::2]):
     if geom_pair in _CONVEX_COLLISION:
