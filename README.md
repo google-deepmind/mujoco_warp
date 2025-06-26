@@ -9,7 +9,7 @@ MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deep
 > * The intended audience during Beta are physics engine enthusiasts and learning framework integrators.
 > * Machine learning / robotics researchers who just want to train policies should wait for the [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) or [Isaac](https://isaac-sim.github.io/IsaacLab/main/index.html)/[Newton](https://github.com/newton-physics/newton) integrations, which are coming soon.
 
-MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). Once MJWarp exits Alpha, it will be integrated into both MJX and [Newton](https://developer.nvidia.com/blog/announcing-newton-an-open-source-physics-engine-for-robotics-simulation).
+MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). MJWarp will be integrated into both MJX and [Newton](https://developer.nvidia.com/blog/announcing-newton-an-open-source-physics-engine-for-robotics-simulation).
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
