@@ -52,29 +52,26 @@ you open, so it's important to fix any issues it reports.
 
 The following features are implemented:
 
-| Category          | Feature                                                                                                  |
-| ----------------- | ---------------------------------------------------------------------------------------------------------|
-| Dynamics          | Forward, Inverse                                                                                         |
-| Transmission      | `JOINT`, `JOINTINPARENT`, `TENDON`,`BODY`, `SITE`                                                        |
-| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`, `MUSCLE`                                                  |
-| Actuator Gain     | `FIXED`, `AFFINE`, `MUSCLE`                                                                              |
-| Actuator Bias     | `NONE`, `AFFINE`, `MUSCLE`                                                                               |
-| Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `HFIELD`, `MESH`, `SDF`                    |
-| Constraint        | `FRICTION JOINT`, `FRICTION TENDON`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`,                        |
-|                   | `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC`                                                                  |
-| Equality          | `CONNECT`, `WELD`, `JOINT`, `TENDON`                                                                     |
-| Integrator        | `EULER`, `IMPLICITFAST`, `RK4`                                                                           |
-| Cone              | `PYRAMIDAL`, `ELLIPTIC`                                                                                  |
-| Condim            | 1, 3, 4, 6                                                                                               |
-| Solver            | `CG`, `NEWTON`                                                                                           |
-| Fluid Model       | `BOX`                                                                                                    |
-| Tendons           | `FIXED`, `SITE`, `SPHERE`, `CYLINDER`, `PULLEY`                                                          |
-| Sensors           | `MAGNETOMETER`, `CAMPROJECTION`, `RANGEFINDER`, `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`,      |
-|                   | `JOINTLIMITPOS`, `TENDONLIMITPOS`, `FRAMEPOS`, `FRAMEXAXIS`, `FRAMEYAXIS`, `FRAMEZAXIS`, `FRAMEQUAT`,    |
-|                   | `SUBTREECOM`, `E_POTENTIAL`, `E_KINETIC`, `CLOCK`, `VELOCIMETER`, `GYRO`, `JOINTVEL`, `TENDONVEL`,       |
-|                   | `ACTUATORVEL`, `BALLANGVEL`, `JOINTLIMITVEL`, `TENDONLIMITVEL`, `FRAMELINVEL`, `FRAMEANGVEL`,            |
-|                   | `SUBTREELINVEL`, `SUBTREEANGMOM`,`TOUCH`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`,             |
-|                   | `TENDONACTFRC`, `JOINTACTFRC`, `JOINTLIMITFRC`, `TENDONLIMITFRC`, `FRAMELINACC`, `FRAMEANGACC`           |
+| Category           | Feature                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------|
+| Dynamics           | Forward, Inverse                                                                                        |
+| Transmission       | All                                                                                                     |
+| Actuator Dynamics  | All except `USER`                                                                                       |
+| Actuator Gain      | All except `USER`                                                                                       |
+| Actuator Bias      | All except `USER`                                                                                       |
+| Geom               | All (`MESH`&harr;`SDF` collision algorithm not yet implemented)                                         |
+| Constraint         | All                                                                                                     |
+| Equality           | All except `FLEX`, `DISTANCE`                                                                           |
+| Integrator         | All except `IMPLICIT`                                                                                   |
+| Cone               | All                                                                                                     |
+| Condim             | 1, 3, 4, 6                                                                                              |
+| Solver             | All                                                                                                     |
+| Fluid Model        | `BOX` only                                                                                              |
+| Tendon Wrap        | All                                                                                                     |
+| Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, `GEOMFROMTO`, `PLUGIN`, `USER`                                     |
+| Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
+| Mass matrix format | Sparse and Dense                                                                                        |
+| Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
 
 # Benchmarking
 
