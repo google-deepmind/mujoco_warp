@@ -64,7 +64,7 @@ The following features are implemented:
 | Equality           | All except `FLEX`, `DISTANCE`                                                                           |
 | Integrator         | All except `IMPLICIT`                                                                                   |
 | Cone               | All                                                                                                     |
-| Condim             | 1, 3, 4, 6                                                                                              |
+| Condim             | All                                                                                                     |
 | Solver             | All                                                                                                     |
 | Fluid Model        | `BOX` only                                                                                              |
 | Tendon Wrap        | All                                                                                                     |
