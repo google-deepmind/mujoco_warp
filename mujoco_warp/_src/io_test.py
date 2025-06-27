@@ -179,12 +179,13 @@ def _get_np_scalar_type(val: Any) -> Optional[Union[bool, int, float]]:
 
 def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
   test_obj.assertTrue(dataclasses.is_dataclass(obj), prefix + " must be dataclass.")
+  msg = "Type of type({val}) does not match annotation {type_} for field {prefix}{field_name}"
 
   for field in dataclasses.fields(obj):
-    msg = "Type of type({val}) does not match annotation {type_} for field {prefix}{field_name}"
-    field_name = field.name
     val = getattr(obj, field_name)
+    field_name = field.name
     type_ = field.type
+
     if dataclasses.is_dataclass(val):
       test_obj.assertTrue(dataclasses.is_dataclass(type_), msg.format(**locals()))
       _check_type_matches_annotation(test_obj, val, prefix + field_name + ".")
@@ -201,8 +202,9 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
 
     if tuple in (type(val), typing.get_origin(type_)):
       test_obj.assertEqual(type(val), typing.get_origin(type_), msg.format(**locals()))
-      type_ = typing.get_args(type_)[0]
       field_name += ".tuple[]"
+      type_ = typing.get_args(type_)[0]
+
       items = val
       for val in items:
         if dataclasses.is_dataclass(val):
