@@ -200,8 +200,9 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
       test_obj.assertIsInstance(val, wp.types.array, msg.format(**locals()))
       continue
 
-    if tuple in (type(val), typing.get_origin(type_)):
-      test_obj.assertEqual(type(val), typing.get_origin(type_), msg.format(**locals()))
+    origin_type = typing.get_origin(type_)
+    if tuple in (type(val), origin_type):
+      test_obj.assertEqual(type(val), origin_type, msg.format(**locals()))
       field_name += ".tuple[]"
       type_ = typing.get_args(type_)[0]
 
