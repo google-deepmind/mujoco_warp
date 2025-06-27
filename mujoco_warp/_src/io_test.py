@@ -17,7 +17,7 @@
 
 import dataclasses
 import typing
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 import mujoco
 import numpy as np
@@ -156,16 +156,80 @@ class IOTest(absltest.TestCase):
       )
 
   def test_public_api_jax_compat(self):
-    _check_annotations(mjwarp.Model.__annotations__, "Model.")
-    _check_annotations(mjwarp.Data.__annotations__, "Data.")
+    """Tests that annotations meet a set of criteria for JAX compat."""
+    _check_annotation_compat(mjwarp.Model.__annotations__, "Model.")
+    _check_annotation_compat(mjwarp.Data.__annotations__, "Data.")
+
+  def test_types_match_annotations(self):
+    """Tests that the types of dataclass fields match the annotations."""
+    mjm, _, m, d = test_util.fixture("pendula.xml")
+
+    _check_type_matches_annotation(self, m, "Model.")
+    _check_type_matches_annotation(self, d, "Data.")
+
+    d = mjwarp.make_data(mjm, nworld=2)
+    _check_type_matches_annotation(self, d, "Data.")
 
 
-def _check_annotations(
+def _get_np_scalar_type(val: Any) -> Optional[Union[bool, int, float]]:
+  is_np_scalar = list(isinstance(val, t) for t in (np.integer, np.floating, np.bool_))
+  if any(is_np_scalar):
+    return [int, float, bool][is_np_scalar.index(True)]
+
+
+def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
+  test_obj.assertTrue(dataclasses.is_dataclass(obj), prefix + " must be dataclass.")
+
+  for field in dataclasses.fields(obj):
+    msg = "Type of type({val}) does not match annotation {type_} for field {prefix}{field_name}"
+    field_name = field.name
+    val = getattr(obj, field_name)
+    type_ = field.type
+    if dataclasses.is_dataclass(val):
+      test_obj.assertTrue(dataclasses.is_dataclass(type_), msg.format(**locals()))
+      _check_type_matches_annotation(test_obj, val, prefix + field_name + ".")
+      continue
+
+    np_scalar_type = _get_np_scalar_type(val)
+    if np_scalar_type:
+      test_obj.assertIsInstance(np_scalar_type(val), type_, msg.format(**locals()))
+      continue
+
+    if isinstance(type_, wp.types.array):
+      test_obj.assertIsInstance(val, wp.types.array, msg.format(**locals()))
+      continue
+
+    if tuple in (type(val), typing.get_origin(type_)):
+      test_obj.assertEqual(type(val), typing.get_origin(type_), msg.format(**locals()))
+      type_ = typing.get_args(type_)[0]
+      field_name += ".tuple[]"
+      items = val
+      for val in items:
+        if dataclasses.is_dataclass(val):
+          _check_type_matches_annotation(test_obj, val, prefix + field_name)
+          continue
+
+        np_scalar_type = _get_np_scalar_type(val)
+        if np_scalar_type:
+          test_obj.assertIsInstance(np_scalar_type(val), type_, msg.format(**locals()))
+          continue
+
+        if isinstance(type_, wp.types.array):
+          test_obj.assertIsInstance(val, wp.types.array, msg.format(**locals()))
+          continue
+
+        test_obj.assertEqual(type(val), type_, msg.format(**locals()))
+      continue
+
+    test_obj.assertEqual(type(val), field.type, msg.format(**locals()))
+
+
+def _check_annotation_compat(
   annotations: Dict[str, Any], prefix: str = "", in_cls: bool = False, in_tuple: bool = False
 ) -> Dict[str, Any]:
   for k, v in annotations.items():
     full_key = f"{prefix}{k}"
-    info_str = f"Found {v} for annotation {full_key}."
+    info = f"Found {v} for annotation {full_key}."
 
     if v in (int, bool, float):
       continue
@@ -174,17 +238,17 @@ def _check_annotations(
       continue
 
     if v in wp.types.vector_types:
-      raise AssertionError(f"Vector types are not allowed. {info_str}")
+      raise AssertionError(f"Vector types are not allowed. {info}")
 
     if typing.get_origin(v) == tuple and (in_cls or in_tuple):
-      raise AssertionError(f"Nested args in Model/Data must not be tuple. {info_str}")
+      raise AssertionError(f"Nested args in Model/Data must not be tuple. {info}")
 
     if typing.get_origin(v) == tuple:
       tuple_args = typing.get_args(v)
       if len(tuple_args) != 2 and tuple_args[1] != ...:
-        raise AssertionError(f"Tuple args must be variadic. {info_str}")
+        raise AssertionError(f"Tuple args must be variadic. {info}")
 
-      _check_annotations(
+      _check_annotation_compat(
         {"[]": tuple_args[0]},
         prefix=f"{full_key}.tuple",
         in_cls=in_cls,
@@ -193,19 +257,19 @@ def _check_annotations(
       continue
 
     if hasattr(v, "__class__") and in_cls:
-      raise AssertionError(f"Nested object args in Model/Data are not allowed. {info_str}")
+      raise AssertionError(f"Nested object args in Model/Data are not allowed. {info}")
 
     if hasattr(v, "__class__") and not dataclasses.is_dataclass(v):
-      raise AssertionError(f"Args that are objects must be dataclass. {info_str}")
+      raise AssertionError(f"Args that are objects must be dataclass. {info}")
 
     if hasattr(v, "__class__") and not v.__module__.startswith("mujoco_warp"):
-      raise AssertionError(f"dataclass args must be within the mujoco_warp module. {info_str}")
+      raise AssertionError(f"dataclass args must be within the mujoco_warp module. {info}")
 
     if hasattr(v, "__class__"):
-      _check_annotations(v.__annotations__, prefix=f"{full_key}{v.__name__}.", in_cls=True, in_tuple=in_tuple)
+      _check_annotation_compat(v.__annotations__, prefix=f"{full_key}{v.__name__}.", in_cls=True, in_tuple=in_tuple)
       continue
 
-    raise AssertionError(f"Model/Data annotation is not allowed. {info_str}")
+    raise AssertionError(f"Model/Data annotation is not allowed. {info}")
 
 
 if __name__ == "__main__":
