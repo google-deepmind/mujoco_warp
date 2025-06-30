@@ -464,15 +464,9 @@ def nxn_broadphase(m: Model, d: Data):
 def collision(m: Model, d: Data):
   """Collision detection."""
 
-  # AD: based on engine_collision_driver.py in Eric's warp fork/mjx-collisions-dev
-  # which is further based on the CUDA code here:
-  # https://github.com/btaba/mujoco/blob/warp-collisions/mjx/mujoco/mjx/_src/cuda/engine_collision_driver.cu.cc#L458-L583
-
   d.ncollision.zero_()
   d.ncon.zero_()
   d.ncon_hfield.zero_()
-
-  # Clear the collision_hftri_index buffer
   d.collision_hftri_index.zero_()
 
   if d.nconmax == 0:
