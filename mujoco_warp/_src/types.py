@@ -989,6 +989,7 @@ class Model:
                          height field mapping
     block_dim: BlockDim
     geom_type_pair: geom type id pairs for collisions
+    has_sdf_geom: whether the model contains SDF geoms
   """
 
   nq: int
@@ -1275,6 +1276,7 @@ class Model:
   geompair2hfgeompair: wp.array(dtype=int)  # warp only
   block_dim: BlockDim  # warp only
   geom_type_pair: tuple[int, ...]  # warp only
+  has_sdf_geom: bool  # warp only
 
 
 @dataclasses.dataclass

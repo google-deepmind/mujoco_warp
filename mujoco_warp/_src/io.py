@@ -752,6 +752,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
     geom_type_pair=geom_type_pair,
+    has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
   )
 
   return m
