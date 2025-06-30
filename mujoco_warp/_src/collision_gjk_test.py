@@ -13,9 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
-from mujoco_warp._src.warp_util import cache_kernel, kernel as nested_kernel
 import warp as wp
 from absl.testing import absltest
+
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 from . import test_util
 from .collision_gjk import ccd
@@ -25,6 +27,7 @@ from .types import GeomType
 from .types import Model
 
 MAX_ITERATIONS = 10
+
 
 def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
   @nested_kernel
