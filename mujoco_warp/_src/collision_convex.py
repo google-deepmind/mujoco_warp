@@ -62,7 +62,7 @@ VECI1 = vec6(0, 0, 0, 1, 1, 2)
 VECI2 = vec6(1, 2, 3, 2, 3, 3)
 
 
-_CONVEX_COLLISION = {
+_CONVEX_COLLISION_PAIRS = {
   (GeomType.HFIELD.value, GeomType.SPHERE.value),
   (GeomType.HFIELD.value, GeomType.CAPSULE.value),
   (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
@@ -1005,12 +1005,12 @@ def ccd_kernel_builder(
 @event_scope
 def convex_narrowphase(m: Model, d: Data):
   for geom_pair in zip(m.geom_type_pair[::2], m.geom_type_pair[1::2]):
-    if geom_pair in _CONVEX_COLLISION:
+    if geom_pair in _CONVEX_COLLISION_PAIRS:
       wp.launch(
         ccd_kernel_builder(
           False,
-          int(geom_pair[0]),
-          int(geom_pair[1]),
+          geom_pair[0],
+          geom_pair[1],
           m.opt.gjk_iterations,
           m.opt.epa_iterations,
           m.opt.epa_exact_neg_distance,
