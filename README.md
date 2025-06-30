@@ -59,13 +59,13 @@ The following features are implemented:
 | Actuator Dynamics  | All except `USER`                                                                                       |
 | Actuator Gain      | All except `USER`                                                                                       |
 | Actuator Bias      | All except `USER`                                                                                       |
-| Geom               | All (`MESH`&harr;`SDF` collision algorithm not yet implemented)                                         |
+| Geom               | All (`MESH`&harr;`SDF`, `MESH`&harr;`PLANE` collision algorithms not yet implemented)                   |
 | Constraint         | All                                                                                                     |
 | Equality           | All except `FLEX`, `DISTANCE`                                                                           |
 | Integrator         | All except `IMPLICIT`                                                                                   |
 | Cone               | All                                                                                                     |
 | Condim             | All                                                                                                     |
-| Solver             | All                                                                                                     |
+| Solver             | All except `PGS`, `noslip`                                                                              |
 | Fluid Model        | `BOX` only                                                                                              |
 | Tendon Wrap        | All                                                                                                     |
 | Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, `GEOMFROMTO`, `PLUGIN`, `USER`                                     |
