@@ -496,4 +496,6 @@ def collision(m: Model, d: Data):
   # TODO(team) switch between collision functions and GJK/EPA here
   convex_narrowphase(m, d)
   primitive_narrowphase(m, d)
-  sdf_narrowphase(m, d)
+
+  if m.has_sdf_geom:
+    sdf_narrowphase(m, d)

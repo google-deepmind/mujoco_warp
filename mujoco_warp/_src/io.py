@@ -336,8 +336,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     nxn_pairid[pairid] = i
 
-  geom_type_pair = tuple(set(zip(mjm.geom_type[geom1], mjm.geom_type[geom2])))
-  geom_type_pair = tuple(t for pair in geom_type_pair for t in pair)
+  # contact pair types
+  type_pairs = np.stack([mjm.geom_type[geom1], mjm.geom_type[geom2]], axis=1)
+  type_pairs.sort()
+  geom_type_pair = set(tuple(tp) for tp in type_pairs)
+  geom_type_pair = tuple(int(t) for tp in geom_type_pair for t in tp)
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
@@ -399,7 +402,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
       magnetic=create_nmodel_batched_array(mjm.opt.magnetic, dtype=wp.vec3, expand_dim=False),
       wind=create_nmodel_batched_array(mjm.opt.wind, dtype=wp.vec3, expand_dim=False),
-      has_fluid=mjm.opt.wind.any() or mjm.opt.density or mjm.opt.viscosity,
+      has_fluid=bool(mjm.opt.wind.any() or mjm.opt.density or mjm.opt.viscosity),
       density=mjm.opt.density,
       viscosity=mjm.opt.viscosity,
       cone=mjm.opt.cone,
@@ -410,13 +413,13 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       disableflags=mjm.opt.disableflags,
       enableflags=mjm.opt.enableflags,
       impratio=mjm.opt.impratio,
-      is_sparse=is_sparse,
+      is_sparse=bool(is_sparse),
       ls_parallel=False,
       gjk_iterations=MJ_CCD_ITERATIONS,
       epa_iterations=MJ_CCD_ITERATIONS,
-      epa_exact_neg_distance=wp.bool(False),
+      epa_exact_neg_distance=False,
       depth_extension=0.1,
-      broadphase=broadphase,
+      broadphase=int(broadphase),
       graph_conditional=False,
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
@@ -752,6 +755,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
     geom_type_pair=geom_type_pair,
+    has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
   )
 
   return m
