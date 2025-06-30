@@ -33,7 +33,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
-from .warp_util import cache_kernel, event_scope, nested_kernel
+from .warp_util import cache_kernel, event_scope, kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.config.enable_backward = False
