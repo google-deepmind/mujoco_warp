@@ -37,7 +37,16 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   return nhfieldgeompair, geompair2hfgeompair
 
 
-def put_model(mjm: mujoco.MjModel) -> types.Model:
+def put_model(mjm: mujoco.MjModel, _nworld: int = 0) -> types.Model:
+  """Puts mujoco.MjModel onto a device, resulting in mjwarp.Model.
+
+  Args:
+    mjm: the mujoco MjModel to put on device
+    _nworld: experimental feature used to determine which fields are batch-able
+
+  Returns:
+    an mjwarp model
+  """
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -343,6 +352,13 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   geom_type_pair = tuple(int(t) for tp in geom_type_pair for t in tp)
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
+    def tile(x):
+      ndim = len(x.shape) if expand_dim else len(x.shape) - 1
+      return np.tile(x, (_nworld,) + (1,) * ndim)
+
+    if _nworld > 0:
+      return wp.array(tile(mjm_array), dtype=dtype)
+
     array = wp.array(mjm_array, dtype=dtype)
     array.strides = (0,) + array.strides
     if not expand_dim:

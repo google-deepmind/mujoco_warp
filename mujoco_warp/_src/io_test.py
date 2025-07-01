@@ -155,6 +155,26 @@ class IOTest(absltest.TestCase):
       """
       )
 
+  def test_put_model_experimental_nworld(self):
+    mjm, *_ = test_util.fixture("pendula.xml")
+    m1 = mjwarp.put_model(mjm)
+
+    self.assertEqual(m1.geom_pos.shape[0], 1)
+    self.assertEqual(m1.geom_pos.strides[0], 0)
+    self.assertEqual(m1.opt.gravity.shape[0], 1)
+    self.assertEqual(m1.opt.gravity.strides[0], 0)
+    self.assertGreater(m1.body_parentid.shape[0], 0)
+    self.assertGreater(m1.body_parentid.strides[0], 0)
+
+    m2 = mjwarp.put_model(mjm, _nworld=113)
+    self.assertEqual(m2.geom_pos.shape[0], 113)
+    self.assertGreater(m2.geom_pos.strides[0], 0)
+    self.assertEqual(m2.opt.gravity.shape[0], 113)
+    self.assertGreater(m2.opt.gravity.strides[0], 0)
+    self.assertGreater(m2.body_parentid.shape[0], 1)
+    self.assertNotEqual(m2.body_parentid.shape[0], 113)
+    self.assertGreater(m2.body_parentid.strides[0], 0)
+
   def test_public_api_jax_compat(self):
     """Tests that annotations meet a set of criteria for JAX compat."""
     _check_annotation_compat(mjwarp.Model.__annotations__, "Model.")
