@@ -37,7 +37,7 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   return nhfieldgeompair, geompair2hfgeompair
 
 
-def put_model(mjm: mujoco.MjModel, _nworld: int = 0) -> types.Model:
+def put_model(mjm: mujoco.MjModel, _nworld: int = 1) -> types.Model:
   """Puts mujoco.MjModel onto a device, resulting in mjwarp.Model.
 
   Args:
@@ -352,19 +352,17 @@ def put_model(mjm: mujoco.MjModel, _nworld: int = 0) -> types.Model:
   geom_type_pair = tuple(int(t) for tp in geom_type_pair for t in tp)
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
+    nworld = max(_nworld, 1)
+
     def tile(x):
       ndim = len(x.shape) if expand_dim else len(x.shape) - 1
-      return np.tile(x, (_nworld,) + (1,) * ndim)
+      return np.tile(x, (nworld,) + (1,) * ndim)
 
-    if _nworld > 0:
-      return wp.array(tile(mjm_array), dtype=dtype)
-
-    array = wp.array(mjm_array, dtype=dtype)
-    array.strides = (0,) + array.strides
-    if not expand_dim:
+    array = wp.array(tile(mjm_array), dtype=dtype)
+    if _nworld > 1:
       return array
-    array.ndim += 1
-    array.shape = (1,) + array.shape
+
+    array.strides = (0,) + array.strides
     return array
 
   # rangefinder
