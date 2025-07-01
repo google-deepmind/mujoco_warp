@@ -15,6 +15,7 @@
 
 """Public API for MJWarp."""
 
+from ._src import collision_sdf as collision_sdf
 from ._src.collision_driver import collision as collision
 from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase
@@ -60,6 +61,7 @@ from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate
 from ._src.test_util import benchmark as benchmark
 from ._src.types import ConeType as ConeType
+from ._src.types import Constraint as Constraint
 from ._src.types import Contact as Contact
 from ._src.types import Data as Data
 from ._src.types import DisableBit as DisableBit

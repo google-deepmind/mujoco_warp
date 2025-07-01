@@ -23,6 +23,7 @@ from . import support
 from . import types
 from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -961,6 +962,7 @@ def linesearch_zero_jv(
   efc_jv_out[worldid, efcid] = 0.0
 
 
+@cache_kernel
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
   @nested_kernel
   def kernel(
@@ -998,21 +1000,6 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
 
 @wp.kernel
-def linesearch_zero_quad_gauss(
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_quad_gauss_out: wp.array(dtype=wp.vec3),
-):
-  worldid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  efc_quad_gauss_out[worldid] = wp.vec3(0.0)
-
-
-@wp.kernel
 def linesearch_init_quad_gauss(
   # Model:
   nv: int,
@@ -1026,16 +1013,19 @@ def linesearch_init_quad_gauss(
   # Data out:
   efc_quad_gauss_out: wp.array(dtype=wp.vec3),
 ):
-  worldid, dofid = wp.tid()
+  worldid = wp.tid()
   if efc_done_in[worldid]:
     return
 
-  search = efc_search_in[worldid, dofid]
-  quad_gauss = wp.vec3()
-  quad_gauss[0] = efc_gauss_in[worldid] / float(nv)
-  quad_gauss[1] = search * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
-  quad_gauss[2] = 0.5 * search * efc_mv_in[worldid, dofid]
-  wp.atomic_add(efc_quad_gauss_out, worldid, quad_gauss)
+  quad_gauss_0 = efc_gauss_in[worldid]
+  quad_gauss_1 = float(0.0)
+  quad_gauss_2 = float(0.0)
+  for i in range(nv):
+    search = efc_search_in[worldid, i]
+    quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
+    quad_gauss_2 += 0.5 * search * efc_mv_in[worldid, i]
+
+  efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
 
 
 @wp.kernel
@@ -1199,17 +1189,9 @@ def _linesearch(m: types.Model, d: types.Data):
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-  # TOOD(team): is zero_() better here?
-  wp.launch(
-    linesearch_zero_quad_gauss,
-    dim=(d.nworld),
-    inputs=[d.efc.done],
-    outputs=[d.efc.quad_gauss],
-  )
-
   wp.launch(
     linesearch_init_quad_gauss,
-    dim=(d.nworld, m.nv),
+    dim=(d.nworld),
     inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
     outputs=[d.efc.quad_gauss],
   )
@@ -2094,6 +2076,7 @@ def update_gradient_JTCJ(
     efc_h_out[worldid, dof1id, dof2id] += efc_h
 
 
+@cache_kernel
 def update_gradient_cholesky(tile_size: int):
   @nested_kernel
   def kernel(
@@ -2119,6 +2102,7 @@ def update_gradient_cholesky(tile_size: int):
   return kernel
 
 
+@cache_kernel
 def update_gradient_cholesky_blocked(tile_size: int):
   @nested_kernel
   def kernel(
@@ -2138,9 +2122,9 @@ def update_gradient_cholesky_blocked(tile_size: int):
     if efc_done_in[worldid]:
       return
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, efc_h_in[worldid], matrix_size, 0, 0, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
     wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
-      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, 0, 0, efc_Mgrad_out[worldid]
+      tid_block, cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
 
   return kernel
@@ -2197,7 +2181,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       # can be change in future to fine-tune the perf. The optimal factor will
       # depend on the kernel's occupancy, which determines how many blocks can
       # simultaneously run on the SM. TODO: This factor can be tuned further.
-      dim_block = int((sm_count * 6 * 256) / m.dof_tri_row.size)
+      dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
     else:
       # fall back for CPU
       dim_block = d.nconmax
@@ -2519,12 +2503,21 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
     _update_gradient(m, d)
 
 
+def _copy_acc(m: types.Model, d: types.Data):
+  wp.copy(d.qacc, d.qacc_smooth)
+  wp.copy(d.qacc_warmstart, d.qacc_smooth)
+  d.solver_niter.fill_(0)
+
+
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if m.opt.graph_conditional:
-    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=None, m=m, d=d)
+    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=_copy_acc, m=m, d=d)
   else:
-    _solve(m, d)
+    if d.njmax == 0:
+      _copy_acc(m, d)
+    else:
+      _solve(m, d)
 
 
 def _solve(m: types.Model, d: types.Data):

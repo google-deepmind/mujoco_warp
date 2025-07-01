@@ -16,10 +16,12 @@
 
 import mujoco
 import numpy as np
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
+from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 from . import test_util
 from . import types
@@ -28,6 +30,104 @@ from . import types
 class CollisionTest(parameterized.TestCase):
   """Tests the collision contact functions."""
 
+  _SDF_SDF = {
+    "_NUT_NUT": """
+<mujoco>
+  <extension>
+    <plugin plugin="mujoco.sdf.nut">
+      <instance name="nut1">
+        <config key="radius" value="0.27"/>
+      </instance>
+      <instance name="nut2">
+        <config key="radius" value="0.27"/>
+      </instance>
+    </plugin>
+  </extension>
+  <compiler autolimits="true"/>
+  <option sdf_iterations="10"/> <!-- Increased for better collision accuracy -->
+  <asset>
+    <mesh name="nut_mesh1">
+      <plugin instance="nut1"/>
+    </mesh>
+    <mesh name="nut_mesh2">
+      <plugin instance="nut2"/>
+    </mesh>
+  </asset>
+  <worldbody>
+    <!-- First nut (floating) -->
+    <body pos="0 0 0.5">
+      <joint type="free"/>
+      <geom type="sdf" name="nut1" mesh="nut_mesh1" rgba="0.83 0.68 0.4 1">
+        <plugin instance="nut1"/>
+      </geom>
+    </body>
+    <!-- Second nut (positioned to intersect) -->
+    <body pos="0 0 0.4">
+      <geom type="sdf" name="nut2" mesh="nut_mesh2" rgba="0.9 0.4 0.2 1">
+        <plugin instance="nut2"/>
+      </geom>
+    </body>
+    <light name="left" pos="-1 0 2" cutoff="80"/>
+    <light name="right" pos="1 0 2" cutoff="80"/>
+  </worldbody>
+</mujoco>
+""",
+    "NUT_BOLT": """<mujoco>
+  <extension>
+    <plugin plugin="mujoco.sdf.nut">
+      <instance name="nut">
+        <config key="radius" value="0.26"/>
+      </instance>
+    </plugin>
+    <plugin plugin="mujoco.sdf.bolt">
+      <instance name="bolt">
+        <config key="radius" value="0.255"/>
+      </instance>
+    </plugin>
+  </extension>
+
+  <compiler autolimits="true"/>
+
+
+  <visual>
+    <map force="0.05"/>
+  </visual>
+
+  <asset>
+    <mesh name="nut">
+      <plugin instance="nut"/>
+    </mesh>
+    <mesh name="bolt">
+      <plugin instance="bolt"/>
+    </mesh>
+  </asset>
+
+  <option sdf_iterations="10" sdf_initpoints="20"/>
+
+  <default>
+    <geom solref="0.01 1" solimp=".95 .99 .0001" friction="0.01"/>
+  </default>
+
+  <statistic meansize=".1"/>
+
+  <worldbody>
+    <body pos="-0.0012496 0.00329058 0.830362" quat="-0.000212626 0.999996 -0.00200453 0.00185878">
+      <joint type="free" damping="30"/>
+      <geom type="sdf" name="nut" mesh="nut" rgba="0.83 0.68 0.4 1">
+        <plugin instance="nut"/>
+      </geom>
+    </body>
+    <body euler="180 0 0">
+      <geom type="sdf" name="bolt" mesh="bolt" rgba="0.7 0.7 0.7 1">
+        <plugin instance="bolt"/>
+      </geom>
+    </body>
+    <light name="left" pos="-1 0 2" cutoff="80"/>
+    <light name="right" pos="1 0 2" cutoff="80"/>
+  </worldbody>
+</mujoco>
+""",
+  }
   _FIXTURES = {
     "box_plane": """
         <mujoco>
@@ -337,23 +437,31 @@ class CollisionTest(parameterized.TestCase):
         """,
   }
 
-  # Temporarily disabled
-  #  "box_mesh": """
-  #      <mujoco>
-  #        <asset>
-  #          <mesh name="boxmesh" scale="0.1 0.1 0.1"
-  #                vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1
-  #                         1 -1 1 -1 1 -1 -1 1 1 -1 -1 1"/>
-  #        </asset>
-  #        <worldbody>
-  #          <geom pos="0 0 -0.1" type="box" size="0.5 0.5 0.1"/>
-  #          <body pos="0 0 .099">
-  #            <joint type="free"/>
-  #            <geom type="mesh" mesh="boxmesh"/>
-  #          </body>
-  #        </worldbody>
-  #      </mujoco>
-  #    """,
+  @classmethod
+  def setUpClass(cls):
+    register_sdf_plugins(mjwarp._src.collision_sdf)
+
+  @parameterized.parameters(_SDF_SDF.keys())
+  def test_sdf_collision(self, fixture):
+    """Tests collisions with different geometries."""
+
+    mjm, mjd, m, d = test_util.fixture(xml=self._SDF_SDF[fixture], qpos0=True)
+
+    mujoco.mj_collision(mjm, mjd)
+    mjwarp.collision(m, d)
+    for i in range(min(mjd.ncon, d.ncon.numpy()[0])):
+      actual_dist = mjd.contact.dist[i]
+      actual_pos = mjd.contact.pos[i]
+      actual_frame = mjd.contact.frame[i][0:3]
+      result = False
+      test_dist = d.contact.dist.numpy()[i]
+      test_pos = d.contact.pos.numpy()[i, :]
+      test_frame = d.contact.frame.numpy()[i].flatten()[0:3]
+      check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-1)
+      check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-1)
+      check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-1)
+      result = check_dist
+      np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
