@@ -37,16 +37,8 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   return nhfieldgeompair, geompair2hfgeompair
 
 
-def put_model(mjm: mujoco.MjModel, _nworld: int = 1) -> types.Model:
-  """Puts mujoco.MjModel onto a device, resulting in mjwarp.Model.
-
-  Args:
-    mjm: the mujoco MjModel to put on device
-    _nworld: experimental feature used to determine which fields are batch-able
-
-  Returns:
-    an mjwarp model
-  """
+def put_model(mjm: mujoco.MjModel) -> types.Model:
+  """Puts mujoco.MjModel onto a device, resulting in mjwarp.Model."""
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -352,15 +344,15 @@ def put_model(mjm: mujoco.MjModel, _nworld: int = 1) -> types.Model:
   geom_type_pair = tuple(int(t) for tp in geom_type_pair for t in tp)
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
-    def tile(x):
-      ndim = len(x.shape) if expand_dim else len(x.shape) - 1
-      return np.tile(x, (max(_nworld, 1),) + (1,) * ndim)
-
-    array = wp.array(tile(mjm_array), dtype=dtype)
-    if _nworld > 1:
+    array = wp.array(mjm_array, dtype=dtype)
+    # add private attribute for JAX to determine which fields are batched
+    array._is_batched = True
+    if not expand_dim:
+      array.strides = (0,) + array.strides[1:]
       return array
-
-    array.strides = (0,) + array.strides[1:]
+    array.strides = (0,) + array.strides
+    array.ndim += 1
+    array.shape = (1,) + array.shape
     return array
 
   # rangefinder

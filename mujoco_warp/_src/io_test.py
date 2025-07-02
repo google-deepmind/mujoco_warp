@@ -155,33 +155,22 @@ class IOTest(absltest.TestCase):
       """
       )
 
-  def test_put_model_experimental_nworld(self):
+  def test_put_model_batched_array(self):
     mjm, *_ = test_util.fixture("pendula.xml")
     m1 = mjwarp.put_model(mjm)
 
+    self.assertTrue(hasattr(m1.geom_pos, "_is_batched"))
     self.assertEqual(m1.geom_pos.shape[0], 1)
     self.assertEqual(m1.geom_pos.strides[0], 0)
     self.assertLen(m1.geom_pos.strides, m1.geom_pos.ndim)
+    self.assertTrue(hasattr(m1.opt.gravity, "_is_batched"))
     self.assertEqual(m1.opt.gravity.shape[0], 1)
     self.assertEqual(m1.opt.gravity.strides[0], 0)
     self.assertLen(m1.opt.gravity.strides, m1.opt.gravity.ndim)
+    self.assertFalse(hasattr(m1.body_parentid, "_is_batched"))
     self.assertGreater(m1.body_parentid.shape[0], 0)
     self.assertGreater(m1.body_parentid.strides[0], 0)
     self.assertLen(m1.body_parentid.strides, m1.body_parentid.ndim)
-
-    m2 = mjwarp.put_model(mjm, _nworld=113)
-    assert m2.ngeom != 113
-    assert m2.nbody != 113
-    self.assertEqual(m2.geom_pos.shape[0], 113)
-    self.assertGreater(m2.geom_pos.strides[0], 0)
-    self.assertLen(m2.geom_pos.strides, m2.geom_pos.ndim)
-    self.assertEqual(m2.opt.gravity.shape[0], 113)
-    self.assertGreater(m2.opt.gravity.strides[0], 0)
-    self.assertLen(m2.opt.gravity.strides, m2.opt.gravity.ndim)
-    self.assertGreater(m2.body_parentid.shape[0], 1)
-    self.assertNotEqual(m2.body_parentid.shape[0], 113)
-    self.assertGreater(m2.body_parentid.strides[0], 0)
-    self.assertLen(m2.body_parentid.strides, m2.body_parentid.ndim)
 
   def test_public_api_jax_compat(self):
     """Tests that annotations meet a set of criteria for JAX compat."""
