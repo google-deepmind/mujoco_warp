@@ -187,6 +187,32 @@ class IOTest(absltest.TestCase):
     d = mjwarp.make_data(mjm, nworld=2)
     _check_type_matches_annotation(self, d, "Data.")
 
+  def test_make_put_data_leading_dim(self):
+    """Tests that make_data and put_data have matching leading dimensions."""
+    mjm, mjd, _, _ = test_util.fixture("pendula.xml")
+    dm2 = mjwarp.make_data(mjm, nworld=2, nconmax=13, njmax=42)
+    dm3 = mjwarp.make_data(mjm, nworld=3, nconmax=13, njmax=42)
+
+    dp2 = mjwarp.put_data(mjm, mjd, nworld=2, nconmax=13, njmax=42)
+    dp3 = mjwarp.put_data(mjm, mjd, nworld=3, nconmax=13, njmax=42)
+
+    _leading_dims_match(self, dm2, dp2)
+    _leading_dims_match(self, dm3, dp3)
+
+
+def _leading_dims_match(test_obj, d1: Any, d2: Any, prefix: str = ""):
+  fields1, fields2 = dataclasses.fields(d1), dataclasses.fields(d2)
+  for f1, f2 in zip(fields1, fields2):
+    full_name = prefix + f1.name
+    a1, a2 = getattr(d1, f1.name), getattr(d2, f2.name)
+    if dataclasses.is_dataclass(a1) or dataclasses.is_dataclass(a2):
+      _leading_dims_match(test_obj, a1, a2, prefix + f1.name + ".")
+      continue
+
+    if isinstance(f1.type, wp.types.array) or isinstance(f2.type, wp.types.array):
+      s1, s2 = a1.shape[0], a2.shape[0]
+      test_obj.assertEqual(s1, s2, full_name + f" leading dims mismatch. Got {s1} and {s2}.")
+
 
 def _get_np_scalar_type(val: Any) -> Optional[Union[bool, int, float]]:
   is_np_scalar = list(isinstance(val, t) for t in (np.integer, np.floating, np.bool_))

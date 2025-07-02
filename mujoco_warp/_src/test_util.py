@@ -166,7 +166,27 @@ def benchmark(
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
 ) -> Tuple[float, float, dict, list, list, list]:
-  """Benchmark a function of Model and Data."""
+  """Benchmark a function of Model and Data.
+
+  Args:
+    fn (Callable[[Model, Data], None]): Function to benchmark.
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output information (device).
+    nstep (int): Number of timesteps.
+    event_trace (bool, optional): If True, time routines decorated with @event_scope.
+                                  Default is False.
+    measure_alloc (bool, optional): If True, record number of contacts and constraints.
+                                    Default is False.
+    measure_solver_niter (bool, False): If True, record the number of solver iterations.
+                                        Default is False.
+  Returns:
+    float: Time to JIT fn.
+    float: Total time to run the benchmark.
+    dict: Trace.
+    list: Number of contacts.
+    list: Number of constraints.
+    list: Number of solver iterations.
+  """
   jit_beg = time.perf_counter()
 
   fn(m, d)

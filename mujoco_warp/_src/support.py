@@ -122,12 +122,12 @@ def mul_m(
 ):
   """Multiply vectors by inertia matrix.
 
-  Arguments:
-    m: Model
-    d: Data
-    vec: input vector to multiply by qM (nworld, nv)
-    skip: skip output for row (nworld)
-    res: output vector to store qM * vec (nworld, nv)
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output arrays (device).
+    res (wp.array2d(dtype=float)): Result: qM @ vec.
+    vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
+    skip (wp.array(dtype=flooat)): Skip output.
   """
 
   if m.opt.is_sparse:
@@ -255,6 +255,14 @@ def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: w
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
+  """
+  Map applied forces at each body via Jacobians to dof space and accumulate.
+
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output arrays (device).
+    qfrc (wp.array2d(dtype=float)): Total applied force mapped to dof space.
+  """
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
 
 
@@ -388,6 +396,16 @@ def contact_force(
   to_world_frame: bool,
   force: wp.array(dtype=wp.spatial_vector),
 ):
+  """
+  Compute forces for contacts in Data.
+
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output arrays (device).
+    contact_ids (wp.array(dtype=int)): IDs for each contact.
+    to_world_frame (bool): If True, map force from contact to world frame.
+    force (wp.array(dtype=wp.spatial_vector)): Contact forces.
+  """
   wp.launch(
     contact_force_kernel,
     dim=(contact_ids.size,),

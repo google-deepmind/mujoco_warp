@@ -64,7 +64,7 @@ class BlockDim:
 class CamLightType(enum.IntEnum):
   """Type of camera light.
 
-  Members:
+  Attributes:
     FIXED: pos and rot fixed in body
     TRACK: pos tracks body, rot fixed in global
     TRACKCOM: pos tracks subtree com, rot fixed in body
@@ -82,7 +82,7 @@ class CamLightType(enum.IntEnum):
 class DataType(enum.IntFlag):
   """Sensor data types.
 
-  Members:
+  Attributes:
     REAL: real values, no constraints
     POSITIVE: positive values, 0 or negative: inactive
   """
@@ -95,7 +95,7 @@ class DataType(enum.IntFlag):
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
-  Members:
+  Attributes:
     CONSTRAINT:   entire constraint solver
     EQUALITY:     equality constraints
     FRICTIONLOSS: joint and tendon frictionloss constraints
@@ -130,7 +130,7 @@ class DisableBit(enum.IntFlag):
 class EnableBit(enum.IntFlag):
   """Enable optional feature bitflags.
 
-  Members:
+  Attributes:
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
   """
@@ -143,7 +143,7 @@ class EnableBit(enum.IntFlag):
 class TrnType(enum.IntEnum):
   """Type of actuator transmission.
 
-  Members:
+  Attributes:
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
     SLIDERCRANK: force via slider-crank linkage
@@ -163,7 +163,7 @@ class TrnType(enum.IntEnum):
 class DynType(enum.IntEnum):
   """Type of actuator dynamics.
 
-  Members:
+  Attributes:
     NONE: no internal dynamics; ctrl specifies force
     INTEGRATOR: integrator: da/dt = u
     FILTER: linear filter: da/dt = (u-a) / tau
@@ -182,7 +182,7 @@ class DynType(enum.IntEnum):
 class GainType(enum.IntEnum):
   """Type of actuator gain.
 
-  Members:
+  Attributes:
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
@@ -197,7 +197,7 @@ class GainType(enum.IntEnum):
 class BiasType(enum.IntEnum):
   """Type of actuator bias.
 
-  Members:
+  Attributes:
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
@@ -212,7 +212,7 @@ class BiasType(enum.IntEnum):
 class JointType(enum.IntEnum):
   """Type of degree of freedom.
 
-  Members:
+  Attributes:
     FREE:  global position and orientation (quat)       (7,)
     BALL:  orientation (quat) relative to parent        (4,)
     SLIDE: sliding distance along body-fixed axis       (1,)
@@ -234,7 +234,7 @@ class JointType(enum.IntEnum):
 class ConeType(enum.IntEnum):
   """Type of friction cone.
 
-  Members:
+  Attributes:
     PYRAMIDAL: pyramidal
     ELLIPTIC: elliptic
   """
@@ -246,7 +246,7 @@ class ConeType(enum.IntEnum):
 class IntegratorType(enum.IntEnum):
   """Integrator mode.
 
-  Members:
+  Attributes:
     EULER: semi-implicit Euler
     RK4: 4th-order Runge Kutta
     IMPLICITFAST: implicit in velocity, no rne derivative
@@ -261,7 +261,7 @@ class IntegratorType(enum.IntEnum):
 class GeomType(enum.IntEnum):
   """Type of geometry.
 
-  Members:
+  Attributes:
     PLANE: plane
     HFIELD: heightfield
     SPHERE: sphere
@@ -287,7 +287,7 @@ class GeomType(enum.IntEnum):
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
 
-  Members:
+  Attributes:
     CG: Conjugate gradient (primal)
     NEWTON: Newton (primal)
   """
@@ -300,7 +300,7 @@ class SolverType(enum.IntEnum):
 class ConstraintType(enum.IntEnum):
   """Type of constraint.
 
-  Members:
+  Attributes:
     EQUALITY: equality constraint
     FRICTION_DOF: dof friction
     FRICTION_TENDON: tendon friction
@@ -324,7 +324,7 @@ class ConstraintType(enum.IntEnum):
 class SensorType(enum.IntEnum):
   """Type of sensor.
 
-  Members:
+  Attributes:
     MAGNETOMETER: magnetometer
     CAMPROJECTION: camera projection
     RANGEFINDER: scalar distance to nearest geom or site along z-axis
@@ -414,7 +414,7 @@ class SensorType(enum.IntEnum):
 class ObjType(enum.IntEnum):
   """Type of object.
 
-  Members:
+  Attributes:
     UNKNOWN: unknown object type
     BODY: body
     XBODY: body, used to access regular frame instead of i-frame
@@ -434,7 +434,7 @@ class ObjType(enum.IntEnum):
 class EqType(enum.IntEnum):
   """Type of equality constraint.
 
-  Members:
+  Attributes:
     CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
     WELD: fix relative position and orientation of two bodies
@@ -450,7 +450,7 @@ class EqType(enum.IntEnum):
 class WrapType(enum.IntEnum):
   """Type of tendon wrapping object.
 
-  Members:
+  Attributes:
     JOINT: constant moment arm
     PULLEY: pulley used to split tendon
     SITE: pass through site

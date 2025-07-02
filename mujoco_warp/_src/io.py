@@ -38,6 +38,15 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
+  """
+  Creates a model on device.
+
+  Args:
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+
+  Returns:
+    Model: The model containing kinematic and dynamic information (device).
+  """
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -765,6 +774,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
 
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
+  """
+  Creates a data object on device.
+
+  Args:
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    nworld (int, optional): Number of worlds. Defaults to 1.
+    nconmax (int, optional): Maximum number of contacts for all worlds. Defaults to -1.
+    njmax (int, optiona): Maximum number of constraints for all worlds. Defaults to -1.
+
+  Returns:
+    Data: The data object containing the current state and output arrays (device).
+  """
   # TODO(team): move to Model?
   if nconmax == -1:
     # TODO(team): heuristic for nconmax
@@ -909,7 +930,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       quad=wp.zeros((njmax,), dtype=wp.vec3f),
       quad_gauss=wp.zeros((nworld,), dtype=wp.vec3f),
       h=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
-      alpha=wp.zeros((njmax,), dtype=float),
+      alpha=wp.zeros((nworld,), dtype=float),
       prev_grad=wp.zeros((nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
       beta=wp.zeros((nworld,), dtype=float),
@@ -1002,7 +1023,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
     # mul_m
     energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    inverse_mul_m_skip=wp.array((nworld,), dtype=bool),
+    inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
@@ -1015,6 +1036,19 @@ def put_data(
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
 ) -> types.Data:
+  """
+  Moves data from host to a device.
+
+  Args:
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    mjd (mujoco.MjData): The data object containing current state and output arrays (host).
+    nworld (int, optional): The number of worlds. Defaults to 1.
+    nconmax (int, optional): The maximum number of contacts for all worlds. Defaults to -1.
+    njmax (int, optional): The maximum number of constraints for all worlds. Defaults to -1.
+
+  Returns:
+    Data: The data object containing the current state and output arrays (device).
+  """
   # TODO(team): move nconmax and njmax to Model?
   # TODO(team): decide what to do about unintialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
@@ -1351,7 +1385,14 @@ def get_data_into(
   mjm: mujoco.MjModel,
   d: types.Data,
 ):
-  """Gets Data from a device into an existing mujoco.MjData."""
+  """Gets data from a device into an existing mujoco.MjData.
+
+  Args:
+    result (mujoco.MjData): The data object containing the current state and output arrays
+                            (host).
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    d (Data): The data object containing the current state and output arrays (device).
+  """
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 
