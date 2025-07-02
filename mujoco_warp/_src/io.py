@@ -38,7 +38,6 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
-  """Puts mujoco.MjModel onto a device, resulting in mjwarp.Model."""
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
