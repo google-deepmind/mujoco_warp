@@ -32,6 +32,7 @@ from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
+
 @wp.kernel
 def _zero_collision_arrays(
   # Data in:
@@ -45,7 +46,7 @@ def _zero_collision_arrays(
   collision_hftri_index: wp.array(dtype=int),
 ):
   tid = wp.tid()
-  
+
   if tid == 0:
     # Zero the single collision counter
     ncollision[0] = 0
@@ -53,7 +54,7 @@ def _zero_collision_arrays(
 
   if tid < hfield_geom_pair * nworld:
     ncon_hfield[tid] = 0
-    
+
   # Zero collision pair indices
   collision_hftri_index[tid] = 0
 
@@ -488,7 +489,7 @@ def nxn_broadphase(m: Model, d: Data):
 @event_scope
 def collision(m: Model, d: Data):
   """Collision detection."""
-  
+
   # zero collision-related arrays
   wp.launch(
     _zero_collision_arrays,
