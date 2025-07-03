@@ -459,6 +459,26 @@ def nxn_broadphase(m: Model, d: Data):
       ],
     )
 
+def _narrowphase(m, d):
+  # Process heightfield collisions
+  if m.nhfield > 0:
+    hfield_midphase(m, d)
+
+  # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
+  #             partitioning because we can move some pressure of the atomics
+  # TODO(team) switch between collision functions and GJK/EPA here
+  convex_narrowphase(m, d)
+  primitive_narrowphase(m, d)
+
+  if m.has_sdf_geom:
+    sdf_narrowphase(m, d)
+
+
+def narrowphase(m, d):
+  if m.opt.graph_conditional:
+    wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
+  else:
+    _narrowphase(m, d)
 
 @event_scope
 def collision(m: Model, d: Data):
@@ -481,15 +501,4 @@ def collision(m: Model, d: Data):
   else:
     sap_broadphase(m, d)
 
-  # Process heightfield collisions
-  if m.nhfield > 0:
-    hfield_midphase(m, d)
-
-  # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
-  #             partitioning because we can move some pressure of the atomics
-  # TODO(team) switch between collision functions and GJK/EPA here
-  convex_narrowphase(m, d)
-  primitive_narrowphase(m, d)
-
-  if m.has_sdf_geom:
-    sdf_narrowphase(m, d)
+  narrowphase(m, d)
