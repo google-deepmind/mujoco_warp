@@ -1077,6 +1077,15 @@ def fwd_acceleration(m: Model, d: Data):
   smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
+@wp.kernel
+def _zero_energy(
+  # Data out:
+  energy_out: wp.array(dtype=wp.vec2),
+):
+  tid = wp.tid()
+  energy_out[tid] = wp.vec2(0.0, 0.0)
+
+
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
@@ -1089,7 +1098,11 @@ def forward(m: Model, d: Data):
     if m.sensor_e_potential == 0:  # not computed by sensor
       sensor.energy_pos(m, d)
   else:
-    d.energy.zero_()
+    wp.launch(
+      _zero_energy,
+      dim=d.nworld,
+      inputs=[d.energy],
+    )
 
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
