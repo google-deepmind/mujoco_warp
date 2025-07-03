@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 
 from . import test_util
+from . import types
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -273,6 +274,23 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
+  @parameterized.product(keyframe=list(range(4)), cone=list(types.ConeType))
+  def test_actuator_adhesion(self, keyframe, cone):
+    """Tests adhesion actuator."""
+    mjm, mjd, m, d = test_util.fixture("actuation/adhesion.xml", keyframe=keyframe, cone=cone)
+
+    d.actuator_length.zero_()
+    d.actuator_moment.zero_()
+    mjwarp._src.collision_driver.collision(m, d)  # compute contact.includemargin
+    mjwarp._src.constraint.make_constraint(m, d)  # compute contact.efc_address
+    mjwarp._src.smooth.transmission(m, d)
+
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+
+    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
+    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "acutator_moment")
+
   def test_subtree_vel(self):
     """Tests subtree_vel."""
     mjm, mjd, m, d = test_util.fixture("pendula.xml")
@@ -355,30 +373,7 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "qM \\ 1")
 
   def test_tendon_armature(self):
-    mjm, mjd, m, d = test_util.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body>
-          <joint type="hinge" axis="0 1 0"/>
-          <geom type="sphere" size=".2" pos="1 0 0"/>
-          <site name="site0" pos="1 0 0"/>
-        </body>
-        <site name="site1" pos="1 0 0"/>
-      </worldbody>
-      <tendon>
-        <spatial armature="2">
-          <site site="site0"/>
-          <site site="site1"/>
-        </spatial>
-      </tendon>
-      <keyframe>
-        <key qpos="1" qvel=".5"/>
-      </keyframe>
-    </mujoco>
-    """,
-      keyframe=0,
-    )
+    mjm, mjd, m, d = test_util.fixture("tendon/armature.xml", keyframe=0)
 
     # qM
     d.qM.zero_()

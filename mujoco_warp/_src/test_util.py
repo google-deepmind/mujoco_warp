@@ -164,7 +164,8 @@ def benchmark(
   nstep: int,
   event_trace: bool = False,
   measure_alloc: bool = False,
-) -> Tuple[float, float, dict, list, list]:
+  measure_solver_niter: bool = False,
+) -> Tuple[float, float, dict, list, list, list]:
   """Benchmark a function of Model and Data."""
   jit_beg = time.perf_counter()
 
@@ -175,7 +176,7 @@ def benchmark(
   wp.synchronize()
 
   trace = {}
-  ncon, nefc = [], []
+  ncon, nefc, solver_niter = [], [], []
 
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
@@ -190,12 +191,16 @@ def benchmark(
         trace = _sum(trace, tracer.trace())
       else:
         trace = tracer.trace()
-      if measure_alloc:
+      if measure_alloc or measure_solver_niter:
         wp.synchronize()
+      if measure_alloc:
         ncon.append(d.ncon.numpy()[0])
         nefc.append(d.nefc.numpy()[0])
+      if measure_solver_niter:
+        solver_niter.append(d.solver_niter.numpy())
+
     wp.synchronize()
     run_end = time.perf_counter()
     run_duration = run_end - run_beg
 
-  return jit_duration, run_duration, trace, ncon, nefc
+  return jit_duration, run_duration, trace, ncon, nefc, solver_niter

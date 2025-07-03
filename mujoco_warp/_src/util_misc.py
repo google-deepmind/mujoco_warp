@@ -82,7 +82,7 @@ def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
 
 
 @wp.func
-def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float):
+def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float) -> Tuple[float, wp.vec2, wp.vec2]:
   """2D circle wrap.
 
   Args:
@@ -93,7 +93,6 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float):
   Returns:
     length of circular wrap or -1.0 if no wrap, pair of 2D wrap points
   """
-  # TODO(team): return type
   valid_side = wp.norm_l2(side) < wp.inf
 
   end0 = wp.vec2(end[0], end[1])
@@ -181,7 +180,15 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float):
 
 
 @wp.func
-def wrap_inside(end: wp.vec4, radius: float):
+def wrap_inside(
+  # In:
+  end: wp.vec4,
+  radius: float,
+  # TODO(team): update kernel analyzer to allow defaults
+  maxiter: int = 20,  # kernel_analyzer: ignore
+  zinit: float = 1.0 - 1.0e-7,  # kernel_analyzer: ignore
+  tolerance: float = 1.0e-6,  # kernel_analyzer: ignore
+) -> Tuple[float, wp.vec2, wp.vec2]:
   """2D inside wrap.
 
   Args:
@@ -194,13 +201,7 @@ def wrap_inside(end: wp.vec4, radius: float):
   Returns:
     0.0 if wrap else -1.0, pair of 2D wrap points
   """
-  # defaults
-  # TODO(team): update kernel analyzer to allow defaults
-  maxiter = 20
-  zinit = 1.0 - 1.0e-7
-  tolerance = 1.0e-6
 
-  # TODO(team): return type
   end0 = wp.vec2(end[0], end[1])
   end1 = wp.vec2(end[2], end[3])
 
@@ -322,7 +323,9 @@ def wrap(
   Returns:
     length of circuler wrap else -1.0 if no wrap, pair of 3D wrap points
   """
-  # TODO(team): check object type; SHOULD NOT OCCUR
+  # check object type
+  if geomtype != int(WrapType.SPHERE.value) and geomtype != int(WrapType.CYLINDER.value):
+    return wp.inf, wp.vec3(wp.inf), wp.vec3(wp.inf)
 
   # map sites to wrap object's local frame
   matT = wp.transpose(mat)

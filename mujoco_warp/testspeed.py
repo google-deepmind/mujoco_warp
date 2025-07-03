@@ -57,12 +57,49 @@ _OUTPUT = flags.DEFINE_enum("output", "text", ["text", "tsv"], "format to print 
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "Provide a full event trace")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of nconmax, njmax is used.")
+_MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "Measure the number of solver iterations.")
+_NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to summarize measurements.")
+_INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator).")
+
+
+def _print_table(matrix, headers):
+  num_cols = len(headers)
+  col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
+  col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
+
+  print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))
+  print("-" * sum(col_widths) + "--" * 3)  # Separator line
+  for row in matrix:
+    print("  ".join(f"{row[i]:{col_widths[i]}g}" for i in range(num_cols)))
+
+
+def _print_trace(trace, indent, steps):
+  for k, v in trace.items():
+    times, sub_trace = v
+    if len(times) == 1:
+      print("  " * indent + f"{k}: {1e6 * times[0] / steps:.2f}")
+    else:
+      print("  " * indent + f"{k}: [ ", end="")
+      for i in range(len(times)):
+        print(f"{1e6 * times[i] / steps:.2f}", end="")
+        print(", " if i < len(times) - 1 else " ", end="")
+      print("]")
+    _print_trace(sub_trace, indent + 1, steps)
+
+
+def _load_model(path):
+  spec = mujoco.MjSpec.from_file(path)
+  # check if the file has any mujoco.sdf test plugins
+  if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+    from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+
+    register_sdf_plugins(mjwarp.collision_sdf)
+  return spec.compile()
 
 
 def _main(argv: Sequence[str]):
   """Runs testpeed function."""
   wp.init()
-
   path = epath.Path(_MJCF.value)
   if not path.exists():
     path = epath.resource_path("mujoco_warp") / _MJCF.value
@@ -71,7 +108,7 @@ def _main(argv: Sequence[str]):
   if path.suffix == ".mjb":
     mjm = mujoco.MjModel.from_binary_path(path.as_posix())
   else:
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+    mjm = _load_model(path.as_posix())
 
   if _CONE.value == "pyramidal":
     mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
@@ -101,6 +138,18 @@ def _main(argv: Sequence[str]):
   mujoco.mj_forward(mjm, mjd)
 
   m = mjwarp.put_model(mjm)
+
+  # integrator
+  IntegratorType = mjwarp._src.types.IntegratorType
+  integrators = {IntegratorType.EULER: "Euler", IntegratorType.IMPLICITFAST: "implicitfast", IntegratorType.RK4: "RK4"}
+  integrator = integrators[m.opt.integrator]
+
+  if _INTEGRATOR.value is not None:
+    for k, v in integrators.items():
+      if _INTEGRATOR.value == v:
+        integrator = v
+        m.opt.integrator = k
+
   m.opt.ls_parallel = _LS_PARALLEL.value
   d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
@@ -113,17 +162,19 @@ def _main(argv: Sequence[str]):
     f"Model nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} "
     f"is_sparse: {_IS_SPARSE.value} solver: {solver_name} "
     f"iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations} "
-    f"linesearch: {linesearch_name}"
+    f"linesearch: {linesearch_name} "
+    f"integrator: {integrator}"
   )
   print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
-  print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...")
-  jit_time, run_time, trace, ncon, nefc = mjwarp.benchmark(
+  print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
+  jit_time, run_time, trace, ncon, nefc, solver_niter = mjwarp.benchmark(
     mjwarp.__dict__[_FUNCTION.value],
     m,
     d,
     _NSTEP.value,
     _EVENT_TRACE.value,
     _MEASURE_ALLOC.value,
+    _MEASURE_SOLVER.value,
   )
   steps = _BATCH_SIZE.value * _NSTEP.value
 
@@ -135,51 +186,40 @@ Summary for {_BATCH_SIZE.value} parallel rollouts
  Total JIT time: {jit_time:.2f} s
  Total simulation time: {run_time:.2f} s
  Total steps per second: {steps / run_time:,.0f}
- Total realtime factor: {steps * m.opt.timestep / run_time:,.2f} x
+ Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
  Total time per step: {1e9 * run_time / steps:.2f} ns""")
+
     if trace:
       print("\nEvent trace:\n")
+      _print_trace(trace, 0, steps)
 
-      def _print_trace(trace, indent):
-        for k, v in trace.items():
-          times, sub_trace = v
-          if len(times) == 1:
-            print("  " * indent + f"{k}: {1e6 * times[0] / steps:.2f}")
-          else:
-            print("  " * indent + f"{k}: [ ", end="")
-            for i in range(len(times)):
-              print(f"{1e6 * times[i] / steps:.2f}", end="")
-              print(", " if i < len(times) - 1 else " ", end="")
-            print("]")
-          _print_trace(sub_trace, indent + 1)
-
-      _print_trace(trace, 0)
     if ncon and nefc:
-      num_buckets = 10
       idx = 0
       ncon_matrix, nefc_matrix = [], []
-      for i in range(num_buckets):
-        size = _NSTEP.value // num_buckets + (i < (_NSTEP.value % num_buckets))
+      for i in range(_NUM_BUCKETS.value):
+        size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
         ncon_arr = np.array(ncon[idx : idx + size])
         nefc_arr = np.array(nefc[idx : idx + size])
         ncon_matrix.append([np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)])
         nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
         idx += size
 
-      def _print_table(matrix, headers):
-        num_cols = len(headers)
-        col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
-        col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
-
-        print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))
-        print("-" * sum(col_widths) + "--" * 3)  # Separator line
-        for row in matrix:
-          print("  ".join(f"{row[i]:{col_widths[i]}g}" for i in range(num_cols)))
-
       print("\nncon alloc:\n")
       _print_table(ncon_matrix, ("mean", "std", "min", "max"))
       print("\nnefc alloc:\n")
       _print_table(nefc_matrix, ("mean", "std", "min", "max"))
+
+    if solver_niter:
+      idx = 0
+      matrix = []
+      for i in range(_NUM_BUCKETS.value):
+        size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
+        arr = np.array(solver_niter[idx : idx + size])
+        matrix.append([np.mean(arr), np.std(arr), np.min(arr), np.max(arr)])
+        idx += size
+
+      print("\nsolver niter:\n")
+      _print_table(matrix, ("mean", "std", "min", "max"))
 
   elif _OUTPUT.value == "tsv":
     name = name.split("/")[-1].replace("testspeed_", "")

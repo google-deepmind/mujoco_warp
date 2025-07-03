@@ -31,7 +31,7 @@ from .types import Model
 @wp.kernel
 def _qfrc_eulerdamp(
   # Model:
-  opt_timestep: float,
+  opt_timestep: wp.array(dtype=float),
   dof_damping: wp.array2d(dtype=float),
   # Data in:
   qacc_in: wp.array2d(dtype=float),
@@ -39,26 +39,25 @@ def _qfrc_eulerdamp(
   qfrc_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  qfrc_out[worldid, dofid] += opt_timestep * dof_damping[worldid, dofid] * qacc_in[worldid, dofid]
+  timestep = opt_timestep[worldid]
+  qfrc_out[worldid, dofid] += timestep * dof_damping[worldid, dofid] * qacc_in[worldid, dofid]
 
 
 @wp.kernel
 def _qfrc_inverse(
-  # Model:
-  dof_armature: wp.array2d(dtype=float),
   # Data in:
-  qacc_in: wp.array2d(dtype=float),
   qfrc_bias_in: wp.array2d(dtype=float),
   qfrc_passive_in: wp.array2d(dtype=float),
   qfrc_constraint_in: wp.array2d(dtype=float),
+  # In:
+  Ma: wp.array2d(dtype=float),
   # Data out:
   qfrc_inverse_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
 
-  qfrc_inverse = 0.0
-  qfrc_inverse += qfrc_bias_in[worldid, dofid]
-  qfrc_inverse += dof_armature[worldid, dofid] * qacc_in[worldid, dofid]
+  qfrc_inverse = qfrc_bias_in[worldid, dofid]
+  qfrc_inverse += Ma[worldid, dofid]
   qfrc_inverse -= qfrc_passive_in[worldid, dofid]
   qfrc_inverse -= qfrc_constraint_in[worldid, dofid]
 
@@ -80,7 +79,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
     # set qfrc = (d.qM + m.opt.timestep * diag(m.dof_damping)) * d.qacc
 
     # d.qM @ d.qacc
-    support.mul_m(m, d, qfrc, d.qacc, d.discrete_acc_mul_m_skip)
+    support.mul_m(m, d, qfrc, d.qacc, d.inverse_mul_m_skip)
 
     # qfrc += m.opt.timestep * m.dof_damping * d.qacc
     wp.launch(
@@ -125,18 +124,20 @@ def inverse(m: Model, d: Data):
     discrete_acc(m, d, d.qacc, d.qfrc_integration)
 
   inv_constraint(m, d)
-  smooth.rne(m, d, flg_acc=True)
+  smooth.rne(m, d)
+  smooth.tendon_bias(m, d, d.qfrc_bias)
   sensor.sensor_acc(m, d)
+
+  support.mul_m(m, d, d.qfrc_inverse, d.qacc, d.inverse_mul_m_skip)
 
   wp.launch(
     _qfrc_inverse,
     dim=(d.nworld, m.nv),
     inputs=[
-      m.dof_armature,
-      d.qacc,
       d.qfrc_bias,
       d.qfrc_passive,
       d.qfrc_constraint,
+      d.qfrc_inverse,
     ],
     outputs=[d.qfrc_inverse],
   )

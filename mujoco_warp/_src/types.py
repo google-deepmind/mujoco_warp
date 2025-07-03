@@ -23,11 +23,10 @@ MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
-MJ_NREF = mujoco.mjNREF
-MJ_NIMP = mujoco.mjNIMP
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
+@dataclasses.dataclass
 class BlockDim:
   """
   Block dimension 'block_dim' settings for wp.launch_tiled.
@@ -37,6 +36,11 @@ class BlockDim:
 
   # collision_box
   box_box: int = 32
+  # collision_driver
+  segmented_sort: int = 128
+  # derivative
+  qderiv_actuator_passive_actuation: int = 64
+  qderiv_actuator_passive_no_actuation: int = 256
   # forward
   euler_dense: int = 32
   actuator_velocity_sparse: int = 32
@@ -144,6 +148,7 @@ class TrnType(enum.IntEnum):
     JOINTINPARENT: force on joint, expressed in parent frame
     SLIDERCRANK: force via slider-crank linkage
     TENDON: force on tendon
+    BODY: adhesion force on body's geoms
     SITE: force on site
   """
 
@@ -151,8 +156,8 @@ class TrnType(enum.IntEnum):
   JOINTINPARENT = mujoco.mjtTrn.mjTRN_JOINTINPARENT
   SLIDERCRANK = mujoco.mjtTrn.mjTRN_SLIDERCRANK
   TENDON = mujoco.mjtTrn.mjTRN_TENDON
+  BODY = mujoco.mjtTrn.mjTRN_BODY
   SITE = mujoco.mjtTrn.mjTRN_SITE
-  # unsupported: BODY
 
 
 class DynType(enum.IntEnum):
@@ -275,6 +280,7 @@ class GeomType(enum.IntEnum):
   CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
   BOX = mujoco.mjtGeom.mjGEOM_BOX
   MESH = mujoco.mjtGeom.mjGEOM_MESH
+  SDF = mujoco.mjtGeom.mjGEOM_SDF
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -525,9 +531,11 @@ class Option:
     viscosity: viscosity of medium
     broadphase: broadphase type, 0: nxn, 1: sap_tile, 2: sap_segmented
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
+    sdf_initpoints: number of starting points for gradient descent
+    sdf_iterations: max number of iterations for gradient descent
   """
 
-  timestep: float
+  timestep: wp.array(dtype=float)
   impratio: float
   tolerance: float
   ls_tolerance: float
@@ -552,6 +560,8 @@ class Option:
   viscosity: float
   broadphase: int
   graph_conditional: bool  # warp only
+  sdf_initpoints: int
+  sdf_iterations: int
 
 
 @dataclasses.dataclass
@@ -964,11 +974,18 @@ class Model:
     sensor_subtree_vel: evaluate subtree_vel
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
+    plugin: globally registered plugin slot number           (nplugin,)
+    plugin_attr: config attributes of geom plugin            (nplugin, 3)
+    geom_plugin_index: geom index in plugin array            (ngeom, )
     mocap_bodyid: id of body for mocap                       (nmocap,)
     mat_rgba: rgba                                           (nworld, nmat, 4)
+    actuator_trntype_body_adr: addresses for actuators       (<=nu,)
+                               with body transmission
     geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
                          height field mapping
     block_dim: BlockDim
+    geom_type_pair: geom type id pairs for collisions
+    has_sdf_geom: whether the model contains SDF geoms
   """
 
   nq: int
@@ -1083,7 +1100,7 @@ class Model:
   geom_solref: wp.array2d(dtype=wp.vec2)
   geom_solimp: wp.array2d(dtype=vec5)
   geom_size: wp.array2d(dtype=wp.vec3)
-  geom_aabb: wp.array(dtype=wp.vec3)
+  geom_aabb: wp.array2d(dtype=wp.vec3)
   geom_rbound: wp.array2d(dtype=float)
   geom_pos: wp.array2d(dtype=wp.vec3)
   geom_quat: wp.array2d(dtype=wp.quat)
@@ -1246,10 +1263,16 @@ class Model:
   sensor_subtree_vel: bool  # warp only
   sensor_rne_postconstraint: bool  # warp only
   sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only
+  plugin: wp.array(dtype=int)
+  plugin_attr: wp.array(dtype=wp.vec3f)
+  geom_plugin_index: wp.array(dtype=int)  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
   mat_rgba: wp.array2d(dtype=wp.vec4)
+  actuator_trntype_body_adr: wp.array(dtype=int)  # warp only
   geompair2hfgeompair: wp.array(dtype=int)  # warp only
   block_dim: BlockDim  # warp only
+  geom_type_pair: tuple[int, ...]  # warp only
+  has_sdf_geom: bool  # warp only
 
 
 @dataclasses.dataclass
@@ -1328,6 +1351,8 @@ class Data:
     ximat: Cartesian orientation of body inertia                (nworld, nbody, 3, 3)
     xanchor: Cartesian position of joint anchor                 (nworld, njnt, 3)
     xaxis: Cartesian joint axis                                 (nworld, njnt, 3)
+    geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
+               during step, reuse previous value
     geom_xpos: Cartesian geom position                          (nworld, ngeom, 3)
     geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
@@ -1393,6 +1418,15 @@ class Data:
     collision_hftri_index: collision index for hfield pairs     (nconmax,)
     collision_worldid: collision world ids from broadphase      (nconmax,)
     ncollision: collision count from broadphase                 ()
+    epa_vert: vertices in EPA polytope in Minkowski space       (nconmax, 5 + CCDiter)
+    epa_vert1: vertices in EPA polytope in geom 1 space         (nconmax, 5 + CCDiter)
+    epa_vert2: vertices in EPA polytope in geom 2 space         (nconmax, 5 + CCDiter)
+    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 3 * CCDiter)
+    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 3 * CCDiter)
+    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 3 * CCDiter)
+    epa_index: index of face in polytope map                    (nconmax, 6 + 3 * CCDiter)
+    epa_map: status of faces in polytope                        (nconmax, 6 + 3 * CCDiter)
+    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 3 * 2 * CCDiter)
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
@@ -1407,7 +1441,7 @@ class Data:
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     wrap_geom_xpos: Cartesian 3D points for geom wrap points    (nworld, <=nwrap, 6)
     sensordata: sensor data array                               (nsensordata,)
-    discrete_acc_mul_m_skip: skip mul_m computation             (nworld,)
+    inverse_mul_m_skip: skip mul_m computation                  (nworld,)
     sensor_rangefinder_pnt: points for rangefinder              (nworld, nrangefinder, 3)
     sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
     sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
@@ -1416,6 +1450,7 @@ class Data:
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
+    actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu,)
   """
 
   nworld: int  # warp only
@@ -1456,6 +1491,7 @@ class Data:
   ximat: wp.array2d(dtype=wp.mat33)
   xanchor: wp.array2d(dtype=wp.vec3)
   xaxis: wp.array2d(dtype=wp.vec3)
+  geom_skip: wp.array(dtype=bool)  # warp only
   geom_xpos: wp.array2d(dtype=wp.vec3)
   geom_xmat: wp.array2d(dtype=wp.mat33)
   site_xpos: wp.array2d(dtype=wp.vec3)
@@ -1529,6 +1565,17 @@ class Data:
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
 
+  # narrowphase collision (EPA polytope)
+  epa_vert: wp.array2d(dtype=wp.vec3)
+  epa_vert1: wp.array2d(dtype=wp.vec3)
+  epa_vert2: wp.array2d(dtype=wp.vec3)
+  epa_face: wp.array2d(dtype=wp.vec3i)
+  epa_pr: wp.array2d(dtype=wp.vec3)
+  epa_norm2: wp.array2d(dtype=float)
+  epa_index: wp.array2d(dtype=int)
+  epa_map: wp.array2d(dtype=int)
+  epa_horizon: wp.array2d(dtype=int)
+
   # rne_postconstraint
   cacc: wp.array2d(dtype=wp.spatial_vector)
   cfrc_int: wp.array2d(dtype=wp.spatial_vector)
@@ -1560,4 +1607,7 @@ class Data:
 
   # mul_m
   energy_vel_mul_m_skip: wp.array(dtype=bool)
-  discrete_acc_mul_m_skip: wp.array(dtype=bool)  # warp only
+  inverse_mul_m_skip: wp.array(dtype=bool)  # warp only
+
+  # actuator
+  actuator_trntype_body_ncon: wp.array2d(dtype=int)

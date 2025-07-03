@@ -132,6 +132,35 @@ class InverseTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       inverse.discrete_acc(m, d, qacc, qfrc)
 
+  def test_inverse_tendon_armature(self):
+    """Tests inverse dynamics with tendon armature."""
+    _, _, m, d = test_util.fixture(
+      "tendon/armature.xml",
+      constraint=False,
+      gravity=False,
+      kick=True,
+      applied=True,
+      nstep=10,
+      keyframe=0,
+    )
+
+    qacc = d.qacc.numpy()[0].copy()
+    qfrc_constraint = d.qfrc_constraint.numpy()[0].copy()
+
+    # qfrc_inverse = qfrc_applied + J.T @ xfrc_applied + qfrc_actuator
+    qfrc_xfrc_applied = wp.zeros((d.nworld, m.nv), dtype=float)
+    support.xfrc_accumulate(m, d, qfrc_xfrc_applied)
+    qfrc_inverse = d.qfrc_applied.numpy()[0] + d.qfrc_actuator.numpy()[0] + qfrc_xfrc_applied.numpy()[0]
+
+    for arr in (d.qfrc_constraint, d.qfrc_inverse):
+      arr.zero_()
+
+    mjwarp.inverse(m, d)
+
+    _assert_eq(d.qfrc_constraint.numpy()[0], qfrc_constraint, "qfrc_constraint")
+    _assert_eq(d.qfrc_inverse.numpy()[0], qfrc_inverse, "qfrc_inverse")
+    _assert_eq(d.qacc.numpy()[0], qacc, "qacc")
+
 
 if __name__ == "__main__":
   wp.init()

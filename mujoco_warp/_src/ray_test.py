@@ -219,6 +219,19 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist-dodecahedron")
 
+  def test_ray_hfield(self):
+    mjm, mjd, m, d = test_util.fixture("ray.xml")
+
+    pnt = wp.array([wp.vec3(0.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
+    dist, geomid = mjwarp.ray(m, d, pnt, vec)
+
+    mj_geomid = np.zeros(1, dtype=np.int32)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
+
+    _assert_eq(dist.numpy()[0, 0], mj_dist, "dist")
+    _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "geomid")
+
   def test_ray_geomgroup(self):
     """Tests ray geomgroup filter."""
     mjm, mjd, m, d = test_util.fixture("ray.xml")

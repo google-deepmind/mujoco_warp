@@ -25,6 +25,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -53,6 +54,7 @@ class Geom:
   vert: wp.array(dtype=wp.vec3)
   graphadr: int
   graph: wp.array(dtype=int)
+  index: int
 
 
 @wp.func
@@ -107,6 +109,7 @@ def _geom(
       geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
     )
 
+  geom.index = -1
   return geom
 
 
@@ -150,7 +153,8 @@ def write_contact(
       contact_frame_out[cid] = frame_in
       contact_geom_out[cid] = geoms_in
       contact_worldid_out[cid] = worldid_in
-      contact_includemargin_out[cid] = margin_in - gap_in
+      includemargin = margin_in - gap_in
+      contact_includemargin_out[cid] = includemargin
       contact_dim_out[cid] = condim_in
       contact_friction_out[cid] = friction_in
       contact_solref_out[cid] = solref_in
@@ -2856,6 +2860,7 @@ def _primitive_narrowphase(
     )
 
 
+@event_scope
 def primitive_narrowphase(m: Model, d: Data):
   # we need to figure out how to keep the overhead of this small - not launching anything
   # for pair types without collisions, as well as updating the launch dimensions.

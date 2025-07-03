@@ -16,17 +16,21 @@
 import warp as wp
 from absl.testing import absltest
 
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import kernel as nested_kernel
+
 from . import test_util
-from .collision_gjk import gjk
+from .collision_gjk import ccd
 from .collision_primitive import Geom
 from .types import Data
 from .types import GeomType
 from .types import Model
 
+MAX_ITERATIONS = 10
 
-# TODO(team): Use sensors when available instead of calling GJK directly
-def _geom_dist(m: Model, d: Data, gid1: int, gid2: int):
-  @wp.kernel
+
+def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
+  @nested_kernel
   def _gjk_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -41,12 +45,24 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int):
     # In:
     gid1: int,
     gid2: int,
+    iterations: int,
+    vert: wp.array(dtype=wp.vec3),
+    vert1: wp.array(dtype=wp.vec3),
+    vert2: wp.array(dtype=wp.vec3),
+    face: wp.array(dtype=wp.vec3i),
+    face_pr: wp.array(dtype=wp.vec3),
+    face_norm2: wp.array(dtype=float),
+    face_index: wp.array(dtype=int),
+    map: wp.array(dtype=int),
+    horizon: wp.array(dtype=int),
     # Out:
     dist_out: wp.array(dtype=float),
+    pos_out: wp.array(dtype=wp.vec3),
   ):
     MESHGEOM = int(GeomType.MESH.value)
 
     geom1 = Geom()
+    geom1.index = -1
     geomtype1 = geom_type[gid1]
     geom1.pos = geom_xpos_in[0, gid1]
     geom1.rot = geom_xmat_in[0, gid1]
@@ -60,6 +76,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int):
       geom1.vert = mesh_vert
 
     geom2 = Geom()
+    geom2.index = -1
     geomtype2 = geom_type[gid2]
     geom2.pos = geom_xpos_in[0, gid2]
     geom2.rot = geom_xmat_in[0, gid2]
@@ -74,10 +91,47 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int):
 
     x_1 = geom_xpos_in[0, gid1]
     x_2 = geom_xpos_in[0, gid2]
-    result = gjk(1e-6, 20, geom1, geom2, x_1, x_2, geomtype1, geomtype2)
-    dist_out[0] = result.dist
 
+    (
+      dist,
+      x1,
+      x2,
+    ) = ccd(
+      1e-6,
+      iterations,
+      iterations,
+      geom1,
+      geom2,
+      geomtype1,
+      geomtype2,
+      x_1,
+      x_2,
+      vert,
+      vert1,
+      vert2,
+      face,
+      face_pr,
+      face_norm2,
+      face_index,
+      map,
+      horizon,
+    )
+
+    dist_out[0] = dist
+    pos_out[0] = x1
+    pos_out[1] = x2
+
+  vert = wp.array(shape=(iterations,), dtype=wp.vec3)
+  vert1 = wp.array(shape=(iterations,), dtype=wp.vec3)
+  vert2 = wp.array(shape=(iterations,), dtype=wp.vec3)
+  face = wp.array(shape=(2 * iterations,), dtype=wp.vec3i)
+  face_pr = wp.array(shape=(2 * iterations,), dtype=wp.vec3)
+  face_norm2 = wp.array(shape=(2 * iterations,), dtype=float)
+  face_index = wp.array(shape=(2 * iterations,), dtype=int)
+  map = wp.array(shape=(2 * iterations,), dtype=int)
+  horizon = wp.array(shape=(2 * iterations,), dtype=int)
   dist_out = wp.array(shape=(1,), dtype=float)
+  pos_out = wp.array(shape=(2,), dtype=wp.vec3)
   wp.launch(
     _gjk_kernel,
     dim=(1,),
@@ -92,19 +146,30 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int):
       d.geom_xmat,
       gid1,
       gid2,
+      iterations,
+      vert,
+      vert1,
+      vert2,
+      face,
+      face_pr,
+      face_norm2,
+      face_index,
+      map,
+      horizon,
     ],
     outputs=[
       dist_out,
+      pos_out,
     ],
   )
-  return dist_out.numpy()[0]
+  return dist_out.numpy()[0], pos_out.numpy()[0], pos_out.numpy()[1]
 
 
 class GJKTest(absltest.TestCase):
-  """Tests for closest points between two convex geoms."""
+  """Tests for GJK/EPA."""
 
-  def test_spheres_nontouching(self):
-    """Test closest points between two spheres not touching"""
+  def test_spheres_distance(self):
+    """Test distance between two spheres."""
 
     _, _, m, d = test_util.fixture(
       xml=f"""
@@ -117,28 +182,28 @@ class GJKTest(absltest.TestCase):
        """
     )
 
-    dist = _geom_dist(m, d, 0, 1)
+    dist, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
     self.assertEqual(1.0, dist)
 
   def test_spheres_touching(self):
-    """Test closest points between two touching spheres"""
+    """Test two touching spheres have zero distance"""
 
     _, _, m, d = test_util.fixture(
       xml=f"""
       <mujoco>
         <worldbody>
-          <geom name="geom1" type="sphere" pos="-1 0 0" size="1"/>
-          <geom name="geom2" type="sphere" pos="1 0 0" size="1"/>
+          <geom type="sphere" pos="-1 0 0" size="1"/>
+          <geom type="sphere" pos="1 0 0" size="1"/>
         </worldbody>
        </mujoco>
        """
     )
 
-    dist = _geom_dist(m, d, 0, 1)
+    dist, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
     self.assertEqual(0.0, dist)
 
-  def test_box_mesh_touching(self):
-    """Test closest points between a mesh and box"""
+  def test_box_mesh_distance(self):
+    """Test distance between a mesh and box"""
 
     _, _, m, d = test_util.fixture(
       xml=f"""
@@ -155,15 +220,90 @@ class GJKTest(absltest.TestCase):
                         -1 -1  1"/>
          </asset>
          <worldbody>
-           <geom name="geom1" pos="0 0 .90" type="box" size="0.5 0.5 0.1"/>
-           <geom pos="0 0 1.2" name="geom2" type="mesh" mesh="smallbox"/>
+           <geom pos="0 0 .90" type="box" size="0.5 0.5 0.1"/>
+           <geom pos="0 0 1.2" type="mesh" mesh="smallbox"/>
           </worldbody>
        </mujoco>
        """
     )
 
-    dist = _geom_dist(m, d, 0, 1)
+    dist, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
     self.assertAlmostEqual(0.1, dist)
+
+  def test_sphere_sphere_contact(self):
+    """Test penetration depth between two spheres."""
+
+    _, _, m, d = test_util.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom type="sphere" pos="-1 0 0" size="3"/>
+          <geom type="sphere" pos=" 3 0 0" size="3"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    # TODO(kbayes): use margin trick instead of EPA for penetration recovery
+    dist, _, _ = _geom_dist(m, d, 0, 1, 500)
+    self.assertAlmostEqual(-2, dist)
+
+  def test_box_box_contact(self):
+    """Test penetration between two boxes."""
+
+    _, _, m, d = test_util.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom type="box" pos="-1 0 0" size="2.5 2.5 2.5"/>
+          <geom type="box" pos="1.5 0 0" size="1 1 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    dist, x1, x2 = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
+    self.assertAlmostEqual(-1, dist)
+    normal = wp.normalize(x1 - x2)
+    self.assertAlmostEqual(normal[0], 1)
+    self.assertAlmostEqual(normal[1], 0)
+    self.assertAlmostEqual(normal[2], 0)
+
+  def test_mesh_mesh_contact(self):
+    """Test penetration beween two meshes."""
+
+    _, _, m, d = test_util.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="box" scale=".5 .5 .1"
+              vertex="-1 -1 -1
+                       1 -1 -1
+                       1  1 -1
+                       1  1  1
+                       1 -1  1
+                      -1  1 -1
+                      -1  1  1
+                      -1 -1  1"/>
+        <mesh name="smallbox" scale=".1 .1 .1"
+              vertex="-1 -1 -1
+                       1 -1 -1
+                       1  1 -1
+                       1  1  1
+                       1 -1  1
+                      -1  1 -1
+                      -1  1  1
+                      -1 -1  1"/>
+      </asset>
+
+      <worldbody>
+        <geom pos="0 0 .09" type="mesh" mesh="smallbox"/>
+        <geom pos="0 0 -.1" type="mesh" mesh="box"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
+    self.assertAlmostEqual(-0.01, dist)
 
 
 if __name__ == "__main__":
