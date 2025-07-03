@@ -459,6 +459,7 @@ def nxn_broadphase(m: Model, d: Data):
       ],
     )
 
+
 def _narrowphase(m, d):
   # Process heightfield collisions
   if m.nhfield > 0:
@@ -479,6 +480,7 @@ def narrowphase(m, d):
     wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
   else:
     _narrowphase(m, d)
+
 
 @event_scope
 def collision(m: Model, d: Data):
