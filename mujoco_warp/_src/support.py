@@ -24,6 +24,7 @@ from .types import JointType
 from .types import Model
 from .types import TileSet
 from .types import vec5
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -81,6 +82,7 @@ def mul_m_sparse_ij(
   wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
 
 
+@cache_kernel
 def mul_m_dense(tile: TileSet):
   """Returns a matmul kernel for some tile size"""
 
@@ -120,12 +122,12 @@ def mul_m(
 ):
   """Multiply vectors by inertia matrix.
 
-  Arguments:
-    m: Model
-    d: Data
-    vec: input vector to multiply by qM (nworld, nv)
-    skip: skip output for row (nworld)
-    res: output vector to store qM * vec (nworld, nv)
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output arrays (device).
+    res (wp.array2d(dtype=float)): Result: qM @ vec.
+    vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
+    skip (wp.array(dtype=flooat)): Skip output.
   """
 
   if m.opt.is_sparse:
@@ -212,6 +214,7 @@ def _apply_ft(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   ft_in: wp.array2d(dtype=wp.spatial_vector),
+  flg_add: bool,
   # Out:
   qfrc_out: wp.array2d(dtype=float),
 ):
@@ -235,41 +238,32 @@ def _apply_ft(
     ft_body = ft_in[worldid, bodyid]
     accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
 
-  qfrc_out[worldid, dofid] += accumul
+  if flg_add:
+    qfrc_out[worldid, dofid] += accumul
+  else:
+    qfrc_out[worldid, dofid] = accumul
 
 
-def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: wp.array2d(dtype=float)):
+def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: wp.array2d(dtype=float), flg_add: bool):
   wp.launch(
     kernel=_apply_ft,
     dim=(d.nworld, m.nv),
-    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft],
+    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
     outputs=[qfrc],
   )
 
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  apply_ft(m, d, d.xfrc_applied, qfrc)
+  """
+  Map applied forces at each body via Jacobians to dof space and accumulate.
 
-
-@wp.func
-def bisection(x: wp.array(dtype=int), v: int, a_: int, b_: int) -> int:
-  # Binary search for the largest index i such that x[i] <= v
-  # x is a sorted array
-  # a and b are the start and end indices within x to search
-  a = int(a_)
-  b = int(b_)
-  c = int(0)
-  while b - a > 1:
-    c = (a + b) // 2
-    if x[c] <= v:
-      a = c
-    else:
-      b = c
-  c = a
-  if c != b and x[b] <= v:
-    c = b
-  return c
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output arrays (device).
+    qfrc (wp.array2d(dtype=float)): Total applied force mapped to dof space.
+  """
+  apply_ft(m, d, d.xfrc_applied, qfrc, True)
 
 
 @wp.func
@@ -402,6 +396,16 @@ def contact_force(
   to_world_frame: bool,
   force: wp.array(dtype=wp.spatial_vector),
 ):
+  """
+  Compute forces for contacts in Data.
+
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output arrays (device).
+    contact_ids (wp.array(dtype=int)): IDs for each contact.
+    to_world_frame (bool): If True, map force from contact to world frame.
+    force (wp.array(dtype=wp.spatial_vector)): Contact forces.
+  """
   wp.launch(
     contact_force_kernel,
     dim=(contact_ids.size,),

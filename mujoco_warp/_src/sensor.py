@@ -33,6 +33,7 @@ from .types import ObjType
 from .types import SensorType
 from .types import TrnType
 from .types import vec6
+from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -2076,6 +2077,7 @@ def energy_pos(m: Model, d: Data):
     # TODO(team): flex
 
 
+@cache_kernel
 def _energy_vel_kinetic(nv: int):
   @nested_kernel
   def energy_vel_kinetic(

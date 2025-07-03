@@ -354,13 +354,14 @@ _IFACE = wp.types.matrix((3, 2), dtype=int)(1, 2, 0, 2, 0, 1)
 
 
 @wp.func
-def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, vec6]:
   """Returns the distance at which a ray intersects with a box."""
+  all = vec6(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
 
   # bounding sphere test
   ssz = wp.dot(size, size)
   if _ray_sphere(pos, ssz, pnt, vec) < 0.0:
-    return wp.inf
+    return wp.inf, all
 
   # map to local frame
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
@@ -390,10 +391,155 @@ def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.v
             if (x < 0.0) or (sol < x):
               x = sol
 
+            # save in all
+            all[2 * i + (side + 1) / 2] = sol
+
+  return x, all
+
+
+@wp.func
+def _ray_hfield(
+  # Model:
+  geom_type: wp.array(dtype=int),
+  geom_dataid: wp.array(dtype=int),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
+  # In:
+  pos: wp.vec3,
+  mat: wp.mat33,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+  id: int,
+):
+  # check geom type
+  if geom_type[id] != int(GeomType.HFIELD.value):
+    return wp.inf
+
+  # hfield id and dimensions
+  hid = geom_dataid[id]
+  nrow = hfield_nrow[hid]
+  ncol = hfield_ncol[hid]
+
+  size = hfield_size[hid]
+  adr = hfield_adr[hid]
+
+  mat_col = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+
+  # compute size and pos of base box
+  base_scale = size[3] * 0.5
+  base_size = wp.vec3(size[0], size[1], base_scale)
+  base_pos = pos + mat_col * base_scale
+
+  # compute size and pos of top box
+  top_scale = size[2] * 0.5
+  top_size = wp.vec3(size[0], size[1], top_scale)
+  top_pos = pos + mat_col * top_scale
+
+  # init: intersection with base box
+  x, _ = _ray_box(base_pos, mat, base_size, pnt, vec)
+
+  # check top box: done if no intersection
+  top_intersect, all = _ray_box(top_pos, mat, top_size, pnt, vec)
+
+  if top_intersect < 0.0:
+    return x
+
+  # map to local frame
+  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+
+  # construct basis vectors of normal plane
+  b0 = wp.vec3(1.0, 1.0, 1.0)
+
+  if wp.abs(lvec[0]) >= wp.abs(lvec[1]) and wp.abs(lvec[0]) >= wp.abs(lvec[2]):
+    b0[0] = 0.0
+  elif wp.abs(lvec[1]) >= wp.abs(lvec[2]):
+    b0[1] = 0.0
+  else:
+    b0[2] = 0.0
+  b1 = b0 + lvec * -wp.dot(lvec, b0) / wp.dot(lvec, lvec)
+  b1 = wp.normalize(b1)
+
+  b2 = wp.cross(b1, lvec)
+  b2 = wp.normalize(b2)
+
+  # find ray segment intersecting top box
+  seg = wp.vec2(0.0, top_intersect)
+  for i in range(6):
+    if all[i] > seg[1]:
+      seg[0] = top_intersect
+      seg[1] = all[i]
+
+  # project segment endpoints in horizontal plane, discretize
+  dx = (2.0 * size[0]) / float(ncol - 1)
+  dy = (2.0 * size[1]) / float(nrow - 1)
+  SX = wp.vec2((lpnt[0] * seg[0] * lvec[0] + size[0]) / dx, (lpnt[0] * seg[1] * lvec[0] + size[0]) / dx)
+  SY = wp.vec2((lpnt[1] + seg[0] * lvec[1] + size[1]) / dy, (lpnt[1] + seg[1] * lvec[1] + size[1]) / dy)
+
+  # compute ranges, with +1 padding
+  cmin = wp.max(0, int(wp.floor(wp.min(SX[0], SX[1])) - 1.0))
+  cmax = wp.min(ncol - 1, int(wp.ceil(wp.max(SX[0], SX[1])) + 1.0))
+  rmin = wp.max(0, int(wp.floor(wp.min(SY[0], SY[1])) - 1.0))
+  rmax = wp.min(nrow - 1, int(wp.ceil(wp.max(SY[0], SY[1])) + 1.0))
+
+  # check triangles within bounds
+  for r in range(rmin, rmax):
+    for c in range(cmin, cmax):
+      # first triangle
+      v0 = wp.vec3(dx * float(c) - size[0], dy * float(r) - size[1], hfield_data[adr + r * ncol + c] * size[2])
+      v1 = wp.vec3(
+        dx * float(c + 1) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2]
+      )
+      v2 = wp.vec3(dx * float(c + 1) - size[0], dy * float(r) - size[1], hfield_data[adr + r * ncol + (c + 1)] * size[2])
+      sol = _ray_triangle(v0, v1, v2, pnt, vec, b0, b1)
+      if sol >= 0.0 and (x < 0.0 or sol < x):
+        x = sol
+
+      # second triangle
+      v0 = wp.vec3(dx * float(c) - size[0], dy * float(r) - size[1], hfield_data[adr + r * ncol + c] * size[2])
+      v1 = wp.vec3(
+        dx * float(c + 1) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2]
+      )
+      v2 = wp.vec3(dx * float(c) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + c] * size[2])
+      sol = _ray_triangle(v0, v1, v2, pnt, vec, b0, b1)
+      if sol >= 0.0 and (x < 0.0 or sol < x):
+        x = sol
+
+  # check viable sides of top box
+  for i in range(4):
+    if all[i] >= 0.0 and (all[i] < x or x < 0.0):
+      # normalized height of intersection point
+      z = (lpnt[2] + all[i] * lvec[2]) / size[2]
+
+      # rectangle points: y, y0, z0, z1
+      # side normal to x-axis
+      if i < 2:
+        y = (lpnt[1] + all[i] * lvec[1] + size[1]) / dy
+        y0 = wp.max(0.0, wp.min(float(nrow - 2), wp.floor(y)))
+        if i == 1:
+          z0 = hfield_data[adr + int(wp.round(y0)) * nrow + ncol - 1]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * nrow + ncol - 1]
+        else:
+          z0 = hfield_data[adr + int(wp.round(y0)) * nrow]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * nrow]
+      # side normal to y-axis
+      else:
+        y = (lpnt[0] + all[i] * lvec[0] + size[0]) / dx
+        y0 = wp.max(0.0, wp.min(float(ncol - 2), wp.floor(y)))
+        if i == 3:
+          z0 = hfield_data[adr + int(wp.round(y0)) + (nrow - 1) * ncol]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) + (nrow - 1) * ncol]
+        else:
+          z0 = hfield_data[adr + int(wp.round(y0))]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0))]
+
+      # check if point is below line segments
+      if z < z0 * (y0 + 1.0 - y) + z1 * (y - y0):
+        x = all[i]
+
   return x
-
-
-# TODO(team): ray intersection with height field
 
 
 @wp.func
@@ -476,7 +622,8 @@ def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.v
   elif geomtype == int(GeomType.CYLINDER.value):
     return _ray_cylinder(pos, mat, size, pnt, vec)
   elif geomtype == int(GeomType.BOX.value):
-    return _ray_box(pos, mat, size, pnt, vec)
+    dist, _ = _ray_box(pos, mat, size, pnt, vec)
+    return dist
   else:
     return wp.inf
 
@@ -493,6 +640,11 @@ def _ray_geom_mesh(
   geom_matid: wp.array2d(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rgba: wp.array2d(dtype=wp.vec4),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_faceadr: wp.array(dtype=int),
@@ -539,6 +691,21 @@ def _ray_geom_mesh(
         pnt,
         vec,
       )
+    elif type == int(GeomType.HFIELD.value):
+      return _ray_hfield(
+        geom_type,
+        geom_dataid,
+        hfield_adr,
+        hfield_nrow,
+        hfield_ncol,
+        hfield_size,
+        hfield_data,
+        pos,
+        mat,
+        pnt,
+        vec,
+        geomid,
+      )
     else:
       return ray_geom(pos, mat, geom_size[worldid, geomid], pnt, vec, type)
   else:
@@ -571,6 +738,11 @@ def _ray(
   geom_matid: wp.array2d(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rgba: wp.array2d(dtype=wp.vec4),
+  hfield_adr: wp.array(dtype=int),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_faceadr: wp.array(dtype=int),
@@ -609,6 +781,11 @@ def _ray(
         geom_matid,
         geom_size,
         geom_rgba,
+        hfield_adr,
+        hfield_nrow,
+        hfield_ncol,
+        hfield_size,
+        hfield_data,
         mesh_vertadr,
         mesh_vert,
         mesh_faceadr,
@@ -652,21 +829,24 @@ def ray(
   geomgroup: vec6 = None,
   flg_static: bool = True,
   bodyexclude: int = -1,
-) -> Tuple[wp.array2d(dtype=float), wp.array2d(dtype=int)]:
+) -> tuple[wp.array2d(dtype=float), wp.array2d(dtype=int)]:
   """Returns the distance at which rays intersect with primitive geoms.
 
   Args:
-      m: MuJoCo model
-      d: MuJoCo data
-      pnt: ray origin points
-      vec: ray directions
-      geomgroup: group inclusion/exclusion mask (6,), or all zeros to ignore
-      flg_static: if True, allows rays to intersect with static geoms
-      bodyexclude: ignore geoms on specified body id (-1 to disable)
+      m (Model): The model containing kinematic and dynamic information (device).
+      d (Data): The data object containing the current state and output arrays (device).
+      pnt (wp.array2d(dtype=wp.vec3)): Ray origin points.
+      vec (wp.array2d(dtype=wp.vec3)): Ray directions.
+      geomgroup (vec6, optional): Group inclusion/exclusion mask.
+                                  If all are wp.inf, ignore.
+      flg_static (bool, optional): If True, allows rays to intersect with static geoms.
+                                   Defaults to True.
+      bodyexclude (int, optional): Ignore geoms on specified body id (-1 to disable).
+                                   Defaults to -1.
 
   Returns:
-      dist: distances from ray origins to geom surfaces
-      geomid: IDs of intersected geoms (-1 if none)
+      wp.array2d(dtype=float): Distances from ray origins to geom surfaces.
+      wp.array2d(dtype=int): IDs of intersected geoms (-1 if none).
   """
 
   assert pnt.shape[0] == vec.shape[0]
@@ -708,6 +888,11 @@ def rays(
       m.geom_matid,
       m.geom_size,
       m.geom_rgba,
+      m.hfield_adr,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_size,
+      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vert,
       m.mesh_faceadr,

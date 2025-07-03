@@ -59,6 +59,7 @@ _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "Provide a full event tra
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of nconmax, njmax is used.")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "Measure the number of solver iterations.")
 _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to summarize measurements.")
+_INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator).")
 
 
 def _print_table(matrix, headers):
@@ -86,10 +87,19 @@ def _print_trace(trace, indent, steps):
     _print_trace(sub_trace, indent + 1, steps)
 
 
+def _load_model(path):
+  spec = mujoco.MjSpec.from_file(path)
+  # check if the file has any mujoco.sdf test plugins
+  if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+    from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+
+    register_sdf_plugins(mjwarp.collision_sdf)
+  return spec.compile()
+
+
 def _main(argv: Sequence[str]):
   """Runs testpeed function."""
   wp.init()
-
   path = epath.Path(_MJCF.value)
   if not path.exists():
     path = epath.resource_path("mujoco_warp") / _MJCF.value
@@ -98,7 +108,7 @@ def _main(argv: Sequence[str]):
   if path.suffix == ".mjb":
     mjm = mujoco.MjModel.from_binary_path(path.as_posix())
   else:
-    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+    mjm = _load_model(path.as_posix())
 
   if _CONE.value == "pyramidal":
     mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
@@ -128,6 +138,18 @@ def _main(argv: Sequence[str]):
   mujoco.mj_forward(mjm, mjd)
 
   m = mjwarp.put_model(mjm)
+
+  # integrator
+  IntegratorType = mjwarp._src.types.IntegratorType
+  integrators = {IntegratorType.EULER: "Euler", IntegratorType.IMPLICITFAST: "implicitfast", IntegratorType.RK4: "RK4"}
+  integrator = integrators[m.opt.integrator]
+
+  if _INTEGRATOR.value is not None:
+    for k, v in integrators.items():
+      if _INTEGRATOR.value == v:
+        integrator = v
+        m.opt.integrator = k
+
   m.opt.ls_parallel = _LS_PARALLEL.value
   d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
@@ -140,10 +162,11 @@ def _main(argv: Sequence[str]):
     f"Model nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} "
     f"is_sparse: {_IS_SPARSE.value} solver: {solver_name} "
     f"iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations} "
-    f"linesearch: {linesearch_name}"
+    f"linesearch: {linesearch_name} "
+    f"integrator: {integrator}"
   )
   print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
-  print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...")
+  print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
   jit_time, run_time, trace, ncon, nefc, solver_niter = mjwarp.benchmark(
     mjwarp.__dict__[_FUNCTION.value],
     m,
@@ -163,7 +186,7 @@ Summary for {_BATCH_SIZE.value} parallel rollouts
  Total JIT time: {jit_time:.2f} s
  Total simulation time: {run_time:.2f} s
  Total steps per second: {steps / run_time:,.0f}
- Total realtime factor: {steps * m.opt.timestep / run_time:,.2f} x
+ Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
  Total time per step: {1e9 * run_time / steps:.2f} ns""")
 
     if trace:

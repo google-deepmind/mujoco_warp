@@ -17,9 +17,10 @@ from typing import Any
 
 import warp as wp
 
-from .collision_convex import gjk_narrowphase
+from .collision_convex import convex_narrowphase
 from .collision_hfield import hfield_midphase
 from .collision_primitive import primitive_narrowphase
+from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
 from .types import MJ_MAXVAL
 from .types import BroadphaseType
@@ -264,9 +265,9 @@ def _sap_broadphase(
     worldgeomid += nsweep_in
 
 
-def create_segmented_sort_kernel(tile_size: int):
+def _segmented_sort(tile_size: int):
   @wp.kernel
-  def segmented_sort_kernel(
+  def segmented_sort(
     # Data in:
     sap_projection_lower_in: wp.array2d(dtype=float),
     sap_sort_index_in: wp.array2d(dtype=int),
@@ -284,9 +285,10 @@ def create_segmented_sort_kernel(tile_size: int):
     wp.tile_store(sap_projection_lower_in[worldid], keys)
     wp.tile_store(sap_sort_index_in[worldid], values)
 
-  return segmented_sort_kernel
+  return segmented_sort
 
 
+@event_scope
 def sap_broadphase(m: Model, d: Data):
   """Broadphase collision detection via sweep-and-prune."""
 
@@ -315,16 +317,18 @@ def sap_broadphase(m: Model, d: Data):
   )
 
   if m.opt.broadphase == int(BroadphaseType.SAP_TILE):
+    wp.launch_tiled(
+      kernel=_segmented_sort(m.ngeom),
+      dim=(d.nworld),
+      inputs=[d.sap_projection_lower, d.sap_sort_index],
+      block_dim=m.block_dim.segmented_sort,
+    )
+  else:
     wp.utils.segmented_sort_pairs(
       d.sap_projection_lower,
       d.sap_sort_index,
       nworldgeom,
       d.sap_segment_index,
-    )
-  else:
-    segmented_sort_kernel = create_segmented_sort_kernel(m.ngeom)
-    wp.launch_tiled(
-      kernel=segmented_sort_kernel, dim=(d.nworld), inputs=[d.sap_projection_lower, d.sap_sort_index], block_dim=128
     )
 
   wp.launch(
@@ -428,6 +432,7 @@ def _nxn_broadphase(
     )
 
 
+@event_scope
 def nxn_broadphase(m: Model, d: Data):
   """Broadphase collision detection via brute-force search."""
 
@@ -459,15 +464,9 @@ def nxn_broadphase(m: Model, d: Data):
 def collision(m: Model, d: Data):
   """Collision detection."""
 
-  # AD: based on engine_collision_driver.py in Eric's warp fork/mjx-collisions-dev
-  # which is further based on the CUDA code here:
-  # https://github.com/btaba/mujoco/blob/warp-collisions/mjx/mujoco/mjx/_src/cuda/engine_collision_driver.cu.cc#L458-L583
-
   d.ncollision.zero_()
   d.ncon.zero_()
   d.ncon_hfield.zero_()
-
-  # Clear the collision_hftri_index buffer
   d.collision_hftri_index.zero_()
 
   if d.nconmax == 0:
@@ -489,5 +488,8 @@ def collision(m: Model, d: Data):
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
   # TODO(team) switch between collision functions and GJK/EPA here
-  gjk_narrowphase(m, d)
+  convex_narrowphase(m, d)
   primitive_narrowphase(m, d)
+
+  if m.has_sdf_geom:
+    sdf_narrowphase(m, d)
