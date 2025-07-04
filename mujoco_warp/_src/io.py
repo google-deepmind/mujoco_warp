@@ -345,17 +345,24 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     nxn_pairid[pairid] = i
 
-  # contact pair types
-  type_pairs = np.stack([mjm.geom_type[geom1], mjm.geom_type[geom2]], axis=1)
-  type_pairs.sort()
-  geom_type_pair = set(tuple(tp) for tp in type_pairs)
-  geom_type_pair = tuple(int(t) for tp in geom_type_pair for t in tp)
+  # count contact pair types
+  geom_type_pair_count = np.bincount(
+    [
+      math.upper_trid_index(len(types.GeomType), int(mjm.geom_type[geom1[i]]), int(mjm.geom_type[geom2[i]]))
+      for i in np.arange(len(geom1))
+      if nxn_pairid[i] > -2
+    ],
+    minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
+  )
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
-    array.strides = (0,) + array.strides
+    # add private attribute for JAX to determine which fields are batched
+    array._is_batched = True
     if not expand_dim:
+      array.strides = (0,) + array.strides[1:]
       return array
+    array.strides = (0,) + array.strides
     array.ndim += 1
     array.shape = (1,) + array.shape
     return array
@@ -766,7 +773,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_trntype_body_adr=wp.array(np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0], dtype=int),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
-    geom_type_pair=geom_type_pair,
+    geom_pair_type_count=tuple(geom_type_pair_count),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
   )
 
