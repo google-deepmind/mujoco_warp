@@ -1,7 +1,11 @@
 <mujoco model="apptronik_apollo">
     <compiler angle="radian" eulerseq="zyx"/>
 
-    <option timestep="0.005"/>
+    <option timestep="0.005" iterations="10" ls_iterations="20" integrator="Euler">
+        <flag eulerdamp="disable" />
+    </option>
+
+   <statistic center="1 -0.8 1.1" extent=".35" />
 
     <default>
         <geom contype="0" conaffinity="0" condim="3" margin="0.000500" solref="0.005 1" group="1"/>

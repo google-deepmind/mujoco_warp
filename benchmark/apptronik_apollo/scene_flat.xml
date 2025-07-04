@@ -1,0 +1,21 @@
+<mujoco model="apptronik_apollo scene flat">
+  <include file="apptronik_apollo.xml" />
+
+  <visual>
+    <map znear="0.01" zfar="200" />
+    <quality shadowsize="8192" />
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
+    <global azimuth="140" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" />
+  </worldbody>
+</mujoco>
