@@ -25,6 +25,7 @@ from .math import gjk_normalize
 from .math import make_frame
 from .math import orthonormal
 from .math import upper_tri_index
+from .math import upper_trid_index
 from .support import all_same
 from .support import any_different
 from .types import MJ_MAXCONPAIR
@@ -64,7 +65,7 @@ VECI1 = vec6(0, 0, 0, 1, 1, 2)
 VECI2 = vec6(1, 2, 3, 2, 3, 3)
 
 
-_CONVEX_COLLISION_PAIRS = {
+_CONVEX_COLLISION_PAIRS = [
   (GeomType.HFIELD.value, GeomType.SPHERE.value),
   (GeomType.HFIELD.value, GeomType.CAPSULE.value),
   (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
@@ -73,8 +74,8 @@ _CONVEX_COLLISION_PAIRS = {
   (GeomType.HFIELD.value, GeomType.MESH.value),
   (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
   (GeomType.SPHERE.value, GeomType.MESH.value),
-  (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
   (GeomType.CAPSULE.value, GeomType.ELLIPSOID.value),
+  (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
   (GeomType.CAPSULE.value, GeomType.MESH.value),
   (GeomType.ELLIPSOID.value, GeomType.ELLIPSOID.value),
   (GeomType.ELLIPSOID.value, GeomType.CYLINDER.value),
@@ -85,7 +86,20 @@ _CONVEX_COLLISION_PAIRS = {
   (GeomType.CYLINDER.value, GeomType.MESH.value),
   (GeomType.BOX.value, GeomType.MESH.value),
   (GeomType.MESH.value, GeomType.MESH.value),
-}
+]
+
+
+def _check_convex_collision_pairs():
+  prev_idx = -1
+  for pair in _CONVEX_COLLISION_PAIRS:
+    idx = upper_trid_index(len(GeomType), pair[0], pair[1])
+    if pair[1] < pair[0] or idx <= prev_idx:
+      return False
+    prev_idx = idx
+  return True
+
+
+assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid order."
 
 
 @wp.func
@@ -1007,8 +1021,8 @@ def ccd_kernel_builder(
 
 @event_scope
 def convex_narrowphase(m: Model, d: Data):
-  for geom_pair in zip(m.geom_type_pair[::2], m.geom_type_pair[1::2]):
-    if geom_pair in _CONVEX_COLLISION_PAIRS:
+  for geom_pair in _CONVEX_COLLISION_PAIRS:
+    if m.geom_pair_type_count[upper_trid_index(len(GeomType), geom_pair[0], geom_pair[1])]:
       wp.launch(
         ccd_kernel_builder(
           False,

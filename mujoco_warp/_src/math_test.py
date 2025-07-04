@@ -17,6 +17,8 @@ import warp as wp
 from absl.testing import absltest
 
 from .math import closest_segment_to_segment_points
+from .math import upper_tri_index
+from .math import upper_trid_index
 
 
 class ClosestSegmentSegmentPointsTest(absltest.TestCase):
@@ -86,6 +88,42 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
     best_a, best_b = closest_segment_to_segment_points(a0, a1, b0, b1)
     self.assertSequenceAlmostEqual(best_a, [0.0, 0.0, 0.0], 5)
     self.assertSequenceAlmostEqual(best_b, [0.0, 0.0, 0.0], 5)
+
+  def test_upper_tri_index2(self):
+    """Tests upper_tri_index with size 2"""
+    arr = []
+    for i in range(2):
+      for j in range(i + 1, 2):
+        arr.append(upper_tri_index(2, i, j))
+    self.assertEqual(arr, list(range(0, 1)))
+
+  def test_upper_tri_index10(self):
+    """Tests upper_tri_index with size 10"""
+    arr = []
+    for i in range(10):
+      for j in range(i + 1, 10):
+        arr.append(upper_tri_index(10, i, j))
+    self.assertEqual(arr, list(range(0, 45)))
+
+  def test_upper_trid_index1(self):
+    """Tests upper_trid_index with size 1"""
+    arr = []
+    for i in range(1):
+      for j in range(i, 1):
+        arr.append(upper_trid_index(1, i, j))
+    self.assertEqual(arr, list(range(0, 1)))
+
+  def test_upper_trid_index10(self):
+    """Tests upper_trid_index with size 10"""
+    arr = []
+    for i in range(10):
+      for j in range(i, 10):
+        arr.append(upper_trid_index(10, i, j))
+    self.assertEqual(arr, list(range(0, 55)))
+
+  def test_upper_trid_index10(self):
+    """Tests upper_trid_index works with symmetric matrix"""
+    self.assertEqual(upper_trid_index(10, 1, 5), upper_trid_index(10, 5, 1))
 
 
 if __name__ == "__main__":
