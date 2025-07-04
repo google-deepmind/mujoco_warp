@@ -650,11 +650,7 @@ def fwd_velocity(m: Model, d: Data):
   if m.opt.is_sparse:
     _actuator_velocity_sparse(m, d)
   else:
-    for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      # TODO(team): avoid creating invalid tiles
-      if tile_nu.size == 0 or tile_nv.size == 0:
-        continue
-
+    for tile_nu, tile_nv in zip(m.actuator_velocity_tiles_nu, m.actuator_velocity_tiles_nv):
       wp.launch_tiled(
         _tile_actuator_velocity_dense(tile_nu, tile_nv),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
@@ -1000,10 +996,7 @@ def fwd_actuation(m: Model, d: Data):
     )
 
   else:
-    for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      if tile_nu.size == 0 or tile_nv.size == 0:
-        continue
-
+    for tile_nu, tile_nv in zip(m.qfrc_actuator_tiles_nu, m.qfrc_actuator_tiles_nv):
       wp.launch_tiled(
         _tile_qfrc_actuator(tile_nu, tile_nv),
         dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),

@@ -240,16 +240,16 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   actuator_moment_tiles_nv, actuator_moment_tiles_nu = tuple(), tuple()
 
-  # TODO(team): tile support
-  if (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).any():
-    actuator_moment_tiles_nv += (types.TileSet(adr=wp.zeros(1, dtype=int), size=mjm.nv),)
-    actuator_moment_tiles_nu += (types.TileSet(adr=wp.zeros(1, dtype=int), size=mjm.nu),)
-  else:
-    for (nv, nu), adr in sorted(tiles.items()):
-      adr_nv = wp.array([nv for nv, _ in adr], dtype=int)
-      adr_nu = wp.array([nu for _, nu in adr], dtype=int)
-      actuator_moment_tiles_nv += (types.TileSet(adr=adr_nv, size=nv),)
-      actuator_moment_tiles_nu += (types.TileSet(adr=adr_nu, size=nu),)
+  for (nv, nu), adr in sorted(tiles.items()):
+    adr_nv = wp.array([nv for nv, _ in adr], dtype=int)
+    adr_nu = wp.array([nu for _, nu in adr], dtype=int)
+    actuator_moment_tiles_nv += (types.TileSet(adr=adr_nv, size=nv),)
+    actuator_moment_tiles_nu += (types.TileSet(adr=adr_nu, size=nu),)
+
+  actuator_velocity_tiles_nu = tuple((types.TileSet(adr=wp.array(np.array(np.arange(mjm.nu)), dtype=int), size=1),))
+  actuator_velocity_tiles_nv = tuple((types.TileSet(adr=wp.zeros(mjm.nu, dtype=int), size=mjm.nv),))
+  qfrc_actuator_tiles_nu = tuple((types.TileSet(adr=wp.zeros(mjm.nv, dtype=int), size=mjm.nu),))
+  qfrc_actuator_tiles_nv = tuple((types.TileSet(adr=wp.array(np.array(np.arange(mjm.nv)), dtype=int), size=1),))
 
   # fixed tendon
   tendon_jnt_adr = []
@@ -614,6 +614,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     eq_ten_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.TENDON.value)[0], dtype=int),
     actuator_moment_tiles_nv=actuator_moment_tiles_nv,
     actuator_moment_tiles_nu=actuator_moment_tiles_nu,
+    actuator_velocity_tiles_nu=actuator_velocity_tiles_nu,
+    actuator_velocity_tiles_nv=actuator_velocity_tiles_nv,
+    qfrc_actuator_tiles_nu=qfrc_actuator_tiles_nu,
+    qfrc_actuator_tiles_nv=qfrc_actuator_tiles_nv,
     actuator_trntype=wp.array(mjm.actuator_trntype, dtype=int),
     actuator_dyntype=wp.array(mjm.actuator_dyntype, dtype=int),
     actuator_gaintype=wp.array(mjm.actuator_gaintype, dtype=int),

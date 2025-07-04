@@ -42,7 +42,7 @@ def _assert_eq(a, b, name):
 
 class ForwardTest(parameterized.TestCase):
   def test_fwd_velocity(self):
-    _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
+    _, mjd, m, d = test_util.fixture("pendula.xml", kick=True)
 
     for arr in (d.actuator_velocity, d.qfrc_bias):
       arr.zero_()

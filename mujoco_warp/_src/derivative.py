@@ -64,6 +64,7 @@ def _actuator_bias_gain_vel(
   act_vel_integration_out[worldid, actid] = bias_vel + gain_vel * ctrl
 
 
+# TODO(team): generalize for actuators
 @cache_kernel
 def _tile_qderiv_actuator_passive(
   tile_nu: TileSet,
