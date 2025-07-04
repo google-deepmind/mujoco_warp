@@ -1924,16 +1924,21 @@ def update_gradient_JTDAJ(
   dofj = elementid - (dofi * (dofi + 1)) // 2
 
   sum_h = float(0.0)
-  for efcid in range(nefc):
-    efc_D = efc_D_in[worldid, efcid]
-    active = efc_active_in[worldid, efcid]
-
-    if efc_D == 0.0 or not active:
-      continue
-
+  efc_D = efc_D_in[worldid, 0]
+  active = efc_active_in[worldid, 0]
+  efc_Ji = efc_J_in[worldid, 0, dofi]
+  efc_Jj = efc_J_in[worldid, 0, dofj]
+  for efcid in range(nefc-1):
     # TODO(team): sparse efc_J
-    sum_h +=  efc_J_in[worldid, efcid, dofi] * efc_J_in[worldid, efcid, dofj] * efc_D
+    sum_h += efc_Ji * efc_Jj * efc_D * float(active)
 
+    jj = efcid + 1
+    efc_D = efc_D_in[worldid, jj]
+    active = efc_active_in[worldid, jj]
+    efc_Ji = efc_J_in[worldid, jj, dofi]
+    efc_Jj = efc_J_in[worldid, jj, dofj]
+
+  sum_h += efc_Ji * efc_Jj * efc_D * float(active)
   efc_h_out[worldid, dofi, dofj] += sum_h
 
 
