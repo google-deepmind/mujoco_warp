@@ -627,6 +627,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_dynprm=create_nmodel_batched_array(mjm.actuator_dynprm, dtype=types.vec10f),
     actuator_gainprm=create_nmodel_batched_array(mjm.actuator_gainprm, dtype=types.vec10f),
     actuator_biasprm=create_nmodel_batched_array(mjm.actuator_biasprm, dtype=types.vec10f),
+    actuator_actearly=wp.array(mjm.actuator_actearly, dtype=bool),
     actuator_ctrlrange=create_nmodel_batched_array(mjm.actuator_ctrlrange, dtype=wp.vec2),
     actuator_forcerange=create_nmodel_batched_array(mjm.actuator_forcerange, dtype=wp.vec2),
     actuator_actrange=create_nmodel_batched_array(mjm.actuator_actrange, dtype=wp.vec2),
