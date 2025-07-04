@@ -355,6 +355,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
   )
 
+  # Disable collisions if there are no potentially colliding pairs
+  valid_mask = nxn_pairid > -2
+  if not valid_mask.any():
+    mjm.opt.disableflags |= types.DisableBit.CONTACT.value
+
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
     # add private attribute for JAX to determine which fields are batched
