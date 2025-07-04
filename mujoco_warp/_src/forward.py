@@ -510,15 +510,15 @@ def rungekutta4(m: Model, d: Data):
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
 
-  # TODO(team): add sparse version
-
   # compile-time constants
   passive_enabled = not m.opt.disableflags & DisableBit.PASSIVE.value
   actuation_enabled = (not m.opt.disableflags & DisableBit.ACTUATION.value) and m.actuator_affine_bias_gain
 
   if passive_enabled or actuation_enabled:
     derivative.deriv_smooth_vel(m, d)
-    smooth._factor_solve_i_dense(m, d, d.qM_integration, d.qacc_integration, d.qfrc_integration)
+    smooth.factor_solve_i(
+      m, d, d.qM_integration, d.qLD_integration, d.qLDiagInv_integration, d.qacc_integration, d.qfrc_integration
+    )
     _advance(m, d, d.qacc_integration)
   else:
     _advance(m, d, d.qacc)

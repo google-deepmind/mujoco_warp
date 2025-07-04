@@ -135,16 +135,6 @@ class IOTest(absltest.TestCase):
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
-  def test_implicitfast_sparse(self):
-    with self.assertRaises(NotImplementedError):
-      test_util.fixture(
-        xml="""
-      <mujoco>
-        <option integrator="implicitfast" jacobian="sparse"/>
-      </mujoco>
-      """
-      )
-
   def test_noslip_solver(self):
     with self.assertRaises(NotImplementedError):
       test_util.fixture(

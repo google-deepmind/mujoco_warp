@@ -117,9 +117,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   is_sparse = mujoco.mj_isSparse(mjm)
 
-  if mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST and is_sparse:
-    raise NotImplementedError("implicitfast integrator and sparse option is unsupported.")
-
   # calculate some fields that cannot be easily computed inline
   nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
 
