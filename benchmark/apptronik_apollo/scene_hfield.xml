@@ -1,4 +1,4 @@
-<mujoco model="apptronik_apollo scene">
+<mujoco model="apptronik_apollo scene hfield">
   <include file="apptronik_apollo.xml" />
   <visual>
     <map znear="0.01" zfar="200" />
