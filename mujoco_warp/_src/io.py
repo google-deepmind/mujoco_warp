@@ -356,8 +356,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
 
   # Disable collisions if there are no potentially colliding pairs
-  valid_mask = nxn_pairid > -2
-  if not valid_mask.any():
+  if np.sum(geom_type_pair_count) == 0:
     mjm.opt.disableflags |= types.DisableBit.CONTACT.value
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
