@@ -36,27 +36,27 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _zero_collision_arrays(
   # Data in:
-  nworld: int,
+  nworld_in: int,
   # In:
-  hfield_geom_pair: int,
+  hfield_geom_pair_in: int,
   # Data out:
-  ncollision: wp.array(dtype=int),
-  ncon: wp.array(dtype=int),
-  ncon_hfield: wp.array(dtype=int),
-  collision_hftri_index: wp.array(dtype=int),
+  ncollision_out: wp.array(dtype=int),
+  ncon_out: wp.array(dtype=int),
+  ncon_hfield_out: wp.array(dtype=int),  # kernel_analyzer: ignore
+  collision_hftri_index_out: wp.array(dtype=int),
 ):
   tid = wp.tid()
 
   if tid == 0:
     # Zero the single collision counter
-    ncollision[0] = 0
-    ncon[0] = 0
+    ncollision_out[0] = 0
+    ncon_out[0] = 0
 
-  if tid < hfield_geom_pair * nworld:
-    ncon_hfield[tid] = 0
+  if tid < hfield_geom_pair_in * nworld_in:
+    ncon_hfield_out[tid] = 0
 
   # Zero collision pair indices
-  collision_hftri_index[tid] = 0
+  collision_hftri_index_out[tid] = 0
 
 
 @wp.func
