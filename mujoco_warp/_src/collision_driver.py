@@ -40,10 +40,10 @@ def _zero_collision_arrays(
   # In:
   hfield_geom_pair_in: int,
   # Data out:
-  ncollision_out: wp.array(dtype=int),
   ncon_out: wp.array(dtype=int),
   ncon_hfield_out: wp.array(dtype=int),  # kernel_analyzer: ignore
   collision_hftri_index_out: wp.array(dtype=int),
+  ncollision_out: wp.array(dtype=int),
 ):
   tid = wp.tid()
 
