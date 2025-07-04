@@ -497,10 +497,10 @@ def collision(m: Model, d: Data):
     inputs=[
       d.nworld,
       d.ncon_hfield.shape[1],
-      d.ncollision,
       d.ncon,
       d.ncon_hfield.reshape(-1),
       d.collision_hftri_index,
+      d.ncollision,
     ],
   )
 
