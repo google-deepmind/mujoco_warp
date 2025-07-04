@@ -525,7 +525,7 @@ def implicit(m: Model, d: Data):
 
 
 @event_scope
-def fwd_position(m: Model, d: Data, deferred_factorization: bool = False):
+def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations."""
 
   smooth.kinematics(m, d)
@@ -534,7 +534,7 @@ def fwd_position(m: Model, d: Data, deferred_factorization: bool = False):
   smooth.tendon(m, d)
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)
-  if not deferred_factorization:
+  if factorize:
     smooth.factor_m(m, d)
   collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
@@ -1057,7 +1057,7 @@ def _qfrc_smooth(
 
 
 @event_scope
-def fwd_acceleration(m: Model, d: Data, deferred_factorization: bool = False):
+def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   """Add up all non-constraint forces, compute qacc_smooth."""
 
   wp.launch(
@@ -1075,10 +1075,10 @@ def fwd_acceleration(m: Model, d: Data, deferred_factorization: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if not deferred_factorization:
-    smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
-  else:
+  if factorize:
     smooth._factor_solve_i_dense(m, d, d.qM, d.qacc_smooth, d.qfrc_smooth)
+  else:
+    smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
 @wp.kernel
@@ -1095,7 +1095,7 @@ def forward(m: Model, d: Data):
   """Forward dynamics."""
   energy = m.opt.enableflags & EnableBit.ENERGY
 
-  fwd_position(m, d, deferred_factorization=True)
+  fwd_position(m, d, factorize=False)
   sensor.sensor_pos(m, d)
 
   if energy:
@@ -1116,7 +1116,7 @@ def forward(m: Model, d: Data):
       sensor.energy_vel(m, d)
 
   fwd_actuation(m, d)
-  fwd_acceleration(m, d, deferred_factorization=True)
+  fwd_acceleration(m, d, factorize=True)
   sensor.sensor_acc(m, d)
 
   solver.solve(m, d)
