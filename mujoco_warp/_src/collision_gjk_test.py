@@ -20,7 +20,7 @@ from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 from . import test_util
-from .collision_gjk import ccd
+from .collision_gjk import build_ccd
 from .collision_primitive import Geom
 from .types import Data
 from .types import GeomType
@@ -96,7 +96,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
       dist,
       x1,
       x2,
-    ) = ccd(
+    ) = wp.static(build_ccd())(
       1e-6,
       iterations,
       iterations,
