@@ -34,9 +34,9 @@ def zero_constraint_counts(
   ne_weld_out: wp.array(dtype=int),
   ne_jnt_out: wp.array(dtype=int),
   ne_ten_out: wp.array(dtype=int),
-  nefc_out: wp.array(dtype=int),
   nf_out: wp.array(dtype=int),
   nl_out: wp.array(dtype=int),
+  nefc_out: wp.array(dtype=int),
 ):
   # Zero all constraint counters
   ne_out[0] = 0
@@ -44,9 +44,9 @@ def zero_constraint_counts(
   ne_weld_out[0] = 0
   ne_jnt_out[0] = 0
   ne_ten_out[0] = 0
-  nefc_out[0] = 0
   nf_out[0] = 0
   nl_out[0] = 0
+  nefc_out[0] = 0
 
 
 @wp.func
@@ -1487,9 +1487,9 @@ def make_constraint(m: types.Model, d: types.Data):
       d.ne_weld,
       d.ne_jnt,
       d.ne_ten,
-      d.nefc,
       d.nf,
       d.nl,
+      d.nefc,
     ],
   )
 
