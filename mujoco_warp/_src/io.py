@@ -1123,9 +1123,7 @@ def put_data(
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  contact_efc_address = np.zeros(
-    (nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int
-  )
+  contact_efc_address = np.zeros((nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int)
   for i in range(nworld):
     for j in range(mjd.ncon):
       condim = mjd.contact.dim[j]
