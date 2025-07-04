@@ -373,6 +373,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   else:
     broadphase = types.BroadphaseType.NXN
 
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
+
   m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,
@@ -637,7 +640,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     pair_margin=create_nmodel_batched_array(mjm.pair_margin, dtype=float),
     pair_gap=create_nmodel_batched_array(mjm.pair_gap, dtype=float),
     pair_friction=create_nmodel_batched_array(mjm.pair_friction, dtype=types.vec5),
-    condim_max=np.max(np.concatenate((mjm.geom_condim, mjm.pair_dim))),  # TODO(team): get max after filtering,
+    condim_max=condim_max,  # TODO(team): get max after filtering,
     tendon_adr=wp.array(mjm.tendon_adr, dtype=int),
     tendon_num=wp.array(mjm.tendon_num, dtype=int),
     tendon_limited=wp.array(mjm.tendon_limited, dtype=int),
@@ -790,6 +793,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   if njmax == -1:
     # TODO(team): heuristic for njmax
     njmax = nworld * 20 * 6
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
 
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
@@ -891,7 +896,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       dim=wp.zeros((nconmax,), dtype=int),
       geom=wp.zeros((nconmax,), dtype=wp.vec2i),
       efc_address=wp.zeros(
-        (nconmax, np.maximum(1, 2 * (np.max(np.concatenate([mjm.geom_condim, mjm.pair_dim])) - 1))),
+        (nconmax, np.maximum(1, 2 * (condim_max - 1))),
         dtype=int,
       ),
       worldid=wp.zeros((nconmax,), dtype=int),
@@ -1109,8 +1114,10 @@ def put_data(
     mjd.moment_colind,
   )
 
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
   contact_efc_address = np.zeros(
-    (nconmax, np.maximum(1, 2 * (np.max(np.concatenate([mjm.geom_condim, mjm.pair_dim])) - 1))), dtype=int
+    (nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int
   )
   for i in range(nworld):
     for j in range(mjd.ncon):
