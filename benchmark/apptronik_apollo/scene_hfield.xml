@@ -1,17 +1,13 @@
 <mujoco model="apptronik_apollo scene hfield">
   <include file="apptronik_apollo.xml" />
+
   <visual>
     <map znear="0.01" zfar="200" />
     <quality shadowsize="8192" />
-  </visual>
-  <option timestep="0.005" iterations="10" ls_iterations="20" integrator="Euler">
-    <flag eulerdamp="disable" />
-  </option>
-  <statistic center="1 -0.8 1.1" extent=".35" />
-  <visual>
     <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
     <global azimuth="140" elevation="-20" />
   </visual>
+
   <asset>
     <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
     <!-- Optimized stepped terrain - sharp edges, lighter file -->
@@ -19,6 +15,7 @@
             size="84.0 44.0 3.157943 0.05"
             file="hfield.png" />
   </asset>
+
   <worldbody>
     <!-- Optimized precise stepped terrain -->
     <geom name="terrain_hfield" 
