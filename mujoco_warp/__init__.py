@@ -39,9 +39,9 @@ from ._src.forward import rungekutta4 as rungekutta4
 from ._src.inverse import inverse as inverse
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
+from ._src.io import nconmax_estimate as nconmax_estimate
 from ._src.io import put_data as put_data
 from ._src.io import put_model as put_model
-from ._src.io import nconmax_estimate as nconmax_estimate
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
 from ._src.sensor import energy_pos as energy_pos

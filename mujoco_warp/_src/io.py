@@ -23,7 +23,7 @@ from . import math
 from . import types
 
 # number of max iterations to run GJK/EPA
-MJ_CCD_ITERATIONS = 50
+MJ_CCD_ITERATIONS = 12
 
 
 def nconmax_estimate(m: types.Model, nworld: Optional[int] = None, user_max: Optional[int] = None) -> int:
@@ -57,7 +57,7 @@ def nconmax_estimate(m: types.Model, nworld: Optional[int] = None, user_max: Opt
     # assume a worse case of a cube of boxes
     return nworld * 12 * ngeom
   if nworld < 2000:
-    # assume a worse case of a row of stack boxes
+    # assume a worse case of a row of stacked boxes
     return nworld * 8 * ngeom + 4000 * ngeom
   if nworld < 4000:
     # assume a worse case roughly a stack of boxes
