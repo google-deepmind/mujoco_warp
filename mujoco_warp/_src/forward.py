@@ -657,7 +657,7 @@ def fwd_velocity(m: Model, d: Data):
 
       wp.launch_tiled(
         _tile_actuator_velocity_dense(tile_nu, tile_nv),
-        dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
+        dim=(d.nworld, tile_nu.adr.size),
         inputs=[d.qvel.reshape(d.qvel.shape + (1,)), d.actuator_moment, tile_nu.adr, tile_nv.adr],
         outputs=[d.actuator_velocity.reshape(d.actuator_velocity.shape + (1,))],
         block_dim=m.block_dim.actuator_velocity_dense,
@@ -1000,13 +1000,14 @@ def fwd_actuation(m: Model, d: Data):
     )
 
   else:
+
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
 
       wp.launch_tiled(
         _tile_qfrc_actuator(tile_nu, tile_nv),
-        dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
+        dim=(d.nworld, tile_nu.adr.size),
         inputs=[
           d.actuator_force.reshape(d.actuator_force.shape + (1,)),
           d.actuator_moment,
