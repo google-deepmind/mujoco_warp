@@ -38,15 +38,17 @@ def zero_constraint_counts(
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
 ):
+  worldid = wp.tid()
+
   # Zero all constraint counters
-  ne_out[0] = 0
-  ne_connect_out[0] = 0
-  ne_weld_out[0] = 0
-  ne_jnt_out[0] = 0
-  ne_ten_out[0] = 0
-  nf_out[0] = 0
-  nl_out[0] = 0
-  nefc_out[0] = 0
+  ne_out[worldid] = 0
+  ne_connect_out[worldid] = 0
+  ne_weld_out[worldid] = 0
+  ne_jnt_out[worldid] = 0
+  ne_ten_out[worldid] = 0
+  nf_out[worldid] = 0
+  nl_out[worldid] = 0
+  nefc_out[worldid] = 0
 
 
 @wp.func
@@ -1447,7 +1449,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
   wp.launch(
     zero_constraint_counts,
-    dim=1,
+    dim=d.nworld,
     inputs=[
       d.ne,
       d.ne_connect,
