@@ -1000,7 +1000,6 @@ def fwd_actuation(m: Model, d: Data):
     )
 
   else:
-
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
       if tile_nu.size == 0 or tile_nv.size == 0:
         continue
