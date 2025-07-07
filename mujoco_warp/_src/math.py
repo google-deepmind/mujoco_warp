@@ -277,4 +277,13 @@ def safe_div(x: float, y: float) -> float:
 
 @wp.func
 def upper_tri_index(n: int, i: int, j: int) -> int:
-  return (n * (n - 1) - (n - i) * (n - i - 1)) / 2 + j - i - 1
+  """Returns index of a_ij = a_ji in upper triangular matrix (excluding diagonal)."""
+  return (i * (2 * n - i - 3)) // 2 + j - 1
+
+
+@wp.func
+def upper_trid_index(n: int, i: int, j: int) -> int:
+  """Returns index of a_ij = a_ji in upper triangular matrix (including diagonal)."""
+  if j < i:
+    i, j = j, i
+  return (i * (2 * n - i - 1)) // 2 + j

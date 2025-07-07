@@ -146,7 +146,14 @@ def _tile_qderiv_actuator_passive(
 
 @event_scope
 def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
-  """Analytical derivative of smooth forces w.r.t velocities."""
+  """Analytical derivative of smooth forces w.r.t velocities.
+
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and outputs arrays (device).
+    flg_forward (bool, optional). If True forward dynamics else inverse dynamics routine.
+                                  Default is True.
+  """
 
   # optimization comments (AD)
   # I went from small kernels for every step to a relatively big single

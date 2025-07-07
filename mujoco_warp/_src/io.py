@@ -38,6 +38,15 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
+  """
+  Creates a model on device.
+
+  Args:
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+
+  Returns:
+    Model: The model containing kinematic and dynamic information (device).
+  """
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
@@ -336,17 +345,28 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     nxn_pairid[pairid] = i
 
-  # contact pair types
-  type_pairs = np.stack([mjm.geom_type[geom1], mjm.geom_type[geom2]], axis=1)
-  type_pairs.sort()
-  geom_type_pair = set(tuple(tp) for tp in type_pairs)
-  geom_type_pair = tuple(int(t) for tp in geom_type_pair for t in tp)
+  # count contact pair types
+  geom_type_pair_count = np.bincount(
+    [
+      math.upper_trid_index(len(types.GeomType), int(mjm.geom_type[geom1[i]]), int(mjm.geom_type[geom2[i]]))
+      for i in np.arange(len(geom1))
+      if nxn_pairid[i] > -2
+    ],
+    minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
+  )
+
+  # Disable collisions if there are no potentially colliding pairs
+  if np.sum(geom_type_pair_count) == 0:
+    mjm.opt.disableflags |= types.DisableBit.CONTACT.value
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
-    array.strides = (0,) + array.strides
+    # add private attribute for JAX to determine which fields are batched
+    array._is_batched = True
     if not expand_dim:
+      array.strides = (0,) + array.strides[1:]
       return array
+    array.strides = (0,) + array.strides
     array.ndim += 1
     array.shape = (1,) + array.shape
     return array
@@ -363,6 +383,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     broadphase = types.BroadphaseType.SAP_TILE
   else:
     broadphase = types.BroadphaseType.NXN
+
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
 
   m = types.Model(
     nq=mjm.nq,
@@ -628,7 +651,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     pair_margin=create_nmodel_batched_array(mjm.pair_margin, dtype=float),
     pair_gap=create_nmodel_batched_array(mjm.pair_gap, dtype=float),
     pair_friction=create_nmodel_batched_array(mjm.pair_friction, dtype=types.vec5),
-    condim_max=np.max(np.concatenate((mjm.geom_condim, mjm.pair_dim))),  # TODO(team): get max after filtering,
+    condim_max=condim_max,  # TODO(team): get max after filtering,
     tendon_adr=wp.array(mjm.tendon_adr, dtype=int),
     tendon_num=wp.array(mjm.tendon_num, dtype=int),
     tendon_limited=wp.array(mjm.tendon_limited, dtype=int),
@@ -754,7 +777,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_trntype_body_adr=wp.array(np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0], dtype=int),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
     block_dim=types.BlockDim(),
-    geom_type_pair=geom_type_pair,
+    geom_pair_type_count=tuple(geom_type_pair_count),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
   )
 
@@ -762,6 +785,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
 
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
+  """
+  Creates a data object on device.
+
+  Args:
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    nworld (int, optional): Number of worlds. Defaults to 1.
+    nconmax (int, optional): Maximum number of contacts for all worlds. Defaults to -1.
+    njmax (int, optiona): Maximum number of constraints for all worlds. Defaults to -1.
+
+  Returns:
+    Data: The data object containing the current state and output arrays (device).
+  """
   # TODO(team): move to Model?
   if nconmax == -1:
     # TODO(team): heuristic for nconmax
@@ -769,6 +804,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   if njmax == -1:
     # TODO(team): heuristic for njmax
     njmax = 20 * 6
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
 
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
@@ -870,7 +907,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       dim=wp.zeros((nconmax,), dtype=int),
       geom=wp.zeros((nconmax,), dtype=wp.vec2i),
       efc_address=wp.zeros(
-        (nconmax, np.maximum(1, 2 * (np.max(np.concatenate([mjm.geom_condim, mjm.pair_dim])) - 1))),
+        (nconmax, np.maximum(1, 2 * (condim_max - 1))),
         dtype=int,
       ),
       worldid=wp.zeros((nconmax,), dtype=int),
@@ -905,7 +942,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       quad=wp.zeros((nworld, njmax), dtype=wp.vec3f),
       quad_gauss=wp.zeros((nworld,), dtype=wp.vec3f),
       h=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
-      alpha=wp.zeros((njmax,), dtype=float),
+      alpha=wp.zeros((nworld,), dtype=float),
       prev_grad=wp.zeros((nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
       beta=wp.zeros((nworld,), dtype=float),
@@ -997,7 +1034,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
     # mul_m
     energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    inverse_mul_m_skip=wp.array((nworld,), dtype=bool),
+    inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
@@ -1010,6 +1047,19 @@ def put_data(
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
 ) -> types.Data:
+  """
+  Moves data from host to a device.
+
+  Args:
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    mjd (mujoco.MjData): The data object containing current state and output arrays (host).
+    nworld (int, optional): The number of worlds. Defaults to 1.
+    nconmax (int, optional): The maximum number of contacts for all worlds. Defaults to -1.
+    njmax (int, optional): The maximum number of constraints for all worlds. Defaults to -1.
+
+  Returns:
+    Data: The data object containing the current state and output arrays (device).
+  """
   # TODO(team): move nconmax and njmax to Model?
   # TODO(team): decide what to do about unintialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
@@ -1073,9 +1123,9 @@ def put_data(
     mjd.moment_colind,
   )
 
-  contact_efc_address = np.zeros(
-    (nconmax, np.maximum(1, 2 * (np.max(np.concatenate([mjm.geom_condim, mjm.pair_dim])) - 1))), dtype=int
-  )
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
+  contact_efc_address = np.zeros((nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int)
   for i in range(nworld):
     for j in range(mjd.ncon):
       condim = mjd.contact.dim[j]
@@ -1372,7 +1422,14 @@ def get_data_into(
   mjm: mujoco.MjModel,
   d: types.Data,
 ):
-  """Gets Data from a device into an existing mujoco.MjData."""
+  """Gets data from a device into an existing mujoco.MjData.
+
+  Args:
+    result (mujoco.MjData): The data object containing the current state and output arrays
+                            (host).
+    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    d (Data): The data object containing the current state and output arrays (device).
+  """
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 

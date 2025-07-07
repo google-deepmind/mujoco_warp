@@ -26,6 +26,29 @@ from .warp_util import event_scope
 wp.config.enable_backward = False
 
 
+@wp.kernel
+def zero_constraint_counts(
+  # Data out:
+  ne_out: wp.array(dtype=int),
+  ne_connect_out: wp.array(dtype=int),
+  ne_weld_out: wp.array(dtype=int),
+  ne_jnt_out: wp.array(dtype=int),
+  ne_ten_out: wp.array(dtype=int),
+  nf_out: wp.array(dtype=int),
+  nl_out: wp.array(dtype=int),
+  nefc_out: wp.array(dtype=int),
+):
+  # Zero all constraint counters
+  ne_out[0] = 0
+  ne_connect_out[0] = 0
+  ne_weld_out[0] = 0
+  ne_jnt_out[0] = 0
+  ne_ten_out[0] = 0
+  nf_out[0] = 0
+  nl_out[0] = 0
+  nefc_out[0] = 0
+
+
 @wp.func
 def _update_efc_row(
   # In:
@@ -1422,14 +1445,20 @@ def _num_equality(
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
 
-  d.ne.zero_()
-  d.ne_connect.zero_()
-  d.ne_weld.zero_()
-  d.ne_jnt.zero_()
-  d.ne_ten.zero_()
-  d.nefc.zero_()
-  d.nf.zero_()
-  d.nl.zero_()
+  wp.launch(
+    zero_constraint_counts,
+    dim=1,
+    inputs=[
+      d.ne,
+      d.ne_connect,
+      d.ne_weld,
+      d.ne_jnt,
+      d.ne_ten,
+      d.nf,
+      d.nl,
+      d.nefc,
+    ],
+  )
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT.value):
     refsafe = m.opt.disableflags & types.DisableBit.REFSAFE
