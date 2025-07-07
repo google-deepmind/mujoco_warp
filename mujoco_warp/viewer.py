@@ -94,7 +94,8 @@ def _main(argv: Sequence[str]) -> None:
     mjm_hash = pickle.dumps(mjm)
     m = mjwarp.put_model(mjm)
     m.opt.ls_parallel = _LS_PARALLEL.value
-    d = mjwarp.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    nconmax = mjwarp.nconmax_estimate(m, user_max=_NCONMAX.value)
+    d = mjwarp.put_data(mjm, mjd, nconmax=nconmax, njmax=_NJMAX.value)
 
     if _CLEAR_KERNEL_CACHE.value:
       wp.clear_kernel_cache()

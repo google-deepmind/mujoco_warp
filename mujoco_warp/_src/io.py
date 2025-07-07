@@ -23,7 +23,46 @@ from . import math
 from . import types
 
 # number of max iterations to run GJK/EPA
-MJ_CCD_ITERATIONS = 12
+MJ_CCD_ITERATIONS = 50
+
+
+def nconmax_estimate(m: types.Model, nworld: Optional[int] = None, user_max: Optional[int] = None) -> int:
+  # TODO(kbayes): determine contacts for heightfields
+  # max number of contacts for each geom collision pair
+  # fmt: off
+  geom_pair_max_contacts = [1, 4, 1, 2, 1, 4, 4, 4, m.opt.sdf_initpoints,
+                               4, 1, 2, 1, 4, 4, 4, m.opt.sdf_initpoints,
+                                  1, 1, 1, 1, 1, 1, m.opt.sdf_initpoints,
+                                     2, 1, 2, 2, 2, m.opt.sdf_initpoints,
+                                        1, 1, 1, 1, m.opt.sdf_initpoints,
+                                           4, 4, 4, m.opt.sdf_initpoints,
+                                              4, 4, m.opt.sdf_initpoints,
+                                                 4, m.opt.sdf_initpoints,
+                                                    m.opt.sdf_initpoints]
+  # fmt: on
+  ngeom = m.ngeom
+  nworld = nworld or 1
+  max_geom_ncon = int(np.sum(np.multiply(m.geom_pair_type_count, geom_pair_max_contacts)))
+
+  # case where user has specified memory
+  if user_max:
+    return min(nworld * max_geom_ncon, user_max)
+
+  # allocate max needed memory for small models
+  if max_geom_ncon < 220:
+    return nworld * max_geom_ncon
+
+  # TODO(kbayes): consider number of primitives as a factor
+  if nworld < 1000:
+    # assume a worse case of a cube of boxes
+    return nworld * 12 * ngeom
+  if nworld < 2000:
+    # assume a worse case of a row of stack boxes
+    return nworld * 8 * ngeom + 4000 * ngeom
+  if nworld < 4000:
+    # assume a worse case roughly a stack of boxes
+    return nworld * 3 * ngeom + 14000 * ngeom
+  return nworld * ngeom + 22000 * ngeom
 
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
