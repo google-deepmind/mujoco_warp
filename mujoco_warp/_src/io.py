@@ -913,8 +913,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       worldid=wp.zeros((nconmax,), dtype=int),
     ),
     efc=types.Constraint(
-      type=wp.zeros((nworld, njmax,), dtype=int),
-      id=wp.zeros((nworld, njmax,), dtype=int),
+      type=wp.zeros((nworld, njmax), dtype=int),
+      id=wp.zeros((nworld, njmax), dtype=int),
       J=wp.zeros((nworld, njmax, mjm.nv), dtype=float),
       pos=wp.zeros((nworld, njmax), dtype=float),
       margin=wp.zeros((nworld, njmax), dtype=float),

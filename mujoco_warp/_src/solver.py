@@ -2516,6 +2516,7 @@ def solve(m: types.Model, d: types.Data):
   else:
     _solve(m, d)
 
+
 def _solve(m: types.Model, d: types.Data):
   """Finds forces that satisfy constraints."""
   # warmstart
