@@ -1087,7 +1087,8 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   Args:
     m (Model): The model containing kinematic and dynamic information.
     d (Data): The data object containing the current state and output arrays.
-    flg_acc (bool): If True, includes joint accelerations in the computation.
+    flg_acc (bool, optional): If True, includes joint accelerations in the computation.
+                              Defaults to False.
   """
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)

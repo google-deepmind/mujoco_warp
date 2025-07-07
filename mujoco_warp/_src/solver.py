@@ -2508,13 +2508,10 @@ def _copy_acc(m: types.Model, d: types.Data):
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
-  if m.opt.graph_conditional:
-    wp.capture_if(condition=d.nefc, on_true=_solve, on_false=_copy_acc, m=m, d=d)
+  if d.njmax == 0:
+    _copy_acc(m, d)
   else:
-    if d.njmax == 0:
-      _copy_acc(m, d)
-    else:
-      _solve(m, d)
+    _solve(m, d)
 
 
 def _solve(m: types.Model, d: types.Data):

@@ -799,6 +799,31 @@ class CollisionTest(parameterized.TestCase):
 
     np.testing.assert_equal(d.ncon.numpy()[0], types.MJ_MAXCONPAIR)
 
+  def test_min_friction(self):
+    _, _, _, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size=".1" friction="0 0 0"/>
+          <joint type="slide"/>
+        </body>
+        <body>
+          <geom type="sphere" size=".1" friction="0 0 0"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="0 .1"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    self.assertEqual(d.ncon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)
+
   # TODO(team): test contact parameter mixing
 
 

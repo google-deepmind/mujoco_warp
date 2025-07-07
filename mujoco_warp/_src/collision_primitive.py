@@ -20,6 +20,7 @@ from .math import closest_segment_point
 from .math import closest_segment_to_segment_points
 from .math import make_frame
 from .math import normalize_with_norm
+from .types import MJ_MINMU
 from .types import MJ_MINVAL
 from .types import Data
 from .types import GeomType
@@ -1351,11 +1352,11 @@ def contact_params(
 
     max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
     friction = vec5(
-      max_geom_friction[0],
-      max_geom_friction[0],
-      max_geom_friction[1],
-      max_geom_friction[2],
-      max_geom_friction[2],
+      wp.max(MJ_MINMU, max_geom_friction[0]),
+      wp.max(MJ_MINMU, max_geom_friction[0]),
+      wp.max(MJ_MINMU, max_geom_friction[1]),
+      wp.max(MJ_MINMU, max_geom_friction[2]),
+      wp.max(MJ_MINMU, max_geom_friction[2]),
     )
 
     if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
