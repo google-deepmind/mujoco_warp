@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .collision_gjk import ccd
+from .collision_gjk import build_ccd
 from .collision_hfield import hfield_prism_vertex
 from .collision_primitive import Geom
 from .collision_primitive import _geom
@@ -955,7 +955,7 @@ def ccd_kernel_builder(
       x1 = geom1.pos
       x2 = geom2.pos
 
-      dist, x1, x2 = ccd(
+      dist, x1, x2 = wp.static(build_ccd())(
         1e-6,
         gjk_iterations,
         epa_iterations,
