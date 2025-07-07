@@ -440,8 +440,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       ls_parallel=False,
       gjk_iterations=MJ_CCD_ITERATIONS,
       epa_iterations=MJ_CCD_ITERATIONS,
-      epa_exact_neg_distance=False,
-      depth_extension=0.1,
       broadphase=int(broadphase),
       graph_conditional=False,
       sdf_initpoints=mjm.opt.sdf_initpoints,

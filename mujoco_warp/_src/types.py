@@ -524,8 +524,6 @@ class Option:
     is_sparse: whether to use sparse representations
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
-    epa_exact_neg_distance: calculate distances for non-intersecting convex geoms
-    depth_extension: distance past which closest point is not calculated for convex geoms
     ls_parallel: evaluate engine solver step sizes in parallel
     wind: wind (for lift, drag, and viscosity)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
@@ -553,8 +551,6 @@ class Option:
   is_sparse: bool
   gjk_iterations: int  # warp only
   epa_iterations: int  # warp only
-  epa_exact_neg_distance: bool  # warp only
-  depth_extension: float  # warp only
   ls_parallel: bool
   wind: wp.array(dtype=wp.vec3)
   has_fluid: bool
