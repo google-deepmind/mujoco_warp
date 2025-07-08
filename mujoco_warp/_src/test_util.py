@@ -161,7 +161,7 @@ def _sum(stack1, stack2):
 def halton(
   # In
   index: int,
-  base: int
+  base: int,
 ) -> float:
   n0 = int(index)
   b = float(base)
@@ -256,7 +256,7 @@ def benchmark(
         inputs=[
           m.actuator_ctrlrange, m.actuator_ctrllimited, i, 0.01
         ],
-        outputs=[d.ctrl])
+        outputs=[d.ctrl])  # fmt: skip
 
       run_beg = time.perf_counter()
       wp.capture_launch(graph)
