@@ -159,7 +159,7 @@ def _sum(stack1, stack2):
 
 @wp.func
 def halton(
-  # In
+  # In:
   index: int,
   base: int,
 ) -> float:
@@ -180,8 +180,8 @@ def halton(
 @wp.kernel
 def get_ctrl_noise(
   # Model:
-  actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   actuator_ctrllimited: wp.array(dtype=bool),
+  actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   # In:
   step: int,
   ctrlnoise: float,
@@ -254,7 +254,7 @@ def benchmark(
         get_ctrl_noise,
         dim=(d.nworld, m.nu),
         inputs=[
-          m.actuator_ctrlrange, m.actuator_ctrllimited, i, 0.01
+          m.actuator_ctrllimited, m.actuator_ctrlrange, i, 0.01
         ],
         outputs=[d.ctrl])  # fmt: skip
 
