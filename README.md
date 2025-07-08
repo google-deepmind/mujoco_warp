@@ -59,7 +59,7 @@ The following features are implemented:
 | Actuator Dynamics  | All except `USER`                                                                                       |
 | Actuator Gain      | All except `USER`                                                                                       |
 | Actuator Bias      | All except `USER`                                                                                       |
-| Geom               | All (`MESH`&harr;`SDF`, `MESH`&harr;`PLANE` collision algorithms not yet implemented)                   |
+| Geom               | All (`MESH`&harr;`SDF`, collisions are not yet implemented)                                             |
 | Constraint         | All                                                                                                     |
 | Equality           | All except `FLEX`, `DISTANCE`                                                                           |
 | Integrator         | All except `IMPLICIT`                                                                                   |
