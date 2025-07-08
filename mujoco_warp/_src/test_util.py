@@ -157,6 +157,50 @@ def _sum(stack1, stack2):
   return ret
 
 
+@wp.func
+def halton(
+  # In
+  index: int,
+  base: int
+) -> float:
+  n0 = int(index)
+  b = float(base)
+  f = 1.0 / b
+  hn = float(0.0)
+  while n0 > 0:
+    n1 = n0 // base
+    r = n0 - n1 * base
+    hn += f * float(r)
+    f /= b
+    n0 = n1
+
+  return hn
+
+
+@wp.kernel
+def get_ctrl_noise(
+  # Model:
+  actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
+  actuator_ctrllimited: wp.array(dtype=bool),
+  # In:
+  step: int,
+  ctrlnoise: float,
+  # Data out:
+  ctrl_out: wp.array2d(dtype=float),
+):
+  worldid, nuid = wp.tid()
+
+  center = 0.0
+  radius = 1.0
+  ctrlrange = actuator_ctrlrange[0, nuid]
+  if actuator_ctrllimited[nuid]:
+    center = (ctrlrange[1] + ctrlrange[0]) / 2.0
+    radius = (ctrlrange[1] - ctrlrange[0]) / 2.0
+  radius *= ctrlnoise
+  noise = 2.0 * halton(step * worldid, nuid + 2) - 1.0
+  ctrl_out[worldid, nuid] = center + radius * noise
+
+
 def benchmark(
   fn: Callable[[Model, Data], None],
   m: Model,
@@ -204,9 +248,21 @@ def benchmark(
       fn(m, d)
     graph = capture.graph
 
-    run_beg = time.perf_counter()
-    for _ in range(nstep):
+    time_vec = np.zeros(nstep)
+    for i in range(nstep):
+      wp.launch(
+        get_ctrl_noise,
+        dim=(d.nworld, m.nu),
+        inputs=[
+          m.actuator_ctrlrange, m.actuator_ctrllimited, i, 0.01
+        ],
+        outputs=[d.ctrl])
+
+      run_beg = time.perf_counter()
       wp.capture_launch(graph)
+      wp.synchronize()
+      run_end = time.perf_counter()
+      time_vec[i] = run_end - run_beg
       if trace:
         trace = _sum(trace, tracer.trace())
       else:
@@ -220,7 +276,6 @@ def benchmark(
         solver_niter.append(d.solver_niter.numpy())
 
     wp.synchronize()
-    run_end = time.perf_counter()
-    run_duration = run_end - run_beg
+    run_duration = np.sum(time_vec)
 
   return jit_duration, run_duration, trace, ncon, nefc, solver_niter
