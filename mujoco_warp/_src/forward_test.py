@@ -227,15 +227,20 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-  @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml")
-  def test_graph_capture(self, xml):
+  @parameterized.product(xml=("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"),
+                         graph_conditional=(True, False))
+  def test_graph_capture(self, xml, graph_conditional):
     # TODO(team): test more environments
     if wp.get_device().is_cuda and wp.config.verify_cuda == False:
       _, _, m, d = test_util.fixture(xml)
+      m.opt.graph_conditional = graph_conditional
 
       with wp.ScopedCapture() as capture:
         mjwarp.step(m, d)
 
+      # step a few times to ensure no errors at the step boundary
+      wp.capture_launch(capture.graph)
+      wp.capture_launch(capture.graph)
       wp.capture_launch(capture.graph)
 
       self.assertTrue(d.time.numpy()[0] > 0.0)
