@@ -19,6 +19,8 @@ from typing import Callable, Optional
 import warp as wp
 from warp.context import Module
 from warp.context import get_module
+from warp.runtime import assert_conditional_graph_support
+from types import Model
 
 _STACK = None
 
@@ -185,3 +187,11 @@ def cache_kernel(func):
     return _KERNEL_CACHE[key]
 
   return wrapper
+
+
+def conditional_graph_enabled_and_supported(m: Model):
+  try:
+    assert_conditional_graph_support()
+  except Exception:
+    return False
+  return m.opt.graph_conditional == True
