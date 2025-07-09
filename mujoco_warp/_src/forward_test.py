@@ -227,8 +227,9 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-  @parameterized.product(xml=("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"),
-                         graph_conditional=(True, False))
+  @parameterized.product(
+    xml=("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"), graph_conditional=(True, False)
+  )
   def test_graph_capture(self, xml, graph_conditional):
     # TODO(team): test more environments
     if wp.get_device().is_cuda and wp.config.verify_cuda == False:
