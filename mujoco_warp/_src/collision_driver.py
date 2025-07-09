@@ -28,7 +28,8 @@ from .types import Data
 from .types import DisableBit
 from .types import GeomType
 from .types import Model
-from .warp_util import conditional_graph_enabled_and_supported, event_scope
+from .warp_util import conditional_graph_enabled_and_supported
+from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 

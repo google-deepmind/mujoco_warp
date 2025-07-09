@@ -23,7 +23,8 @@ from . import support
 from . import types
 from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
-from .warp_util import cache_kernel, conditional_graph_enabled_and_supported
+from .warp_util import cache_kernel
+from .warp_util import conditional_graph_enabled_and_supported
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 

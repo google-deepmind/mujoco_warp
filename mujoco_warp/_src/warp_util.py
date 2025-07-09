@@ -14,13 +14,13 @@
 # ==============================================================================
 
 import functools
+from types import Model
 from typing import Callable, Optional
 
 import warp as wp
 from warp.context import Module
-from warp.context import get_module
 from warp.context import assert_conditional_graph_support
-from types import Model
+from warp.context import get_module
 
 _STACK = None
 
