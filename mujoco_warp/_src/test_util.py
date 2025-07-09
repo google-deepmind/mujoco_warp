@@ -215,7 +215,7 @@ def benchmark(
         wp.synchronize()
       if measure_alloc:
         ncon.append(d.ncon.numpy()[0])
-        nefc.append(d.nefc.numpy()[0])
+        nefc.append(np.sum(d.nefc.numpy()))
       if measure_solver_niter:
         solver_niter.append(d.solver_niter.numpy())
 
