@@ -25,6 +25,7 @@ from .math import gjk_normalize
 from .math import make_frame
 from .math import orthonormal
 from .math import upper_tri_index
+from .math import upper_trid_index
 from .support import all_same
 from .support import any_different
 from .types import MJ_MAXCONPAIR
@@ -33,7 +34,9 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .warp_util import cache_kernel
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.config.enable_backward = False
@@ -62,7 +65,7 @@ VECI1 = vec6(0, 0, 0, 1, 1, 2)
 VECI2 = vec6(1, 2, 3, 2, 3, 3)
 
 
-_CONVEX_COLLISION_PAIRS = {
+_CONVEX_COLLISION_PAIRS = [
   (GeomType.HFIELD.value, GeomType.SPHERE.value),
   (GeomType.HFIELD.value, GeomType.CAPSULE.value),
   (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
@@ -71,8 +74,8 @@ _CONVEX_COLLISION_PAIRS = {
   (GeomType.HFIELD.value, GeomType.MESH.value),
   (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
   (GeomType.SPHERE.value, GeomType.MESH.value),
-  (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
   (GeomType.CAPSULE.value, GeomType.ELLIPSOID.value),
+  (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
   (GeomType.CAPSULE.value, GeomType.MESH.value),
   (GeomType.ELLIPSOID.value, GeomType.ELLIPSOID.value),
   (GeomType.ELLIPSOID.value, GeomType.CYLINDER.value),
@@ -83,7 +86,20 @@ _CONVEX_COLLISION_PAIRS = {
   (GeomType.CYLINDER.value, GeomType.MESH.value),
   (GeomType.BOX.value, GeomType.MESH.value),
   (GeomType.MESH.value, GeomType.MESH.value),
-}
+]
+
+
+def _check_convex_collision_pairs():
+  prev_idx = -1
+  for pair in _CONVEX_COLLISION_PAIRS:
+    idx = upper_trid_index(len(GeomType), pair[0], pair[1])
+    if pair[1] < pair[0] or idx <= prev_idx:
+      return False
+    prev_idx = idx
+  return True
+
+
+assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid order."
 
 
 @wp.func
@@ -239,6 +255,7 @@ def _max_contacts_height_field(
   return False
 
 
+@cache_kernel
 def ccd_kernel_builder(
   default_gjk: bool,
   geomtype1: int,
@@ -771,7 +788,7 @@ def ccd_kernel_builder(
     return contact_count, contact_points
 
   # runs GJK and EPA on a set of sparse geom pairs per env
-  @wp.kernel
+  @nested_kernel
   def gjk_epa_sparse(
     # Model:
     ngeom: int,
@@ -796,6 +813,15 @@ def ccd_kernel_builder(
     mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graphadr: wp.array(dtype=int),
     mesh_graph: wp.array(dtype=int),
+    mesh_polynum: wp.array(dtype=int),
+    mesh_polyadr: wp.array(dtype=int),
+    mesh_polynormal: wp.array(dtype=wp.vec3),
+    mesh_polyvertadr: wp.array(dtype=int),
+    mesh_polyvertnum: wp.array(dtype=int),
+    mesh_polyvert: wp.array(dtype=int),
+    mesh_polymapadr: wp.array(dtype=int),
+    mesh_polymapnum: wp.array(dtype=int),
+    mesh_polymap: wp.array(dtype=int),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array2d(dtype=wp.vec2),
     pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -816,6 +842,8 @@ def ccd_kernel_builder(
     epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
+    epa_vert_index1_in: wp.array2d(dtype=int),
+    epa_vert_index2_in: wp.array2d(dtype=int),
     epa_face_in: wp.array2d(dtype=wp.vec3i),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
@@ -887,6 +915,15 @@ def ccd_kernel_builder(
       mesh_vert,
       mesh_graphadr,
       mesh_graph,
+      mesh_polynum,
+      mesh_polyadr,
+      mesh_polynormal,
+      mesh_polyvertadr,
+      mesh_polyvertnum,
+      mesh_polyvert,
+      mesh_polymapadr,
+      mesh_polymapnum,
+      mesh_polymap,
       geom_xpos_in,
       geom_xmat_in,
       worldid,
@@ -908,6 +945,15 @@ def ccd_kernel_builder(
       mesh_vert,
       mesh_graphadr,
       mesh_graph,
+      mesh_polynum,
+      mesh_polyadr,
+      mesh_polynormal,
+      mesh_polyvertadr,
+      mesh_polyvertnum,
+      mesh_polyvert,
+      mesh_polymapadr,
+      mesh_polymapnum,
+      mesh_polymap,
       geom_xpos_in,
       geom_xmat_in,
       worldid,
@@ -951,6 +997,8 @@ def ccd_kernel_builder(
         epa_vert_in[tid],
         epa_vert1_in[tid],
         epa_vert2_in[tid],
+        epa_vert_index1_in[tid],
+        epa_vert_index2_in[tid],
         epa_face_in[tid],
         epa_pr_in[tid],
         epa_norm2_in[tid],
@@ -1004,8 +1052,8 @@ def ccd_kernel_builder(
 
 @event_scope
 def convex_narrowphase(m: Model, d: Data):
-  for geom_pair in zip(m.geom_type_pair[::2], m.geom_type_pair[1::2]):
-    if geom_pair in _CONVEX_COLLISION_PAIRS:
+  for geom_pair in _CONVEX_COLLISION_PAIRS:
+    if m.geom_pair_type_count[upper_trid_index(len(GeomType), geom_pair[0], geom_pair[1])]:
       wp.launch(
         ccd_kernel_builder(
           False,
@@ -1040,6 +1088,15 @@ def convex_narrowphase(m: Model, d: Data):
           m.mesh_vert,
           m.mesh_graphadr,
           m.mesh_graph,
+          m.mesh_polynum,
+          m.mesh_polyadr,
+          m.mesh_polynormal,
+          m.mesh_polyvertadr,
+          m.mesh_polyvertnum,
+          m.mesh_polyvert,
+          m.mesh_polymapadr,
+          m.mesh_polymapnum,
+          m.mesh_polymap,
           m.pair_dim,
           m.pair_solref,
           m.pair_solreffriction,
@@ -1059,6 +1116,8 @@ def convex_narrowphase(m: Model, d: Data):
           d.epa_vert,
           d.epa_vert1,
           d.epa_vert2,
+          d.epa_vert_index1,
+          d.epa_vert_index2,
           d.epa_face,
           d.epa_pr,
           d.epa_norm2,

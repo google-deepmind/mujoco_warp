@@ -59,6 +59,7 @@ _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "Provide a full event tra
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of nconmax, njmax is used.")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "Measure the number of solver iterations.")
 _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to summarize measurements.")
+_INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator).")
 
 
 def _print_table(matrix, headers):
@@ -137,6 +138,18 @@ def _main(argv: Sequence[str]):
   mujoco.mj_forward(mjm, mjd)
 
   m = mjwarp.put_model(mjm)
+
+  # integrator
+  IntegratorType = mjwarp._src.types.IntegratorType
+  integrators = {IntegratorType.EULER: "Euler", IntegratorType.IMPLICITFAST: "implicitfast", IntegratorType.RK4: "RK4"}
+  integrator = integrators[m.opt.integrator]
+
+  if _INTEGRATOR.value is not None:
+    for k, v in integrators.items():
+      if _INTEGRATOR.value == v:
+        integrator = v
+        m.opt.integrator = k
+
   m.opt.ls_parallel = _LS_PARALLEL.value
   d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
@@ -149,7 +162,8 @@ def _main(argv: Sequence[str]):
     f"Model nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} "
     f"is_sparse: {_IS_SPARSE.value} solver: {solver_name} "
     f"iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations} "
-    f"linesearch: {linesearch_name}"
+    f"linesearch: {linesearch_name} "
+    f"integrator: {integrator}"
   )
   print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}")
   print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")

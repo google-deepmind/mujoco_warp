@@ -213,10 +213,10 @@
     </worldbody>
 
     <sensor>
-        <!-- <framequat name="IMU-orientation" objtype="site" objname="imu"/>
+        <framequat name="IMU-orientation" objtype="site" objname="imu"/>
         <gyro name="IMU-angular-velocity" site="imu" noise="5e-4" cutoff="54.9"/>
         <accelerometer name="IMU-linear-acceleration" site="imu" noise="1e-4" cutoff="157"/>
-        <magnetometer name="IMU-magnetometer" site="imu"/> -->
+        <magnetometer name="IMU-magnetometer" site="imu"/>
     </sensor>
 
     <actuator>
