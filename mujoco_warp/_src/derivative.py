@@ -201,7 +201,7 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
     for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
       wp.launch_tiled(
         _tile_qderiv_actuator_passive(tile_nu, tile_nv, actuation_enabled, passive_enabled, flg_forward),
-        dim=(d.nworld, tile_nu.adr.size, tile_nv.adr.size),
+        dim=(d.nworld, tile_nu.adr.size),
         inputs=[
           m.opt.timestep,
           m.dof_damping,

@@ -493,7 +493,6 @@ def _narrowphase(m, d):
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
-  # TODO(team) switch between collision functions and GJK/EPA here
   convex_narrowphase(m, d)
   primitive_narrowphase(m, d)
 

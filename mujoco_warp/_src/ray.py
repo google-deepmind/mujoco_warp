@@ -712,19 +712,6 @@ def _ray_geom_mesh(
     return wp.inf
 
 
-snippet = """
-#if defined(__CUDA_ARCH__)
-    return blockDim.x;
-#else
-    return 1;
-#endif
-    """
-
-
-@wp.func_native(snippet)
-def get_block_dim_x() -> int: ...
-
-
 @wp.kernel
 def _ray(
   # Model:
@@ -763,7 +750,7 @@ def _ray(
 ):
   worldid, rayid, tid = wp.tid()
 
-  num_threads = get_block_dim_x()
+  num_threads = wp.block_dim()
 
   min_dist = float(wp.inf)
   min_geomid = int(-1)
