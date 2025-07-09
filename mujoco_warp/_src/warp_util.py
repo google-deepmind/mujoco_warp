@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import functools
-from types import Model
+from .types import Model
 from typing import Callable, Optional
 
 import warp as wp
