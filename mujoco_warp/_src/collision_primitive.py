@@ -860,7 +860,7 @@ def plane_convex(
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos, convex.vert[convex.vertadr + idx])
+        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         if support > max_support:
           max_support = support
           imax = int(subidx)
@@ -901,7 +901,7 @@ def plane_convex(
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos, convex.vert[convex.vertadr + idx])
+        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
         if dist > a_dist:
           a_dist = dist
@@ -940,7 +940,7 @@ def plane_convex(
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos, convex.vert[convex.vertadr + idx])
+        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
         dist = wp.length_sq(a - convex.vert[convex.vertadr + idx]) + dist_mask
         if dist > b_dist:
@@ -982,7 +982,7 @@ def plane_convex(
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos, convex.vert[convex.vertadr + idx])
+        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
         dist = wp.length_sq(ab - convex.vert[convex.vertadr + idx]) + dist_mask
         if dist > c_dist:
@@ -1026,7 +1026,7 @@ def plane_convex(
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos, convex.vert[convex.vertadr + idx])
+        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
         ap = ac - convex.vert[convex.vertadr + idx]
         bp = bc - convex.vert[convex.vertadr + idx]
