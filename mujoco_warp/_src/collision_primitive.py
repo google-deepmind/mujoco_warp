@@ -801,7 +801,6 @@ def plane_box(
 
 _HUGE_VAL = 1e6
 
-
 @wp.func
 def plane_convex(
   # Data in:
@@ -838,18 +837,75 @@ def plane_convex(
   plane_pos = wp.transpose(convex.rot) @ (plane.pos - convex.pos)
   n = wp.transpose(convex.rot) @ plane.normal
 
-  # Find support points
-  max_support = wp.float32(-_HUGE_VAL)
+  # Store indices in vec4
+  indices = wp.vec4i(-1, -1, -1, -1)
+
+  # exhaustive search over all vertices
   if convex.graphadr == -1 or convex.vertnum < 10:
-    # exhaustive search over all vertices
+    # Find support points
+    max_support = wp.float32(-_HUGE_VAL)
     for i in range(convex.vertnum):
       support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
       max_support = wp.max(support, max_support)
+
+    threshold = wp.max(0.0, max_support - 1e-3)
+    # Find point a (first support point)
+    a_dist = wp.float32(-_HUGE_VAL)
+    for i in range(convex.vertnum):
+      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+      dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+      if dist > a_dist:
+        indices[0] = i
+        a_dist = dist
+    a = convex.vert[convex.vertadr + indices[0]]
+
+    # Find point b (furthest from a)
+    b_dist = wp.float32(-_HUGE_VAL)
+    for i in range(convex.vertnum):
+      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+      dist = wp.length_sq(a - convex.vert[convex.vertadr + i]) + dist_mask
+      if dist > b_dist:
+        indices[1] = i
+        b_dist = dist
+    b = convex.vert[convex.vertadr + indices[1]]
+
+    # Find point c (furthest along axis orthogonal to a-b)
+    ab = wp.cross(n, a - b)
+    c_dist = wp.float32(-_HUGE_VAL)
+    for i in range(convex.vertnum):
+      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+      dist = wp.length_sq(ab - convex.vert[convex.vertadr + i]) + dist_mask
+      if dist > c_dist:
+        indices[2] = i
+        c_dist = dist
+    c = convex.vert[convex.vertadr + indices[2]]
+
+    # Find point d (furthest from other triangle edges)
+    ac = wp.cross(n, a - c)
+    bc = wp.cross(n, b - c)
+    d_dist = wp.float32(-_HUGE_VAL)
+    for i in range(convex.vertnum):
+      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
+      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
+      ap = ac - convex.vert[convex.vertadr + i]
+      bp = bc - convex.vert[convex.vertadr + i]
+      dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
+      dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
+      if dist_ap + dist_bp > d_dist:
+        indices[3] = i
+        d_dist = dist_ap + dist_bp
+
   else:
     numvert = convex.graph[convex.graphadr]
     vert_edgeadr = convex.graphadr + 2
     vert_globalid = convex.graphadr + 2 + numvert
     edge_localid = convex.graphadr + 2 + 2 * numvert
+
+    # Find support points
+    max_support = wp.float32(-_HUGE_VAL)
+
     # hillclimb until no change
     prev = int(-1)
     imax = int(0)
@@ -868,70 +924,7 @@ def plane_convex(
       if imax == prev:
         break
 
-  threshold = wp.max(0.0, max_support - 1e-3)
-
-  # Store indices in vec4
-  indices = wp.vec4i(-1, -1, -1, -1)
-
-  if convex.graphadr == -1 or convex.vertnum < 10:
-    # Find point a (first support point)
-    # exhaustive search over all vertices
-    a_dist = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      if dist > a_dist:
-        indices[0] = i
-        a_dist = dist
-    a = convex.vert[convex.vertadr + indices[0]]
-
-    # Find point b (furthest from a)
-    b_dist = wp.float32(-_HUGE_VAL)
-    # exhaustive search over all vertices
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      dist = wp.length_sq(a - convex.vert[convex.vertadr + i]) + dist_mask
-      if dist > b_dist:
-        indices[1] = i
-        b_dist = dist
-    b = convex.vert[convex.vertadr + indices[1]]
-
-    # Find point c (furthest along axis orthogonal to a-b)
-    ab = wp.cross(n, a - b)
-    c_dist = wp.float32(-_HUGE_VAL)
-    # exhaustive search over all vertices
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      dist = wp.length_sq(ab - convex.vert[convex.vertadr + i]) + dist_mask
-      if dist > c_dist:
-        indices[2] = i
-        c_dist = dist
-    c = convex.vert[convex.vertadr + indices[2]]
-
-    # Find point d (furthest from other triangle edges)
-    ac = wp.cross(n, a - c)
-    bc = wp.cross(n, b - c)
-    d_dist = wp.float32(-_HUGE_VAL)
-    # exhaustive search over all vertices
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      ap = ac - convex.vert[convex.vertadr + i]
-      bp = bc - convex.vert[convex.vertadr + i]
-      dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
-      dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
-      if dist_ap + dist_bp > d_dist:
-        indices[3] = i
-        d_dist = dist_ap + dist_bp
-
-  else:
-    numvert = convex.graph[convex.graphadr]
-    vert_edgeadr = convex.graphadr + 2
-    vert_globalid = convex.graphadr + 2 + numvert
-    edge_localid = convex.graphadr + 2 + 2 * numvert
-    
+    threshold = wp.max(0.0, max_support - 1e-3)
     
     a_dist = wp.float32(-_HUGE_VAL)
     # hillclimb until no change
