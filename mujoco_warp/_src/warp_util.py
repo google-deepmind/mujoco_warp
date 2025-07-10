@@ -190,9 +190,9 @@ def cache_kernel(func):
   return wrapper
 
 
-def conditional_graph_enabled_and_supported(m: Model):
+def conditional_graph_supported():
   try:
     assert_conditional_graph_support()
   except Exception:
     return False
-  return m.opt.graph_conditional == True
+  return True

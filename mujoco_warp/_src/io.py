@@ -19,6 +19,8 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src.warp_util import conditional_graph_supported
+
 from . import math
 from . import types
 
@@ -446,7 +448,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       epa_exact_neg_distance=False,
       depth_extension=0.1,
       broadphase=int(broadphase),
-      graph_conditional=False,
+      graph_conditional=True and conditional_graph_supported(),
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
     ),

@@ -28,7 +28,6 @@ from .types import Data
 from .types import DisableBit
 from .types import GeomType
 from .types import Model
-from .warp_util import conditional_graph_enabled_and_supported
 from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -502,7 +501,7 @@ def _narrowphase(m, d):
 
 
 def narrowphase(m, d):
-  if conditional_graph_enabled_and_supported(m):
+  if m.opt.graph_conditional:
     wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
   else:
     _narrowphase(m, d)

@@ -24,7 +24,6 @@ from . import types
 from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
 from .warp_util import cache_kernel
-from .warp_util import conditional_graph_enabled_and_supported
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
@@ -2646,7 +2645,7 @@ def _copy_acc(m: types.Model, d: types.Data):
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
-  if conditional_graph_enabled_and_supported(m):
+  if m.opt.graph_conditional:
     wp.capture_if(condition=d.nefc, on_true=_solve, on_false=_copy_acc, m=m, d=d)
   else:
     if d.njmax == 0:
@@ -2671,7 +2670,7 @@ def _solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
-  if m.opt.iterations != 0 and conditional_graph_enabled_and_supported(m):
+  if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
     # condition_iteration is a warp array of size 1 and type int, it counts the number
