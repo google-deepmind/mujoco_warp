@@ -854,34 +854,6 @@ class CollisionTest(parameterized.TestCase):
 
   # TODO(team): test contact parameter mixing
 
-  @absltest.skip("skip")
-  def test_h1(self):
-    mjm, mjd, m, d = test_util.fixture("h1_minimal.xml")
-
-    for k in range(100):
-      mujoco.mj_step(mjm, mjd)
-      mjwarp.step(m, d)
-      print("step ", k, mjd.ncon, d.ncon.numpy()[0])
-
-      for i in range(mjd.ncon):
-        actual_dist = mjd.contact.dist[i]
-        actual_pos = mjd.contact.pos[i]
-        actual_frame = mjd.contact.frame[i]
-        #print("actual_dist", actual_dist)
-        result = False
-        for j in range(d.ncon.numpy()[0]):
-          #print("test_dist", d.contact.dist.numpy()[j])
-          test_dist = d.contact.dist.numpy()[j]
-          test_pos = d.contact.pos.numpy()[j, :]
-          test_frame = d.contact.frame.numpy()[j].flatten()
-          check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
-          check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-2)
-          check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-2)
-          if check_dist and check_pos and check_frame:
-            result = True
-            break
-          np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
-
 
 if __name__ == "__main__":
   absltest.main()
