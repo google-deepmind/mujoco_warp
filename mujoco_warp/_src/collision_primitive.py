@@ -801,6 +801,7 @@ def plane_box(
 
 _HUGE_VAL = 1e6
 
+
 @wp.func
 def plane_convex(
   # Data in:
@@ -925,7 +926,7 @@ def plane_convex(
         break
 
     threshold = wp.max(0.0, max_support - 1e-3)
-    
+
     a_dist = wp.float32(-_HUGE_VAL)
     # hillclimb until no change
     prev = int(-1)
@@ -973,7 +974,6 @@ def plane_convex(
     imax = convex.graph[vert_globalid + imax]
     b = convex.vert[convex.vertadr + imax]
     indices[1] = imax
-
 
     # Find point c (furthest along axis orthogonal to a-b)
     ab = wp.cross(n, a - b)
