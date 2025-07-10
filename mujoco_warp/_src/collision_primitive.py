@@ -2466,7 +2466,7 @@ _primitive_collisions_types = []
 _primitive_collisions_func = []
 
 
-def primitive_narrowphase_builder(m: Model):
+def _primitive_narrowphase_builder(m: Model):
   for types, func in _PRIMITIVE_COLLISIONS.items():
     idx = upper_trid_index(len(GeomType), types[0], types[1])
     if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
@@ -2671,10 +2671,25 @@ def primitive_narrowphase_builder(m: Model):
 
 @event_scope
 def primitive_narrowphase(m: Model, d: Data):
+  """Runs collision detection on primitive geom pairs discovered during broadphase.
+
+  This function processes collision pairs involving primitive shapes that were
+  identified during the broadphase stage. It computes detailed contact information
+  such as distance, position, and frame, and populates the `d.contact` array.
+
+  The primitive geom types handled are PLANE, SPHERE, CAPSULE, CYLINDER, BOX.
+
+  It also handles collisions between planes and meshes, treating the mesh as a
+  generic convex shape.
+
+  To improve performance, it dynamically builds and launches a kernel tailored to
+  the specific primitive collision types present in the model, avoiding
+  unnecessary checks for non-existent collision pairs.
+  """
   # we need to figure out how to keep the overhead of this small - not launching anything
   # for pair types without collisions, as well as updating the launch dimensions.
   wp.launch(
-    primitive_narrowphase_builder(m),
+    _primitive_narrowphase_builder(m),
     dim=d.nconmax,
     inputs=[
       m.geom_type,

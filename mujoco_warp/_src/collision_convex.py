@@ -1053,6 +1053,20 @@ def ccd_kernel_builder(
 
 @event_scope
 def convex_narrowphase(m: Model, d: Data):
+  """Runs narrowphase collision detection for convex geom pairs.
+
+  This function handles collision detection for pairs of convex geometries that were
+  identified during the broadphase. It uses the Gilbert-Johnson-Keerthi (GJK) algorithm to
+  determine the distance between shapes and the Expanding Polytope Algorithm (EPA) to find
+  the penetration depth and contact normal for colliding pairs.
+
+  The convex geom types handled by this function are SPHERE, CAPSULE, ELLIPSOID, CYLINDER,
+  BOX, MESH, HFIELD.
+
+  To optimize performance, this function dynamically builds and launches a specialized
+  kernel for each type of convex collision pair present in the model, avoiding unnecessary
+  computations for non-existent pair types.
+  """
   for geom_pair in _CONVEX_COLLISION_PAIRS:
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), geom_pair[0], geom_pair[1])]:
       wp.launch(
