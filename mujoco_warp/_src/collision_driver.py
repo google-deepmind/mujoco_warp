@@ -99,6 +99,184 @@ def _sphere_filter(
 
 
 @wp.func
+def _aabb_filter(
+  # Model:
+  geom_aabb: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  # Data in:
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  geom1: int,
+  geom2: int,
+  worldid: int,
+) -> bool:
+  """Axis aligned boxes collision.
+
+  references: mju_raySlab: see Ericson, Real-time Collision Detection section 5.3.3.
+              filterBox: filter contact based on global AABBs.
+  """
+  size1_local = geom_aabb[geom1, 1]
+  size2_local = geom_aabb[geom2, 1]
+
+  # get infinite dimensions (planes only)
+  inf1 = wp.vec3i(int(size1_local[0] >= MJ_MAXVAL), int(size1_local[1] >= MJ_MAXVAL), int(size1_local[2] >= MJ_MAXVAL))
+  inf2 = wp.vec3i(int(size2_local[0] >= MJ_MAXVAL), int(size2_local[1] >= MJ_MAXVAL), int(size2_local[2] >= MJ_MAXVAL))
+
+  # if a bounding box is infinite, there must be a collision
+  if (inf1[0] and inf1[1] and inf1[2]) or (inf2[0] and inf2[1] and inf2[2]):
+    return True
+
+  xmat1 = geom_xmat_in[worldid, geom1]
+  center1 = xmat1 @ geom_aabb[geom1, 0] + geom_xpos_in[worldid, geom1]
+  size1 = xmat1 @ size1_local
+  margin1 = geom_margin[worldid, geom1]
+
+  xmat2 = geom_xmat_in[worldid, geom2]
+  center2 = xmat2 @ geom_aabb[geom2, 0] + geom_xpos_in[worldid, geom2]
+  size2 = xmat2 @ size2_local
+  margin2 = geom_margin[worldid, geom2]
+
+  margin = wp.max(margin1, margin2)
+  infinite = wp.vec2i(int(inf1[0] or inf1[1] or inf1[2]), int(inf2[0] or inf2[1] or inf2[2]))
+
+  if not infinite[0] and not infinite[1]:
+    if center1[0] + size1[0] + margin < center2[0] - size2[0]:
+      return False
+    if center1[1] + size1[1] + margin < center2[1] - size2[1]:
+      return False
+    if center1[2] + size1[2] + margin < center2[2] - size2[2]:
+      return False
+    if center2[0] + size2[0] + margin < center1[0] - size1[0]:
+      return False
+    if center2[1] + size2[1] + margin < center1[1] - size1[1]:
+      return False
+    if center2[2] + size2[2] + margin < center1[2] - size1[2]:
+      return False
+
+  return True
+
+
+mat23 = wp.types.matrix(shape=(2, 3), dtype=float)
+mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
+
+
+@wp.func
+def _obb_filter(
+  # Model:
+  geom_aabb: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  # Data in:
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  geom1: int,
+  geom2: int,
+  worldid: int,
+) -> bool:
+  """Oriented bounding boxes collision (see Gottschalk et al.), see mj_collideOBB."""
+  size1 = geom_aabb[geom1, 1]
+  size2 = geom_aabb[geom2, 1]
+
+  # get infinite dimensions (planes only)
+  inf1 = wp.vec3i(int(size1[0] >= MJ_MAXVAL), int(size1[1] >= MJ_MAXVAL), int(size1[2] >= MJ_MAXVAL))
+  inf2 = wp.vec3i(int(size2[0] >= MJ_MAXVAL), int(size2[1] >= MJ_MAXVAL), int(size2[2] >= MJ_MAXVAL))
+
+  # if a bounding box is infinite, there must be a collision
+  if (inf1[0] and inf1[1] and inf1[2]) or (inf2[0] and inf2[1] and inf2[2]):
+    return True
+
+  center1 = geom_aabb[geom1, 0]
+  xpos1 = geom_xpos_in[worldid, geom1]
+  xmat1 = geom_xmat_in[worldid, geom1]
+  margin1 = geom_margin[worldid, geom1]
+
+  center2 = geom_aabb[geom2, 0]
+  xpos2 = geom_xpos_in[worldid, geom2]
+  xmat2 = geom_xmat_in[worldid, geom2]
+  margin2 = geom_margin[worldid, geom2]
+
+  margin = wp.max(margin1, margin2)
+
+  xcenter = mat23()
+  normal = mat63()
+  proj = wp.vec2()
+  radius = wp.vec2()
+  infinite = wp.vec2i(int(inf1[0] or inf1[1] or inf1[2]), int(inf2[0] or inf2[1] or inf2[2]))
+
+  # compute centers in local coordinates
+  xcenter[0] = xmat1 @ center1 + xpos1
+  xcenter[1] = xmat2 @ center2 + xpos2
+
+  # compute normals in global coordinates
+  normal[0] = wp.vec3(xmat1[0, 0], xmat1[1, 0], xmat1[2, 0])
+  normal[1] = wp.vec3(xmat1[0, 1], xmat1[1, 1], xmat1[2, 1])
+  normal[2] = wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2])
+  normal[3] = wp.vec3(xmat2[0, 0], xmat2[1, 0], xmat2[2, 0])
+  normal[4] = wp.vec3(xmat2[0, 1], xmat2[1, 1], xmat2[2, 1])
+  normal[5] = wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2])
+
+  # check intersections
+  for j in range(2):
+    if infinite[1 - j]:
+      continue  # skip test against an infinite body
+    for k in range(3):
+      for i in range(2):
+        proj[i] = wp.dot(xcenter[i], normal[3 * j + k])
+        if i == 0:
+          size = size1
+        else:
+          size = size2
+
+        # fmt: off
+        radius[i] = (
+            wp.abs(size[0] * wp.dot(normal[3 * i + 0], normal[3 * j + k]))
+          + wp.abs(size[1] * wp.dot(normal[3 * i + 1], normal[3 * j + k]))
+          + wp.abs(size[2] * wp.dot(normal[3 * i + 2], normal[3 * j + k]))
+        )
+        # fmt: on
+      if radius[0] + radius[1] + margin < wp.abs(proj[1] - proj[0]):
+        return False
+
+  return True
+
+
+@wp.func
+def _broadphase_filter(
+  # Model:
+  opt_broadphase_filter: int,
+  geom_aabb: wp.array2d(dtype=wp.vec3),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
+  # Data in:
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  geom1: int,
+  geom2: int,
+  worldid: int,
+) -> bool:
+  # 0: sphere
+  # 1: aabb
+  # 2: obb
+  # 3: sphere -> aabb
+  # 4: sphere -> obb
+  # 5: sphere -> aabb -> obb
+
+  sphere = True
+  aabb = True
+  obb = True
+
+  if opt_broadphase_filter == 0 or opt_broadphase_filter == 3 or opt_broadphase_filter == 4 or opt_broadphase_filter == 5:
+    sphere = _sphere_filter(geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+  if opt_broadphase_filter == 1 or opt_broadphase_filter == 3 or opt_broadphase_filter == 5:
+    aabb = _aabb_filter(geom_aabb, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+  if opt_broadphase_filter == 2 or opt_broadphase_filter == 4 or opt_broadphase_filter == 5:
+    obb = _obb_filter(geom_aabb, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+  return sphere and aabb and obb
+
+
+@wp.func
 def _add_geom_pair(
   # Model:
   geom_type: wp.array(dtype=int),
@@ -213,7 +391,9 @@ def _sap_range(
 def _sap_broadphase(
   # Model:
   ngeom: int,
+  opt_broadphase_filter: int,
   geom_type: wp.array(dtype=int),
+  geom_aabb: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   nxn_pairid: wp.array(dtype=int),
@@ -264,14 +444,8 @@ def _sap_broadphase(
       worldgeomid += nsweep_in
       continue
 
-    if _sphere_filter(
-      geom_rbound,
-      geom_margin,
-      geom_xpos_in,
-      geom_xmat_in,
-      geom1,
-      geom2,
-      worldid,
+    if _broadphase_filter(
+      opt_broadphase_filter, geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
     ):
       _add_geom_pair(
         geom_type,
@@ -382,7 +556,9 @@ def sap_broadphase(m: Model, d: Data):
     dim=nsweep,
     inputs=[
       m.ngeom,
+      m.opt.broadphase_filter,
       m.geom_type,
+      m.geom_aabb,
       m.geom_rbound,
       m.geom_margin,
       m.nxn_pairid,
@@ -407,7 +583,9 @@ def sap_broadphase(m: Model, d: Data):
 @wp.kernel
 def _nxn_broadphase(
   # Model:
+  opt_broadphase_filter: int,
   geom_type: wp.array(dtype=int),
+  geom_aabb: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   nxn_geom_pair: wp.array(dtype=wp.vec2i),
@@ -433,14 +611,8 @@ def _nxn_broadphase(
   geom1 = geom[0]
   geom2 = geom[1]
 
-  if _sphere_filter(
-    geom_rbound,
-    geom_margin,
-    geom_xpos_in,
-    geom_xmat_in,
-    geom1,
-    geom2,
-    worldid,
+  if _broadphase_filter(
+    opt_broadphase_filter, geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
   ):
     _add_geom_pair(
       geom_type,
@@ -467,7 +639,9 @@ def nxn_broadphase(m: Model, d: Data):
       _nxn_broadphase,
       dim=(d.nworld, m.nxn_geom_pair.shape[0]),
       inputs=[
+        m.opt.broadphase_filter,
         m.geom_type,
+        m.geom_aabb,
         m.geom_rbound,
         m.geom_margin,
         m.nxn_geom_pair,

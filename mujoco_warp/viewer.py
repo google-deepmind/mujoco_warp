@@ -40,6 +40,9 @@ _VIEWER_GLOBAL_STATE = {
 }
 _NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
 _NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints.")
+_BROADPHASE = flags.DEFINE_integer("broadphase", None, "Broadphase collision routine.")
+_BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
+_KEYFRAME = flags.DEFINE_integer("keyframe", None, "Keyframe to initialize simulation.")
 
 
 def key_callback(key: int) -> None:
@@ -85,6 +88,8 @@ def _main(argv: Sequence[str]) -> None:
   elif _CONE.value == "elliptic":
     mjm.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
   mjd = mujoco.MjData(mjm)
+  if _KEYFRAME.value is not None:
+    mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
   mujoco.mj_forward(mjm, mjd)
 
   if _ENGINE.value == "mjc":
@@ -94,6 +99,11 @@ def _main(argv: Sequence[str]) -> None:
     mjm_hash = pickle.dumps(mjm)
     m = mjwarp.put_model(mjm)
     m.opt.ls_parallel = _LS_PARALLEL.value
+    if _BROADPHASE.value is not None:
+      m.opt.broadphase = _BROADPHASE.value
+    if _BROADPHASE_FILTER.value is not None:
+      m.opt.broadphase_filter = _BROADPHASE_FILTER.value
+
     d = mjwarp.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
     if _CLEAR_KERNEL_CACHE.value:

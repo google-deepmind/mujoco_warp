@@ -60,6 +60,8 @@ _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of 
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "Measure the number of solver iterations.")
 _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to summarize measurements.")
 _INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator).")
+_BROADPHASE = flags.DEFINE_integer("broadphase", None, "Broadphase collision routine.")
+_BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
 
 
 def _print_table(matrix, headers):
@@ -151,6 +153,11 @@ def _main(argv: Sequence[str]):
         m.opt.integrator = k
 
   m.opt.ls_parallel = _LS_PARALLEL.value
+  if _BROADPHASE.value is not None:
+    m.opt.broadphase = _BROADPHASE.value
+  if _BROADPHASE_FILTER.value is not None:
+    m.opt.broadphase_filter = _BROADPHASE_FILTER.value
+
   d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
   if _CLEAR_KERNEL_CACHE.value:
