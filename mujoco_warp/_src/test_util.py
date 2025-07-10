@@ -32,6 +32,7 @@ from .types import EnableBit
 from .types import IntegratorType
 from .types import Model
 from .types import SolverType
+from .util_misc import halton
 
 
 def fixture(
@@ -157,28 +158,8 @@ def _sum(stack1, stack2):
   return ret
 
 
-@wp.func
-def halton(
-  # In:
-  index: int,
-  base: int,
-) -> float:
-  n0 = int(index)
-  b = float(base)
-  f = 1.0 / b
-  hn = float(0.0)
-  while n0 > 0:
-    n1 = n0 // base
-    r = n0 - n1 * base
-    hn += f * float(r)
-    f /= b
-    n0 = n1
-
-  return hn
-
-
 @wp.kernel
-def get_ctrl_noise(
+def ctrl_noise(
   # Model:
   actuator_ctrllimited: wp.array(dtype=bool),
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
@@ -188,17 +169,17 @@ def get_ctrl_noise(
   # Data out:
   ctrl_out: wp.array2d(dtype=float),
 ):
-  worldid, nuid = wp.tid()
+  worldid, actid = wp.tid()
 
   center = 0.0
   radius = 1.0
-  ctrlrange = actuator_ctrlrange[0, nuid]
-  if actuator_ctrllimited[nuid]:
+  ctrlrange = actuator_ctrlrange[0, actid]
+  if actuator_ctrllimited[actid]:
     center = (ctrlrange[1] + ctrlrange[0]) / 2.0
     radius = (ctrlrange[1] - ctrlrange[0]) / 2.0
   radius *= ctrlnoise
-  noise = 2.0 * halton(step * worldid, nuid + 2) - 1.0
-  ctrl_out[worldid, nuid] = center + radius * noise
+  noise = 2.0 * halton((step + 1) * (worldid + 1), actid + 2) - 1.0
+  ctrl_out[worldid, actid] = center + radius * noise
 
 
 def benchmark(
