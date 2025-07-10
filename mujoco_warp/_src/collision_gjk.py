@@ -79,8 +79,16 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
   if geomtype == int(GeomType.SPHERE.value):
     support_pt = geom.pos + geom.size[0] * dir
   elif geomtype == int(GeomType.BOX.value):
-    res = wp.cw_mul(wp.sign(local_dir), geom.size)
+    tmp = wp.sign(local_dir)
+    res = wp.cw_mul(tmp, geom.size)
     support_pt = geom.rot @ res + geom.pos
+    vertex_index = 0
+    if tmp[0] > 0:
+      vertex_index += 1
+    if tmp[1] > 0:
+      vertex_index += 2
+    if tmp[2] > 0:
+      vertex_index += 4
   elif geomtype == int(GeomType.CAPSULE.value):
     res = local_dir * geom.size[0]
     # add cylinder contribution
@@ -118,6 +126,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
           max_dist = dist
           support_pt = vert
           cached_index = geom.vertadr + i
+      vertex_index = cached_index - geom.vertadr
     else:
       numvert = geom.graph[geom.graphadr]
       vert_edgeadr = geom.graphadr + 2
@@ -145,6 +154,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
           break
       cached_index = imax
       imax = geom.graph[vert_globalid + imax]
+      vertex_index = imax
       support_pt = geom.vert[geom.vertadr + imax]
 
     support_pt = geom.rot @ support_pt + geom.pos
