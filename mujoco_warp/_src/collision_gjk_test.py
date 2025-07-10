@@ -49,11 +49,13 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
     vert: wp.array(dtype=wp.vec3),
     vert1: wp.array(dtype=wp.vec3),
     vert2: wp.array(dtype=wp.vec3),
+    vert_index1: wp.array(dtype=int),
+    vert_index2: wp.array(dtype=int),
     face: wp.array(dtype=wp.vec3i),
     face_pr: wp.array(dtype=wp.vec3),
     face_norm2: wp.array(dtype=float),
     face_index: wp.array(dtype=int),
-    map: wp.array(dtype=int),
+    face_map: wp.array(dtype=int),
     horizon: wp.array(dtype=int),
     # Out:
     dist_out: wp.array(dtype=float),
@@ -109,11 +111,13 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
       vert,
       vert1,
       vert2,
+      vert_index1,
+      vert_index2,
       face,
       face_pr,
       face_norm2,
       face_index,
-      map,
+      face_map,
       horizon,
     )
 
@@ -124,11 +128,13 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
   vert = wp.array(shape=(iterations,), dtype=wp.vec3)
   vert1 = wp.array(shape=(iterations,), dtype=wp.vec3)
   vert2 = wp.array(shape=(iterations,), dtype=wp.vec3)
+  vert_index1 = wp.array(shape=(iterations,), dtype=int)
+  vert_index2 = wp.array(shape=(iterations,), dtype=int)
   face = wp.array(shape=(2 * iterations,), dtype=wp.vec3i)
   face_pr = wp.array(shape=(2 * iterations,), dtype=wp.vec3)
   face_norm2 = wp.array(shape=(2 * iterations,), dtype=float)
   face_index = wp.array(shape=(2 * iterations,), dtype=int)
-  map = wp.array(shape=(2 * iterations,), dtype=int)
+  face_map = wp.array(shape=(2 * iterations,), dtype=int)
   horizon = wp.array(shape=(2 * iterations,), dtype=int)
   dist_out = wp.array(shape=(1,), dtype=float)
   pos_out = wp.array(shape=(2,), dtype=wp.vec3)
@@ -150,11 +156,13 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
       vert,
       vert1,
       vert2,
+      vert_index1,
+      vert_index2,
       face,
       face_pr,
       face_norm2,
       face_index,
-      map,
+      face_map,
       horizon,
     ],
     outputs=[

@@ -56,6 +56,15 @@ class Geom:
   vert: wp.array(dtype=wp.vec3)
   graphadr: int
   graph: wp.array(dtype=int)
+  mesh_polynum: int
+  mesh_polyadr: int
+  mesh_polynormal: wp.array(dtype=wp.vec3)
+  mesh_polyvertadr: wp.array(dtype=int)
+  mesh_polyvertnum: wp.array(dtype=int)
+  mesh_polyvert: wp.array(dtype=int)
+  mesh_polymapadr: wp.array(dtype=int)
+  mesh_polymapnum: wp.array(dtype=int)
+  mesh_polymap: wp.array(dtype=int)
   index: int
 
 
@@ -75,6 +84,15 @@ def _geom(
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_graphadr: wp.array(dtype=int),
   mesh_graph: wp.array(dtype=int),
+  mesh_polynum: wp.array(dtype=int),
+  mesh_polyadr: wp.array(dtype=int),
+  mesh_polynormal: wp.array(dtype=wp.vec3),
+  mesh_polyvertadr: wp.array(dtype=int),
+  mesh_polyvertnum: wp.array(dtype=int),
+  mesh_polyvert: wp.array(dtype=int),
+  mesh_polymapadr: wp.array(dtype=int),
+  mesh_polymapnum: wp.array(dtype=int),
+  mesh_polymap: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -96,14 +114,25 @@ def _geom(
     geom.vertadr = mesh_vertadr[dataid]
     geom.vertnum = mesh_vertnum[dataid]
     geom.graphadr = mesh_graphadr[dataid]
+    geom.mesh_polynum = mesh_polynum[dataid]
+    geom.mesh_polyadr = mesh_polyadr[dataid]
   else:
     geom.vertadr = -1
     geom.vertnum = -1
     geom.graphadr = -1
+    geom.mesh_polynum = -1
+    geom.mesh_polyadr = -1
 
   if geom_type[gid] == int(GeomType.MESH.value):
     geom.vert = mesh_vert
     geom.graph = mesh_graph
+    geom.mesh_polynormal = mesh_polynormal
+    geom.mesh_polyvertadr = mesh_polyvertadr
+    geom.mesh_polyvertnum = mesh_polyvertnum
+    geom.mesh_polyvert = mesh_polyvert
+    geom.mesh_polymapadr = mesh_polymapadr
+    geom.mesh_polymapnum = mesh_polymapnum
+    geom.mesh_polymap = mesh_polymap
 
   # If geom is HFIELD triangle, compute triangle prism verts
   if geom_type[gid] == int(GeomType.HFIELD.value):
@@ -2468,6 +2497,15 @@ def primitive_narrowphase_builder(m: Model):
     mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graphadr: wp.array(dtype=int),
     mesh_graph: wp.array(dtype=int),
+    mesh_polynum: wp.array(dtype=int),
+    mesh_polyadr: wp.array(dtype=int),
+    mesh_polynormal: wp.array(dtype=wp.vec3),
+    mesh_polyvertadr: wp.array(dtype=int),
+    mesh_polyvertnum: wp.array(dtype=int),
+    mesh_polyvert: wp.array(dtype=int),
+    mesh_polymapadr: wp.array(dtype=int),
+    mesh_polymapnum: wp.array(dtype=int),
+    mesh_polymap: wp.array(dtype=int),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array2d(dtype=wp.vec2),
     pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -2555,6 +2593,15 @@ def primitive_narrowphase_builder(m: Model):
           mesh_vert,
           mesh_graphadr,
           mesh_graph,
+          mesh_polynum,
+          mesh_polyadr,
+          mesh_polynormal,
+          mesh_polyvertadr,
+          mesh_polyvertnum,
+          mesh_polyvert,
+          mesh_polymapadr,
+          mesh_polymapnum,
+          mesh_polymap,
           geom_xpos_in,
           geom_xmat_in,
           worldid,
@@ -2576,6 +2623,15 @@ def primitive_narrowphase_builder(m: Model):
           mesh_vert,
           mesh_graphadr,
           mesh_graph,
+          mesh_polynum,
+          mesh_polyadr,
+          mesh_polynormal,
+          mesh_polyvertadr,
+          mesh_polyvertnum,
+          mesh_polyvert,
+          mesh_polymapadr,
+          mesh_polymapnum,
+          mesh_polymap,
           geom_xpos_in,
           geom_xmat_in,
           worldid,
@@ -2642,6 +2698,15 @@ def primitive_narrowphase(m: Model, d: Data):
       m.mesh_vert,
       m.mesh_graphadr,
       m.mesh_graph,
+      m.mesh_polynum,
+      m.mesh_polyadr,
+      m.mesh_polynormal,
+      m.mesh_polyvertadr,
+      m.mesh_polyvertnum,
+      m.mesh_polyvert,
+      m.mesh_polymapadr,
+      m.mesh_polymapnum,
+      m.mesh_polymap,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,
