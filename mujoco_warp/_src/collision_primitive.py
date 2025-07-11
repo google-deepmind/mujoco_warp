@@ -2677,97 +2677,97 @@ def primitive_narrowphase_builder(m: Model):
     type1 = geom_type[g1]
     type2 = geom_type[g2]
 
+    worldid = collision_worldid_in[tid]
+
+    _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+      geom_condim,
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_margin,
+      geom_gap,
+      pair_dim,
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_margin,
+      pair_gap,
+      pair_friction,
+      collision_pair_in,
+      collision_pairid_in,
+      tid,
+      worldid,
+    )
+
+    hftri_index = collision_hftri_index_in[tid]
+
+    geom1 = _geom(
+      geom_type,
+      geom_dataid,
+      geom_size,
+      hfield_adr,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_data,
+      mesh_vertadr,
+      mesh_vertnum,
+      mesh_vert,
+      mesh_graphadr,
+      mesh_graph,
+      mesh_polynum,
+      mesh_polyadr,
+      mesh_polynormal,
+      mesh_polyvertadr,
+      mesh_polyvertnum,
+      mesh_polyvert,
+      mesh_polymapadr,
+      mesh_polymapnum,
+      mesh_polymap,
+      geom_xpos_in,
+      geom_xmat_in,
+      worldid,
+      g1,
+      hftri_index,
+    )
+
+    geom2 = _geom(
+      geom_type,
+      geom_dataid,
+      geom_size,
+      hfield_adr,
+      hfield_nrow,
+      hfield_ncol,
+      hfield_size,
+      hfield_data,
+      mesh_vertadr,
+      mesh_vertnum,
+      mesh_vert,
+      mesh_graphadr,
+      mesh_graph,
+      mesh_polynum,
+      mesh_polyadr,
+      mesh_polynormal,
+      mesh_polyvertadr,
+      mesh_polyvertnum,
+      mesh_polyvert,
+      mesh_polymapadr,
+      mesh_polymapnum,
+      mesh_polymap,
+      geom_xpos_in,
+      geom_xmat_in,
+      worldid,
+      g2,
+      hftri_index,
+    )
+
     for i in range(wp.static(len(_primitive_collisions_func))):
       collision_type1 = wp.static(_primitive_collisions_types[i][0])
       collision_type2 = wp.static(_primitive_collisions_types[i][1])
 
       if collision_type1 == type1 and collision_type2 == type2:
-        worldid = collision_worldid_in[tid]
-
-        _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
-          geom_condim,
-          geom_priority,
-          geom_solmix,
-          geom_solref,
-          geom_solimp,
-          geom_friction,
-          geom_margin,
-          geom_gap,
-          pair_dim,
-          pair_solref,
-          pair_solreffriction,
-          pair_solimp,
-          pair_margin,
-          pair_gap,
-          pair_friction,
-          collision_pair_in,
-          collision_pairid_in,
-          tid,
-          worldid,
-        )
-
-        hftri_index = collision_hftri_index_in[tid]
-
-        geom1 = _geom(
-          geom_type,
-          geom_dataid,
-          geom_size,
-          hfield_adr,
-          hfield_nrow,
-          hfield_ncol,
-          hfield_size,
-          hfield_data,
-          mesh_vertadr,
-          mesh_vertnum,
-          mesh_vert,
-          mesh_graphadr,
-          mesh_graph,
-          mesh_polynum,
-          mesh_polyadr,
-          mesh_polynormal,
-          mesh_polyvertadr,
-          mesh_polyvertnum,
-          mesh_polyvert,
-          mesh_polymapadr,
-          mesh_polymapnum,
-          mesh_polymap,
-          geom_xpos_in,
-          geom_xmat_in,
-          worldid,
-          g1,
-          hftri_index,
-        )
-
-        geom2 = _geom(
-          geom_type,
-          geom_dataid,
-          geom_size,
-          hfield_adr,
-          hfield_nrow,
-          hfield_ncol,
-          hfield_size,
-          hfield_data,
-          mesh_vertadr,
-          mesh_vertnum,
-          mesh_vert,
-          mesh_graphadr,
-          mesh_graph,
-          mesh_polynum,
-          mesh_polyadr,
-          mesh_polynormal,
-          mesh_polyvertadr,
-          mesh_polyvertnum,
-          mesh_polyvert,
-          mesh_polymapadr,
-          mesh_polymapnum,
-          mesh_polymap,
-          geom_xpos_in,
-          geom_xmat_in,
-          worldid,
-          g2,
-          hftri_index,
-        )
-
         wp.static(_primitive_collisions_func[i])(
           nconmax_in,
           geom1,

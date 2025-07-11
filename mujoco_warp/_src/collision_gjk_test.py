@@ -100,6 +100,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
       x2,
     ) = ccd(
       1e-6,
+      1.0e30,
       iterations,
       iterations,
       geom1,

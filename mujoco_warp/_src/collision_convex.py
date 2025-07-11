@@ -986,6 +986,7 @@ def ccd_kernel_builder(
 
       dist, x1, x2 = ccd(
         1e-6,
+        0.0,
         gjk_iterations,
         epa_iterations,
         geom1,

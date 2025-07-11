@@ -425,10 +425,6 @@ def _nxn_broadphase(
 ):
   worldid, elementid = wp.tid()
 
-  # check for valid geom pair
-  if nxn_pairid[elementid] < -1:
-    return
-
   geom = nxn_geom_pair[elementid]
   geom1 = geom[0]
   geom2 = geom[1]
@@ -462,28 +458,27 @@ def _nxn_broadphase(
 def nxn_broadphase(m: Model, d: Data):
   """Broadphase collision detection via brute-force search."""
 
-  if m.nxn_geom_pair.shape[0]:
-    wp.launch(
-      _nxn_broadphase,
-      dim=(d.nworld, m.nxn_geom_pair.shape[0]),
-      inputs=[
-        m.geom_type,
-        m.geom_rbound,
-        m.geom_margin,
-        m.nxn_geom_pair,
-        m.nxn_pairid,
-        d.nconmax,
-        d.geom_xpos,
-        d.geom_xmat,
-      ],
-      outputs=[
-        d.collision_pair,
-        d.collision_hftri_index,
-        d.collision_pairid,
-        d.collision_worldid,
-        d.ncollision,
-      ],
-    )
+  wp.launch(
+    _nxn_broadphase,
+    dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
+    inputs=[
+      m.geom_type,
+      m.geom_rbound,
+      m.geom_margin,
+      m.nxn_geom_pair_filtered,
+      m.nxn_pairid_filtered,
+      d.nconmax,
+      d.geom_xpos,
+      d.geom_xmat,
+    ],
+    outputs=[
+      d.collision_pair,
+      d.collision_hftri_index,
+      d.collision_pairid,
+      d.collision_worldid,
+      d.ncollision,
+    ],
+  )
 
 
 def _narrowphase(m, d):

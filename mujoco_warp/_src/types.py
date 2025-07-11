@@ -721,36 +721,36 @@ class Model:
   """Model definition and parameters.
 
   Attributes:
-    nq: number of generalized coordinates = dim              ()
-    nv: number of degrees of freedom = dim                   ()
-    nu: number of actuators/controls = dim                   ()
-    na: number of activation states = dim                    ()
-    nbody: number of bodies                                  ()
-    njnt: number of joints                                   ()
-    ngeom: number of geoms                                   ()
-    nsite: number of sites                                   ()
-    ncam: number of cameras                                  ()
-    nlight: number of lights                                 ()
-    nexclude: number of excluded geom pairs                  ()
-    neq: number of equality constraints                      ()
-    nmocap: number of mocap bodies                           ()
-    ngravcomp: number of bodies with nonzero gravcomp        ()
-    nM: number of non-zeros in sparse inertia matrix         ()
-    nC: number of non-zeros in sparse reduced dof-dof matrix ()
-    ntendon: number of tendons                               ()
-    nwrap: number of wrap objects in all tendon paths        ()
-    nsensor: number of sensors                               ()
-    nsensordata: number of elements in sensor data vector    ()
-    nmeshvert: number of vertices for all meshes             ()
-    nmeshface: number of faces for all meshes                ()
-    nmeshgraph: number of ints in mesh auxiliary data        ()
-    nmeshpoly: number of polygons in all meshes              ()
-    nmeshpolyvert: number of vertices in all polygons        ()
-    nmeshpolymap: number of polygons in vertex map           ()
-    nlsp: number of step sizes for parallel linsearch        ()
-    npair: number of predefined geom pairs                   ()
-    nhfield: number of heightfields                          ()
-    nhfielddata: size of elevation data                      ()
+    nq: number of generalized coordinates
+    nv: number of degrees of freedom
+    nu: number of actuators/controls
+    na: number of activation states
+    nbody: number of bodies
+    njnt: number of joints
+    ngeom: number of geoms
+    nsite: number of sites
+    ncam: number of cameras
+    nlight: number of lights
+    nexclude: number of excluded geom pairs
+    neq: number of equality constraints
+    nmocap: number of mocap bodies
+    ngravcomp: number of bodies with nonzero gravcomp
+    nM: number of non-zeros in sparse inertia matrix
+    nC: number of non-zeros in sparse reduced dof-dof matrix
+    ntendon: number of tendons
+    nwrap: number of wrap objects in all tendon paths
+    nsensor: number of sensors
+    nsensordata: number of elements in sensor data vector
+    nmeshvert: number of vertices for all meshes
+    nmeshface: number of faces for all meshes
+    nmeshgraph: number of ints in mesh auxiliary data
+    nmeshpoly: number of polygons in all meshes
+    nmeshpolyvert: number of vertices in all polygons
+    nmeshpolymap: number of polygons in vertex map
+    nlsp: number of step sizes for parallel linsearch
+    npair: number of predefined geom pairs
+    nhfield: number of heightfields
+    nhfielddata: size of elevation data
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nworld, nq)
@@ -762,10 +762,10 @@ class Model:
     qM_madr_ij: sparse mass matrix addressing
     qLD_update_tree: dof tree ordering for qLD updates
     qLD_update_treeadr: index of each dof tree level
-    M_rownnz: number of non-zeros in each row of qM             (nv,)
-    M_rowadr: index of each row in qM                           (nv,)
-    M_colind: column indices of non-zeros in qM                 (nM,)
-    mapM2M: index mapping from M (legacy) to M (CSR)            (nC)
+    M_rownnz: number of non-zeros in each row of qM          (nv,)
+    M_rowadr: index of each row in qM                        (nv,)
+    M_colind: column indices of non-zeros in qM              (nM,)
+    mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
     qM_tiles: tiling configuration
     body_tree: list of body ids by tree level
     body_parentid: id of body's parent                       (nbody,)
@@ -913,6 +913,7 @@ class Model:
     actuator_dynprm: dynamics parameters                     (nworld, nu, mjNDYN)
     actuator_gainprm: gain parameters                        (nworld, nu, mjNGAIN)
     actuator_biasprm: bias parameters                        (nworld, nu, mjNBIAS)
+    actuator_actearly: step activation before force          (nu,)
     actuator_ctrlrange: range of controls                    (nworld, nu, 2)
     actuator_forcerange: range of forces                     (nworld, nu, 2)
     actuator_actrange: range of activations                  (nworld, nu, 2)
@@ -920,8 +921,13 @@ class Model:
     actuator_cranklength: crank length for slider-crank      (nu,)
     actuator_acc0: acceleration from unit force in qpos0     (nu,)
     actuator_lengthrange: feasible actuator length range     (nu, 2)
-    nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
-    nxn_pairid: predefined pair id, -1 if not predefined     (<= ngeom * (ngeom - 1) // 2,)
+    nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
+    nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
+                            [-1, ngeom - 1]
+    nxn_pairid: predefined pair id, -1 if not predefined,    (<= ngeom * (ngeom - 1) // 2,)
+                -2 if skipped
+    nxn_pairid_filtered: predefined pair id, -1 if not       (<= ngeom * (ngeom - 1) // 2,)
+                         predefined
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
     pair_geom2: id of geom2                                  (npair,)
@@ -944,14 +950,14 @@ class Model:
     tendon_solimp_fri: constraint solver impedance: friction (nworld, ntendon, mjNIMP)
     tendon_range: tendon length limits                       (nworld, ntendon, 2)
     tendon_actfrcrange: range of total actuator force        (nworld, ntendon, 2)
-    tendon_margin: min distance for limit detection          (nworld, ntendon,)
-    tendon_stiffness: stiffness coefficient                  (nworld, ntendon,)
-    tendon_damping: damping coefficient                      (nworld, ntendon,)
-    tendon_armature: inertia associated with tendon velocity (nworld, ntendon,)
-    tendon_frictionloss: loss due to friction                (nworld, ntendon,)
+    tendon_margin: min distance for limit detection          (nworld, ntendon)
+    tendon_stiffness: stiffness coefficient                  (nworld, ntendon)
+    tendon_damping: damping coefficient                      (nworld, ntendon)
+    tendon_armature: inertia associated with tendon velocity (nworld, ntendon)
+    tendon_frictionloss: loss due to friction                (nworld, ntendon)
     tendon_lengthspring: spring resting length range         (nworld, ntendon, 2)
-    tendon_length0: tendon length in qpos0                   (nworld, ntendon,)
-    tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon,)
+    tendon_length0: tendon length in qpos0                   (nworld, ntendon)
+    tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
     wrap_type: wrap object type (mjtWrap)                    (nwrap,)
@@ -1217,6 +1223,7 @@ class Model:
   actuator_dynprm: wp.array2d(dtype=vec10f)
   actuator_gainprm: wp.array2d(dtype=vec10f)
   actuator_biasprm: wp.array2d(dtype=vec10f)
+  actuator_actearly: wp.array(dtype=bool)
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2)
   actuator_forcerange: wp.array2d(dtype=wp.vec2)
   actuator_actrange: wp.array2d(dtype=wp.vec2)
@@ -1225,7 +1232,9 @@ class Model:
   actuator_acc0: wp.array(dtype=float)
   actuator_lengthrange: wp.array(dtype=wp.vec2)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
+  nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)  # warp only
   nxn_pairid: wp.array(dtype=int)  # warp only
+  nxn_pairid_filtered: wp.array(dtype=int)  # warp only
   pair_dim: wp.array(dtype=int)
   pair_geom1: wp.array(dtype=int)
   pair_geom2: wp.array(dtype=int)
@@ -1343,19 +1352,19 @@ class Data:
   """Dynamic state that updates each step.
 
   Attributes:
-    nworld: number of worlds                                    ()
-    nconmax: maximum number of contacts                         ()
-    njmax: maximum number of constraints                        ()
+    nworld: number of worlds
+    nconmax: maximum number of contacts
+    njmax: maximum number of constraints
     solver_niter: number of solver iterations                   (nworld,)
-    ncon: number of detected contacts                           ()
+    ncon: number of detected contacts
     ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeompair)
-    ne: number of equality constraints                          ()
-    ne_connect: number of equality connect constraints          ()
-    ne_weld: number of equality weld constraints                ()
-    ne_jnt: number of equality joint constraints                ()
-    ne_ten: number of equality tendon constraints               ()
-    nf: number of friction constraints                          ()
-    nl: number of limit constraints                             ()
+    ne: number of equality constraints
+    ne_connect: number of equality connect constraints
+    ne_weld: number of equality weld constraints
+    ne_jnt: number of equality joint constraints
+    ne_ten: number of equality tendon constraints
+    nf: number of friction constraints
+    nl: number of limit constraints
     nefc: number of constraints                                 (1,)
     nsolving: number of unconverged worlds                      (1,)
     time: simulation time                                       (nworld,)
@@ -1447,7 +1456,7 @@ class Data:
     collision_pair: collision pairs from broadphase             (nconmax,)
     collision_hftri_index: collision index for hfield pairs     (nconmax,)
     collision_worldid: collision world ids from broadphase      (nconmax,)
-    ncollision: collision count from broadphase                 ()
+    ncollision: collision count from broadphase
     epa_vert: vertices in EPA polytope in Minkowski space       (nconmax, 5 + CCDiter)
     epa_vert1: vertices in EPA polytope in geom 1 space         (nconmax, 5 + CCDiter)
     epa_vert2: vertices in EPA polytope in geom 2 space         (nconmax, 5 + CCDiter)
@@ -1478,11 +1487,11 @@ class Data:
     sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
     sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
     sensor_rangefinder_geomid: geomids for rangefinder          (nworld, nrangefinder)
-    ray_bodyexclude: id of body to exclude from ray computation ()
+    ray_bodyexclude: id of body to exclude from ray computation
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
-    actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu,)
+    actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
   nworld: int  # warp only

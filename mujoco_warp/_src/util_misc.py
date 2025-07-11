@@ -55,6 +55,23 @@ def is_intersect(p1: wp.vec2, p2: wp.vec2, p3: wp.vec2, p4: wp.vec2) -> bool:
 
 
 @wp.func
+def halton(index: int, base: int) -> float:
+  n0 = index
+  b = float(base)
+  f = float(1.0) / b
+  hn = float(0.0)
+
+  while n0 > 0:
+    n1 = n0 // base
+    r = n0 - n1 * base
+    hn += f * float(r)
+    f /= b
+    n0 = n1
+
+  return hn
+
+
+@wp.func
 def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
   """Curve length along circle.
 

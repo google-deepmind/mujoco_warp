@@ -32,6 +32,7 @@ from .types import EnableBit
 from .types import IntegratorType
 from .types import Model
 from .types import SolverType
+from .util_misc import halton
 
 
 def fixture(
@@ -157,6 +158,30 @@ def _sum(stack1, stack2):
   return ret
 
 
+@wp.kernel
+def ctrl_noise(
+  # Model:
+  actuator_ctrllimited: wp.array(dtype=bool),
+  actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
+  # In:
+  step: int,
+  ctrlnoise: float,
+  # Data out:
+  ctrl_out: wp.array2d(dtype=float),
+):
+  worldid, actid = wp.tid()
+
+  center = 0.0
+  radius = 1.0
+  ctrlrange = actuator_ctrlrange[0, actid]
+  if actuator_ctrllimited[actid]:
+    center = (ctrlrange[1] + ctrlrange[0]) / 2.0
+    radius = (ctrlrange[1] - ctrlrange[0]) / 2.0
+  radius *= ctrlnoise
+  noise = 2.0 * halton((step + 1) * (worldid + 1), actid + 2) - 1.0
+  ctrl_out[worldid, actid] = center + radius * noise
+
+
 def benchmark(
   fn: Callable[[Model, Data], None],
   m: Model,
@@ -204,9 +229,21 @@ def benchmark(
       fn(m, d)
     graph = capture.graph
 
-    run_beg = time.perf_counter()
-    for _ in range(nstep):
+    time_vec = np.zeros(nstep)
+    for i in range(nstep):
+      wp.launch(
+        ctrl_noise,
+        dim=(d.nworld, m.nu),
+        inputs=[
+          m.actuator_ctrllimited, m.actuator_ctrlrange, i, 0.01
+        ],
+        outputs=[d.ctrl])  # fmt: skip
+
+      run_beg = time.perf_counter()
       wp.capture_launch(graph)
+      wp.synchronize()
+      run_end = time.perf_counter()
+      time_vec[i] = run_end - run_beg
       if trace:
         trace = _sum(trace, tracer.trace())
       else:
@@ -220,7 +257,6 @@ def benchmark(
         solver_niter.append(d.solver_niter.numpy())
 
     wp.synchronize()
-    run_end = time.perf_counter()
-    run_duration = run_end - run_beg
+    run_duration = np.sum(time_vec)
 
   return jit_duration, run_duration, trace, ncon, nefc, solver_niter
