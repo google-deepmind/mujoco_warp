@@ -163,9 +163,9 @@ def _sap_project(
   # In:
   direction_in: wp.vec3,
   # Data out:
-  sap_projection_lower_out: wp.array3d(dtype=float),
+  sap_projection_lower_out: wp.array2d(dtype=float),  # kernel_analyzer: ignore
   sap_projection_upper_out: wp.array2d(dtype=float),
-  sap_sort_index_out: wp.array3d(dtype=int),
+  sap_sort_index_out: wp.array2d(dtype=int),  # kernel_analyzer: ignore
 ):
   worldid, geomid = wp.tid()
 
@@ -189,9 +189,9 @@ def _sap_range(
   # Model:
   ngeom: int,
   # Data in:
-  sap_projection_lower_in: wp.array3d(dtype=float),
+  sap_projection_lower_in: wp.array2d(dtype=float),  # kernel_analyzer: ignore
   sap_projection_upper_in: wp.array2d(dtype=float),
-  sap_sort_index_in: wp.array3d(dtype=int),
+  sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
   # Data out:
   sap_range_out: wp.array2d(dtype=int),
 ):
@@ -222,8 +222,8 @@ def _sap_broadphase(
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  sap_sort_index_in: wp.array3d(dtype=int),
-  sap_cumulative_sum_in: wp.array2d(dtype=int),
+  sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
+  sap_cumulative_sum_in: wp.array(dtype=int),  # kernel_analyzer: ignore
   # In:
   nsweep_in: int,
   # Data out:
@@ -295,8 +295,8 @@ def _segmented_sort(tile_size: int):
   @wp.kernel
   def segmented_sort(
     # Data in:
-    sap_projection_lower_in: wp.array3d(dtype=float),
-    sap_sort_index_in: wp.array3d(dtype=int),
+    sap_projection_lower_in: wp.array2d(dtype=float),  # kernel_analyzer: ignore
+    sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
   ):
     worldid = wp.tid()
 
