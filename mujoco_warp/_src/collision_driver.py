@@ -336,7 +336,7 @@ def sap_broadphase(m: Model, d: Data):
       direction,
     ],
     outputs=[
-      d.sap_projection_lower,
+      d.sap_projection_lower.reshape((-1, m.ngeom)),
       d.sap_projection_upper,
       d.sap_sort_index.reshape((-1, m.ngeom)),
     ],
