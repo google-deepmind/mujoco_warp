@@ -1361,7 +1361,7 @@ def put_data(
     sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
     sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
     sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros(nworld * mjm.ngeom, dtype=int),
+    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
     sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
     collision_pair=wp.empty(nconmax, dtype=wp.vec2i),
