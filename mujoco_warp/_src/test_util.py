@@ -232,7 +232,7 @@ def benchmark(
     time_vec = np.zeros(nstep)
     for i in range(nstep):
       wp.launch(
-        get_ctrl_noise,
+        ctrl_noise,
         dim=(d.nworld, m.nu),
         inputs=[
           m.actuator_ctrllimited, m.actuator_ctrlrange, i, 0.01
