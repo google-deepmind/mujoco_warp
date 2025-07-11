@@ -531,7 +531,9 @@ def collision(m: Model, d: Data):
   distance, position, and frame.
 
   The results are used to populate the `d.contact` array, and the total number of contacts
-  is stored in `d.ncon`.
+  is stored in `d.ncon`.  If `d.ncon` is larger than `d.nconmax` then an overflow has
+  occurred and the remaining contacts will be skipped.  If this happens, raise the `nconmax`
+  parameter in `io.make_data` or `io.put_data`.
 
   This function will do nothing except zero out arrays if collision detection is disabled
   via `m.opt.disableflags` or if `d.nconmax` is 0.

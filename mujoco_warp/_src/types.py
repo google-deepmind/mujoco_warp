@@ -35,8 +35,6 @@ class BlockDim:
   TODO(team): experimental and may be removed
   """
 
-  # collision_box
-  box_box: int = 32
   # collision_driver
   segmented_sort: int = 128
   # derivative

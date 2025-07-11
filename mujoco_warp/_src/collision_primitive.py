@@ -2679,8 +2679,7 @@ def primitive_narrowphase(m: Model, d: Data):
 
   The primitive geom types handled are PLANE, SPHERE, CAPSULE, CYLINDER, BOX.
 
-  It also handles collisions between planes and meshes, treating the mesh as a
-  generic convex shape.
+  It also handles collisions between planes and convex hulls.
 
   To improve performance, it dynamically builds and launches a kernel tailored to
   the specific primitive collision types present in the model, avoiding
