@@ -1449,8 +1449,8 @@ class Data:
     qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
     qLDiagInv_integration: temporary array for integration      (nworld, nv)
     boxes_sorted: min, max of sorted bounding boxes             (nworld, ngeom, 2)
-    sap_projections_lower: broadphase context                   (2*nworld, ngeom)
-    sap_projections_upper: broadphase context                   (nworld, ngeom)
+    sap_projection_lower: broadphase context                    (2*nworld, ngeom)
+    sap_projection_upper: broadphase context                    (nworld, ngeom)
     sap_sort_index: broadphase context                          (2*nworld, ngeom)
     sap_range: broadphase context                               (nworld, ngeom)
     sap_cumulative_sum: broadphase context                      (nworld*ngeom,)
