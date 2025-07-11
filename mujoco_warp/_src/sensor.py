@@ -246,30 +246,28 @@ def _limit_pos(
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
   nl_in: wp.array(dtype=int),
-  efc_worldid_in: wp.array(dtype=int),
-  efc_type_in: wp.array(dtype=int),
-  efc_id_in: wp.array(dtype=int),
-  efc_pos_in: wp.array(dtype=float),
-  efc_margin_in: wp.array(dtype=float),
+  efc_type_in: wp.array2d(dtype=int),
+  efc_id_in: wp.array2d(dtype=int),
+  efc_pos_in: wp.array2d(dtype=float),
+  efc_margin_in: wp.array2d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
-  efcid, limitposid = wp.tid()
+  worldid, efcid, limitposid = wp.tid()
 
-  ne = ne_in[0]
-  nf = nf_in[0]
-  nl = nl_in[0]
+  ne = ne_in[worldid]
+  nf = nf_in[worldid]
+  nl = nl_in[worldid]
 
   # skip if not limit
   if efcid < ne + nf or efcid >= ne + nf + nl:
     return
 
   sensorid = sensor_limitpos_adr[limitposid]
-  if efc_id_in[efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[efcid]
+  if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[worldid, efcid]
     if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
-      val = efc_pos_in[efcid] - efc_margin_in[efcid]
-      worldid = efc_worldid_in[efcid]
+      val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
 
@@ -701,7 +699,7 @@ def sensor_pos(m: Model, d: Data):
 
   wp.launch(
     _limit_pos,
-    dim=(d.njmax, m.sensor_limitpos_adr.size),
+    dim=(d.nworld, d.njmax, m.sensor_limitpos_adr.size),
     inputs=[
       m.sensor_datatype,
       m.sensor_objid,
@@ -711,7 +709,6 @@ def sensor_pos(m: Model, d: Data):
       d.ne,
       d.nf,
       d.nl,
-      d.efc.worldid,
       d.efc.type,
       d.efc.id,
       d.efc.pos,
@@ -811,29 +808,27 @@ def _limit_vel(
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
   nl_in: wp.array(dtype=int),
-  efc_worldid_in: wp.array(dtype=int),
-  efc_type_in: wp.array(dtype=int),
-  efc_id_in: wp.array(dtype=int),
-  efc_vel_in: wp.array(dtype=float),
+  efc_type_in: wp.array2d(dtype=int),
+  efc_id_in: wp.array2d(dtype=int),
+  efc_vel_in: wp.array2d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
-  efcid, limitvelid = wp.tid()
+  worldid, efcid, limitvelid = wp.tid()
 
-  ne = ne_in[0]
-  nf = nf_in[0]
-  nl = nl_in[0]
+  ne = ne_in[worldid]
+  nf = nf_in[worldid]
+  nl = nl_in[worldid]
 
   # skip if not limit
   if efcid < ne + nf or efcid >= ne + nf + nl:
     return
 
   sensorid = sensor_limitvel_adr[limitvelid]
-  if efc_id_in[efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[efcid]
+  if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[worldid, efcid]
     if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
-      worldid = efc_worldid_in[efcid]
-      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[efcid], sensordata_out[worldid])
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid])
 
 
 @wp.func
@@ -1260,7 +1255,7 @@ def sensor_vel(m: Model, d: Data):
 
   wp.launch(
     _limit_vel,
-    dim=(d.njmax, m.sensor_limitvel_adr.size),
+    dim=(d.nworld, d.njmax, m.sensor_limitvel_adr.size),
     inputs=[
       m.sensor_datatype,
       m.sensor_objid,
@@ -1270,7 +1265,6 @@ def sensor_vel(m: Model, d: Data):
       d.ne,
       d.nf,
       d.nl,
-      d.efc.worldid,
       d.efc.type,
       d.efc.id,
       d.efc.vel,
@@ -1448,29 +1442,27 @@ def _limit_frc(
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
   nl_in: wp.array(dtype=int),
-  efc_worldid_in: wp.array(dtype=int),
-  efc_type_in: wp.array(dtype=int),
-  efc_id_in: wp.array(dtype=int),
-  efc_force_in: wp.array(dtype=float),
+  efc_type_in: wp.array2d(dtype=int),
+  efc_id_in: wp.array2d(dtype=int),
+  efc_force_in: wp.array2d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
-  efcid, limitfrcid = wp.tid()
+  worldid, efcid, limitfrcid = wp.tid()
 
-  ne = ne_in[0]
-  nf = nf_in[0]
-  nl = nl_in[0]
+  ne = ne_in[worldid]
+  nf = nf_in[worldid]
+  nl = nl_in[worldid]
 
   # skip if not limit
   if efcid < ne + nf or efcid >= ne + nf + nl:
     return
 
   sensorid = sensor_limitfrc_adr[limitfrcid]
-  if efc_id_in[efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[efcid]
+  if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
+    efc_type = efc_type_in[worldid, efcid]
     if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
-      worldid = efc_worldid_in[efcid]
-      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[efcid], sensordata_out[worldid])
+      _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid])
 
 
 @wp.func
@@ -1674,7 +1666,7 @@ def _sensor_touch(
   contact_geom_in: wp.array(dtype=wp.vec2i),
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
-  efc_force_in: wp.array(dtype=float),
+  efc_force_in: wp.array2d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
@@ -1695,15 +1687,16 @@ def _sensor_touch(
   conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
 
   # select contacts involving sensorized body
+  worldid = contact_worldid_in[conid]
   efc_address0 = contact_efc_address_in[conid, 0]
   if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
     # get contact normal force
-    normalforce = efc_force_in[efc_address0]
+    normalforce = efc_force_in[worldid, efc_address0]
 
     if opt_cone == int(ConeType.PYRAMIDAL.value):
       dim = contact_dim_in[conid]
       for i in range(1, 2 * (dim - 1)):
-        normalforce += efc_force_in[contact_efc_address_in[conid, i]]
+        normalforce += efc_force_in[worldid, contact_efc_address_in[conid, i]]
 
     if normalforce <= 0.0:
       return
@@ -1718,7 +1711,6 @@ def _sensor_touch(
       conray = -conray
 
     # add if ray-zone intersection (always true when contact.pos inside zone)
-    worldid = contact_worldid_in[conid]
     if (
       ray.ray_geom(
         site_xpos_in[worldid, objid],
@@ -1865,7 +1857,7 @@ def sensor_acc(m: Model, d: Data):
 
   wp.launch(
     _limit_frc,
-    dim=(d.njmax, m.sensor_limitfrc_adr.size),
+    dim=(d.nworld, d.njmax, m.sensor_limitfrc_adr.size),
     inputs=[
       m.sensor_datatype,
       m.sensor_objid,
@@ -1875,7 +1867,6 @@ def sensor_acc(m: Model, d: Data):
       d.ne,
       d.nf,
       d.nl,
-      d.efc.worldid,
       d.efc.type,
       d.efc.id,
       d.efc.force,
