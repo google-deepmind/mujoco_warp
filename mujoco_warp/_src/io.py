@@ -1002,12 +1002,14 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     qLD_integration=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # sweep-and-prune broadphase
-    sap_projection_lower=wp.zeros((2 * nworld, mjm.ngeom), dtype=float),
+    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
     sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((2 * nworld, mjm.ngeom), dtype=int),
+    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
     sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros(nworld * mjm.ngeom, dtype=int),
-    sap_segment_index=wp.array([i * mjm.ngeom for i in range(nworld + 1)], dtype=int),
+    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
+    sap_segment_index=wp.array(
+      np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2)), dtype=int
+    ),
     # collision driver
     collision_pair=wp.zeros((nconmax,), dtype=wp.vec2i),
     collision_hftri_index=wp.zeros((nconmax,), dtype=int),
@@ -1355,12 +1357,12 @@ def put_data(
     qLD_integration=tile(qLD_integration),
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # TODO(team): skip allocation if broadphase != sap
-    sap_projection_lower=wp.zeros((2 * nworld, mjm.ngeom), dtype=float),
+    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
     sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((2 * nworld, mjm.ngeom), dtype=int),
+    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
     sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
     sap_cumulative_sum=wp.zeros(nworld * mjm.ngeom, dtype=int),
-    sap_segment_index=arr([i * mjm.ngeom for i in range(nworld + 1)]),
+    sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
     collision_pair=wp.empty(nconmax, dtype=wp.vec2i),
     collision_hftri_index=wp.empty(nconmax, dtype=int),

@@ -1449,12 +1449,12 @@ class Data:
     qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
     qLDiagInv_integration: temporary array for integration      (nworld, nv)
     boxes_sorted: min, max of sorted bounding boxes             (nworld, ngeom, 2)
-    sap_projection_lower: broadphase context                    (2*nworld, ngeom)
+    sap_projection_lower: broadphase context                    (nworld, ngeom, 2)
     sap_projection_upper: broadphase context                    (nworld, ngeom)
-    sap_sort_index: broadphase context                          (2*nworld, ngeom)
+    sap_sort_index: broadphase context                          (nworld, ngeom, 2)
     sap_range: broadphase context                               (nworld, ngeom)
-    sap_cumulative_sum: broadphase context                      (nworld*ngeom,)
-    sap_segment_index: broadphase context                       (nworld+1,)
+    sap_cumulative_sum: broadphase context                      (nworld, ngeom)
+    sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (nconmax,)
     collision_hftri_index: collision index for hfield pairs     (nconmax,)
@@ -1595,12 +1595,12 @@ class Data:
   qLDiagInv_integration: wp.array2d(dtype=float)
 
   # sweep-and-prune broadphase
-  sap_projection_lower: wp.array2d(dtype=float)
+  sap_projection_lower: wp.array3d(dtype=float)
   sap_projection_upper: wp.array2d(dtype=float)
-  sap_sort_index: wp.array2d(dtype=int)
+  sap_sort_index: wp.array3d(dtype=int)
   sap_range: wp.array2d(dtype=int)
-  sap_cumulative_sum: wp.array(dtype=int)
-  sap_segment_index: wp.array(dtype=int)
+  sap_cumulative_sum: wp.array2d(dtype=int)
+  sap_segment_index: wp.array2d(dtype=int)
 
   # collision driver
   collision_pair: wp.array(dtype=wp.vec2i)

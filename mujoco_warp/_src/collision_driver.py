@@ -163,9 +163,9 @@ def _sap_project(
   # In:
   direction_in: wp.vec3,
   # Data out:
-  sap_projection_lower_out: wp.array2d(dtype=float),
+  sap_projection_lower_out: wp.array3d(dtype=float),
   sap_projection_upper_out: wp.array2d(dtype=float),
-  sap_sort_index_out: wp.array2d(dtype=int),
+  sap_sort_index_out: wp.array3d(dtype=int),
 ):
   worldid, geomid = wp.tid()
 
@@ -189,9 +189,9 @@ def _sap_range(
   # Model:
   ngeom: int,
   # Data in:
-  sap_projection_lower_in: wp.array2d(dtype=float),
+  sap_projection_lower_in: wp.array3d(dtype=float),
   sap_projection_upper_in: wp.array2d(dtype=float),
-  sap_sort_index_in: wp.array2d(dtype=int),
+  sap_sort_index_in: wp.array3d(dtype=int),
   # Data out:
   sap_range_out: wp.array2d(dtype=int),
 ):
@@ -222,8 +222,8 @@ def _sap_broadphase(
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  sap_sort_index_in: wp.array2d(dtype=int),
-  sap_cumulative_sum_in: wp.array(dtype=int),
+  sap_sort_index_in: wp.array3d(dtype=int),
+  sap_cumulative_sum_in: wp.array2d(dtype=int),
   # In:
   nsweep_in: int,
   # Data out:
@@ -295,8 +295,8 @@ def _segmented_sort(tile_size: int):
   @wp.kernel
   def segmented_sort(
     # Data in:
-    sap_projection_lower_in: wp.array2d(dtype=float),
-    sap_sort_index_in: wp.array2d(dtype=int),
+    sap_projection_lower_in: wp.array3d(dtype=float),
+    sap_sort_index_in: wp.array3d(dtype=int),
   ):
     worldid = wp.tid()
 
@@ -338,7 +338,7 @@ def sap_broadphase(m: Model, d: Data):
     outputs=[
       d.sap_projection_lower,
       d.sap_projection_upper,
-      d.sap_sort_index,
+      d.sap_sort_index.reshape((-1, m.ngeom)),
     ],
   )
 
@@ -346,15 +346,15 @@ def sap_broadphase(m: Model, d: Data):
     wp.launch_tiled(
       kernel=_segmented_sort(m.ngeom),
       dim=(d.nworld),
-      inputs=[d.sap_projection_lower, d.sap_sort_index],
+      inputs=[d.sap_projection_lower.reshape((-1, m.ngeom)), d.sap_sort_index.reshape((-1, m.ngeom))],
       block_dim=m.block_dim.segmented_sort,
     )
   else:
     wp.utils.segmented_sort_pairs(
-      d.sap_projection_lower,
-      d.sap_sort_index,
+      d.sap_projection_lower.reshape((-1, m.ngeom)),
+      d.sap_sort_index.reshape((-1, m.ngeom)),
       nworldgeom,
-      d.sap_segment_index,
+      d.sap_segment_index.reshape(-1),
     )
 
   wp.launch(
@@ -362,9 +362,9 @@ def sap_broadphase(m: Model, d: Data):
     dim=(d.nworld, m.ngeom),
     inputs=[
       m.ngeom,
-      d.sap_projection_lower,
+      d.sap_projection_lower.reshape((-1, m.ngeom)),
       d.sap_projection_upper,
-      d.sap_sort_index,
+      d.sap_sort_index.reshape((-1, m.ngeom)),
     ],
     outputs=[
       d.sap_range,
@@ -372,7 +372,7 @@ def sap_broadphase(m: Model, d: Data):
   )
 
   # scan is used for load balancing among the threads
-  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
+  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum.reshape(-1), True)
 
   # estimate number of overlap checks
   # assumes each geom has 5 other geoms (batched over all worlds)
@@ -390,8 +390,8 @@ def sap_broadphase(m: Model, d: Data):
       d.nconmax,
       d.geom_xpos,
       d.geom_xmat,
-      d.sap_sort_index,
-      d.sap_cumulative_sum,
+      d.sap_sort_index.reshape((-1, m.ngeom)),
+      d.sap_cumulative_sum.reshape(-1),
       nsweep,
     ],
     outputs=[
