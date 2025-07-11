@@ -151,7 +151,8 @@ def _main(argv: Sequence[str]):
         m.opt.integrator = k
 
   m.opt.ls_parallel = _LS_PARALLEL.value
-  d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+  nconmax = mjwarp.nconmax_estimate(m, nworld=_BATCH_SIZE.value, user_max=_NCONMAX.value)
+  d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=nconmax, njmax=_NJMAX.value)
 
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
