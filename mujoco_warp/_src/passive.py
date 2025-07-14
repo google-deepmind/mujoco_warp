@@ -274,15 +274,15 @@ def _box_fluid(
     box1 = wp.sqrt(wp.max(MJ_MINVAL, inertia[0] + inertia[2] - inertia[1]) * scl)
     box2 = wp.sqrt(wp.max(MJ_MINVAL, inertia[0] + inertia[1] - inertia[2]) * scl)
 
-  if viscosity:
+  if has_viscosity:
     # diameter of sphere approximation
     diam = (box0 + box1 + box2) / 3.0
 
     # angular viscosity
-    lfrc_torque = -lvel_torque * wp.pow(diam, 3.0) * wp.pi * opt_viscosity
+    lfrc_torque = -lvel_torque * wp.pow(diam, 3.0) * wp.pi * viscosity
 
     # linear viscosity
-    lfrc_force = -3.0 * lvel_force * diam * wp.pi * opt_viscosity
+    lfrc_force = -3.0 * lvel_force * diam * wp.pi * viscosity
 
   if has_density:
     # force
