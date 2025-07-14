@@ -153,6 +153,25 @@ def _check_annotation_compat(
     raise AssertionError(f"Model/Data annotation is not allowed. {info}")
 
 
+def _leading_dims_scale_w_nworld(test_obj, d1: Any, d2: Any, nworld1: int, nworld2: int, prefix: str = ""):
+  """Checks that dataclass fields that scale with nworld have leading dim nworld."""
+  msg = "Arrays that scale with nworld should have leading dim nworld."
+  fields1, fields2 = dataclasses.fields(d1), dataclasses.fields(d2)
+  for f1, f2 in zip(fields1, fields2):
+    full_name = prefix + f1.name
+    a1, a2 = getattr(d1, f1.name), getattr(d2, f2.name)
+    if dataclasses.is_dataclass(a1) or dataclasses.is_dataclass(a2):
+      _leading_dims_scale_w_nworld(test_obj, a1, a2, nworld1, nworld2, prefix + f1.name + ".")
+      continue
+
+    if isinstance(f1.type, wp.types.array) or isinstance(f2.type, wp.types.array):
+      s1, s2 = a1.shape[0], a2.shape[0]
+      if s1 == s2:
+        continue
+      test_obj.assertEqual(s2, nworld2, full_name + f" has leading dim {s2} with nworld={nworld2}. {msg}")
+      test_obj.assertEqual(s1, nworld1, full_name + f" has leading dim {s1} with nworld={nworld1}. {msg}")
+
+
 class IOTest(absltest.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
@@ -327,25 +346,6 @@ class IOTest(absltest.TestCase):
 
     _leading_dims_match(self, dm2, dp2)
     _leading_dims_match(self, dm3, dp3)
-
-
-def _leading_dims_scale_w_nworld(test_obj, d1: Any, d2: Any, nworld1: int, nworld2: int, prefix: str = ""):
-  """Checks that dataclass fields that scale with nworld have leading dim nworld."""
-  msg = "Arrays that scale with nworld should have leading dim nworld."
-  fields1, fields2 = dataclasses.fields(d1), dataclasses.fields(d2)
-  for f1, f2 in zip(fields1, fields2):
-    full_name = prefix + f1.name
-    a1, a2 = getattr(d1, f1.name), getattr(d2, f2.name)
-    if dataclasses.is_dataclass(a1) or dataclasses.is_dataclass(a2):
-      _leading_dims_scale_w_nworld(test_obj, a1, a2, nworld1, nworld2, prefix + f1.name + ".")
-      continue
-
-    if isinstance(f1.type, wp.types.array) or isinstance(f2.type, wp.types.array):
-      s1, s2 = a1.shape[0], a2.shape[0]
-      if s1 == s2:
-        continue
-      test_obj.assertEqual(s2, nworld2, full_name + f" has leading dim {s2} with nworld={nworld2}. {msg}")
-      test_obj.assertEqual(s1, nworld1, full_name + f" has leading dim {s1} with nworld={nworld1}. {msg}")
 
 
 if __name__ == "__main__":
