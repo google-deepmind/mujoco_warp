@@ -536,9 +536,9 @@ class Option:
   """
 
   timestep: wp.array(dtype=float)
-  impratio: float
-  tolerance: float
-  ls_tolerance: float
+  impratio: wp.array(dtype=float)
+  tolerance: wp.array(dtype=float)
+  ls_tolerance: wp.array(dtype=float)
   gravity: wp.array(dtype=wp.vec3)
   magnetic: wp.array(dtype=wp.vec3)
   integrator: int
@@ -554,8 +554,8 @@ class Option:
   ls_parallel: bool
   wind: wp.array(dtype=wp.vec3)
   has_fluid: bool
-  density: float
-  viscosity: float
+  density: wp.array(dtype=float)
+  viscosity: wp.array(dtype=float)
   broadphase: int
   graph_conditional: bool  # warp only
   sdf_initpoints: int

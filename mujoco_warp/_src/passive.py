@@ -218,8 +218,8 @@ def _gravity_force(
 def _box_fluid(
   # Model:
   opt_wind: wp.array(dtype=wp.vec3),
-  opt_density: float,
-  opt_viscosity: float,
+  opt_density: wp.array(dtype=float),
+  opt_viscosity: wp.array(dtype=float),
   body_rootid: wp.array(dtype=int),
   body_mass: wp.array2d(dtype=float),
   body_inertia: wp.array2d(dtype=wp.vec3),
@@ -235,6 +235,8 @@ def _box_fluid(
 
   worldid, bodyid = wp.tid()
   wind = opt_wind[worldid]
+  density = opt_density[worldid]
+  viscosity = opt_viscosity[worldid]
 
   # map from CoM-centered to local body-centered 6D velocity
 
@@ -261,10 +263,10 @@ def _box_fluid(
   lfrc_torque = wp.vec3(0.0)
   lfrc_force = wp.vec3(0.0)
 
-  viscosity = opt_viscosity > 0.0
-  density = opt_density > 0.0
+  has_viscosity = viscosity > 0.0
+  has_density = density > 0.0
 
-  if viscosity or density:
+  if has_viscosity or has_density:
     inertia = body_inertia[worldid, bodyid]
     mass = body_mass[worldid, bodyid]
     scl = 6.0 / mass
@@ -282,16 +284,16 @@ def _box_fluid(
     # linear viscosity
     lfrc_force = -3.0 * lvel_force * diam * wp.pi * opt_viscosity
 
-  if density:
+  if has_density:
     # force
     lfrc_force -= wp.vec3(
-      0.5 * opt_density * box1 * box2 * wp.abs(lvel_force[0]) * lvel_force[0],
-      0.5 * opt_density * box0 * box2 * wp.abs(lvel_force[1]) * lvel_force[1],
-      0.5 * opt_density * box0 * box1 * wp.abs(lvel_force[2]) * lvel_force[2],
+      0.5 * density * box1 * box2 * wp.abs(lvel_force[0]) * lvel_force[0],
+      0.5 * density * box0 * box2 * wp.abs(lvel_force[1]) * lvel_force[1],
+      0.5 * density * box0 * box1 * wp.abs(lvel_force[2]) * lvel_force[2],
     )
 
     # torque
-    scl = opt_density / 64.0
+    scl = density / 64.0
     box0_pow4 = wp.pow(box0, 4.0)
     box1_pow4 = wp.pow(box1, 4.0)
     box2_pow4 = wp.pow(box2, 4.0)

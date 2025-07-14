@@ -49,9 +49,8 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 @wp.func
 def _eval_pt_elliptic(
-  # Model:
-  opt_impratio: float,
   # In:
+  impratio: float,
   friction: types.vec5,
   u0: float,
   uu: float,
@@ -62,7 +61,7 @@ def _eval_pt_elliptic(
   quad: wp.vec3,
   alpha: float,
 ) -> wp.vec3:
-  mu = friction[0] / wp.sqrt(opt_impratio)
+  mu = friction[0] / wp.sqrt(impratio)
   v0 = jv * mu
   n = u0 + alpha * v0
   tsqr = uu + alpha * (2.0 * uv + alpha * vv)
@@ -107,8 +106,8 @@ def _eval_pt_elliptic(
 def linesearch_iterative_gtol(
   # Model:
   nv: int,
-  opt_tolerance: float,
-  opt_ls_tolerance: float,
+  opt_tolerance: wp.array(dtype=float),
+  opt_ls_tolerance: wp.array(dtype=float),
   stat_meaninertia: float,
   # Data in:
   efc_search_dot_in: wp.array(dtype=float),
@@ -121,9 +120,11 @@ def linesearch_iterative_gtol(
   if efc_done_in[worldid]:
     return
 
+  tolerance = opt_tolerance[worldid]
+  ls_tolerance = opt_ls_tolerance[worldid]
   snorm = wp.math.sqrt(efc_search_dot_in[worldid])
   scale = stat_meaninertia * wp.float(wp.max(1, nv))
-  efc_gtol_out[worldid] = opt_tolerance * opt_ls_tolerance * snorm * scale
+  efc_gtol_out[worldid] = tolerance * ls_tolerance * snorm * scale
 
 
 @wp.kernel
@@ -185,7 +186,7 @@ def linesearch_iterative_init_p0_elliptic0(
 @wp.kernel
 def linesearch_iterative_init_p0_elliptic1(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   # Data in:
   ncon_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -218,7 +219,7 @@ def linesearch_iterative_init_p0_elliptic1(
   worldid = contact_worldid_in[conid]
 
   pt = _eval_pt_elliptic(
-    opt_impratio,
+    opt_impratio[worldid],
     contact_friction_in[conid],
     efc_u_in[conid][0],
     efc_uu_in[conid],
@@ -330,7 +331,7 @@ def linesearch_iterative_init_lo_elliptic0(
 @wp.kernel
 def linesearch_iterative_init_lo_elliptic1(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   # Data in:
   ncon_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -364,7 +365,7 @@ def linesearch_iterative_init_lo_elliptic1(
   worldid = contact_worldid_in[conid]
   alpha = efc_lo_alpha_in[worldid]
   pt = _eval_pt_elliptic(
-    opt_impratio,
+    opt_impratio[worldid],
     contact_friction_in[conid],
     efc_u_in[conid][0],
     efc_uu_in[conid],
@@ -562,7 +563,7 @@ def linesearch_iterative_next_quad_elliptic0(
 @wp.kernel
 def linesearch_iterative_next_quad_elliptic1(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   # Data in:
   ncon_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -599,7 +600,7 @@ def linesearch_iterative_next_quad_elliptic1(
     return
 
   efcid = contact_efc_address_in[conid, 0]
-
+  impratio = opt_impratio[worldid]
   friction = contact_friction_in[conid]
   u = efc_u_in[conid][0]
   uu = efc_uu_in[conid]
@@ -610,15 +611,15 @@ def linesearch_iterative_next_quad_elliptic1(
   quad = efc_quad_in[efcid]
 
   alpha = efc_lo_next_alpha_in[worldid]
-  pt = _eval_pt_elliptic(opt_impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
+  pt = _eval_pt_elliptic(impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
   wp.atomic_add(efc_lo_next_out, worldid, pt)
 
   alpha = efc_hi_next_alpha_in[worldid]
-  pt = _eval_pt_elliptic(opt_impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
+  pt = _eval_pt_elliptic(impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
   wp.atomic_add(efc_hi_next_out, worldid, pt)
 
   alpha = efc_mid_alpha_in[worldid]
-  pt = _eval_pt_elliptic(opt_impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
+  pt = _eval_pt_elliptic(impratio, friction, u, uu, uv, vv, jv, d, quad, alpha)
   wp.atomic_add(efc_mid_out, worldid, pt)
 
 
@@ -1508,7 +1509,7 @@ def update_constraint_efc_pyramidal(
 @wp.kernel
 def update_constraint_u_elliptic(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   # Data in:
   ncon_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -1527,7 +1528,8 @@ def update_constraint_u_elliptic(
   if conid >= ncon_in[0]:
     return
 
-  if efc_done_in[contact_worldid_in[conid]]:
+  worldid = contact_worldid_in[conid]
+  if efc_done_in[worldid]:
     return
 
   efcid = contact_efc_address_in[conid, dimid]
@@ -1540,7 +1542,7 @@ def update_constraint_u_elliptic(
 
   if dimid < condim:
     if dimid == 0:
-      fri = contact_friction_in[conid][0] / wp.sqrt(opt_impratio)
+      fri = contact_friction_in[conid][0] / wp.sqrt(opt_impratio[worldid])
     else:
       fri = contact_friction_in[conid][dimid - 1]
     u = efc_Jaref_in[efcid] * fri
@@ -1552,7 +1554,7 @@ def update_constraint_u_elliptic(
 @wp.kernel
 def update_constraint_active_elliptic_bottom_zone(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   # Data in:
   ncon_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -1570,14 +1572,15 @@ def update_constraint_active_elliptic_bottom_zone(
   if conid >= ncon_in[0]:
     return
 
-  if efc_done_in[contact_worldid_in[conid]]:
+  worldid = contact_worldid_in[conid]
+  if efc_done_in[worldid]:
     return
 
   condim = contact_dim_in[conid]
   if condim == 1:
     return
 
-  mu = contact_friction_in[conid][0] / wp.sqrt(opt_impratio)
+  mu = contact_friction_in[conid][0] / wp.sqrt(opt_impratio[worldid])
   n = efc_u_in[conid][0]
   tt = efc_uu_in[conid]
   if tt <= 0.0:
@@ -1668,7 +1671,7 @@ def update_constraint_efc_elliptic0(
 @wp.kernel
 def update_constraint_efc_elliptic1(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   # Data in:
   ncon_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -1688,7 +1691,8 @@ def update_constraint_efc_elliptic1(
   if conid >= ncon_in[0]:
     return
 
-  if efc_done_in[contact_worldid_in[conid]]:
+  worldid = contact_worldid_in[conid]
+  if efc_done_in[worldid]:
     return
 
   condim = contact_dim_in[conid]
@@ -1699,7 +1703,7 @@ def update_constraint_efc_elliptic1(
   friction = contact_friction_in[conid]
   efcid = contact_efc_address_in[conid, dimid]
 
-  mu = friction[0] / wp.sqrt(opt_impratio)
+  mu = friction[0] / wp.sqrt(opt_impratio[worldid])
   n = efc_u_in[conid][0]
   tt = efc_uu_in[conid]
   if tt <= 0.0:
@@ -2076,7 +2080,7 @@ def update_gradient_JTDAJ(
 @wp.kernel
 def update_gradient_JTCJ(
   # Model:
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   dof_tri_row: wp.array(dtype=int),
   dof_tri_col: wp.array(dtype=int),
   # Data in:
@@ -2108,7 +2112,8 @@ def update_gradient_JTCJ(
     if conid >= min(ncon_in[0], nconmax_in):
       return
 
-    if efc_done_in[contact_worldid_in[conid]]:
+    worldid = contact_worldid_in[conid]
+    if efc_done_in[worldid]:
       continue
 
     condim = contact_dim_in[conid]
@@ -2117,7 +2122,7 @@ def update_gradient_JTCJ(
       continue
 
     fri = contact_friction_in[conid]
-    mu = fri[0] / wp.sqrt(opt_impratio)
+    mu = fri[0] / wp.sqrt(opt_impratio[worldid])
     n = efc_u_in[conid][0]
     tt = efc_uu_in[conid]
     if tt <= 0.0:
@@ -2515,7 +2520,7 @@ def solve_search_update(
 def solve_done(
   # Model:
   nv: int,
-  opt_tolerance: float,
+  opt_tolerance: wp.array(dtype=float),
   opt_iterations: int,
   stat_meaninertia: float,
   # Data in:
@@ -2534,10 +2539,11 @@ def solve_done(
     return
 
   solver_niter_out[worldid] += 1
+  tolerance = opt_tolerance[worldid]
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
-  done = (improvement < opt_tolerance) or (gradient < opt_tolerance)
+  done = (improvement < tolerance) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then
     # mark this world as done and remove it from the number of unconverged worlds
