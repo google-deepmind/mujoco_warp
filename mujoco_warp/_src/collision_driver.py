@@ -179,9 +179,13 @@ def _sap_project(
   radius = rbound + geom_margin[worldid, geomid]
   center = wp.dot(direction_in, xpos)
 
-  sap_projection_lower_out[worldid, geomid] = center - radius
-  sap_projection_upper_out[worldid, geomid] = center + radius
   sap_sort_index_out[worldid, geomid] = geomid
+  if not wp.isnan(center):
+    sap_projection_lower_out[worldid, geomid] = center - radius
+    sap_projection_upper_out[worldid, geomid] = center + radius
+  else:
+    sap_projection_lower_out[worldid, geomid] = MJ_MAXVAL
+    sap_projection_upper_out[worldid, geomid] = MJ_MAXVAL
 
 
 @wp.kernel
