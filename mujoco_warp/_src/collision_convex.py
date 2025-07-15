@@ -348,7 +348,7 @@ def ccd_kernel_builder(
       if dist >= 0.0:
         count = 0
         return
-      
+
     for i in range(count):
       points[0] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]

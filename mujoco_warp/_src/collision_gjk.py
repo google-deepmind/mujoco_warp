@@ -1325,18 +1325,19 @@ def feature_dim(face: wp.vec3i, vert_index: wp.array(dtype=int), vert: wp.array(
 
 # find two normals that are facing each other within a tolerance, return 1 if found
 @wp.func
-def aligned_faces(v: polyverts, nv: int, w: polyverts, nw: int):
+def aligned_faces(vert1: polyverts, len1: int, vert2: polyverts, len2: int):
   res = wp.vec2i()
-  for i in range(nv):
-    for j in range(nw):
-      if wp.dot(v[i], w[j]) < -FACE_TOL:
+  for i in range(len1):
+    for j in range(len2):
+      if wp.dot(vert1[i], vert2[j]) < -FACE_TOL:
         res[0] = i
         res[1] = j
         return 1, res
   return 0, res
 
 
-# find two normals that are perpendicular to each other within a tolerance, return 1 if found
+# find two normals that are perpendicular to each other within a tolerance
+# return 1 if found
 @wp.func
 def aligned_face_edge(edge: polyverts, nedge: int, face: polyverts, nface: int):
   res = wp.vec2i()
@@ -1381,6 +1382,7 @@ def intersect2(a1: wp.vec2i, a2: wp.array(dtype=int), start2: int, len1: int, le
 # compute possible polygon normals of a mesh given up to 3 vertices
 @wp.func
 def mesh_normals(
+  # In:
   feature_dim: int,
   feature_index: wp.vec3i,
   mat: wp.mat33,
@@ -1452,6 +1454,7 @@ def mesh_normals(
 # compute normal directional vectors along possible edges given by up to two vertices
 @wp.func
 def mesh_edge_normals(
+  # In:
   dim: int,
   mat: wp.mat33,
   pos: wp.vec3,
@@ -1679,6 +1682,7 @@ def box_face(mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int):
 # recover mesh polygon from its index, return number of edges
 @wp.func
 def mesh_face(
+  # In:
   mat: wp.mat33,
   pos: wp.vec3,
   vertadr: int,
