@@ -313,7 +313,8 @@ def ccd_kernel_builder(
       x1 = geom1.pos
       x2 = geom2.pos
 
-      dist, x1, x2 = ccd(
+      dist, count, witness1, witness2 = ccd(
+        False,
         1e-6,
         0.0,
         gjk_iterations,
@@ -336,13 +337,13 @@ def ccd_kernel_builder(
         epa_map_in[tid],
         epa_horizon_in[tid],
       )
-      count = 0
-      if dist < 0.0:
-        count = 1
-
-      points[0] = 0.5 * (x1 + x2)
-      normal = x1 - x2
-
+      if dist >= 0.0:
+        count = 0
+        return
+      
+    for i in range(count):
+      points[0] = 0.5 * (witness1[i] + witness2[i])
+    normal = witness1[0] - witness2[0]
     frame = make_frame(normal)
     for i in range(count):
       # limit maximum number of contacts with height field
