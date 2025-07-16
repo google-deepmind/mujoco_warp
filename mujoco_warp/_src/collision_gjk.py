@@ -912,28 +912,37 @@ def _polytope2(
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
 
   # build hexahedron
+  set = False
   if _attach_face(pt, 0, 0, 2, 3) < MJ_MINVAL:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 0, 2, 3)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 1, 0, 4, 2) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 1, 0, 4, 2) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 0, 4, 2)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 2, 0, 3, 4) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 2, 0, 3, 4) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 0, 3, 4)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 3, 1, 3, 2) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 3, 1, 3, 2) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 1, 3, 2)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 4, 1, 2, 4) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 4, 1, 2, 4) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 1, 2, 4)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 5, 1, 4, 3) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 5, 1, 4, 3) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 1, 4, 3)
+    set = True
+  
+  if set:
     return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
   # check hexahedron is convex
@@ -1094,22 +1103,28 @@ def _polytope4(
   pt.vert_index2[1] = simplex_index2[1]
   pt.vert_index2[2] = simplex_index2[2]
   pt.vert_index2[3] = simplex_index2[3]
-
+  set = False
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
   if _attach_face(pt, 0, 0, 1, 2) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 0, 1, 2)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 1, 0, 3, 1) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 1, 0, 3, 1) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 0, 3, 1)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 2, 0, 2, 3) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 2, 0, 2, 3) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 0, 2, 3)
-    return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
+    set = True
+    #return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
-  if _attach_face(pt, 3, 3, 2, 1) < MJ_MINVAL2:
+  if not set and _attach_face(pt, 3, 3, 2, 1) < MJ_MINVAL2:
     s, s1, s2, si1, si2 = _replace_simplex3(pt, 3, 2, 1)
+    set = True
+
+  if set:
     return _polytope3(pt, dist, s, s1, s2, si1, si2, geom1, geom2, geomtype1, geomtype2)
 
   if not _test_tetra(pt.vert[0], pt.vert[1], pt.vert[2], pt.vert[3]):
