@@ -90,7 +90,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
     )
   elif m.opt.integrator == IntegratorType.IMPLICITFAST:
     derivative.deriv_smooth_vel(m, d, flg_forward=False)
-    smooth._factor_solve_i_dense(m, d, d.qM, qacc, qfrc)
+    smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, qacc, qfrc)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 

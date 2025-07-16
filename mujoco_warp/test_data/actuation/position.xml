@@ -27,12 +27,12 @@
     </body>
   </worldbody>
   <actuator>
-    <motor joint="hinge4"/>
-    <motor joint="hinge1"/>
-    <motor joint="hinge2"/>
-    <motor joint="hinge5"/>
-    <motor joint="hinge3"/>
-    <motor joint="hinge0"/>
+    <position joint="hinge0" kp="1" kv="2"/>
+    <position joint="hinge3" kp="7" kv="8"/>
+    <position joint="hinge4" kp="9" kv="10"/>
+    <position joint="hinge5" kp="11" kv="12"/>
+    <position joint="hinge2" kp="5" kv="6"/>
+    <position joint="hinge1" kp="3" kv="4"/>
   </actuator>
   <keyframe>
     <key ctrl="1 2 3 4 5 6"/>

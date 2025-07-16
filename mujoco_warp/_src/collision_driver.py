@@ -163,9 +163,9 @@ def _sap_project(
   # In:
   direction_in: wp.vec3,
   # Data out:
-  sap_projection_lower_out: wp.array2d(dtype=float),
+  sap_projection_lower_out: wp.array2d(dtype=float),  # kernel_analyzer: ignore
   sap_projection_upper_out: wp.array2d(dtype=float),
-  sap_sort_index_out: wp.array2d(dtype=int),
+  sap_sort_index_out: wp.array2d(dtype=int),  # kernel_analyzer: ignore
 ):
   worldid, geomid = wp.tid()
 
@@ -189,9 +189,9 @@ def _sap_range(
   # Model:
   ngeom: int,
   # Data in:
-  sap_projection_lower_in: wp.array2d(dtype=float),
+  sap_projection_lower_in: wp.array2d(dtype=float),  # kernel_analyzer: ignore
   sap_projection_upper_in: wp.array2d(dtype=float),
-  sap_sort_index_in: wp.array2d(dtype=int),
+  sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
   # Data out:
   sap_range_out: wp.array2d(dtype=int),
 ):
@@ -222,8 +222,8 @@ def _sap_broadphase(
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  sap_sort_index_in: wp.array2d(dtype=int),
-  sap_cumulative_sum_in: wp.array(dtype=int),
+  sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
+  sap_cumulative_sum_in: wp.array(dtype=int),  # kernel_analyzer: ignore
   # In:
   nsweep_in: int,
   # Data out:
@@ -295,8 +295,8 @@ def _segmented_sort(tile_size: int):
   @wp.kernel
   def segmented_sort(
     # Data in:
-    sap_projection_lower_in: wp.array2d(dtype=float),
-    sap_sort_index_in: wp.array2d(dtype=int),
+    sap_projection_lower_in: wp.array2d(dtype=float),  # kernel_analyzer: ignore
+    sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
   ):
     worldid = wp.tid()
 
@@ -316,7 +316,21 @@ def _segmented_sort(tile_size: int):
 
 @event_scope
 def sap_broadphase(m: Model, d: Data):
-  """Broadphase collision detection via sweep-and-prune."""
+  """Runs broadphase collision detection using a sweep-and-prune (SAP) algorithm.
+
+  This method is more efficient than the N-squared approach for large numbers of
+  objects. It works by projecting the bounding spheres of all geoms onto a
+  single axis and sorting them. It then sweeps along the axis, only checking
+  for overlaps between geoms whose projections are close to each other.
+
+  For each potentially colliding pair identified by the sweep, a more precise
+  bounding sphere check is performed. If this check passes, the pair is added
+  to the collision arrays in `d` for the narrowphase stage.
+
+  Two sorting strategies are supported, controlled by `m.opt.broadphase`:
+  - `SAP_TILE`: Uses a tile-based sort.
+  - `SAP_SEGMENTED`: Uses a segmented sort.
+  """
 
   nworldgeom = d.nworld * m.ngeom
 
@@ -336,9 +350,9 @@ def sap_broadphase(m: Model, d: Data):
       direction,
     ],
     outputs=[
-      d.sap_projection_lower,
+      d.sap_projection_lower.reshape((-1, m.ngeom)),
       d.sap_projection_upper,
-      d.sap_sort_index,
+      d.sap_sort_index.reshape((-1, m.ngeom)),
     ],
   )
 
@@ -346,15 +360,15 @@ def sap_broadphase(m: Model, d: Data):
     wp.launch_tiled(
       kernel=_segmented_sort(m.ngeom),
       dim=(d.nworld),
-      inputs=[d.sap_projection_lower, d.sap_sort_index],
+      inputs=[d.sap_projection_lower.reshape((-1, m.ngeom)), d.sap_sort_index.reshape((-1, m.ngeom))],
       block_dim=m.block_dim.segmented_sort,
     )
   else:
     wp.utils.segmented_sort_pairs(
-      d.sap_projection_lower,
-      d.sap_sort_index,
+      d.sap_projection_lower.reshape((-1, m.ngeom)),
+      d.sap_sort_index.reshape((-1, m.ngeom)),
       nworldgeom,
-      d.sap_segment_index,
+      d.sap_segment_index.reshape(-1),
     )
 
   wp.launch(
@@ -362,9 +376,9 @@ def sap_broadphase(m: Model, d: Data):
     dim=(d.nworld, m.ngeom),
     inputs=[
       m.ngeom,
-      d.sap_projection_lower,
+      d.sap_projection_lower.reshape((-1, m.ngeom)),
       d.sap_projection_upper,
-      d.sap_sort_index,
+      d.sap_sort_index.reshape((-1, m.ngeom)),
     ],
     outputs=[
       d.sap_range,
@@ -372,7 +386,7 @@ def sap_broadphase(m: Model, d: Data):
   )
 
   # scan is used for load balancing among the threads
-  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum, True)
+  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum.reshape(-1), True)
 
   # estimate number of overlap checks
   # assumes each geom has 5 other geoms (batched over all worlds)
@@ -390,8 +404,8 @@ def sap_broadphase(m: Model, d: Data):
       d.nconmax,
       d.geom_xpos,
       d.geom_xmat,
-      d.sap_sort_index,
-      d.sap_cumulative_sum,
+      d.sap_sort_index.reshape((-1, m.ngeom)),
+      d.sap_cumulative_sum.reshape(-1),
       nsweep,
     ],
     outputs=[
@@ -425,10 +439,6 @@ def _nxn_broadphase(
 ):
   worldid, elementid = wp.tid()
 
-  # check for valid geom pair
-  if nxn_pairid[elementid] < -1:
-    return
-
   geom = nxn_geom_pair[elementid]
   geom1 = geom[0]
   geom2 = geom[1]
@@ -460,30 +470,40 @@ def _nxn_broadphase(
 
 @event_scope
 def nxn_broadphase(m: Model, d: Data):
-  """Broadphase collision detection via brute-force search."""
+  """Runs broadphase collision detection using a brute-force N-squared approach.
 
-  if m.nxn_geom_pair.shape[0]:
-    wp.launch(
-      _nxn_broadphase,
-      dim=(d.nworld, m.nxn_geom_pair.shape[0]),
-      inputs=[
-        m.geom_type,
-        m.geom_rbound,
-        m.geom_margin,
-        m.nxn_geom_pair,
-        m.nxn_pairid,
-        d.nconmax,
-        d.geom_xpos,
-        d.geom_xmat,
-      ],
-      outputs=[
-        d.collision_pair,
-        d.collision_hftri_index,
-        d.collision_pairid,
-        d.collision_worldid,
-        d.ncollision,
-      ],
-    )
+  This function iterates through a pre-filtered list of all possible geometry pairs and
+  performs a quick bounding sphere check to identify potential collisions.
+
+  For each pair that passes the sphere check, it populates the collision arrays in `d`
+  (`d.collision_pair`, `d.collision_pairid`, etc.), which are then consumed by the
+  narrowphase.
+
+  The initial list of pairs is filtered at model creation time to exclude pairs based on
+  `contype`/`conaffinity`, parent-child relationships, and explicit `<exclude>` tags.
+  """
+
+  wp.launch(
+    _nxn_broadphase,
+    dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
+    inputs=[
+      m.geom_type,
+      m.geom_rbound,
+      m.geom_margin,
+      m.nxn_geom_pair_filtered,
+      m.nxn_pairid_filtered,
+      d.nconmax,
+      d.geom_xpos,
+      d.geom_xmat,
+    ],
+    outputs=[
+      d.collision_pair,
+      d.collision_hftri_index,
+      d.collision_pairid,
+      d.collision_worldid,
+      d.ncollision,
+    ],
+  )
 
 
 def _narrowphase(m, d):
@@ -500,16 +520,24 @@ def _narrowphase(m, d):
     sdf_narrowphase(m, d)
 
 
-def narrowphase(m, d):
-  if m.opt.graph_conditional:
-    wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
-  else:
-    _narrowphase(m, d)
-
-
 @event_scope
 def collision(m: Model, d: Data):
-  """Collision detection."""
+  """Runs the full collision detection pipeline.
+
+  This function orchestrates the broadphase and narrowphase collision detection stages. It
+  first identifies potential collision pairs using a broadphase algorithm (either N-squared
+  or Sweep-and-Prune, based on `m.opt.broadphase`). Then, for each potential pair, it
+  performs narrowphase collision detection to compute detailed contact information like
+  distance, position, and frame.
+
+  The results are used to populate the `d.contact` array, and the total number of contacts
+  is stored in `d.ncon`.  If `d.ncon` is larger than `d.nconmax` then an overflow has
+  occurred and the remaining contacts will be skipped.  If this happens, raise the `nconmax`
+  parameter in `io.make_data` or `io.put_data`.
+
+  This function will do nothing except zero out arrays if collision detection is disabled
+  via `m.opt.disableflags` or if `d.nconmax` is 0.
+  """
 
   # zero collision-related arrays
   wp.launch(
@@ -525,11 +553,7 @@ def collision(m: Model, d: Data):
     ],
   )
 
-  if d.nconmax == 0:
-    return
-
-  dsbl_flgs = m.opt.disableflags
-  if (dsbl_flgs & DisableBit.CONSTRAINT) | (dsbl_flgs & DisableBit.CONTACT):
+  if d.nconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     return
 
   if m.opt.broadphase == int(BroadphaseType.NXN):
@@ -537,4 +561,7 @@ def collision(m: Model, d: Data):
   else:
     sap_broadphase(m, d)
 
-  narrowphase(m, d)
+  if m.opt.graph_conditional:
+    wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
+  else:
+    _narrowphase(m, d)

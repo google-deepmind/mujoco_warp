@@ -1104,7 +1104,7 @@ def _efc_contact_pyramidal(
   # Model:
   nv: int,
   opt_timestep: wp.array(dtype=float),
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -1165,6 +1165,7 @@ def _efc_contact_pyramidal(
       return
 
     timestep = opt_timestep[worldid]
+    impratio = opt_impratio[worldid]
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
@@ -1184,7 +1185,7 @@ def _efc_contact_pyramidal(
       fri0 = friction[0]
       frii = friction[dimid2 - 1]
       invweight = invweight + fri0 * fri0 * invweight
-      invweight = invweight * 2.0 * fri0 * fri0 / opt_impratio
+      invweight = invweight * 2.0 * fri0 * fri0 / impratio
 
     Jqvel = float(0.0)
     for i in range(nv):
@@ -1267,7 +1268,7 @@ def _efc_contact_elliptic(
   # Model:
   nv: int,
   opt_timestep: wp.array(dtype=float),
-  opt_impratio: float,
+  opt_impratio: wp.array(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -1327,6 +1328,7 @@ def _efc_contact_elliptic(
       return
 
     timestep = opt_timestep[worldid]
+    impratio = opt_impratio[worldid]
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
@@ -1386,7 +1388,7 @@ def _efc_contact_elliptic(
         ref = solreffriction
 
       # TODO(team): precompute 1 / impratio
-      invweight = invweight / opt_impratio
+      invweight = invweight / impratio
       friction = friction_in[conid]
 
       if dimid > 1:
