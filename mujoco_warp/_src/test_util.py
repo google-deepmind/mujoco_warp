@@ -243,7 +243,7 @@ def benchmark(
         run_beg = time.perf_counter()
         wp.capture_launch(graph)
         wp.synchronize()
-      
+
       run_end = time.perf_counter()
       time_vec[i] = run_end - run_beg
       if trace:

@@ -62,6 +62,7 @@ _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to sum
 _INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator).")
 _DEVICE = flags.DEFINE_string("device", None, "Override the default Warp device.")
 
+
 def _print_table(matrix, headers):
   num_cols = len(headers)
   col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
@@ -138,7 +139,6 @@ def _main(argv: Sequence[str]):
   mujoco.mj_forward(mjm, mjd)
 
   with wp.ScopedDevice(_DEVICE.value):
-  
     m = mjwarp.put_model(mjm)
 
     # integrator
