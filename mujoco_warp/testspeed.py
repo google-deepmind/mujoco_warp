@@ -63,7 +63,6 @@ _INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator
 _DEVICE = flags.DEFINE_string("device", None, "Override the default Warp device.")
 _BROADPHASE = flags.DEFINE_integer("broadphase", None, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
-_CTRL_NOISE = flags.DEFINE_bool("ctrl_noise", None, "Add noise to ctrl.")
 
 
 def _print_table(matrix, headers):
@@ -185,7 +184,6 @@ def _main(argv: Sequence[str]):
       _EVENT_TRACE.value,
       _MEASURE_ALLOC.value,
       _MEASURE_SOLVER.value,
-      _CTRL_NOISE.value,
     )
     steps = _BATCH_SIZE.value * _NSTEP.value
 
