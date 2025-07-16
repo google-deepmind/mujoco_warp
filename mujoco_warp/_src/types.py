@@ -59,6 +59,22 @@ class BlockDim:
   mul_m_dense: int = 32
 
 
+class BroadphaseFilter(enum.IntFlag):
+  """Bitmask specifying which collision functions to run during broadphase.
+
+  Attributes:
+    PLANE: collision between bounding sphere and plane.
+    SPHERE: collision between bounding spheres.
+    AABB: collision between axis-aligned bounding boxes.
+    OBB: collision between oriented bounding boxes.
+  """
+
+  PLANE = 1
+  SPHERE = 2
+  AABB = 4
+  OBB = 8
+
+
 class CamLightType(enum.IntEnum):
   """Type of camera light.
 
@@ -527,6 +543,7 @@ class Option:
     density: density of medium
     viscosity: viscosity of medium
     broadphase: broadphase type, 0: nxn, 1: sap_tile, 2: sap_segmented
+    broadphase_filter: broadphase filter bitflag
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
     sdf_initpoints: number of starting points for gradient descent
     sdf_iterations: max number of iterations for gradient descent
@@ -556,7 +573,8 @@ class Option:
   has_fluid: bool
   density: wp.array(dtype=float)
   viscosity: wp.array(dtype=float)
-  broadphase: int
+  broadphase: int  # warp only
+  broadphase_filter: int  # warp only
   graph_conditional: bool  # warp only
   sdf_initpoints: int
   sdf_iterations: int

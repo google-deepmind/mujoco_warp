@@ -97,6 +97,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
 
+  if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
+    raise NotImplementedError("Flex collisions are not implemented.")
+
   if mjm.geom_fluid.any():
     raise NotImplementedError("Ellipsoid fluid model not implemented.")
 
@@ -443,6 +446,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       gjk_iterations=MJ_CCD_ITERATIONS,
       epa_iterations=MJ_CCD_ITERATIONS,
       broadphase=int(broadphase),
+      broadphase_filter=int(
+        types.BroadphaseFilter.PLANE.value | types.BroadphaseFilter.SPHERE.value | types.BroadphaseFilter.OBB.value
+      ),
       graph_conditional=True and conditional_graph_supported(),
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
@@ -539,7 +545,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_solref=create_nmodel_batched_array(mjm.geom_solref, dtype=wp.vec2),
     geom_solimp=create_nmodel_batched_array(mjm.geom_solimp, dtype=types.vec5),
     geom_size=create_nmodel_batched_array(mjm.geom_size, dtype=wp.vec3),
-    geom_aabb=wp.array(mjm.geom_aabb, dtype=wp.vec3),
+    geom_aabb=wp.array2d(mjm.geom_aabb, dtype=wp.vec3),
     geom_rbound=create_nmodel_batched_array(mjm.geom_rbound, dtype=float),
     geom_pos=create_nmodel_batched_array(mjm.geom_pos, dtype=wp.vec3),
     geom_quat=create_nmodel_batched_array(mjm.geom_quat, dtype=wp.quat),
