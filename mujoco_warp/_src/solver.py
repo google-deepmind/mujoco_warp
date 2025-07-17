@@ -883,7 +883,6 @@ def linesearch_parallel_fused(
   efc_quad_gauss_in: wp.array(dtype=wp.vec3),
   efc_done_in: wp.array(dtype=bool),
   # Data out:
-  efc_alpha_out: wp.array(dtype=float),
   efc_cost_candidate_out: wp.array2d(dtype=float),
 ):
   worldid, alphaid = wp.tid()
@@ -911,18 +910,33 @@ def linesearch_parallel_fused(
 
   efc_cost_candidate_out[worldid, alphaid] = alpha_sq * quad_total2 + alpha * quad_total1 + quad_total0
 
-  if alphaid == 0:
-    # TODO(team): investigate alternatives to wp.argmin
-    # TODO(thowell): how did this use to work?
-    bestid = int(0)
-    best_cost = float(wp.inf)
-    for i in range(nlsp):
-      cost = efc_cost_candidate_out[worldid, i]
-      if cost < best_cost:
-        best_cost = cost
-        bestid = i
 
-    efc_alpha_out[worldid] = float(bestid) / float(nlsp - 1)
+@wp.kernel
+def linesearch_parallel_best_alpha(
+  # Model:
+  nlsp: int,
+  # Data in:
+  efc_done_in: wp.array(dtype=bool),
+  efc_cost_candidate_in: wp.array2d(dtype=float),
+  # Data out:
+  efc_alpha_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  # TODO(team): investigate alternatives to wp.argmin
+  # TODO(thowell): how did this use to work?
+  bestid = int(0)
+  best_cost = float(wp.inf)
+  for i in range(nlsp):
+    cost = efc_cost_candidate_in[worldid, i]
+    if cost < best_cost:
+      best_cost = cost
+      bestid = i
+
+  efc_alpha_out[worldid] = float(bestid) / float(nlsp - 1)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
@@ -940,7 +954,14 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
       d.efc.quad_gauss,
       d.efc.done,
     ],
-    outputs=[d.efc.alpha, d.efc.cost_candidate],
+    outputs=[d.efc.cost_candidate],
+  )
+
+  wp.launch(
+    linesearch_parallel_best_alpha,
+    dim=(d.nworld),
+    inputs=[m.nlsp, d.efc.done, d.efc.cost_candidate],
+    outputs=[d.efc.alpha],
   )
 
 
