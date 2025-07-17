@@ -811,7 +811,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     nworld (int, optional): Number of worlds. Defaults to 1.
     nconmax (int, optional): Maximum number of contacts for all worlds. Defaults to -1.
-    njmax (int, optiona): Maximum number of constraints for all worlds. Defaults to -1.
+    njmax (int, optional): Maximum number of constraints for all worlds. Defaults to -1.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).
@@ -1086,7 +1086,7 @@ def put_data(
     Data: The data object containing the current state and output arrays (device).
   """
   # TODO(team): move nconmax and njmax to Model?
-  # TODO(team): decide what to do about unintialized warp-only fields created by put_data
+  # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
 
   nworld = nworld or 1

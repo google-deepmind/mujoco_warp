@@ -278,7 +278,7 @@ class GJKTest(absltest.TestCase):
     self.assertAlmostEqual(normal[2], 0)
 
   def test_mesh_mesh_contact(self):
-    """Test penetration beween two meshes."""
+    """Test penetration between two meshes."""
 
     _, _, m, d = test_util.fixture(
       xml=f"""

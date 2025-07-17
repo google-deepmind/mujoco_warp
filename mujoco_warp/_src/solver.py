@@ -2310,7 +2310,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       sm_count = wp.get_device().sm_count
 
       # Here we assume one block has 256 threads. We use a factor of 6, which
-      # can be change in future to fine-tune the perf. The optimal factor will
+      # can be changed in the future to fine-tune the perf. The optimal factor will
       # depend on the kernel's occupancy, which determines how many blocks can
       # simultaneously run on the SM. TODO: This factor can be tuned further.
       dim_x = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)

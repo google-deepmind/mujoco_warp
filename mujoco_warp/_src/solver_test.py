@@ -61,7 +61,7 @@ class SolverTest(parameterized.TestCase):
 
       mj_cost = cost(mjd.qacc)
 
-      # solve with 0 iterations just intializes constraints and costs and then exits
+      # solve with 0 iterations just initializes constraints and costs and then exits
       mjwarp.solve(m, d)
 
       mjwarp_cost = d.efc.cost.numpy()[0] - d.efc.gauss.numpy()[0]

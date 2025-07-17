@@ -715,7 +715,7 @@ class Constraint:
 
 @dataclasses.dataclass
 class TileSet:
-  """Tiling configuration for decomposible block diagonal matrix.
+  """Tiling configuration for decomposable block diagonal matrix.
 
   For non-square, non-block-diagonal tiles, use two tilesets.
 

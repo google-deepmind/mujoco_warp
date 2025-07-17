@@ -1139,7 +1139,7 @@ def _polytope4(
 
 @wp.func
 def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int):
-  """Recover pentration data from two geoms in contact given an initial polytope."""
+  """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
   upper2 = FLOAT_MAX
   idx = int(-1)
@@ -1256,7 +1256,7 @@ def ccd(
   """General convex collision detection via GJK/EPA."""
   result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff)
 
-  # no pentration depth to recover
+  # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
     return result.dist, result.x1, result.x2
 

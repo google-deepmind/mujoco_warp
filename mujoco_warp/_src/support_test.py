@@ -55,7 +55,7 @@ class SupportTest(parameterized.TestCase):
     _assert_eq(res.numpy()[0], mj_res, f"mul_m ({'sparse' if sparse else 'dense'})")
 
   def test_xfrc_accumulated(self):
-    """Tests that xfrc_accumulate ouput matches mj_xfrcAccumulate."""
+    """Tests that xfrc_accumulate output matches mj_xfrcAccumulate."""
     mjm, mjd, m, d = test_util.fixture("pendula.xml")
     xfrc = np.random.randn(*d.xfrc_applied.numpy().shape)
     d.xfrc_applied = wp.from_numpy(xfrc, dtype=wp.spatial_vector)
