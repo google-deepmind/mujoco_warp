@@ -23,6 +23,7 @@ from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
 from .types import MJ_MAXVAL
+from .types import BroadphaseFilter
 from .types import BroadphaseType
 from .types import Data
 from .types import DisableBit
@@ -60,8 +61,198 @@ def _zero_collision_arrays(
 
 
 @wp.func
-def _sphere_filter(
+def _plane_filter(
+  size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3, xmat1: wp.mat33, xmat2: wp.mat33
+) -> bool:
+  if size1 == 0.0:
+    # geom1 is a plane
+    dist = wp.dot(xpos2 - xpos1, wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2]))
+    return dist <= size2 + wp.max(margin1, margin2)
+  elif size2 == 0.0:
+    # geom2 is a plane
+    dist = wp.dot(xpos1 - xpos2, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
+    return dist <= size1 + wp.max(margin1, margin2)
+
+  return True
+
+
+@wp.func
+def _sphere_filter(size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3) -> bool:
+  bound = size1 + size2 + wp.max(margin1, margin2)
+  dif = xpos2 - xpos1
+  dist_sq = wp.dot(dif, dif)
+  return dist_sq <= bound * bound
+
+
+# TODO(team): improve performance by precomputing bounding box
+@wp.func
+def _aabb_filter(
+  # In:
+  center1: wp.vec3,
+  center2: wp.vec3,
+  size1: wp.vec3,
+  size2: wp.vec3,
+  margin1: float,
+  margin2: float,
+  xpos1: wp.vec3,
+  xpos2: wp.vec3,
+  xmat1: wp.mat33,
+  xmat2: wp.mat33,
+) -> bool:
+  """Axis aligned boxes collision.
+
+  references: see Ericson, Real-time Collision Detection section 4.2.
+              filterBox: filter contact based on global AABBs.
+  """
+  center1 = xmat1 @ center1 + xpos1
+  center2 = xmat2 @ center2 + xpos2
+
+  margin = wp.max(margin1, margin2)
+
+  max_x1 = -MJ_MAXVAL
+  max_y1 = -MJ_MAXVAL
+  max_z1 = -MJ_MAXVAL
+  min_x1 = MJ_MAXVAL
+  min_y1 = MJ_MAXVAL
+  min_z1 = MJ_MAXVAL
+
+  max_x2 = -MJ_MAXVAL
+  max_y2 = -MJ_MAXVAL
+  max_z2 = -MJ_MAXVAL
+  min_x2 = MJ_MAXVAL
+  min_y2 = MJ_MAXVAL
+  min_z2 = MJ_MAXVAL
+
+  sign = wp.vec2(-1.0, 1.0)
+
+  for i in range(2):
+    for j in range(2):
+      for k in range(2):
+        corner1 = wp.vec3(sign[i] * size1[0], sign[j] * size1[1], sign[k] * size1[2])
+        pos1 = xmat1 @ corner1
+
+        corner2 = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
+        pos2 = xmat2 @ corner2
+
+        if pos1[0] > max_x1:
+          max_x1 = pos1[0]
+
+        if pos1[1] > max_y1:
+          max_y1 = pos1[1]
+
+        if pos1[2] > max_z1:
+          max_z1 = pos1[2]
+
+        if pos1[0] < min_x1:
+          min_x1 = pos1[0]
+
+        if pos1[1] < min_y1:
+          min_y1 = pos1[1]
+
+        if pos1[2] < min_z1:
+          min_z1 = pos1[2]
+
+        if pos2[0] > max_x2:
+          max_x2 = pos2[0]
+
+        if pos2[1] > max_y2:
+          max_y2 = pos2[1]
+
+        if pos2[2] > max_z2:
+          max_z2 = pos2[2]
+
+        if pos2[0] < min_x2:
+          min_x2 = pos2[0]
+
+        if pos2[1] < min_y2:
+          min_y2 = pos2[1]
+
+        if pos2[2] < min_z2:
+          min_z2 = pos2[2]
+
+  if center1[0] + max_x1 + margin < center2[0] + min_x2:
+    return False
+  if center1[1] + max_y1 + margin < center2[1] + min_y2:
+    return False
+  if center1[2] + max_z1 + margin < center2[2] + min_z2:
+    return False
+  if center2[0] + max_x2 + margin < center1[0] + min_x1:
+    return False
+  if center2[1] + max_y2 + margin < center1[1] + min_y1:
+    return False
+  if center2[2] + max_z2 + margin < center1[2] + min_z1:
+    return False
+
+  return True
+
+
+mat23 = wp.types.matrix(shape=(2, 3), dtype=float)
+mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
+
+
+# TODO(team): improve performance by precomputing bounding box
+@wp.func
+def _obb_filter(
+  # In:
+  center1: wp.vec3,
+  center2: wp.vec3,
+  size1: wp.vec3,
+  size2: wp.vec3,
+  margin1: float,
+  margin2: float,
+  xpos1: wp.vec3,
+  xpos2: wp.vec3,
+  xmat1: wp.mat33,
+  xmat2: wp.mat33,
+) -> bool:
+  """Oriented bounding boxes collision (see Gottschalk et al.), see mj_collideOBB."""
+  margin = wp.max(margin1, margin2)
+
+  xcenter = mat23()
+  normal = mat63()
+  proj = wp.vec2()
+  radius = wp.vec2()
+
+  # compute centers in local coordinates
+  xcenter[0] = xmat1 @ center1 + xpos1
+  xcenter[1] = xmat2 @ center2 + xpos2
+
+  # compute normals in global coordinates
+  normal[0] = wp.vec3(xmat1[0, 0], xmat1[1, 0], xmat1[2, 0])
+  normal[1] = wp.vec3(xmat1[0, 1], xmat1[1, 1], xmat1[2, 1])
+  normal[2] = wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2])
+  normal[3] = wp.vec3(xmat2[0, 0], xmat2[1, 0], xmat2[2, 0])
+  normal[4] = wp.vec3(xmat2[0, 1], xmat2[1, 1], xmat2[2, 1])
+  normal[5] = wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2])
+
+  # check intersections
+  for j in range(2):
+    for k in range(3):
+      for i in range(2):
+        proj[i] = wp.dot(xcenter[i], normal[3 * j + k])
+        if i == 0:
+          size = size1
+        else:
+          size = size2
+
+        # fmt: off
+        radius[i] = (
+            wp.abs(size[0] * wp.dot(normal[3 * i + 0], normal[3 * j + k]))
+          + wp.abs(size[1] * wp.dot(normal[3 * i + 1], normal[3 * j + k]))
+          + wp.abs(size[2] * wp.dot(normal[3 * i + 2], normal[3 * j + k]))
+        )
+        # fmt: on
+      if radius[0] + radius[1] + margin < wp.abs(proj[1] - proj[0]):
+        return False
+
+  return True
+
+
+@wp.func
+def _broadphase_filter(
   # Model:
+  opt_broadphase_filter: int,
+  geom_aabb: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   # Data in:
@@ -72,30 +263,39 @@ def _sphere_filter(
   geom2: int,
   worldid: int,
 ) -> bool:
+  # 1: plane
+  # 2: sphere
+  # 4: aabb
+  # 8: obb
+
+  center1 = geom_aabb[geom1, 0]
+  center2 = geom_aabb[geom2, 0]
+  size1 = geom_aabb[geom1, 1]
+  size2 = geom_aabb[geom2, 1]
+  rbound1 = geom_rbound[worldid, geom1]
+  rbound2 = geom_rbound[worldid, geom2]
   margin1 = geom_margin[worldid, geom1]
   margin2 = geom_margin[worldid, geom2]
-  pos1 = geom_xpos_in[worldid, geom1]
-  pos2 = geom_xpos_in[worldid, geom2]
-  size1 = geom_rbound[worldid, geom1]
-  size2 = geom_rbound[worldid, geom2]
+  xpos1 = geom_xpos_in[worldid, geom1]
+  xpos2 = geom_xpos_in[worldid, geom2]
+  xmat1 = geom_xmat_in[worldid, geom1]
+  xmat2 = geom_xmat_in[worldid, geom2]
 
-  bound = size1 + size2 + wp.max(margin1, margin2)
-  dif = pos2 - pos1
-
-  if size1 != 0.0 and size2 != 0.0:
-    # neither geom is a plane
-    dist_sq = wp.dot(dif, dif)
-    return dist_sq <= bound * bound
-  elif size1 == 0.0:
-    # geom1 is a plane
-    xmat1 = geom_xmat_in[worldid, geom1]
-    dist = wp.dot(dif, wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2]))
-    return dist <= bound
+  if rbound1 == 0.0 or rbound2 == 0.0:
+    if opt_broadphase_filter & int(BroadphaseFilter.PLANE.value):
+      return _plane_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2, xmat1, xmat2)
   else:
-    # geom2 is a plane
-    xmat2 = geom_xmat_in[worldid, geom2]
-    dist = wp.dot(-dif, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
-    return dist <= bound
+    if opt_broadphase_filter & int(BroadphaseFilter.SPHERE.value):
+      if not _sphere_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2):
+        return False
+    if opt_broadphase_filter & int(BroadphaseFilter.AABB.value):
+      if not _aabb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
+        return False
+    if opt_broadphase_filter & int(BroadphaseFilter.OBB.value):
+      if not _obb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
+        return False
+
+  return True
 
 
 @wp.func
@@ -179,9 +379,13 @@ def _sap_project(
   radius = rbound + geom_margin[worldid, geomid]
   center = wp.dot(direction_in, xpos)
 
-  sap_projection_lower_out[worldid, geomid] = center - radius
-  sap_projection_upper_out[worldid, geomid] = center + radius
   sap_sort_index_out[worldid, geomid] = geomid
+  if not wp.isnan(center):
+    sap_projection_lower_out[worldid, geomid] = center - radius
+    sap_projection_upper_out[worldid, geomid] = center + radius
+  else:
+    sap_projection_lower_out[worldid, geomid] = MJ_MAXVAL
+    sap_projection_upper_out[worldid, geomid] = MJ_MAXVAL
 
 
 @wp.kernel
@@ -213,7 +417,9 @@ def _sap_range(
 def _sap_broadphase(
   # Model:
   ngeom: int,
+  opt_broadphase_filter: int,
   geom_type: wp.array(dtype=int),
+  geom_aabb: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   nxn_pairid: wp.array(dtype=int),
@@ -264,14 +470,8 @@ def _sap_broadphase(
       worldgeomid += nsweep_in
       continue
 
-    if _sphere_filter(
-      geom_rbound,
-      geom_margin,
-      geom_xpos_in,
-      geom_xmat_in,
-      geom1,
-      geom2,
-      worldid,
+    if _broadphase_filter(
+      opt_broadphase_filter, geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
     ):
       _add_geom_pair(
         geom_type,
@@ -396,7 +596,9 @@ def sap_broadphase(m: Model, d: Data):
     dim=nsweep,
     inputs=[
       m.ngeom,
+      m.opt.broadphase_filter,
       m.geom_type,
+      m.geom_aabb,
       m.geom_rbound,
       m.geom_margin,
       m.nxn_pairid,
@@ -421,7 +623,9 @@ def sap_broadphase(m: Model, d: Data):
 @wp.kernel
 def _nxn_broadphase(
   # Model:
+  opt_broadphase_filter: int,
   geom_type: wp.array(dtype=int),
+  geom_aabb: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   nxn_geom_pair: wp.array(dtype=wp.vec2i),
@@ -443,14 +647,8 @@ def _nxn_broadphase(
   geom1 = geom[0]
   geom2 = geom[1]
 
-  if _sphere_filter(
-    geom_rbound,
-    geom_margin,
-    geom_xpos_in,
-    geom_xmat_in,
-    geom1,
-    geom2,
-    worldid,
+  if _broadphase_filter(
+    opt_broadphase_filter, geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
   ):
     _add_geom_pair(
       geom_type,
@@ -487,7 +685,9 @@ def nxn_broadphase(m: Model, d: Data):
     _nxn_broadphase,
     dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
     inputs=[
+      m.opt.broadphase_filter,
       m.geom_type,
+      m.geom_aabb,
       m.geom_rbound,
       m.geom_margin,
       m.nxn_geom_pair_filtered,

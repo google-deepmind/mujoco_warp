@@ -90,7 +90,7 @@ class PassiveTest(parameterized.TestCase):
 
   @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
   def test_gravcomp(self, sparse, gravity):
-    """Tests gravity compenstation."""
+    """Tests gravity compensation."""
 
     _, mjd, m, d = test_util.fixture(
       xml="""

@@ -909,7 +909,7 @@ def _qLDiag_div(
 
 
 def _factor_i_sparse(m: Model, d: Data, M: wp.array3d(dtype=float), L: wp.array3d(dtype=float), D: wp.array2d(dtype=float)):
-  """Sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd."""
+  """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   wp.launch(_copy_CSR, dim=(d.nworld, m.nC), inputs=[m.mapM2M, M], outputs=[L])
 
   for i in reversed(range(len(m.qLD_updates))):
@@ -921,7 +921,7 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array3d(dtype=float), L: wp.array3
 
 @cache_kernel
 def _tile_cholesky_factorize(tile: TileSet):
-  """Returns a kernel for dense Cholesky factorizaton of a tile."""
+  """Returns a kernel for dense Cholesky factorization of a tile."""
 
   @nested_kernel
   def cholesky_factorize(
@@ -944,7 +944,7 @@ def _tile_cholesky_factorize(tile: TileSet):
 
 
 def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
-  """Dense Cholesky factorizaton of inertia-like matrix M, assumed spd."""
+  """Dense Cholesky factorization of inertia-like matrix M, assumed spd."""
   for tile in m.qM_tiles:
     wp.launch_tiled(
       _tile_cholesky_factorize(tile),
@@ -957,7 +957,7 @@ def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
 
 @event_scope
 def factor_m(m: Model, d: Data):
-  """Factorizaton of inertia-like matrix M, assumed spd."""
+  """Factorization of inertia-like matrix M, assumed spd."""
   if m.opt.is_sparse:
     _factor_i_sparse(m, d, d.qM, d.qLD, d.qLDiagInv)
   else:
@@ -2438,7 +2438,7 @@ def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=f
 
 @cache_kernel
 def _tile_cholesky_factorize_solve(tile: TileSet):
-  """Returns a kernel for dense Cholesky factorizaton and backsubstitution of a tile."""
+  """Returns a kernel for dense Cholesky factorization and backsubstitution of a tile."""
 
   @nested_kernel
   def cholesky_factorize_solve(

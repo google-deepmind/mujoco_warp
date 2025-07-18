@@ -338,7 +338,7 @@ def wrap(
     side: 3D position for sidesite, no side point: wp.vec3(wp.inf)
 
   Returns:
-    length of circuler wrap else -1.0 if no wrap, pair of 3D wrap points
+    length of circular wrap else -1.0 if no wrap, pair of 3D wrap points
   """
   # check object type
   if geomtype != int(WrapType.SPHERE.value) and geomtype != int(WrapType.CYLINDER.value):
