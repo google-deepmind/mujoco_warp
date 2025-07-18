@@ -1630,7 +1630,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       wp.launch(
         _num_equality,
-        dim=(1,),
+        dim=(d.nworld,),
         inputs=[
           d.ne_connect,
           d.ne_weld,
