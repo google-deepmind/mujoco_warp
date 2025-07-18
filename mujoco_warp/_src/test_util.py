@@ -26,9 +26,9 @@ import warp as wp
 from etils import epath
 
 from . import collision_driver
-from . import solver
 from . import forward
 from . import io
+from . import solver
 from . import warp_util
 from .types import ConeType
 from .types import Data
@@ -297,7 +297,7 @@ class BenchmarkSuite:
     if self._mjm.nkey > 0:
       mujoco.mj_resetDataKeyframe(self._mjm, self._mjd, 0)
 
-    # TODO(team): investigate why mj_forward fixes bug in franka_emika_panda reporting extra contacts
+    # TODO(team): investigate why mj_forward fixes bug in franka reporting extra contacts
     mujoco.mj_forward(self._mjm, self._mjd)
 
     self.timer = lambda: time.perf_counter() / self.batch_size
