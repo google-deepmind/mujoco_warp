@@ -1201,18 +1201,19 @@ def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom
 
     # insert w as new vertex and attach faces along the horizon
     for i in range(pt.nhorizon):
-      dist2 = _attach_face(pt, pt.nface, wi, pt.horizon[2 * i + 0], pt.horizon[2 * i + 1])
-      if dist2 == 0:
-        idx = -1
-        break
+      if (pt.nface + 1) < pt.face.shape[0]:
+        dist2 = _attach_face(pt, pt.nface, wi, pt.horizon[2 * i + 0], pt.horizon[2 * i + 1])
+        if dist2 == 0:
+          idx = -1
+          break
 
-      pt.nface += 1
+        pt.nface += 1
 
-      # store face in map
-      if dist2 >= lower2 and dist2 <= upper2:
-        pt.face_map[pt.nmap] = pt.nface - 1
-        pt.face_index[pt.nface - 1] = pt.nmap
-        pt.nmap += 1
+        # store face in map
+        if dist2 >= lower2 and dist2 <= upper2:
+          pt.face_map[pt.nmap] = pt.nface - 1
+          pt.face_index[pt.nface - 1] = pt.nmap
+          pt.nmap += 1
 
     # no face candidates left
     if pt.nmap == 0 or idx == -1:
