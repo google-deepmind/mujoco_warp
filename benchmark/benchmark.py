@@ -9,6 +9,7 @@ class AlohaPot(mujoco_warp.BenchmarkSuite):
   nconmax = 200_000
   njmax = 200_000
 
+
 class ApptronikApolloFlat(mujoco_warp.BenchmarkSuite):
   """Apptronik Apollo locomoting on an infinite plain."""
 
@@ -16,6 +17,7 @@ class ApptronikApolloFlat(mujoco_warp.BenchmarkSuite):
   batch_size = 8192
   nconmax = 200_000
   njmax = 500_000
+
 
 class ApptronikApolloHfield(mujoco_warp.BenchmarkSuite):
   """Apptronik Apollo locomoting on a pyramidal hfield."""
@@ -25,6 +27,7 @@ class ApptronikApolloHfield(mujoco_warp.BenchmarkSuite):
   nconmax = 700_000
   njmax = 50_000
 
+
 class ApptronikApolloTerrain(mujoco_warp.BenchmarkSuite):
   """Apptronik Apollo locomoting on Isaac-style pyramids made of thousands of boxes."""
 
@@ -33,6 +36,7 @@ class ApptronikApolloTerrain(mujoco_warp.BenchmarkSuite):
   nconmax = 400_000
   njmax = 600_000
 
+
 class FrankaEmikaPanda(mujoco_warp.BenchmarkSuite):
   """Franka Emika Panda on an infinite plain."""
 
@@ -40,6 +44,7 @@ class FrankaEmikaPanda(mujoco_warp.BenchmarkSuite):
   batch_size = 32768
   nconmax = 10_000
   njmax = 150_000
+
 
 class Humanoid(mujoco_warp.BenchmarkSuite):
   """MuJoCo humanoid on an infinite plain."""
