@@ -142,6 +142,35 @@ def _next_velocity(
   qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
 
 
+# TODO(team): kernel analyzer array slice?
+@wp.func
+def _next_act(
+  # Model:
+  opt_timestep: float,  # kernel_analyzer: ignore
+  actuator_dyntype: int,  # kernel_analyzer: ignore
+  actuator_dynprm: vec10f,  # kernel_analyzer: ignore
+  actuator_actrange: wp.vec2,  # kernel_analyzer: ignore
+  # Data In:
+  act_in: float,  # kernel_analyzer: ignore
+  act_dot_in: float,  # kernel_analyzer: ignore
+  # In:
+  act_dot_scale: float,
+  clamp: bool,
+) -> float:
+  # advance actuation
+  if actuator_dyntype == wp.static(DynType.FILTEREXACT.value):
+    tau = wp.max(MJ_MINVAL, actuator_dynprm[0])
+    act = act_in + act_dot_scale * act_dot_in * tau * (1.0 - wp.exp(-opt_timestep / tau))
+  else:
+    act = act_in + act_dot_scale * act_dot_in * opt_timestep
+
+  # clamp to actrange
+  if clamp:
+    act = wp.clamp(act, actuator_actrange[0], actuator_actrange[1])
+
+  return act
+
+
 @wp.kernel
 def _next_activation(
   # Model:
@@ -154,30 +183,22 @@ def _next_activation(
   act_in: wp.array2d(dtype=float),
   act_dot_in: wp.array2d(dtype=float),
   # In:
-  act_dot_scale_in: float,
+  act_dot_scale: float,
   limit: bool,
   # Data out:
   act_out: wp.array2d(dtype=float),
 ):
   worldid, actid = wp.tid()
-  timestep = opt_timestep[worldid]
-
-  act = act_in[worldid, actid]
-  act_dot = act_dot_in[worldid, actid]
-
-  # advance the actuation
-  if actuator_dyntype[actid] == wp.static(DynType.FILTEREXACT.value):
-    dyn_prm = actuator_dynprm[worldid, actid]
-    tau = wp.max(MJ_MINVAL, dyn_prm[0])
-    act += act_dot_scale_in * act_dot * tau * (1.0 - wp.exp(-timestep / tau))
-  else:
-    act += act_dot_scale_in * act_dot * timestep
-
-  # clamp to actrange
-  if limit and actuator_actlimited[actid]:
-    actrange = actuator_actrange[worldid, actid]
-    act = wp.clamp(act, actrange[0], actrange[1])
-
+  act = _next_act(
+    opt_timestep[worldid],
+    actuator_dyntype[actid],
+    actuator_dynprm[worldid, actid],
+    actuator_actrange[worldid, actid],
+    act_in[worldid, actid],
+    act_dot_in[worldid, actid],
+    act_dot_scale,
+    limit and actuator_actlimited[actid],
+  )
   act_out[worldid, actid] = act
 
 
@@ -510,15 +531,15 @@ def rungekutta4(m: Model, d: Data):
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
 
-  # TODO(team): add sparse version
-
   # compile-time constants
   passive_enabled = not m.opt.disableflags & DisableBit.PASSIVE.value
   actuation_enabled = (not m.opt.disableflags & DisableBit.ACTUATION.value) and m.actuator_affine_bias_gain
 
   if passive_enabled or actuation_enabled:
     derivative.deriv_smooth_vel(m, d)
-    smooth._factor_solve_i_dense(m, d, d.qM_integration, d.qacc_integration, d.qfrc_integration)
+    smooth.factor_solve_i(
+      m, d, d.qM_integration, d.qLD_integration, d.qLDiagInv_integration, d.qacc_integration, d.qfrc_integration
+    )
     _advance(m, d, d.qacc_integration)
   else:
     _advance(m, d, d.qacc)
@@ -536,17 +557,18 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.tendon_armature(m, d)
   if factorize:
     smooth.factor_m(m, d)
-  collision_driver.collision(m, d)
+  if m.opt.run_collision_detection:
+    collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
   smooth.transmission(m, d)
 
 
-# TODO(team): sparse version
-def _actuator_velocity_sparse(m: Model, d: Data):
+# TODO(team): sparse actuator_moment version
+def _actuator_velocity(m: Model, d: Data):
   NV = m.nv
 
   @kernel
-  def actuator_velocity_sparse(
+  def actuator_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
     actuator_moment_in: wp.array3d(dtype=float),
@@ -558,10 +580,10 @@ def _actuator_velocity_sparse(m: Model, d: Data):
     qvel_tile = wp.tile_load(qvel_in[worldid], shape=NV)
     moment_qvel_tile = wp.tile_map(wp.mul, moment_tile, qvel_tile)
     actuator_velocity_tile = wp.tile_reduce(wp.add, moment_qvel_tile)
-    wp.tile_store(actuator_velocity_out[worldid], actuator_velocity_tile)
+    actuator_velocity_out[worldid, actid] = actuator_velocity_tile[0]
 
   wp.launch_tiled(
-    actuator_velocity_sparse,
+    actuator_velocity,
     dim=(d.nworld, m.nu),
     inputs=[
       d.qvel,
@@ -570,45 +592,8 @@ def _actuator_velocity_sparse(m: Model, d: Data):
     outputs=[
       d.actuator_velocity,
     ],
-    block_dim=m.block_dim.actuator_velocity_sparse,
+    block_dim=m.block_dim.actuator_velocity,
   )
-
-
-@cache_kernel
-def _tile_actuator_velocity_dense(
-  tile_nu: TileSet,
-  tile_nv: TileSet,
-):
-  @nested_kernel
-  def actuator_velocity_dense(
-    # Data in:
-    qvel_in: wp.array3d(dtype=float),
-    actuator_moment_in: wp.array3d(dtype=float),
-    # In:
-    tile_nu_adr: wp.array(dtype=int),
-    tile_nv_adr: wp.array(dtype=int),
-    # Data out:
-    actuator_velocity_out: wp.array3d(dtype=float),
-  ):
-    worldid, nodeid = wp.tid()
-
-    TILE_NU_SIZE = wp.static(int(tile_nu.size))
-    TILE_NV_SIZE = wp.static(int(tile_nv.size))
-
-    offset_nu = tile_nu_adr[nodeid]
-    offset_nv = tile_nv_adr[nodeid]
-
-    actuator_moment_tile = wp.tile_load(
-      actuator_moment_in[worldid],
-      shape=(TILE_NU_SIZE, TILE_NV_SIZE),
-      offset=(offset_nu, offset_nv),
-    )
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=(TILE_NV_SIZE, 1), offset=(offset_nv, 0))
-    velocity_tile = wp.tile_matmul(actuator_moment_tile, qvel_tile)
-
-    wp.tile_store(actuator_velocity_out[worldid], velocity_tile, offset=(offset_nu, 0))
-
-  return actuator_velocity_dense
 
 
 def _tendon_velocity(m: Model, d: Data):
@@ -627,7 +612,7 @@ def _tendon_velocity(m: Model, d: Data):
     qvel_tile = wp.tile_load(qvel_in[worldid], shape=NV)
     ten_J_qvel_tile = wp.tile_map(wp.mul, ten_J_tile, qvel_tile)
     ten_velocity_tile = wp.tile_reduce(wp.add, ten_J_qvel_tile)
-    wp.tile_store(ten_velocity_out[worldid], ten_velocity_tile)
+    ten_velocity_out[worldid, tenid] = ten_velocity_tile[0]
 
   wp.launch_tiled(
     tendon_velocity,
@@ -647,21 +632,7 @@ def _tendon_velocity(m: Model, d: Data):
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
 
-  if m.opt.is_sparse:
-    _actuator_velocity_sparse(m, d)
-  else:
-    for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      # TODO(team): avoid creating invalid tiles
-      if tile_nu.size == 0 or tile_nv.size == 0:
-        continue
-
-      wp.launch_tiled(
-        _tile_actuator_velocity_dense(tile_nu, tile_nv),
-        dim=(d.nworld, tile_nu.adr.size),
-        inputs=[d.qvel.reshape(d.qvel.shape + (1,)), d.actuator_moment, tile_nu.adr, tile_nv.adr],
-        outputs=[d.actuator_velocity.reshape(d.actuator_velocity.shape + (1,))],
-        block_dim=m.block_dim.actuator_velocity_dense,
-      )
+  _actuator_velocity(m, d)
 
   if m.ntendon > 0:
     # TODO(team): sparse version
@@ -677,6 +648,7 @@ def fwd_velocity(m: Model, d: Data):
 def _actuator_force(
   # Model:
   na: int,
+  opt_timestep: wp.array(dtype=float),
   actuator_dyntype: wp.array(dtype=int),
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
@@ -684,11 +656,14 @@ def _actuator_force(
   actuator_actnum: wp.array(dtype=int),
   actuator_ctrllimited: wp.array(dtype=bool),
   actuator_forcelimited: wp.array(dtype=bool),
+  actuator_actlimited: wp.array(dtype=bool),
   actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array2d(dtype=vec10f),
+  actuator_actearly: wp.array(dtype=bool),
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   actuator_forcerange: wp.array2d(dtype=wp.vec2),
+  actuator_actrange: wp.array2d(dtype=wp.vec2),
   actuator_acc0: wp.array(dtype=float),
   actuator_lengthrange: wp.array(dtype=wp.vec2),
   # Data in:
@@ -709,32 +684,45 @@ def _actuator_force(
   if actuator_ctrllimited[uid] and not dsbl_clampctrl:
     ctrlrange = actuator_ctrlrange[worldid, uid]
     ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
-
-  if na:
-    actadr = actuator_actadr[uid]
-
-    if actadr > -1:
-      dyntype = actuator_dyntype[uid]
-      act_dot = 0.0
-      if dyntype == int(DynType.INTEGRATOR.value):
-        act_dot = ctrl
-      elif dyntype == int(DynType.FILTER.value) or dyntype == int(DynType.FILTEREXACT.value):
-        dynprm = actuator_dynprm[worldid, uid]
-        act = act_in[worldid, actadr]
-        act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
-      elif dyntype == int(DynType.MUSCLE.value):
-        dynprm = actuator_dynprm[worldid, uid]
-        act = act_in[worldid, actadr]
-        act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
-
-      act_dot_out[worldid, actadr] = act_dot
-
   ctrl_act = ctrl
-  if na:
-    if actuator_actadr[uid] > -1:
-      ctrl_act = act_in[worldid, actuator_actadr[uid] + actuator_actnum[uid] - 1]
 
-  # TODO(team): actuator_actearly
+  act_first = actuator_actadr[uid]
+  if na and act_first >= 0:
+    act_last = act_first + actuator_actnum[uid] - 1
+    dyntype = actuator_dyntype[uid]
+
+    if dyntype == int(DynType.INTEGRATOR.value):
+      act_dot = ctrl
+    elif dyntype == int(DynType.FILTER.value) or dyntype == int(DynType.FILTEREXACT.value):
+      dynprm = actuator_dynprm[worldid, uid]
+      act = act_in[worldid, act_last]
+      act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
+    elif dyntype == int(DynType.MUSCLE.value):
+      dynprm = actuator_dynprm[worldid, uid]
+      act = act_in[worldid, act_last]
+      act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
+    else:  # DynType.NONE
+      act_dot = 0.0
+
+    act_dot_out[worldid, act_last] = act_dot
+
+    if actuator_actearly[uid]:
+      if dyntype == int(DynType.INTEGRATOR.value) or dyntype == int(DynType.NONE.value):
+        dynprm = actuator_dynprm[worldid, uid]
+        act = act_in[worldid, act_last]
+
+      ctrl_act = _next_act(
+        opt_timestep[worldid],
+        dyntype,
+        dynprm,
+        actuator_actrange[worldid, uid],
+        act,
+        act_dot,
+        1.0,
+        actuator_actlimited[uid],
+      )
+    else:
+      ctrl_act = act_in[worldid, act_last]
 
   length = actuator_length_in[worldid, uid]
   velocity = actuator_velocity_in[worldid, uid]
@@ -820,102 +808,61 @@ def _tendon_actuator_force_clamp(
         actuator_force_out[worldid, actid] *= actfrcrange[1] / ten_actfrc
 
 
-@wp.kernel
-def _qfrc_actuator_sparse(
-  # Model:
-  nu: int,
-  ngravcomp: int,
-  jnt_actfrclimited: wp.array(dtype=bool),
-  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
-  jnt_actgravcomp: wp.array(dtype=int),
-  dof_jntid: wp.array(dtype=int),
-  # Data in:
-  actuator_moment_in: wp.array3d(dtype=float),
-  qfrc_gravcomp_in: wp.array2d(dtype=float),
-  actuator_force_in: wp.array2d(dtype=float),
-  # Data out:
-  qfrc_actuator_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
+def _qfrc_actuator(m: Model, d: Data):
+  NU = m.nu
 
-  qfrc = float(0.0)
-  for uid in range(nu):
-    # TODO consider using Tile API or transpose moment for better access pattern
-    qfrc += actuator_moment_in[worldid, uid, dofid] * actuator_force_in[worldid, uid]
-
-  jntid = dof_jntid[dofid]
-
-  # actuator-level gravity compensation, skip if added as passive force
-  if ngravcomp and jnt_actgravcomp[jntid]:
-    qfrc += qfrc_gravcomp_in[worldid, dofid]
-
-  if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[worldid, jntid]
-    qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
-
-  qfrc_actuator_out[worldid, dofid] = qfrc
-
-
-@wp.kernel
-def _qfrc_actuator_limited(
-  # Model:
-  ngravcomp: int,
-  jnt_actfrclimited: wp.array(dtype=bool),
-  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
-  jnt_actgravcomp: wp.array(dtype=int),
-  dof_jntid: wp.array(dtype=int),
-  # Data in:
-  qfrc_gravcomp_in: wp.array2d(dtype=float),
-  qfrc_actuator_in: wp.array2d(dtype=float),
-  # Data out:
-  qfrc_actuator_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-  jntid = dof_jntid[dofid]
-  qfrc_dof = qfrc_actuator_in[worldid, dofid]
-
-  # actuator-level gravity compensation, skip if added as a passive force
-  if ngravcomp and jnt_actgravcomp[jntid]:
-    qfrc_dof += qfrc_gravcomp_in[worldid, dofid]
-
-  if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[worldid, jntid]
-    qfrc_dof = wp.clamp(qfrc_dof, frcrange[0], frcrange[1])
-
-  qfrc_actuator_out[worldid, dofid] = qfrc_dof
-
-
-@cache_kernel
-def _tile_qfrc_actuator(tile_nu: TileSet, tile_nv: TileSet):
-  @nested_kernel
+  @wp.kernel
   def qfrc_actuator(
+    # Model:
+    ngravcomp: int,
+    jnt_actfrclimited: wp.array(dtype=bool),
+    jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
+    jnt_actgravcomp: wp.array(dtype=int),
+    dof_jntid: wp.array(dtype=int),
     # Data in:
-    actuator_force_in: wp.array3d(dtype=float),
     actuator_moment_in: wp.array3d(dtype=float),
-    # In:
-    tile_nu_adr: wp.array(dtype=int),
-    tile_nv_adr: wp.array(dtype=int),
+    qfrc_gravcomp_in: wp.array2d(dtype=float),
+    actuator_force_in: wp.array2d(dtype=float),
     # Data out:
-    qfrc_actuator_out: wp.array3d(dtype=float),
+    qfrc_actuator_out: wp.array2d(dtype=float),
   ):
-    worldid, nodeid = wp.tid()
+    worldid, dofid = wp.tid()
 
-    TILE_NU_SIZE = wp.static(int(tile_nu.size))
-    TILE_NV_SIZE = wp.static(int(tile_nv.size))
+    actuator_moment_tile = wp.tile_load(actuator_moment_in[worldid], shape=(NU, 1), offset=(0, dofid))
+    actuator_moment_tile = wp.tile_squeeze(actuator_moment_tile, axis=(1,))
+    actuator_force_tile = wp.tile_load(actuator_force_in[worldid], shape=NU)
+    actuator_moment_force_tile = wp.tile_map(wp.mul, actuator_moment_tile, actuator_force_tile)
+    qfrc_tile = wp.tile_reduce(wp.add, actuator_moment_force_tile)
+    qfrc = qfrc_tile[0]
 
-    offset_nu = tile_nu_adr[nodeid]
-    offset_nv = tile_nv_adr[nodeid]
+    jntid = dof_jntid[dofid]
 
-    actuator_moment_tile = wp.tile_load(
-      actuator_moment_in[worldid], shape=(TILE_NU_SIZE, TILE_NV_SIZE), offset=(offset_nu, offset_nv)
-    )
-    actuator_moment_T_tile = wp.tile_transpose(actuator_moment_tile)
+    # actuator-level gravity compensation, skip if added as passive force
+    if ngravcomp and jnt_actgravcomp[jntid]:
+      qfrc += qfrc_gravcomp_in[worldid, dofid]
 
-    force_tile = wp.tile_load(actuator_force_in[worldid], shape=(TILE_NU_SIZE, 1), offset=(offset_nu, 0))
-    qfrc_tile = wp.tile_matmul(actuator_moment_T_tile, force_tile)
-    wp.tile_store(qfrc_actuator_out[worldid], qfrc_tile, offset=(offset_nv, 0))
+    if jnt_actfrclimited[jntid]:
+      frcrange = jnt_actfrcrange[worldid, jntid]
+      qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
 
-  return qfrc_actuator
+    qfrc_actuator_out[worldid, dofid] = qfrc
+
+  wp.launch_tiled(
+    qfrc_actuator,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.ngravcomp,
+      m.jnt_actfrclimited,
+      m.jnt_actfrcrange,
+      m.jnt_actgravcomp,
+      m.dof_jntid,
+      d.actuator_moment,
+      d.qfrc_gravcomp,
+      d.actuator_force,
+    ],
+    outputs=[d.qfrc_actuator],
+    block_dim=m.block_dim.qfrc_actuator,
+  )
 
 
 @event_scope
@@ -931,6 +878,7 @@ def fwd_actuation(m: Model, d: Data):
     dim=(d.nworld, m.nu),
     inputs=[
       m.na,
+      m.opt.timestep,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
@@ -938,11 +886,14 @@ def fwd_actuation(m: Model, d: Data):
       m.actuator_actnum,
       m.actuator_ctrllimited,
       m.actuator_forcelimited,
+      m.actuator_actlimited,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
+      m.actuator_actearly,
       m.actuator_ctrlrange,
       m.actuator_forcerange,
+      m.actuator_actrange,
       m.actuator_acc0,
       m.actuator_lengthrange,
       d.act,
@@ -981,60 +932,7 @@ def fwd_actuation(m: Model, d: Data):
       outputs=[d.actuator_force],
     )
 
-  if m.opt.is_sparse:
-    wp.launch(
-      _qfrc_actuator_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.nu,
-        m.ngravcomp,
-        m.jnt_actfrclimited,
-        m.jnt_actfrcrange,
-        m.jnt_actgravcomp,
-        m.dof_jntid,
-        d.actuator_moment,
-        d.qfrc_gravcomp,
-        d.actuator_force,
-      ],
-      outputs=[d.qfrc_actuator],
-    )
-
-  else:
-    for tile_nu, tile_nv in zip(m.actuator_moment_tiles_nu, m.actuator_moment_tiles_nv):
-      if tile_nu.size == 0 or tile_nv.size == 0:
-        continue
-
-      wp.launch_tiled(
-        _tile_qfrc_actuator(tile_nu, tile_nv),
-        dim=(d.nworld, tile_nu.adr.size),
-        inputs=[
-          d.actuator_force.reshape(d.actuator_force.shape + (1,)),
-          d.actuator_moment,
-          tile_nu.adr,
-          tile_nv.adr,
-        ],
-        outputs=[
-          d.qfrc_actuator.reshape(d.qfrc_actuator.shape + (1,)),
-        ],
-        block_dim=m.block_dim.qfrc_actuator,
-      )
-
-    wp.launch(
-      _qfrc_actuator_limited,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.ngravcomp,
-        m.jnt_actfrclimited,
-        m.jnt_actfrcrange,
-        m.jnt_actgravcomp,
-        m.dof_jntid,
-        d.qfrc_gravcomp,
-        d.qfrc_actuator,
-      ],
-      outputs=[d.qfrc_actuator],
-    )
-
-  # TODO actuator-level gravity compensation, skip if added as passive force
+  _qfrc_actuator(m, d)
 
 
 @wp.kernel

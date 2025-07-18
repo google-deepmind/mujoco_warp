@@ -534,9 +534,19 @@ def _S1D(s1: wp.vec3, s2: wp.vec3):
 
 @wp.func
 def _gjk(
-  tolerance: float, gjk_iterations: int, geom1: Geom, geom2: Geom, x1_0: wp.vec3, x2_0: wp.vec3, geomtype1: int, geomtype2: int
+  # In:
+  tolerance: float,
+  gjk_iterations: int,
+  geom1: Geom,
+  geom2: Geom,
+  x1_0: wp.vec3,
+  x2_0: wp.vec3,
+  geomtype1: int,
+  geomtype2: int,
+  cutoff: float,
 ):
   """Find distance within a tolerance between two geoms."""
+  cutoff2 = cutoff * cutoff
   simplex = mat43()
   simplex1 = mat43()
   simplex2 = mat43()
@@ -567,8 +577,23 @@ def _gjk(
     simplex_index2[n] = vertex_index2
     simplex[n] = s1_k - s2_k
 
+    if cutoff == 0.0:
+      if wp.dot(x_k, simplex[n]) > 0:
+        result = GJKResult()
+        result.dim = 0
+        result.dist = FLOAT_MAX
+        return result
+    elif cutoff < FLOAT_MAX:
+      vs = wp.dot(x_k, simplex[n])
+      vv = wp.dot(x_k, x_k)
+      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / vv) >= cutoff2:
+        result = GJKResult()
+        result.dim = 0
+        result.dist = FLOAT_MAX
+        return result
+
     # stopping criteria using the Frank-Wolfe duality gap given by
-    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - s_k) >
+    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
     if wp.dot(x_k, x_k - simplex[n]) < epsilon:
       break
 
@@ -1199,6 +1224,7 @@ def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom
 def ccd(
   # In:
   tolerance: float,
+  cutoff: float,
   gjk_iterations: int,
   epa_iterations: int,
   geom1: Geom,
@@ -1220,7 +1246,7 @@ def ccd(
   horizon: wp.array(dtype=int),
 ):
   """General convex collision detection via GJK/EPA."""
-  result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2)
+  result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff)
 
   # no pentration depth to recover
   if result.dist > tolerance or result.dim < 2:

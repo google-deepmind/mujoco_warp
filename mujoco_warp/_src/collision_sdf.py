@@ -26,6 +26,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .util_misc import halton
 from .warp_util import event_scope
 
 
@@ -266,23 +267,6 @@ def gradient_descent(
   n = rot2 * n
   pos3 = pos - n * dist / 2.0
   return dist, pos3, n
-
-
-@wp.func
-def halton(index: int, base: int) -> float:
-  n0 = index
-  b = float(base)
-  f = float(1.0) / b
-  hn = float(0.0)
-
-  while n0 > 0:
-    n1 = n0 // base
-    r = n0 - n1 * base
-    hn += f * float(r)
-    f /= b
-    n0 = n1
-
-  return hn
 
 
 @wp.kernel

@@ -799,7 +799,9 @@ def crb(m: Model, d: Data):
 @wp.kernel
 def _tendon_armature(
   # Model:
+  opt_is_sparse: bool,
   dof_parentid: wp.array(dtype=int),
+  dof_Madr: wp.array(dtype=int),
   tendon_armature: wp.array2d(dtype=float),
   # Data in:
   ten_J_in: wp.array3d(dtype=float),
@@ -808,20 +810,36 @@ def _tendon_armature(
 ):
   worldid, tenid, dofid = wp.tid()
 
+  if opt_is_sparse:
+    madr_ij = dof_Madr[dofid]
+
   armature = tendon_armature[worldid, tenid]
+
+  if armature == 0.0:
+    return
+
   ten_Ji = ten_J_in[worldid, tenid, dofid]
 
-  wp.atomic_add(qM_out[worldid, dofid], dofid, armature * ten_Ji * ten_Ji)
+  if ten_Ji == 0.0:
+    return
 
   # sparse backward pass over ancestors
   dofidi = dofid
-  dofid = dof_parentid[dofid]
   while dofid >= 0:
-    ten_Jj = ten_J_in[worldid, tenid, dofid]
+    if dofid != dofidi:
+      ten_Jj = ten_J_in[worldid, tenid, dofid]
+    else:
+      ten_Jj = ten_Ji
+
     qMij = armature * ten_Jj * ten_Ji
 
-    wp.atomic_add(qM_out[worldid, dofidi], dofid, qMij)
-    wp.atomic_add(qM_out[worldid, dofid], dofidi, qMij)
+    if opt_is_sparse:
+      wp.atomic_add(qM_out[worldid, 0], madr_ij, qMij)
+      madr_ij += 1
+    else:
+      wp.atomic_add(qM_out[worldid, dofidi], dofid, qMij)
+      if dofidi != dofid:
+        wp.atomic_add(qM_out[worldid, dofid], dofidi, qMij)
 
     dofid = dof_parentid[dofid]
 
@@ -832,7 +850,7 @@ def tendon_armature(m: Model, d: Data):
   wp.launch(
     _tendon_armature,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[m.dof_parentid, m.tendon_armature, d.ten_J],
+    inputs=[m.opt.is_sparse, m.dof_parentid, m.dof_Madr, m.tendon_armature, d.ten_J],
     outputs=[d.qM],
   )
 
@@ -1580,6 +1598,7 @@ def _tendon_bias_qfrc(
 @event_scope
 def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
   """Add bias force due to tendon armature."""
+  d.ten_Jdot.zero_()
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -1609,6 +1628,7 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
     ],
   )
 
+  d.ten_bias_coef.zero_()
   wp.launch(
     _tendon_bias_coef,
     dim=(d.nworld, m.ntendon, m.nv),

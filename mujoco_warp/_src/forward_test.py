@@ -41,8 +41,10 @@ def _assert_eq(a, b, name):
 
 
 class ForwardTest(parameterized.TestCase):
-  def test_fwd_velocity(self):
-    _, mjd, m, d = test_util.fixture("humanoid/humanoid.xml", kick=True)
+  # TODO(team): test sparse when actuator_moment and/or ten_J have sparse representation
+  @parameterized.product(xml=["humanoid/humanoid.xml", "pendula.xml"])
+  def test_fwd_velocity(self, xml):
+    _, mjd, m, d = test_util.fixture(xml, kick=True)
 
     for arr in (d.actuator_velocity, d.qfrc_bias):
       arr.zero_()
@@ -188,17 +190,14 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
-  @parameterized.parameters(
-    0,
-    DisableBit.PASSIVE.value,
-    DisableBit.ACTUATION.value,
-    DisableBit.PASSIVE.value & DisableBit.ACTUATION.value,
-  )
-  def test_implicit(self, dsblflgs):
+  @parameterized.product(actuation=[True, False], passive=[True, False], sparse=[True, False])
+  def test_implicit(self, actuation, passive, sparse):
     mjm, mjd, _, _ = test_util.fixture(
       "pendula.xml",
       integrator=IntegratorType.IMPLICITFAST,
-      disableflags=dsblflgs,
+      actuation=actuation,
+      passive=passive,
+      sparse=sparse,
     )
 
     mjm.actuator_gainprm[:, 2] = np.random.uniform(low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape)
@@ -227,15 +226,39 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
-  @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml")
-  def test_graph_capture(self, xml):
+  def test_implicit_position(self):
+    mjm, mjd, m, d = test_util.fixture("actuation/position.xml", keyframe=0, integrator=IntegratorType.IMPLICITFAST, kick=True)
+
+    mujoco.mj_implicit(mjm, mjd)
+    mjwarp.implicit(m, d)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+
+  def test_implicit_tendon_damping(self):
+    mjm, mjd, m, d = test_util.fixture("tendon/damping.xml", keyframe=0, integrator=IntegratorType.IMPLICITFAST, kick=True)
+
+    mujoco.mj_implicit(mjm, mjd)
+    mjwarp.implicit(m, d)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+
+  @parameterized.product(
+    xml=("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"), graph_conditional=(True, False)
+  )
+  def test_graph_capture(self, xml, graph_conditional):
     # TODO(team): test more environments
     if wp.get_device().is_cuda and wp.config.verify_cuda == False:
       _, _, m, d = test_util.fixture(xml)
+      m.opt.graph_conditional = graph_conditional
 
       with wp.ScopedCapture() as capture:
         mjwarp.step(m, d)
 
+      # step a few times to ensure no errors at the step boundary
+      wp.capture_launch(capture.graph)
+      wp.capture_launch(capture.graph)
       wp.capture_launch(capture.graph)
 
       self.assertTrue(d.time.numpy()[0] > 0.0)

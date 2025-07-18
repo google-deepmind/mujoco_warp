@@ -265,6 +265,8 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         param_reftypes.add(param_name)
       param_source, expected_type, param_order = field_info.get(field_name, (None, None, None))
 
+      # TODO(team): indicate array slice with suffix and check type?
+
       # if parameters are multi-line, parameters must be grouped by comments of the form
       # "{source} {in | out | ""}:" e.g. "Model:" or "Data in:" or "Out:"
       if params_multiline and (param_out, param_source) not in param_groups:

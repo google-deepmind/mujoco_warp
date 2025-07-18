@@ -62,8 +62,9 @@ class InverseTest(parameterized.TestCase):
   @parameterized.product(
     integrator=[IntegratorType.EULER, IntegratorType.IMPLICITFAST],
     invdiscrete=[True, False],
+    sparse=[True, False],
   )
-  def test_inverse(self, integrator, invdiscrete):
+  def test_inverse(self, integrator, invdiscrete, sparse):
     """Tests inverse dynamics."""
     mjm, mjd, m, d = test_util.fixture(
       xml=_XML,
@@ -72,6 +73,7 @@ class InverseTest(parameterized.TestCase):
       kick=True,
       applied=True,
       nstep=10,
+      sparse=sparse,
     )
 
     # discrete qacc

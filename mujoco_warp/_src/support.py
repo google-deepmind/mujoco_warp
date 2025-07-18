@@ -116,9 +116,10 @@ def mul_m_dense(tile: TileSet):
 def mul_m(
   m: Model,
   d: Data,
-  res: wp.array(ndim=2, dtype=wp.float32),
-  vec: wp.array(ndim=2, dtype=wp.float32),
-  skip: wp.array(ndim=1, dtype=bool),
+  res: wp.array2d(dtype=float),
+  vec: wp.array2d(dtype=float),
+  skip: wp.array(dtype=bool),
+  M: wp.array3d(dtype=float) = None,
 ):
   """Multiply vectors by inertia matrix.
 
@@ -128,20 +129,24 @@ def mul_m(
     res (wp.array2d(dtype=float)): Result: qM @ vec.
     vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
     skip (wp.array(dtype=flooat)): Skip output.
+    M (wp.array3d(dtype=float), optional): Input matrix: M @ vec.
   """
+
+  if M is None:
+    M = d.qM
 
   if m.opt.is_sparse:
     wp.launch(
       mul_m_sparse_diag,
       dim=(d.nworld, m.nv),
-      inputs=[m.dof_Madr, d.qM, vec, skip],
+      inputs=[m.dof_Madr, M, vec, skip],
       outputs=[res],
     )
 
     wp.launch(
       mul_m_sparse_ij,
       dim=(d.nworld, m.qM_madr_ij.size),
-      inputs=[m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij, d.qM, vec, skip],
+      inputs=[m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij, M, vec, skip],
       outputs=[res],
     )
 
@@ -151,7 +156,7 @@ def mul_m(
         mul_m_dense(tile),
         dim=(d.nworld, tile.adr.size),
         inputs=[
-          d.qM,
+          M,
           tile.adr,
           # note reshape: tile_matmul expects 2d input
           vec.reshape(vec.shape + (1,)),

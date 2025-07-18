@@ -73,6 +73,9 @@ The following features are implemented:
 | Mass matrix format | Sparse and Dense                                                                                        |
 | Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
 
+[Differentiability via Warp](https://nvidia.github.io/warp/modules/differentiability.html#differentiability) is not currently
+available.
+
 # Benchmarking
 
 Benchmark as follows:

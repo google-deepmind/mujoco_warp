@@ -203,6 +203,17 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "plane_ellipsoid": """
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="10 10 .001"/>
+            <body pos="0 0 .299">
+              <geom type="ellipsoid" size=".1 .2 .3"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "plane_capsule": """
         <mujoco>
           <worldbody>
