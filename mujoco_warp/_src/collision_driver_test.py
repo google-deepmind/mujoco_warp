@@ -279,7 +279,7 @@ class CollisionTest(parameterized.TestCase):
           <worldbody>
             <body>
               <joint type="free"/>
-              <geom pos="0 0 0" size="0.2" type="sphere"/>
+              <geom pos="0 0 0" size="0.25" type="sphere"/>
             </body>
             <body>
               <joint type="free"/>
@@ -366,7 +366,7 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
-    "mesh_plane": """
+    "mesh_plane_simple": """
         <mujoco>
           <asset>
             <mesh name="cube" vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
@@ -376,6 +376,31 @@ class CollisionTest(parameterized.TestCase):
             <body pos="0 0 1" euler="45 0 0">
               <freejoint/>
               <geom type="mesh" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "mesh_plane_complex": """
+        <mujoco>
+          <asset>
+            <mesh name="poly"
+            vertex="
+              0.5 0.0 0.0   0.4 0.3 0.0   0.2 0.45 0.0   0.0 0.5 0.0
+              -0.2 0.45 0.0  -0.4 0.3 0.0  -0.5 0.0 0.0  -0.4 -0.3 0.0
+              -0.2 -0.45 0.0  0.0 -0.5 0.0  0.2 -0.45 0.0  0.4 -0.3 0.0
+              0.0 0.0 1.0
+            "
+            face="
+              0 1 12  1 2 12  2 3 12  3 4 12  4 5 12  5 6 12
+              6 7 12  7 8 12  8 9 12  9 10 12  10 11 12  11 0 12
+              0 1 2  0 2 3  0 3 4  0 4 5  0 5 6  0 6 7  0 7 8  0 8 9  0 9 10  0 10 11  0 11 1
+            "/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0.0 2.0 0.0" euler="90 90 0">
+              <freejoint/>
+              <geom size="0.2 0.2 0.2" type="mesh" mesh="poly"/>
             </body>
           </worldbody>
         </mujoco>
@@ -485,6 +510,9 @@ class CollisionTest(parameterized.TestCase):
 
     mujoco.mj_collision(mjm, mjd)
     mjwarp.collision(m, d)
+
+    self.assertGreater(d.ncon.numpy()[0], 0)
+    self.assertGreater(mjd.ncon, 0)
 
     for i in range(mjd.ncon):
       actual_dist = mjd.contact.dist[i]

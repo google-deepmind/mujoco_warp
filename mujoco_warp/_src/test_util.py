@@ -231,17 +231,19 @@ def benchmark(
 
     time_vec = np.zeros(nstep)
     for i in range(nstep):
-      wp.launch(
-        ctrl_noise,
-        dim=(d.nworld, m.nu),
-        inputs=[
-          m.actuator_ctrllimited, m.actuator_ctrlrange, i, 0.01
-        ],
-        outputs=[d.ctrl])  # fmt: skip
+      with wp.ScopedStream(wp.get_stream()):
+        wp.launch(
+          ctrl_noise,
+          dim=(d.nworld, m.nu),
+          inputs=[
+            m.actuator_ctrllimited, m.actuator_ctrlrange, i, 0.01
+          ],
+          outputs=[d.ctrl])  # fmt: skip
 
-      run_beg = time.perf_counter()
-      wp.capture_launch(graph)
-      wp.synchronize()
+        run_beg = time.perf_counter()
+        wp.capture_launch(graph)
+        wp.synchronize()
+
       run_end = time.perf_counter()
       time_vec[i] = run_end - run_beg
       if trace:

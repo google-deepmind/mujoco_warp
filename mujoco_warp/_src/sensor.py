@@ -157,7 +157,7 @@ def _cam_projection(
   # TODO(team): compute proj directly
   proj = image @ focal @ rotation @ translation
 
-  # projection matrix multiples homogenous [x, y, z, 1] vectors
+  # projection matrix multiples homogeneous [x, y, z, 1] vectors
   pos_hom = wp.vec4(target_xpos[0], target_xpos[1], target_xpos[2], 1.0)
 
   # project world coordinates into pixel space, see:

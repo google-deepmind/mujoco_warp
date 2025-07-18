@@ -89,7 +89,7 @@ def _merge(a: dict, b: dict) -> dict:
 
 
 def event_scope(fn, name: str = ""):
-  """Wraps a function and records an event before and after the fucntion invocation."""
+  """Wraps a function and records an event before and after the function invocation."""
   name = name or getattr(fn, "__name__")
 
   @functools.wraps(fn)

@@ -185,7 +185,7 @@ def _ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp
   # map to local frame
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
-  # z-vec not pointing torwards front face: reject
+  # z-vec not pointing towards front face: reject
   if lvec[2] > -MJ_MINVAL:
     return wp.inf
 
