@@ -133,12 +133,13 @@ class DisableBit(enum.IntFlag):
   PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
+  WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
   ACTUATION = mujoco.mjtDisableBit.mjDSBL_ACTUATION
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
-  # unsupported: MIDPHASE, WARMSTART
+  # unsupported: MIDPHASE
 
 
 class EnableBit(enum.IntFlag):
