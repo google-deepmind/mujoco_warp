@@ -15,6 +15,8 @@
 
 """Utilities for testing."""
 
+import importlib
+import os
 import time
 from typing import Callable, Optional, Tuple
 
@@ -23,6 +25,9 @@ import numpy as np
 import warp as wp
 from etils import epath
 
+from . import collision_driver
+from . import solver
+from . import forward
 from . import io
 from . import warp_util
 from .types import ConeType
@@ -265,3 +270,106 @@ def benchmark(
     run_duration = np.sum(time_vec)
 
   return jit_duration, run_duration, trace, ncon, nefc, solver_niter
+
+
+class BenchmarkSuite:
+  """Base suite for all model benchmarks."""
+
+  path = ""
+  batch_size = -1
+  nconmax = -1
+  njmax = -1
+  param_names = ("function",)
+  params = ("collision", "fwd_position", "fwd_velocity", "fwd_actuation", "fwd_acceleration", "solve", "step")
+  number = 1
+  rounds = 1
+  sample_time = 0
+  repeat = 1000
+  reset_every = 100
+  _step = 0
+  _prev_fn = None
+
+  def __init__(self):
+    m = importlib.import_module(self.__module__)
+    path = os.path.join(os.path.realpath(os.path.dirname(m.__file__)), self.path)
+    self._mjm = mujoco.MjModel.from_xml_path(path)
+    self._mjd = mujoco.MjData(self._mjm)
+    if self._mjm.nkey > 0:
+      mujoco.mj_resetDataKeyframe(self._mjm, self._mjd, 0)
+
+    # TODO(team): investigate why mj_forward fixes bug in franka_emika_panda reporting extra contacts
+    mujoco.mj_forward(self._mjm, self._mjd)
+
+    self.timer = lambda: time.perf_counter() / self.batch_size
+
+  def setup(self, fn):
+    if self._prev_fn is None:
+      # first time running
+      wp.init()
+      self._m = io.put_model(self._mjm)
+      self._d = io.put_data(self._mjm, self._mjd, self.batch_size, self.nconmax, self.njmax)
+      fn_map = {
+        "collision": collision_driver.collision,
+        "fwd_position": forward.fwd_position,
+        "fwd_velocity": forward.fwd_velocity,
+        "fwd_actuation": forward.fwd_actuation,
+        "fwd_acceleration": forward.fwd_acceleration,
+        "solve": solver.solve,
+        "euler": forward.euler,
+        "implicit": forward.implicit,
+        "rungekutta4": forward.rungekutta4,
+        "step": forward.step,
+      }
+
+      # TODO(team): fix graph capture issue that forces running the functions ahead of time
+      fn_map[fn](self._m, self._d)
+      with wp.ScopedCapture() as capture:
+        fn_map[fn](self._m, self._d)
+
+      self._fn_graph = capture.graph
+
+      forward.step(self._m, self._d)
+      with wp.ScopedCapture() as capture:
+        forward.step(self._m, self._d)
+
+      self._step_graph = capture.graph
+
+      forward.forward(self._m, self._d)
+      with wp.ScopedCapture() as capture:
+        forward.forward(self._m, self._d)
+
+      self._forward_graph = capture.graph
+
+    if self._step % self.reset_every == 0 or self._prev_fn != fn:
+      wp.copy(self._d.qpos, wp.array(np.tile(self._mjd.qpos, (self.batch_size, 1)), dtype=wp.float32))
+      wp.copy(self._d.qvel, wp.array(np.tile(self._mjd.qvel, (self.batch_size, 1)), dtype=wp.float32))
+
+    if fn == "solve":
+      # cache the old qacc and qacc_warmstart to avoid trivially early exit in the solver
+      self._old_qacc = wp.empty(self._d.qacc.shape, dtype=float)
+      self._old_qacc_warmstart = wp.empty(self._d.qacc_warmstart.shape, dtype=float)
+      wp.copy(self._old_qacc, self._d.qacc)
+      wp.copy(self._old_qacc_warmstart, self._d.qacc_warmstart)
+
+    if fn != "step":
+      # set up all intermediate arrays that benchmark functions require
+      wp.capture_launch(self._forward_graph)
+
+    if fn == "solve":
+      # revert to the qacc before the step occurred, so that solve has to do real work
+      wp.copy(self._d.qacc, self._old_qacc)
+      wp.copy(self._d.qacc_warmstart, self._old_qacc_warmstart)
+
+    wp.synchronize()
+
+  def teardown(self, fn):
+    if fn != "step":
+      # advance time to profile a range of states not just the initial keyframe state
+      wp.capture_launch(self._step_graph)
+
+    self._step += 1
+    self._prev_fn = fn
+
+  def time_function(self, fn):
+    wp.capture_launch(self._fn_graph)
+    wp.synchronize()
