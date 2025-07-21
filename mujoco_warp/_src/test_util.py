@@ -46,6 +46,7 @@ def fixture(
   passive: bool = True,
   gravity: bool = True,
   clampctrl: bool = True,
+  filterparent: bool = True,
   qpos0: bool = False,
   kick: bool = False,
   energy: bool = False,
@@ -91,6 +92,8 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.CLAMPCTRL
   if not eulerdamp:
     mjm.opt.disableflags |= DisableBit.EULERDAMP
+  if not filterparent:
+    mjm.opt.disableflags |= DisableBit.FILTERPARENT
 
   if energy:
     mjm.opt.enableflags |= EnableBit.ENERGY

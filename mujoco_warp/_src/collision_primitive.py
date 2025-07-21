@@ -2280,8 +2280,9 @@ def box_box(
         for k in range(3):
           if k != i and (int(cross_axis[k] > 0) ^ int(box_dist < 0)):
             cle1 += 1 << k
-          if k != j and (int(rot21[i, 3 - k - j] > 0) ^ int(box_dist < 0) ^ int((k - j + 3) % 3 == 1)):
-            cle2 += 1 << k
+          if k != j:
+            if int(rot21[i, 3 - k - j] > 0) ^ int(box_dist < 0) ^ int((k - j + 3) % 3 == 1):
+              cle2 += 1 << k
 
         axis_code = 12 + i * 3 + j
         clnorm = cross_axis

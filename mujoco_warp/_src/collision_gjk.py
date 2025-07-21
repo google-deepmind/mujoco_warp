@@ -173,6 +173,10 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
 
 @wp.func
 def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int):
+  # out of memory, returning 0 will force EPA to return early without contact
+  if pt.nface == pt.face.shape[0]:
+    return 0.0
+
   # compute witness point v
   r, ret = _project_origin_plane(pt.vert[v3], pt.vert[v2], pt.vert[v1])
   if ret:
@@ -803,6 +807,10 @@ def _ray_triangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec
 @wp.func
 def _add_edge(pt: Polytope, e1: int, e2: int):
   n = pt.nhorizon
+
+  if n < 0:
+    return -1
+
   for i in range(n):
     old_e1 = pt.horizon[2 * i + 0]
     old_e2 = pt.horizon[2 * i + 1]
@@ -810,6 +818,10 @@ def _add_edge(pt: Polytope, e1: int, e2: int):
       pt.horizon[2 * i + 0] = pt.horizon[2 * (n - 1) + 0]
       pt.horizon[2 * i + 1] = pt.horizon[2 * (n - 1) + 1]
       return n - 1
+
+  # out of memory, force EPA to return early without contact
+  if n > pt.horizon.shape[0] - 2:
+    return -1
 
   pt.horizon[2 * n + 0] = e1
   pt.horizon[2 * n + 1] = e2
@@ -1187,6 +1199,9 @@ def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom
     pt.nhorizon = _add_edge(pt, pt.face[idx][0], pt.face[idx][1])
     pt.nhorizon = _add_edge(pt, pt.face[idx][1], pt.face[idx][2])
     pt.nhorizon = _add_edge(pt, pt.face[idx][2], pt.face[idx][0])
+    if pt.nhorizon == -1:
+      idx = -1
+      break
 
     # compute horizon for w
     for i in range(pt.nface):
@@ -1198,6 +1213,9 @@ def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom
         pt.nhorizon = _add_edge(pt, pt.face[i][0], pt.face[i][1])
         pt.nhorizon = _add_edge(pt, pt.face[i][1], pt.face[i][2])
         pt.nhorizon = _add_edge(pt, pt.face[i][2], pt.face[i][0])
+        if pt.nhorizon == -1:
+          idx = -1
+          break
 
     # insert w as new vertex and attach faces along the horizon
     for i in range(pt.nhorizon):

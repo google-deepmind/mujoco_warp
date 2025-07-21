@@ -176,6 +176,53 @@ class BroadphaseTest(parameterized.TestCase):
     np.testing.assert_allclose(d5.collision_pair.numpy()[0][0], 3)
     np.testing.assert_allclose(d5.collision_pair.numpy()[0][1], 2)
 
+  @parameterized.parameters((0, 0, 0), (0, 0.011, 1), (0.011, 0, 1), (0.00999, 0, 0), (0, 0.00999, 0), (0.00999, 0.00999, 0))
+  def test_broadphase_margin(self, margin1, margin2, ncollision):
+    _MJCF = f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1" margin="{margin1}"/>
+            <joint type="slide" axis="1 0 0"/>
+          </body>
+          <body>
+            <geom type="sphere" size=".1" margin="{margin2}"/>
+            <joint type="slide" axis="1 0 0"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 .21"/>
+        </keyframe>
+      </mujoco>
+    """
+    _, _, m, d = test_util.fixture(xml=_MJCF, keyframe=0)
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], ncollision)
+
+  @parameterized.parameters(True, False)
+  def test_broadphase_filterparent(self, filterparent):
+    _MJCF = """
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1"/>
+            <joint type="slide"/>
+            <body>
+              <geom type="sphere" size=".1"/>
+              <joint type="slide"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0"/>
+        </keyframe>
+      </mujoco>
+    """
+    _, _, m, d = test_util.fixture(xml=_MJCF, filterparent=filterparent, keyframe=0)
+
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0 if filterparent else 1)
+
   def test_broadphase_filter(self):
     plane = BroadphaseFilter.PLANE.value
     sphere = BroadphaseFilter.SPHERE.value
