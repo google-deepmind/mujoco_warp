@@ -21,6 +21,7 @@ from .math import gjk_normalize
 from .math import orthonormal
 from .support import all_same
 from .support import any_different
+from .support import sign
 from .types import MJ_MINVAL
 from .types import GeomType
 
@@ -57,12 +58,12 @@ def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3):
   if geomtype == int(GeomType.SPHERE.value):
     support_pt = geom.pos + geom.size[0] * dir
   elif geomtype == int(GeomType.BOX.value):
-    res = wp.cw_mul(wp.sign(local_dir), geom.size)
+    res = wp.cw_mul(wp.vec3(sign(local_dir[0]), sign(local_dir[1]), sign(local_dir[2])), geom.size)
     support_pt = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.CAPSULE.value):
     res = local_dir * geom.size[0]
     # add cylinder contribution
-    res[2] += wp.sign(local_dir[2]) * geom.size[1]
+    res[2] += sign(local_dir[2]) * geom.size[1]
     support_pt = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.ELLIPSOID.value):
     res = wp.cw_mul(local_dir, geom.size)
@@ -79,7 +80,7 @@ def _gjk_support_geom(geom: Geom, geomtype: int, dir: wp.vec3):
       res[0] = local_dir[0] * scl
       res[1] = local_dir[1] * scl
     # set result in Z direction
-    res[2] = wp.sign(local_dir[2]) * geom.size[1]
+    res[2] = sign(local_dir[2]) * geom.size[1]
     support_pt = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.MESH.value):
     max_dist = float(FLOAT_MIN)

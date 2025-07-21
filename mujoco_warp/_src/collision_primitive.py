@@ -21,6 +21,7 @@ from .math import closest_segment_to_segment_points
 from .math import make_frame
 from .math import normalize_with_norm
 from .math import upper_trid_index
+from .support import sign
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
 from .types import Data
@@ -1278,7 +1279,7 @@ def sphere_cylinder(
   inv_len = 1.0 / wp.sqrt(p_proj_sqr)
   p_proj = p_proj * (cylinder.size[0] * inv_len)
 
-  cap_offset = axis * (wp.sign(x) * cylinder.size[1])
+  cap_offset = axis * (sign(x) * cylinder.size[1])
   pos_corner = cylinder.pos + cap_offset + p_proj
 
   _sphere_sphere_ext(

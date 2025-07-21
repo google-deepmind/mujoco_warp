@@ -546,3 +546,10 @@ def jac_dot(
   jacr = cdof_dot_ang
 
   return jacp, jacr
+
+
+@wp.func
+def sign(x: float):
+  if x == 0.0:
+    return 0.0
+  return wp.sign(x)

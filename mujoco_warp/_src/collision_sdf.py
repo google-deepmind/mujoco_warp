@@ -183,7 +183,7 @@ def compute_grad(
       max_grad = grad1_transformed
     else:
       max_grad = grad2
-    sign = wp.sign(max_val)
+    sign = sign(max_val)
     gradient += max_grad * sign
     return gradient
 

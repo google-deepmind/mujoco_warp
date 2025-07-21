@@ -17,6 +17,7 @@ import warp as wp
 
 from .collision_hfield import hfield_prism_vertex
 from .collision_primitive import Geom
+from .support import sign
 from .types import MJ_MINVAL
 from .types import GeomType
 
@@ -79,7 +80,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
   if geomtype == int(GeomType.SPHERE.value):
     support_pt = geom.pos + geom.size[0] * dir
   elif geomtype == int(GeomType.BOX.value):
-    tmp = wp.sign(local_dir)
+    tmp = wp.vec3(sign(local_dir[0]), sign(local_dir[1]), sign(local_dir[2]))
     res = wp.cw_mul(tmp, geom.size)
     support_pt = geom.rot @ res + geom.pos
     vertex_index = 0
@@ -92,7 +93,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
   elif geomtype == int(GeomType.CAPSULE.value):
     res = local_dir * geom.size[0]
     # add cylinder contribution
-    res[2] += wp.sign(local_dir[2]) * geom.size[1]
+    res[2] += sign(local_dir[2]) * geom.size[1]
     support_pt = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.ELLIPSOID.value):
     res = wp.cw_mul(local_dir, geom.size)
@@ -109,7 +110,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
       res[0] = local_dir[0] * scl
       res[1] = local_dir[1] * scl
     # set result in Z direction
-    res[2] = wp.sign(local_dir[2]) * geom.size[1]
+    res[2] = sign(local_dir[2]) * geom.size[1]
     support_pt = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.MESH.value):
     max_dist = float(FLOAT_MIN)
