@@ -1,3 +1,18 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 import mujoco_warp
 
 
@@ -11,7 +26,7 @@ class AlohaPot(mujoco_warp.BenchmarkSuite):
 
 
 class ApptronikApolloFlat(mujoco_warp.BenchmarkSuite):
-  """Apptronik Apollo locomoting on an infinite plain."""
+  """Apptronik Apollo locomoting on an infinite plane."""
 
   path = "apptronik_apollo/scene_flat.xml"
   batch_size = 8192
@@ -38,7 +53,7 @@ class ApptronikApolloTerrain(mujoco_warp.BenchmarkSuite):
 
 
 class FrankaEmikaPanda(mujoco_warp.BenchmarkSuite):
-  """Franka Emika Panda on an infinite plain."""
+  """Franka Emika Panda on an infinite plane."""
 
   path = "franka_emika_panda/scene.xml"
   batch_size = 32768
@@ -47,7 +62,7 @@ class FrankaEmikaPanda(mujoco_warp.BenchmarkSuite):
 
 
 class Humanoid(mujoco_warp.BenchmarkSuite):
-  """MuJoCo humanoid on an infinite plain."""
+  """MuJoCo humanoid on an infinite plane."""
 
   path = "humanoid/humanoid.xml"
   batch_size = 8192
@@ -56,7 +71,7 @@ class Humanoid(mujoco_warp.BenchmarkSuite):
 
 
 class ThreeHumanoids(mujoco_warp.BenchmarkSuite):
-  """Three MuJoCo humanoids on an infinite plain.
+  """Three MuJoCo humanoids on an infinite plane.
 
   Ideally, simulation time scales linearly with number of humanoids.
   """
