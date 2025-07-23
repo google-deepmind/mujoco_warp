@@ -36,5 +36,3 @@ def pytest_configure(config):
     wp.config.verify_cuda = True
   if config.getoption("--lineinfo"):
     wp.config.lineinfo = True
-  wp.config.mode = "debug"
-  wp.config.print_launches = True
