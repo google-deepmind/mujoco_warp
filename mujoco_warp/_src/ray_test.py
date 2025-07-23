@@ -295,7 +295,7 @@ class RayTest(absltest.TestCase):
     mjm, mjd, m, d = test_util.fixture("ray.xml")
 
     # nothing hit with transparent geoms
-    m.geom_rgba = wp.array2d([[wp.vec4(0.0, 0.0, 0.0, 0.0)]], dtype=wp.vec4)
+    m.geom_rgba = wp.array2d([[wp.vec4(0.0, 0.0, 0.0, 0.0)] * 8], dtype=wp.vec4) # this needs to be ngeom?
     mujoco.mj_forward(mjm, mjd)
 
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
