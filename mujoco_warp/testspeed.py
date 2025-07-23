@@ -70,6 +70,7 @@ _INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator
 _DEVICE = flags.DEFINE_string("device", None, "Override the default Warp device.")
 _BROADPHASE = flags.DEFINE_enum_class("broadphase", None, mjwarp.BroadphaseType, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
+_CCD_ITERATIONS = flags.DEFINE_integer("ccd_iterations", None, "Max number of iterations for GJK and EPA.")
 
 
 def _print_table(matrix, headers):
@@ -164,8 +165,13 @@ def _main(argv: Sequence[str]):
       m.opt.broadphase = _BROADPHASE.value
     if _BROADPHASE_FILTER.value is not None:
       m.opt.broadphase_filter = _BROADPHASE_FILTER.value
+    if _CCD_ITERATIONS.value is not None:
+      m.opt.gjk_iterations = _CCD_ITERATIONS.value
+      m.opt.epa_iterations = _CCD_ITERATIONS.value
 
-    d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    d = mjwarp.put_data(
+      mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value, ccd_iterations=_CCD_ITERATIONS.value
+    )
 
     if _CLEAR_KERNEL_CACHE.value:
       wp.clear_kernel_cache()
