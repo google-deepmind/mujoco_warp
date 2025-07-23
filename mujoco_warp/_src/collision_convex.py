@@ -26,7 +26,6 @@ from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_tri_index
 from .math import upper_trid_index
-from .types import MJ_MAXCONPAIR
 from .types import Data
 from .types import GeomType
 from .types import Model
@@ -82,6 +81,7 @@ assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid o
 def _max_contacts_height_field(
   # Model:
   ngeom: int,
+  opt_maxconpair: int,
   geom_type: wp.array(dtype=int),
   geompair2hfgeompair: wp.array(dtype=int),
   # In:
@@ -96,7 +96,7 @@ def _max_contacts_height_field(
     geompairid = upper_tri_index(ngeom, g1, g2)
     hfgeompairid = geompair2hfgeompair[geompairid]
     hfncon = wp.atomic_add(ncon_hfield_out[worldid], hfgeompairid, 1)
-    if hfncon >= MJ_MAXCONPAIR:
+    if hfncon >= opt_maxconpair:
       return True
 
   return False
@@ -117,6 +117,7 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     ngeom: int,
+    opt_maxconpair: int,
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -354,7 +355,7 @@ def ccd_kernel_builder(
     frame = make_frame(normal)
     for i in range(count):
       # limit maximum number of contacts with height field
-      if _max_contacts_height_field(ngeom, geom_type, geompair2hfgeompair, g1, g2, worldid, ncon_hfield_out):
+      if _max_contacts_height_field(ngeom, opt_maxconpair, geom_type, geompair2hfgeompair, g1, g2, worldid, ncon_hfield_out):
         return
 
       write_contact(
@@ -419,6 +420,7 @@ def convex_narrowphase(m: Model, d: Data):
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.opt.maxconpair,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
