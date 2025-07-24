@@ -15,6 +15,7 @@
 
 """Run benchmarks on various devices."""
 
+import enum
 import inspect
 from typing import Sequence
 
@@ -27,6 +28,12 @@ from etils import epath
 
 import mujoco_warp as mjwarp
 
+
+class OutputOptions(enum.IntEnum):
+  TEXT = 0
+  TSV = 1
+
+
 _FUNCTION = flags.DEFINE_enum(
   "function",
   "step",
@@ -36,12 +43,12 @@ _FUNCTION = flags.DEFINE_enum(
 _MJCF = flags.DEFINE_string("mjcf", None, "path to model `.xml` or `.mjb`", required=True)
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _BATCH_SIZE = flags.DEFINE_integer("batch_size", 8192, "number of parallel rollouts")
-_SOLVER = flags.DEFINE_enum("solver", None, ["cg", "newton"], "Override model constraint solver")
+_SOLVER = flags.DEFINE_enum_class("solver", None, mjwarp.SolverType, "Override model constraint solver")
 _ITERATIONS = flags.DEFINE_integer("iterations", None, "Override model solver iterations")
 _LS_ITERATIONS = flags.DEFINE_integer("ls_iterations", None, "Override model linesearch iterations")
 _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "solve with parallel linesearch")
 _IS_SPARSE = flags.DEFINE_bool("is_sparse", None, "Override model sparse config")
-_CONE = flags.DEFINE_enum("cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type")
+_CONE = flags.DEFINE_enum_class("cone", mjwarp.ConeType.PYRAMIDAL, mjwarp.ConeType, "Friction cone type")
 _NCONMAX = flags.DEFINE_integer(
   "nconmax",
   None,
@@ -53,7 +60,7 @@ _NJMAX = flags.DEFINE_integer(
   "Override default maximum number of constraints in a batch physics step.",
 )
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "Keyframe to initialize simulation.")
-_OUTPUT = flags.DEFINE_enum("output", "text", ["text", "tsv"], "format to print results")
+_OUTPUT = flags.DEFINE_enum_class("output", OutputOptions.TEXT, OutputOptions, "format to print results")
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "Provide a full event trace")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "Measure how much of nconmax, njmax is used.")
@@ -61,7 +68,7 @@ _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "Measure the number
 _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "Number of buckets to summarize measurements.")
 _INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator).")
 _DEVICE = flags.DEFINE_string("device", None, "Override the default Warp device.")
-_BROADPHASE = flags.DEFINE_integer("broadphase", None, "Broadphase collision routine.")
+_BROADPHASE = flags.DEFINE_enum_class("broadphase", None, mjwarp.BroadphaseType, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
 
 
@@ -113,20 +120,15 @@ def _main(argv: Sequence[str]):
   else:
     mjm = _load_model(path.as_posix())
 
-  if _CONE.value == "pyramidal":
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
-  elif _CONE.value == "elliptic":
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+  mjm.opt.cone = _CONE.value
 
   if _IS_SPARSE.value == True:
     mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
   elif _IS_SPARSE.value == False:
     mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
 
-  if _SOLVER.value == "cg":
-    mjm.opt.solver = mujoco.mjtSolver.mjSOL_CG
-  elif _SOLVER.value == "newton":
-    mjm.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
+  if _SOLVER.value is not None:
+    mjm.opt.solver = _SOLVER.value
 
   if _ITERATIONS.value is not None:
     mjm.opt.iterations = _ITERATIONS.value
@@ -142,7 +144,10 @@ def _main(argv: Sequence[str]):
 
   with wp.ScopedDevice(_DEVICE.value):
     m = mjwarp.put_model(mjm)
-
+    if _EVENT_TRACE.value:
+      if m.opt.graph_conditional:
+        print("Warning: graph conditional is disabled, feature not supported with event tracing")
+        m.opt.graph_conditional = False  # graph conditional doesn't work with event trace
     # integrator
     IntegratorType = mjwarp._src.types.IntegratorType
     integrators = {IntegratorType.EULER: "Euler", IntegratorType.IMPLICITFAST: "implicitfast", IntegratorType.RK4: "RK4"}
@@ -188,7 +193,7 @@ def _main(argv: Sequence[str]):
     steps = _BATCH_SIZE.value * _NSTEP.value
 
     name = argv[0]
-    if _OUTPUT.value == "text":
+    if _OUTPUT.value == OutputOptions.TEXT:
       print(f"""
 Summary for {_BATCH_SIZE.value} parallel rollouts
 
@@ -230,7 +235,7 @@ Summary for {_BATCH_SIZE.value} parallel rollouts
         print("\nsolver niter:\n")
         _print_table(matrix, ("mean", "std", "min", "max"))
 
-    elif _OUTPUT.value == "tsv":
+    elif _OUTPUT.value == OutputOptions.TSV:
       name = name.split("/")[-1].replace("testspeed_", "")
       print(f"{name}\tjit: {jit_time:.2f}s\tsteps/second: {steps / run_time:.0f}")
 

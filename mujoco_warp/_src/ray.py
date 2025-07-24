@@ -586,7 +586,11 @@ def _ray_mesh(
 
   # get mesh face and vertex data
   face_start = mesh_faceadr[data_id]
-  face_end = wp.where(data_id + 1 < mesh_faceadr.shape[0], mesh_faceadr[data_id + 1], nmeshface)
+
+  if data_id + 1 < mesh_faceadr.shape[0]:
+    face_end = mesh_faceadr[data_id + 1]
+  else:
+    face_end = nmeshface
 
   # iterate through all faces
   for i in range(face_start, face_end):

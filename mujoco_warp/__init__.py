@@ -65,6 +65,7 @@ from ._src.support import contact_force as contact_force
 from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate
 from ._src.test_util import benchmark as benchmark
+from ._src.types import BroadphaseType as BroadphaseType
 from ._src.types import ConeType as ConeType
 from ._src.types import Constraint as Constraint
 from ._src.types import Contact as Contact
@@ -73,5 +74,6 @@ from ._src.types import DynType as DynType
 from ._src.types import EnableBit as EnableBit
 from ._src.types import JointType as JointType
 from ._src.types import Option as Option
+from ._src.types import SolverType as SolverType
 from ._src.types import Statistic as Statistic
 from ._src.types import TrnType as TrnType

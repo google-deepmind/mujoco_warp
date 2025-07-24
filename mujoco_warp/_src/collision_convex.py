@@ -19,6 +19,7 @@ from .collision_gjk import ccd
 from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
+from .collision_hfield import hfield_prism_vertex
 from .collision_primitive import _geom
 from .collision_primitive import contact_params
 from .collision_primitive import write_contact
@@ -312,6 +313,13 @@ def ccd_kernel_builder(
     else:
       x1 = geom1.pos
       x2 = geom2.pos
+
+      # find prism center for height field
+      if geomtype1 == int(GeomType.HFIELD.value):
+        x1 = wp.vec3(0.0, 0.0, 0.0)
+        for i in range(6):
+          x1 += hfield_prism_vertex(geom1.hfprism, i)
+        x1 = x1 / 6.0
 
       dist, x1, x2 = ccd(
         1e-6,

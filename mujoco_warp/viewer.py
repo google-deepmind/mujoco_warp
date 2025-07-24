@@ -15,6 +15,7 @@
 
 """An example integration of MJWarp with the MuJoCo viewer."""
 
+import enum
 import logging
 import pickle
 import time
@@ -29,10 +30,16 @@ from absl import flags
 
 import mujoco_warp as mjwarp
 
+
+class EngineOptions(enum.IntEnum):
+  MJWARP = 0
+  MJC = 1
+
+
 _MODEL_PATH = flags.DEFINE_string("mjcf", None, "Path to a MuJoCo MJCF file.", required=True)
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
-_ENGINE = flags.DEFINE_enum("engine", "mjwarp", ["mjwarp", "mjc"], "Simulation engine")
-_CONE = flags.DEFINE_enum("cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type")
+_ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.MJWARP, EngineOptions, "Simulation engine")
+_CONE = flags.DEFINE_enum_class("cone", mjwarp.ConeType.PYRAMIDAL, mjwarp.ConeType, "Friction cone type")
 _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "Engine solver with parallel linesearch")
 _VIEWER_GLOBAL_STATE = {
   "running": True,
@@ -40,7 +47,7 @@ _VIEWER_GLOBAL_STATE = {
 }
 _NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
 _NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints.")
-_BROADPHASE = flags.DEFINE_integer("broadphase", None, "Broadphase collision routine.")
+_BROADPHASE = flags.DEFINE_enum_class("broadphase", None, mjwarp.BroadphaseType, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
 _KEYFRAME = flags.DEFINE_integer("keyframe", None, "Keyframe to initialize simulation.")
 
@@ -83,16 +90,13 @@ def _main(argv: Sequence[str]) -> None:
     mjm = mujoco.MjModel.from_binary_path(_MODEL_PATH.value)
   else:
     mjm = _load_model()
-  if _CONE.value == "pyramidal":
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
-  elif _CONE.value == "elliptic":
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    mjm.opt.cone = _CONE.value
   mjd = mujoco.MjData(mjm)
   if _KEYFRAME.value is not None:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
   mujoco.mj_forward(mjm, mjd)
 
-  if _ENGINE.value == "mjc":
+  if _ENGINE.value == EngineOptions.MJC:
     print("Engine: MuJoCo C")
   else:  # mjwarp
     print("Engine: MuJoCo Warp")
@@ -120,7 +124,7 @@ def _main(argv: Sequence[str]) -> None:
     while True:
       start = time.time()
 
-      if _ENGINE.value == "mjc":
+      if _ENGINE.value == EngineOptions.MJC:
         mujoco.mj_step(mjm, mjd)
       else:  # mjwarp
         wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
