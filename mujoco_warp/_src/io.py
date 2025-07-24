@@ -27,6 +27,9 @@ from . import types
 # number of max iterations to run GJK/EPA
 MJ_CCD_ITERATIONS = 12
 
+# max number of worlds supported
+MAX_WORLDS = 2**16
+
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
@@ -369,7 +372,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       return array
     array.strides = (0,) + array.strides
     array.ndim += 1
-    array.shape = (1,) + array.shape
+    array.shape = (MAX_WORLDS,) + array.shape
     return array
 
   # rangefinder
@@ -803,7 +806,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
+def make_data(mjm: mujoco.MjModel, nworld: Optional[int] = None, nconmax: int = -1, njmax: int = -1) -> types.Data:
   """
   Creates a data object on device.
 
@@ -816,6 +819,9 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   Returns:
     Data: The data object containing the current state and output arrays (device).
   """
+
+  nworld = nworld or 1
+
   # TODO(team): move to Model?
   if nconmax == -1:
     # TODO(team): heuristic for nconmax
@@ -823,6 +829,16 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   if njmax == -1:
     # TODO(team): heuristic for njmax
     njmax = nworld * 20 * 6
+
+  if nworld < 1 or nworld > MAX_WORLDS:
+    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
+
+  if nconmax < 1:
+    raise ValueError("nconmax must be >= 1")
+
+  if njmax < 1:
+    raise ValueError("njmax must be >= 1")
+
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
 
@@ -1095,8 +1111,8 @@ def put_data(
   # TODO(team): better heuristic for njmax
   njmax = njmax or max(512, mjd.nefc * nworld)
 
-  if nworld < 1:
-    raise ValueError("nworld must be >= 1")
+  if nworld < 1 or nworld > MAX_WORLDS:
+    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
   if nconmax < 1:
     raise ValueError("nconmax must be >= 1")
