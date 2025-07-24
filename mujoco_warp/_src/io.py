@@ -28,7 +28,7 @@ from . import types
 MJ_CCD_ITERATIONS = 12
 
 # max number of worlds supported
-MAX_WORLDS = 2**16
+MAX_WORLDS = 2**24
 
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
@@ -369,6 +369,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array._is_batched = True
     if not expand_dim:
       array.strides = (0,) + array.strides[1:]
+      array.shape = (MAX_WORLDS,) + array.shape[1:]
       return array
     array.strides = (0,) + array.strides
     array.ndim += 1
