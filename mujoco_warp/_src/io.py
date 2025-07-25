@@ -827,7 +827,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     nconmax = nworld * 20
   if njmax == -1:
     # TODO(team): heuristic for njmax
-     njmax = 20 * 6
+    njmax = 20 * 6
 
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
