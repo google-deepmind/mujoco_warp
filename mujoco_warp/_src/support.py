@@ -299,7 +299,7 @@ def any_different(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
 
 @wp.func
 def _decode_pyramid(
-  pyramid: wp.array(dtype=float), efc_address: int, mu: vec5, condim: int, njmax_in: int
+  njmax_in: int, pyramid: wp.array(dtype=float), efc_address: int, mu: vec5, condim: int
 ) -> wp.spatial_vector:
   """Converts pyramid representation to contact force."""
   force = wp.spatial_vector()
@@ -330,8 +330,8 @@ def contact_force_fn(
   # Model:
   opt_cone: int,
   # Data in:
-  ncon_in: wp.array(dtype=int),
   njmax_in: int,
+  ncon_in: wp.array(dtype=int),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
@@ -350,11 +350,11 @@ def contact_force_fn(
   if contact_id >= 0 and contact_id <= ncon_in[0] and efc_address >= 0:
     if opt_cone == int(ConeType.PYRAMIDAL.value):
       force = _decode_pyramid(
+        njmax_in,
         efc_force_in[worldid],
         efc_address,
         contact_friction_in[contact_id],
         condim,
-        njmax_in,
       )
     else:
       for i in range(condim):
@@ -375,8 +375,8 @@ def contact_force_kernel(
   # Model:
   opt_cone: int,
   # Data in:
-  ncon_in: wp.array(dtype=int),
   njmax_in: int,
+  ncon_in: wp.array(dtype=int),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
@@ -400,8 +400,8 @@ def contact_force_kernel(
 
   out[tid] = contact_force_fn(
     opt_cone,
-    ncon_in,
     njmax_in,
+    ncon_in,
     contact_frame_in,
     contact_friction_in,
     contact_dim_in,
@@ -435,8 +435,8 @@ def contact_force(
     dim=(contact_ids.size,),
     inputs=[
       m.opt.cone,
-      d.ncon,
       d.njmax,
+      d.ncon,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
