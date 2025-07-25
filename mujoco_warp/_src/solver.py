@@ -2185,28 +2185,6 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
 
-    # Optimization: launching _JTDAJ with limited number of blocks on a GPU.
-    # Profiling suggests that only a fraction of blocks out of the original
-    # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
-    # effective work. It launches with #blocks that's proportional to the number
-    # of SMs on the GPU. We can now query the SM count:
-    # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
-
-    # make dim_block and nblocks_perblock static for _JTDAJ to allow loop unrolling
-    if wp.get_device().is_cuda:
-      sm_count = wp.get_device().sm_count
-
-      # Here we assume one block has 256 threads. We use a factor of 6, which
-      # can be changed in the future to fine-tune the perf. The optimal factor will
-      # depend on the kernel's occupancy, which determines how many blocks can
-      # simultaneously run on the SM. TODO: This factor can be tuned further.
-      dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
-    else:
-      # fall back for CPU
-      dim_block = d.nconmax
-
-    nblocks_perblock = int((d.nconmax + dim_block - 1) / dim_block)
-
     wp.launch(
       update_gradient_JTDAJ,
       dim=(d.nworld, m.dof_tri_row.size),
@@ -2223,6 +2201,29 @@ def _update_gradient(m: types.Model, d: types.Data):
     )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
+      # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
+      # Profiling suggests that only a fraction of blocks out of the original
+      # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
+      # effective work. It launches with #blocks that's proportional to the number
+      # of SMs on the GPU. We can now query the SM count:
+      # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
+
+      # make dim_block and nblocks_perblock static for update_gradient_JTCJ to allow
+      # loop unrolling
+      if wp.get_device().is_cuda:
+        sm_count = wp.get_device().sm_count
+
+        # Here we assume one block has 256 threads. We use a factor of 6, which
+        # can be changed in the future to fine-tune the perf. The optimal factor will
+        # depend on the kernel's occupancy, which determines how many blocks can
+        # simultaneously run on the SM. TODO: This factor can be tuned further.
+        dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
+      else:
+        # fall back for CPU
+        dim_block = d.nconmax
+
+      nblocks_perblock = int((d.nconmax + dim_block - 1) / dim_block)
+
       wp.launch(
         update_gradient_JTCJ,
         dim=(dim_block, m.dof_tri_row.size),
@@ -2539,8 +2540,10 @@ def solve(m: types.Model, d: types.Data):
 
 def _solve(m: types.Model, d: types.Data):
   """Finds forces that satisfy constraints."""
-  # warmstart
-  wp.copy(d.qacc, d.qacc_warmstart)
+  if not (m.opt.disableflags & types.DisableBit.WARMSTART):
+    wp.copy(d.qacc, d.qacc_warmstart)
+  else:
+    wp.copy(d.qacc, d.qacc_smooth)
 
   # create context
   create_context(m, d, grad=True)

@@ -1181,17 +1181,16 @@ def put_data(
   efc_margin_fill = np.zeros((nworld, njmax))
 
   nefc = mjd.nefc
-  for i in range(nworld):
-    efc_type_fill[i, :nefc] = mjd.efc_type
-    efc_id_fill[i, :nefc] = mjd.efc_id
-    efc_J_fill[i, :nefc, :] = efc_J
-    efc_D_fill[i, :nefc] = mjd.efc_D
-    efc_vel_fill[i, :nefc] = mjd.efc_vel
-    efc_pos_fill[i, :nefc] = mjd.efc_pos
-    efc_aref_fill[i, :nefc] = mjd.efc_aref
-    efc_frictionloss_fill[i, :nefc] = mjd.efc_frictionloss
-    efc_force_fill[i, :nefc] = mjd.efc_force
-    efc_margin_fill[i, :nefc] = mjd.efc_margin
+  efc_type_fill[:, :nefc] = np.tile(mjd.efc_type, (nworld, 1))
+  efc_id_fill[:, :nefc] = np.tile(mjd.efc_id, (nworld, 1))
+  efc_J_fill[:, :nefc, :] = np.tile(efc_J, (nworld, 1, 1))
+  efc_D_fill[:, :nefc] = np.tile(mjd.efc_D, (nworld, 1))
+  efc_vel_fill[:, :nefc] = np.tile(mjd.efc_vel, (nworld, 1))
+  efc_pos_fill[:, :nefc] = np.tile(mjd.efc_pos, (nworld, 1))
+  efc_aref_fill[:, :nefc] = np.tile(mjd.efc_aref, (nworld, 1))
+  efc_frictionloss_fill[:, :nefc] = np.tile(mjd.efc_frictionloss, (nworld, 1))
+  efc_force_fill[:, :nefc] = np.tile(mjd.efc_force, (nworld, 1))
+  efc_margin_fill[:, :nefc] = np.tile(mjd.efc_margin, (nworld, 1))
 
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
@@ -1314,16 +1313,16 @@ def put_data(
       worldid=arr(contact_worldid),
     ),
     efc=types.Constraint(
-      type=wp.array(efc_type_fill, dtype=int, ndim=2),
-      id=wp.array(efc_id_fill, dtype=int, ndim=2),
-      J=wp.array(efc_J_fill, dtype=float, ndim=3),
-      pos=wp.array(efc_pos_fill, dtype=float, ndim=2),
-      margin=wp.array(efc_margin_fill, dtype=float, ndim=2),
-      D=wp.array(efc_D_fill, dtype=float, ndim=2),
-      vel=wp.array(efc_vel_fill, dtype=float, ndim=2),
-      aref=wp.array(efc_aref_fill, dtype=float, ndim=2),
-      frictionloss=wp.array(efc_frictionloss_fill, dtype=float, ndim=2),
-      force=wp.array(efc_force_fill, dtype=float, ndim=2),
+      type=wp.array2d(efc_type_fill, dtype=int),
+      id=wp.array2d(efc_id_fill, dtype=int),
+      J=wp.array3d(efc_J_fill, dtype=float),
+      pos=wp.array2d(efc_pos_fill, dtype=float),
+      margin=wp.array2d(efc_margin_fill, dtype=float),
+      D=wp.array2d(efc_D_fill, dtype=float),
+      vel=wp.array2d(efc_vel_fill, dtype=float),
+      aref=wp.array2d(efc_aref_fill, dtype=float),
+      frictionloss=wp.array2d(efc_frictionloss_fill, dtype=float),
+      force=wp.array2d(efc_force_fill, dtype=float),
       Jaref=wp.empty(shape=(nworld, njmax), dtype=float),
       Ma=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       grad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
@@ -1363,7 +1362,7 @@ def put_data(
       mid=wp.empty(shape=(nworld,), dtype=wp.vec3),
       mid_alpha=wp.empty(shape=(nworld,), dtype=float),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
-      # TODO(team): skip allocation if not ellpitic
+      # TODO(team): skip allocation if not elliptic
       u=wp.empty((nconmax,), dtype=types.vec6),
       uu=wp.empty((nconmax,), dtype=float),
       uv=wp.empty((nconmax,), dtype=float),

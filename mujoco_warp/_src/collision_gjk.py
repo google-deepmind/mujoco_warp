@@ -103,7 +103,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
   elif geomtype == int(GeomType.CYLINDER.value):
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
-    d = wp.sqrt(wp.dot(local_dir, local_dir))
+    d = wp.sqrt(local_dir[0] * local_dir[0] + local_dir[1] * local_dir[1])
     if d > MJ_MINVAL:
       scl = geom.size[0] / d
       res[0] = local_dir[0] * scl
