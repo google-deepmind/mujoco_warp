@@ -69,7 +69,7 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(mjwarp_cost, mj_cost, name="cost")
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
-  def test_equivalent_linesearch(self, cone):
+  def test_parallel_linesearch(self, cone):
     """Test that iterative and parallel linesearch leads to equivalent results."""
     _, _, m, d = test_util.fixture(
       "humanoid/humanoid.xml",
@@ -117,7 +117,7 @@ class SolverTest(parameterized.TestCase):
 
     # Checking that iterative and parallel linesearch lead to similar results
     # and that increasing ls_iterations leads to better results
-    _assert_eq(alpha_iterative, alpha_iterative, name="linesearch alpha")
+    _assert_eq(alpha_iterative, alpha_parallel_50, name="linesearch alpha")
     self.assertLessEqual(abs(alpha_iterative - alpha_parallel_50), abs(alpha_iterative - alpha_parallel_10))
 
   @parameterized.parameters(
