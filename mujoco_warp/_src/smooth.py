@@ -1283,8 +1283,8 @@ def _cfrc_ext_contact(
   # contact force in world frame
   force = support.contact_force_fn(
     opt_cone,
-    ncon_in,
     njmax_in,
+    ncon_in,
     contact_frame_in,
     contact_friction_in,
     contact_dim_in,
