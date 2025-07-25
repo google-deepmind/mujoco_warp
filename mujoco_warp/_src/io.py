@@ -807,7 +807,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def make_data(mjm: mujoco.MjModel, nworld: Optional[int] = None, nconmax: int = -1, njmax: int = -1) -> types.Data:
+def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
   """
   Creates a data object on device.
 
@@ -820,8 +820,6 @@ def make_data(mjm: mujoco.MjModel, nworld: Optional[int] = None, nconmax: int = 
   Returns:
     Data: The data object containing the current state and output arrays (device).
   """
-
-  nworld = nworld or 1
 
   # TODO(team): move to Model?
   if nconmax == -1:

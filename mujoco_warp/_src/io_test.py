@@ -27,6 +27,7 @@ from absl.testing import absltest
 import mujoco_warp as mjwarp
 
 from . import test_util
+from .io import MAX_WORLDS
 
 
 def _dims_match(test_obj, d1: Any, d2: Any, prefix: str = ""):
@@ -295,11 +296,11 @@ class IOTest(absltest.TestCase):
     m1 = mjwarp.put_model(mjm)
 
     self.assertTrue(hasattr(m1.geom_pos, "_is_batched"))
-    self.assertEqual(m1.geom_pos.shape[0], 1)
+    self.assertEqual(m1.geom_pos.shape[0], MAX_WORLDS)
     self.assertEqual(m1.geom_pos.strides[0], 0)
     self.assertLen(m1.geom_pos.strides, m1.geom_pos.ndim)
     self.assertTrue(hasattr(m1.opt.gravity, "_is_batched"))
-    self.assertEqual(m1.opt.gravity.shape[0], 1)
+    self.assertEqual(m1.opt.gravity.shape[0], MAX_WORLDS)
     self.assertEqual(m1.opt.gravity.strides[0], 0)
     self.assertLen(m1.opt.gravity.strides, m1.opt.gravity.ndim)
     self.assertFalse(hasattr(m1.body_parentid, "_is_batched"))
