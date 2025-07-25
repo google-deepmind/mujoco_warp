@@ -57,7 +57,7 @@ _NCONMAX = flags.DEFINE_integer(
 _NJMAX = flags.DEFINE_integer(
   "njmax",
   None,
-  "Override default maximum number of constraints in a batch physics step.",
+  "Override default maximum number of constraints per world in a batch physics step.",
 )
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "Keyframe to initialize simulation.")
 _OUTPUT = flags.DEFINE_enum_class("output", OutputOptions.TEXT, OutputOptions, "format to print results")

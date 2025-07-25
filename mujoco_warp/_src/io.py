@@ -815,7 +815,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     nworld (int, optional): Number of worlds. Defaults to 1.
     nconmax (int, optional): Maximum number of contacts for all worlds. Defaults to -1.
-    njmax (int, optional): Maximum number of constraints for all worlds. Defaults to -1.
+    njmax (int, optional): Maximum number of constraints per world. Defaults to -1.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).
@@ -1093,7 +1093,7 @@ def put_data(
     mjd (mujoco.MjData): The data object containing current state and output arrays (host).
     nworld (int, optional): The number of worlds. Defaults to 1.
     nconmax (int, optional): The maximum number of contacts for all worlds. Defaults to -1.
-    njmax (int, optional): The maximum number of constraints for all worlds. Defaults to -1.
+    njmax (int, optional): The maximum number of constraints per world. Defaults to -1.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).

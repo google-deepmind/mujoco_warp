@@ -1366,7 +1366,7 @@ class Data:
   Attributes:
     nworld: number of worlds
     nconmax: maximum number of contacts
-    njmax: maximum number of constraints
+    njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
     ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeompair)

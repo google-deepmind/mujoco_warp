@@ -51,7 +51,7 @@ class JAXTest(parameterized.TestCase):
       xml,
       nworld=NWORLDS,
       nconmax=NWORLDS * NCONTACTS,
-      njmax=NWORLDS * NCONTACTS * 4,
+      njmax=NCONTACTS * 4,
       iterations=1,
       ls_iterations=4,
       kick=True,
