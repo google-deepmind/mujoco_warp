@@ -48,7 +48,7 @@ _ITERATIONS = flags.DEFINE_integer("iterations", None, "Override model solver it
 _LS_ITERATIONS = flags.DEFINE_integer("ls_iterations", None, "Override model linesearch iterations")
 _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "solve with parallel linesearch")
 _IS_SPARSE = flags.DEFINE_bool("is_sparse", None, "Override model sparse config")
-_CONE = flags.DEFINE_enum_class("cone", mjwarp.ConeType.PYRAMIDAL, mjwarp.ConeType, "Friction cone type")
+_CONE = flags.DEFINE_enum_class("cone", None, mjwarp.ConeType, "Friction cone type")
 _NCONMAX = flags.DEFINE_integer(
   "nconmax",
   None,
@@ -120,7 +120,8 @@ def _main(argv: Sequence[str]):
   else:
     mjm = _load_model(path.as_posix())
 
-  mjm.opt.cone = _CONE.value
+  if _CONE.value is not None:
+    mjm.opt.cone = _CONE.value
 
   if _IS_SPARSE.value == True:
     mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
