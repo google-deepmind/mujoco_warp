@@ -310,12 +310,13 @@ def _decode_pyramid(
 
   force[0] = float(0.0)
   for i in range(condim - 1):
-    if 2 * i + efc_address < njmax_in:
-      dir1 = pyramid[2 * i + efc_address]
+    adr = 2 * i + efc_address
+    if adr < njmax_in:
+      dir1 = pyramid[adr]
     else:
       dir1 = 0.0
-    if 2 * i + efc_address + 1 < njmax_in:
-      dir2 = pyramid[2 * i + efc_address + 1]
+    if adr + 1 < njmax_in:
+      dir2 = pyramid[adr + 1]
     else:
       dir2 = 0.0
     force[0] += dir1 + dir2
