@@ -1932,6 +1932,7 @@ def update_gradient_JTDAJ(
   dof_tri_col: wp.array(dtype=int),
   # Data in:
   nefc_in: wp.array(dtype=int),
+  njmax_in: int,
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_active_in: wp.array2d(dtype=bool),
@@ -1950,7 +1951,7 @@ def update_gradient_JTDAJ(
   dofi = dof_tri_row[elementid]
   dofj = dof_tri_col[elementid]
 
-  for efcid in range(nefc):
+  for efcid in range(min(nefc, njmax_in)):
     efc_D = efc_D_in[worldid, efcid]
     active = efc_active_in[worldid, efcid]
 
@@ -2191,6 +2192,7 @@ def _update_gradient(m: types.Model, d: types.Data):
         m.dof_tri_row,
         m.dof_tri_col,
         d.nefc,
+        d.njmax,
         d.efc.J,
         d.efc.D,
         d.efc.active,
