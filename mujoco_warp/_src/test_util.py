@@ -335,11 +335,11 @@ class BenchmarkSuite:
       "device_memory_allocated": free_before - wp.get_device().free_memory,
     }
 
-    def tree_flatten(d, parent_k=''):
+    def tree_flatten(d, parent_k=""):
       ret = {}
       steps = self.batch_size * 1000
       for k, v in d.items():
-        k = parent_k + '.' + k if parent_k else k
+        k = parent_k + "." + k if parent_k else k
         ret = ret | {k: 1e6 * v[0][0] / steps} | tree_flatten(v[1], k)
       return ret
 
