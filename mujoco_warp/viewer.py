@@ -39,7 +39,7 @@ class EngineOptions(enum.IntEnum):
 _MODEL_PATH = flags.DEFINE_string("mjcf", None, "Path to a MuJoCo MJCF file.", required=True)
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
 _ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.MJWARP, EngineOptions, "Simulation engine")
-_CONE = flags.DEFINE_enum_class("cone", mjwarp.ConeType.PYRAMIDAL, mjwarp.ConeType, "Friction cone type")
+_CONE = flags.DEFINE_enum_class("cone", None, mjwarp.ConeType, "Friction cone type")
 _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "Engine solver with parallel linesearch")
 _VIEWER_GLOBAL_STATE = {
   "running": True,
@@ -90,7 +90,10 @@ def _main(argv: Sequence[str]) -> None:
     mjm = mujoco.MjModel.from_binary_path(_MODEL_PATH.value)
   else:
     mjm = _load_model()
+
+  if _CONE.value is not None:
     mjm.opt.cone = _CONE.value
+
   mjd = mujoco.MjData(mjm)
   if _KEYFRAME.value is not None:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
