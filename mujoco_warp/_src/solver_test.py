@@ -116,7 +116,7 @@ class SolverTest(parameterized.TestCase):
       if m.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
         _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
-        _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
+        _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),
@@ -177,10 +177,8 @@ class SolverTest(parameterized.TestCase):
     )
     d = mjwarp.put_data(mjm, mjd, nworld=3, njmax=2 * nefc_active)
 
-    d.nefc = wp.array([nefc_active], dtype=wp.int32, ndim=1)
-    d.ne = wp.array([ne_active], dtype=wp.int32, ndim=1)
-
-    nefc_fill = d.njmax - nefc_active
+    d.nefc = wp.array([nefc_active, nefc_active, nefc_active], dtype=wp.int32, ndim=1)
+    d.ne = wp.array([ne_active, ne_active, ne_active], dtype=wp.int32, ndim=1)
 
     qacc_warmstart = np.vstack(
       [
@@ -224,70 +222,29 @@ class SolverTest(parameterized.TestCase):
     efc_J1 = mjd1.efc_J.reshape((mjd1.nefc, mjm1.nv))
     efc_J2 = mjd2.efc_J.reshape((mjd2.nefc, mjm2.nv))
 
-    # Extract equality constraints (first ne rows) from each world
-    eq_J0 = efc_J0[: mjd0.ne]
-    eq_J1 = efc_J1[: mjd1.ne]
-    eq_J2 = efc_J2[: mjd2.ne]
-
-    # Extract inequality constraints (remaining rows) from each world
-    ineq_J0 = efc_J0[mjd0.ne :]
-    ineq_J1 = efc_J1[mjd1.ne :]
-    ineq_J2 = efc_J2[mjd2.ne :]
-
-    # Stack all equality constraints first, then all inequality constraints
-    efc_J_fill = np.vstack(
-      [
-        eq_J0,
-        eq_J1,
-        eq_J2,  # All equality constraints grouped together
-        ineq_J0,
-        ineq_J1,
-        ineq_J2,  # All inequality constraints
-        np.full((nefc_fill, mjm.nv), np.nan),  # Padding
-      ]
-    )
+    efc_J_fill = np.zeros((3, d.njmax, m.nv))
+    efc_J_fill[0, : mjd0.nefc, :] = efc_J0
+    efc_J_fill[1, : mjd1.nefc, :] = efc_J1
+    efc_J_fill[2, : mjd2.nefc, :] = efc_J2
 
     # Similarly for D and aref values
-    eq_D0 = mjd0.efc_D[: mjd0.ne]
-    eq_D1 = mjd1.efc_D[: mjd1.ne]
-    eq_D2 = mjd2.efc_D[: mjd2.ne]
-    ineq_D0 = mjd0.efc_D[mjd0.ne :]
-    ineq_D1 = mjd1.efc_D[mjd1.ne :]
-    ineq_D2 = mjd2.efc_D[mjd2.ne :]
+    efc_D0 = mjd0.efc_D[: mjd0.nefc]
+    efc_D1 = mjd1.efc_D[: mjd1.nefc]
+    efc_D2 = mjd2.efc_D[: mjd2.nefc]
 
-    efc_D_fill = np.concatenate([eq_D0, eq_D1, eq_D2, ineq_D0, ineq_D1, ineq_D2, np.zeros(nefc_fill)])
+    efc_D_fill = np.zeros((3, d.njmax))
+    efc_D_fill[0, : mjd0.nefc] = efc_D0
+    efc_D_fill[1, : mjd1.nefc] = efc_D1
+    efc_D_fill[2, : mjd2.nefc] = efc_D2
 
-    eq_aref0 = mjd0.efc_aref[: mjd0.ne]
-    eq_aref1 = mjd1.efc_aref[: mjd1.ne]
-    eq_aref2 = mjd2.efc_aref[: mjd2.ne]
-    ineq_aref0 = mjd0.efc_aref[mjd0.ne :]
-    ineq_aref1 = mjd1.efc_aref[mjd1.ne :]
-    ineq_aref2 = mjd2.efc_aref[mjd2.ne :]
+    efc_aref0 = mjd0.efc_aref[: mjd0.nefc]
+    efc_aref1 = mjd1.efc_aref[: mjd1.nefc]
+    efc_aref2 = mjd2.efc_aref[: mjd2.nefc]
 
-    efc_aref_fill = np.concatenate(
-      [
-        eq_aref0,
-        eq_aref1,
-        eq_aref2,
-        ineq_aref0,
-        ineq_aref1,
-        ineq_aref2,
-        np.zeros(nefc_fill),
-      ]
-    )
-
-    # World IDs need to match the new ordering
-    efc_worldid = np.concatenate(
-      [
-        [0] * mjd0.ne,
-        [1] * mjd1.ne,
-        [2] * mjd2.ne,  # Equality constraints
-        [0] * (mjd0.nefc - mjd0.ne),
-        [1] * (mjd1.nefc - mjd1.ne),  # Inequality constraints
-        [2] * (mjd2.nefc - mjd2.ne),
-        [-1] * nefc_fill,  # Padding
-      ]
-    )
+    efc_aref_fill = np.zeros((3, d.njmax))
+    efc_aref_fill[0, : mjd0.nefc] = efc_aref0
+    efc_aref_fill[1, : mjd1.nefc] = efc_aref1
+    efc_aref_fill[2, : mjd2.nefc] = efc_aref2
 
     d.qacc_warmstart = wp.from_numpy(qacc_warmstart, dtype=wp.float32)
     d.qM = wp.from_numpy(qM, dtype=wp.float32)
@@ -296,7 +253,6 @@ class SolverTest(parameterized.TestCase):
     d.efc.J = wp.from_numpy(efc_J_fill, dtype=wp.float32)
     d.efc.D = wp.from_numpy(efc_D_fill, dtype=wp.float32)
     d.efc.aref = wp.from_numpy(efc_aref_fill, dtype=wp.float32)
-    d.efc.worldid = wp.from_numpy(efc_worldid, dtype=wp.int32)
 
     if solver_ == SolverType.CG:
       m0 = mjwarp.put_model(mjm0)
@@ -354,20 +310,20 @@ class SolverTest(parameterized.TestCase):
       nieq0 = mjd0.nefc - mjd0.ne
       nieq1 = mjd1.nefc - mjd1.ne
       nieq2 = mjd2.nefc - mjd2.ne
-      world0_eq_forces = d.efc.force.numpy()[: mjd0.ne]
-      world0_ineq_forces = d.efc.force.numpy()[ne_active : ne_active + nieq0]
+      world0_eq_forces = d.efc.force.numpy()[0, : mjd0.ne]
+      world0_ineq_forces = d.efc.force.numpy()[0, ne_active : ne_active + nieq0]
       world0_forces = np.concatenate([world0_eq_forces, world0_ineq_forces])
       _assert_eq(world0_forces, mjd0.efc_force, "efc_force0")
 
       # Get world 1 forces
-      world1_eq_forces = d.efc.force.numpy()[mjd0.ne : mjd0.ne + mjd1.ne]
-      world1_ineq_forces = d.efc.force.numpy()[ne_active + nieq0 : ne_active + nieq0 + nieq1]
+      world1_eq_forces = d.efc.force.numpy()[1, : mjd1.ne]
+      world1_ineq_forces = d.efc.force.numpy()[1, ne_active : ne_active + nieq1]
       world1_forces = np.concatenate([world1_eq_forces, world1_ineq_forces])
       _assert_eq(world1_forces, mjd1.efc_force, "efc_force1")
 
       # Get world 2 forces
-      world2_eq_forces = d.efc.force.numpy()[mjd0.ne + mjd1.ne : ne_active]
-      world2_ineq_forces = d.efc.force.numpy()[ne_active + nieq0 + nieq1 : ne_active + nieq0 + nieq1 + nieq2]
+      world2_eq_forces = d.efc.force.numpy()[2, : mjd2.ne]
+      world2_ineq_forces = d.efc.force.numpy()[2, ne_active : ne_active + nieq2]
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
@@ -380,7 +336,7 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
       _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
-      _assert_eq(d.efc.force.numpy()[: mjd.nefc], mjd.efc_force, "efc_force")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
 
 if __name__ == "__main__":
