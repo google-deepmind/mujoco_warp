@@ -1934,7 +1934,6 @@ def update_gradient_JTDAJ(
   # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
-  # TODO(team): static m?
   worldid, elementid = wp.tid()
 
   if efc_done_in[worldid]:
@@ -2189,8 +2188,6 @@ def _update_gradient(m: types.Model, d: types.Data):
       update_gradient_JTDAJ,
       dim=(d.nworld, m.dof_tri_row.size),
       inputs=[
-        # m.dof_tri_row,
-        # m.dof_tri_col,
         d.nefc,
         d.efc.J,
         d.efc.D,
