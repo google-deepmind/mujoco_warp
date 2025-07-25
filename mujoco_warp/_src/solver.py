@@ -13,7 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
-from math import ceil, sqrt
+from math import ceil
+from math import sqrt
 
 import warp as wp
 
@@ -1675,7 +1676,7 @@ def update_constraint_init_qfrc_constraint(
 
 @wp.kernel
 def update_constraint_gauss_cost(
-  # Model in:
+  # Model:
   nv: int,
   # Data in:
   qacc_in: wp.array2d(dtype=float),
@@ -1694,9 +1695,8 @@ def update_constraint_gauss_cost(
 
   gauss_cost = float(0.0)
   for dofid in range(nv):
-    gauss_cost += (
-      (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
-      * (qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid])
+    gauss_cost += (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid]) * (
+      qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid]
     )
   efc_gauss_out[worldid] += 0.5 * gauss_cost
   efc_cost_out[worldid] += 0.5 * gauss_cost
@@ -1949,7 +1949,7 @@ def update_gradient_JTDAJ(
   active = efc_active_in[worldid, 0]
   efc_Ji = efc_J_in[worldid, 0, dofi]
   efc_Jj = efc_J_in[worldid, 0, dofj]
-  for efcid in range(nefc-1):
+  for efcid in range(nefc - 1):
     # TODO(team): sparse efc_J
     sum_h += efc_Ji * efc_Jj * efc_D * float(active)
 
