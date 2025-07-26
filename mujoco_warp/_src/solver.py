@@ -14,6 +14,7 @@
 # ==============================================================================
 
 from math import ceil
+from math import sqrt
 
 import warp as wp
 
@@ -1651,8 +1652,6 @@ def update_constraint_zero_qfrc_constraint(
 
 @wp.kernel
 def update_constraint_init_qfrc_constraint(
-  # Model:
-  nv: int,
   # Data in:
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
@@ -1661,25 +1660,24 @@ def update_constraint_init_qfrc_constraint(
   # Data out:
   qfrc_constraint_out: wp.array2d(dtype=float),
 ):
-  worldid, efcid = wp.tid()
-
-  if efcid >= nefc_in[worldid]:
-    return
+  worldid, dofid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
-  force = efc_force_in[worldid, efcid]
-  for i in range(nv):
-    wp.atomic_add(
-      qfrc_constraint_out[worldid],
-      i,
-      efc_J_in[worldid, efcid, i] * force,
-    )
+  sum_qfrc = float(0.0)
+  for efcid in range(nefc_in[worldid]):
+    efc_J = efc_J_in[worldid, efcid, dofid]
+    force = efc_force_in[worldid, efcid]
+    sum_qfrc += efc_J * force
+
+  qfrc_constraint_out[worldid, dofid] += sum_qfrc
 
 
 @wp.kernel
 def update_constraint_gauss_cost(
+  # Model:
+  nv: int,
   # Data in:
   qacc_in: wp.array2d(dtype=float),
   qfrc_smooth_in: wp.array2d(dtype=float),
@@ -1690,18 +1688,18 @@ def update_constraint_gauss_cost(
   efc_gauss_out: wp.array(dtype=float),
   efc_cost_out: wp.array(dtype=float),
 ):
-  worldid, dofid = wp.tid()
+  worldid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
-  gauss_cost = (
-    0.5
-    * (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid])
-    * (qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid])
-  )
-  wp.atomic_add(efc_gauss_out, worldid, gauss_cost)
-  wp.atomic_add(efc_cost_out, worldid, gauss_cost)
+  gauss_cost = float(0.0)
+  for dofid in range(nv):
+    gauss_cost += (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid]) * (
+      qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid]
+    )
+  efc_gauss_out[worldid] += 0.5 * gauss_cost
+  efc_cost_out[worldid] += 0.5 * gauss_cost
 
 
 def _update_constraint(m: types.Model, d: types.Data):
@@ -1813,16 +1811,16 @@ def _update_constraint(m: types.Model, d: types.Data):
 
   wp.launch(
     update_constraint_init_qfrc_constraint,
-    dim=(d.nworld, d.njmax),
-    inputs=[m.nv, d.nefc, d.efc.J, d.efc.force, d.efc.done],
+    dim=(d.nworld, m.nv),
+    inputs=[d.nefc, d.efc.J, d.efc.force, d.efc.done],
     outputs=[d.qfrc_constraint],
   )
 
   # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
   wp.launch(
     update_constraint_gauss_cost,
-    dim=(d.nworld, m.nv),
-    inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
+    dim=(d.nworld),
+    inputs=[m.nv, d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
     outputs=[d.efc.gauss, d.efc.cost],
   )
 
@@ -1927,16 +1925,12 @@ def update_gradient_copy_lower_triangle(
 
 @wp.kernel
 def update_gradient_JTDAJ(
-  # Model:
-  dof_tri_row: wp.array(dtype=int),
-  dof_tri_col: wp.array(dtype=int),
   # Data in:
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_active_in: wp.array2d(dtype=bool),
   efc_done_in: wp.array(dtype=bool),
-  # In:
   # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
@@ -1947,20 +1941,26 @@ def update_gradient_JTDAJ(
 
   nefc = nefc_in[worldid]
 
-  dofi = dof_tri_row[elementid]
-  dofj = dof_tri_col[elementid]
+  dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
+  dofj = elementid - (dofi * (dofi + 1)) // 2
 
-  for efcid in range(nefc):
-    efc_D = efc_D_in[worldid, efcid]
-    active = efc_active_in[worldid, efcid]
-
-    if efc_D == 0.0 or not active:
-      continue
-
+  sum_h = float(0.0)
+  efc_D = efc_D_in[worldid, 0]
+  active = efc_active_in[worldid, 0]
+  efc_Ji = efc_J_in[worldid, 0, dofi]
+  efc_Jj = efc_J_in[worldid, 0, dofj]
+  for efcid in range(nefc - 1):
     # TODO(team): sparse efc_J
-    value = efc_J_in[worldid, efcid, dofi] * efc_J_in[worldid, efcid, dofj] * efc_D
-    if value != 0.0:
-      wp.atomic_add(efc_h_out[worldid, dofi], dofj, value)
+    sum_h += efc_Ji * efc_Jj * efc_D * float(active)
+
+    jj = efcid + 1
+    efc_D = efc_D_in[worldid, jj]
+    active = efc_active_in[worldid, jj]
+    efc_Ji = efc_J_in[worldid, jj, dofi]
+    efc_Jj = efc_J_in[worldid, jj, dofj]
+
+  sum_h += efc_Ji * efc_Jj * efc_D * float(active)
+  efc_h_out[worldid, dofi, dofj] += sum_h
 
 
 @wp.kernel
@@ -2188,8 +2188,6 @@ def _update_gradient(m: types.Model, d: types.Data):
       update_gradient_JTDAJ,
       dim=(d.nworld, m.dof_tri_row.size),
       inputs=[
-        m.dof_tri_row,
-        m.dof_tri_col,
         d.nefc,
         d.efc.J,
         d.efc.D,
