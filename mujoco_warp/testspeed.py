@@ -145,10 +145,7 @@ def _main(argv: Sequence[str]):
 
   with wp.ScopedDevice(_DEVICE.value):
     m = mjwarp.put_model(mjm)
-    if _EVENT_TRACE.value:
-      if m.opt.graph_conditional:
-        print("Warning: graph conditional is disabled, feature not supported with event tracing")
-        m.opt.graph_conditional = False  # graph conditional doesn't work with event trace
+
     # integrator
     IntegratorType = mjwarp._src.types.IntegratorType
     integrators = {IntegratorType.EULER: "Euler", IntegratorType.IMPLICITFAST: "implicitfast", IntegratorType.RK4: "RK4"}
