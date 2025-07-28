@@ -50,16 +50,10 @@ _LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "solve with parallel line
 _IS_SPARSE = flags.DEFINE_bool("is_sparse", None, "Override model sparse config")
 _CONE = flags.DEFINE_enum_class("cone", None, mjwarp.ConeType, "Friction cone type")
 _NCONMAX = flags.DEFINE_integer(
-  "nconmax",
-  None,
-  "Override default maximum number of contacts in a batch physics step.",
-  lower_bound=1
+  "nconmax", None, "Override default maximum number of contacts in a batch physics step.", lower_bound=1
 )
 _NJMAX = flags.DEFINE_integer(
-  "njmax",
-  None,
-  "Override default maximum number of constraints per world in a batch physics step.",
-  lower_bound=1
+  "njmax", None, "Override default maximum number of constraints per world in a batch physics step.", lower_bound=1
 )
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "Keyframe to initialize simulation.")
 _OUTPUT = flags.DEFINE_enum_class("output", OutputOptions.TEXT, OutputOptions, "format to print results")
