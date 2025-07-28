@@ -42,7 +42,7 @@ _FUNCTION = flags.DEFINE_enum(
 )
 _MJCF = flags.DEFINE_string("mjcf", None, "path to model `.xml` or `.mjb`", required=True)
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
-_BATCH_SIZE = flags.DEFINE_integer("batch_size", 8192, "number of parallel rollouts")
+_BATCH_SIZE = flags.DEFINE_integer("batch_size", 8192, "number of parallel rollouts", lower_bound=1)
 _SOLVER = flags.DEFINE_enum_class("solver", None, mjwarp.SolverType, "Override model constraint solver")
 _ITERATIONS = flags.DEFINE_integer("iterations", None, "Override model solver iterations")
 _LS_ITERATIONS = flags.DEFINE_integer("ls_iterations", None, "Override model linesearch iterations")
@@ -53,11 +53,13 @@ _NCONMAX = flags.DEFINE_integer(
   "nconmax",
   None,
   "Override default maximum number of contacts in a batch physics step.",
+  lower_bound=1
 )
 _NJMAX = flags.DEFINE_integer(
   "njmax",
   None,
   "Override default maximum number of constraints in a batch physics step.",
+  lower_bound=1
 )
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "Keyframe to initialize simulation.")
 _OUTPUT = flags.DEFINE_enum_class("output", OutputOptions.TEXT, OutputOptions, "format to print results")
@@ -70,7 +72,7 @@ _INTEGRATOR = flags.DEFINE_string("integrator", None, "Integrator (mjtIntegrator
 _DEVICE = flags.DEFINE_string("device", None, "Override the default Warp device.")
 _BROADPHASE = flags.DEFINE_enum_class("broadphase", None, mjwarp.BroadphaseType, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
-_CCD_ITERATIONS = flags.DEFINE_integer("ccd_iterations", None, "Max number of iterations for GJK and EPA.")
+_CCD_ITERATIONS = flags.DEFINE_integer("ccd_iterations", None, "Max number of iterations for GJK and EPA.", lower_bound=1)
 
 
 def _print_table(matrix, headers):
@@ -137,6 +139,9 @@ def _main(argv: Sequence[str]):
   if _LS_ITERATIONS.value is not None:
     mjm.opt.ls_iterations = _LS_ITERATIONS.value
 
+  if _CCD_ITERATIONS.value is not None:
+    mjm.opt.ccd_iterations = _CCD_ITERATIONS.value
+
   mjd = mujoco.MjData(mjm)
   if mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
@@ -165,13 +170,8 @@ def _main(argv: Sequence[str]):
       m.opt.broadphase = _BROADPHASE.value
     if _BROADPHASE_FILTER.value is not None:
       m.opt.broadphase_filter = _BROADPHASE_FILTER.value
-    if _CCD_ITERATIONS.value is not None:
-      m.opt.gjk_iterations = _CCD_ITERATIONS.value
-      m.opt.epa_iterations = _CCD_ITERATIONS.value
 
-    d = mjwarp.put_data(
-      mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value, ccd_iterations=_CCD_ITERATIONS.value
-    )
+    d = mjwarp.put_data(mjm, mjd, nworld=_BATCH_SIZE.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
     if _CLEAR_KERNEL_CACHE.value:
       wp.clear_kernel_cache()
