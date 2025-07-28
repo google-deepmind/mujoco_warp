@@ -1366,18 +1366,18 @@ class Data:
   Attributes:
     nworld: number of worlds
     nconmax: maximum number of contacts
-    njmax: maximum number of constraints
+    njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
     ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeompair)
-    ne: number of equality constraints
-    ne_connect: number of equality connect constraints
-    ne_weld: number of equality weld constraints
-    ne_jnt: number of equality joint constraints
-    ne_ten: number of equality tendon constraints
-    nf: number of friction constraints
-    nl: number of limit constraints
-    nefc: number of constraints                                 (1,)
+    ne: number of equality constraints                          (nworld,)
+    ne_connect: number of equality connect constraints          (nworld,)
+    ne_weld: number of equality weld constraints                (nworld,)
+    ne_jnt: number of equality joint constraints                (nworld,)
+    ne_ten: number of equality tendon constraints               (nworld,)
+    nf: number of friction constraints                          (nworld,)
+    nl: number of limit constraints                             (nworld,)
+    nefc: number of constraints                                 (nworld,)
     nsolving: number of unconverged worlds                      (1,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)

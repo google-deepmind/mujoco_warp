@@ -27,6 +27,9 @@ from . import types
 # number of max iterations to run GJK/EPA
 MJ_CCD_ITERATIONS = 12
 
+# max number of worlds supported
+MAX_WORLDS = 2**24
+
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
@@ -366,10 +369,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array._is_batched = True
     if not expand_dim:
       array.strides = (0,) + array.strides[1:]
+      array.shape = (MAX_WORLDS,) + array.shape[1:]
       return array
     array.strides = (0,) + array.strides
     array.ndim += 1
-    array.shape = (1,) + array.shape
+    array.shape = (MAX_WORLDS,) + array.shape
     return array
 
   # rangefinder
@@ -811,11 +815,12 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     nworld (int, optional): Number of worlds. Defaults to 1.
     nconmax (int, optional): Maximum number of contacts for all worlds. Defaults to -1.
-    njmax (int, optional): Maximum number of constraints for all worlds. Defaults to -1.
+    njmax (int, optional): Maximum number of constraints per world. Defaults to -1.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).
   """
+
   # TODO(team): move to Model?
   if nconmax == -1:
     # TODO(team): heuristic for nconmax
@@ -823,6 +828,16 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   if njmax == -1:
     # TODO(team): heuristic for njmax
     njmax = 20 * 6
+
+  if nworld < 1 or nworld > MAX_WORLDS:
+    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
+
+  if nconmax < 1:
+    raise ValueError("nconmax must be >= 1")
+
+  if njmax < 1:
+    raise ValueError("njmax must be >= 1")
+
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
 
@@ -1078,7 +1093,7 @@ def put_data(
     mjd (mujoco.MjData): The data object containing current state and output arrays (host).
     nworld (int, optional): The number of worlds. Defaults to 1.
     nconmax (int, optional): The maximum number of contacts for all worlds. Defaults to -1.
-    njmax (int, optional): The maximum number of constraints for all worlds. Defaults to -1.
+    njmax (int, optional): The maximum number of constraints per world. Defaults to -1.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).
@@ -1093,8 +1108,8 @@ def put_data(
   # TODO(team): better heuristic for njmax
   njmax = njmax or max(5, mjd.nefc)
 
-  if nworld < 1:
-    raise ValueError("nworld must be >= 1")
+  if nworld < 1 or nworld > MAX_WORLDS:
+    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
   if nconmax < 1:
     raise ValueError("nconmax must be >= 1")
