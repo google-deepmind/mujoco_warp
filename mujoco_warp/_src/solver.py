@@ -2207,10 +2207,11 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
 
+    lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
     # TODO(team): Investigate whether d.efc.h initialization can be merged into this kernel
     wp.launch(
       update_gradient_JTDAJ,
-      dim=(d.nworld, m.dof_tri_row.size),
+      dim=(d.nworld, lower_triangle_dim),
       inputs=[
         d.nefc,
         d.efc.J,
