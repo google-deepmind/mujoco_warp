@@ -2207,6 +2207,7 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
 
+    # TODO(team): Investigate whether d.efc.h initialization can be merged into this kernel
     wp.launch(
       update_gradient_JTDAJ,
       dim=(d.nworld, m.dof_tri_row.size),
