@@ -59,6 +59,20 @@ class BlockDim:
   mul_m_dense: int = 32
 
 
+class BroadphaseType(enum.IntEnum):
+  """Type of broadphase algorithm.
+
+  Attributes:
+     NXN: Broad phase checking all pairs
+     SAP_TILE: Sweep and prune broad phase using tile sort
+     SAP_SEGMENTED: Sweep and prune broad phase using segment sort
+  """
+
+  NXN = 0
+  SAP_TILE = 1
+  SAP_SEGMENTED = 2
+
+
 class BroadphaseFilter(enum.IntFlag):
   """Bitmask specifying which collision functions to run during broadphase.
 
@@ -503,20 +517,6 @@ vec10 = vec10f
 vec11 = vec11f
 
 
-class BroadphaseType(enum.IntEnum):
-  """Type of broadphase algorithm.
-
-  Attributes:
-     NXN: Broad phase checking all pairs
-     SAP_TILE: Sweep and prune broad phase using tile sort
-     SAP_SEGMENTED: Sweep and prune broad phase using segment sort
-  """
-
-  NXN = 0
-  SAP_TILE = 1
-  SAP_SEGMENTED = 2
-
-
 @dataclasses.dataclass
 class Option:
   """Physics options.
@@ -528,9 +528,9 @@ class Option:
     ls_tolerance: CG/Newton linesearch tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
-    integrator: integration mode (mjtIntegrator)
-    cone: type of friction cone (mjtCone)
-    solver: solver algorithm (mjtSolver)
+    integrator: integration mode (IntegratorType)
+    cone: type of friction cone (ConeType)
+    solver: solver algorithm (SolverType)
     iterations: number of main solver iterations
     ls_iterations: maximum number of CG/Newton linesearch iterations
     disableflags: bit flags for disabling standard features
@@ -543,8 +543,8 @@ class Option:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     density: density of medium
     viscosity: viscosity of medium
-    broadphase: broadphase type, 0: nxn, 1: sap_tile, 2: sap_segmented
-    broadphase_filter: broadphase filter bitflag
+    broadphase: broadphase type (BroadphaseType)
+    broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
     graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
     sdf_initpoints: number of starting points for gradient descent
     sdf_iterations: max number of iterations for gradient descent
@@ -598,7 +598,7 @@ class Constraint:
   """Constraint data.
 
   Attributes:
-    type: constraint type (mjtConstraint)             (nworld, njmax)
+    type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
     J: constraint Jacobian                            (nworld, njmax, nv)
     pos: constraint position (equality, contact)      (nworld, njmax)
@@ -802,7 +802,7 @@ class Model:
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
     body_gravcomp: antigravity force, units of body weight   (nworld, nbody)
-    jnt_type: type of joint (mjtJoint)                       (njnt,)
+    jnt_type: type of joint (JointType)                      (njnt,)
     jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
     jnt_bodyid: id of joint's body                           (njnt,)
@@ -831,7 +831,7 @@ class Model:
     dof_solref: constraint solver reference: frictionloss    (nworld, nv, NREF)
     dof_tri_row: np.tril_indices                             (mjm.nv)[0]
     dof_tri_col: np.tril_indices                             (mjm.nv)[1]
-    geom_type: geometric type (mjtGeom)                      (ngeom,)
+    geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
     geom_conaffinity: geom contact affinity                  (ngeom,)
     geom_condim: contact dimensionality (1, 3, 4, 6)         (ngeom,)
@@ -857,11 +857,11 @@ class Model:
     hfield_ncol: number of columns in grid                   (nhfield,)
     hfield_size: (x, y, z_top, z_bottom)                     (nhfield, 4)
     hfield_data: elevation data                              (nhfielddata,)
-    site_type: geom type for rendering (mjtGeom)             (nsite,)
+    site_type: geom type for rendering (GeomType)            (nsite,)
     site_bodyid: id of site's body                           (nsite,)
     site_pos: local position offset rel. to body             (nworld, nsite, 3)
     site_quat: local orientation offset rel. to body         (nworld, nsite, 4)
-    cam_mode: camera tracking mode (mjtCamLight)             (ncam,)
+    cam_mode: camera tracking mode (CamLightType)            (ncam,)
     cam_bodyid: id of camera's body                          (ncam,)
     cam_targetbodyid: id of targeted body; -1: none          (ncam,)
     cam_pos: position rel. to body frame                     (nworld, ncam, 3)
@@ -873,7 +873,7 @@ class Model:
     cam_resolution: resolution: pixels [width, height]       (ncam, 2)
     cam_sensorsize: sensor size: length [width, height]      (ncam, 2)
     cam_intrinsic: [focal length; principal point]           (ncam, 4)
-    light_mode: light tracking mode (mjtCamLight)            (nlight,)
+    light_mode: light tracking mode (CamLightType)           (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
     light_pos: position rel. to body frame                   (nworld, nlight, 3)
@@ -897,10 +897,10 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
-    eq_type: constraint type (mjtEq)                         (neq,)
+    eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
-    eq_objtype: type of both objects (mjtObj)                (neq,)
+    eq_objtype: type of both objects (ObjType)               (neq,)
     eq_active0: initial enable/disable constraint state      (neq,)
     eq_solref: constraint solver reference                   (nworld, neq, mjNREF)
     eq_solimp: constraint solver impedance                   (nworld, neq, mjNIMP)
@@ -912,10 +912,10 @@ class Model:
     actuator_moment_tiles_nv: tiling configuration
     actuator_moment_tiles_nu: tiling configuration
     actuator_affine_bias_gain: affine bias/gain present
-    actuator_trntype: transmission type (mjtTrn)             (nu,)
-    actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
-    actuator_gaintype: gain type (mjtGain)                   (nu,)
-    actuator_biastype: bias type (mjtBias)                   (nu,)
+    actuator_trntype: transmission type (TrnType)            (nu,)
+    actuator_dyntype: dynamics type (DynType)                (nu,)
+    actuator_gaintype: gain type (GainType)                  (nu,)
+    actuator_biastype: bias type (BiasType)                  (nu,)
     actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
     actuator_actadr: first activation address; -1: stateless (nu,)
     actuator_actnum: number of activation variables          (nu,)
@@ -972,7 +972,7 @@ class Model:
     tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
-    wrap_type: wrap object type (mjtWrap)                    (nwrap,)
+    wrap_type: wrap object type (WrapType)                   (nwrap,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
     tendon_site_pair_adr: site pair tendon address           (<=nwrap,)
     tendon_geom_adr: geom tendon address                     (<=nwrap,)
@@ -983,11 +983,11 @@ class Model:
     wrap_site_pair_adr: first address for site wrap pair     (<=nwrap,)
     wrap_geom_adr: addresses for geom tendon wrap object     (<=nwrap,)
     wrap_pulley_scale: pulley scaling                        (nwrap,)
-    sensor_type: sensor type (mjtSensor)                     (nsensor,)
-    sensor_datatype: numeric data type (mjtDataType)         (nsensor,)
-    sensor_objtype: type of sensorized object (mjtObj)       (nsensor,)
+    sensor_type: sensor type (SensorType)                    (nsensor,)
+    sensor_datatype: numeric data type (DataType)            (nsensor,)
+    sensor_objtype: type of sensorized object (ObjType)      (nsensor,)
     sensor_objid: id of sensorized object                    (nsensor,)
-    sensor_reftype: type of reference frame (mjtObj)         (nsensor,)
+    sensor_reftype: type of reference frame (ObjType)        (nsensor,)
     sensor_refid: id of reference frame; -1: global frame    (nsensor,)
     sensor_dim: number of scalar outputs                     (nsensor,)
     sensor_adr: address in sensor array                      (nsensor,)

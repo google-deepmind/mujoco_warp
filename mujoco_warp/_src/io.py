@@ -1104,9 +1104,9 @@ def put_data(
 
   nworld = nworld or 1
   # TODO(team): better heuristic for nconmax
-  nconmax = nconmax or max(512, mjd.ncon * nworld)
+  nconmax = nconmax or max(512, 4 * mjd.ncon * nworld)
   # TODO(team): better heuristic for njmax
-  njmax = njmax or max(5, mjd.nefc)
+  njmax = njmax or max(5, 4 * mjd.nefc)
 
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")

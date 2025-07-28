@@ -1,3 +1,12 @@
+<p>
+  <a href="https://github.com/google-deepmind/mujoco_warp/actions/workflows/ci.yml?query=branch%3Amain" alt="GitHub Actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_warp/ci.yml?branch=main">
+  </a>
+  <a href="https://github.com/google-deepmind/mujoco_warp/blob/main/LICENSE" alt="License">
+    <img src="https://img.shields.io/github/license/google-deepmind/mujoco_warp">
+  </a>
+</p>
+
 # MuJoCo Warp (MJWarp)
 
 MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deepmind/mujoco) physics simulator, designed for NVIDIA hardware.
@@ -76,17 +85,30 @@ The following features are implemented:
 [Differentiability via Warp](https://nvidia.github.io/warp/modules/differentiability.html#differentiability) is not currently
 available.
 
+# Viewing simulations
+
+Explore MuJoCo Warp simulations using an interactive viewer:
+
+```bash
+mjwarp-viewer benchmark/humanoid/humanoid.xml
+```
+
+This will open a window on your local machine that looks like this:
+
+<img alt="MuJoCo Warp Viewer" src="doc/images/mjwarp-viewer.gif">
+
 # Benchmarking
 
 Benchmark as follows:
 
 ```bash
-mjwarp-testspeed --function=step --mjcf=test_data/humanoid/humanoid.xml --batch_size=8192
+mjwarp-testspeed benchmark/humanoid/humanoid.xml
 ```
 
 To get a full trace of the physics steps (e.g. timings of the subcomponents) run the following:
 
 ```bash
-mjwarp-testspeed --function=step --mjcf=test_data/humanoid/humanoid.xml --batch_size=8192 --event_trace=True
+mjwarp-testspeed benchmark/humanoid/humanoid.xml --event_trace=True
 ```
 
+`mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
