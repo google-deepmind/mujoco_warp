@@ -52,7 +52,7 @@ _CONE = flags.DEFINE_enum_class("cone", None, mjwarp.ConeType, "Friction cone ty
 _NCONMAX = flags.DEFINE_integer(
   "nconmax",
   None,
-  "Override default maximum number of contacts in a batch physics step.",
+  "Override default maximum number of contacts per world in a batch physics step.",
 )
 _NJMAX = flags.DEFINE_integer(
   "njmax",

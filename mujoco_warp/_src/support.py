@@ -322,10 +322,10 @@ def contact_force_fn(
   opt_cone: int,
   # Data in:
   ncon_in: wp.array(dtype=int),
-  contact_frame_in: wp.array(dtype=wp.mat33),
-  contact_friction_in: wp.array(dtype=vec5),
-  contact_dim_in: wp.array(dtype=int),
-  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_frame_in: wp.array2d(dtype=wp.mat33),
+  contact_friction_in: wp.array2d(dtype=vec5),
+  contact_dim_in: wp.array2d(dtype=int),
+  contact_efc_address_in: wp.array3d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
   # In:
   worldid: int,
@@ -334,25 +334,25 @@ def contact_force_fn(
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  condim = contact_dim_in[contact_id]
-  efc_address = contact_efc_address_in[contact_id, 0]
+  condim = contact_dim_in[worldid, contact_id]
+  efc_address = contact_efc_address_in[worldid, contact_id, 0]
 
-  if contact_id >= 0 and contact_id <= ncon_in[0] and efc_address >= 0:
+  if contact_id >= 0 and contact_id <= ncon_in[worldid] and efc_address >= 0:
     if opt_cone == int(ConeType.PYRAMIDAL.value):
       force = _decode_pyramid(
         efc_force_in[worldid],
         efc_address,
-        contact_friction_in[contact_id],
+        contact_friction_in[worldid, contact_id],
         condim,
       )
     else:
       for i in range(condim):
-        force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
+        force[i] = efc_force_in[worldid, contact_efc_address_in[worldid, contact_id, i]]
 
   if to_world_frame:
     # Transform both top and bottom parts of spatial vector by the full contact frame matrix
-    t = wp.spatial_top(force) @ contact_frame_in[contact_id]
-    b = wp.spatial_bottom(force) @ contact_frame_in[contact_id]
+    t = wp.spatial_top(force) @ contact_frame_in[worldid, contact_id]
+    b = wp.spatial_bottom(force) @ contact_frame_in[worldid, contact_id]
     force = wp.spatial_vector(t, b)
 
   return force
@@ -364,28 +364,26 @@ def contact_force_kernel(
   opt_cone: int,
   # Data in:
   ncon_in: wp.array(dtype=int),
-  contact_frame_in: wp.array(dtype=wp.mat33),
-  contact_friction_in: wp.array(dtype=vec5),
-  contact_dim_in: wp.array(dtype=int),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
+  contact_frame_in: wp.array2d(dtype=wp.mat33),
+  contact_friction_in: wp.array2d(dtype=vec5),
+  contact_dim_in: wp.array2d(dtype=int),
+  contact_efc_address_in: wp.array3d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
   # In:
-  contact_ids: wp.array(dtype=int),
+  contact_id: wp.array(dtype=wp.vec2i),
   to_world_frame: bool,
   # Out:
   out: wp.array(dtype=wp.spatial_vector),
 ):
   tid = wp.tid()
+  cid = contact_id[tid]
+  worldid = cid[0]
+  conid = cid[1]
 
-  contactid = contact_ids[tid]
-
-  if contactid >= ncon_in[0]:
+  if conid >= ncon_in[worldid]:
     return
 
-  worldid = contact_worldid_in[contactid]
-
-  out[tid] = contact_force_fn(
+  forcetorque = contact_force_fn(
     opt_cone,
     ncon_in,
     contact_frame_in,
@@ -394,15 +392,17 @@ def contact_force_kernel(
     contact_efc_address_in,
     efc_force_in,
     worldid,
-    contactid,
+    conid,
     to_world_frame,
   )
+
+  out[tid] = forcetorque
 
 
 def contact_force(
   m: Model,
   d: Data,
-  contact_ids: wp.array(dtype=int),
+  contact_id: wp.array(dtype=wp.vec2i),
   to_world_frame: bool,
   force: wp.array(dtype=wp.spatial_vector),
 ):
@@ -416,9 +416,10 @@ def contact_force(
     to_world_frame (bool): If True, map force from contact to world frame.
     force (wp.array(dtype=wp.spatial_vector)): Contact forces.
   """
+
   wp.launch(
     contact_force_kernel,
-    dim=(contact_ids.size,),
+    dim=(d.nworld, d.nconmax),
     inputs=[
       m.opt.cone,
       d.ncon,
@@ -426,9 +427,8 @@ def contact_force(
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,
-      d.contact.worldid,
       d.efc.force,
-      contact_ids,
+      contact_id,
       to_world_frame,
     ],
     outputs=[force],

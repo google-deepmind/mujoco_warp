@@ -1254,30 +1254,27 @@ def _cfrc_ext_contact(
   # Data in:
   ncon_in: wp.array(dtype=int),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
-  contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
-  contact_friction_in: wp.array(dtype=vec5),
-  contact_dim_in: wp.array(dtype=int),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
+  contact_pos_in: wp.array2d(dtype=wp.vec3),
+  contact_frame_in: wp.array2d(dtype=wp.mat33),
+  contact_friction_in: wp.array2d(dtype=vec5),
+  contact_dim_in: wp.array2d(dtype=int),
+  contact_geom_in: wp.array2d(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array3d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
-  contactid = wp.tid()
+  worldid, conid = wp.tid()
 
-  if contactid >= ncon_in[0]:
+  if conid >= ncon_in[worldid]:
     return
 
-  geom = contact_geom_in[contactid]
+  geom = contact_geom_in[worldid, conid]
   id1 = geom_bodyid[geom[0]]
   id2 = geom_bodyid[geom[1]]
 
   if id1 == 0 and id2 == 0:
     return
-
-  worldid = contact_worldid_in[contactid]
 
   # contact force in world frame
   force = support.contact_force_fn(
@@ -1289,11 +1286,11 @@ def _cfrc_ext_contact(
     contact_efc_address_in,
     efc_force_in,
     worldid,
-    contactid,
+    conid,
     to_world_frame=True,
   )
 
-  pos = contact_pos_in[contactid]
+  pos = contact_pos_in[worldid, conid]
 
   # contact force on bodies
   if id1:
@@ -1346,7 +1343,7 @@ def rne_postconstraint(m: Model, d: Data):
   # cfrc_ext += contacts
   wp.launch(
     _cfrc_ext_contact,
-    dim=(d.nconmax,),
+    dim=(d.nworld, d.nconmax),
     inputs=[
       m.opt.cone,
       m.body_rootid,
@@ -1359,7 +1356,6 @@ def rne_postconstraint(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.efc_address,
-      d.contact.worldid,
       d.efc.force,
     ],
     outputs=[d.cfrc_ext],
@@ -2087,30 +2083,27 @@ def _transmission_body_moment(
   ncon_in: wp.array(dtype=int),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  contact_dist_in: wp.array(dtype=float),
-  contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
-  contact_includemargin_in: wp.array(dtype=float),
-  contact_dim_in: wp.array(dtype=int),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
+  contact_dist_in: wp.array2d(dtype=float),
+  contact_pos_in: wp.array2d(dtype=wp.vec3),
+  contact_frame_in: wp.array2d(dtype=wp.mat33),
+  contact_includemargin_in: wp.array2d(dtype=float),
+  contact_dim_in: wp.array2d(dtype=int),
+  contact_geom_in: wp.array2d(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array3d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   # Data out:
   actuator_moment_out: wp.array3d(dtype=float),
   actuator_trntype_body_ncon_out: wp.array2d(dtype=int),
 ):
-  trnbodyid, conid, dofid = wp.tid()
+  trnbodyid, worldid, conid, dofid = wp.tid()
   actid = actuator_trntype_body_adr[trnbodyid]
   bodyid = actuator_trnid[actid][0]
 
-  if conid >= ncon_in[0]:
+  if conid >= ncon_in[worldid]:
     return
 
-  worldid = contact_worldid_in[conid]
-
   # get geom ids
-  geom = contact_geom_in[conid]
+  geom = contact_geom_in[worldid, conid]
   g1 = geom[0]
   g2 = geom[1]
 
@@ -2126,15 +2119,15 @@ def _transmission_body_moment(
   if b1 != bodyid and b2 != bodyid:
     return
 
-  contact_exclude = int(contact_dist_in[conid] >= contact_includemargin_in[conid])
+  contact_exclude = int(contact_dist_in[worldid, conid] >= contact_includemargin_in[worldid, conid])
 
   if dofid == 0:
     wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
 
   # mark contact normals in efc_force
   if contact_exclude == 0:
-    contact_dim = contact_dim_in[conid]
-    contact_efc_address = contact_efc_address_in[conid]
+    contact_dim = contact_dim_in[worldid, conid]
+    contact_efc_address = contact_efc_address_in[worldid, conid]
 
     if contact_dim == 1 or opt_cone == int(ConeType.ELLIPTIC.value):
       efc_force = 1.0
@@ -2151,8 +2144,8 @@ def _transmission_body_moment(
 
   # excluded contact in gap: get Jacobian, accumulate
   elif contact_exclude == 1:
-    contact_pos = contact_pos_in[conid]
-    contact_frame = contact_frame_in[conid]
+    contact_pos = contact_pos_in[worldid, conid]
+    contact_frame = contact_frame_in[worldid, conid]
     normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
 
     # get Jacobian difference
@@ -2256,6 +2249,7 @@ def transmission(m: Model, d: Data):
       _transmission_body_moment,
       dim=(
         m.actuator_trntype_body_adr.size,
+        d.nworld,
         d.nconmax,
         m.nv,
       ),
@@ -2277,7 +2271,6 @@ def transmission(m: Model, d: Data):
         d.contact.dim,
         d.contact.geom,
         d.contact.efc_address,
-        d.contact.worldid,
         d.efc.J,
       ],
       outputs=[

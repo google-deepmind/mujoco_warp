@@ -45,7 +45,7 @@ _VIEWER_GLOBAL_STATE = {
   "running": True,
   "step_once": False,
 }
-_NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
+_NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts per world.")
 _NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per world.")
 _BROADPHASE = flags.DEFINE_enum_class("broadphase", None, mjwarp.BroadphaseType, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")

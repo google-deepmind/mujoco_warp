@@ -178,17 +178,16 @@ def ccd_kernel_builder(
     # Data out:
     ncon_out: wp.array(dtype=int),
     ncon_hfield_out: wp.array2d(dtype=int),
-    contact_dist_out: wp.array(dtype=float),
-    contact_pos_out: wp.array(dtype=wp.vec3),
-    contact_frame_out: wp.array(dtype=wp.mat33),
-    contact_includemargin_out: wp.array(dtype=float),
-    contact_friction_out: wp.array(dtype=vec5),
-    contact_solref_out: wp.array(dtype=wp.vec2),
-    contact_solreffriction_out: wp.array(dtype=wp.vec2),
-    contact_solimp_out: wp.array(dtype=vec5),
-    contact_dim_out: wp.array(dtype=int),
-    contact_geom_out: wp.array(dtype=wp.vec2i),
-    contact_worldid_out: wp.array(dtype=int),
+    contact_dist_out: wp.array2d(dtype=float),
+    contact_pos_out: wp.array2d(dtype=wp.vec3),
+    contact_frame_out: wp.array2d(dtype=wp.mat33),
+    contact_includemargin_out: wp.array2d(dtype=float),
+    contact_friction_out: wp.array2d(dtype=vec5),
+    contact_solref_out: wp.array2d(dtype=wp.vec2),
+    contact_solreffriction_out: wp.array2d(dtype=wp.vec2),
+    contact_solimp_out: wp.array2d(dtype=vec5),
+    contact_dim_out: wp.array2d(dtype=int),
+    contact_geom_out: wp.array2d(dtype=wp.vec2i),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -382,7 +381,6 @@ def ccd_kernel_builder(
         contact_solimp_out,
         contact_dim_out,
         contact_geom_out,
-        contact_worldid_out,
       )
 
   return ccd_kernel
@@ -416,7 +414,7 @@ def convex_narrowphase(m: Model, d: Data):
           False,
           0.1,
         ),
-        dim=d.nconmax,
+        dim=d.nworld * d.nconmax,
         inputs=[
           m.ngeom,
           m.geom_type,
@@ -490,6 +488,5 @@ def convex_narrowphase(m: Model, d: Data):
           d.contact.solimp,
           d.contact.dim,
           d.contact.geom,
-          d.contact.worldid,
         ],
       )

@@ -1660,19 +1660,18 @@ def _sensor_touch(
   ncon_in: wp.array(dtype=int),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
-  contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
-  contact_dim_in: wp.array(dtype=int),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
+  contact_pos_in: wp.array2d(dtype=wp.vec3),
+  contact_frame_in: wp.array2d(dtype=wp.mat33),
+  contact_dim_in: wp.array2d(dtype=int),
+  contact_geom_in: wp.array2d(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array3d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
-  conid, sensortouchadrid = wp.tid()
+  worldid, conid, sensortouchadrid = wp.tid()
 
-  if conid > ncon_in[0]:
+  if conid > ncon_in[worldid]:
     return
 
   sensorid = sensor_touch_adr[sensortouchadrid]
@@ -1683,26 +1682,25 @@ def _sensor_touch(
   # find contact in sensor zone, add normal force
 
   # contacting bodies
-  geom = contact_geom_in[conid]
+  geom = contact_geom_in[worldid, conid]
   conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
 
   # select contacts involving sensorized body
-  worldid = contact_worldid_in[conid]
-  efc_address0 = contact_efc_address_in[conid, 0]
+  efc_address0 = contact_efc_address_in[worldid, conid, 0]
   if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
     # get contact normal force
     normalforce = efc_force_in[worldid, efc_address0]
 
     if opt_cone == int(ConeType.PYRAMIDAL.value):
-      dim = contact_dim_in[conid]
+      dim = contact_dim_in[worldid, conid]
       for i in range(1, 2 * (dim - 1)):
-        normalforce += efc_force_in[worldid, contact_efc_address_in[conid, i]]
+        normalforce += efc_force_in[worldid, contact_efc_address_in[worldid, conid, i]]
 
     if normalforce <= 0.0:
       return
 
     # convert contact normal force to global frame, normalize
-    frame = contact_frame_in[conid]
+    frame = contact_frame_in[worldid, conid]
     conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
     conray, _ = math.normalize_with_norm(conray)
 
@@ -1716,7 +1714,7 @@ def _sensor_touch(
         site_xpos_in[worldid, objid],
         site_xmat_in[worldid, objid],
         site_size[objid],
-        contact_pos_in[conid],
+        contact_pos_in[worldid, conid],
         conray,
         site_type[objid],
       )
@@ -1746,7 +1744,7 @@ def sensor_acc(m: Model, d: Data):
 
   wp.launch(
     _sensor_touch,
-    dim=(d.nconmax, m.sensor_touch_adr.size),
+    dim=(d.nworld, d.nconmax, m.sensor_touch_adr.size),
     inputs=[
       m.opt.cone,
       m.geom_bodyid,
@@ -1764,7 +1762,6 @@ def sensor_acc(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.efc_address,
-      d.contact.worldid,
       d.efc.force,
     ],
     outputs=[

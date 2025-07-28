@@ -106,7 +106,7 @@ class SupportTest(parameterized.TestCase):
     mj_force = np.zeros(6, dtype=float)
     mujoco.mj_contactForce(mjm, mjd, 0, mj_force)
 
-    contact_ids = wp.zeros(1, dtype=int)
+    contact_ids = wp.zeros(1, dtype=wp.vec2i)
     force = wp.zeros(1, dtype=wp.spatial_vector)
 
     mjwarp.contact_force(m, d, contact_ids, to_world_frame, force)

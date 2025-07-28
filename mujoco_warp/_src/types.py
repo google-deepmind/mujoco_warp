@@ -703,10 +703,10 @@ class Constraint:
   mid_alpha: wp.array(dtype=float)
   cost_candidate: wp.array2d(dtype=float)
   # elliptic cone
-  u: wp.array(dtype=vec6)
-  uu: wp.array(dtype=float)
-  uv: wp.array(dtype=float)
-  vv: wp.array(dtype=float)
+  u: wp.array2d(dtype=vec6)
+  uu: wp.array2d(dtype=float)
+  uv: wp.array2d(dtype=float)
+  vv: wp.array2d(dtype=float)
   condim: wp.array2d(dtype=int)
 
 
@@ -1342,21 +1342,19 @@ class Contact:
     dim: contact space dimensionality: 1, 3, 4 or 6
     geom: geom ids; -1 for flex
     efc_address: address in efc; -1: not included
-    worldid: world id
   """
 
-  dist: wp.array(dtype=float)
-  pos: wp.array(dtype=wp.vec3)
-  frame: wp.array(dtype=wp.mat33)
-  includemargin: wp.array(dtype=float)
-  friction: wp.array(dtype=vec5)
-  solref: wp.array(dtype=wp.vec2)
-  solreffriction: wp.array(dtype=wp.vec2)
-  solimp: wp.array(dtype=vec5)
-  dim: wp.array(dtype=int)
-  geom: wp.array(dtype=wp.vec2i)
-  efc_address: wp.array2d(dtype=int)
-  worldid: wp.array(dtype=int)
+  dist: wp.array2d(dtype=float)
+  pos: wp.array2d(dtype=wp.vec3)
+  frame: wp.array2d(dtype=wp.mat33)
+  includemargin: wp.array2d(dtype=float)
+  friction: wp.array2d(dtype=vec5)
+  solref: wp.array2d(dtype=wp.vec2)
+  solreffriction: wp.array2d(dtype=wp.vec2)
+  solimp: wp.array2d(dtype=vec5)
+  dim: wp.array2d(dtype=int)
+  geom: wp.array2d(dtype=wp.vec2i)
+  efc_address: wp.array3d(dtype=int)
 
 
 @dataclasses.dataclass
@@ -1365,10 +1363,10 @@ class Data:
 
   Attributes:
     nworld: number of worlds
-    nconmax: maximum number of contacts
+    nconmax: maximum number of contacts per world
     njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
-    ncon: number of detected contacts
+    ncon: number of detected contacts per world                 (nworld,)
     ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeompair)
     ne: number of equality constraints
     ne_connect: number of equality connect constraints

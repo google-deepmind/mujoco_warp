@@ -229,6 +229,7 @@ def _hfield_midphase(
   hfield_ncol: wp.array(dtype=int),
   hfield_size: wp.array(dtype=wp.vec4),
   # Data in:
+  nworld_in: int,
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -257,6 +258,7 @@ def _hfield_midphase(
     hfield_nrow: Array of heightfield rows
     hfield_ncol: Array of heightfield columns
     hfield_size: Array of heightfield sizes
+    nworld_in: Number of worlds
     nconmax_in: Max number of collisions
     geom_xpos_in: Array of geometry positions
     geom_xmat_in: Array of geometry orientation matrices
@@ -331,7 +333,7 @@ def _hfield_midphase(
           # for the rest create a new pair
           new_pairid = wp.atomic_add(ncollision_out, 0, 1)
 
-        if new_pairid >= nconmax_in:
+        if new_pairid >= nworld_in * nconmax_in:
           return
 
         collision_pair_out[new_pairid] = pair
@@ -357,7 +359,7 @@ def hfield_midphase(m: Model, d: Data):
       - geom_rbound: Array of geometry bounding radii
       - geom_margin: Array of geometry margins
     d: Data containing current state and collision information
-      - nconmax: Maximum number of contacts
+      - nconmax: Maximum number of contacts per world
       - geom_xpos: Array of geometry positions
       - geom_xmat: Array of geometry orientation matrices
       - collision_pair: Array of collision pairs
@@ -370,7 +372,7 @@ def hfield_midphase(m: Model, d: Data):
   # write directly to the same buffers that _add_geom_pair writes to
   wp.launch(
     kernel=_hfield_midphase,
-    dim=d.nconmax,  # launch threads to process all potential pairs
+    dim=d.nworld * d.nconmax,  # launch threads to process all potential pairs
     inputs=[
       m.geom_type,
       m.geom_dataid,
@@ -379,6 +381,7 @@ def hfield_midphase(m: Model, d: Data):
       m.hfield_nrow,
       m.hfield_ncol,
       m.hfield_size,
+      d.nworld,
       d.nconmax,
       d.geom_xpos,
       d.geom_xmat,

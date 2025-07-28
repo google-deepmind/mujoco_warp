@@ -207,6 +207,7 @@ def _next_time(
   # Model:
   opt_timestep: wp.array(dtype=float),
   # Data in:
+  nworld_in: int,
   nconmax_in: int,
   njmax_in: int,
   ncon_in: wp.array(dtype=int),
@@ -219,17 +220,18 @@ def _next_time(
   worldid = wp.tid()
   time_out[worldid] = time_in[worldid] + opt_timestep[worldid]
   nefc = nefc_in[worldid]
+  ncon = ncon_in[worldid]
 
   if nefc > njmax_in:
     wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
 
+  if ncon > nconmax_in:
+    wp.printf("ncon overflow - please increase nconmax to %u\n", ncon)
+
   if worldid == 0:
     ncollision = ncollision_in[0]
-    if ncollision > nconmax_in:
-      wp.printf("ncollision overflow - please increase nconmax to %u\n", ncollision)
-
-    if ncon_in[0] > nconmax_in:
-      wp.printf("ncon overflow - please increase nconmax to %u\n", ncon_in[0])
+    if ncollision > nworld_in * nconmax_in:
+      wp.printf("ncollision overflow - please increase nconmax to %u\n", ncollision // nworld_in)
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -300,6 +302,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=(d.nworld,),
     inputs=[
       m.opt.timestep,
+      d.nworld,
       d.nconmax,
       d.njmax,
       d.ncon,

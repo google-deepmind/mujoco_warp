@@ -1118,19 +1118,18 @@ def _efc_contact_pyramidal(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   refsafe_in: int,
-  dist_in: wp.array(dtype=float),
-  condim_in: wp.array(dtype=int),
-  includemargin_in: wp.array(dtype=float),
-  worldid_in: wp.array(dtype=int),
-  geom_in: wp.array(dtype=wp.vec2i),
-  pos_in: wp.array(dtype=wp.vec3),
-  frame_in: wp.array(dtype=wp.mat33),
-  friction_in: wp.array(dtype=vec5),
-  solref_in: wp.array(dtype=wp.vec2),
-  solimp_in: wp.array(dtype=vec5),
+  dist_in: wp.array2d(dtype=float),
+  condim_in: wp.array2d(dtype=int),
+  includemargin_in: wp.array2d(dtype=float),
+  geom_in: wp.array2d(dtype=wp.vec2i),
+  pos_in: wp.array2d(dtype=wp.vec3),
+  frame_in: wp.array2d(dtype=wp.mat33),
+  friction_in: wp.array2d(dtype=vec5),
+  solref_in: wp.array2d(dtype=wp.vec2),
+  solimp_in: wp.array2d(dtype=vec5),
   # Data out:
   nefc_out: wp.array(dtype=int),
-  contact_efc_address_out: wp.array2d(dtype=int),
+  contact_efc_address_out: wp.array3d(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
   efc_J_out: wp.array3d(dtype=float),
@@ -1141,24 +1140,23 @@ def _efc_contact_pyramidal(
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
 ):
-  conid, dimid = wp.tid()
+  worldid, conid, dimid = wp.tid()
 
-  if conid >= ncon_in[0]:
+  if conid >= ncon_in[worldid]:
     return
 
-  condim = condim_in[conid]
+  condim = condim_in[worldid, conid]
 
   if condim == 1 and dimid > 0:
     return
   elif condim > 1 and dimid >= 2 * (condim - 1):
     return
 
-  includemargin = includemargin_in[conid]
-  pos = dist_in[conid] - includemargin
+  includemargin = includemargin_in[worldid, conid]
+  pos = dist_in[worldid, conid] - includemargin
   active = pos < 0
 
   if active:
-    worldid = worldid_in[conid]
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
     if efcid >= njmax_in:
@@ -1166,14 +1164,14 @@ def _efc_contact_pyramidal(
 
     timestep = opt_timestep[worldid]
     impratio = opt_impratio[worldid]
-    contact_efc_address_out[conid, dimid] = efcid
+    contact_efc_address_out[worldid, conid, dimid] = efcid
 
-    geom = geom_in[conid]
+    geom = geom_in[worldid, conid]
     body1 = geom_bodyid[geom[0]]
     body2 = geom_bodyid[geom[1]]
 
-    con_pos = pos_in[conid]
-    frame = frame_in[conid]
+    con_pos = pos_in[worldid, conid]
+    frame = frame_in[worldid, conid]
 
     # pyramidal has common invweight across all edges
     invweight = body_invweight0[worldid, body1][0] + body_invweight0[worldid, body2][0]
@@ -1181,7 +1179,7 @@ def _efc_contact_pyramidal(
     if condim > 1:
       dimid2 = dimid / 2 + 1
 
-      friction = friction_in[conid]
+      friction = friction_in[worldid, conid]
       fri0 = friction[0]
       frii = friction[dimid2 - 1]
       invweight = invweight + fri0 * fri0 * invweight
@@ -1245,8 +1243,8 @@ def _efc_contact_pyramidal(
       pos,
       pos,
       invweight,
-      solref_in[conid],
-      solimp_in[conid],
+      solref_in[worldid, conid],
+      solimp_in[worldid, conid],
       includemargin,
       Jqvel,
       0.0,
@@ -1282,20 +1280,19 @@ def _efc_contact_elliptic(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   refsafe_in: int,
-  dist_in: wp.array(dtype=float),
-  condim_in: wp.array(dtype=int),
-  includemargin_in: wp.array(dtype=float),
-  worldid_in: wp.array(dtype=int),
-  geom_in: wp.array(dtype=wp.vec2i),
-  pos_in: wp.array(dtype=wp.vec3),
-  frame_in: wp.array(dtype=wp.mat33),
-  friction_in: wp.array(dtype=vec5),
-  solref_in: wp.array(dtype=wp.vec2),
-  solreffriction_in: wp.array(dtype=wp.vec2),
-  solimp_in: wp.array(dtype=vec5),
+  dist_in: wp.array2d(dtype=float),
+  condim_in: wp.array2d(dtype=int),
+  includemargin_in: wp.array2d(dtype=float),
+  geom_in: wp.array2d(dtype=wp.vec2i),
+  pos_in: wp.array2d(dtype=wp.vec3),
+  frame_in: wp.array2d(dtype=wp.mat33),
+  friction_in: wp.array2d(dtype=vec5),
+  solref_in: wp.array2d(dtype=wp.vec2),
+  solreffriction_in: wp.array2d(dtype=wp.vec2),
+  solimp_in: wp.array2d(dtype=vec5),
   # Data out:
   nefc_out: wp.array(dtype=int),
-  contact_efc_address_out: wp.array2d(dtype=int),
+  contact_efc_address_out: wp.array3d(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
   efc_J_out: wp.array3d(dtype=float),
@@ -1306,22 +1303,21 @@ def _efc_contact_elliptic(
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
 ):
-  conid, dimid = wp.tid()
+  worldid, conid, dimid = wp.tid()
 
-  if conid >= ncon_in[0]:
+  if conid >= ncon_in[worldid]:
     return
 
-  condim = condim_in[conid]
+  condim = condim_in[worldid, conid]
 
   if dimid > condim - 1:
     return
 
-  includemargin = includemargin_in[conid]
-  pos = dist_in[conid] - includemargin
+  includemargin = includemargin_in[worldid, conid]
+  pos = dist_in[worldid, conid] - includemargin
   active = pos < 0.0
 
   if active:
-    worldid = worldid_in[conid]
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
     if efcid >= njmax_in:
@@ -1329,14 +1325,14 @@ def _efc_contact_elliptic(
 
     timestep = opt_timestep[worldid]
     impratio = opt_impratio[worldid]
-    contact_efc_address_out[conid, dimid] = efcid
+    contact_efc_address_out[worldid, conid, dimid] = efcid
 
-    geom = geom_in[conid]
+    geom = geom_in[worldid, conid]
     body1 = geom_bodyid[geom[0]]
     body2 = geom_bodyid[geom[1]]
 
-    cpos = pos_in[conid]
-    frame = frame_in[conid]
+    cpos = pos_in[worldid, conid]
+    frame = frame_in[worldid, conid]
 
     # TODO(team): parallelize J and Jqvel computation?
     Jqvel = float(0.0)
@@ -1377,11 +1373,11 @@ def _efc_contact_elliptic(
 
     invweight = body_invweight0[worldid, body1][0] + body_invweight0[worldid, body2][0]
 
-    ref = solref_in[conid]
+    ref = solref_in[worldid, conid]
     pos_aref = pos
 
     if dimid > 0:
-      solreffriction = solreffriction_in[conid]
+      solreffriction = solreffriction_in[worldid, conid]
 
       # non-normal directions use solreffriction (if non-zero)
       if solreffriction[0] or solreffriction[1]:
@@ -1389,7 +1385,7 @@ def _efc_contact_elliptic(
 
       # TODO(team): precompute 1 / impratio
       invweight = invweight / impratio
-      friction = friction_in[conid]
+      friction = friction_in[worldid, conid]
 
       if dimid > 1:
         fri0 = friction[0]
@@ -1413,7 +1409,7 @@ def _efc_contact_elliptic(
       pos,
       invweight,
       ref,
-      solimp_in[conid],
+      solimp_in[worldid, conid],
       includemargin,
       Jqvel,
       0.0,
@@ -1820,7 +1816,7 @@ def make_constraint(m: types.Model, d: types.Data):
       if m.opt.cone == types.ConeType.PYRAMIDAL.value:
         wp.launch(
           _efc_contact_pyramidal,
-          dim=(d.nconmax, 2 * (m.condim_max - 1) if m.condim_max > 1 else 1),
+          dim=(d.nworld, d.nconmax, 2 * (m.condim_max - 1) if m.condim_max > 1 else 1),
           inputs=[
             m.nv,
             m.opt.timestep,
@@ -1839,7 +1835,6 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.dist,
             d.contact.dim,
             d.contact.includemargin,
-            d.contact.worldid,
             d.contact.geom,
             d.contact.pos,
             d.contact.frame,
@@ -1864,7 +1859,7 @@ def make_constraint(m: types.Model, d: types.Data):
       elif m.opt.cone == types.ConeType.ELLIPTIC.value:
         wp.launch(
           _efc_contact_elliptic,
-          dim=(d.nconmax, m.condim_max),
+          dim=(d.nworld, d.nconmax, m.condim_max),
           inputs=[
             m.nv,
             m.opt.timestep,
@@ -1883,7 +1878,6 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.dist,
             d.contact.dim,
             d.contact.includemargin,
-            d.contact.worldid,
             d.contact.geom,
             d.contact.pos,
             d.contact.frame,

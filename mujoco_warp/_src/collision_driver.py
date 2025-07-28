@@ -303,9 +303,8 @@ def _add_geom_pair(
   # Model:
   geom_type: wp.array(dtype=int),
   nxn_pairid: wp.array(dtype=int),
-  # Data in:
-  nconmax_in: int,
   # In:
+  ncon_total: int,
   geom1: int,
   geom2: int,
   worldid: int,
@@ -319,7 +318,7 @@ def _add_geom_pair(
 ):
   pairid = wp.atomic_add(ncollision_out, 0, 1)
 
-  if pairid >= nconmax_in:
+  if pairid >= ncon_total:
     return
 
   type1 = geom_type[geom1]
@@ -476,7 +475,7 @@ def _sap_broadphase(
       _add_geom_pair(
         geom_type,
         nxn_pairid,
-        nconmax_in,
+        nworld_in * nconmax_in,
         geom1,
         geom2,
         worldid,
@@ -631,6 +630,7 @@ def _nxn_broadphase(
   nxn_geom_pair: wp.array(dtype=wp.vec2i),
   nxn_pairid: wp.array(dtype=int),
   # Data in:
+  nworld_in: int,
   nconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -653,7 +653,7 @@ def _nxn_broadphase(
     _add_geom_pair(
       geom_type,
       nxn_pairid,
-      nconmax_in,
+      nworld_in * nconmax_in,
       geom1,
       geom2,
       worldid,
@@ -692,6 +692,7 @@ def nxn_broadphase(m: Model, d: Data):
       m.geom_margin,
       m.nxn_geom_pair_filtered,
       m.nxn_pairid_filtered,
+      d.nworld,
       d.nconmax,
       d.geom_xpos,
       d.geom_xmat,
@@ -731,9 +732,9 @@ def collision(m: Model, d: Data):
   distance, position, and frame.
 
   The results are used to populate the `d.contact` array, and the total number of contacts
-  is stored in `d.ncon`.  If `d.ncon` is larger than `d.nconmax` then an overflow has
-  occurred and the remaining contacts will be skipped.  If this happens, raise the `nconmax`
-  parameter in `io.make_data` or `io.put_data`.
+  per world is stored in `d.ncon[i]`.  If `d.ncon[i]` is larger than `d.nconmax` then an 
+  overflow has occurred and the remaining contacts will be skipped.  If this happens, raise 
+  the `nconmax` parameter in `io.make_data` or `io.put_data`.
 
   This function will do nothing except zero out arrays if collision detection is disabled
   via `m.opt.disableflags` or if `d.nconmax` is 0.
@@ -742,7 +743,7 @@ def collision(m: Model, d: Data):
   # zero collision-related arrays
   wp.launch(
     _zero_collision_arrays,
-    dim=d.nconmax,
+    dim=d.nworld * d.nconmax,
     inputs=[
       d.nworld,
       d.ncon_hfield.shape[1],
@@ -761,6 +762,8 @@ def collision(m: Model, d: Data):
   else:
     sap_broadphase(m, d)
 
+  # TODO(team):
+  d.ncon.zero_()
   if m.opt.graph_conditional:
     wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
   else:

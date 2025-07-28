@@ -814,7 +814,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   Args:
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     nworld (int, optional): Number of worlds. Defaults to 1.
-    nconmax (int, optional): Maximum number of contacts for all worlds. Defaults to -1.
+    nconmax (int, optional): Maximum number of contacts per world. Defaults to -1.
     njmax (int, optional): Maximum number of constraints per world. Defaults to -1.
 
   Returns:
@@ -824,7 +824,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   # TODO(team): move to Model?
   if nconmax == -1:
     # TODO(team): heuristic for nconmax
-    nconmax = nworld * 20
+    nconmax = 20 * 6
   if njmax == -1:
     # TODO(team): heuristic for njmax
     njmax = 20 * 6
@@ -855,7 +855,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     nconmax=nconmax,
     njmax=njmax,
     solver_niter=wp.zeros(nworld, dtype=int),
-    ncon=wp.zeros(1, dtype=int),
+    ncon=wp.zeros(nworld, dtype=int),
     ncon_hfield=wp.zeros((nworld, _hfield_geom_pair(mjm)[0]), dtype=int),  # warp only
     ne=wp.zeros(nworld, dtype=int),
     ne_connect=wp.zeros(nworld, dtype=int),  # warp only
@@ -930,21 +930,17 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     qfrc_constraint=wp.zeros((nworld, mjm.nv), dtype=float),
     qfrc_inverse=wp.zeros((nworld, mjm.nv), dtype=float),
     contact=types.Contact(
-      dist=wp.zeros((nconmax,), dtype=float),
-      pos=wp.zeros((nconmax,), dtype=wp.vec3f),
-      frame=wp.zeros((nconmax,), dtype=wp.mat33f),
-      includemargin=wp.zeros((nconmax,), dtype=float),
-      friction=wp.zeros((nconmax,), dtype=types.vec5),
-      solref=wp.zeros((nconmax,), dtype=wp.vec2f),
-      solreffriction=wp.zeros((nconmax,), dtype=wp.vec2f),
-      solimp=wp.zeros((nconmax,), dtype=types.vec5),
-      dim=wp.zeros((nconmax,), dtype=int),
-      geom=wp.zeros((nconmax,), dtype=wp.vec2i),
-      efc_address=wp.zeros(
-        (nconmax, np.maximum(1, 2 * (condim_max - 1))),
-        dtype=int,
-      ),
-      worldid=wp.zeros((nconmax,), dtype=int),
+      dist=wp.zeros((nworld, nconmax), dtype=float),
+      pos=wp.zeros((nworld, nconmax), dtype=wp.vec3f),
+      frame=wp.zeros((nworld, nconmax), dtype=wp.mat33f),
+      includemargin=wp.zeros((nworld, nconmax), dtype=float),
+      friction=wp.zeros((nworld, nconmax), dtype=types.vec5),
+      solref=wp.zeros((nworld, nconmax), dtype=wp.vec2f),
+      solreffriction=wp.zeros((nworld, nconmax), dtype=wp.vec2f),
+      solimp=wp.zeros((nworld, nconmax), dtype=types.vec5),
+      dim=wp.zeros((nworld, nconmax), dtype=int),
+      geom=wp.zeros((nworld, nconmax), dtype=wp.vec2i),
+      efc_address=wp.zeros((nworld, nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int),
     ),
     efc=types.Constraint(
       type=wp.zeros((nworld, njmax), dtype=int),
@@ -998,10 +994,10 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       mid_alpha=wp.zeros((nworld,), dtype=float),
       cost_candidate=wp.zeros((nworld, mjm.opt.ls_iterations), dtype=float),
       # elliptic cone
-      u=wp.zeros((nconmax,), dtype=types.vec6),
-      uu=wp.zeros((nconmax,), dtype=float),
-      uv=wp.zeros((nconmax,), dtype=float),
-      vv=wp.zeros((nconmax,), dtype=float),
+      u=wp.zeros((nworld, nconmax), dtype=types.vec6),
+      uu=wp.zeros((nworld, nconmax), dtype=float),
+      uv=wp.zeros((nworld, nconmax), dtype=float),
+      vv=wp.zeros((nworld, nconmax), dtype=float),
       condim=wp.zeros((nworld, njmax), dtype=int),
     ),
     # RK4
@@ -1028,23 +1024,23 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2)), dtype=int
     ),
     # collision driver
-    collision_pair=wp.zeros((nconmax,), dtype=wp.vec2i),
-    collision_hftri_index=wp.zeros((nconmax,), dtype=int),
-    collision_pairid=wp.zeros((nconmax,), dtype=int),
-    collision_worldid=wp.zeros((nconmax,), dtype=int),
+    collision_pair=wp.zeros((nworld * nconmax,), dtype=wp.vec2i),
+    collision_hftri_index=wp.zeros((nworld * nconmax,), dtype=int),
+    collision_pairid=wp.zeros((nworld * nconmax,), dtype=int),
+    collision_worldid=wp.zeros((nworld * nconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
     # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_face=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=float),
-    epa_index=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_map=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_horizon=wp.zeros(shape=(nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_vert=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_vert1=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_vert2=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_vert_index1=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
+    epa_vert_index2=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
+    epa_face=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3i),
+    epa_pr=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_norm2=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=float),
+    epa_index=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_map=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_horizon=wp.zeros(shape=(nworld * nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
     # rne_postconstraint
     cacc=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     cfrc_int=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
@@ -1092,7 +1088,7 @@ def put_data(
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     mjd (mujoco.MjData): The data object containing current state and output arrays (host).
     nworld (int, optional): The number of worlds. Defaults to 1.
-    nconmax (int, optional): The maximum number of contacts for all worlds. Defaults to -1.
+    nconmax (int, optional): The maximum number of contacts per world. Defaults to -1.
     njmax (int, optional): The maximum number of constraints per world. Defaults to -1.
 
   Returns:
@@ -1104,7 +1100,7 @@ def put_data(
 
   nworld = nworld or 1
   # TODO(team): better heuristic for nconmax
-  nconmax = nconmax or max(512, mjd.ncon * nworld)
+  nconmax = nconmax or max(512, mjd.ncon)
   # TODO(team): better heuristic for njmax
   njmax = njmax or max(5, mjd.nefc)
 
@@ -1117,8 +1113,8 @@ def put_data(
   if njmax < 1:
     raise ValueError("njmax must be >= 1")
 
-  if nworld * mjd.ncon > nconmax:
-    raise ValueError(f"nconmax overflow (nconmax must be >= {nworld * mjd.ncon})")
+  if mjd.ncon > nconmax:
+    raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
@@ -1161,11 +1157,35 @@ def put_data(
     mjd.moment_colind,
   )
 
+  ncon = mjd.ncon
+
+  contact_dist = np.zeros((nworld, nconmax))
+  contact_pos = np.zeros((nworld, nconmax, 3))
+  contact_frame = np.zeros((nworld, nconmax, 9))
+  contact_includemargin = np.zeros((nworld, nconmax))
+  contact_friction = np.zeros((nworld, nconmax, 5))
+  contact_solref = np.zeros((nworld, nconmax, 2))
+  contact_solreffriction = np.zeros((nworld, nconmax, 2))
+  contact_solimp = np.zeros((nworld, nconmax, 5))
+  contact_dim = np.zeros((nworld, nconmax))
+  contact_geom = np.zeros((nworld, nconmax, 2))
+
+  contact_dist[:, :ncon] = np.tile(mjd.contact.dist, (nworld, 1))
+  contact_pos[:, :ncon] = np.tile(mjd.contact.pos, (nworld, 1, 1))
+  contact_frame[:, :ncon] = np.tile(mjd.contact.frame, (nworld, 1, 1))
+  contact_includemargin[:, :ncon] = np.tile(mjd.contact.includemargin, (nworld, 1))
+  contact_friction[:, :ncon] = np.tile(mjd.contact.friction, (nworld, 1, 1))
+  contact_solref[:, :ncon] = np.tile(mjd.contact.solref, (nworld, 1, 1))
+  contact_solreffriction[:, :ncon] = np.tile(mjd.contact.solreffriction, (nworld, 1, 1))
+  contact_solimp[:, :ncon] = np.tile(mjd.contact.solimp, (nworld, 1, 1))
+  contact_dim[:, :ncon] = np.tile(mjd.contact.dim, (nworld, 1))
+  contact_geom[:, :ncon] = np.tile(mjd.contact.geom, (nworld, 1, 1))
+
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  contact_efc_address = np.zeros((nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int)
+  contact_efc_address = np.zeros((nworld, nconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int)
   for i in range(nworld):
-    for j in range(mjd.ncon):
+    for j in range(ncon):
       condim = mjd.contact.dim[j]
       efc_address = mjd.contact.efc_address[j]
       if efc_address == -1:
@@ -1175,9 +1195,7 @@ def put_data(
       else:
         nconvar = condim if mjm.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC else 2 * (condim - 1)
       for k in range(nconvar):
-        contact_efc_address[i * mjd.ncon + j, k] = mjd.nefc * i + efc_address + k
-
-  contact_worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, nconmax - nworld * mjd.ncon))
+        contact_efc_address[i, j, k] = efc_address + k
 
   ne_connect = int(3 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active))
   ne_weld = int(6 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active))
@@ -1239,7 +1257,7 @@ def put_data(
     nconmax=nconmax,
     njmax=njmax,
     solver_niter=tile(mjd.solver_niter[0]),
-    ncon=arr([mjd.ncon * nworld]),
+    ncon=wp.full(shape=(nworld), value=mjd.ncon),
     ncon_hfield=wp.zeros((nworld, _hfield_geom_pair(mjm)[0]), dtype=int),  # warp only
     ne=wp.full(shape=(nworld), value=mjd.ne),
     ne_connect=wp.full(shape=(nworld), value=ne_connect),
@@ -1314,18 +1332,17 @@ def put_data(
     qfrc_constraint=tile(mjd.qfrc_constraint),
     qfrc_inverse=tile(mjd.qfrc_inverse),
     contact=types.Contact(
-      dist=padtile(mjd.contact.dist, nconmax),
-      pos=padtile(mjd.contact.pos, nconmax, dtype=wp.vec3),
-      frame=padtile(mjd.contact.frame, nconmax, dtype=wp.mat33),
-      includemargin=padtile(mjd.contact.includemargin, nconmax),
-      friction=padtile(mjd.contact.friction, nconmax, dtype=types.vec5),
-      solref=padtile(mjd.contact.solref, nconmax, dtype=wp.vec2f),
-      solreffriction=padtile(mjd.contact.solreffriction, nconmax, dtype=wp.vec2f),
-      solimp=padtile(mjd.contact.solimp, nconmax, dtype=types.vec5),
-      dim=padtile(mjd.contact.dim, nconmax),
-      geom=padtile(mjd.contact.geom, nconmax, dtype=wp.vec2i),
-      efc_address=arr(contact_efc_address),
-      worldid=arr(contact_worldid),
+      dist=wp.array2d(contact_dist, dtype=float),
+      pos=wp.array2d(contact_pos, dtype=wp.vec3),
+      frame=wp.array2d(contact_frame, dtype=wp.mat33),
+      includemargin=wp.array2d(contact_includemargin, dtype=float),
+      friction=wp.array2d(contact_friction, dtype=types.vec5),
+      solref=wp.array2d(contact_solref, dtype=wp.vec2),
+      solreffriction=wp.array2d(contact_solreffriction, dtype=wp.vec2),
+      solimp=wp.array2d(contact_solimp, dtype=types.vec5),
+      dim=wp.array2d(contact_dim, dtype=int),
+      geom=wp.array2d(contact_geom, dtype=wp.vec2i),
+      efc_address=wp.array3d(contact_efc_address, dtype=int),
     ),
     efc=types.Constraint(
       type=wp.array2d(efc_type_fill, dtype=int),
@@ -1378,10 +1395,10 @@ def put_data(
       mid_alpha=wp.empty(shape=(nworld,), dtype=float),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
       # TODO(team): skip allocation if not elliptic
-      u=wp.empty((nconmax,), dtype=types.vec6),
-      uu=wp.empty((nconmax,), dtype=float),
-      uv=wp.empty((nconmax,), dtype=float),
-      vv=wp.empty((nconmax,), dtype=float),
+      u=wp.empty((nworld, nconmax), dtype=types.vec6),
+      uu=wp.empty((nworld, nconmax), dtype=float),
+      uv=wp.empty((nworld, nconmax), dtype=float),
+      vv=wp.empty((nworld, nconmax), dtype=float),
       condim=wp.empty((nworld, njmax), dtype=int),
     ),
     # TODO(team): skip allocation if integrator != RK4
@@ -1406,23 +1423,23 @@ def put_data(
     sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
     sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
-    collision_pair=wp.empty(nconmax, dtype=wp.vec2i),
-    collision_hftri_index=wp.empty(nconmax, dtype=int),
-    collision_pairid=wp.empty(nconmax, dtype=int),
-    collision_worldid=wp.empty(nconmax, dtype=int),
+    collision_pair=wp.empty(nworld * nconmax, dtype=wp.vec2i),
+    collision_hftri_index=wp.empty(nworld * nconmax, dtype=int),
+    collision_pairid=wp.empty(nworld * nconmax, dtype=int),
+    collision_worldid=wp.empty(nworld * nconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
     # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_face=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=float),
-    epa_index=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_map=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_horizon=wp.zeros(shape=(nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_vert=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_vert1=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_vert2=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_vert_index1=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
+    epa_vert_index2=wp.zeros(shape=(nworld * nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
+    epa_face=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3i),
+    epa_pr=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3),
+    epa_norm2=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=float),
+    epa_index=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_map=wp.zeros(shape=(nworld * nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_horizon=wp.zeros(shape=(nworld * nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
     # rne_postconstraint but also smooth
     cacc=tile(mjd.cacc, dtype=wp.spatial_vector),
     cfrc_int=tile(mjd.cfrc_int, dtype=wp.spatial_vector),
@@ -1544,16 +1561,16 @@ def get_data_into(
   result.act = d.act.numpy()[0]
   result.act_dot = d.act_dot.numpy()[0]
 
-  result.contact.dist[:] = d.contact.dist.numpy()[:ncon]
-  result.contact.pos[:] = d.contact.pos.numpy()[:ncon]
-  result.contact.frame[:] = d.contact.frame.numpy()[:ncon].reshape((-1, 9))
-  result.contact.includemargin[:] = d.contact.includemargin.numpy()[:ncon]
-  result.contact.friction[:] = d.contact.friction.numpy()[:ncon]
-  result.contact.solref[:] = d.contact.solref.numpy()[:ncon]
-  result.contact.solreffriction[:] = d.contact.solreffriction.numpy()[:ncon]
-  result.contact.solimp[:] = d.contact.solimp.numpy()[:ncon]
-  result.contact.dim[:] = d.contact.dim.numpy()[:ncon]
-  result.contact.efc_address[:] = d.contact.efc_address.numpy()[:ncon, 0]
+  result.contact.dist[:] = d.contact.dist.numpy()[0, :ncon]
+  result.contact.pos[:] = d.contact.pos.numpy()[0, :ncon]
+  result.contact.frame[:] = d.contact.frame.numpy()[0, :ncon].reshape((-1, 9))
+  result.contact.includemargin[:] = d.contact.includemargin.numpy()[0, :ncon]
+  result.contact.friction[:] = d.contact.friction.numpy()[0, :ncon]
+  result.contact.solref[:] = d.contact.solref.numpy()[0, :ncon]
+  result.contact.solreffriction[:] = d.contact.solreffriction.numpy()[0, :ncon]
+  result.contact.solimp[:] = d.contact.solimp.numpy()[0, :ncon]
+  result.contact.dim[:] = d.contact.dim.numpy()[0, :ncon]
+  result.contact.efc_address[:] = d.contact.efc_address.numpy()[0, :ncon, 0]
 
   if mujoco.mj_isSparse(mjm):
     result.qM[:] = d.qM.numpy()[0, 0]
