@@ -79,6 +79,7 @@ class ThreeHumanoids(mujoco_warp.BenchmarkSuite):
   """Three MuJoCo humanoids on an infinite plane.
   Ideally, simulation time scales linearly with number of humanoids.
   """
+
   path = "humanoid/n_humanoid.xml"
   params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
   # TODO: use batch_size=8192 once performance is fixed
