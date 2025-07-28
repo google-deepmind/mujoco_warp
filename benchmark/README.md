@@ -8,7 +8,7 @@ Make sure you install MJWarp in develop so you can run the `asv` command:
 pip install -e .[dev,cuda]
 ```
 
-Run benchmarks like so at the top level of the `mujoco_warp` checkout:
+To execute benchmarks, from the `mujoco_warp` directory run:
 
 ```
 asv run

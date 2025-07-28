@@ -71,7 +71,7 @@ class Humanoid(mujoco_warp.BenchmarkSuite):
   path = "humanoid/humanoid.xml"
   params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 150_000
+  nconmax = 200_000
   njmax = 64
 
 
@@ -79,9 +79,9 @@ class ThreeHumanoids(mujoco_warp.BenchmarkSuite):
   """Three MuJoCo humanoids on an infinite plane.
   Ideally, simulation time scales linearly with number of humanoids.
   """
-
   path = "humanoid/n_humanoid.xml"
   params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
+  # TODO: use batch_size=8192 once performance is fixed
   batch_size = 1024
   nconmax = 100_000
   njmax = 192
