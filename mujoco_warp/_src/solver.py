@@ -1674,10 +1674,10 @@ def update_constraint_init_qfrc_constraint(
   qfrc_constraint_out[worldid, dofid] += sum_qfrc
 
 
-@wp.kernel
-def update_constraint_gauss_cost(
-  # Model:
-  nv: int,
+@cache_kernel
+def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
+  @nested_kernel
+  def kernel(
   # Data in:
   qacc_in: wp.array2d(dtype=float),
   qfrc_smooth_in: wp.array2d(dtype=float),
@@ -1687,19 +1687,33 @@ def update_constraint_gauss_cost(
   # Data out:
   efc_gauss_out: wp.array(dtype=float),
   efc_cost_out: wp.array(dtype=float),
-):
-  worldid = wp.tid()
+  ):
+    worldid, dofstart = wp.tid()
 
-  if efc_done_in[worldid]:
-    return
+    if efc_done_in[worldid]:
+      return
 
-  gauss_cost = float(0.0)
-  for dofid in range(nv):
-    gauss_cost += (efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid]) * (
-      qacc_in[worldid, dofid] - qacc_smooth_in[worldid, dofid]
-    )
-  efc_gauss_out[worldid] += 0.5 * gauss_cost
-  efc_cost_out[worldid] += 0.5 * gauss_cost
+    gauss_cost = float(0.0)
+
+    if wp.static(dofs_per_thread >= nv):
+      for i in range(wp.static(min(dofs_per_thread, nv))):
+        gauss_cost += (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i]) * (
+          qacc_in[worldid, i] - qacc_smooth_in[worldid, i]
+        )
+      efc_gauss_out[worldid] += 0.5 * gauss_cost
+      efc_cost_out[worldid] += 0.5 * gauss_cost
+
+    else:
+      for i in range(wp.static(dofs_per_thread)):
+        ii = dofstart * wp.static(dofs_per_thread) + i
+        if ii < nv:
+          gauss_cost += (efc_Ma_in[worldid, ii] - qfrc_smooth_in[worldid, ii]) * (
+            qacc_in[worldid, ii] - qacc_smooth_in[worldid, ii]
+          )
+      wp.atomic_add(efc_gauss_out, worldid, gauss_cost)
+      wp.atomic_add(efc_cost_out, worldid, gauss_cost)
+
+  return kernel
 
 
 def _update_constraint(m: types.Model, d: types.Data):
@@ -1816,11 +1830,20 @@ def _update_constraint(m: types.Model, d: types.Data):
     outputs=[d.qfrc_constraint],
   )
 
+  # if we are only using 1 thread, it makes sense to do more dofs as we can skip the atomics.
+  # For more than 1 thread, dofs_per_thread is lower for better load balancing.
+  if m.nv > 50:
+    dofs_per_thread = 20
+  else:
+    dofs_per_thread = 50
+
+  threads_per_efc = ceil(m.nv / dofs_per_thread)
+
   # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
   wp.launch(
-    update_constraint_gauss_cost,
-    dim=(d.nworld),
-    inputs=[m.nv, d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
+    update_constraint_gauss_cost(m.nv, dofs_per_thread),
+    dim=(d.nworld, threads_per_efc),
+    inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
     outputs=[d.efc.gauss, d.efc.cost],
   )
 
