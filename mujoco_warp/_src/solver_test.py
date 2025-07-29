@@ -89,14 +89,14 @@ class SolverTest(parameterized.TestCase):
     solver.solve(m, d)
 
     # Storing some initial values
-    d_efc_Ma = d.efc.Ma.numpy()
-    d_efc_Jaref = d.efc.Jaref.numpy()
-    d_qacc = d.qacc.numpy()
+    d_efc_Ma = d.efc.Ma.numpy().copy()
+    d_efc_Jaref = d.efc.Jaref.numpy().copy()
+    d_qacc = d.qacc.numpy().copy()
 
     # Launching iterative linesearch
     m.opt.ls_parallel = False
     solver._linesearch(m, d)
-    alpha_iterative = d.efc.alpha.numpy()
+    alpha_iterative = d.efc.alpha.numpy().copy()
 
     # Launching parallel linesearch with 10 testing points
     m.nlsp = 10
@@ -105,7 +105,7 @@ class SolverTest(parameterized.TestCase):
     d.qacc = wp.array2d(d_qacc)
     m.opt.ls_parallel = True
     solver._linesearch(m, d)
-    alpha_parallel_10 = d.efc.alpha.numpy()
+    alpha_parallel_10 = d.efc.alpha.numpy().copy()
 
     # Launching parallel linesearch with 50 testing points
     m.nlsp = 50
@@ -113,7 +113,7 @@ class SolverTest(parameterized.TestCase):
     d.efc.Jaref = wp.array(d_efc_Jaref)
     d.qacc = wp.array2d(d_qacc)
     solver._linesearch(m, d)
-    alpha_parallel_50 = d.efc.alpha.numpy()
+    alpha_parallel_50 = d.efc.alpha.numpy().copy()
 
     # Checking that iterative and parallel linesearch lead to similar results
     # and that increasing ls_iterations leads to better results
