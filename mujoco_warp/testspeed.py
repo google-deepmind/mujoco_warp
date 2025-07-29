@@ -159,10 +159,7 @@ def _main(argv: Sequence[str]):
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)
     _override(m)
-    if _EVENT_TRACE.value:
-      if m.opt.graph_conditional:
-        print("Warning: graph conditional is disabled, feature not supported with event tracing")
-        m.opt.graph_conditional = False  # graph conditional doesn't work with event trace
+
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
 
     print(
