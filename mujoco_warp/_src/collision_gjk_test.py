@@ -253,8 +253,7 @@ class GJKTest(absltest.TestCase):
       """
     )
 
-    # TODO(kbayes): use margin trick instead of EPA for penetration recovery
-    dist, _, _ = _geom_dist(m, d, 0, 1, 500)
+    dist, _, _ = _geom_dist(m, d, 0, 1, 0)
     self.assertAlmostEqual(-2, dist)
 
   def test_box_box_contact(self):
