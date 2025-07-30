@@ -71,17 +71,41 @@ class Polytope:
   nhorizon: int
 
 
+@wp.struct
+class SupportPoint:
+  point: wp.vec3
+  cached_index: int
+  vertex_index: int
+
+
+@wp.func
+def _support_margin(geom: Geom, geomtype: int, dir: wp.vec3):
+  sp = SupportPoint()
+  sp.cached_index = -1
+  sp.vertex_index = -1
+  if geomtype == int(GeomType.SPHERE.value):
+    sp.point = geom.pos
+    return sp
+  elif geomtype == int(GeomType.CAPSULE.value):
+    local_dir = wp.transpose(geom.rot) @ dir
+    res = wp.vec3()
+    res[2] = wp.where(local_dir[2] >= 0, geom.size[1], -geom.size[1])
+    sp.point = res
+    return sp
+
+
 @wp.func
 def _support(geom: Geom, geomtype: int, dir: wp.vec3):
-  cached_index = -1
-  vertex_index = -1
+  sp = SupportPoint()
+  sp.cached_index = -1
+  sp.vertex_index = -1
   local_dir = wp.transpose(geom.rot) @ dir
   if geomtype == int(GeomType.SPHERE.value):
-    support_pt = geom.pos + geom.size[0] * dir
+    sp.point = geom.pos + geom.size[0] * dir
   elif geomtype == int(GeomType.BOX.value):
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
-    support_pt = geom.rot @ res + geom.pos
+    sp.point = geom.rot @ res + geom.pos
     vertex_index = 0
     if tmp[0] > 0:
       vertex_index += 1
@@ -93,13 +117,13 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
     res = local_dir * geom.size[0]
     # add cylinder contribution
     res[2] += wp.sign(local_dir[2]) * geom.size[1]
-    support_pt = geom.rot @ res + geom.pos
+    sp.point = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.ELLIPSOID.value):
     res = wp.cw_mul(local_dir, geom.size)
     res = wp.normalize(res)
     # transform to ellipsoid
     res = wp.cw_mul(res, geom.size)
-    support_pt = geom.rot @ res + geom.pos
+    sp.point = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.CYLINDER.value):
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
@@ -110,23 +134,23 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
       res[1] = local_dir[1] * scl
     # set result in Z direction
     res[2] = wp.sign(local_dir[2]) * geom.size[1]
-    support_pt = geom.rot @ res + geom.pos
+    sp.point = geom.rot @ res + geom.pos
   elif geomtype == int(GeomType.MESH.value):
     max_dist = float(FLOAT_MIN)
     if geom.graphadr == -1 or geom.vertnum < 10:
       if geom.index > -1:
-        cached_index = geom.index
+        sp.cached_index = geom.index
         max_dist = wp.dot(geom.vert[geom.index], local_dir)
-        support_pt = geom.vert[geom.index]
+        sp.point = geom.vert[geom.index]
       # exhaustive search over all vertices
       for i in range(geom.vertnum):
         vert = geom.vert[geom.vertadr + i]
         dist = wp.dot(vert, local_dir)
         if dist > max_dist:
           max_dist = dist
-          support_pt = vert
-          cached_index = geom.vertadr + i
-      vertex_index = cached_index - geom.vertadr
+          sp.point = vert
+          sp.cached_index = geom.vertadr + i
+      sp.vertex_index = sp.cached_index - geom.vertadr
     else:
       numvert = geom.graph[geom.graphadr]
       vert_edgeadr = geom.graphadr + 2
@@ -137,7 +161,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
       imax = int(0)
       if geom.index > -1:
         imax = geom.index
-        cached_index = geom.index
+        sp.cached_index = geom.index
 
       while True:
         prev = int(imax)
@@ -152,12 +176,12 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
           i += int(1)
         if imax == prev:
           break
-      cached_index = imax
+      sp.cached_index = imax
       imax = geom.graph[vert_globalid + imax]
-      vertex_index = imax
-      support_pt = geom.vert[geom.vertadr + imax]
+      sp.vertex_index = imax
+      sp.point = geom.vert[geom.vertadr + imax]
 
-    support_pt = geom.rot @ support_pt + geom.pos
+    sp.point = geom.rot @ sp.point + geom.pos
   elif geomtype == int(GeomType.HFIELD.value):
     max_dist = float(FLOAT_MIN)
     for i in range(6):
@@ -165,10 +189,10 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
       dist = wp.dot(vert, local_dir)
       if dist > max_dist:
         max_dist = dist
-        support_pt = vert
-    support_pt = geom.rot @ support_pt + geom.pos
+        sp.point = vert
+    sp.point = geom.rot @ sp.point + geom.pos
 
-  return support_pt, cached_index, vertex_index
+  return sp
 
 
 @wp.func
@@ -193,14 +217,18 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int):
 
 @wp.func
 def _epa_support(pt: Polytope, idx: int, geom1: Geom, geom2: Geom, geom1_type: int, geom2_type: int, dir: wp.vec3):
-  s1, index1, vertex_index1 = _support(geom1, geom1_type, dir)
-  s2, index2, vertex_index2 = _support(geom2, geom2_type, -dir)
+  sp = _support(geom1, geom1_type, dir)
+  pt.vert1[idx] = sp.point
+  pt.vert_index1[idx] = sp.vertex_index
+  index1 = sp.cached_index
 
-  pt.vert[idx] = s1 - s2
-  pt.vert1[idx] = s1
-  pt.vert2[idx] = s2
-  pt.vert_index1[idx] = vertex_index1
-  pt.vert_index2[idx] = vertex_index2
+  sp = _support(geom2, geom2_type, -dir)
+  pt.vert2[idx] = sp.point
+  pt.vert_index2[idx] = sp.vertex_index
+  index2 = sp.cached_index
+
+  pt.vert[idx] = pt.vert1[idx] - pt.vert2[idx]
+
   return index1, index2
 
 
@@ -548,6 +576,7 @@ def _gjk(
   geomtype1: int,
   geomtype2: int,
   cutoff: float,
+  use_margin: bool,
 ):
   """Find distance within a tolerance between two geoms."""
   cutoff2 = cutoff * cutoff
@@ -563,6 +592,9 @@ def _gjk(
   # set initial guess
   x_k = x1_0 - x2_0
 
+  use_margin1 = use_margin and (geomtype1 == int(GeomType.SPHERE.value) or geomtype1 == int(GeomType.CAPSULE.value))
+  use_margin2 = use_margin and (geomtype2 == int(GeomType.SPHERE.value) or geomtype2 == int(GeomType.CAPSULE.value))
+
   for k in range(gjk_iterations):
     xnorm = wp.dot(x_k, x_k)
     # TODO(kbayes): determine new constant here
@@ -570,16 +602,20 @@ def _gjk(
       break
     dir_neg = x_k / wp.sqrt(xnorm)
 
+    # compute kth support point in geom1
+    sp = wp.where(use_margin1, _support_margin(geom1, geomtype1, -dir_neg), _support(geom1, geomtype1, -dir_neg))
+    simplex1[n] = sp.point
+    geom1.index = sp.cached_index
+    simplex_index1[n] = sp.vertex_index
+
+    # compute kth support point in geom2
+    sp = wp.where(use_margin2, _support_margin(geom2, geomtype2, dir_neg), _support(geom2, geomtype2, dir_neg))
+    simplex2[n] = sp.point
+    geom2.index = sp.cached_index
+    simplex_index2[n] = sp.vertex_index
+
     # compute the kth support point
-    s1_k, i1, vertex_index1 = _support(geom1, geomtype1, -dir_neg)
-    s2_k, i2, vertex_index2 = _support(geom2, geomtype2, dir_neg)
-    geom1.index = i1
-    geom2.index = i2
-    simplex1[n] = s1_k
-    simplex2[n] = s2_k
-    simplex_index1[n] = vertex_index1
-    simplex_index2[n] = vertex_index2
-    simplex[n] = s1_k - s2_k
+    simplex[n] = simplex1[n] - simplex2[n]
 
     if cutoff == 0.0:
       if wp.dot(x_k, simplex[n]) > 0:
@@ -1247,6 +1283,18 @@ def _epa(tolerance2: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom
 
 
 @wp.func
+def inflate(dist: float, x1: wp.vec3, x2: wp.vec3, margin1: float, margin2: float):
+  n = wp.normalize(x2 - x1)
+  if margin1 > 0.0:
+    x1 += margin1 * n
+
+  if margin2 > 0.0:
+    x2 -= margin2 * n
+  dist -= margin1 + margin2
+  return dist, x1, x2
+
+
+@wp.func
 def ccd(
   # In:
   tolerance: float,
@@ -1272,7 +1320,30 @@ def ccd(
   horizon: wp.array(dtype=int),
 ):
   """General convex collision detection via GJK/EPA."""
-  result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff)
+  margin1 = 0.0
+  margin2 = 0.0
+
+  if geomtype1 == int(GeomType.SPHERE.value) or geomtype1 == int(GeomType.CAPSULE.value):
+    margin1 = geom1.size[0]
+
+  if geomtype2 == int(GeomType.SPHERE.value) or geomtype2 == int(GeomType.CAPSULE.value):
+    margin2 = geom2.size[0]
+
+  # special handling for sphere and capsule (shrink to point and line respectively)
+  if margin1 + margin2 > 0.0:
+    cutoff += margin1 + margin2
+    result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, True)
+
+    # shallow penetration, inflate contact
+    if result.dist > tolerance:
+      if result.dist == FLOAT_MAX:
+        return result.dist, result.x1, result.x2
+      return inflate(result.dist, result.x1, result.x2, margin1, margin2)
+
+    # deep penetration, reset initial conditions and rerun GJK + EPA
+    cutoff -= margin1 + margin2
+
+  result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, False)
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
