@@ -833,10 +833,11 @@ class CollisionTest(parameterized.TestCase):
     """
 
     _, _, m, d = test_util.fixture(xml=_XML, keyframe=0)
+    m.opt.maxconpair = mujoco.mjMAXCONPAIR
 
     mjwarp.collision(m, d)
 
-    np.testing.assert_equal(d.ncon.numpy()[0], types.MJ_MAXCONPAIR)
+    np.testing.assert_equal(d.ncon.numpy()[0], m.opt.maxconpair)
 
   def test_min_friction(self):
     _, _, _, d = test_util.fixture(
