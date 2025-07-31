@@ -772,8 +772,6 @@ class Model:
     qM_mulm_i: sparse mass matrix addressing
     qM_mulm_j: sparse mass matrix addressing
     qM_madr_ij: sparse mass matrix addressing
-    qLD_update_tree: dof tree ordering for qLD updates
-    qLD_update_treeadr: index of each dof tree level
     M_rownnz: number of non-zeros in each row of qM          (nv,)
     M_rowadr: index of each row in qM                        (nv,)
     M_colind: column indices of non-zeros in qM              (nM,)
