@@ -629,8 +629,6 @@ class Constraint:
     prev_grad: previous grad                          (nworld, nv)
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
-    beta_num: numerator of beta                       (nworld,)
-    beta_den: denominator of beta                     (nworld,)
     done: solver done                                 (nworld,)
     ls_done: linesearch done                          (nworld,)
     p0: initial point                                 (nworld, 3)
@@ -685,8 +683,6 @@ class Constraint:
   prev_grad: wp.array2d(dtype=float)
   prev_Mgrad: wp.array2d(dtype=float)
   beta: wp.array(dtype=float)
-  beta_num: wp.array(dtype=float)
-  beta_den: wp.array(dtype=float)
   done: wp.array(dtype=bool)
   # linesearch
   ls_done: wp.array(dtype=bool)

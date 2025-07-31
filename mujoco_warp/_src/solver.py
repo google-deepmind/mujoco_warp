@@ -2316,53 +2316,14 @@ def solve_prev_grad_Mgrad(
 
 
 @wp.kernel
-def solve_zero_beta_num_den(
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_beta_num_out: wp.array(dtype=float),
-  efc_beta_den_out: wp.array(dtype=float),
-):
-  worldid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  efc_beta_num_out[worldid] = 0.0
-  efc_beta_den_out[worldid] = 0.0
-
-
-@wp.kernel
-def solve_beta_num_den(
+def solve_beta(
+  # Model:
+  nv: int,
   # Data in:
   efc_grad_in: wp.array2d(dtype=float),
   efc_Mgrad_in: wp.array2d(dtype=float),
   efc_prev_grad_in: wp.array2d(dtype=float),
   efc_prev_Mgrad_in: wp.array2d(dtype=float),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_beta_num_out: wp.array(dtype=float),
-  efc_beta_den_out: wp.array(dtype=float),
-):
-  worldid, dofid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  prev_Mgrad = efc_prev_Mgrad_in[worldid][dofid]
-  wp.atomic_add(
-    efc_beta_num_out,
-    worldid,
-    efc_grad_in[worldid, dofid] * (efc_Mgrad_in[worldid, dofid] - prev_Mgrad),
-  )
-  wp.atomic_add(efc_beta_den_out, worldid, efc_prev_grad_in[worldid, dofid] * prev_Mgrad)
-
-
-@wp.kernel
-def solve_beta(
-  # Data in:
-  efc_beta_num_in: wp.array(dtype=float),
-  efc_beta_den_in: wp.array(dtype=float),
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_beta_out: wp.array(dtype=float),
@@ -2372,7 +2333,14 @@ def solve_beta(
   if efc_done_in[worldid]:
     return
 
-  efc_beta_out[worldid] = wp.max(0.0, efc_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, efc_beta_den_in[worldid]))
+  beta_num = float(0.0)
+  beta_den = float(0.0)
+  for dofid in range(nv):
+    prev_Mgrad = efc_prev_Mgrad_in[worldid][dofid]
+    beta_num += efc_grad_in[worldid, dofid] * (efc_Mgrad_in[worldid, dofid] - prev_Mgrad)
+    beta_den += efc_prev_grad_in[worldid, dofid] * prev_Mgrad
+
+  efc_beta_out[worldid] = wp.max(0.0, beta_num / wp.max(types.MJ_MINVAL, beta_den))
 
 
 @wp.kernel
@@ -2473,23 +2441,9 @@ def _solver_iteration(
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
-      solve_zero_beta_num_den,
-      dim=(d.nworld),
-      inputs=[d.efc.done],
-      outputs=[d.efc.beta_num, d.efc.beta_den],
-    )
-
-    wp.launch(
-      solve_beta_num_den,
-      dim=(d.nworld, m.nv),
-      inputs=[d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
-      outputs=[d.efc.beta_num, d.efc.beta_den],
-    )
-
-    wp.launch(
       solve_beta,
       dim=(d.nworld,),
-      inputs=[d.efc.beta_num, d.efc.beta_den, d.efc.done],
+      inputs=[m.nv, d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
       outputs=[d.efc.beta],
     )
 

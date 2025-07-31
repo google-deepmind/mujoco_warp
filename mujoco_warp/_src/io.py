@@ -980,8 +980,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       prev_grad=wp.zeros((nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
       beta=wp.zeros((nworld,), dtype=float),
-      beta_num=wp.zeros((nworld,), dtype=float),
-      beta_den=wp.zeros((nworld,), dtype=float),
       done=wp.zeros((nworld,), dtype=bool),
       # linesearch
       ls_done=wp.zeros((nworld,), dtype=bool),
@@ -1361,8 +1359,6 @@ def put_data(
       prev_grad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       beta=wp.empty(shape=(nworld,), dtype=float),
-      beta_num=wp.empty(shape=(nworld,), dtype=float),
-      beta_den=wp.empty(shape=(nworld,), dtype=float),
       done=wp.empty(shape=(nworld,), dtype=bool),
       ls_done=wp.zeros(shape=(nworld,), dtype=bool),
       p0=wp.empty(shape=(nworld,), dtype=wp.vec3),
