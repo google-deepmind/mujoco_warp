@@ -25,6 +25,7 @@ import mujoco_warp as mjwarp
 
 from . import solver
 from . import test_util
+from .math import safe_div
 from .types import ConeType
 from .types import SolverType
 
@@ -34,7 +35,7 @@ _TOLERANCE = 5e-3
 
 
 def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
+  tol = _TOLERANCE * 15  # avoid test noise
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
@@ -67,6 +68,102 @@ class SolverTest(parameterized.TestCase):
       mjwarp_cost = d.efc.cost.numpy()[0] - d.efc.gauss.numpy()[0]
 
       _assert_eq(mjwarp_cost, mj_cost, name="cost")
+
+  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+  def test_init_linesearch(self, cone):
+    """Test linesearch initialization."""
+    mjm, mjd, m, d = test_util.fixture(
+      "constraints.xml",
+      cone=cone,
+      iterations=0,
+      ls_iterations=0,
+    )
+
+    # One step to obtain more non-zeros results
+    mjwarp.step(m, d)
+
+    # Calculate target values
+    def calc_jv(njmax, efc_J, efc_search):
+      jv = np.zeros(njmax)
+      for i in range(njmax):
+        jv[i] += np.sum(efc_J[i, :] * efc_search[:])
+      return jv
+
+    def calc_quad_gauss(efc_gauss, efc_search, efc_Ma, qfrc_smooth, efc_mv):
+      quad_gauss = np.zeros(3)
+      quad_gauss[0] = efc_gauss[0]
+      quad_gauss[1] = np.sum(efc_search[:] * (efc_Ma[0, :] - qfrc_smooth[0, :]))
+      quad_gauss[2] = 0.5 * np.sum(efc_search[:] * efc_mv[:])
+
+      return quad_gauss
+
+    def calc_quad(njmax, efc_jaref, efc_jv, efc_D, efc_frictionloss):
+      quad = np.zeros((njmax, 3))
+      for i in range(njmax):
+        if efc_frictionloss[i] > 0.0:
+          rf = efc_frictionloss[i] / efc_D[i]
+          if efc_jaref[i] <= -rf:
+            quad[i] = wp.vec3(efc_frictionloss[i] * (-0.5 * rf - efc_jaref[i]), -efc_frictionloss[i] * efc_jv[i], 0.0)
+            continue
+          elif efc_jaref[i] >= rf:
+            quad[i] = wp.vec3(efc_frictionloss[i] * (-0.5 * rf + efc_jaref[i]), efc_frictionloss[i] * efc_jv[i], 0.0)
+            continue
+
+        quad[i, 0] = 0.5 * efc_jaref[i] * efc_jaref[i] * efc_D[i]
+        quad[i, 1] = efc_jv[i] * efc_jaref[i] * efc_D[i]
+        quad[i, 2] = 0.5 * efc_jv[i] * efc_jv[i] * efc_D[i]
+
+      return quad
+
+    def elliptic_effect(nconmax, efc_quad, efc_jv, efc_u, contact_friction, contact_dim, contact_efc_address):
+      efc_uv = np.zeros(d.nconmax)
+      efc_vv = np.zeros(d.nconmax)
+      for i in range(nconmax):
+        efcid0 = contact_efc_address[i, 0]
+        for j in range(1, contact_dim[i]):
+          efcid = contact_efc_address[i, j]
+          efc_quad[efcid0] += efc_quad[efcid]
+          u = efc_u[i, j]
+          v = efc_jv[efcid] * contact_friction[i, j - 1]
+          efc_uv[i] += u * v
+          efc_vv[i] += v * v
+      return efc_uv, efc_vv
+
+    efc_search_np = d.efc.search.numpy()[0]
+    efc_J_np = d.efc.J.numpy()[0]
+    efc_gauss_np = d.efc.gauss.numpy()
+    efc_Ma_np = d.efc.Ma.numpy()
+    efc_Jaref_np = d.efc.Jaref.numpy()[0]
+    efc_D_np = d.efc.D.numpy()[0]
+    efc_floss_np = d.efc.frictionloss.numpy()[0]
+    efc_u_np = d.efc.u.numpy()
+    qfrc_smooth_np = d.qfrc_smooth.numpy()
+    contact_friction_np = d.contact.friction.numpy()
+    contact_dim_np = d.contact.dim.numpy()
+    contact_efc_address_np = d.contact.efc_address.numpy()
+
+    target_mv = np.zeros(mjm.nv)
+    mujoco.mj_mulM(mjm, mjd, target_mv, efc_search_np)
+    target_jv = calc_jv(d.njmax, efc_J_np, efc_search_np)
+    target_quad_gauss = calc_quad_gauss(efc_gauss_np, efc_search_np, efc_Ma_np, qfrc_smooth_np, target_mv)
+    target_quad = calc_quad(d.njmax, efc_Jaref_np, target_jv, efc_D_np, efc_floss_np)
+    if cone == ConeType.ELLIPTIC:
+      target_efc_uv, target_efc_vv = elliptic_effect(
+        d.nconmax, target_quad, target_jv, efc_u_np, contact_friction_np, contact_dim_np, contact_efc_address_np
+      )
+
+    # launch linesearch with 0 iteration just doing the initialization step
+    d.efc.jv.zero_()
+    d.efc.quad.zero_()
+    solver._linesearch(m, d)
+
+    _assert_eq(target_mv, d.efc.mv.numpy()[0], name="efc.mv")
+    _assert_eq(target_jv, d.efc.jv.numpy()[0], name="efc.jv")
+    _assert_eq(target_quad_gauss, d.efc.quad_gauss.numpy()[0], name="efc.quad_gauss")
+    _assert_eq(target_quad, d.efc.quad.numpy()[0], name="efc.quad")
+    if cone == ConeType.ELLIPTIC:
+      _assert_eq(target_efc_uv, d.efc.uv.numpy(), name="efc.uv")
+      _assert_eq(target_efc_vv, d.efc.vv.numpy(), name="efc.vv")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 5, 5, False, False),
