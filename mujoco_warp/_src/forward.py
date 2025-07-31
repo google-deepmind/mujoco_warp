@@ -218,13 +218,15 @@ def _next_time(
 ):
   worldid = wp.tid()
   time_out[worldid] = time_in[worldid] + opt_timestep[worldid]
+  nefc = nefc_in[worldid]
+
+  if nefc > njmax_in:
+    wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
 
   if worldid == 0:
-    if nefc_in[0] > njmax_in:
-      wp.printf("nefc overflow - please increase njmax to %u\n", nefc_in[0])
-
-    if ncollision_in[0] > nconmax_in:
-      wp.printf("ncollision overflow - please increase nconmax to %u\n", ncollision_in[0])
+    ncollision = ncollision_in[0]
+    if ncollision > nconmax_in:
+      wp.printf("ncollision overflow - please increase nconmax to %u\n", ncollision)
 
     if ncon_in[0] > nconmax_in:
       wp.printf("ncon overflow - please increase nconmax to %u\n", ncon_in[0])

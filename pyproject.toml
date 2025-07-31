@@ -77,12 +77,12 @@ force-single-line = true
 single-line-exclusions = ["typing"]
 
 [tool.ruff.lint.pycodestyle]
-max-doc-length = 92
+max-doc-length = 100
 max-line-length = 128
 
 [tool.ruff.format]
 docstring-code-format = true
-docstring-code-line-length = 88
+docstring-code-line-length = 100
 
 [tool.setuptools]
 package-data = { "mujoco_warp" = ["test_data/**"] }
