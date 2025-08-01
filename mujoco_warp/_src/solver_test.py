@@ -60,7 +60,7 @@ class SolverTest(parameterized.TestCase):
         return cost
 
       mj_cost = cost(mjd.qacc)
-      mj_state = (mjd.efc_state == 1)
+      mj_state = mjd.efc_state == 1
 
       # solve with 0 iterations just initializes constraints and costs and then exits
       d.efc.force.zero_()
@@ -76,7 +76,6 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(mjwarp_qfrc_constraint, mjd.qfrc_constraint, name="qfrc_constraint")
       _assert_eq(mjwarp_force, mjd.efc_force, name="force")
       _assert_eq(mjwarp_cost, mj_cost, name="cost")
-
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_parallel_linesearch(self, cone):
