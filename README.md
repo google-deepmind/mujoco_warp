@@ -93,9 +93,7 @@ Explore MuJoCo Warp simulations using an interactive viewer:
 mjwarp-viewer benchmark/humanoid/humanoid.xml
 ```
 
-This will open a window on your local machine that looks like this:
-
-<img alt="MuJoCo Warp Viewer" src="doc/images/mjwarp-viewer.gif">
+This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
 
 # Benchmarking
 
