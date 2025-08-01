@@ -45,11 +45,12 @@ _VIEWER_GLOBAL_STATE = {
   "running": True,
   "step_once": False,
 }
-_NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
-_NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per world.")
+_NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.", lower_bound=1)
+_NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per world.", lower_bound=1)
 _BROADPHASE = flags.DEFINE_enum_class("broadphase", None, mjwarp.BroadphaseType, "Broadphase collision routine.")
 _BROADPHASE_FILTER = flags.DEFINE_integer("broadphase_filter", None, "Broadphase collision filter routine.")
 _KEYFRAME = flags.DEFINE_integer("keyframe", None, "Keyframe to initialize simulation.")
+_CCD_ITERATIONS = flags.DEFINE_integer("ccd_iterations", None, "Max number of iterations for GJK and EPA.", lower_bound=1)
 
 
 def key_callback(key: int) -> None:
@@ -90,6 +91,9 @@ def _main(argv: Sequence[str]) -> None:
     mjm = mujoco.MjModel.from_binary_path(_MODEL_PATH.value)
   else:
     mjm = _load_model()
+
+  if _CCD_ITERATIONS.value is not None:
+    mjm.opt.ccd_iterations = _CCD_ITERATIONS.value
 
   if _CONE.value is not None:
     mjm.opt.cone = _CONE.value
