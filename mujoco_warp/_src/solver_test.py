@@ -41,8 +41,8 @@ def _assert_eq(a, b, name):
 
 class SolverTest(parameterized.TestCase):
   @parameterized.product(cone=tuple(ConeType), solver_=tuple(SolverType))
-  def test_cost(self, cone, solver_):
-    """Tests cost function is correct."""
+  def test_constraint_update(self, cone, solver_):
+    """Tests _update_constraint function is correct."""
     for keyframe in range(3):
       mjm, mjd, m, d = test_util.fixture(
         "constraints.xml",
@@ -60,13 +60,23 @@ class SolverTest(parameterized.TestCase):
         return cost
 
       mj_cost = cost(mjd.qacc)
+      mj_state = (mjd.efc_state == 1)
 
       # solve with 0 iterations just initializes constraints and costs and then exits
+      d.efc.force.zero_()
+      d.qfrc_constraint.zero_()
       mjwarp.solve(m, d)
 
       mjwarp_cost = d.efc.cost.numpy()[0] - d.efc.gauss.numpy()[0]
+      mjwarp_force = d.efc.force.numpy()[0]
+      mjwarp_qfrc_constraint = d.qfrc_constraint.numpy()[0]
+      mjwarp_active = d.efc.active.numpy()[0]
 
+      _assert_eq(mjwarp_active, mj_state, name="active")
+      _assert_eq(mjwarp_qfrc_constraint, mjd.qfrc_constraint, name="qfrc_constraint")
+      _assert_eq(mjwarp_force, mjd.efc_force, name="force")
       _assert_eq(mjwarp_cost, mj_cost, name="cost")
+
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_parallel_linesearch(self, cone):
