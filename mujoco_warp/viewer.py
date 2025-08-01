@@ -160,7 +160,6 @@ def _main(argv: Sequence[str]) -> None:
       m = mjw.put_model(mjm)
       _override(m)
       mjm_hash = pickle.dumps(mjm)
-      d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
       broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
       solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
       integrator = mjw.IntegratorType(m.opt.integrator).name
@@ -171,6 +170,7 @@ def _main(argv: Sequence[str]) -> None:
         f"  solver: {solver} cone: {cone} iterations: {iterations} ls_iterations: {ls_iterations} ls_parallel: {ls_parallel}\n"
         f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
       )
+      d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
       print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
       print("Compiling physics step...", end="")
       start = time.time()
