@@ -894,6 +894,7 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
+    volume_ids: wp.array(dtype=wp.uint64)                    (nvolume,)
     eq_type: constraint type (mjtEq)                         (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
@@ -1206,6 +1207,8 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
+  volume_ids: wp.array(dtype=wp.uint64)
+  volumes: tuple[wp.Volume, ...]
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)
