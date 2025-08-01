@@ -618,7 +618,8 @@ class Constraint:
     gauss: gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
-    active: active (quadratic) constraints            (nworld, njmax)
+    active: if active (quadratic) constraints: D,     (nworld, njmax)
+            else: 0.0
     gtol: linesearch termination tolerance            (nworld,)
     mv: qM @ search                                   (nworld, nv)
     jv: efc_J @ search                                (nworld, njmax)
