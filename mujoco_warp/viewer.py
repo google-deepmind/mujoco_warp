@@ -161,16 +161,17 @@ def _main(argv: Sequence[str]) -> None:
       _override(m)
       mjm_hash = pickle.dumps(mjm)
       d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+      broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
+      solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
+      integrator = mjw.IntegratorType(m.opt.integrator).name
+      iterations, ls_iterations, ls_parallel = m.opt.iterations, m.opt.ls_iterations, m.opt.ls_parallel
       print(
         f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
-        f"  broadphase: {mjw.BroadphaseType(m.opt.broadphase).name}"
-        f" broadphase_filter: {mjw.BroadphaseFilter(m.opt.broadphase_filter).name}\n"
-        f"  solver: {mjw.SolverType(m.opt.solver).name} cone: {mjw.ConeType(m.opt.cone).name}"
-        f" iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations} ls_parallel: {m.opt.ls_parallel}\n"
-        f"  integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
-        f"  graph_conditional: {m.opt.graph_conditional}\n"
+        f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
+        f"  solver: {solver} cone: {cone} iterations: {iterations} ls_iterations: {ls_iterations} ls_parallel: {ls_parallel}\n"
+        f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
       )
-      print(f"Data nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
+      print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
       print("Compiling physics step...", end="")
       start = time.time()
       graph = _compile_step(m, d)
