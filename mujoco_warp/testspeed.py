@@ -96,7 +96,7 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
   if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
     from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
 
-    register_sdf_plugins(mjw.collision_sdf)
+    register_sdf_plugins(mjw)
 
   return spec.compile()
 

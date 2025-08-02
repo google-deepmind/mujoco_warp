@@ -433,6 +433,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nwrap=mjm.nwrap,
     nsensor=mjm.nsensor,
     nsensordata=mjm.nsensordata,
+    nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     nmeshvert=mjm.nmeshvert,
     nmeshface=mjm.nmeshface,
     nmeshgraph=mjm.nmeshgraph,
@@ -613,10 +614,13 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_vertadr=wp.array(mjm.mesh_vertadr, dtype=int),
     mesh_vertnum=wp.array(mjm.mesh_vertnum, dtype=int),
     mesh_vert=wp.array(mjm.mesh_vert, dtype=wp.vec3),
+    mesh_normaladr=wp.array(mjm.mesh_normaladr, dtype=int),
+    mesh_normal=wp.array(mjm.mesh_normal, dtype=wp.vec3),
     mesh_faceadr=wp.array(mjm.mesh_faceadr, dtype=int),
     mesh_face=wp.array(mjm.mesh_face, dtype=wp.vec3i),
     mesh_graphadr=wp.array(mjm.mesh_graphadr, dtype=int),
     mesh_graph=wp.array(mjm.mesh_graph, dtype=int),
+    mesh_quat=wp.array(mjm.mesh_quat, dtype=wp.quat),
     mesh_polynum=wp.array(mjm.mesh_polynum, dtype=int),
     mesh_polyadr=wp.array(mjm.mesh_polyadr, dtype=int),
     mesh_polynormal=wp.array(mjm.mesh_polynormal, dtype=wp.vec3),
@@ -818,6 +822,23 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     block_dim=types.BlockDim(),
     geom_pair_type_count=tuple(geom_type_pair_count),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
+    taxel_vertadr=wp.array(
+      [
+        j + mjm.mesh_vertadr[mjm.sensor_objid[i]]
+        for i in range(mjm.nsensor)
+        if mjm.sensor_type[i] == mujoco.mjtSensor.mjSENS_TACTILE
+        for j in range(mjm.mesh_vertnum[mjm.sensor_objid[i]])
+      ]
+    ),
+    taxel_sensorid=wp.array(
+      [
+        i
+        for i in range(mjm.nsensor)
+        if mjm.sensor_type[i] == mujoco.mjtSensor.mjSENS_TACTILE
+        for j in range(mjm.mesh_vertnum[mjm.sensor_objid[i]])
+      ],
+      dtype=int,
+    ),
   )
 
   return m
