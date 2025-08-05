@@ -870,6 +870,12 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
       ])  # fmt: skip
 
 
+@wp.func
+def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> float:
+  step = (wp.log(max_value) - wp.log(min_value)) / wp.max(1.0, float(num_values - 1))
+  return wp.exp(wp.log(min_value) + float(i) * step)
+
+
 @wp.kernel
 def linesearch_parallel_fused(
   # Model:
@@ -893,7 +899,8 @@ def linesearch_parallel_fused(
 
   efc_quad_total_candidate = efc_quad_gauss_in[worldid]
 
-  alpha = float(alphaid) / float(nlsp - 1)
+  alpha = _log_scale(1.0e-6, 1.0, nlsp, alphaid)
+
   ne = ne_in[worldid]
   nf = nf_in[worldid]
   for efcid in range(nefc_in[worldid]):
@@ -937,7 +944,7 @@ def linesearch_parallel_best_alpha(
       best_cost = cost
       bestid = i
 
-  efc_alpha_out[worldid] = float(bestid) / float(nlsp - 1)
+  efc_alpha_out[worldid] = _log_scale(1.0e-6, 1.0, nlsp, bestid)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
