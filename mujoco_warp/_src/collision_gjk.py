@@ -1493,12 +1493,9 @@ def mesh_edge_normals(
       nvert = polyvertnum[polyadr + idx]
       # find previous vertex in polygon to form edge
       for j in range(nvert):
-        v = polyvert[adr + j]
-        if v == v1i:
-          k = j - 1
-          if j == 0:
-            k = nvert - 1
-          endverts[i] = mat @ vert[vertadr + k] + pos
+        if polyvert[adr + j] == v1i:
+          k = wp.where(j == 0, nvert - 1, j - 1)
+          endverts[i] = mat @ vert[vertadr + polyvert[adr + k]] + pos
           normals[i] = wp.normalize(endverts[i] - v1)
     return v1_num, normals, endverts
   return 0, normals, endverts
@@ -2049,8 +2046,13 @@ def ccd(
     # shallow penetration, inflate contact
     if result.dist > tolerance:
       if result.dist == FLOAT_MAX:
-        return result.dist, result.x1, result.x2
-      return inflate(result.dist, result.x1, result.x2, margin1, margin2)
+        witness1[0] = result.x1
+        witness2[0] = result.x2
+        return result.dist, 1, witness1, witness2
+      dist, x1, x2 = inflate(result.dist, result.x1, result.x2, margin1, margin2)
+      witness1[0] = x1
+      witness2[0] = x2
+      return dist, 1, witness1, witness2
 
     # deep penetration, reset initial conditions and rerun GJK + EPA
     cutoff -= margin1 + margin2

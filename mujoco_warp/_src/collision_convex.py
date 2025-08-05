@@ -322,7 +322,7 @@ def ccd_kernel_builder(
         x1 = x1 / 6.0
 
       dist, count, witness1, witness2 = ccd(
-        False,
+        True,
         1e-6,
         0.0,
         gjk_iterations,
@@ -350,7 +350,7 @@ def ccd_kernel_builder(
         return
 
     for i in range(count):
-      points[0] = 0.5 * (witness1[i] + witness2[i])
+      points[i] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]
     frame = make_frame(normal)
     for i in range(count):
