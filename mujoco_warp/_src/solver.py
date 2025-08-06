@@ -971,7 +971,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
   wp.launch(
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
-    inputs=[m.nlsp, d.efc.done, d.efc.cost_candidate],
+    inputs=[m.nlsp, m.opt.min_step, d.efc.done, d.efc.cost_candidate],
     outputs=[d.efc.alpha],
   )
 
