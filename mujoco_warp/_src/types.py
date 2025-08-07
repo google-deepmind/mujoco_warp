@@ -772,6 +772,7 @@ class Model:
     npair: number of predefined geom pairs
     nhfield: number of heightfields
     nhfielddata: size of elevation data
+    nhfieldgeom: number of hfield-geom pairs
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nworld, nq)
@@ -1073,6 +1074,7 @@ class Model:
   npair: int
   nhfield: int
   nhfielddata: int
+  nhfieldgeom: int
   opt: Option
   stat: Statistic
   qpos0: wp.array2d(dtype=float)
@@ -1391,7 +1393,7 @@ class Data:
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
     ncon_world: number of detected contacts per world           (nworld,)
-    ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeompair)
+    ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeom)
     ne: number of equality constraints                          (nworld,)
     ne_connect: number of equality connect constraints          (nworld,)
     ne_weld: number of equality weld constraints                (nworld,)
