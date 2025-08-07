@@ -423,21 +423,6 @@ class IOTest(parameterized.TestCase):
       "qM",
     ]
 
-    reset_contactfield = [
-      "dist",
-      "pos",
-      "frame",
-      "includemargin",
-      "friction",
-      "solref",
-      "solreffriction",
-      "solimp",
-      "dim",
-      "geom",
-      "efc_address",
-      "worldid",
-    ]
-
     mjm, mjd, m, d = test_util.fixture(xml)
 
     # data fields
