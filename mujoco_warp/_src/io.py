@@ -828,7 +828,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         for i in range(mjm.nsensor)
         if mjm.sensor_type[i] == mujoco.mjtSensor.mjSENS_TACTILE
         for j in range(mjm.mesh_vertnum[mjm.sensor_objid[i]])
-      ]
+      ],
+      dtype=int,
     ),
     taxel_sensorid=wp.array(
       [
@@ -880,10 +881,14 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
 
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
-    qLD = wp.zeros((nworld, 1, mjm.nM), dtype=float)
+    qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
+    qM_integration = wp.zeros((nworld, 1, mjm.nM), dtype=float)
+    qLD_integration = wp.zeros((nworld, 1, mjm.nM), dtype=float)
   else:
     qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+    qM_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+    qLD_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
@@ -1052,8 +1057,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     act_vel_integration=wp.zeros((nworld, mjm.nu), dtype=float),
-    qM_integration=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
-    qLD_integration=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
+    qM_integration=qM_integration,
+    qLD_integration=qLD_integration,
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # sweep-and-prune broadphase
     sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
