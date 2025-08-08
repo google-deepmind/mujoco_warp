@@ -328,6 +328,24 @@ class SolverType(enum.IntEnum):
   # unsupported: PGS
 
 
+class ConstraintState(enum.IntEnum):
+  """State of constraint.
+
+  Attributes:
+    SATISFIED: constraint satisfied, zero cost (limit, contact)
+    QUADRATIC: quadratic cost (equality, friction, limit, contact)
+    LINEARNEG: linear cost, negative side (friction)
+    LINEARPOS: linear cost, positive side (friction)
+    CONE: square distance to cone cost (elliptic contact)
+  """
+
+  SATISFIED = mujoco.mjtConstraintState.mjCNSTRSTATE_SATISFIED
+  QUADRATIC = mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC
+  LINEARNEG = mujoco.mjtConstraintState.mjCNSTRSTATE_LINEARNEG
+  LINEARPOS = mujoco.mjtConstraintState.mjCNSTRSTATE_LINEARPOS
+  CONE = mujoco.mjtConstraintState.mjCNSTRSTATE_CONE
+
+
 class ConstraintType(enum.IntEnum):
   """Type of constraint.
 
@@ -398,6 +416,7 @@ class SensorType(enum.IntEnum):
     TENDONLIMITFRC: tendon limit force
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
+    TACTILE: tactile sensor
   """
 
   MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
@@ -442,6 +461,7 @@ class SensorType(enum.IntEnum):
   TENDONLIMITFRC = mujoco.mjtSensor.mjSENS_TENDONLIMITFRC
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
+  TACTILE = mujoco.mjtSensor.mjSENS_TACTILE
 
 
 class ObjType(enum.IntEnum):
@@ -623,7 +643,7 @@ class Constraint:
     gauss: gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
-    active: active (quadratic) constraints            (nworld, njmax)
+    state: constraint state                           (nworld, njmax)
     gtol: linesearch termination tolerance            (nworld,)
     mv: qM @ search                                   (nworld, nv)
     jv: efc_J @ search                                (nworld, njmax)
@@ -648,11 +668,6 @@ class Constraint:
     mid: loss at mid_alpha                            (nworld, 3)
     mid_alpha: midpoint between lo_alpha and hi_alpha (nworld,)
     cost_candidate: costs associated with step sizes  (nworld, nlsp)
-    u: friction cone (normal and tangents)            (nconmax, 6)
-    uu: elliptic cone variables                       (nconmax,)
-    uv: elliptic cone variables                       (nconmax,)
-    vv: elliptic cone variables                       (nconmax,)
-    condim: if contact: condim, else: -1              (nworld, njmax)
   """
 
   type: wp.array2d(dtype=int)
@@ -677,7 +692,7 @@ class Constraint:
   gauss: wp.array(dtype=float)
   cost: wp.array(dtype=float)
   prev_cost: wp.array(dtype=float)
-  active: wp.array2d(dtype=bool)
+  state: wp.array2d(dtype=int)
   gtol: wp.array(dtype=float)
   mv: wp.array2d(dtype=float)
   jv: wp.array2d(dtype=float)
@@ -703,12 +718,6 @@ class Constraint:
   mid: wp.array(dtype=wp.vec3)
   mid_alpha: wp.array(dtype=float)
   cost_candidate: wp.array2d(dtype=float)
-  # elliptic cone
-  u: wp.array(dtype=vec6)
-  uu: wp.array(dtype=float)
-  uv: wp.array(dtype=float)
-  vv: wp.array(dtype=float)
-  condim: wp.array2d(dtype=int)
 
 
 @dataclasses.dataclass
@@ -754,6 +763,7 @@ class Model:
     nwrap: number of wrap objects in all tendon paths
     nsensor: number of sensors
     nsensordata: number of elements in sensor data vector
+    nsensortaxel: number of taxels in all tactile sensors
     nmeshvert: number of vertices for all meshes
     nmeshface: number of faces for all meshes
     nmeshgraph: number of ints in mesh auxiliary data
@@ -883,10 +893,14 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
+    mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_faceadr: first face address                         (nmesh,)
     mesh_face: face indices for all meshes                   (nface, 3)
+    mesh_normaladr: first normal address                     (nmesh,)
+    mesh_normal: normals for all meshes                      (nmeshnormal x 3)
     mesh_graphadr: graph data address; -1: no graph          (nmesh,)
     mesh_graph: convex graph data                            (nmeshgraph,)
+    mesh_quat: rotation applied to asset vertices            (nmesh, 4)
     mesh_polynum: number of polygons per mesh                (nmesh,)
     mesh_polyadr: first polygon address per mesh             (nmesh,)
     mesh_polynormal: all polygon normals                     (nmeshpoly, 3)
@@ -1050,6 +1064,7 @@ class Model:
   nwrap: int
   nsensor: int
   nsensordata: int
+  nsensortaxel: int
   nmeshvert: int
   nmeshface: int
   nmeshgraph: int
@@ -1195,10 +1210,13 @@ class Model:
   mesh_vertadr: wp.array(dtype=int)
   mesh_vertnum: wp.array(dtype=int)
   mesh_vert: wp.array(dtype=wp.vec3)
+  mesh_normaladr: wp.array(dtype=int)
+  mesh_normal: wp.array(dtype=wp.vec3)
   mesh_faceadr: wp.array(dtype=int)
   mesh_face: wp.array(dtype=wp.vec3i)
   mesh_graphadr: wp.array(dtype=int)
   mesh_graph: wp.array(dtype=int)
+  mesh_quat: wp.array(dtype=wp.quat)
   mesh_polynum: wp.array(dtype=int)
   mesh_polyadr: wp.array(dtype=int)
   mesh_polynormal: wp.array(dtype=wp.vec3)
@@ -1327,6 +1345,8 @@ class Model:
   block_dim: BlockDim  # warp only
   geom_pair_type_count: tuple[int, ...]  # warp only
   has_sdf_geom: bool  # warp only
+  taxel_vertadr: wp.array(dtype=int)  # warp only
+  taxel_sensorid: wp.array(dtype=int)  # warp only
 
 
 @dataclasses.dataclass
