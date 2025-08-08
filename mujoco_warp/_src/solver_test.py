@@ -100,10 +100,6 @@ class SolverTest(parameterized.TestCase):
   def test_parallel_linesearch(self, cone):
     """Test that iterative and parallel linesearch leads to equivalent results."""
 
-    # TODO(team): Enable this case when elliptic/parallel linesearch is working
-    if cone == ConeType.ELLIPTIC:
-      return
-
     _, _, m, d = test_util.fixture(
       "humanoid/humanoid.xml",
       cone=cone,
