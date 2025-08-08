@@ -279,6 +279,126 @@ class ForwardTest(parameterized.TestCase):
 
       _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
 
+  @parameterized.parameters(("humanoid/humanoid.xml", True), ("humanoid/humanoid.xml", False))
+  def test_step1(self, xml, energy):
+    mjm, mjd, m, d = test_util.fixture(xml, kick=True, energy=energy)
+
+    # some of the fields updated by step1
+    step1_field = [
+      "xpos",
+      "xquat",
+      # TODO(team): "xmat"
+      "xipos",
+      # TODO(team): "ximat"
+      "xanchor",
+      "xaxis",
+      "geom_xpos",
+      # TODO(team): "geom_xmat"
+      # TODO(team): "site_xmat"
+      # TODO(team): "site_xmat"
+      "subtree_com",
+      "cinert",
+      "cdof",
+      "cam_xpos",
+      # TODO(team): "cam_xmat",
+      "light_xpos",
+      "light_xdir",
+      "ten_length",
+      # TODO(team): "ten_J"
+      "ten_wrapadr",
+      "ten_wrapnum",
+      "wrap_obj",
+      "wrap_xpos",
+      # TODO(team): "qM"
+      # TODO(team): "qLD"
+      "nefc",
+      # TODO(team): efc
+      "actuator_length",
+      # TODO(team): "actuator_moment"
+      "actuator_velocity",
+      "ten_velocity",
+      "cvel",
+      "cdof_dot",
+      "qfrc_spring",
+      "qfrc_damper",
+      "qfrc_gravcomp",
+      "qfrc_fluid",
+      "qfrc_passive",
+      "qfrc_bias",
+      "energy",
+    ]
+    if m.nflexvert:
+      step1_field += ["flexvert_xpos"]
+    if m.nflexedge:
+      step1_field += ["flexedge_length", "flexedge_velocity"]
+
+    for arr in step1_field:
+      attr = getattr(d, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      elif attr.dtype == int:
+        attr.fill_(-1)
+      else:
+        attr.zero_()
+
+    mujoco.mj_step1(mjm, mjd)
+    mjwarp.step1(m, d)
+
+    for arr in step1_field:
+      _assert_eq(getattr(d, arr).numpy()[0], getattr(mjd, arr), arr)
+
+    # TODO(team): sensor_pos
+    # TODO(team): sensor_vel
+
+  @parameterized.parameters(
+    ("humanoid/humanoid.xml", IntegratorType.EULER),
+    ("humanoid/humanoid.xml", IntegratorType.IMPLICITFAST),
+    ("humanoid/humanoid.xml", IntegratorType.RK4),
+  )
+  def test_step2(self, xml, integrator):
+    mjm, mjd, m, _ = test_util.fixture(xml, kick=True, integrator=integrator)
+
+    # some of the fields updated by step2
+    step2_field = [
+      "act_dot",
+      "actuator_force",
+      "qfrc_actuator",
+      "qfrc_smooth",
+      "qacc",
+      "qvel",
+      "qpos",
+    ]
+
+    mujoco.mj_step1(mjm, mjd)
+
+    # input
+    ctrl = 0.1 * np.random.rand(mjm.nu)
+    qfrc_applied = 0.1 * np.random.rand(mjm.nv)
+    xfrc_applied = 0.1 * np.random.rand(mjm.nbody, 6)
+
+    mjd.ctrl = ctrl
+    mjd.qfrc_applied = qfrc_applied
+    mjd.xfrc_applied = xfrc_applied
+
+    d = mjwarp.put_data(mjm, mjd)
+
+    for arr in step2_field:
+      if arr in ["qpos", "qvel"]:
+        continue
+      attr = getattr(d, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      elif attr.dtype == int:
+        attr.fill_(-1)
+      else:
+        attr.zero_()
+
+    mujoco.mj_step2(mjm, mjd)
+    mjwarp.step2(m, d)
+
+    for arr in step2_field:
+      _assert_eq(getattr(d, arr).numpy()[0], getattr(mjd, arr), arr)
+
 
 if __name__ == "__main__":
   wp.init()
