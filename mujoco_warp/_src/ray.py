@@ -519,11 +519,11 @@ def _ray_hfield(
         y = (lpnt[1] + all[i] * lvec[1] + size[1]) / dy
         y0 = wp.max(0.0, wp.min(float(nrow - 2), wp.floor(y)))
         if i == 1:
-          z0 = hfield_data[adr + int(wp.round(y0)) * nrow + ncol - 1]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * nrow + ncol - 1]
+          z0 = hfield_data[adr + int(wp.round(y0)) * ncol + ncol - 1]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * ncol + ncol - 1]
         else:
-          z0 = hfield_data[adr + int(wp.round(y0)) * nrow]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * nrow]
+          z0 = hfield_data[adr + int(wp.round(y0)) * ncol]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * ncol]
       # side normal to y-axis
       else:
         y = (lpnt[0] + all[i] * lvec[0] + size[0]) / dx
