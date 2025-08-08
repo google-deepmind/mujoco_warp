@@ -396,6 +396,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   rangefinder_sensor_adr = np.full(mjm.nsensor, -1)
   rangefinder_sensor_adr[sensor_rangefinder_adr] = np.arange(len(sensor_rangefinder_adr))
 
+  # contact sensor
+  sensor_adr_to_contact_adr = np.clip(np.cumsum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT) - 1, a_min=0, a_max=None)
+
   # TODO(team): improve heuristic for selecting broadphase routine
   if mjm.ngeom > 1000:
     broadphase = types.BroadphaseType.SAP_SEGMENTED
@@ -800,6 +803,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],
     ).any(),
     sensor_contact_adr=wp.array(np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)[0], dtype=int),
+    sensor_adr_to_contact_adr=wp.array(sensor_adr_to_contact_adr, dtype=int),
     sensor_rne_postconstraint=np.isin(
       mjm.sensor_type,
       [
