@@ -874,11 +874,11 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
-  if nconmax < 1:
-    raise ValueError("nconmax must be >= 1")
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
-  if njmax < 1:
-    raise ValueError("njmax must be >= 1")
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
@@ -1155,11 +1155,11 @@ def put_data(
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
-  if nconmax < 1:
-    raise ValueError("nconmax must be >= 1")
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
-  if njmax < 1:
-    raise ValueError("njmax must be >= 1")
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   if nworld * mjd.ncon > nconmax:
     raise ValueError(f"nconmax overflow (nconmax must be >= {nworld * mjd.ncon})")
