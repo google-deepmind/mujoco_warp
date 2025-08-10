@@ -30,6 +30,10 @@ MJ_CCD_ITERATIONS = 12
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
+# option setting overrides for float32
+_TOLERANCE_F32 = 1.0e-6
+_LS_TOLERANCE_F32 = 1.0e-6
+
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
@@ -447,8 +451,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     npair=mjm.npair,
     opt=types.Option(
       timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
-      tolerance=create_nmodel_batched_array(np.array(mjm.opt.tolerance), dtype=float, expand_dim=False),
-      ls_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ls_tolerance), dtype=float, expand_dim=False),
+      tolerance=create_nmodel_batched_array(
+        np.array(np.maximum(mjm.opt.tolerance, _TOLERANCE_F32)), dtype=float, expand_dim=False
+      ),
+      ls_tolerance=create_nmodel_batched_array(
+        np.array(np.maximum(mjm.opt.ls_tolerance, _LS_TOLERANCE_F32)), dtype=float, expand_dim=False
+      ),
       gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
       magnetic=create_nmodel_batched_array(mjm.opt.magnetic, dtype=wp.vec3, expand_dim=False),
       wind=create_nmodel_batched_array(mjm.opt.wind, dtype=wp.vec3, expand_dim=False),
