@@ -30,7 +30,7 @@ MJ_CCD_ITERATIONS = 12
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
-# tolernace override for float32
+# tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
 
