@@ -207,29 +207,12 @@ def _next_time(
   # Model:
   opt_timestep: wp.array(dtype=float),
   # Data in:
-  nconmax_in: int,
-  njmax_in: int,
-  ncon_in: wp.array(dtype=int),
-  nefc_in: wp.array(dtype=int),
   time_in: wp.array(dtype=float),
-  ncollision_in: wp.array(dtype=int),
   # Data out:
   time_out: wp.array(dtype=float),
 ):
   worldid = wp.tid()
   time_out[worldid] = time_in[worldid] + opt_timestep[worldid]
-  nefc = nefc_in[worldid]
-
-  if nefc > njmax_in:
-    wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
-
-  if worldid == 0:
-    ncollision = ncollision_in[0]
-    if ncollision > nconmax_in:
-      wp.printf("ncollision overflow - please increase nconmax to %u\n", ncollision)
-
-    if ncon_in[0] > nconmax_in:
-      wp.printf("ncon overflow - please increase nconmax to %u\n", ncon_in[0])
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -298,18 +281,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   wp.launch(
     _next_time,
     dim=(d.nworld,),
-    inputs=[
-      m.opt.timestep,
-      d.nconmax,
-      d.njmax,
-      d.ncon,
-      d.nefc,
-      d.time,
-      d.ncollision,
-    ],
-    outputs=[
-      d.time,
-    ],
+    inputs=[m.opt.timestep, d.time],
+    outputs=[d.time],
   )
 
 
@@ -990,6 +963,35 @@ def _zero_energy(
   energy_out[tid] = wp.vec2(0.0, 0.0)
 
 
+@wp.kernel
+def _check_overflow(
+  # Data in:
+  nconmax_in: int,
+  njmax_in: int,
+  # Data out:
+  ncon_out: wp.array(dtype=int),
+  nefc_out: wp.array(dtype=int),
+  ncollision_out: wp.array(dtype=int),
+):
+  worldid = wp.tid()
+  nefc = nefc_out[worldid]
+
+  if nefc > njmax_in:
+    wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
+    nefc_out[worldid] = njmax_in
+
+  if worldid == 0:
+    ncollision = ncollision_out[0]
+    ncon = ncon_out[0]
+    if ncollision > nconmax_in:
+      wp.printf("ncollision overflow - please increase nconmax to %u\n", ncollision)
+      ncollision_out[0] = nconmax_in
+
+    if ncon > nconmax_in:
+      wp.printf("ncon overflow - please increase nconmax to %u\n", ncon)
+      ncon_out[0] = nconmax_in
+
+
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
@@ -1017,6 +1019,13 @@ def forward(m: Model, d: Data):
 
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
+
+  wp.launch(
+    _check_overflow,
+    dim=(d.nworld,),
+    inputs=[d.nconmax, d.njmax],
+    outputs=[d.ncon, d.nefc, d.ncollision],
+  )
 
   solver.solve(m, d)
   sensor.sensor_acc(m, d)
