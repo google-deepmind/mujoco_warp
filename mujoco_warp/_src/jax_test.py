@@ -26,8 +26,8 @@ from mujoco_warp._src.test_util import fixture
 
 
 class JAXTest(parameterized.TestCase):
-  @parameterized.parameters("humanoid/humanoid.xml", "pendula.xml")
-  def test_jax(self, xml):
+  @parameterized.product(xml=("pendula.xml", "humanoid/humanoid.xml"), graph_conditional=(True, False))
+  def test_jax(self, xml, graph_conditional):
     os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
     # Force JAX to allocate memory on demand and deallocate when not needed (slow)
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -38,7 +38,7 @@ class JAXTest(parameterized.TestCase):
       self.skipTest("JAX not installed")
 
     from jax import numpy as jp
-    from warp.jax_experimental.ffi import jax_callable
+    from warp.jax_experimental import ffi
 
     if jax.default_backend() != "gpu":
       self.skipTest("JAX default backend is not GPU")
@@ -56,9 +56,7 @@ class JAXTest(parameterized.TestCase):
       ls_iterations=4,
       kick=True,
     )
-
-    # Disable CUDA graph conditional
-    m.opt.graph_conditional = False
+    m.opt.graph_conditional = graph_conditional
 
     def warp_step(
       qpos_in: wp.array(dtype=wp.float32, ndim=2),
@@ -82,11 +80,11 @@ class JAXTest(parameterized.TestCase):
 
       return qpos, qvel
 
-    warp_step_fn = jax_callable(
+    warp_step_fn = ffi.jax_callable(
       warp_step,
       num_outputs=2,
       output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
-      graph_compatible=True,
+      graph_mode=ffi.GraphMode.WARP,
     )
 
     # temp qpos0 array to get the right numpy shape

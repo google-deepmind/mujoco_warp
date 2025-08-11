@@ -374,11 +374,16 @@ def _subtree_com_acc(
 def _subtree_div(
   # Model:
   subtree_mass: wp.array2d(dtype=float),
+  # Data in:
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  subtree_com_out[worldid, bodyid] /= subtree_mass[worldid, bodyid]
+  com = subtree_com_in[worldid, bodyid]
+  mass = subtree_mass[worldid, bodyid]
+  if mass != 0.0:
+    subtree_com_out[worldid, bodyid] = com / mass
 
 
 @wp.kernel
@@ -492,7 +497,7 @@ def com_pos(m: Model, d: Data):
       outputs=[d.subtree_com],
     )
 
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.subtree_mass], outputs=[d.subtree_com])
+  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.subtree_mass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),

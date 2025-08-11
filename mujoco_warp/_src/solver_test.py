@@ -77,6 +77,34 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(mjwarp_force, mjd.efc_force, name="force")
       _assert_eq(mjwarp_cost, mj_cost, name="cost")
 
+  @parameterized.parameters(
+    (ConeType.PYRAMIDAL, False),
+    (ConeType.ELLIPTIC, False),
+    (ConeType.PYRAMIDAL, True),
+    (ConeType.ELLIPTIC, True),
+  )
+  def test_update_gradient_CG(self, cone, sparse):
+    """Test _update_gradient function is correct for the CG solver."""
+    mjm, mjd, m, d = test_util.fixture(
+      "humanoid/humanoid.xml",
+      cone=cone,
+      solver=SolverType.CG,
+      sparse=sparse,
+      iterations=0,
+      keyframe=0,
+    )
+
+    # Solve with 0 iterations just initializes and exit
+    mjwarp.solve(m, d)
+
+    # Calculate Mgrad with Mujoco C
+    mj_Mgrad = np.zeros(shape=(1, mjm.nv), dtype=float)
+    mj_grad = np.tile(d.efc.grad.numpy(), (1, 1))
+    mujoco.mj_solveM(mjm, mjd, mj_Mgrad, mj_grad)
+
+    efc_Mgrad = d.efc.Mgrad.numpy()[0]
+    _assert_eq(efc_Mgrad, mj_Mgrad[0], name="Mgrad")
+
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_parallel_linesearch(self, cone):
     """Test that iterative and parallel linesearch leads to equivalent results."""
@@ -135,12 +163,12 @@ class SolverTest(parameterized.TestCase):
     self.assertLessEqual(abs(alpha_iterative - alpha_parallel_50), abs(alpha_iterative - alpha_parallel_10))
 
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, SolverType.CG, 5, 5, False, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 5, 5, False, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, False, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 2, 5, False, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4, True, True),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 3, 16, True, True),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, False, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, False, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 64, True, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 64, True, True),
   )
   def test_solve(self, cone, solver_, iterations, ls_iterations, sparse, ls_parallel):
     """Tests solve."""
