@@ -185,7 +185,7 @@ class ConstraintTest(parameterized.TestCase):
 
       for arr in (d.nefc, d.nl, d.efc.type):
         arr.fill_(-1)
-      for arr in (d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
+      for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
         arr.fill_(wp.nan)
 
       mjwarp.make_constraint(m, d)
