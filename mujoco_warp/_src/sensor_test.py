@@ -433,7 +433,8 @@ class SensorTest(parameterized.TestCase):
       ]:
         for data in datas:
           data = " ".join(data)
-          contact_sensor += f'<contact {geoms} num="{num}" reduce="mindist" data="{data}"/>'
+          for reduce in ["mindist", "maxforce"]:
+            contact_sensor += f'<contact {geoms} num="{num}" reduce="{reduce}" data="{data}"/>'
 
     _MJCF = f"""
     <mujoco>
