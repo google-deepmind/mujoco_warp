@@ -49,14 +49,14 @@ def _assert_efc_eq(d, mjd, nefc, name):
   mjd_efc_pos = mjd.efc_pos[:nefc]
   mjd_efc_vel = mjd.efc_vel[:nefc]
   mjd_efc_aref = mjd.efc_aref[:nefc]
-  
+
   # Create sorting keys using lexsort (more efficient for multiple keys)
   d_sort_indices = np.lexsort((efc_pos, efc_type, efc_vel, efc_aref))
   mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref))
-  
+
   # Sort MJWarp efc fields
   d_sorted = d.efc.J.numpy()[0, d_sort_indices, :].reshape(-1)
-  
+
   # Sort MuJoCo efc fields
   # For J matrix, need to reshape to 2D, sort rows, then flatten
   nefc = len(mjd_sort_indices)
@@ -66,32 +66,32 @@ def _assert_efc_eq(d, mjd, nefc, name):
     mjd_sorted_J = mjd_J_2d[mjd_sort_indices].reshape(-1)
   else:
     mjd_sorted_J = mjd.efc_J
-    
+
   mjd_sorted_D = mjd.efc_D[mjd_sort_indices]
   mjd_sorted_vel = mjd.efc_vel[mjd_sort_indices]
   mjd_sorted_aref = mjd.efc_aref[mjd_sort_indices]
   mjd_sorted_pos = mjd.efc_pos[mjd_sort_indices]
   mjd_sorted_margin = mjd.efc_margin[mjd_sort_indices]
   mjd_sorted_type = mjd.efc_type[mjd_sort_indices]
-  
+
   # Compare sorted data
   _assert_eq(d_sorted, mjd_sorted_J, f"{name}_J")
-  
+
   d_sorted = d.efc.D.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_D, f"{name}_D")
-  
+
   d_sorted = d.efc.vel.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_vel, f"{name}_vel")
-  
+
   d_sorted = d.efc.aref.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_aref, f"{name}_aref")
-  
+
   d_sorted = d.efc.pos.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_pos, f"{name}_pos")
-  
+
   d_sorted = d.efc.margin.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_margin, f"{name}_margin")
-  
+
   d_sorted = d.efc.type.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_type, f"{name}_type")
 
