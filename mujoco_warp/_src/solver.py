@@ -57,68 +57,68 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 @wp.func
 def _eval_iter(
-  ne: int,
-  nf: int,
-  efc_D: float,
-  efc_frictionloss: float,
-  efc_Jaref: float,
-  efc_jv: float,
-  efc_quad: wp.vec3,
   # In:
+  nequality: int,
+  nef: int,
+  D: float,
+  frictionloss: float,
+  Jaref: float,
+  jv: float,
+  quad: wp.vec3,
   efcid: int,
   alpha: float,
 ):
   # equality
-  if efcid < ne:
-    return _eval_pt(efc_quad, alpha)
+  if efcid < nequality:
+    return _eval_pt(quad, alpha)
   # friction
-  elif efcid < ne + nf:
+  elif efcid < nef:
     # search point, friction loss, bound (rf)
-    x = efc_Jaref + alpha * efc_jv
-    f = efc_frictionloss
-    rf = math.safe_div(f, efc_D)
+    x = Jaref + alpha * jv
+    f = frictionloss
+    rf = math.safe_div(f, D)
 
     # -bound < x < bound : quadratic
     if (-rf < x) and (x < rf):
-      quad = efc_quad
+      quad_f = quad
     # x < -bound: linear negative
     elif x <= -rf:
-      quad = wp.vec3(f * (-0.5 * rf - efc_Jaref), -f * efc_jv, 0.0)
+      quad_f = wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
     # bound < x : linear positive
     else:
-      quad = wp.vec3(f * (-0.5 * rf + efc_Jaref), f * efc_jv, 0.0)
+      quad_f = wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
 
-    return _eval_pt(quad, alpha)
+    return _eval_pt(quad_f, alpha)
   # limit or pyramidal friction cone contact
   else:
     # search point
-    x = efc_Jaref + alpha * efc_jv
+    x = Jaref + alpha * jv
 
     # active
     if x < 0.0:
-      return _eval_pt(efc_quad, alpha)
+      return _eval_pt(quad, alpha)
 
   return wp.vec3(0.0, 0.0, 0.0)
 
 
 @wp.func
 def _eval_elliptic(
+  # In:
   impratio: float,
   friction: types.vec5,
-  efc_quad: wp.vec3,
-  efc_quad1: wp.vec3,
-  efc_quad2: wp.vec3,
-  # In:
+  quad: wp.vec3,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
   alpha: float,
 ):
   mu = friction[0] / wp.sqrt(impratio)
 
-  u0 = efc_quad1[0]
-  v0 = efc_quad1[1]
-  uu = efc_quad1[2]
-  uv = efc_quad2[0]
-  vv = efc_quad2[1]
-  dm = efc_quad2[2]
+  u0 = quad1[0]
+  v0 = quad1[1]
+  uu = quad1[2]
+  uv = quad2[0]
+  vv = quad2[1]
+  dm = quad2[2]
 
   # compute N, Tsqr
   N = u0 + alpha * v0
@@ -128,7 +128,7 @@ def _eval_elliptic(
   if Tsqr <= 0.0:
     # bottom zone: quadratic cost
     if N < 0.0:
-      return _eval_pt(efc_quad, alpha)
+      return _eval_pt(quad, alpha)
 
     # top zone: nothing to do
   # otherwise regular processing
@@ -142,7 +142,7 @@ def _eval_elliptic(
       pass
     # mu * N + T <= 0 : bottom zone
     elif mu * N + T <= 0.0:
-      return _eval_pt(efc_quad, alpha)
+      return _eval_pt(quad, alpha)
 
     # otherwise middle zone
     else:
@@ -165,24 +165,25 @@ def _eval_elliptic(
 
 @wp.kernel
 def linesearch_iterative(
+  # Model:
   nv: int,
+  opt_impratio: wp.array(dtype=float),
   opt_tolerance: wp.array(dtype=float),
   opt_ls_tolerance: wp.array(dtype=float),
-  stat_meaninertia: float,
   opt_ls_iterations: int,
-  opt_impratio: wp.array(dtype=float),
+  stat_meaninertia: float,
   # Data in:
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
   nefc_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
   contact_efc_address_in: wp.array2d(dtype=int),
-  efc_search_dot_in: wp.array(dtype=float),
   efc_type_in: wp.array2d(dtype=int),
   efc_id_in: wp.array2d(dtype=int),
   efc_D_in: wp.array2d(dtype=float),
   efc_frictionloss_in: wp.array2d(dtype=float),
   efc_Jaref_in: wp.array2d(dtype=float),
+  efc_search_dot_in: wp.array(dtype=float),
   efc_jv_in: wp.array2d(dtype=float),
   efc_quad_in: wp.array2d(dtype=wp.vec3),
   efc_quad_gauss_in: wp.array(dtype=wp.vec3),
@@ -198,7 +199,7 @@ def linesearch_iterative(
   # Prefetch needed properties
   quad = efc_quad_gauss_in[worldid]
   ne = ne_in[worldid]
-  nf = nf_in[worldid]
+  nef = ne + nf_in[worldid]
   impratio = opt_impratio[worldid]
   efc_type = efc_type_in[worldid]
   efc_id = efc_id_in[worldid]
@@ -235,7 +236,7 @@ def linesearch_iterative(
     else:
       p0 += _eval_iter(
         ne,
-        nf,
+        nef,
         efc_D[efcid],
         efc_frictionloss[efcid],
         efc_Jaref[efcid],
@@ -267,7 +268,7 @@ def linesearch_iterative(
     else:
       lo_in += _eval_iter(
         ne,
-        nf,
+        nef,
         efc_D[efcid],
         efc_frictionloss[efcid],
         efc_Jaref[efcid],
@@ -314,7 +315,7 @@ def linesearch_iterative(
       else:
         lo_next += _eval_iter(
           ne,
-          nf,
+          nef,
           efc_D[efcid],
           efc_frictionloss[efcid],
           efc_Jaref[efcid],
@@ -325,7 +326,7 @@ def linesearch_iterative(
         )
         hi_next += _eval_iter(
           ne,
-          nf,
+          nef,
           efc_D[efcid],
           efc_frictionloss[efcid],
           efc_Jaref[efcid],
@@ -336,7 +337,7 @@ def linesearch_iterative(
         )
         mid += _eval_iter(
           ne,
-          nf,
+          nef,
           efc_D[efcid],
           efc_frictionloss[efcid],
           efc_Jaref[efcid],
@@ -401,22 +402,22 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     dim=(d.nworld,),
     inputs=[
       m.nv,
+      m.opt.impratio,
       m.opt.tolerance,
       m.opt.ls_tolerance,
-      m.stat.meaninertia,
       m.opt.ls_iterations,
-      m.opt.impratio,
+      m.stat.meaninertia,
       d.ne,
       d.nf,
       d.nefc,
       d.contact.friction,
       d.contact.efc_address,
-      d.efc.search_dot,
       d.efc.type,
       d.efc.id,
       d.efc.D,
       d.efc.frictionloss,
       d.efc.Jaref,
+      d.efc.search_dot,
       d.efc.jv,
       d.efc.quad,
       d.efc.quad_gauss,
