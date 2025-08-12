@@ -942,7 +942,8 @@ def plane_convex(
     for i in range(convex.vertnum):
       support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
       dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      dist = wp.length_sq(ab - convex.vert[convex.vertadr + i]) + dist_mask
+      ap = a - convex.vert[convex.vertadr + i]
+      dist = wp.abs(wp.dot(ap, ab)) + dist_mask
       if dist > c_dist:
         indices[2] = i
         c_dist = dist
@@ -955,8 +956,8 @@ def plane_convex(
     for i in range(convex.vertnum):
       support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
       dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      ap = ac - convex.vert[convex.vertadr + i]
-      bp = bc - convex.vert[convex.vertadr + i]
+      ap = a - convex.vert[convex.vertadr + i]
+      bp = b - convex.vert[convex.vertadr + i]
       dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
       dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
       if dist_ap + dist_bp > d_dist:
@@ -1055,7 +1056,8 @@ def plane_convex(
         idx = convex.graph[vert_globalid + subidx]
         support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        dist = wp.length_sq(ab - convex.vert[convex.vertadr + idx]) + dist_mask
+        ap = a - convex.vert[convex.vertadr + idx]
+        dist = wp.abs(wp.dot(ap, ab)) + dist_mask
         if dist > c_dist:
           c_dist = dist
           imax = int(subidx)
@@ -1082,8 +1084,8 @@ def plane_convex(
         idx = convex.graph[vert_globalid + subidx]
         support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        ap = ac - convex.vert[convex.vertadr + idx]
-        bp = bc - convex.vert[convex.vertadr + idx]
+        ap = a - convex.vert[convex.vertadr + idx]
+        bp = b - convex.vert[convex.vertadr + idx]
         dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
         dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
         if dist_ap + dist_bp > d_dist:
