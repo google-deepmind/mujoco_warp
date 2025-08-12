@@ -341,7 +341,7 @@ def wrap(
     length of circular wrap else -1.0 if no wrap, pair of 3D wrap points
   """
   # check object type
-  if geomtype != int(WrapType.SPHERE.value) and geomtype != int(WrapType.CYLINDER.value):
+  if geomtype != WrapType.SPHERE and geomtype != WrapType.CYLINDER:
     return wp.inf, wp.vec3(wp.inf), wp.vec3(wp.inf)
 
   # map sites to wrap object's local frame
@@ -354,7 +354,7 @@ def wrap(
     return -1.0, wp.vec3(wp.inf), wp.vec3(wp.inf)
 
   # construct 2D frame for circle wrap
-  if geomtype == int(WrapType.SPHERE.value):
+  if geomtype == WrapType.SPHERE:
     # 1st axis = p0
     axis0, _ = math.normalize_with_norm(p0)
 
@@ -431,7 +431,7 @@ def wrap(
   res1 = axis0 * pnt1[0] + axis1 * pnt1[1]
 
   # cylinder: correct along z
-  if geomtype == int(WrapType.CYLINDER.value):
+  if geomtype == WrapType.CYLINDER:
     # set vertical coordinates
     L0 = wp.sqrt((p0[0] - res0[0]) * (p0[0] - res0[0]) + (p0[1] - res0[1]) * (p0[1] - res0[1]))
     L1 = wp.sqrt((p1[0] - res1[0]) * (p1[0] - res1[0]) + (p1[1] - res1[1]) * (p1[1] - res1[1]))

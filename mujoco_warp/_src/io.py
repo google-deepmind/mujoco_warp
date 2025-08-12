@@ -321,7 +321,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   mocap_bodyid = mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
 
   # precalculated geom pairs
-  filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT.value)
+  filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
 
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
   nxn_geom_pair = np.stack((geom1, geom2), axis=1)
@@ -375,7 +375,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   # Disable collisions if there are no potentially colliding pairs
   if np.sum(geom_type_pair_count) == 0:
-    mjm.opt.disableflags |= types.DisableBit.CONTACT.value
+    mjm.opt.disableflags |= types.DisableBit.CONTACT
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
@@ -468,9 +468,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       gjk_iterations=MJ_CCD_ITERATIONS,
       epa_iterations=MJ_CCD_ITERATIONS,
       broadphase=int(broadphase),
-      broadphase_filter=int(
-        types.BroadphaseFilter.PLANE.value | types.BroadphaseFilter.SPHERE.value | types.BroadphaseFilter.OBB.value
-      ),
+      broadphase_filter=int(types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB),
       graph_conditional=True and conditional_graph_supported(),
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
@@ -649,10 +647,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     eq_solimp=create_nmodel_batched_array(mjm.eq_solimp, dtype=types.vec5),
     eq_data=create_nmodel_batched_array(mjm.eq_data, dtype=types.vec11),
     # pre-compute indices of equality constraints
-    eq_connect_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.CONNECT.value)[0], dtype=int),
-    eq_wld_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.WELD.value)[0], dtype=int),
-    eq_jnt_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.JOINT.value)[0], dtype=int),
-    eq_ten_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.TENDON.value)[0], dtype=int),
+    eq_connect_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.CONNECT)[0], dtype=int),
+    eq_wld_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.WELD)[0], dtype=int),
+    eq_jnt_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.JOINT)[0], dtype=int),
+    eq_ten_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.TENDON)[0], dtype=int),
     actuator_moment_tiles_nv=actuator_moment_tiles_nv,
     actuator_moment_tiles_nu=actuator_moment_tiles_nu,
     actuator_trntype=wp.array(mjm.actuator_trntype, dtype=int),
@@ -679,8 +677,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     exclude_signature=wp.array(mjm.exclude_signature, dtype=int),
     # short-circuiting here allows us to skip a lot of code in implicit integration
     actuator_affine_bias_gain=bool(
-      np.any(mjm.actuator_biastype == types.BiasType.AFFINE.value)
-      or np.any(mjm.actuator_gaintype == types.GainType.AFFINE.value)
+      np.any(mjm.actuator_biastype == types.BiasType.AFFINE) or np.any(mjm.actuator_gaintype == types.GainType.AFFINE)
     ),
     nxn_geom_pair=wp.array(nxn_geom_pair, dtype=wp.vec2i),
     nxn_geom_pair_filtered=wp.array(nxn_geom_pair_filtered, dtype=wp.vec2i),

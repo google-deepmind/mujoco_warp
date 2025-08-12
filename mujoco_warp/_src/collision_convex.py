@@ -42,33 +42,33 @@ MULTI_CONTACT_COUNT = 4
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
 
 _CONVEX_COLLISION_PAIRS = [
-  (GeomType.HFIELD.value, GeomType.SPHERE.value),
-  (GeomType.HFIELD.value, GeomType.CAPSULE.value),
-  (GeomType.HFIELD.value, GeomType.ELLIPSOID.value),
-  (GeomType.HFIELD.value, GeomType.CYLINDER.value),
-  (GeomType.HFIELD.value, GeomType.BOX.value),
-  (GeomType.HFIELD.value, GeomType.MESH.value),
-  (GeomType.SPHERE.value, GeomType.ELLIPSOID.value),
-  (GeomType.SPHERE.value, GeomType.MESH.value),
-  (GeomType.CAPSULE.value, GeomType.ELLIPSOID.value),
-  (GeomType.CAPSULE.value, GeomType.CYLINDER.value),
-  (GeomType.CAPSULE.value, GeomType.MESH.value),
-  (GeomType.ELLIPSOID.value, GeomType.ELLIPSOID.value),
-  (GeomType.ELLIPSOID.value, GeomType.CYLINDER.value),
-  (GeomType.ELLIPSOID.value, GeomType.BOX.value),
-  (GeomType.ELLIPSOID.value, GeomType.MESH.value),
-  (GeomType.CYLINDER.value, GeomType.CYLINDER.value),
-  (GeomType.CYLINDER.value, GeomType.BOX.value),
-  (GeomType.CYLINDER.value, GeomType.MESH.value),
-  (GeomType.BOX.value, GeomType.MESH.value),
-  (GeomType.MESH.value, GeomType.MESH.value),
+  (GeomType.HFIELD, GeomType.SPHERE),
+  (GeomType.HFIELD, GeomType.CAPSULE),
+  (GeomType.HFIELD, GeomType.ELLIPSOID),
+  (GeomType.HFIELD, GeomType.CYLINDER),
+  (GeomType.HFIELD, GeomType.BOX),
+  (GeomType.HFIELD, GeomType.MESH),
+  (GeomType.SPHERE, GeomType.ELLIPSOID),
+  (GeomType.SPHERE, GeomType.MESH),
+  (GeomType.CAPSULE, GeomType.ELLIPSOID),
+  (GeomType.CAPSULE, GeomType.CYLINDER),
+  (GeomType.CAPSULE, GeomType.MESH),
+  (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
+  (GeomType.ELLIPSOID, GeomType.CYLINDER),
+  (GeomType.ELLIPSOID, GeomType.BOX),
+  (GeomType.ELLIPSOID, GeomType.MESH),
+  (GeomType.CYLINDER, GeomType.CYLINDER),
+  (GeomType.CYLINDER, GeomType.BOX),
+  (GeomType.CYLINDER, GeomType.MESH),
+  (GeomType.BOX, GeomType.MESH),
+  (GeomType.MESH, GeomType.MESH),
 ]
 
 
 def _check_convex_collision_pairs():
   prev_idx = -1
   for pair in _CONVEX_COLLISION_PAIRS:
-    idx = upper_trid_index(len(GeomType), pair[0], pair[1])
+    idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
     if pair[1] < pair[0] or idx <= prev_idx:
       return False
     prev_idx = idx
@@ -91,8 +91,7 @@ def _max_contacts_height_field(
   # Data out:
   ncon_hfield_out: wp.array2d(dtype=int),
 ):
-  hfield = int(GeomType.HFIELD.value)
-  if geom_type[g1] == hfield or (geom_type[g2] == hfield):
+  if geom_type[g1] == GeomType.HFIELD or (geom_type[g2] == GeomType.HFIELD):
     geompairid = upper_tri_index(ngeom, g1, g2)
     hfgeompairid = geompair2hfgeompair[geompairid]
     hfncon = wp.atomic_add(ncon_hfield_out[worldid], hfgeompairid, 1)
@@ -304,9 +303,13 @@ def ccd_kernel_builder(
 
       if (dist - margin) >= 0.0 or depth != depth:
         return
-      sphere = int(GeomType.SPHERE.value)
-      ellipsoid = int(GeomType.ELLIPSOID.value)
-      if geom_type[g1] == sphere or geom_type[g1] == ellipsoid or geom_type[g2] == sphere or geom_type[g2] == ellipsoid:
+
+      if (
+           geom_type[g1] == GeomType.SPHERE
+        or geom_type[g1] == GeomType.ELLIPSOID
+        or geom_type[g2] == GeomType.SPHERE
+        or geom_type[g2] == GeomType.ELLIPSOID
+      ):  # fmt: off
         count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 1, 2, 1.0e-5)
       else:
         count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 4, 8, 1.0e-3)
@@ -315,7 +318,7 @@ def ccd_kernel_builder(
       x2 = geom2.pos
 
       # find prism center for height field
-      if geomtype1 == int(GeomType.HFIELD.value):
+      if geomtype1 == GeomType.HFIELD:
         x1 = wp.vec3(0.0, 0.0, 0.0)
         for i in range(6):
           x1 += hfield_prism_vertex(geom1.hfprism, i)
@@ -406,12 +409,12 @@ def convex_narrowphase(m: Model, d: Data):
   computations for non-existent pair types.
   """
   for geom_pair in _CONVEX_COLLISION_PAIRS:
-    if m.geom_pair_type_count[upper_trid_index(len(GeomType), geom_pair[0], geom_pair[1])]:
+    if m.geom_pair_type_count[upper_trid_index(len(GeomType), geom_pair[0].value, geom_pair[1].value)]:
       wp.launch(
         ccd_kernel_builder(
           False,
-          geom_pair[0],
-          geom_pair[1],
+          geom_pair[0].value,
+          geom_pair[1].value,
           m.opt.gjk_iterations,
           m.opt.epa_iterations,
           False,

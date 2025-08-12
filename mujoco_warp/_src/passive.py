@@ -61,7 +61,7 @@ def _spring_damper_dof_passive(
   jnttype = jnt_type[jntid]
   qposid = jnt_qposadr[jntid]
 
-  if jnttype == wp.static(JointType.FREE.value):
+  if jnttype == JointType.FREE:
     # spring
     if has_stiffness:
       dif = wp.vec3(
@@ -98,7 +98,7 @@ def _spring_damper_dof_passive(
       qfrc_damper_out[worldid, dofid + 3] = -damping * qvel_in[worldid, dofid + 3]
       qfrc_damper_out[worldid, dofid + 4] = -damping * qvel_in[worldid, dofid + 4]
       qfrc_damper_out[worldid, dofid + 5] = -damping * qvel_in[worldid, dofid + 5]
-  elif jnttype == wp.static(JointType.BALL.value):
+  elif jnttype == JointType.BALL:
     # spring
     if has_stiffness:
       rot = wp.quat(

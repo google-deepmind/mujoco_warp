@@ -111,7 +111,7 @@ def _geom(
   dataid = geom_dataid[gid]
 
   # If geom is MESH, get mesh verts
-  if dataid >= 0 and geom_type[gid] == int(GeomType.MESH.value):
+  if dataid >= 0 and geom_type[gid] == GeomType.MESH:
     geom.vertadr = mesh_vertadr[dataid]
     geom.vertnum = mesh_vertnum[dataid]
     geom.graphadr = mesh_graphadr[dataid]
@@ -124,7 +124,7 @@ def _geom(
     geom.mesh_polynum = -1
     geom.mesh_polyadr = -1
 
-  if geom_type[gid] == int(GeomType.MESH.value):
+  if geom_type[gid] == GeomType.MESH:
     geom.vert = mesh_vert
     geom.graph = mesh_graph
     geom.mesh_polynormal = mesh_polynormal
@@ -136,7 +136,7 @@ def _geom(
     geom.mesh_polymap = mesh_polymap
 
   # If geom is HFIELD triangle, compute triangle prism verts
-  if geom_type[gid] == int(GeomType.HFIELD.value):
+  if geom_type[gid] == GeomType.HFIELD:
     geom.hfprism = hfield_triangle_prism(
       geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
     )
@@ -2629,19 +2629,19 @@ def box_box(
 
 
 _PRIMITIVE_COLLISIONS = {
-  (GeomType.PLANE.value, GeomType.SPHERE.value): plane_sphere,
-  (GeomType.PLANE.value, GeomType.CAPSULE.value): plane_capsule,
-  (GeomType.PLANE.value, GeomType.ELLIPSOID.value): plane_ellipsoid,
-  (GeomType.PLANE.value, GeomType.CYLINDER.value): plane_cylinder,
-  (GeomType.PLANE.value, GeomType.BOX.value): plane_box,
-  (GeomType.PLANE.value, GeomType.MESH.value): plane_convex,
-  (GeomType.SPHERE.value, GeomType.SPHERE.value): sphere_sphere,
-  (GeomType.SPHERE.value, GeomType.CAPSULE.value): sphere_capsule,
-  (GeomType.SPHERE.value, GeomType.CYLINDER.value): sphere_cylinder,
-  (GeomType.SPHERE.value, GeomType.BOX.value): sphere_box,
-  (GeomType.CAPSULE.value, GeomType.CAPSULE.value): capsule_capsule,
-  (GeomType.CAPSULE.value, GeomType.BOX.value): capsule_box,
-  (GeomType.BOX.value, GeomType.BOX.value): box_box,
+  (GeomType.PLANE, GeomType.SPHERE): plane_sphere,
+  (GeomType.PLANE, GeomType.CAPSULE): plane_capsule,
+  (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid,
+  (GeomType.PLANE, GeomType.CYLINDER): plane_cylinder,
+  (GeomType.PLANE, GeomType.BOX): plane_box,
+  (GeomType.PLANE, GeomType.MESH): plane_convex,
+  (GeomType.SPHERE, GeomType.SPHERE): sphere_sphere,
+  (GeomType.SPHERE, GeomType.CAPSULE): sphere_capsule,
+  (GeomType.SPHERE, GeomType.CYLINDER): sphere_cylinder,
+  (GeomType.SPHERE, GeomType.BOX): sphere_box,
+  (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule,
+  (GeomType.CAPSULE, GeomType.BOX): capsule_box,
+  (GeomType.BOX, GeomType.BOX): box_box,
 }
 
 
@@ -2649,7 +2649,7 @@ _PRIMITIVE_COLLISIONS = {
 def _check_primitive_collisions():
   prev_idx = -1
   for types in _PRIMITIVE_COLLISIONS.keys():
-    idx = upper_trid_index(len(GeomType), types[0], types[1])
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if types[1] < types[0] or idx <= prev_idx:
       return False
     prev_idx = idx
@@ -2664,7 +2664,7 @@ _primitive_collisions_func = []
 
 def _primitive_narrowphase_builder(m: Model):
   for types, func in _PRIMITIVE_COLLISIONS.items():
-    idx = upper_trid_index(len(GeomType), types[0], types[1])
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
