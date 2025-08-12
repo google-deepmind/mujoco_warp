@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from . import math
 from .math import motion_cross
 from .types import ConeType
 from .types import Data
@@ -332,7 +333,8 @@ def contact_force_fn(
   # Data in:
   njmax_in: int,
   ncon_in: wp.array(dtype=int),
-  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_normal_in: wp.array(dtype=wp.vec3),
+  contact_tangent_in: wp.array(dtype=wp.vec3),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
@@ -363,8 +365,9 @@ def contact_force_fn(
 
   if to_world_frame:
     # Transform both top and bottom parts of spatial vector by the full contact frame matrix
-    t = wp.spatial_top(force) @ contact_frame_in[contact_id]
-    b = wp.spatial_bottom(force) @ contact_frame_in[contact_id]
+    frame = math.extract_frame(contact_normal_in[contact_id], contact_tangent_in[contact_id])
+    t = wp.spatial_top(force) @ frame
+    b = wp.spatial_bottom(force) @ frame
     force = wp.spatial_vector(t, b)
 
   return force
@@ -377,7 +380,8 @@ def contact_force_kernel(
   # Data in:
   njmax_in: int,
   ncon_in: wp.array(dtype=int),
-  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_normal_in: wp.array(dtype=wp.vec3),
+  contact_tangent_in: wp.array(dtype=wp.vec3),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
@@ -402,7 +406,8 @@ def contact_force_kernel(
     opt_cone,
     njmax_in,
     ncon_in,
-    contact_frame_in,
+    contact_normal_in,
+    contact_tangent_in,
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
@@ -437,7 +442,8 @@ def contact_force(
       m.opt.cone,
       d.njmax,
       d.ncon,
-      d.contact.frame,
+      d.contact.normal,
+      d.contact.tangent,
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,

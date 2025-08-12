@@ -1124,7 +1124,8 @@ def _efc_contact_pyramidal(
   worldid_in: wp.array(dtype=int),
   geom_in: wp.array(dtype=wp.vec2i),
   pos_in: wp.array(dtype=wp.vec3),
-  frame_in: wp.array(dtype=wp.mat33),
+  normal_in: wp.array(dtype=wp.vec3),
+  tangent_in: wp.array(dtype=wp.vec3),
   friction_in: wp.array(dtype=vec5),
   solref_in: wp.array(dtype=wp.vec2),
   solimp_in: wp.array(dtype=vec5),
@@ -1174,7 +1175,7 @@ def _efc_contact_pyramidal(
     body2 = geom_bodyid[geom[1]]
 
     con_pos = pos_in[conid]
-    frame = frame_in[conid]
+    frame = math.extract_frame(normal_in[conid], tangent_in[conid])
 
     # pyramidal has common invweight across all edges
     invweight = body_invweight0[worldid, body1][0] + body_invweight0[worldid, body2][0]
@@ -1289,7 +1290,8 @@ def _efc_contact_elliptic(
   worldid_in: wp.array(dtype=int),
   geom_in: wp.array(dtype=wp.vec2i),
   pos_in: wp.array(dtype=wp.vec3),
-  frame_in: wp.array(dtype=wp.mat33),
+  normal_in: wp.array(dtype=wp.vec3),
+  tangent_in: wp.array(dtype=wp.vec3),
   friction_in: wp.array(dtype=vec5),
   solref_in: wp.array(dtype=wp.vec2),
   solreffriction_in: wp.array(dtype=wp.vec2),
@@ -1338,7 +1340,7 @@ def _efc_contact_elliptic(
     body2 = geom_bodyid[geom[1]]
 
     cpos = pos_in[conid]
-    frame = frame_in[conid]
+    frame = math.extract_frame(normal_in[conid], tangent_in[conid])
 
     # TODO(team): parallelize J and Jqvel computation?
     Jqvel = float(0.0)
@@ -1844,7 +1846,8 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.worldid,
             d.contact.geom,
             d.contact.pos,
-            d.contact.frame,
+            d.contact.normal,
+            d.contact.tangent,
             d.contact.friction,
             d.contact.solref,
             d.contact.solimp,
@@ -1888,7 +1891,8 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.worldid,
             d.contact.geom,
             d.contact.pos,
-            d.contact.frame,
+            d.contact.normal,
+            d.contact.tangent,
             d.contact.friction,
             d.contact.solref,
             d.contact.solreffriction,

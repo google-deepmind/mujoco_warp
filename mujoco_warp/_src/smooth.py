@@ -1261,7 +1261,8 @@ def _cfrc_ext_contact(
   ncon_in: wp.array(dtype=int),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_normal_in: wp.array(dtype=wp.vec3),
+  contact_tangent_in: wp.array(dtype=wp.vec3),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_geom_in: wp.array(dtype=wp.vec2i),
@@ -1290,7 +1291,8 @@ def _cfrc_ext_contact(
     opt_cone,
     njmax_in,
     ncon_in,
-    contact_frame_in,
+    contact_normal_in,
+    contact_tangent_in,
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
@@ -1362,7 +1364,8 @@ def rne_postconstraint(m: Model, d: Data):
       d.ncon,
       d.subtree_com,
       d.contact.pos,
-      d.contact.frame,
+      d.contact.normal,
+      d.contact.tangent,
       d.contact.friction,
       d.contact.dim,
       d.contact.geom,
@@ -2097,7 +2100,8 @@ def _transmission_body_moment(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   contact_dist_in: wp.array(dtype=float),
   contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_normal_in: wp.array(dtype=wp.vec3),
+  contact_tangent_in: wp.array(dtype=wp.vec3),
   contact_includemargin_in: wp.array(dtype=float),
   contact_dim_in: wp.array(dtype=int),
   contact_geom_in: wp.array(dtype=wp.vec2i),
@@ -2160,8 +2164,7 @@ def _transmission_body_moment(
   # excluded contact in gap: get Jacobian, accumulate
   elif contact_exclude == 1:
     contact_pos = contact_pos_in[conid]
-    contact_frame = contact_frame_in[conid]
-    normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
+    normal = contact_normal_in[conid]
 
     # get Jacobian difference
     jacp1, _ = support.jac(
@@ -2280,7 +2283,8 @@ def transmission(m: Model, d: Data):
         d.cdof,
         d.contact.dist,
         d.contact.pos,
-        d.contact.frame,
+        d.contact.normal,
+        d.contact.tangent,
         d.contact.includemargin,
         d.contact.dim,
         d.contact.geom,

@@ -1581,7 +1581,8 @@ def _sensor_acc(
   qfrc_actuator_in: wp.array2d(dtype=float),
   contact_dist_in: wp.array(dtype=float),
   contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_normal_in: wp.array(dtype=wp.vec3),
+  contact_tangent_in: wp.array(dtype=wp.vec3),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
@@ -1663,7 +1664,8 @@ def _sensor_acc(
           opt_cone,
           njmax_in,
           ncon_in,
-          contact_frame_in,
+          contact_normal_in,
+          contact_tangent_in,
           contact_friction_in,
           contact_dim_in,
           contact_efc_address_in,
@@ -1692,13 +1694,13 @@ def _sensor_acc(
         out[adr_slot + 2] = contact_pos[2]
         adr_slot += 3
       if normal:
-        contact_normal = contact_frame_in[cid][0]
+        contact_normal = contact_normal_in[cid]
         out[adr_slot + 0] = dir * contact_normal[0]
         out[adr_slot + 1] = dir * contact_normal[1]
         out[adr_slot + 2] = dir * contact_normal[2]
         adr_slot += 3
       if tangent:
-        contact_tangent = contact_frame_in[cid][1]
+        contact_tangent = contact_tangent_in[cid]
         out[adr_slot + 0] = dir * contact_tangent[0]
         out[adr_slot + 1] = dir * contact_tangent[1]
         out[adr_slot + 2] = dir * contact_tangent[2]
@@ -1790,7 +1792,7 @@ def _sensor_touch(
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_normal_in: wp.array(dtype=wp.vec3),
   contact_dim_in: wp.array(dtype=int),
   contact_geom_in: wp.array(dtype=wp.vec2i),
   contact_efc_address_in: wp.array2d(dtype=int),
@@ -1831,8 +1833,8 @@ def _sensor_touch(
       return
 
     # convert contact normal force to global frame, normalize
-    frame = contact_frame_in[conid]
-    conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
+    normal = contact_normal_in[conid]
+    conray = normal * normalforce
     conray, _ = math.normalize_with_norm(conray)
 
     # flip ray direction if sensor is on body2
@@ -2093,7 +2095,7 @@ def sensor_acc(m: Model, d: Data):
       d.site_xpos,
       d.site_xmat,
       d.contact.pos,
-      d.contact.frame,
+      d.contact.normal,
       d.contact.dim,
       d.contact.geom,
       d.contact.efc_address,
@@ -2230,7 +2232,8 @@ def sensor_acc(m: Model, d: Data):
       d.qfrc_actuator,
       d.contact.dist,
       d.contact.pos,
-      d.contact.frame,
+      d.contact.normal,
+      d.contact.tangent,
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,

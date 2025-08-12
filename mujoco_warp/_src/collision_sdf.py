@@ -381,7 +381,8 @@ def _sdf_narrowphase(
   ncon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
-  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_normal_out: wp.array(dtype=wp.vec3),
+  contact_tangent_out: wp.array(dtype=wp.vec3),
   contact_includemargin_out: wp.array(dtype=float),
   contact_friction_out: wp.array(dtype=vec5),
   contact_solref_out: wp.array(dtype=wp.vec2),
@@ -541,11 +542,16 @@ def _sdf_narrowphase(
       type1, x0_initial, attr1, attr2, pos1, rot1, pos2, rot2, g1_plugin_id, g2_plugin_id, sdf_iterations
     )
 
+    frame = make_frame(n)
+    normal = math.get_normal(frame)
+    tangent = math.get_tangent(frame)
+
     write_contact(
       nconmax_in,
       dist,
       pos,
-      make_frame(n),
+      normal,
+      tangent,
       margin,
       gap,
       condim,
@@ -558,7 +564,8 @@ def _sdf_narrowphase(
       ncon_out,
       contact_dist_out,
       contact_pos_out,
-      contact_frame_out,
+      contact_normal_out,
+      contact_tangent_out,
       contact_includemargin_out,
       contact_friction_out,
       contact_solref_out,
@@ -634,7 +641,8 @@ def sdf_narrowphase(m: Model, d: Data):
       d.ncon,
       d.contact.dist,
       d.contact.pos,
-      d.contact.frame,
+      d.contact.normal,
+      d.contact.tangent,
       d.contact.includemargin,
       d.contact.friction,
       d.contact.solref,

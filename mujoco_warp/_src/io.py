@@ -980,7 +980,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     contact=types.Contact(
       dist=wp.zeros((nconmax,), dtype=float),
       pos=wp.zeros((nconmax,), dtype=wp.vec3f),
-      frame=wp.zeros((nconmax,), dtype=wp.mat33f),
+      normal=wp.zeros((nconmax,), dtype=wp.vec3f),
+      tangent=wp.zeros((nconmax,), dtype=wp.vec3f),
       includemargin=wp.zeros((nconmax,), dtype=float),
       friction=wp.zeros((nconmax,), dtype=types.vec5),
       solref=wp.zeros((nconmax,), dtype=wp.vec2f),
@@ -1362,7 +1363,8 @@ def put_data(
     contact=types.Contact(
       dist=padtile(mjd.contact.dist, nconmax),
       pos=padtile(mjd.contact.pos, nconmax, dtype=wp.vec3),
-      frame=padtile(mjd.contact.frame, nconmax, dtype=wp.mat33),
+      normal=padtile(mjd.contact.frame.reshape(-1, 9)[:, 0:3], nconmax, dtype=wp.vec3),
+      tangent=padtile(mjd.contact.frame.reshape(-1, 9)[:, 3:6], nconmax, dtype=wp.vec3),
       includemargin=padtile(mjd.contact.includemargin, nconmax),
       friction=padtile(mjd.contact.friction, nconmax, dtype=types.vec5),
       solref=padtile(mjd.contact.solref, nconmax, dtype=wp.vec2f),
@@ -1588,7 +1590,10 @@ def get_data_into(
 
   result.contact.dist[:] = d.contact.dist.numpy()[:ncon]
   result.contact.pos[:] = d.contact.pos.numpy()[:ncon]
-  result.contact.frame[:] = d.contact.frame.numpy()[:ncon].reshape((-1, 9))
+  normal = d.contact.normal.numpy()[:ncon]
+  tangent = d.contact.tangent.numpy()[:ncon]
+  tangent2 = np.cross(normal, tangent)
+  result.contact.frame[:] = np.hstack([normal, tangent, tangent2])
   result.contact.includemargin[:] = d.contact.includemargin.numpy()[:ncon]
   result.contact.friction[:] = d.contact.friction.numpy()[:ncon]
   result.contact.solref[:] = d.contact.solref.numpy()[:ncon]
