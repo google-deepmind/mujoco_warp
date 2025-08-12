@@ -652,7 +652,6 @@ class Constraint:
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    ls_done: linesearch done                          (nworld,)
     cost_candidate: costs associated with step sizes  (nworld, nlsp)
   """
 
@@ -690,7 +689,6 @@ class Constraint:
   beta: wp.array(dtype=float)
   done: wp.array(dtype=bool)
   # linesearch
-  ls_done: wp.array(dtype=bool)
   cost_candidate: wp.array2d(dtype=float)
 
 

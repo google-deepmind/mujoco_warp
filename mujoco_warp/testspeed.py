@@ -180,6 +180,16 @@ def _main(argv: Sequence[str]):
     jit_time, run_time, trace, ncon, nefc, solver_niter = res
     steps = _NWORLD.value * _NSTEP.value
 
+    nanworld = 0
+    qpos = d.qpos.numpy()
+    for i in range(d.nworld):
+        nanworld += np.any(np.isnan(qpos[i]))
+
+    if nanworld:
+        print("================== nanworld: " + str(nanworld) + " ==================")
+        print(qpos)
+
+
     print(f"""
 Summary for {_NWORLD.value} parallel rollouts
 

@@ -173,6 +173,7 @@ def linesearch_iterative(
   opt_ls_iterations: int,
   stat_meaninertia: float,
   # Data in:
+  njmax_in: int,
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
   nefc_in: wp.array(dtype=int),
@@ -217,7 +218,7 @@ def linesearch_iterative(
   scale = stat_meaninertia * wp.float(wp.max(1, nv))
   gtol = tolerance * ls_tolerance * snorm * scale
   p0 = wp.vec3(quad[0], quad[1], 2.0 * quad[2])
-  for efcid in range(nefc_in[worldid]):
+  for efcid in range(min(njmax_in, nefc_in[worldid])):
     if efc_type[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
       conid = efc_id[efcid]
 
@@ -249,7 +250,7 @@ def linesearch_iterative(
   # Calculate lo bound
   lo_alpha_in = -math.safe_div(p0[1], p0[2])
   lo_in = _eval_pt(quad, lo_alpha_in)
-  for efcid in range(nefc_in[worldid]):
+  for efcid in range(min(njmax_in, nefc_in[worldid])):
     if efc_type[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
       conid = efc_id[efcid]
 
@@ -294,7 +295,7 @@ def linesearch_iterative(
     mid_alpha = 0.5 * (lo_alpha + hi_alpha)
     mid = _eval_pt(quad, mid_alpha)
 
-    for efcid in range(nefc_in[worldid]):
+    for efcid in range(min(njmax_in, nefc_in[worldid])):
       if efc_type[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
         conid = efc_id[efcid]
 
@@ -395,8 +396,6 @@ def linesearch_iterative(
 
 def _linesearch_iterative(m: types.Model, d: types.Data):
   """Iterative linesearch."""
-  d.efc.ls_done.zero_()
-
   wp.launch(
     linesearch_iterative,
     dim=(d.nworld,),
@@ -407,6 +406,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
       m.opt.ls_tolerance,
       m.opt.ls_iterations,
       m.stat.meaninertia,
+      d.njmax,
       d.ne,
       d.nf,
       d.nefc,

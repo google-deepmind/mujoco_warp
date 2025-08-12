@@ -1029,7 +1029,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       beta=wp.zeros((nworld,), dtype=float),
       done=wp.zeros((nworld,), dtype=bool),
       # linesearch
-      ls_done=wp.zeros((nworld,), dtype=bool),
       cost_candidate=wp.zeros((nworld, mjm.opt.ls_iterations), dtype=float),
     ),
     # RK4
@@ -1395,7 +1394,6 @@ def put_data(
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       beta=wp.empty(shape=(nworld,), dtype=float),
       done=wp.empty(shape=(nworld,), dtype=bool),
-      ls_done=wp.zeros(shape=(nworld,), dtype=bool),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
     ),
     # TODO(team): skip allocation if integrator != RK4
