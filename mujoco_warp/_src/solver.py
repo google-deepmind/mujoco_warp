@@ -98,7 +98,7 @@ def _eval_iter(
     if x < 0.0:
       return _eval_pt(efc_quad, alpha)
 
-  return  wp.vec3(0.0, 0.0, 0.0)
+  return wp.vec3(0.0, 0.0, 0.0)
 
 
 @wp.func
@@ -111,7 +111,6 @@ def _eval_elliptic(
   # In:
   alpha: float,
 ):
-
   mu = friction[0] / wp.sqrt(impratio)
 
   u0 = efc_quad1[0]
@@ -161,7 +160,7 @@ def _eval_elliptic(
 
       return cost
 
-  return  wp.vec3(0.0, 0.0, 0.0)
+  return wp.vec3(0.0, 0.0, 0.0)
 
 
 @wp.kernel
@@ -190,7 +189,6 @@ def linesearch_iterative(
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_alpha_out: wp.array(dtype=float),
-
 ):
   worldid = wp.tid()
 
@@ -236,7 +234,15 @@ def linesearch_iterative(
       p0 += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, 0.0)
     else:
       p0 += _eval_iter(
-        ne, nf, efc_D[efcid], efc_frictionloss[efcid], efc_Jaref[efcid], efc_jv[efcid], efc_quad[efcid], efcid, 0.0,
+        ne,
+        nf,
+        efc_D[efcid],
+        efc_frictionloss[efcid],
+        efc_Jaref[efcid],
+        efc_jv[efcid],
+        efc_quad[efcid],
+        efcid,
+        0.0,
       )
 
   # Calculate lo bound
@@ -260,7 +266,15 @@ def linesearch_iterative(
       lo_in += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, lo_alpha_in)
     else:
       lo_in += _eval_iter(
-        ne, nf, efc_D[efcid], efc_frictionloss[efcid], efc_Jaref[efcid], efc_jv[efcid], efc_quad[efcid], efcid, lo_alpha_in,
+        ne,
+        nf,
+        efc_D[efcid],
+        efc_frictionloss[efcid],
+        efc_Jaref[efcid],
+        efc_jv[efcid],
+        efc_quad[efcid],
+        efcid,
+        lo_alpha_in,
       )
 
   # Initialize bounds
@@ -299,13 +313,37 @@ def linesearch_iterative(
         mid += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, mid_alpha)
       else:
         lo_next += _eval_iter(
-          ne, nf, efc_D[efcid], efc_frictionloss[efcid], efc_Jaref[efcid], efc_jv[efcid], efc_quad[efcid], efcid, lo_next_alpha,
+          ne,
+          nf,
+          efc_D[efcid],
+          efc_frictionloss[efcid],
+          efc_Jaref[efcid],
+          efc_jv[efcid],
+          efc_quad[efcid],
+          efcid,
+          lo_next_alpha,
         )
         hi_next += _eval_iter(
-          ne, nf, efc_D[efcid], efc_frictionloss[efcid], efc_Jaref[efcid], efc_jv[efcid], efc_quad[efcid], efcid, hi_next_alpha,
+          ne,
+          nf,
+          efc_D[efcid],
+          efc_frictionloss[efcid],
+          efc_Jaref[efcid],
+          efc_jv[efcid],
+          efc_quad[efcid],
+          efcid,
+          hi_next_alpha,
         )
         mid += _eval_iter(
-          ne, nf, efc_D[efcid], efc_frictionloss[efcid], efc_Jaref[efcid], efc_jv[efcid], efc_quad[efcid], efcid, mid_alpha,
+          ne,
+          nf,
+          efc_D[efcid],
+          efc_frictionloss[efcid],
+          efc_Jaref[efcid],
+          efc_jv[efcid],
+          efc_quad[efcid],
+          efcid,
+          mid_alpha,
         )
 
     # swap lo:
@@ -365,7 +403,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
       m.nv,
       m.opt.tolerance,
       m.opt.ls_tolerance,
-      m.stat.meaninertia, 
+      m.stat.meaninertia,
       m.opt.ls_iterations,
       m.opt.impratio,
       d.ne,
