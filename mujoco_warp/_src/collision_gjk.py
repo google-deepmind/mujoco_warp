@@ -95,8 +95,8 @@ class SupportPoint:
 
 @wp.func
 def _discrete_geoms(g1: int, g2: int):
-  return (g1 == GeomType.MESH or g1 == GeomType.BOX or g1 == int(GeomType.HFIELD.value)) and (
-    g2 == GeomType.MESH or g2 == GeomType.BOX or g2 == int(GeomType.HFIELD.value)
+  return (g1 == GeomType.MESH or g1 == GeomType.BOX or g1 == GeomType.HFIELD) and (
+    g2 == GeomType.MESH or g2 == GeomType.BOX or g2 == GeomType.HFIELD
   )
 
 
@@ -136,13 +136,13 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
     # add cylinder contribution
     res[2] += wp.sign(local_dir[2]) * geom.size[1]
     sp.point = geom.rot @ res + geom.pos
-  elif geomtype == int(GeomType.ELLIPSOID.value):
+  elif geomtype == GeomType.ELLIPSOID:
     res = wp.cw_mul(local_dir, geom.size)
     res = wp.normalize(res)
     # transform to ellipsoid
     res = wp.cw_mul(res, geom.size)
     sp.point = geom.rot @ res + geom.pos
-  elif geomtype == int(GeomType.CYLINDER.value):
+  elif geomtype == GeomType.CYLINDER:
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
     d = wp.sqrt(local_dir[0] * local_dir[0] + local_dir[1] * local_dir[1])
@@ -200,7 +200,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
       sp.point = geom.vert[geom.vertadr + imax]
 
     sp.point = geom.rot @ sp.point + geom.pos
-  elif geomtype == int(GeomType.HFIELD.value):
+  elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     for i in range(6):
       vert = hfield_prism_vertex(geom.hfprism, i)
