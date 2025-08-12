@@ -168,15 +168,15 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 
 @wp.func
 def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
-  if type == int(GeomType.PLANE.value):
+  if type == GeomType.PLANE:
     return p[2]
-  elif type == int(GeomType.SPHERE.value):
+  elif type == GeomType.SPHERE:
     return sphere(p, attr)
-  elif type == int(GeomType.BOX.value):
+  elif type == GeomType.BOX:
     return box(p, attr)
-  elif type == int(GeomType.ELLIPSOID.value):
+  elif type == GeomType.ELLIPSOID:
     return ellipsoid(p, attr)
-  elif type == int(GeomType.SDF.value):
+  elif type == GeomType.SDF:
     return user_sdf(p, attr, sdf_type)
   wp.printf("ERROR: SDF type not implemented\n")
   return 0.0
@@ -184,16 +184,16 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
 
 @wp.func
 def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
-  if type == int(GeomType.PLANE.value):
+  if type == GeomType.PLANE:
     grad = wp.vec3(0.0, 0.0, 1.0)
     return grad
-  elif type == int(GeomType.SPHERE.value):
+  elif type == GeomType.SPHERE:
     return grad_sphere(p)
-  elif type == int(GeomType.BOX.value):
+  elif type == GeomType.BOX:
     return grad_box(p, attr)
-  elif type == int(GeomType.ELLIPSOID.value):
+  elif type == GeomType.ELLIPSOID:
     return grad_ellipsoid(p, attr)
-  elif type == int(GeomType.SDF.value):
+  elif type == GeomType.SDF:
     return user_sdf_grad(p, attr, sdf_type)
   wp.printf("ERROR: SDF grad type not implemented\n")
   return wp.vec3(0.0)
@@ -204,7 +204,7 @@ def clearance(
   type1: int, p1: wp.vec3, p2: wp.vec3, s1: wp.vec3, s2: wp.vec3, sdf_type1: int, sdf_type2: int, sfd_intersection: bool
 ) -> float:
   sdf1 = sdf(type1, p1, s1, sdf_type1)
-  sdf2 = sdf(int(GeomType.SDF.value), p2, s2, sdf_type2)
+  sdf2 = sdf(GeomType.SDF, p2, s2, sdf_type2)
   if sfd_intersection:
     return wp.max(sdf1, sdf2)
   else:
@@ -216,9 +216,9 @@ def compute_grad(
   type1: int, p1: wp.vec3, p2: wp.vec3, params: OptimizationParams, sdf_type1: int, sdf_type2: int, sfd_intersection: bool
 ) -> wp.vec3:
   A = sdf(type1, p1, params.attr1, sdf_type1)
-  B = sdf(int(GeomType.SDF.value), p2, params.attr2, sdf_type2)
+  B = sdf(GeomType.SDF, p2, params.attr2, sdf_type2)
   grad1 = sdf_grad(type1, p1, params.attr1, sdf_type1)
-  grad2 = sdf_grad(int(GeomType.SDF.value), p2, params.attr2, sdf_type2)
+  grad2 = sdf_grad(GeomType.SDF, p2, params.attr2, sdf_type2)
   grad1_transformed = params.rel_mat * grad1
   if sfd_intersection:
     if A > B:
@@ -307,7 +307,7 @@ def gradient_descent(
   grad1 = wp.transpose(params.rel_mat) * grad1
   grad1 = wp.normalize(grad1)
 
-  grad2 = sdf_grad(int(GeomType.SDF.value), x, params.attr2, sdf_type2)
+  grad2 = sdf_grad(GeomType.SDF, x, params.attr2, sdf_type2)
   grad2 = wp.normalize(grad2)
 
   n = grad1 - grad2
@@ -400,7 +400,7 @@ def _sdf_narrowphase(
 
   g2 = geoms[1]
   type2 = geom_type[g2]
-  if type2 != int(GeomType.SDF.value):
+  if type2 != GeomType.SDF:
     return
 
   worldid = collision_worldid_in[tid]
@@ -513,7 +513,7 @@ def _sdf_narrowphase(
   pos1 = geom1.pos
   rot1 = geom1.rot
 
-  if type1 == int(GeomType.SDF.value):
+  if type1 == GeomType.SDF:
     attr1 = plugin_attr[g1_plugin]
     g1_plugin_id = plugin[g1_plugin]
   else:

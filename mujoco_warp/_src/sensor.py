@@ -59,9 +59,9 @@ def _write_scalar(
 
   if cutoff > 0.0:
     datatype = sensor_datatype[sensorid]
-    if datatype == int(DataType.REAL.value):
+    if datatype == DataType.REAL:
       out[adr] = wp.clamp(sensor, -cutoff, cutoff)
-    elif datatype == int(DataType.POSITIVE.value):
+    elif datatype == DataType.POSITIVE:
       out[adr] = wp.min(sensor, cutoff)
   else:
     out[adr] = sensor
@@ -85,10 +85,10 @@ def _write_vector(
 
   if cutoff > 0.0:
     datatype = sensor_datatype[sensorid]
-    if datatype == int(DataType.REAL.value):
+    if datatype == DataType.REAL:
       for i in range(sensordim):
         out[adr + i] = wp.clamp(sensor[i], -cutoff, cutoff)
-    elif datatype == int(DataType.POSITIVE.value):
+    elif datatype == DataType.POSITIVE:
       for i in range(sensordim):
         out[adr + i] = wp.min(sensor[i], cutoff)
   else:
@@ -270,7 +270,7 @@ def _limit_pos(
   sensorid = sensor_limitpos_adr[limitposid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
-    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
       val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
@@ -295,15 +295,15 @@ def _frame_pos(
   refid: int,
   reftype: int,
 ) -> wp.vec3:
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     xpos = xipos_in[worldid, objid]
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     xpos = xpos_in[worldid, objid]
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     xpos = geom_xpos_in[worldid, objid]
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     xpos = site_xpos_in[worldid, objid]
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     xpos = cam_xpos_in[worldid, objid]
   else:  # UNKNOWN
     xpos = wp.vec3(0.0)
@@ -311,19 +311,19 @@ def _frame_pos(
   if refid == -1:
     return xpos
 
-  if reftype == int(ObjType.BODY.value):
+  if reftype == ObjType.BODY:
     xpos_ref = xipos_in[worldid, refid]
     xmat_ref = ximat_in[worldid, refid]
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     xpos_ref = xpos_in[worldid, refid]
     xmat_ref = xmat_in[worldid, refid]
-  elif reftype == int(ObjType.GEOM.value):
+  elif reftype == ObjType.GEOM:
     xpos_ref = geom_xpos_in[worldid, refid]
     xmat_ref = geom_xmat_in[worldid, refid]
-  elif reftype == int(ObjType.SITE.value):
+  elif reftype == ObjType.SITE:
     xpos_ref = site_xpos_in[worldid, refid]
     xmat_ref = site_xmat_in[worldid, refid]
-  elif reftype == int(ObjType.CAMERA.value):
+  elif reftype == ObjType.CAMERA:
     xpos_ref = cam_xpos_in[worldid, refid]
     xmat_ref = cam_xmat_in[worldid, refid]
 
@@ -350,19 +350,19 @@ def _frame_axis(
   reftype: int,
   frame_axis: int,
 ) -> wp.vec3:
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     xmat = ximat_in[worldid, objid]
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     xmat = xmat_in[worldid, objid]
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     xmat = geom_xmat_in[worldid, objid]
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     xmat = site_xmat_in[worldid, objid]
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     xmat = cam_xmat_in[worldid, objid]
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
   else:  # UNKNOWN
@@ -371,15 +371,15 @@ def _frame_axis(
   if refid == -1:
     return axis
 
-  if reftype == int(ObjType.BODY.value):
+  if reftype == ObjType.BODY:
     xmat_ref = ximat_in[worldid, refid]
-  elif reftype == int(ObjType.XBODY.value):
+  elif reftype == ObjType.XBODY:
     xmat_ref = xmat_in[worldid, refid]
-  elif reftype == int(ObjType.GEOM.value):
+  elif reftype == ObjType.GEOM:
     xmat_ref = geom_xmat_in[worldid, refid]
-  elif reftype == int(ObjType.SITE.value):
+  elif reftype == ObjType.SITE:
     xmat_ref = site_xmat_in[worldid, refid]
-  elif reftype == int(ObjType.CAMERA.value):
+  elif reftype == ObjType.CAMERA:
     xmat_ref = cam_xmat_in[worldid, refid]
   else:  # UNKNOWN
     xmat_ref = wp.identity(3, dtype=wp.float32)
@@ -406,15 +406,15 @@ def _frame_quat(
   refid: int,
   reftype: int,
 ) -> wp.quat:
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[worldid, objid])
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     quat = xquat_in[worldid, objid]
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[worldid, objid])
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[worldid, objid])
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     quat = math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[worldid, objid])
   else:  # UNKNOWN
     quat = wp.quat(1.0, 0.0, 0.0, 0.0)
@@ -422,15 +422,15 @@ def _frame_quat(
   if refid == -1:
     return quat
 
-  if reftype == int(ObjType.BODY.value):
+  if reftype == ObjType.BODY:
     refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[worldid, refid])
-  elif reftype == int(ObjType.XBODY.value):
+  elif reftype == ObjType.XBODY:
     refquat = xquat_in[worldid, refid]
-  elif reftype == int(ObjType.GEOM.value):
+  elif reftype == ObjType.GEOM:
     refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid, refid])
-  elif reftype == int(ObjType.SITE.value):
+  elif reftype == ObjType.SITE:
     refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[worldid, refid])
-  elif reftype == int(ObjType.CAMERA.value):
+  elif reftype == ObjType.CAMERA:
     refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[worldid, refid])
   else:  # UNKNOWN
     refquat = wp.quat(1.0, 0.0, 0.0, 0.0)
@@ -502,31 +502,31 @@ def _sensor_pos(
   objid = sensor_objid[sensorid]
   out = sensordata_out[worldid]
 
-  if sensortype == int(SensorType.MAGNETOMETER.value):
+  if sensortype == SensorType.MAGNETOMETER:
     vec3 = _magnetometer(opt_magnetic, site_xmat_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.CAMPROJECTION.value):
+  elif sensortype == SensorType.CAMPROJECTION:
     refid = sensor_refid[sensorid]
     vec2 = _cam_projection(
       cam_fovy, cam_resolution, cam_sensorsize, cam_intrinsic, site_xpos_in, cam_xpos_in, cam_xmat_in, worldid, objid, refid
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 2, vec2, out)
-  elif sensortype == int(SensorType.RANGEFINDER.value):
+  elif sensortype == SensorType.RANGEFINDER:
     val = sensor_rangefinder_dist_in[worldid, rangefinder_sensor_adr[sensorid]]
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.JOINTPOS.value):
+  elif sensortype == SensorType.JOINTPOS:
     val = _joint_pos(jnt_qposadr, qpos_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.TENDONPOS.value):
+  elif sensortype == SensorType.TENDONPOS:
     val = _tendon_pos(ten_length_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.ACTUATORPOS.value):
+  elif sensortype == SensorType.ACTUATORPOS:
     val = _actuator_pos(actuator_length_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.BALLQUAT.value):
+  elif sensortype == SensorType.BALLQUAT:
     quat = _ball_quat(jnt_qposadr, qpos_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 4, quat, out)
-  elif sensortype == int(SensorType.FRAMEPOS.value):
+  elif sensortype == SensorType.FRAMEPOS:
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
@@ -548,25 +548,21 @@ def _sensor_pos(
       reftype,
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif (
-    sensortype == int(SensorType.FRAMEXAXIS.value)
-    or sensortype == int(SensorType.FRAMEYAXIS.value)
-    or sensortype == int(SensorType.FRAMEZAXIS.value)
-  ):
+  elif sensortype == SensorType.FRAMEXAXIS or sensortype == SensorType.FRAMEYAXIS or sensortype == SensorType.FRAMEZAXIS:
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
-    if sensortype == int(SensorType.FRAMEXAXIS.value):
+    if sensortype == SensorType.FRAMEXAXIS:
       axis = 0
-    elif sensortype == int(SensorType.FRAMEYAXIS.value):
+    elif sensortype == SensorType.FRAMEYAXIS:
       axis = 1
-    elif sensortype == int(SensorType.FRAMEZAXIS.value):
+    elif sensortype == SensorType.FRAMEZAXIS:
       axis = 2
     vec3 = _frame_axis(
       ximat_in, xmat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.FRAMEQUAT.value):
+  elif sensortype == SensorType.FRAMEQUAT:
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
@@ -586,16 +582,16 @@ def _sensor_pos(
       reftype,
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 4, quat, out)
-  elif sensortype == int(SensorType.SUBTREECOM.value):
+  elif sensortype == SensorType.SUBTREECOM:
     vec3 = _subtree_com(subtree_com_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.E_POTENTIAL.value):
+  elif sensortype == SensorType.E_POTENTIAL:
     val = energy_in[worldid][0]
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.E_KINETIC.value):
+  elif sensortype == SensorType.E_KINETIC:
     val = energy_in[worldid][1]
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.CLOCK.value):
+  elif sensortype == SensorType.CLOCK:
     val = _clock(time_in, worldid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
 
@@ -831,7 +827,7 @@ def _limit_vel(
   sensorid = sensor_limitvel_adr[limitvelid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
-    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
       _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid])
 
 
@@ -855,19 +851,19 @@ def _cvel_offset(
   objtype: int,
   objid: int,
 ) -> Tuple[wp.spatial_vector, wp.vec3]:
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     pos = xipos_in[worldid, objid]
     bodyid = objid
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     pos = xpos_in[worldid, objid]
     bodyid = objid
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     pos = geom_xpos_in[worldid, objid]
     bodyid = geom_bodyid[objid]
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     pos = site_xpos_in[worldid, objid]
     bodyid = site_bodyid[objid]
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     pos = cam_xpos_in[worldid, objid]
     bodyid = cam_bodyid[objid]
   else:  # UNKNOWN
@@ -904,32 +900,32 @@ def _frame_linvel(
   refid: int,
   reftype: int,
 ) -> wp.vec3:
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     xpos = xipos_in[worldid, objid]
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     xpos = xpos_in[worldid, objid]
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     xpos = geom_xpos_in[worldid, objid]
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     xpos = site_xpos_in[worldid, objid]
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     xpos = cam_xpos_in[worldid, objid]
   else:  # UNKNOWN
     xpos = wp.vec3(0.0)
 
-  if reftype == int(ObjType.BODY.value):
+  if reftype == ObjType.BODY:
     xposref = xipos_in[worldid, refid]
     xmatref = ximat_in[worldid, refid]
-  elif reftype == int(ObjType.XBODY.value):
+  elif reftype == ObjType.XBODY:
     xposref = xpos_in[worldid, refid]
     xmatref = xmat_in[worldid, refid]
-  elif reftype == int(ObjType.GEOM.value):
+  elif reftype == ObjType.GEOM:
     xposref = geom_xpos_in[worldid, refid]
     xmatref = geom_xmat_in[worldid, refid]
-  elif reftype == int(ObjType.SITE.value):
+  elif reftype == ObjType.SITE:
     xposref = site_xpos_in[worldid, refid]
     xmatref = site_xmat_in[worldid, refid]
-  elif reftype == int(ObjType.CAMERA.value):
+  elif reftype == ObjType.CAMERA:
     xposref = cam_xpos_in[worldid, refid]
     xmatref = cam_xmat_in[worldid, refid]
   else:  # UNKNOWN
@@ -1029,15 +1025,15 @@ def _frame_angvel(
   cangvel = wp.spatial_top(cvel)
 
   if refid > -1:
-    if reftype == int(ObjType.BODY.value):
+    if reftype == ObjType.BODY:
       xmatref = ximat_in[worldid, refid]
-    elif reftype == int(ObjType.XBODY.value):
+    elif reftype == ObjType.XBODY:
       xmatref = xmat_in[worldid, refid]
-    elif reftype == int(ObjType.GEOM.value):
+    elif reftype == ObjType.GEOM:
       xmatref = geom_xmat_in[worldid, refid]
-    elif reftype == int(ObjType.SITE.value):
+    elif reftype == ObjType.SITE:
       xmatref = site_xmat_in[worldid, refid]
-    elif reftype == int(ObjType.CAMERA.value):
+    elif reftype == ObjType.CAMERA:
       xmatref = cam_xmat_in[worldid, refid]
     else:  # UNKNOWN
       xmatref = wp.identity(3, dtype=float)
@@ -1119,25 +1115,25 @@ def _sensor_vel(
   objid = sensor_objid[sensorid]
   out = sensordata_out[worldid]
 
-  if sensortype == int(SensorType.VELOCIMETER.value):
+  if sensortype == SensorType.VELOCIMETER:
     vec3 = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.GYRO.value):
+  elif sensortype == SensorType.GYRO:
     vec3 = _gyro(site_bodyid, site_xmat_in, cvel_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.JOINTVEL.value):
+  elif sensortype == SensorType.JOINTVEL:
     val = _joint_vel(jnt_dofadr, qvel_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.TENDONVEL.value):
+  elif sensortype == SensorType.TENDONVEL:
     val = _tendon_vel(ten_velocity_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.ACTUATORVEL.value):
+  elif sensortype == SensorType.ACTUATORVEL:
     val = _actuator_vel(actuator_velocity_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.BALLANGVEL.value):
+  elif sensortype == SensorType.BALLANGVEL:
     vec3 = _ball_ang_vel(jnt_dofadr, qvel_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.FRAMELINVEL.value):
+  elif sensortype == SensorType.FRAMELINVEL:
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
@@ -1165,7 +1161,7 @@ def _sensor_vel(
       reftype,
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_linvel, out)
-  elif sensortype == int(SensorType.FRAMEANGVEL.value):
+  elif sensortype == SensorType.FRAMEANGVEL:
     objtype = sensor_objtype[sensorid]
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
@@ -1193,10 +1189,10 @@ def _sensor_vel(
       reftype,
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, frame_angvel, out)
-  elif sensortype == int(SensorType.SUBTREELINVEL.value):
+  elif sensortype == SensorType.SUBTREELINVEL:
     vec3 = _subtree_linvel(subtree_linvel_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.SUBTREEANGMOM.value):
+  elif sensortype == SensorType.SUBTREEANGMOM:
     vec3 = _subtree_angmom(subtree_angmom_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
 
@@ -1397,7 +1393,7 @@ def _tendon_actuator_force(
   worldid, tenactfrcid, actid = wp.tid()
   sensorid = sensor_tendonactfrc_adr[tenactfrcid]
 
-  if actuator_trntype[actid] == int(TrnType.TENDON.value) and actuator_trnid[actid][0] == sensor_objid[sensorid]:
+  if actuator_trntype[actid] == TrnType.TENDON and actuator_trnid[actid][0] == sensor_objid[sensorid]:
     adr = sensor_adr[sensorid]
     sensordata_out[worldid, adr] += actuator_force_in[worldid, actid]
 
@@ -1465,7 +1461,7 @@ def _limit_frc(
   sensorid = sensor_limitfrc_adr[limitfrcid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
-    if efc_type == int(ConstraintType.LIMIT_JOINT.value) or efc_type == int(ConstraintType.LIMIT_TENDON.value):
+    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
       _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid])
 
 
@@ -1490,19 +1486,19 @@ def _framelinacc(
   objid: int,
   objtype: int,
 ) -> wp.vec3:
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     bodyid = objid
     pos = xipos_in[worldid, objid]
-  elif objtype == int(ObjType.XBODY.value):
+  elif objtype == ObjType.XBODY:
     bodyid = objid
     pos = xpos_in[worldid, objid]
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     bodyid = geom_bodyid[objid]
     pos = geom_xpos_in[worldid, objid]
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     bodyid = site_bodyid[objid]
     pos = site_xpos_in[worldid, objid]
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     bodyid = cam_bodyid[objid]
     pos = cam_xpos_in[worldid, objid]
   else:  # UNKNOWN
@@ -1533,13 +1529,13 @@ def _frameangacc(
   objid: int,
   objtype: int,
 ) -> wp.vec3:
-  if objtype == int(ObjType.BODY.value) or objtype == int(ObjType.XBODY.value):
+  if objtype == ObjType.BODY or objtype == ObjType.XBODY:
     bodyid = objid
-  elif objtype == int(ObjType.GEOM.value):
+  elif objtype == ObjType.GEOM:
     bodyid = geom_bodyid[objid]
-  elif objtype == int(ObjType.SITE.value):
+  elif objtype == ObjType.SITE:
     bodyid = site_bodyid[objid]
-  elif objtype == int(ObjType.CAMERA.value):
+  elif objtype == ObjType.CAMERA:
     bodyid = cam_bodyid[objid]
   else:  # UNKNOWN
     bodyid = 0
@@ -1600,7 +1596,7 @@ def _sensor_acc(
   objid = sensor_objid[sensorid]
   out = sensordata_out[worldid]
 
-  if sensortype == int(SensorType.CONTACT.value):
+  if sensortype == SensorType.CONTACT:
     dataspec = sensor_intprm[sensorid, 0]
     dim = sensor_dim[sensorid]
     objtype = sensor_objtype[sensorid]
@@ -1709,24 +1705,24 @@ def _sensor_acc(
       for j in range(size):
         out[adr + i * size + j] = 0.0
 
-  elif sensortype == int(SensorType.ACCELEROMETER.value):
+  elif sensortype == SensorType.ACCELEROMETER:
     vec3 = _accelerometer(
       body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.FORCE.value):
+  elif sensortype == SensorType.FORCE:
     vec3 = _force(site_bodyid, site_xmat_in, cfrc_int_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.TORQUE.value):
+  elif sensortype == SensorType.TORQUE:
     vec3 = _torque(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cfrc_int_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.ACTUATORFRC.value):
+  elif sensortype == SensorType.ACTUATORFRC:
     val = _actuator_force(actuator_force_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.JOINTACTFRC.value):
+  elif sensortype == SensorType.JOINTACTFRC:
     val = _joint_actuator_force(jnt_dofadr, qfrc_actuator_in, worldid, objid)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
-  elif sensortype == int(SensorType.FRAMELINACC.value):
+  elif sensortype == SensorType.FRAMELINACC:
     objtype = sensor_objtype[sensorid]
     vec3 = _framelinacc(
       body_rootid,
@@ -1746,7 +1742,7 @@ def _sensor_acc(
       objtype,
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == int(SensorType.FRAMEANGACC.value):
+  elif sensortype == SensorType.FRAMEANGACC:
     objtype = sensor_objtype[sensorid]
     vec3 = _frameangacc(
       geom_bodyid,
@@ -1822,7 +1818,7 @@ def _sensor_touch(
     # get contact normal force
     normalforce = efc_force_in[worldid, efc_address0]
 
-    if opt_cone == int(ConeType.PYRAMIDAL.value):
+    if opt_cone == ConeType.PYRAMIDAL:
       dim = contact_dim_in[conid]
       for i in range(1, 2 * (dim - 1)):
         normalforce += efc_force_in[worldid, contact_efc_address_in[conid, i]]
@@ -1866,7 +1862,7 @@ def _sensor_tactile_zero(
 ):
   worldid, sensorid = wp.tid()
 
-  if sensor_type[sensorid] != int(SensorType.TACTILE.value):
+  if sensor_type[sensorid] != SensorType.TACTILE:
     return
 
   for i in range(sensor_dim[sensorid]):
@@ -1950,7 +1946,7 @@ def _sensor_tactile(
 
   # compute distance
   plugin_id = geom_plugin_index[geom]
-  depth = wp.min(sdf(int(GeomType.SDF.value), lpos, plugin_attr[plugin_id], plugin[plugin_id]), 0.0)
+  depth = wp.min(sdf(GeomType.SDF, lpos, plugin_attr[plugin_id], plugin[plugin_id]), 0.0)
   if depth >= 0.0:
     return
 
@@ -2366,7 +2362,7 @@ def _energy_pos_passive_joint(
   padr = jnt_qposadr[jntid]
   jnttype = jnt_type[jntid]
 
-  if jnttype == int(JointType.FREE.value):
+  if jnttype == JointType.FREE:
     dif0 = wp.vec3(
       qpos_in[worldid, padr + 0] - qpos_spring[worldid, padr + 0],
       qpos_in[worldid, padr + 1] - qpos_spring[worldid, padr + 1],
@@ -2398,7 +2394,7 @@ def _energy_pos_passive_joint(
 
     wp.atomic_add(energy_out, worldid, energy)
 
-  elif jnttype == int(JointType.BALL.value):
+  elif jnttype == JointType.BALL:
     quat = wp.quat(
       qpos_in[worldid, padr + 0],
       qpos_in[worldid, padr + 1],
@@ -2420,7 +2416,7 @@ def _energy_pos_passive_joint(
       0.0,
     )
     wp.atomic_add(energy_out, worldid, energy)
-  elif jnttype == int(JointType.SLIDE.value) or jnttype == int(JointType.HINGE.value):
+  elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
     dif_ = qpos_in[worldid, padr] - qpos_spring[worldid, padr]
     energy = wp.vec2(
       0.5 * stiffness * dif_ * dif_,

@@ -348,7 +348,7 @@ def contact_force_fn(
   efc_address = contact_efc_address_in[contact_id, 0]
 
   if contact_id >= 0 and contact_id <= ncon_in[0] and efc_address >= 0:
-    if opt_cone == int(ConeType.PYRAMIDAL.value):
+    if opt_cone == ConeType.PYRAMIDAL:
       force = _decode_pyramid(
         njmax_in,
         efc_force_in[worldid],
@@ -548,7 +548,7 @@ def jac_dot(
   jnttype = jnt_type[dofjntid]
   jntdofadr = jnt_dofadr[dofjntid]
 
-  if (jnttype == int(JointType.BALL.value)) or ((jnttype == int(JointType.FREE.value)) and dofid >= jntdofadr + 3):
+  if (jnttype == JointType.BALL) or ((jnttype == JointType.FREE) and dofid >= jntdofadr + 3):
     # compute cdof_dot for quaternion (use current body cvel)
     cvel = cvel_in[worldid, dof_bodyid[dofid]]
     cdof_dot = motion_cross(cvel, cdof)

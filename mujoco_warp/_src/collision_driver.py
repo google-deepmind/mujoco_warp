@@ -282,16 +282,16 @@ def _broadphase_filter(
   xmat2 = geom_xmat_in[worldid, geom2]
 
   if rbound1 == 0.0 or rbound2 == 0.0:
-    if opt_broadphase_filter & int(BroadphaseFilter.PLANE.value):
+    if opt_broadphase_filter & BroadphaseFilter.PLANE:
       return _plane_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2, xmat1, xmat2)
   else:
-    if opt_broadphase_filter & int(BroadphaseFilter.SPHERE.value):
+    if opt_broadphase_filter & BroadphaseFilter.SPHERE:
       if not _sphere_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2):
         return False
-    if opt_broadphase_filter & int(BroadphaseFilter.AABB.value):
+    if opt_broadphase_filter & BroadphaseFilter.AABB:
       if not _aabb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
         return False
-    if opt_broadphase_filter & int(BroadphaseFilter.OBB.value):
+    if opt_broadphase_filter & BroadphaseFilter.OBB:
       if not _obb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
         return False
 
@@ -337,7 +337,7 @@ def _add_geom_pair(
   # Writing -1 to collision_hftri_index_out[pairid] signals
   # hfield_midphase to generate a collision pair for every
   # potentially colliding triangle
-  if type1 == int(GeomType.HFIELD.value) or type2 == int(GeomType.HFIELD.value):
+  if type1 == GeomType.HFIELD or type2 == GeomType.HFIELD:
     collision_hftri_index_out[pairid] = -1
 
 
@@ -556,7 +556,7 @@ def sap_broadphase(m: Model, d: Data):
     ],
   )
 
-  if m.opt.broadphase == int(BroadphaseType.SAP_TILE):
+  if m.opt.broadphase == BroadphaseType.SAP_TILE:
     wp.launch_tiled(
       kernel=_segmented_sort(m.ngeom),
       dim=(d.nworld),
@@ -756,7 +756,7 @@ def collision(m: Model, d: Data):
   if d.nconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     return
 
-  if m.opt.broadphase == int(BroadphaseType.NXN):
+  if m.opt.broadphase == BroadphaseType.NXN:
     nxn_broadphase(m, d)
   else:
     sap_broadphase(m, d)

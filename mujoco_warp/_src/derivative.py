@@ -63,17 +63,17 @@ def _qderiv_actuator_passive(
   qderiv = float(0.0)
   for actid in range(nu):
     if actuation_enabled:
-      if actuator_gaintype[actid] == int(GainType.AFFINE.value):
+      if actuator_gaintype[actid] == GainType.AFFINE:
         gain = actuator_gainprm[worldid, actid][2]
       else:
         gain = 0.0
 
-      if actuator_biastype[actid] == int(BiasType.AFFINE.value):
+      if actuator_biastype[actid] == BiasType.AFFINE:
         bias = actuator_biasprm[worldid, actid][2]
       else:
         bias = 0.0
 
-      if actuator_dyntype[actid] != int(DynType.NONE.value):
+      if actuator_dyntype[actid] != DynType.NONE:
         act_first = actuator_actadr[actid]
         act_last = act_first + actuator_actnum[actid] - 1
         vel = bias + gain * act_in[worldid, act_last]

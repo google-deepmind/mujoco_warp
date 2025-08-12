@@ -293,7 +293,7 @@ def _hfield_midphase(
 
   # if the first geom is not a heightfield, swap them
   # in theory, shouldn't happen as _add_geom_pair already sorted the pair
-  if geom_type[g1] != int(GeomType.HFIELD.value):
+  if geom_type[g1] != GeomType.HFIELD:
     hfieldid = g2
     geomid = g1
 
