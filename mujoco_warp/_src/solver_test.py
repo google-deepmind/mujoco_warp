@@ -72,10 +72,10 @@ class SolverTest(parameterized.TestCase):
       mjwarp_state = d.efc.state.numpy()[0]
       nefc = d.nefc.numpy()[0]
 
-      _assert_eq(mjwarp_state[:nefc], mjd.efc_state, name="state")
-      _assert_eq(mjwarp_qfrc_constraint, mjd.qfrc_constraint, name="qfrc_constraint")
-      _assert_eq(mjwarp_force[:nefc], mjd.efc_force, name="force")
-      _assert_eq(mjwarp_cost, mj_cost, name="cost")
+      _assert_eq(mjwarp_state[:nefc], mjd.efc_state, "efc_state")
+      _assert_eq(mjwarp_qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
+      _assert_eq(mjwarp_force[:nefc], mjd.efc_force, "efc_force")
+      _assert_eq(mjwarp_cost, mj_cost, "cost")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, False),
