@@ -56,52 +56,6 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 
 @wp.func
-def _eval_iter(
-  # In:
-  nequality: int,
-  nef: int,
-  D: float,
-  frictionloss: float,
-  Jaref: float,
-  jv: float,
-  quad: wp.vec3,
-  efcid: int,
-  alpha: float,
-):
-  # equality
-  if efcid < nequality:
-    return _eval_pt(quad, alpha)
-  # friction
-  elif efcid < nef:
-    # search point, friction loss, bound (rf)
-    x = Jaref + alpha * jv
-    f = frictionloss
-    rf = math.safe_div(f, D)
-
-    # -bound < x < bound : quadratic
-    if (-rf < x) and (x < rf):
-      quad_f = quad
-    # x < -bound: linear negative
-    elif x <= -rf:
-      quad_f = wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
-    # bound < x : linear positive
-    else:
-      quad_f = wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
-
-    return _eval_pt(quad_f, alpha)
-  # limit or pyramidal friction cone contact
-  else:
-    # search point
-    x = Jaref + alpha * jv
-
-    # active
-    if x < 0.0:
-      return _eval_pt(quad, alpha)
-
-  return wp.vec3(0.0, 0.0, 0.0)
-
-
-@wp.func
 def _eval_elliptic(
   # In:
   impratio: float,
@@ -163,6 +117,183 @@ def _eval_elliptic(
   return wp.vec3(0.0, 0.0, 0.0)
 
 
+@wp.func
+def _eval_init(
+  # In:
+  nequality: int,
+  nef: int,
+  nefc: int,
+  impratio: float,
+  contact_friction_in: wp.array(dtype=types.vec5),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  type_in: wp.array(dtype=int),
+  id_in: wp.array(dtype=int),
+  D_in: wp.array(dtype=float),
+  frictionloss_in: wp.array(dtype=float),
+  Jaref_in: wp.array(dtype=float),
+  jv_in: wp.array(dtype=float),
+  quad_in: wp.array(dtype=wp.vec3),
+  alpha: float,
+):
+  lo = wp.vec3(0.0, 0.0, 0.0)
+  for efcid in range(min(nefc, nequality)):
+    quad = quad_in[efcid]
+    lo += _eval_pt(quad, alpha)
+
+  for efcid in range(min(nefc, nequality), min(nefc, nef)):
+    D = D_in[efcid]
+    f = frictionloss_in[efcid]
+    Jaref = Jaref_in[efcid]
+    jv = jv_in[efcid]
+    # search point, friction loss, bound (rf)
+    x = Jaref + alpha * jv
+    rf = math.safe_div(f, D)
+
+    # -bound < x < bound : quadratic
+    if (-rf < x) and (x < rf):
+      quad_f = quad_in[efcid]
+    # x < -bound: linear negative
+    elif x <= -rf:
+      quad_f = wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
+    # bound < x : linear positive
+    else:
+      quad_f = wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
+
+    lo += _eval_pt(quad_f, alpha)
+
+  for efcid in range(min(nefc, nef), nefc):
+    if type_in[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
+      conid = id_in[efcid]
+
+      efcid0 = contact_efc_address_in[conid, 0]
+      if efcid != efcid0:
+        continue
+
+      efcid1 = contact_efc_address_in[conid, 1]
+      efcid2 = contact_efc_address_in[conid, 2]
+      efc_quad0 = quad_in[efcid0]
+      efc_quad1 = quad_in[efcid1]
+      efc_quad2 = quad_in[efcid2]
+      friction = contact_friction_in[conid]
+
+      lo += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, alpha)
+    else:
+      Jaref = Jaref_in[efcid]
+      jv = jv_in[efcid]
+      quad = quad_in[efcid]
+
+      x = Jaref + alpha * jv
+      res = _eval_pt(quad, alpha)
+      lo += res * float(x < 0.0)
+
+  return lo
+
+
+@wp.func
+def _eval(
+  # In:
+  nequality: int,
+  nef: int,
+  nefc: int,
+  impratio: float,
+  contact_friction_in: wp.array(dtype=types.vec5),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  type_in: wp.array(dtype=int),
+  id_in: wp.array(dtype=int),
+  D_in: wp.array(dtype=float),
+  frictionloss_in: wp.array(dtype=float),
+  Jaref_in: wp.array(dtype=float),
+  jv_in: wp.array(dtype=float),
+  quad_in: wp.array(dtype=wp.vec3),
+  lo_alpha: float,
+  hi_alpha: float,
+  mid_alpha: float,
+):
+  lo = wp.vec3(0.0, 0.0, 0.0)
+  hi = wp.vec3(0.0, 0.0, 0.0)
+  mid = wp.vec3(0.0, 0.0, 0.0)
+  for efcid in range(min(nefc, nequality)):
+    quad = quad_in[efcid]
+    lo += _eval_pt(quad, lo_alpha)
+    hi += _eval_pt(quad, hi_alpha)
+    mid += _eval_pt(quad, mid_alpha)
+  for efcid in range(min(nefc, nequality), min(nefc, nef)):
+    D = D_in[efcid]
+    f = frictionloss_in[efcid]
+    Jaref = Jaref_in[efcid]
+    jv = jv_in[efcid]
+    # search point, friction loss, bound (rf)
+    rf = math.safe_div(f, D)
+    x_lo = Jaref + lo_alpha * jv
+    x_hi = Jaref + hi_alpha * jv
+    x_mid = Jaref + mid_alpha * jv
+
+    # -bound < x < bound : quadratic
+    if (-rf < x_lo) and (x_lo < rf):
+      quad_f = quad_in[efcid]
+    # x < -bound: linear negative
+    elif x_lo <= -rf:
+      quad_f = wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
+    # bound < x : linear positive
+    else:
+      quad_f = wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
+    lo += _eval_pt(quad_f, lo_alpha)
+
+    # -bound < x < bound : quadratic
+    if (-rf < x_hi) and (x_hi < rf):
+      quad_f = quad_in[efcid]
+    # x < -bound: linear negative
+    elif x_hi <= -rf:
+      quad_f = wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
+    # bound < x : linear positive
+    else:
+      quad_f = wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
+    hi += _eval_pt(quad_f, hi_alpha)
+
+    # -bound < x < bound : quadratic
+    if (-rf < x_mid) and (x_mid < rf):
+      quad_f = quad_in[efcid]
+    # x < -bound: linear negative
+    elif x_mid <= -rf:
+      quad_f = wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
+    # bound < x : linear positive
+    else:
+      quad_f = wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
+    mid += _eval_pt(quad_f, mid_alpha)
+
+  for efcid in range(min(nefc, nef), nefc):
+    if type_in[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
+      conid = id_in[efcid]
+
+      efcid0 = contact_efc_address_in[conid, 0]
+      if efcid != efcid0:
+        continue
+
+      efcid1 = contact_efc_address_in[conid, 1]
+      efcid2 = contact_efc_address_in[conid, 2]
+      efc_quad0 = quad_in[efcid0]
+      efc_quad1 = quad_in[efcid1]
+      efc_quad2 = quad_in[efcid2]
+      friction = contact_friction_in[conid]
+
+      lo += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, lo_alpha)
+      hi += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, hi_alpha)
+      mid += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, mid_alpha)
+    else:
+      Jaref = Jaref_in[efcid]
+      jv = jv_in[efcid]
+      quad = quad_in[efcid]
+
+    x_lo = Jaref + lo_alpha * jv
+    x_hi = Jaref + hi_alpha * jv
+    x_mid = Jaref + mid_alpha * jv
+    lo += _eval_pt(quad, lo_alpha) * float(x_lo < 0.0)
+    hi += _eval_pt(quad, hi_alpha) * float(x_hi < 0.0)
+    mid += _eval_pt(quad, mid_alpha) * float(x_mid < 0.0)
+
+  return lo, hi, mid
+
+
 @wp.kernel
 def linesearch_iterative(
   # Model:
@@ -212,72 +343,19 @@ def linesearch_iterative(
   efc_jv = efc_jv_in[worldid]
   tolerance = opt_tolerance[worldid]
   ls_tolerance = opt_ls_tolerance[worldid]
+  nefc_adj = min(njmax_in, nefc_in[worldid])
 
   # Calculate p0
   snorm = wp.math.sqrt(efc_search_dot_in[worldid])
   scale = stat_meaninertia * wp.float(wp.max(1, nv))
   gtol = tolerance * ls_tolerance * snorm * scale
   p0 = wp.vec3(quad[0], quad[1], 2.0 * quad[2])
-  for efcid in range(min(njmax_in, nefc_in[worldid])):
-    if efc_type[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
-      conid = efc_id[efcid]
-
-      efcid0 = contact_efc_address_in[conid, 0]
-      if efcid != efcid0:
-        continue
-
-      efcid1 = contact_efc_address_in[conid, 1]
-      efcid2 = contact_efc_address_in[conid, 2]
-      efc_quad0 = efc_quad[efcid0]
-      efc_quad1 = efc_quad[efcid1]
-      efc_quad2 = efc_quad[efcid2]
-      friction = contact_friction_in[conid]
-
-      p0 += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, 0.0)
-    else:
-      p0 += _eval_iter(
-        ne,
-        nef,
-        efc_D[efcid],
-        efc_frictionloss[efcid],
-        efc_Jaref[efcid],
-        efc_jv[efcid],
-        efc_quad[efcid],
-        efcid,
-        0.0,
-      )
+  p0 += _eval_init(ne, nef, nefc_adj, impratio, contact_friction_in, contact_efc_address_in, efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad, 0.0)
 
   # Calculate lo bound
   lo_alpha_in = -math.safe_div(p0[1], p0[2])
   lo_in = _eval_pt(quad, lo_alpha_in)
-  for efcid in range(min(njmax_in, nefc_in[worldid])):
-    if efc_type[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
-      conid = efc_id[efcid]
-
-      efcid0 = contact_efc_address_in[conid, 0]
-      if efcid != efcid0:
-        continue
-
-      efcid1 = contact_efc_address_in[conid, 1]
-      efcid2 = contact_efc_address_in[conid, 2]
-      efc_quad0 = efc_quad[efcid0]
-      efc_quad1 = efc_quad[efcid1]
-      efc_quad2 = efc_quad[efcid2]
-      friction = contact_friction_in[conid]
-
-      lo_in += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, lo_alpha_in)
-    else:
-      lo_in += _eval_iter(
-        ne,
-        nef,
-        efc_D[efcid],
-        efc_frictionloss[efcid],
-        efc_Jaref[efcid],
-        efc_jv[efcid],
-        efc_quad[efcid],
-        efcid,
-        lo_alpha_in,
-      )
+  lo_in += _eval_init(ne, nef, nefc_adj, impratio, contact_friction_in, contact_efc_address_in, efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad, lo_alpha_in)
 
   # Initialize bounds
   lo_less = lo_in[1] < p0[1]
@@ -287,6 +365,7 @@ def linesearch_iterative(
   hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
 
   # Launch main linesearch iterative loop
+  alpha = float(0.0)
   for _ in range(opt_ls_iterations):
     lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
     lo_next = _eval_pt(quad, lo_next_alpha)
@@ -295,58 +374,10 @@ def linesearch_iterative(
     mid_alpha = 0.5 * (lo_alpha + hi_alpha)
     mid = _eval_pt(quad, mid_alpha)
 
-    for efcid in range(min(njmax_in, nefc_in[worldid])):
-      if efc_type[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
-        conid = efc_id[efcid]
-
-        efcid0 = contact_efc_address_in[conid, 0]
-        if efcid != efcid0:
-          continue
-
-        efcid1 = contact_efc_address_in[conid, 1]
-        efcid2 = contact_efc_address_in[conid, 2]
-        efc_quad0 = efc_quad[efcid0]
-        efc_quad1 = efc_quad[efcid1]
-        efc_quad2 = efc_quad[efcid2]
-        friction = contact_friction_in[conid]
-
-        lo_next += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, lo_next_alpha)
-        hi_next += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, hi_next_alpha)
-        mid += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, mid_alpha)
-      else:
-        lo_next += _eval_iter(
-          ne,
-          nef,
-          efc_D[efcid],
-          efc_frictionloss[efcid],
-          efc_Jaref[efcid],
-          efc_jv[efcid],
-          efc_quad[efcid],
-          efcid,
-          lo_next_alpha,
-        )
-        hi_next += _eval_iter(
-          ne,
-          nef,
-          efc_D[efcid],
-          efc_frictionloss[efcid],
-          efc_Jaref[efcid],
-          efc_jv[efcid],
-          efc_quad[efcid],
-          efcid,
-          hi_next_alpha,
-        )
-        mid += _eval_iter(
-          ne,
-          nef,
-          efc_D[efcid],
-          efc_frictionloss[efcid],
-          efc_Jaref[efcid],
-          efc_jv[efcid],
-          efc_quad[efcid],
-          efcid,
-          mid_alpha,
-        )
+    res0, res1, res2 = _eval(ne, nef, nefc_adj, impratio, contact_friction_in, contact_efc_address_in, efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad, lo_next_alpha, hi_next_alpha, mid_alpha)
+    lo_next += res0
+    hi_next += res1
+    mid += res2
 
     # swap lo:
     swap_lo_lo_next = _in_bracket(lo, lo_next)
@@ -376,21 +407,14 @@ def linesearch_iterative(
     # also done if either low or hi slope is nearly flat
     ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0 and lo[1] > -gtol) or (hi[1] > 0 and hi[1] < gtol)
 
+    # update alpha if we have an improvement
+    improved = lo[0] < p0[0] or hi[0] < p0[0]
+    lo_better = lo[0] < hi[0]
+    alpha = wp.where(improved and lo_better, lo_alpha, alpha)
+    alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
     if ls_done:
-      # update alpha if we have an improvement
-      alpha = 0.0
-      improved = lo[0] < p0[0] or hi[0] < p0[0]
-      lo_better = lo[0] < hi[0]
-      alpha = wp.where(improved and lo_better, lo_alpha, alpha)
-      alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
-      efc_alpha_out[worldid] = alpha
-      return
+      break
 
-  alpha = 0.0
-  improved = lo[0] < p0[0] or hi[0] < p0[0]
-  lo_better = lo[0] < hi[0]
-  alpha = wp.where(improved and lo_better, lo_alpha, alpha)
-  alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
   efc_alpha_out[worldid] = alpha
 
 
