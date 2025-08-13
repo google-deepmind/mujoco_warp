@@ -90,8 +90,8 @@ class ThreeHumanoids(mujoco_warp.BenchmarkSuite):
 
 
 # attach a setup_cache to each test for one-time setup of benchmarks
+AlohaPot.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 ApptronikApolloFlat.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
-ApptronikApolloHfield.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 ApptronikApolloTerrain.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 FrankaEmikaPanda.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 Humanoid.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
