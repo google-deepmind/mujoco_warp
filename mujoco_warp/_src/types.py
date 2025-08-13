@@ -254,12 +254,6 @@ class JointType(enum.IntEnum):
   SLIDE = mujoco.mjtJoint.mjJNT_SLIDE
   HINGE = mujoco.mjtJoint.mjJNT_HINGE
 
-  def dof_width(self) -> int:
-    return {0: 6, 1: 3, 2: 1, 3: 1}[self.value]
-
-  def qpos_width(self) -> int:
-    return {0: 7, 1: 4, 2: 1, 3: 1}[self.value]
-
 
 class ConeType(enum.IntEnum):
   """Type of friction cone.
@@ -491,6 +485,7 @@ class EqType(enum.IntEnum):
     CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
     WELD: fix relative position and orientation of two bodies
+    TENDON: couple the lengths of two tendons with cubic
   """
 
   CONNECT = mujoco.mjtEq.mjEQ_CONNECT

@@ -15,14 +15,14 @@
 
 import mujoco_warp
 
-# TODO(team): uncomment once elliptic cone is fixed
-# class AlohaPot(mujoco_warp.BenchmarkSuite):
-#   """Aloha robot with a pasta pot on the workbench."""
 
-#   path = "aloha_pot/scene.xml"
-#   batch_size = 8192
-#   nconmax = 200_000
-#   njmax = 128
+class AlohaPot(mujoco_warp.BenchmarkSuite):
+  """Aloha robot with a pasta pot on the workbench."""
+
+  path = "aloha_pot/scene.xml"
+  batch_size = 8192
+  nconmax = 200_000
+  njmax = 128
 
 
 class ApptronikApolloFlat(mujoco_warp.BenchmarkSuite):
@@ -35,14 +35,15 @@ class ApptronikApolloFlat(mujoco_warp.BenchmarkSuite):
   njmax = 64
 
 
-class ApptronikApolloHfield(mujoco_warp.BenchmarkSuite):
-  """Apptronik Apollo locomoting on a pyramidal hfield."""
+# TODO(team): uncomment once the scene is stable
+# class ApptronikApolloHfield(mujoco_warp.BenchmarkSuite):
+#   """Apptronik Apollo locomoting on a pyramidal hfield."""
 
-  path = "apptronik_apollo/scene_hfield.xml"
-  params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
-  batch_size = 1024
-  nconmax = 700_000
-  njmax = 128
+#   path = "apptronik_apollo/scene_hfield.xml"
+#   params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
+#   batch_size = 1024
+#   nconmax = 700_000
+#   njmax = 128
 
 
 class ApptronikApolloTerrain(mujoco_warp.BenchmarkSuite):
