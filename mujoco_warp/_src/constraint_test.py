@@ -39,20 +39,22 @@ def _assert_eq(a, b, name):
 
 def _assert_efc_eq(d, mjd, nefc, name):
   """Assert equality of efc fields after sorting both sides."""
-  # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref for MJWarp
+  # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref, efc_d for MJWarp
   efc_type = d.efc.type.numpy()[0, :nefc]
   efc_pos = d.efc.pos.numpy()[0, :nefc]
   efc_vel = d.efc.vel.numpy()[0, :nefc]
   efc_aref = d.efc.aref.numpy()[0, :nefc]
-  # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref for MuJoCo
+  efc_d = d.efc.D.numpy()[0, :nefc]
+  # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref, efc_d for MuJoCo
   mjd_efc_type = mjd.efc_type[:nefc]
   mjd_efc_pos = mjd.efc_pos[:nefc]
   mjd_efc_vel = mjd.efc_vel[:nefc]
   mjd_efc_aref = mjd.efc_aref[:nefc]
+  mjd_efc_d = mjd.efc_D[:nefc]
 
   # Create sorting keys using lexsort (more efficient for multiple keys)
-  d_sort_indices = np.lexsort((efc_pos, efc_type, efc_vel, efc_aref))
-  mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref))
+  d_sort_indices = np.lexsort((efc_pos, efc_type, efc_vel, efc_aref, efc_d))
+  mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
 
   # Sort MJWarp efc fields
   d_sorted = d.efc.J.numpy()[0, d_sort_indices, :].reshape(-1)
