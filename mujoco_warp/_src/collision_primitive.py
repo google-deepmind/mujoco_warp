@@ -906,20 +906,24 @@ def plane_convex(
   # vertex indices
   indices = wp.vec4i(-1, -1, -1, -1)
 
+  # find first vertex
+  max_support = float(0.0)
+  a = wp.vec3(0.0)
+  for i in range(convex.vertnum):
+    vert = convex.vert[convex.vertadr + i]
+    support = wp.dot(plane_pos - vert, n)
+    if support > max_support:
+      indices[0] = i
+      max_support = support
+      a = vert
+
+  if indices[0] < 0:
+    return
+
+  threshold = wp.max(0.0, max_support - 1e-3)
+
   # exhaustive search over vertices
-  if convex.graphadr == -1 or convex.vertnum < 10:
-    max_support = float(0.0)
-    a = wp.vec3(0.0)
-    for i in range(convex.vertnum):
-      vert = convex.vert[convex.vertadr + i]
-      support = wp.dot(plane_pos - vert, n)
-      if support > max_support:
-        indices[0] = i
-        max_support = support
-        a = vert
-
-    threshold = wp.max(0.0, max_support - 1e-3)
-
+  if convex.graphadr < 0 or convex.vertnum < 10:
     # find point b (furthest from a)
     if indices[0] >= 0:
       b_dist = float(0.0)
@@ -980,32 +984,6 @@ def plane_convex(
     vert_edgeadr = convex.graphadr + 2
     vert_globalid = convex.graphadr + 2 + numvert
     edge_localid = convex.graphadr + 2 + 2 * numvert
-
-    max_support = float(0.0)
-    a = wp.vec3(0.0)
-
-    # hillclimb until no change
-    prev = int(-1)
-    imax = int(0)
-
-    while True:
-      prev = int(imax)
-      i = int(convex.graph[vert_edgeadr + imax])
-      while convex.graph[edge_localid + i] >= 0:
-        subidx = convex.graph[edge_localid + i]
-        idx = convex.graph[vert_globalid + subidx]
-        vert = convex.vert[convex.vertadr + idx]
-        support = wp.dot(plane_pos - vert, n)
-        if support > max_support:
-          max_support = support
-          imax = int(subidx)
-          indices[0] = idx
-          a = vert
-        i += 1
-      if imax == prev:
-        break
-
-    threshold = wp.max(0.0, max_support - 1e-3)
 
     # find point b (furthest from a)
     if indices[0] >= 0:
