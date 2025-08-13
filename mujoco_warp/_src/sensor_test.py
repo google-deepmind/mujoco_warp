@@ -328,6 +328,7 @@ class SensorTest(parameterized.TestCase):
           </keyframe>
         </mujoco>
       """,
+        keyframe=keyframe,
       )
 
       d.sensordata.zero_()

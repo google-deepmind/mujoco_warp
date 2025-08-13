@@ -1801,7 +1801,7 @@ def _sensor_touch(
 ):
   conid, sensortouchadrid = wp.tid()
 
-  if conid > ncon_in[0]:
+  if conid >= ncon_in[0]:
     return
 
   sensorid = sensor_touch_adr[sensortouchadrid]
