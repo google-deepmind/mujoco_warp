@@ -117,7 +117,7 @@ def _override(model: mjw.Model):
 
     if key in enum_fields:
       try:
-        val = str(enum_fields[key][val.upper()])
+        val = int(enum_fields[key][val.upper()])
       except KeyError:
         raise app.UsageError(f"Unrecognized enum value: {val}")
 
@@ -128,11 +128,6 @@ def _override(model: mjw.Model):
       if i < len(attrs) - 1:
         obj = getattr(obj, attr)
       else:
-        try:
-          val = type(getattr(obj, attr))(ast.literal_eval(val))
-        except (SyntaxError, ValueError):
-          raise app.UsageError(f"Unrecognized value for field: {key}")
-
         setattr(obj, attr, val)
 
 
