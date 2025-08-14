@@ -92,7 +92,6 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
-
   def test_init_linesearch(self):
     """Test linesearch initialization."""
     for keyframe in range(3):
