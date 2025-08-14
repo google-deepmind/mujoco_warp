@@ -79,14 +79,14 @@ def _eval_friction(
 @wp.func
 def _eval_elliptic(
   # In:
-  impratio: float,
+  impratio_invsqrt: float,
   friction: types.vec5,
   quad: wp.vec3,
   quad1: wp.vec3,
   quad2: wp.vec3,
   alpha: float,
 ):
-  mu = friction[0] / wp.sqrt(impratio)
+  mu = friction[0] * impratio_invsqrt
 
   u0 = quad1[0]
   v0 = quad1[1]
@@ -147,7 +147,7 @@ def _eval_init(
   ne_clip: int,
   nef_clip: int,
   nefc_clip: int,
-  impratio: float,
+  impratio_invsqrt: float,
   type_in: wp.array(dtype=int),
   id_in: wp.array(dtype=int),
   D_in: wp.array(dtype=float),
@@ -190,7 +190,7 @@ def _eval_init(
       efc_quad2 = quad_in[efcid2]
       friction = contact_friction_in[conid]
 
-      lo += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, alpha)
+      lo += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, alpha)
     else:
       Jaref = Jaref_in[efcid]
       jv = jv_in[efcid]
@@ -212,7 +212,7 @@ def _eval(
   ne_clip: int,
   nef_clip: int,
   nefc_clip: int,
-  impratio: float,
+  impratio_invsqrt: float,
   type_in: wp.array(dtype=int),
   id_in: wp.array(dtype=int),
   D_in: wp.array(dtype=float),
@@ -268,9 +268,9 @@ def _eval(
       efc_quad2 = quad_in[efcid2]
       friction = contact_friction_in[conid]
 
-      lo += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, lo_alpha)
-      hi += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, hi_alpha)
-      mid += _eval_elliptic(impratio, friction, efc_quad0, efc_quad1, efc_quad2, mid_alpha)
+      lo += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, lo_alpha)
+      hi += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, hi_alpha)
+      mid += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, mid_alpha)
     else:
       Jaref = Jaref_in[efcid]
       jv = jv_in[efcid]
@@ -334,6 +334,7 @@ def linesearch_iterative(
   ne_clip = min(njmax_in, ne_in[worldid])
   nef_clip = min(njmax_in, ne_clip + nf_in[worldid])
   nefc_clip = min(njmax_in, nefc_in[worldid])
+  impratio_invsqrt = 1.0 / wp.sqrt(impratio)
 
   # Calculate p0
   snorm = wp.math.sqrt(efc_search_dot_in[worldid])
@@ -346,7 +347,7 @@ def linesearch_iterative(
     ne_clip,
     nef_clip,
     nefc_clip,
-    impratio,
+    impratio_invsqrt,
     efc_type,
     efc_id,
     efc_D,
@@ -366,7 +367,7 @@ def linesearch_iterative(
     ne_clip,
     nef_clip,
     nefc_clip,
-    impratio,
+    impratio_invsqrt,
     efc_type,
     efc_id,
     efc_D,
@@ -397,7 +398,7 @@ def linesearch_iterative(
       ne_clip,
       nef_clip,
       nefc_clip,
-      impratio,
+      impratio_invsqrt,
       efc_type,
       efc_id,
       efc_D,
