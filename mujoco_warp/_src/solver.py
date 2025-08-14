@@ -726,6 +726,7 @@ def linesearch_parallel_fused(
   nlsp: int,
   opt_impratio: wp.array(dtype=float),
   # Data in:
+  njmax_in: int,
   ncon_in: wp.array(dtype=int),
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
@@ -757,7 +758,7 @@ def linesearch_parallel_fused(
   nf = nf_in[worldid]
 
   # TODO(team): _eval with option to only compute cost
-  for efcid in range(nefc_in[worldid]):
+  for efcid in range(min(njmax_in, nefc_in[worldid])):
     # equality
     if efcid < ne:
       out += _eval_cost(efc_quad_in[worldid, efcid], alpha)
@@ -876,6 +877,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     inputs=[
       m.nlsp,
       m.opt.impratio,
+      d.njmax,
       d.ncon,
       d.ne,
       d.nf,
@@ -1424,6 +1426,7 @@ def update_constraint_zero_qfrc_constraint(
 @wp.kernel
 def update_constraint_init_qfrc_constraint(
   # Data in:
+  njmax_in: int,
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_force_in: wp.array2d(dtype=float),
@@ -1437,7 +1440,7 @@ def update_constraint_init_qfrc_constraint(
     return
 
   sum_qfrc = float(0.0)
-  for efcid in range(nefc_in[worldid]):
+  for efcid in range(min(njmax_in, nefc_in[worldid])):
     efc_J = efc_J_in[worldid, efcid, dofid]
     force = efc_force_in[worldid, efcid]
     sum_qfrc += efc_J * force
@@ -1528,7 +1531,7 @@ def _update_constraint(m: types.Model, d: types.Data):
   wp.launch(
     update_constraint_init_qfrc_constraint,
     dim=(d.nworld, m.nv),
-    inputs=[d.nefc, d.efc.J, d.efc.force, d.efc.done],
+    inputs=[d.njmax, d.nefc, d.efc.J, d.efc.force, d.efc.done],
     outputs=[d.qfrc_constraint],
   )
 
@@ -1651,6 +1654,7 @@ def update_gradient_copy_lower_triangle(
 @wp.kernel
 def update_gradient_JTDAJ(
   # Data in:
+  njmax_in: int,
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
@@ -1675,7 +1679,7 @@ def update_gradient_JTDAJ(
   efc_Ji = efc_J_in[worldid, 0, dofi]
   efc_Jj = efc_J_in[worldid, 0, dofj]
   efc_state = efc_state_in[worldid, 0]
-  for efcid in range(nefc - 1):
+  for efcid in range(min(njmax_in, nefc) - 1):
     if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
       sum_h += efc_Ji * efc_Jj * efc_D
 
@@ -1927,6 +1931,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       update_gradient_JTDAJ,
       dim=(d.nworld, lower_triangle_dim),
       inputs=[
+        d.njmax,
         d.nefc,
         d.efc.J,
         d.efc.D,
