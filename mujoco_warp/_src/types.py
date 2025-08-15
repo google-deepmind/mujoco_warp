@@ -588,7 +588,7 @@ class Option:
   is_sparse: bool
   gjk_iterations: int  # warp only
   epa_iterations: int  # warp only
-  ls_parallel: bool
+  ls_parallel: bool  # warp only
   ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
   has_fluid: bool
