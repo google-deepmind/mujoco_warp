@@ -462,6 +462,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
       ls_parallel=False,
+      ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
       gjk_iterations=MJ_CCD_ITERATIONS,
       epa_iterations=MJ_CCD_ITERATIONS,
       broadphase=int(broadphase),
@@ -472,7 +473,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
-      ls_min_step=1.0e-6,  # TODO(team): determine good default setting
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,

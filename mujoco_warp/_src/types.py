@@ -557,6 +557,7 @@ class Option:
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
+    ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     density: density of medium
@@ -569,7 +570,6 @@ class Option:
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
-    ls_min_step: minimum step size for solver linesearch
   """
 
   timestep: wp.array(dtype=float)
@@ -589,6 +589,7 @@ class Option:
   gjk_iterations: int  # warp only
   epa_iterations: int  # warp only
   ls_parallel: bool
+  ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
   has_fluid: bool
   density: wp.array(dtype=float)
@@ -599,7 +600,6 @@ class Option:
   sdf_initpoints: int
   sdf_iterations: int
   run_collision_detection: bool  # warp only
-  ls_min_step: float  # warp only
 
 
 @dataclasses.dataclass

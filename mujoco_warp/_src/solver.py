@@ -731,7 +731,7 @@ def linesearch_parallel_fused(
   # Model:
   nlsp: int,
   opt_impratio: wp.array(dtype=float),
-  opt_ls_min_step: float,
+  opt_ls_parallel_min_step: float,
   # Data in:
   njmax_in: int,
   ncon_in: wp.array(dtype=int),
@@ -757,7 +757,7 @@ def linesearch_parallel_fused(
   if efc_done_in[worldid]:
     return
 
-  alpha = _log_scale(opt_ls_min_step, 1.0, nlsp, alphaid)
+  alpha = _log_scale(opt_ls_parallel_min_step, 1.0, nlsp, alphaid)
 
   out = _eval_cost(efc_quad_gauss_in[worldid], alpha)
 
@@ -853,7 +853,7 @@ def linesearch_parallel_fused(
 def linesearch_parallel_best_alpha(
   # Model:
   nlsp: int,
-  opt_ls_min_step: float,
+  opt_ls_parallel_min_step: float,
   # Data in:
   efc_done_in: wp.array(dtype=bool),
   efc_cost_candidate_in: wp.array2d(dtype=float),
@@ -875,7 +875,7 @@ def linesearch_parallel_best_alpha(
       best_cost = cost
       bestid = i
 
-  efc_alpha_out[worldid] = _log_scale(opt_ls_min_step, 1.0, nlsp, bestid)
+  efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, nlsp, bestid)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data):
@@ -885,7 +885,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
     inputs=[
       m.nlsp,
       m.opt.impratio,
-      m.opt.ls_min_step,
+      m.opt.ls_parallel_min_step,
       d.njmax,
       d.ncon,
       d.ne,
@@ -909,7 +909,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
   wp.launch(
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
-    inputs=[m.nlsp, m.opt.ls_min_step, d.efc.done, d.efc.cost_candidate],
+    inputs=[m.nlsp, m.opt.ls_parallel_min_step, d.efc.done, d.efc.cost_candidate],
     outputs=[d.efc.alpha],
   )
 
