@@ -258,8 +258,8 @@ def benchmark(
       else:
         trace = tracer.trace()
       if measure_alloc:
-        ncon.append(d.ncon.numpy()[0])
-        nefc.append(np.sum(d.nefc.numpy()))
+        ncon.append(np.max([d.ncon.numpy()[0], d.ncollision.numpy()[0]]))
+        nefc.append(np.max(d.nefc.numpy()))
       if measure_solver_niter:
         solver_niter.append(d.solver_niter.numpy())
 
