@@ -424,6 +424,7 @@ class IOTest(parameterized.TestCase):
     ]
 
     mjm, mjd, m, d = test_util.fixture(xml)
+    nconmax = d.nconmax
 
     # data fields
     for arr in reset_datafield:
@@ -441,6 +442,9 @@ class IOTest(parameterized.TestCase):
         attr.fill_(-1)
 
     mujoco.mj_resetData(mjm, mjd)
+
+    # set ncon in order to zero all contact memory
+    wp.copy(d.ncon, wp.array([nconmax], dtype=int))
     mjwarp.reset_data(m, d)
 
     for arr in reset_datafield:

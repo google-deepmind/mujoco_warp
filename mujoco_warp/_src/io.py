@@ -1792,31 +1792,6 @@ def _zero_contact(
 
 def reset_data(m: types.Model, d: types.Data):
   """Clear data, set defaults."""
-
-  # clear variables sizes and global properties
-  wp.launch(
-    _zero_nworld,
-    dim=d.nworld,
-    inputs=[m.nhfieldgeom, d.nworld],
-    outputs=[
-      d.solver_niter,
-      d.ncon,
-      d.ncon_world,
-      d.ncon_hfield,
-      d.ne,
-      d.ne_connect,
-      d.ne_weld,
-      d.ne_jnt,
-      d.ne_ten,
-      d.nf,
-      d.nl,
-      d.nefc,
-      d.nsolving,
-      d.time,
-      d.energy,
-    ],
-  )
-
   # copy qpos0 from model
   wp.copy(d.qpos, m.qpos0)
 
@@ -1851,5 +1826,29 @@ def reset_data(m: types.Model, d: types.Data):
       d.contact.geom,
       d.contact.efc_address,
       d.contact.worldid,
+    ],
+  )
+
+  # clear variables sizes and global properties
+  wp.launch(
+    _zero_nworld,
+    dim=d.nworld,
+    inputs=[m.nhfieldgeom, d.nworld],
+    outputs=[
+      d.solver_niter,
+      d.ncon,
+      d.ncon_world,
+      d.ncon_hfield,
+      d.ne,
+      d.ne_connect,
+      d.ne_weld,
+      d.ne_jnt,
+      d.ne_ten,
+      d.nf,
+      d.nl,
+      d.nefc,
+      d.nsolving,
+      d.time,
+      d.energy,
     ],
   )
