@@ -7,6 +7,8 @@
     "python -m build --wheel -o {build_cache_dir}"
   ],
   "install_command": [
+    "in-dir={env_dir} python -m pip install mujoco --pre --upgrade -f https://py.mujoco.org/",
+    "in-dir={env_dir} python -m pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/",
     "in-dir={env_dir} python -m pip install {wheel_file}[dev]"
   ],
   "branches": ["main"],
