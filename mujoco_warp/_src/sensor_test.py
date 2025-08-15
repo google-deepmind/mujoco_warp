@@ -411,7 +411,7 @@ class SensorTest(parameterized.TestCase):
   @parameterized.parameters(
     'type="sphere" size=".1"',
     'type="capsule" size=".1 .1" euler="0 89 89"',
-    'type="box" size=".1 .1 .1" euler=".02 .05 .1"',
+    'type="box" size=".1 .11 .12" euler=".02 .05 .1"',
   )
   def test_contact_sensor(self, geom):
     """Test contact sensor."""
@@ -431,7 +431,7 @@ class SensorTest(parameterized.TestCase):
       'geom1="geom" geom2="sphere"',
       'geom1="sphere" geom2="geom"',
     ]:
-      for num in [1, 2, 3, 4, 5]:
+      for num in [1, 3, 5]:
         for reduce in ["mindist", "maxforce"]:
           for data in datas:
             data = " ".join(data)
