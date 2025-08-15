@@ -176,7 +176,7 @@ def _main(argv: Sequence[str]):
 
     fn = _FUNCS[_FUNCTION.value]
     res = mjw.benchmark(fn, m, d, _NSTEP.value, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
-    jit_time, run_time, trace, ncon, nefc, solver_niter = res
+    jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
     print(f"""
@@ -186,7 +186,8 @@ Total JIT time: {jit_time:.2f} s
 Total simulation time: {run_time:.2f} s
 Total steps per second: {steps / run_time:,.0f}
 Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
-Total time per step: {1e9 * run_time / steps:.2f} ns""")
+Total time per step: {1e9 * run_time / steps:.2f} ns
+Total converged worlds: {nsuccess} / {d.nworld}""")
 
     if trace:
       _print_trace(trace, 0, steps)
