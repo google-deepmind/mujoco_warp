@@ -111,8 +111,12 @@ def _override(model: Union[mjw.Model, mujoco.MjModel]):
         raise app.UsageError(f"Unrecognized model field: {key}")
       if i < len(attrs) - 1:
         obj = getattr(obj, attr)
-      else:
-        setattr(obj, attr, val)
+      elif key not in enum_fields:
+        try:
+          val = type(getattr(obj, attr))(ast.literal_eval(val))
+        except (SyntaxError, ValueError):
+          raise app.UsageError(f"Unrecognized value for field: {key}")
+      setattr(obj, attr, val)
 
 
 def _compile_step(m, d):
