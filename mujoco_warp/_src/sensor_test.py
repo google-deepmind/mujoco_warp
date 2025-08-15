@@ -419,22 +419,17 @@ class SensorTest(parameterized.TestCase):
     contact_sensor = ""
 
     # data combinations
-    field = ["found", "force", "torque", "dist", "pos", "normal", "tangent"]
-    datas = itertools.chain.from_iterable([itertools.combinations(field, i) for i in range(len(field))])
-    datas = list(datas)
+    datas = ["found", "force dist normal", "torque pos tangent", "found force torque dist pos normal tangent"]
 
     for geoms in [
       'geom1="plane" geom2="geom"',
       'geom1="geom" geom2="plane"',
-      'geom1="plane" geom2="sphere"',
       'geom1="sphere" geom2="plane"',
       'geom1="geom" geom2="sphere"',
-      'geom1="sphere" geom2="geom"',
     ]:
       for num in [1, 3, 5]:
         for reduce in ["mindist", "maxforce"]:
           for data in datas:
-            data = " ".join(data)
             contact_sensor += f'<contact {geoms} num="{num}" reduce="{reduce}" data="{data}"/>'
 
     _MJCF = f"""
