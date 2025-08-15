@@ -1752,6 +1752,8 @@ def _set_mocap(
 
 @wp.kernel
 def _zero_contact(
+  # Data in:
+  ncon_in: wp.array(dtype=int),
   # In:
   nefcaddress: int,
   # Data out:
@@ -1770,7 +1772,8 @@ def _zero_contact(
 ):
   conid = wp.tid()
 
-  # TODO(team): only zero if conid <= ncon[0]?
+  if conid >= ncon_in[0]:
+    return
 
   contact_dist_out[conid] = 0.0
   contact_pos_out[conid] = wp.vec3(0.0)
@@ -1834,7 +1837,7 @@ def reset_data(m: types.Model, d: types.Data):
   wp.launch(
     _zero_contact,
     dim=d.nconmax,
-    inputs=[d.contact.efc_address.shape[1]],
+    inputs=[d.ncon, d.contact.efc_address.shape[1]],
     outputs=[
       d.contact.dist,
       d.contact.pos,
