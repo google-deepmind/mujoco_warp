@@ -45,12 +45,18 @@ class mat83f(wp.types.matrix(shape=(8, 3), dtype=wp.float32)):
   pass
 
 
+# parameters for plane-mesh extra contacts
+_MAX_PLANE_MESH = 3
+_TOLERANCE_PLANE_MESH = 0.3
+
+
 @wp.struct
 class Geom:
   pos: wp.vec3
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+  rbound: float
   hfprism: wp.mat33
   vertadr: int
   vertnum: int
@@ -75,6 +81,7 @@ def _geom(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
+  geom_rbound: wp.array2d(dtype=float),
   hfield_adr: wp.array(dtype=int),
   hfield_nrow: wp.array(dtype=int),
   hfield_ncol: wp.array(dtype=int),
@@ -107,6 +114,7 @@ def _geom(
   rot = geom_xmat_in[worldid, gid]
   geom.rot = rot
   geom.size = geom_size[worldid, gid]
+  geom.rbound = geom_rbound[worldid, gid]
   geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
   dataid = geom_dataid[gid]
 
@@ -898,219 +906,111 @@ def plane_convex(
   contact_worldid_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a plane and a convex object."""
-
-  # get points in the convex frame
-  plane_pos = wp.transpose(convex.rot) @ (plane.pos - convex.pos)
-  n = wp.transpose(convex.rot) @ plane.normal
-
-  # Store indices in vec4
+  # vertex indices
   indices = wp.vec4i(-1, -1, -1, -1)
 
-  # exhaustive search over all vertices
-  if convex.graphadr == -1 or convex.vertnum < 10:
-    # Find support points
-    max_support = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      max_support = wp.max(support, max_support)
+  pos1 = plane.pos
+  normal = plane.normal
+  pos2 = convex.pos
+  mat2 = convex.rot
 
-    threshold = wp.max(0.0, max_support - 1e-3)
-    # Find point a (first support point)
-    a_dist = wp.float32(-_HUGE_VAL)
+  # support point in -normal direction
+  local_normal = wp.transpose(mat2) @ normal
+  local_dir = -local_normal
+  max_ = float(-1.0e32)
+
+  imax = int(0)
+  exhaustive_search = convex.graphadr < 0 or convex.vertnum < 10
+
+  if exhaustive_search:
     for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      if dist > a_dist:
+      vert = convex.vert[convex.vertadr + i]
+      vdot = wp.dot(local_dir, vert)
+      if vdot > max_:
+        max_ = vdot
         indices[0] = i
-        a_dist = dist
-    a = convex.vert[convex.vertadr + indices[0]]
-
-    # Find point b (furthest from a)
-    b_dist = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      dist = wp.length_sq(a - convex.vert[convex.vertadr + i]) + dist_mask
-      if dist > b_dist:
-        indices[1] = i
-        b_dist = dist
-    b = convex.vert[convex.vertadr + indices[1]]
-
-    # Find point c (furthest along axis orthogonal to a-b)
-    ab = wp.cross(n, a - b)
-    c_dist = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      dist = wp.length_sq(ab - convex.vert[convex.vertadr + i]) + dist_mask
-      if dist > c_dist:
-        indices[2] = i
-        c_dist = dist
-    c = convex.vert[convex.vertadr + indices[2]]
-
-    # Find point d (furthest from other triangle edges)
-    ac = wp.cross(n, a - c)
-    bc = wp.cross(n, b - c)
-    d_dist = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + i], n)
-      dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-      ap = ac - convex.vert[convex.vertadr + i]
-      bp = bc - convex.vert[convex.vertadr + i]
-      dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
-      dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
-      if dist_ap + dist_bp > d_dist:
-        indices[3] = i
-        d_dist = dist_ap + dist_bp
-
-  else:
-    numvert = convex.graph[convex.graphadr]
+  else:  # hill climb
     vert_edgeadr = convex.graphadr + 2
-    vert_globalid = convex.graphadr + 2 + numvert
-    edge_localid = convex.graphadr + 2 + 2 * numvert
+    vert_globalid = convex.graphadr + 2 + convex.vertnum
+    edge_localid = convex.graphadr + 2 + 2 * convex.vertnum
 
-    # Find support points
-    max_support = wp.float32(-_HUGE_VAL)
-
-    # hillclimb until no change
     prev = int(-1)
-    imax = int(0)
-
-    while True:
+    while imax != prev:
       prev = int(imax)
       i = int(convex.graph[vert_edgeadr + imax])
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
-        if support > max_support:
-          max_support = support
-          imax = int(subidx)
-        i += int(1)
-      if imax == prev:
+        vert = convex.vert[convex.vertadr + idx]
+        vdot = wp.dot(local_dir, vert)
+        if vdot > max_:
+          max_ = vdot
+          imax = subidx
+          indices[0] = idx
+        i += 1
+
+  vert0_global = mat2 @ convex.vert[convex.vertadr + indices[0]] + pos2
+
+  dist = wp.dot(normal, vert0_global - pos1)
+
+  if dist > margin:
+    return
+
+  # inclusion threshold along local_dir, relative to geom2 center
+  threshold = wp.dot(normal, pos2 - pos1) - margin
+
+  count = int(1)
+
+  if exhaustive_search:
+    for i in range(convex.vertnum):
+      if count >= _MAX_PLANE_MESH:
         break
 
-    threshold = wp.max(0.0, max_support - 1e-3)
+      # skip best
+      if i == indices[0]:
+        continue
 
-    a_dist = wp.float32(-_HUGE_VAL)
-    # hillclimb until no change
-    prev = int(-1)
-    imax = int(0)
-
-    while True:
-      prev = int(imax)
-      i = int(convex.graph[vert_edgeadr + imax])
-      while convex.graph[edge_localid + i] >= 0:
-        subidx = convex.graph[edge_localid + i]
-        idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
-        dist = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        if dist > a_dist:
-          a_dist = dist
-          imax = int(subidx)
-        i += int(1)
-      if imax == prev:
+      # detect contact
+      vert = convex.vert[convex.vertadr + i]
+      vdot = wp.dot(local_dir, vert)
+      if vdot > threshold:
+        # skip contact if too close to first contact
+        vert_global = mat2 @ vert + pos2
+        if wp.norm_l2(vert_global - vert0_global) >= _TOLERANCE_PLANE_MESH * convex.rbound:
+          indices[count] = i
+          count += 1
+  elif imax >= 0:  # hill climb
+    i = int(convex.graph[vert_edgeadr + imax])
+    while convex.graph[edge_localid + i] >= 0:
+      if count >= _MAX_PLANE_MESH:
         break
-    imax = convex.graph[vert_globalid + imax]
-    a = convex.vert[convex.vertadr + imax]
-    indices[0] = imax
+      locid = convex.graph[edge_localid + i]
+      idx = convex.graph[vert_globalid + locid]
+      if idx != indices[0]:
+        vert = convex.vert[convex.vertadr + idx]
+        vdot = wp.dot(local_dir, vert)
+        if vdot > threshold:
+          # skip if too close to first contact
+          vert_global = mat2 @ vert + pos2
+          if wp.norm_l2(vert_global - vert0_global) >= _TOLERANCE_PLANE_MESH * convex.rbound:
+            indices[count] = idx
+            count += 1
+      i += 1
 
-    # Find point b (furthest from a)
-    b_dist = wp.float32(-_HUGE_VAL)
-    # hillclimb until no change
-    prev = int(-1)
-    imax = int(0)
-
-    while True:
-      prev = int(imax)
-      i = int(convex.graph[vert_edgeadr + imax])
-      while convex.graph[edge_localid + i] >= 0:
-        subidx = convex.graph[edge_localid + i]
-        idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
-        dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        dist = wp.length_sq(a - convex.vert[convex.vertadr + idx]) + dist_mask
-        if dist > b_dist:
-          b_dist = dist
-          imax = int(subidx)
-        i += int(1)
-      if imax == prev:
-        break
-    imax = convex.graph[vert_globalid + imax]
-    b = convex.vert[convex.vertadr + imax]
-    indices[1] = imax
-
-    # Find point c (furthest along axis orthogonal to a-b)
-    ab = wp.cross(n, a - b)
-    c_dist = wp.float32(-_HUGE_VAL)
-    # hillclimb until no change
-    prev = int(-1)
-    imax = int(0)
-
-    while True:
-      prev = int(imax)
-      i = int(convex.graph[vert_edgeadr + imax])
-      while convex.graph[edge_localid + i] >= 0:
-        subidx = convex.graph[edge_localid + i]
-        idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
-        dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        dist = wp.length_sq(ab - convex.vert[convex.vertadr + idx]) + dist_mask
-        if dist > c_dist:
-          c_dist = dist
-          imax = int(subidx)
-        i += int(1)
-      if imax == prev:
-        break
-    imax = convex.graph[vert_globalid + imax]
-    c = convex.vert[convex.vertadr + imax]
-    indices[2] = imax
-
-    # Find point d (furthest from other triangle edges)
-    ac = wp.cross(n, a - c)
-    bc = wp.cross(n, b - c)
-    d_dist = wp.float32(-_HUGE_VAL)
-    # hillclimb until no change
-    prev = int(-1)
-    imax = int(0)
-
-    while True:
-      prev = int(imax)
-      i = int(convex.graph[vert_edgeadr + imax])
-      while convex.graph[edge_localid + i] >= 0:
-        subidx = convex.graph[edge_localid + i]
-        idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
-        dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        ap = ac - convex.vert[convex.vertadr + idx]
-        bp = bc - convex.vert[convex.vertadr + idx]
-        dist_ap = wp.abs(wp.dot(ap, ac)) + dist_mask
-        dist_bp = wp.abs(wp.dot(bp, bc)) + dist_mask
-        if dist_ap + dist_bp > d_dist:
-          d_dist = dist_ap + dist_bp
-          imax = int(subidx)
-        i += int(1)
-      if imax == prev:
-        break
-    imax = convex.graph[vert_globalid + imax]
-    indices[3] = imax
-
-  # Write contacts
+  # write contacts
   frame = make_frame(plane.normal)
-  for i in range(3, -1, -1):
-    idx = indices[i]
-    count = int(0)
-    for j in range(i + 1):
-      if indices[j] == idx:
-        count = count + 1
 
-    # Check if the index is unique (appears exactly once)
-    if count == 1:
-      pos = convex.vert[convex.vertadr + idx]
-      pos = convex.pos + convex.rot @ pos
-      support = wp.dot(plane_pos - convex.vert[convex.vertadr + idx], n)
-      dist = -support
-      pos = pos - 0.5 * dist * plane.normal
+  for i in range(count):
+    idx = indices[i]
+    if idx >= 0:
+      vert_global = mat2 @ convex.vert[convex.vertadr + idx] + pos2
+      dist = wp.dot(normal, vert_global - pos1)
+
+      if dist > margin:
+        continue
+
+      pos = vert_global - 0.5 * dist * normal
+
       write_contact(
         nconmax_in,
         dist,
@@ -2690,6 +2590,7 @@ def _primitive_narrowphase_builder(m: Model):
     geom_solref: wp.array2d(dtype=wp.vec2),
     geom_solimp: wp.array2d(dtype=vec5),
     geom_size: wp.array2d(dtype=wp.vec3),
+    geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
@@ -2784,6 +2685,7 @@ def _primitive_narrowphase_builder(m: Model):
       geom_type,
       geom_dataid,
       geom_size,
+      geom_rbound,
       hfield_adr,
       hfield_nrow,
       hfield_ncol,
@@ -2814,6 +2716,7 @@ def _primitive_narrowphase_builder(m: Model):
       geom_type,
       geom_dataid,
       geom_size,
+      geom_rbound,
       hfield_adr,
       hfield_nrow,
       hfield_ncol,
@@ -2905,6 +2808,7 @@ def primitive_narrowphase(m: Model, d: Data):
       m.geom_solref,
       m.geom_solimp,
       m.geom_size,
+      m.geom_rbound,
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
