@@ -57,4 +57,11 @@ You can also benchmark your own branch:
 asv run $MYBRANCH
 ```
 
+In order to measure accurate JIT times, the benchmarks disable the Warp kernel cache.  If you would like to re-enable the kernel
+cache, e.g. for quick local debugging, set the `ASV_CACHE_KERNELS` environment variable:
+
+```
+ASV_CACHE_KERNELS=true asv run
+```
+
 See the [airspeed velocity documentation](https://asv.readthedocs.io/en/latest/index.html) for more information.
