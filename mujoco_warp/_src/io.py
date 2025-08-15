@@ -408,7 +408,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   condim_max = np.max(condim) if len(condim) > 0 else 0
 
   # height field
-  nhfieldgeom, geomgeom2hfgeom = _hfield_geom_pair(mjm)
+  nhfieldgeom, geompair2hfgeom = _hfield_geom_pair(mjm)
 
   m = types.Model(
     nq=mjm.nq,
@@ -822,7 +822,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     actuator_trntype_body_adr=wp.array(np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0], dtype=int),
-    geompair2hfgeompair=wp.array(geomgeom2hfgeom, dtype=int),
+    geompair2hfgeompair=wp.array(geompair2hfgeom, dtype=int),
     block_dim=types.BlockDim(),
     geom_pair_type_count=tuple(geom_type_pair_count),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
