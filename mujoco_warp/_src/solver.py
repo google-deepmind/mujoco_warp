@@ -1590,26 +1590,6 @@ def update_gradient_grad(
 
 
 @wp.kernel
-def update_gradient_zero_h_lower(
-  # Model:
-  dof_tri_row: wp.array(dtype=int),
-  dof_tri_col: wp.array(dtype=int),
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
-):
-  worldid, elementid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  rowid = dof_tri_row[elementid]
-  colid = dof_tri_col[elementid]
-  efc_h_out[worldid, rowid, colid] = 0.0
-
-
-@wp.kernel
 def update_gradient_set_h_qM_lower_sparse(
   # Model:
   qM_fullm_i: wp.array(dtype=int),
@@ -1627,32 +1607,11 @@ def update_gradient_set_h_qM_lower_sparse(
 
   i = qM_fullm_i[elementid]
   j = qM_fullm_j[elementid]
-  efc_h_out[worldid, i, j] = qM_in[worldid, 0, elementid]
+  efc_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
 
 
 @wp.kernel
-def update_gradient_copy_lower_triangle(
-  # Model:
-  dof_tri_row: wp.array(dtype=int),
-  dof_tri_col: wp.array(dtype=int),
-  # Data in:
-  qM_in: wp.array3d(dtype=float),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
-):
-  worldid, elementid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  rowid = dof_tri_row[elementid]
-  colid = dof_tri_col[elementid]
-  efc_h_out[worldid, rowid, colid] = qM_in[worldid, rowid, colid]
-
-
-@wp.kernel
-def update_gradient_JTDAJ(
+def update_gradient_JTDAJ_sparse(
   # Data in:
   njmax_in: int,
   nefc_in: wp.array(dtype=int),
@@ -1691,7 +1650,52 @@ def update_gradient_JTDAJ(
 
   if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
     sum_h += efc_Ji * efc_Jj * efc_D
-  efc_h_out[worldid, dofi, dofj] += sum_h
+  efc_h_out[worldid, dofi, dofj] = sum_h
+
+
+@wp.kernel
+def update_gradient_JTDAJ_dense(
+  # Data in:
+  njmax_in: int,
+  nefc_in: wp.array(dtype=int),
+  qM_in: wp.array3d(dtype=float),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_h_out: wp.array3d(dtype=float),
+):
+  worldid, elementid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  nefc = nefc_in[worldid]
+
+  dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
+  dofj = elementid - (dofi * (dofi + 1)) // 2
+
+  sum_h = float(0.0)
+  qM = qM_in[worldid, dofi, dofj]
+  efc_D = efc_D_in[worldid, 0]
+  # TODO(team): sparse efc_J
+  efc_Ji = efc_J_in[worldid, 0, dofi]
+  efc_Jj = efc_J_in[worldid, 0, dofj]
+  efc_state = efc_state_in[worldid, 0]
+  for efcid in range(min(njmax_in, nefc) - 1):
+    if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
+      sum_h += efc_Ji * efc_Jj * efc_D
+
+    jj = efcid + 1
+    efc_D = efc_D_in[worldid, jj]
+    efc_Ji = efc_J_in[worldid, jj, dofi]
+    efc_Jj = efc_J_in[worldid, jj, dofj]
+    efc_state = efc_state_in[worldid, jj]
+
+  if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
+    sum_h += efc_Ji * efc_Jj * efc_D
+  efc_h_out[worldid, dofi, dofj] = qM + sum_h
 
 
 # TODO(thowell): combine with JTDAJ ?
@@ -1904,11 +1908,19 @@ def _update_gradient(m: types.Model, d: types.Data):
     smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
+    lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
     if m.opt.is_sparse:
       wp.launch(
-        update_gradient_zero_h_lower,
-        dim=(d.nworld, m.dof_tri_row.size),
-        inputs=[m.dof_tri_row, m.dof_tri_col, d.efc.done],
+        update_gradient_JTDAJ_sparse,
+        dim=(d.nworld, lower_triangle_dim),
+        inputs=[
+          d.njmax,
+          d.nefc,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          d.efc.done,
+        ],
         outputs=[d.efc.h],
       )
       wp.launch(
@@ -1919,27 +1931,19 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch(
-        update_gradient_copy_lower_triangle,
-        dim=(d.nworld, m.dof_tri_row.size),
-        inputs=[m.dof_tri_row, m.dof_tri_col, d.qM, d.efc.done],
+        update_gradient_JTDAJ_dense,
+        dim=(d.nworld, lower_triangle_dim),
+        inputs=[
+          d.njmax,
+          d.nefc,
+          d.qM,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          d.efc.done,
+        ],
         outputs=[d.efc.h],
       )
-
-    lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
-    # TODO(team): Investigate whether d.efc.h initialization can be merged into this kernel
-    wp.launch(
-      update_gradient_JTDAJ,
-      dim=(d.nworld, lower_triangle_dim),
-      inputs=[
-        d.njmax,
-        d.nefc,
-        d.efc.J,
-        d.efc.D,
-        d.efc.state,
-        d.efc.done,
-      ],
-      outputs=[d.efc.h],
-    )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
