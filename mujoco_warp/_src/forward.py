@@ -319,11 +319,7 @@ def _euler_damp_qfrc_sparse(
   opt_timestep: wp.array(dtype=float),
   dof_Madr: wp.array(dtype=int),
   dof_damping: wp.array2d(dtype=float),
-  # Data in:
-  qfrc_smooth_in: wp.array2d(dtype=float),
-  qfrc_constraint_in: wp.array2d(dtype=float),
   # Data out:
-  qfrc_integration_out: wp.array2d(dtype=float),
   qM_integration_out: wp.array3d(dtype=float),
 ):
   worldid, tid = wp.tid()
@@ -331,7 +327,6 @@ def _euler_damp_qfrc_sparse(
 
   adr = dof_Madr[tid]
   qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
-  qfrc_integration_out[worldid, tid] = qfrc_smooth_in[worldid, tid] + qfrc_constraint_in[worldid, tid]
 
 
 def _euler_sparse(m: Model, d: Data):
@@ -343,11 +338,8 @@ def _euler_sparse(m: Model, d: Data):
       m.opt.timestep,
       m.dof_Madr,
       m.dof_damping,
-      d.qfrc_smooth,
-      d.qfrc_constraint,
     ],
     outputs=[
-      d.qfrc_integration,
       d.qM_integration,
     ],
   )
@@ -358,7 +350,7 @@ def _euler_sparse(m: Model, d: Data):
     d.qLD_integration,
     d.qLDiagInv_integration,
     d.qacc_integration,
-    d.qfrc_integration,
+    d.efc.Ma,
   )
 
 
@@ -371,8 +363,7 @@ def _tile_euler_dense(tile: TileSet):
     opt_timestep: wp.array(dtype=float),
     # Data in:
     qM_in: wp.array3d(dtype=float),
-    qfrc_smooth_in: wp.array2d(dtype=float),
-    qfrc_constraint_in: wp.array2d(dtype=float),
+    efc_Ma_in: wp.array2d(dtype=float),
     # In:
     adr_in: wp.array(dtype=int),
     # Data out:
@@ -388,14 +379,10 @@ def _tile_euler_dense(tile: TileSet):
     damping_scaled = damping_tile * timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
-    qfrc_smooth_tile = wp.tile_load(qfrc_smooth_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    qfrc_constraint_tile = wp.tile_load(qfrc_constraint_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-
-    qfrc_tile = qfrc_smooth_tile + qfrc_constraint_tile
-
+    Ma_tile = wp.tile_load(efc_Ma_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     L_tile = wp.tile_cholesky(qm_integration_tile)
-    qacc_tile = wp.tile_cholesky_solve(L_tile, qfrc_tile)
-    wp.tile_store(qacc_integration_out[worldid], qacc_tile, offset=(dofid))
+    qacc_integration_tile = wp.tile_cholesky_solve(L_tile, Ma_tile)
+    wp.tile_store(qacc_integration_out[worldid], qacc_integration_tile, offset=(dofid))
 
   return euler_dense
 
@@ -413,7 +400,7 @@ def euler(m: Model, d: Data):
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
-          inputs=[m.dof_damping, m.opt.timestep, d.qM, d.qfrc_smooth, d.qfrc_constraint, tile.adr],
+          inputs=[m.dof_damping, m.opt.timestep, d.qM, d.efc.Ma, tile.adr],
           outputs=[d.qacc_integration],
           block_dim=m.block_dim.euler_dense,
         )
@@ -1025,7 +1012,10 @@ def forward(m: Model, d: Data):
 @event_scope
 def step(m: Model, d: Data):
   """Advance simulation."""
+  # TODO(team): mj_checkPos
+  # TODO(team): mj_checkVel
   forward(m, d)
+  # TODO(team): mj_checkAcc
 
   if m.opt.integrator == IntegratorType.EULER:
     euler(m, d)
@@ -1035,3 +1025,44 @@ def step(m: Model, d: Data):
     implicit(m, d)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+
+
+@event_scope
+def step1(m: Model, d: Data):
+  """Advance simulation in two phases: before input is set by user."""
+  energy = m.opt.enableflags & EnableBit.ENERGY
+  # TODO(team): mj_checkPos
+  # TODO(team): mj_checkVel
+  fwd_position(m, d)
+  sensor.sensor_pos(m, d)
+
+  if energy:
+    if m.sensor_e_potential == 0:  # not computed by sensor
+      sensor.energy_pos(m, d)
+  else:
+    wp.launch(_zero_energy, dim=d.nworld, inputs=[d.energy])
+
+  fwd_velocity(m, d)
+  sensor.sensor_vel(m, d)
+
+  if energy:
+    if m.sensor_e_kinetic == 0:  # not computed by sensor
+      sensor.energy_vel(m, d)
+
+
+@event_scope
+def step2(m: Model, d: Data):
+  """Advance simulation in two phases: after input is set by user."""
+  fwd_actuation(m, d)
+  fwd_acceleration(m, d)
+  solver.solve(m, d)
+  sensor.sensor_acc(m, d)
+  # TODO(team): mj_checkAcc
+
+  # integrate with Euler or implicitfast
+  # TODO(team): implicit
+  if m.opt.integrator == IntegratorType.IMPLICITFAST:
+    implicit(m, d)
+  else:
+    # note: RK4 defaults to Euler
+    euler(m, d)

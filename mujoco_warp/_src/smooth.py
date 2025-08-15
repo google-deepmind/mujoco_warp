@@ -242,7 +242,7 @@ def _flex_edges(
   j = body_dofadr[flex_vertbodyid[vbase + v[1]]]
   vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
   vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
-  flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, vec) / vecnorm
+  flexedge_velocity_out[worldid, edgeid] = math.safe_div(wp.dot(vel2 - vel1, vec), vecnorm)
 
 
 @wp.kernel
@@ -1551,7 +1551,7 @@ def _tendon_dot(
         # chain rule, second term: Jdot += (jac2 - jac1) * d / dt (dpnt)
         Jdot += wp.dot(jacdif, dvel)
 
-        ten_Jdot_out[worldid, tenid, i] += Jdot / divisor
+        ten_Jdot_out[worldid, tenid, i] += math.safe_div(Jdot, divisor)
 
     # TODO(team): j += 2 if geom wrapping
     j += 1
@@ -1872,8 +1872,8 @@ def _transmission(
 
     # compute derivatives of length w.r.t. vec and axis
     if ok == 1:
-      scale = 1.0 - av / sdet
-      dldv = axis * scale + vec / sdet
+      scale = 1.0 - math.safe_div(av, sdet)
+      dldv = axis * scale + math.safe_div(vec, sdet)
       dlda = vec * scale
     else:
       dldv = axis

@@ -25,7 +25,6 @@ import mujoco_warp as mjwarp
 
 from . import test_util
 from .types import BiasType
-from .types import DisableBit
 from .types import GainType
 from .types import IntegratorType
 
@@ -133,14 +132,13 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, _, _ = test_util.fixture("pendula.xml", kick=True, eulerdamp=eulerdamp, sparse=sparse)
     self.assertTrue((mjm.dof_damping > 0).any())
 
-    mjd.qvel[:] = 1.0
-    mjd.qacc[:] = 1.0
-    mujoco.mj_forward(mjm, mjd)
-
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
+    mujoco.mj_forward(mjm, mjd)
 
     mujoco.mj_Euler(mjm, mjd)
+
+    mjwarp.solve(m, d)  # compute efc.Ma
     mjwarp.euler(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
@@ -220,8 +218,10 @@ class ForwardTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    mjwarp.implicit(m, d)
     mujoco.mj_implicit(mjm, mjd)
+
+    mjwarp.solve(m, d)  # compute efc.Ma
+    mjwarp.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
@@ -230,6 +230,8 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, m, d = test_util.fixture("actuation/position.xml", keyframe=0, integrator=IntegratorType.IMPLICITFAST, kick=True)
 
     mujoco.mj_implicit(mjm, mjd)
+
+    mjwarp.solve(m, d)  # compute efc.Ma
     mjwarp.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
@@ -239,6 +241,8 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, m, d = test_util.fixture("tendon/damping.xml", keyframe=0, integrator=IntegratorType.IMPLICITFAST, kick=True)
 
     mujoco.mj_implicit(mjm, mjd)
+
+    mjwarp.solve(m, d)  # compute efc.Ma
     mjwarp.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
@@ -278,6 +282,189 @@ class ForwardTest(parameterized.TestCase):
       mjwarp.forward(m, d)
 
       _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+
+  @parameterized.parameters(("humanoid/humanoid.xml", True), ("humanoid/humanoid.xml", False))
+  def test_step1(self, xml, energy):
+    # TODO(team): test more mjcfs
+    mjm, mjd, m, d = test_util.fixture(xml, kick=True, energy=energy)
+
+    # some of the fields updated by step1
+    step1_field = [
+      "xpos",
+      "xquat",
+      "xmat",
+      "xipos",
+      "ximat",
+      "xanchor",
+      "xaxis",
+      "geom_xpos",
+      "geom_xmat",
+      "site_xmat",
+      "subtree_com",
+      "cinert",
+      "cdof",
+      "cam_xpos",
+      "cam_xmat",
+      "light_xpos",
+      "light_xdir",
+      "ten_length",
+      "ten_J",
+      "ten_wrapadr",
+      "ten_wrapnum",
+      "wrap_obj",
+      "wrap_xpos",
+      "qM",
+      "qLD",
+      "nefc",
+      "efc_type",
+      "efc_id",
+      "efc_J",
+      "efc_pos",
+      "efc_margin",
+      "efc_D",
+      "efc_vel",
+      "efc_aref",
+      "efc_frictionloss",
+      "actuator_length",
+      "actuator_moment",
+      "actuator_velocity",
+      "ten_velocity",
+      "cvel",
+      "cdof_dot",
+      "qfrc_spring",
+      "qfrc_damper",
+      "qfrc_gravcomp",
+      "qfrc_fluid",
+      "qfrc_passive",
+      "qfrc_bias",
+      "energy",
+    ]
+    if m.nflexvert:
+      step1_field += ["flexvert_xpos"]
+    if m.nflexedge:
+      step1_field += ["flexedge_length", "flexedge_velocity"]
+
+    def _getattr(arr):
+      if (len(arr) >= 4) & (arr[:4] == "efc_"):
+        return getattr(d.efc, arr[4:]), True
+      return getattr(d, arr), False
+
+    for arr in step1_field:
+      attr, _ = _getattr(arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      elif attr.dtype == int:
+        attr.fill_(-1)
+      else:
+        attr.zero_()
+
+    mujoco.mj_step1(mjm, mjd)
+    mjwarp.step1(m, d)
+
+    for arr in step1_field:
+      d_arr, is_nefc = _getattr(arr)
+      d_arr = d_arr.numpy()[0]
+      mjd_arr = getattr(mjd, arr)
+      if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
+        mjd_arr = mjd_arr.reshape(-1)
+        d_arr = d_arr.reshape(-1)
+      elif arr == "qM":
+        qM = np.zeros((mjm.nv, mjm.nv))
+        mujoco.mj_fullM(mjm, qM, mjd.qM)
+        mjd_arr = qM
+      elif arr == "actuator_moment":
+        actuator_moment = np.zeros((mjm.nu, mjm.nv))
+        mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+        mjd_arr = actuator_moment
+      elif arr == "ten_J" and mjm.ntendon:
+        ten_J = np.zeros((mjm.ntendon, mjm.nv))
+        mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
+        mjd_arr = ten_J
+      elif arr == "efc_J":
+        if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
+          efc_J = np.zeros((mjd.nefc, mjm.nv))
+          mujoco.mju_sparse2dense(efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+          mjd_arr = efc_J
+        else:
+          mjd_arr = mjd_arr.reshape((mjd.nefc, mjm.nv))
+      elif arr == "qLD":
+        vec = np.ones((1, mjm.nv))
+        res = np.zeros((1, mjm.nv))
+        mujoco.mj_solveM(mjm, mjd, res, vec)
+
+        vec_wp = wp.array(vec, dtype=float)
+        res_wp = wp.zeros((1, mjm.nv), dtype=float)
+        mjwarp.solve_m(m, d, res_wp, vec_wp)
+
+        d_arr = res_wp.numpy()[0]
+        mjd_arr = res[0]
+      if is_nefc:
+        d_arr = d_arr[: d.nefc.numpy()[0]]
+
+      _assert_eq(d_arr, mjd_arr, arr)
+
+    # TODO(team): sensor_pos
+    # TODO(team): sensor_vel
+
+  @parameterized.parameters(
+    ("humanoid/humanoid.xml", IntegratorType.EULER),
+    ("humanoid/humanoid.xml", IntegratorType.IMPLICITFAST),
+    ("humanoid/humanoid.xml", IntegratorType.RK4),
+  )
+  def test_step2(self, xml, integrator):
+    mjm, mjd, m, _ = test_util.fixture(xml, kick=True, integrator=integrator)
+
+    # some of the fields updated by step2
+    step2_field = [
+      "act_dot",
+      "actuator_force",
+      "qfrc_actuator",
+      "qfrc_smooth",
+      "qacc",
+      "qvel",
+      "qpos",
+      "efc_force",
+      "qfrc_constraint",
+    ]
+
+    def _getattr(arr):
+      if (len(arr) >= 4) & (arr[:4] == "efc_"):
+        return getattr(d.efc, arr[4:]), True
+      return getattr(d, arr), False
+
+    mujoco.mj_step1(mjm, mjd)
+
+    # input
+    ctrl = 0.1 * np.random.rand(mjm.nu)
+    qfrc_applied = 0.1 * np.random.rand(mjm.nv)
+    xfrc_applied = 0.1 * np.random.rand(mjm.nbody, 6)
+
+    mjd.ctrl = ctrl
+    mjd.qfrc_applied = qfrc_applied
+    mjd.xfrc_applied = xfrc_applied
+
+    d = mjwarp.put_data(mjm, mjd)
+
+    for arr in step2_field:
+      if arr in ["qpos", "qvel"]:
+        continue
+      attr, _ = _getattr(arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      elif attr.dtype == int:
+        attr.fill_(-1)
+      else:
+        attr.zero_()
+
+    mujoco.mj_step2(mjm, mjd)
+    mjwarp.step2(m, d)
+
+    for arr in step2_field:
+      d_arr, is_efc = _getattr(arr)
+      d_arr = d_arr.numpy()[0]
+      if is_efc:
+        d_arr = d_arr[: d.nefc.numpy()[0]]
+      _assert_eq(d_arr, getattr(mjd, arr), arr)
 
 
 if __name__ == "__main__":
