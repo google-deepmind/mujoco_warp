@@ -217,6 +217,7 @@ def benchmark(
     list: Number of contacts.
     list: Number of constraints.
     list: Number of solver iterations.
+    int: Number of converged worlds.
   """
   jit_beg = time.perf_counter()
 
@@ -263,9 +264,10 @@ def benchmark(
       if measure_solver_niter:
         solver_niter.append(d.solver_niter.numpy())
 
+    nsuccess = d.nworld - np.sum(np.any(np.isnan(d.qpos.numpy()), axis=1))
     run_duration = np.sum(time_vec)
 
-  return jit_duration, run_duration, trace, ncon, nefc, solver_niter
+  return jit_duration, run_duration, trace, ncon, nefc, solver_niter, nsuccess
 
 
 class BenchmarkSuite:
