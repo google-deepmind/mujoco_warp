@@ -254,12 +254,6 @@ class JointType(enum.IntEnum):
   SLIDE = mujoco.mjtJoint.mjJNT_SLIDE
   HINGE = mujoco.mjtJoint.mjJNT_HINGE
 
-  def dof_width(self) -> int:
-    return {0: 6, 1: 3, 2: 1, 3: 1}[self.value]
-
-  def qpos_width(self) -> int:
-    return {0: 7, 1: 4, 2: 1, 3: 1}[self.value]
-
 
 class ConeType(enum.IntEnum):
   """Type of friction cone.
@@ -491,6 +485,7 @@ class EqType(enum.IntEnum):
     CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
     WELD: fix relative position and orientation of two bodies
+    TENDON: couple the lengths of two tendons with cubic
   """
 
   CONNECT = mujoco.mjtEq.mjEQ_CONNECT
@@ -1022,7 +1017,8 @@ class Model:
     sensor_e_kinetic: evaluate energy_vel
     sensor_tendonactfrc_adr: address for tendonactfrc sensor (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
-    sensor_contact_adr: addresses for contact sensors
+    sensor_contact_adr: addresses for contact sensors        (<=nsensor,)
+    sensor_adr_to_contact_adr: map sensor adr to contact adr (nsensor,)
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     plugin: globally registered plugin slot number           (nplugin,)
@@ -1333,6 +1329,7 @@ class Model:
   sensor_tendonactfrc_adr: wp.array(dtype=int)  # warp only
   sensor_subtree_vel: bool  # warp only
   sensor_contact_adr: wp.array(dtype=int)  # warp only
+  sensor_adr_to_contact_adr: wp.array(dtype=int)  # warp only
   sensor_rne_postconstraint: bool  # warp only
   sensor_rangefinder_bodyid: wp.array(dtype=int)  # warp only
   plugin: wp.array(dtype=int)

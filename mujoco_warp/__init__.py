@@ -36,6 +36,8 @@ from ._src.forward import fwd_position as fwd_position
 from ._src.forward import fwd_velocity as fwd_velocity
 from ._src.forward import implicit as implicit
 from ._src.forward import rungekutta4 as rungekutta4
+from ._src.forward import step1 as step1
+from ._src.forward import step2 as step2
 from ._src.inverse import inverse as inverse
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
