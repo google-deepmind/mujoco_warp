@@ -129,8 +129,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
 
     # reduction
-    if (mjm.sensor_intprm[is_contact_sensor, 1] != 1).any():
-      raise NotImplementedError(f"Contact sensor: only mindist reduction is implemented.")
+    if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
+      raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
@@ -610,7 +610,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     flex_elemedge=wp.array(mjm.flex_elemedge, dtype=int),
     flexedge_length0=wp.array(mjm.flexedge_length0, dtype=float),
     flex_stiffness=wp.array(mjm.flex_stiffness.flatten(), dtype=float),
-    flex_bending=wp.array(mjm.flex_bending, dtype=wp.mat44f),
+    flex_bending=wp.array(mjm.flex_bending.flatten(), dtype=float),
     flex_damping=wp.array(mjm.flex_damping, dtype=float),
     mesh_vertadr=wp.array(mjm.mesh_vertadr, dtype=int),
     mesh_vertnum=wp.array(mjm.mesh_vertnum, dtype=int),
