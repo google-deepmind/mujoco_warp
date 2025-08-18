@@ -1632,12 +1632,14 @@ def update_gradient_JTDAJ_sparse(
   dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
   dofj = elementid - (dofi * (dofi + 1)) // 2
 
-  sum_h = float(0.0)
+  # To optimize the loop, data for the next iteration is prefetched
+  # This allows to parallelize memory load and computation to hide memory latency
+  efc_state = efc_state_in[worldid, 0]
   efc_D = efc_D_in[worldid, 0]
   # TODO(team): sparse efc_J
   efc_Ji = efc_J_in[worldid, 0, dofi]
   efc_Jj = efc_J_in[worldid, 0, dofj]
-  efc_state = efc_state_in[worldid, 0]
+  sum_h = float(0.0)
   for efcid in range(min(njmax_in, nefc) - 1):
     if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
       sum_h += efc_Ji * efc_Jj * efc_D
@@ -1648,8 +1650,10 @@ def update_gradient_JTDAJ_sparse(
     efc_Jj = efc_J_in[worldid, jj, dofj]
     efc_state = efc_state_in[worldid, jj]
 
+  # Adding the contribution from the last constraint row
   if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
     sum_h += efc_Ji * efc_Jj * efc_D
+
   efc_h_out[worldid, dofi, dofj] = sum_h
 
 
@@ -1676,13 +1680,14 @@ def update_gradient_JTDAJ_dense(
   dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
   dofj = elementid - (dofi * (dofi + 1)) // 2
 
-  sum_h = float(0.0)
-  qM = qM_in[worldid, dofi, dofj]
+  # To optimize the loop, data for the next iteration is prefetched
+  # This allows to parallelize memory load and computation to hide memory latency
+  efc_state = efc_state_in[worldid, 0]
   efc_D = efc_D_in[worldid, 0]
   # TODO(team): sparse efc_J
   efc_Ji = efc_J_in[worldid, 0, dofi]
   efc_Jj = efc_J_in[worldid, 0, dofj]
-  efc_state = efc_state_in[worldid, 0]
+  sum_h = float(0.0)
   for efcid in range(min(njmax_in, nefc) - 1):
     if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
       sum_h += efc_Ji * efc_Jj * efc_D
@@ -1693,8 +1698,11 @@ def update_gradient_JTDAJ_dense(
     efc_Jj = efc_J_in[worldid, jj, dofj]
     efc_state = efc_state_in[worldid, jj]
 
+  # Adding the contribution from the last constraint row
   if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
     sum_h += efc_Ji * efc_Jj * efc_D
+
+  qM = qM_in[worldid, dofi, dofj]
   efc_h_out[worldid, dofi, dofj] = qM + sum_h
 
 
