@@ -22,7 +22,6 @@ MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
-MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 
 
@@ -570,6 +569,7 @@ class Option:
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
+    maxconpair: maximum number of contacts per geom pair
   """
 
   timestep: wp.array(dtype=float)
@@ -600,6 +600,7 @@ class Option:
   sdf_initpoints: int
   sdf_iterations: int
   run_collision_detection: bool  # warp only
+  maxconpair: int  # warp only
 
 
 @dataclasses.dataclass
