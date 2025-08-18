@@ -20,6 +20,7 @@ class AlohaPot(mujoco_warp.BenchmarkSuite):
   """Aloha robot with a pasta pot on the workbench."""
 
   path = "aloha_pot/scene.xml"
+  params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
   nconmax = 200_000
   njmax = 128
