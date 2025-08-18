@@ -329,7 +329,7 @@ class BenchmarkSuite:
     m = io.put_model(mjm)
     d = io.put_data(mjm, mjd, self.batch_size, self.nconmax, self.njmax)
 
-    jit_duration, _, trace, _, _, solver_niter = benchmark(forward.step, m, d, 1000, True, False, True)
+    jit_duration, _, trace, _, _, solver_niter, _ = benchmark(forward.step, m, d, 1000, True, False, True)
     metrics = {
       "jit_duration": jit_duration,
       "solver_niter_mean": np.mean(solver_niter),
