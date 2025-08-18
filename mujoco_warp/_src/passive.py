@@ -481,7 +481,7 @@ def _flex_bending(
   for i in range(nvert):
     for j in range(nvert):
       for x in range(3):
-        force[i, x] -= flex_bending[17*edgeid + 4*i + j] * flexvert_xpos_in[worldid, v[j]][x]
+        force[i, x] -= flex_bending[17 * edgeid + 4 * i + j] * flexvert_xpos_in[worldid, v[j]][x]
 
   for i in range(nvert):
     bodyid = flex_vertbodyid[flex_vertadr[f] + v[i]]
