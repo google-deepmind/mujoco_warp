@@ -483,10 +483,10 @@ def _flex_bending(
     v1 = flexvert_xpos_in[worldid, v[1]]
     v2 = flexvert_xpos_in[worldid, v[2]]
     v3 = flexvert_xpos_in[worldid, v[3]]
-    frc[1, :] = wp.cross(v2 - v0, v3 - v0)
-    frc[2, :] = wp.cross(v3 - v0, v1 - v0)
-    frc[3, :] = wp.cross(v1 - v0, v2 - v0)
-    frc[0, :] = -(frc[1, :] + frc[2, :] + frc[3, :])
+    frc[1] = wp.cross(v2 - v0, v3 - v0)
+    frc[2] = wp.cross(v3 - v0, v1 - v0)
+    frc[3] = wp.cross(v1 - v0, v2 - v0)
+    frc[0] = -(frc[1] + frc[2] + frc[3])
 
   force = wp.mat(0.0, shape=(nvert, 3))
   for i in range(nvert):
