@@ -347,10 +347,10 @@ def _subtree_com_init(
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
-  xipos_out: wp.array2d(dtype=wp.vec3),
+  subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  xipos_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
+  subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
 
 
 @wp.kernel
@@ -486,7 +486,7 @@ def com_pos(m: Model, d: Data):
   Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
   computes composite inertias and motion degrees of freedom in the subtree CoM frame.
   """
-  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos, d.subtree_com])
+  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
