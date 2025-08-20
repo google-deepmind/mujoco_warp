@@ -117,7 +117,7 @@ def _override(model: mjw.Model):
 
     if key in enum_fields:
       try:
-        val = str(enum_fields[key][val.upper()])
+        val = int(enum_fields[key][val.upper()])
       except KeyError:
         raise app.UsageError(f"Unrecognized enum value: {val}")
 
@@ -127,13 +127,12 @@ def _override(model: mjw.Model):
         raise app.UsageError(f"Unrecognized model field: {key}")
       if i < len(attrs) - 1:
         obj = getattr(obj, attr)
-      else:
+      elif key not in enum_fields:
         try:
           val = type(getattr(obj, attr))(ast.literal_eval(val))
         except (SyntaxError, ValueError):
           raise app.UsageError(f"Unrecognized value for field: {key}")
-
-        setattr(obj, attr, val)
+      setattr(obj, attr, val)
 
 
 def _main(argv: Sequence[str]):
@@ -177,7 +176,7 @@ def _main(argv: Sequence[str]):
 
     fn = _FUNCS[_FUNCTION.value]
     res = mjw.benchmark(fn, m, d, _NSTEP.value, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
-    jit_time, run_time, trace, ncon, nefc, solver_niter = res
+    jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
     print(f"""
@@ -187,7 +186,8 @@ Total JIT time: {jit_time:.2f} s
 Total simulation time: {run_time:.2f} s
 Total steps per second: {steps / run_time:,.0f}
 Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
-Total time per step: {1e9 * run_time / steps:.2f} ns""")
+Total time per step: {1e9 * run_time / steps:.2f} ns
+Total converged worlds: {nsuccess} / {d.nworld}""")
 
     if trace:
       _print_trace(trace, 0, steps)
