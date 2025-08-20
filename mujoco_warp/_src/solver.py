@@ -15,6 +15,7 @@
 
 from math import ceil
 from math import sqrt
+from typing import Tuple
 
 import warp as wp
 
@@ -56,7 +57,7 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 
 @wp.func
-def _eval_friction(
+def _eval_frictionloss(
   # In:
   x: float,
   f: float,
@@ -85,7 +86,7 @@ def _eval_elliptic(
   quad1: wp.vec3,
   quad2: wp.vec3,
   alpha: float,
-):
+) -> wp.vec3:
   mu = friction[0] * impratio_invsqrt
 
   u0 = quad1[0]
@@ -156,7 +157,7 @@ def _eval_init(
   jv_in: wp.array(dtype=float),
   quad_in: wp.array(dtype=wp.vec3),
   alpha: float,
-):
+) -> wp.vec3:
   lo = wp.vec3(0.0, 0.0, 0.0)
   for efcid in range(ne_clip):
     quad = quad_in[efcid]
@@ -172,7 +173,7 @@ def _eval_init(
     x = Jaref + alpha * jv
     rf = math.safe_div(f, D)
 
-    quad_f = _eval_friction(x, f, rf, Jaref, jv, quad_in[efcid])
+    quad_f = _eval_frictionloss(x, f, rf, Jaref, jv, quad_in[efcid])
     lo += _eval_pt(quad_f, alpha)
 
   for efcid in range(nef_clip, nefc_clip):
@@ -223,7 +224,7 @@ def _eval(
   lo_alpha: float,
   hi_alpha: float,
   mid_alpha: float,
-):
+) -> Tuple[wp.vec3, wp.vec3, wp.vec3]:
   lo = wp.vec3(0.0, 0.0, 0.0)
   hi = wp.vec3(0.0, 0.0, 0.0)
   mid = wp.vec3(0.0, 0.0, 0.0)
@@ -246,11 +247,11 @@ def _eval(
     x_hi = Jaref + hi_alpha * jv
     x_mid = Jaref + mid_alpha * jv
 
-    quad_f = _eval_friction(x_lo, f, rf, Jaref, jv, quad)
+    quad_f = _eval_frictionloss(x_lo, f, rf, Jaref, jv, quad)
     lo += _eval_pt(quad_f, lo_alpha)
-    quad_f = _eval_friction(x_hi, f, rf, Jaref, jv, quad)
+    quad_f = _eval_frictionloss(x_hi, f, rf, Jaref, jv, quad)
     hi += _eval_pt(quad_f, hi_alpha)
-    quad_f = _eval_friction(x_mid, f, rf, Jaref, jv, quad)
+    quad_f = _eval_frictionloss(x_mid, f, rf, Jaref, jv, quad)
     mid += _eval_pt(quad_f, mid_alpha)
 
   for efcid in range(nef_clip, nefc_clip):
