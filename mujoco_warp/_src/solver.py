@@ -1790,7 +1790,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch_tiled(
-        update_gradient_cholesky_blocked(32),
+        update_gradient_cholesky_blocked(16),
         dim=(d.nworld,),
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),
