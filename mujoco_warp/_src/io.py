@@ -396,13 +396,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # contact sensor
   sensor_adr_to_contact_adr = np.clip(np.cumsum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT) - 1, a_min=0, a_max=None)
 
-  # TODO(team): improve heuristic for selecting broadphase routine
-  if mjm.ngeom > 1000:
-    broadphase = types.BroadphaseType.SAP_SEGMENTED
-  elif mjm.ngeom > 100:
+  if nxn_geom_pair_filtered.shape[0] < 250_000:
+    broadphase = types.BroadphaseType.NXN
+  elif mjm.ngeom < 1000:
     broadphase = types.BroadphaseType.SAP_TILE
   else:
-    broadphase = types.BroadphaseType.NXN
+    broadphase = types.BroadphaseType.SAP_SEGMENTED
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
