@@ -1503,7 +1503,7 @@ def _mesh_normals(
     # up to two faces as two vertices define an edge
     n, edgeset = _intersect1(polymap, polymap, v1_adr, v2_adr, v1_num, v2_num)
     if n == 0:
-      return 0, normals, indices
+      return 0
     for i in range(n):
       normals[i] = mat @ polynormal[polyadr + edgeset[i]]
       indices[i] = edgeset[i]
