@@ -334,7 +334,7 @@ def ccd_kernel_builder(
         x1 += geom1.rot @ (x1_ / 6.0)
 
       dist, count, witness1, witness2 = ccd(
-        False,
+        True,
         opt_ccd_tolerance[worldid],
         0.0,
         gjk_iterations,

@@ -1326,7 +1326,7 @@ def _next(n: int, i: int) -> int:
 
 
 @wp.func
-def _polygon_quad(polygon: wp.array(wp.vec3), npolygon: int):
+def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int):
   """Returns the indices of a quadrilateral of maximum area in a convex polygon."""
   b = _next(npolygon, 0)
   c = _next(npolygon, b)
@@ -1525,8 +1525,8 @@ def _mesh_normals(
 @wp.func
 def _mesh_edge_normals(
   # In:
-  normals: wp.array(wp.vec3),
-  endverts: wp.array(wp.vec3),
+  normals: wp.array(dtype=wp.vec3),
+  endverts: wp.array(dtype=wp.vec3),
   dim: int,
   mat: wp.mat33,
   pos: wp.vec3,
@@ -1668,8 +1668,8 @@ def _box_normals(
 # compute possible edge normals for box for edge collisions
 @wp.func
 def _box_edge_normals(
-  normals: wp.array(wp.vec3),
-  endverts: wp.array(wp.vec3),
+  normals: wp.array(dtype=wp.vec3),
+  endverts: wp.array(dtype=wp.vec3),
   dim: int,
   mat: wp.mat33,
   pos: wp.vec3,
