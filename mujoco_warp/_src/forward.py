@@ -312,8 +312,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     ],
   )
 
-  if not m.opt.disableflags & DisableBit.WARMSTART.value:
-    wp.copy(d.qacc_warmstart, d.qacc)
+  wp.copy(d.qacc_warmstart, d.qacc)
 
 
 @wp.kernel
