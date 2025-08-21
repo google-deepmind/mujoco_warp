@@ -15,9 +15,7 @@
 
 <mujoco model="Poncho">
   <include file="mannequin.xml"/>
-  <option timestep="0.001" integrator="Euler" solver="CG" tolerance="1e-6" jacobian="sparse">
-    <flag energy="enable"/>
-  </option>
+  <option timestep="0.001" integrator="Euler" solver="CG" tolerance="1e-6" jacobian="sparse"/>
 
   <visual>
     <map force="0.1" zfar="30"/>
