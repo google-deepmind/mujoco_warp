@@ -1026,6 +1026,9 @@ def step(m: Model, d: Data):
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 
+  if not m.opt.disableflags & DisableBit.WARMSTART.value:
+    wp.copy(d.qacc_warmstart, d.qacc)
+
 
 @event_scope
 def step1(m: Model, d: Data):
@@ -1066,3 +1069,6 @@ def step2(m: Model, d: Data):
   else:
     # note: RK4 defaults to Euler
     euler(m, d)
+
+  if not m.opt.disableflags & DisableBit.WARMSTART.value:
+    wp.copy(d.qacc_warmstart, d.qacc)

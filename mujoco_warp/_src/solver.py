@@ -2009,16 +2009,11 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
     _update_gradient(m, d)
 
 
-def _copy_acc(m: types.Model, d: types.Data):
-  wp.copy(d.qacc, d.qacc_smooth)
-  wp.copy(d.qacc_warmstart, d.qacc_smooth)
-  d.solver_niter.fill_(0)
-
-
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if d.njmax == 0:
-    _copy_acc(m, d)
+    wp.copy(d.qacc, d.qacc_smooth)
+    d.solver_niter.fill_(0)
   else:
     _solve(m, d)
 
@@ -2062,5 +2057,3 @@ def _solve(m: types.Model, d: types.Data):
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
       _solver_iteration(m, d)
-
-  wp.copy(d.qacc_warmstart, d.qacc)
