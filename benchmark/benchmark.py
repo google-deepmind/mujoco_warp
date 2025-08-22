@@ -57,6 +57,16 @@ class ApptronikApolloTerrain(mujoco_warp.BenchmarkSuite):
   njmax = 96
 
 
+class Cloth(mujoco_warp.BenchmarkSuite):
+  """Draping of a cloth over the MuJoCo humanoid."""
+
+  path = "cloth/scene.xml"
+  params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
+  batch_size = 2048
+  nconmax = 165_000
+  njmax = 140
+
+
 class FrankaEmikaPanda(mujoco_warp.BenchmarkSuite):
   """Franka Emika Panda on an infinite plane."""
 
@@ -94,6 +104,7 @@ class ThreeHumanoids(mujoco_warp.BenchmarkSuite):
 AlohaPot.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 ApptronikApolloFlat.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 ApptronikApolloTerrain.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
+Cloth.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 FrankaEmikaPanda.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 Humanoid.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
 ThreeHumanoids.setup_cache = lambda s: mujoco_warp.BenchmarkSuite.setup_cache(s)
