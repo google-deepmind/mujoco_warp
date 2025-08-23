@@ -472,6 +472,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
+      legacy_gjk=False,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
