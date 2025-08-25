@@ -52,7 +52,7 @@ _NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per 
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
-
+_REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 
 _VIEWER_GLOBAL_STATE = {"running": True, "step_once": False}
 
@@ -119,6 +119,37 @@ def _override(model: Union[mjw.Model, mujoco.MjModel]):
       setattr(obj, attr, val)
 
 
+def _make_traj(model: mujoco.MjModel, keyname_prefix: str) -> tuple[list[int], np.ndarray]:
+  """Make a ctrl trajectory with linear interpolation."""
+  keyids, ctrls = [], []
+  prev_ctrl_key = np.zeros(model.nu, dtype=np.float64)
+  prev_time, time = 0.0, 0.0
+
+  for keyid in range(model.nkey):
+    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_KEY, keyid)
+    if not name.startswith(keyname_prefix):
+      continue
+    ctrl_key, ctrl_time = model.key_ctrl[keyid], model.key_time[keyid]
+    if not ctrls and ctrl_time != 0.0:
+      raise ValueError("first keyframe must have time 0.0")
+    elif ctrls and ctrl_time <= prev_time:
+      raise ValueError("keyframes must be in time order")
+
+    while time < ctrl_time:
+      frac = (time - prev_time) / (ctrl_time - prev_time)
+      keyids.append(keyid)
+      ctrls.append(prev_ctrl_key * (1 - frac) + ctrl_key * frac)
+      time += model.opt.timestep
+
+    keyids.append(keyid)
+    ctrls.append(ctrl_key)
+    time += model.opt.timestep
+    prev_ctrl_key = ctrl_key
+    prev_time = time
+
+  return keyids, np.array(ctrls)
+
+
 def _compile_step(m, d):
   mjw.step(m, d)
   # double warmup to work around issues with compilation during graph capture:
@@ -138,7 +169,12 @@ def _main(argv: Sequence[str]) -> None:
 
   mjm = _load_model(epath.Path(argv[1]))
   mjd = mujoco.MjData(mjm)
-  if mjm.nkey > 0 and _KEYFRAME.value > -1:
+  ctrls = None
+  ctrlid = 0
+  if _REPLAY.value:
+    keyids, ctrls = _make_traj(mjm, _REPLAY.value)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, keyids[0])
+  elif mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
   mujoco.mj_forward(mjm, mjd)
 
@@ -183,6 +219,10 @@ def _main(argv: Sequence[str]) -> None:
   with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
     while True:
       start = time.time()
+
+      if ctrls is not None and ctrlid < len(ctrls):
+        mjd.ctrl[:] = ctrls[ctrlid]
+        ctrlid += 1
 
       if _ENGINE.value == EngineOptions.C:
         mujoco.mj_step(mjm, mjd)
