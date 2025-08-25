@@ -1185,21 +1185,6 @@ def update_constraint_efc(
 
 
 @wp.kernel
-def update_constraint_zero_qfrc_constraint(
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  qfrc_constraint_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  qfrc_constraint_out[worldid, dofid] = 0.0
-
-
-@wp.kernel
 def update_constraint_init_qfrc_constraint(
   # Data in:
   njmax_in: int,
@@ -1221,7 +1206,7 @@ def update_constraint_init_qfrc_constraint(
     force = efc_force_in[worldid, efcid]
     sum_qfrc += efc_J * force
 
-  qfrc_constraint_out[worldid, dofid] += sum_qfrc
+  qfrc_constraint_out[worldid, dofid] = sum_qfrc
 
 
 @cache_kernel
@@ -1297,13 +1282,6 @@ def _update_constraint(m: types.Model, d: types.Data):
   )
 
   # qfrc_constraint = efc_J.T @ efc_force
-  wp.launch(
-    update_constraint_zero_qfrc_constraint,
-    dim=(d.nworld, m.nv),
-    inputs=[d.efc.done],
-    outputs=[d.qfrc_constraint],
-  )
-
   wp.launch(
     update_constraint_init_qfrc_constraint,
     dim=(d.nworld, m.nv),
