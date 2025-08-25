@@ -785,7 +785,7 @@ class Model:
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
     jnt_bodyid: id of joint's body                           (njnt,)
     jnt_limited: does joint have limits                      (njnt,)
-    jnt_actfrclimited: does joint have actuator force limits (njnt,)
+    jnt_actfrclimited: does joint have actuator force limits (nworld, njnt)
     jnt_solref: constraint solver reference: limit           (nworld, njnt, mjNREF)
     jnt_solimp: constraint solver impedance: limit           (nworld, njnt, mjNIMP)
     jnt_pos: local anchor position                           (nworld, njnt, 3)
