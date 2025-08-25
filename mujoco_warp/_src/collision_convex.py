@@ -317,10 +317,10 @@ def ccd_kernel_builder(
 
       # find prism center for height field
       if geomtype1 == int(GeomType.HFIELD.value):
-        x1 = wp.vec3(0.0, 0.0, 0.0)
+        x1_ = wp.vec3(0.0, 0.0, 0.0)
         for i in range(6):
-          x1 += hfield_prism_vertex(geom1.hfprism, i)
-        x1 = x1 / 6.0
+          x1_ += hfield_prism_vertex(geom1.hfprism, i)
+        x1 += geom1.rot @ (x1_ / 6.0)
 
       dist, count, witness1, witness2 = ccd(
         False,
