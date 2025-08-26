@@ -1984,15 +1984,15 @@ def _sensor_tactile(
 
 
 @wp.func
-def _check_match(body: int, geom: int, objtype: int, id: int) -> bool:
-  """Check if a contact body/geom matches a sensor spec (objtype, id)."""
+def _check_match(body: int, geom: int, objtype: int, objid: int) -> bool:
+  """Check if a contact body/geom matches a sensor spec (objtype, objid)."""
   if objtype == int(ObjType.UNKNOWN.value):
     return True
   # TODO(team): site
   if objtype == int(ObjType.GEOM.value):
-    return id == geom
+    return objid == geom
   if objtype == int(ObjType.BODY.value):
-    return id == body
+    return objid == body
   # TODO(team): xbody
   return False
 
