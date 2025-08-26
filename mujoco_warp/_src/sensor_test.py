@@ -422,10 +422,18 @@ class SensorTest(parameterized.TestCase):
     datas = ["found", "force dist normal", "torque pos tangent", "found force torque dist pos normal tangent"]
 
     for geoms in [
+      'geom1="plane"',
+      'geom2="plane"',
       'geom1="plane" geom2="geom"',
       'geom1="geom" geom2="plane"',
       'geom1="sphere" geom2="plane"',
       'geom1="geom" geom2="sphere"',
+      'body1="plane"',
+      'body2="plane"',
+      'body1="plane" body2="geom"',
+      'body1="geom" body2="plane"',
+      'body1="sphere" body2="plane"',
+      'body1="geom" body2="sphere"',
     ]:
       for num in [1, 3, 5]:
         for reduce in ["mindist", "maxforce"]:
@@ -437,12 +445,14 @@ class SensorTest(parameterized.TestCase):
       <compiler angle="degree"/>
       <option cone="pyramidal"/>
       <worldbody>
-        <geom name="plane" type="plane" size="10 10 .001"/>
-        <body>
+        <body name="plane">
+          <geom name="plane" type="plane" size="10 10 .001"/>
+        </body>
+        <body name="geom">
           <geom name="geom" {geom}/>
           <joint type="slide" axis="0 0 1"/>
         </body>
-        <body>
+        <body name="sphere">
           <geom name="sphere" type="sphere" size=".1"/>
           <joint type="slide" axis="0 0 1"/>
         </body>

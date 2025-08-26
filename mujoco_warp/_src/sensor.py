@@ -1983,11 +1983,28 @@ def _sensor_tactile(
   wp.atomic_add(sensordata_out[worldid], sensor_adr[sensor_id] + 2 * dim + vertid, forceT[2])
 
 
+@wp.func
+def _check_match(body: int, geom: int, objtype: int, id: int) -> bool:
+  """Check if a contact body/geom matches a sensor spec (objtype, id)."""
+  if objtype == int(ObjType.UNKNOWN.value):
+    return True
+  # TODO(team): site
+  if objtype == int(ObjType.GEOM.value):
+    return id == geom
+  if objtype == int(ObjType.BODY.value):
+    return id == body
+  # TODO(team): xbody
+  return False
+
+
 @wp.kernel
 def _contact_match(
   # Model:
   opt_cone: int,
+  geom_bodyid: wp.array(dtype=int),
+  sensor_objtype: wp.array(dtype=int),
   sensor_objid: wp.array(dtype=int),
+  sensor_reftype: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_intprm: wp.array2d(dtype=int),
   sensor_contact_adr: wp.array(dtype=int),
@@ -2015,53 +2032,83 @@ def _contact_match(
     return
 
   # sensor information
+  objtype = sensor_objtype[sensorid]
   objid = sensor_objid[sensorid]
+  reftype = sensor_reftype[sensorid]
   refid = sensor_refid[sensorid]
   reduce = sensor_intprm[sensorid, 1]
 
-  # contact information
-  geom = contact_geom_in[contactid]
+  # unknown-unknown match
+  if objtype == int(ObjType.UNKNOWN.value) and reftype == int(ObjType.UNKNOWN.value):
+    dir = 1.0
+  else:
+    # contact information
+    geom = contact_geom_in[contactid]
+    geom1 = geom[0]
+    geom2 = geom[1]
+    body1 = geom_bodyid[geom1]
+    body2 = geom_bodyid[geom2]
 
-  # geom-geom match
-  geom0geom1 = objid == geom[0] and refid == geom[1]
-  geom1geom0 = objid == geom[1] and refid == geom[0]
-  if geom0geom1 or geom1geom0:
-    worldid = contact_worldid_in[contactid]
+    # check match of sensor objects with contact objects
+    match11 = _check_match(body1, geom1, objtype, objid)
+    match12 = _check_match(body2, geom2, objtype, objid)
+    match21 = _check_match(body1, geom1, reftype, refid)
+    match22 = _check_match(body2, geom2, reftype, refid)
 
-    contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
-    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+    # if a sensor object is specified, it must be involved in the contact
+    if not match11 and not match12:
+      return
+    if not match21 and not match22:
+      return
 
-    if reduce == 1:  # mindist
-      sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
-    elif reduce == 2:  # maxforce
-      contact_force = support.contact_force_fn(
-        opt_cone,
-        njmax_in,
-        ncon_in,
-        contact_frame_in,
-        contact_friction_in,
-        contact_dim_in,
-        contact_efc_address_in,
-        efc_force_in,
-        worldid,
-        contactid,
-        False,
-      )
-      force_magnitude = (
-        contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
-      )
-      sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
-    # TODO(thowell): netforce
+    # determine direction
+    dir = 1.0
+    if objtype != int(ObjType.UNKNOWN.value) and reftype != int(ObjType.UNKNOWN.value):
+      # both obj1 and obj2 specified: direction depends on order
+      order_regular = match11 and match22
+      order_reverse = match12 and match21
+      if order_reverse and not order_regular:
+        dir = -1.0
+    elif objtype != int(ObjType.UNKNOWN.value):
+      if not match11:
+        dir = -1.0
+    elif reftype != int(ObjType.UNKNOWN.value):
+      if not match22:
+        dir = -1.0
 
-    # contact direction
-    if geom1geom0:
-      sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = -1.0
-    else:
-      sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = 1.0
+  worldid = contact_worldid_in[contactid]
+  contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
 
+  if contactmatchid >= MJ_MAXCONPAIR:
+    wp.printf("contact match overflow: please increase MJ_MAXCONPAIR to %u\n", contactmatchid)
     return
 
-  # TODO(thowell): alternative matching
+  sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+
+  if reduce == 1:  # mindist
+    sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
+  elif reduce == 2:  # maxforce
+    contact_force = support.contact_force_fn(
+      opt_cone,
+      njmax_in,
+      ncon_in,
+      contact_frame_in,
+      contact_friction_in,
+      contact_dim_in,
+      contact_efc_address_in,
+      efc_force_in,
+      worldid,
+      contactid,
+      False,
+    )
+    force_magnitude = (
+      contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
+    )
+    sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
+  # TODO(thowell): netforce
+
+  # contact direction
+  sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
 
 @wp.kernel
@@ -2191,7 +2238,10 @@ def sensor_acc(m: Model, d: Data):
       dim=(m.sensor_contact_adr.size, d.nconmax),
       inputs=[
         m.opt.cone,
+        m.geom_bodyid,
+        m.sensor_objtype,
         m.sensor_objid,
+        m.sensor_reftype,
         m.sensor_refid,
         m.sensor_intprm,
         m.sensor_contact_adr,
