@@ -475,6 +475,43 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
+  def test_contact_sensor_subtree(self):
+    """Test contact sensor with subtree matching semantics."""
+    _MJCF = f"""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="2 2 .01"/>
+        <body name="thigh" pos="-1 0 .1">
+          <joint type="slide"/>
+          <geom type="capsule" size=".1" fromto="0 0 0 .5 0 0"/>
+          <body name="shin" pos=".7 0 0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 .5"/>
+            <body name="foot" pos="0 0 .7">
+              <joint axis="0 1 0"/>
+              <geom type="capsule" size=".1" fromto="0 0 0 -.7 0 0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact name="all" reduce="mindist"/>
+        <contact name="world" subtree1="world" reduce="mindist"/>
+        <contact name="thigh" subtree1="thigh" reduce="mindist"/>
+        <contact name="shin" subtree1="shin" reduce="mindist"/>
+        <contact name="foot" subtree1="foot" reduce="mindist"/>
+        <contact name="foot_w" subtree1="foot" body2="world" reduce="mindist"/>
+        <contact name="foot_w2" subtree1="foot" subtree2="world" reduce="mindist"/>
+      </sensor>
+    </mujoco>
+    """
+    _, _, m, d = test_util.fixture(xml=_MJCF, nconmax=12, njmax=48, qpos0=True)
+
+    while d.time.numpy()[0] < 0.6:
+      mjwarp.step(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
+
 
 if __name__ == "__main__":
   wp.init()

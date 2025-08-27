@@ -1984,7 +1984,7 @@ def _sensor_tactile(
 
 
 @wp.func
-def _check_match(body: int, geom: int, objtype: int, objid: int) -> bool:
+def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objtype: int, objid: int) -> bool:
   """Check if a contact body/geom matches a sensor spec (objtype, objid)."""
   if objtype == int(ObjType.UNKNOWN.value):
     return True
@@ -1993,7 +1993,11 @@ def _check_match(body: int, geom: int, objtype: int, objid: int) -> bool:
     return objid == geom
   if objtype == int(ObjType.BODY.value):
     return objid == body
-  # TODO(team): xbody
+  if objtype == int(ObjType.XBODY.value):
+    # traverse up the tree from body, return true if we land on id
+    while body > objid:
+      body = body_parentid[body]
+    return body == objid
   return False
 
 
@@ -2001,6 +2005,7 @@ def _check_match(body: int, geom: int, objtype: int, objid: int) -> bool:
 def _contact_match(
   # Model:
   opt_cone: int,
+  body_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   sensor_objtype: wp.array(dtype=int),
   sensor_objid: wp.array(dtype=int),
@@ -2050,10 +2055,10 @@ def _contact_match(
     body2 = geom_bodyid[geom2]
 
     # check match of sensor objects with contact objects
-    match11 = _check_match(body1, geom1, objtype, objid)
-    match12 = _check_match(body2, geom2, objtype, objid)
-    match21 = _check_match(body1, geom1, reftype, refid)
-    match22 = _check_match(body2, geom2, reftype, refid)
+    match11 = _check_match(body_parentid, body1, geom1, objtype, objid)
+    match12 = _check_match(body_parentid, body2, geom2, objtype, objid)
+    match21 = _check_match(body_parentid, body1, geom1, reftype, refid)
+    match22 = _check_match(body_parentid, body2, geom2, reftype, refid)
 
     # if a sensor object is specified, it must be involved in the contact
     if not match11 and not match12:
@@ -2238,6 +2243,7 @@ def sensor_acc(m: Model, d: Data):
       dim=(m.sensor_contact_adr.size, d.nconmax),
       inputs=[
         m.opt.cone,
+        m.body_parentid,
         m.geom_bodyid,
         m.sensor_objtype,
         m.sensor_objid,
