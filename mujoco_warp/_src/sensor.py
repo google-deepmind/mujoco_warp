@@ -1540,6 +1540,7 @@ def _sensor_acc(
     dataspec = sensor_intprm[sensorid, 0]
     dim = sensor_dim[sensorid]
     objtype = sensor_objtype[sensorid]
+    reduce = sensor_intprm[sensorid, 1]
 
     # found, force, torque, dist, pos, normal, tangent
     # TODO(thowell): precompute slot size
@@ -1580,21 +1581,16 @@ def _sensor_acc(
 
     adr = sensor_adr[sensorid]
     contactsensorid = sensor_adr_to_contact_adr[sensorid]
-
     nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
-    for i in range(wp.min(nmatch, num)):
-      # sorted contact id
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
-      # contact direction
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+    if reduce == 3:  # netforce
+      # compute point: force-weighted centroid of contact position
+      net_pos = wp.vec3(0.0)
+      total_force_magnitude = float(0.0)
 
-      adr_slot = adr + i * size
+      for i in range(nmatch):
+        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
-      if found:
-        out[adr_slot] = float(nmatch)
-        adr_slot += 1
-      if force or torque:
         contact_forcetorque = support.contact_force_fn(
           opt_cone,
           njmax_in,
@@ -1608,42 +1604,148 @@ def _sensor_acc(
           cid,
           False,
         )
+
+        weight = wp.norm_l2(wp.spatial_top(contact_forcetorque))
+        net_pos += weight * contact_pos_in[cid]
+        total_force_magnitude += weight
+
+      net_pos /= wp.max(total_force_magnitude, MJ_MINVAL)
+
+      # TODO(team): iterate over matches once
+
+      # compute total wrench about point, in the global frame
+      net_force = wp.vec3(0.0)
+      net_torque = wp.vec3(0.0)
+
+      for i in range(nmatch):
+        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+        dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+
+        contact_forcetorque = support.contact_force_fn(
+          opt_cone,
+          njmax_in,
+          ncon_in,
+          contact_frame_in,
+          contact_friction_in,
+          contact_dim_in,
+          contact_efc_address_in,
+          efc_force_in,
+          worldid,
+          cid,
+          False,
+        )
+        contact_forcetorque *= dir
+
+        force_local = wp.spatial_top(contact_forcetorque)
+        torque_local = wp.spatial_bottom(contact_forcetorque)
+
+        frame = contact_frame_in[cid]
+        frameT = wp.transpose(frame)
+
+        force_global = frameT @ force_local
+        torque_global = frameT @ torque_local
+
+        # add to total force, torque
+        net_force += force_global
+        net_torque += torque_global
+
+        # add induced moment: torque += (pos - point) x force
+        net_torque += wp.cross(contact_pos_in[cid] - net_pos, force_global)
+
+      adr_slot = adr
+
+      if found:
+        out[adr_slot] = float(nmatch)
+        adr_slot += 1
       if force:
-        out[adr_slot + 0] = contact_forcetorque[0]
-        out[adr_slot + 1] = contact_forcetorque[1]
-        out[adr_slot + 2] = dir * contact_forcetorque[2]
+        out[adr_slot + 0] = net_force[0]
+        out[adr_slot + 1] = net_force[1]
+        out[adr_slot + 2] = net_force[2]
         adr_slot += 3
       if torque:
-        out[adr_slot + 0] = contact_forcetorque[3]
-        out[adr_slot + 1] = contact_forcetorque[4]
-        out[adr_slot + 2] = dir * contact_forcetorque[5]
+        out[adr_slot + 0] = net_torque[0]
+        out[adr_slot + 1] = net_torque[1]
+        out[adr_slot + 2] = net_torque[2]
         adr_slot += 3
       if dist:
-        out[adr_slot] = contact_dist_in[cid]
+        out[adr_slot] = 0.0
         adr_slot += 1
       if pos:
-        contact_pos = contact_pos_in[cid]
-        out[adr_slot + 0] = contact_pos[0]
-        out[adr_slot + 1] = contact_pos[1]
-        out[adr_slot + 2] = contact_pos[2]
+        out[adr_slot + 0] = net_pos[0]
+        out[adr_slot + 1] = net_pos[1]
+        out[adr_slot + 2] = net_pos[2]
         adr_slot += 3
       if normal:
-        contact_normal = contact_frame_in[cid][0]
-        out[adr_slot + 0] = dir * contact_normal[0]
-        out[adr_slot + 1] = dir * contact_normal[1]
-        out[adr_slot + 2] = dir * contact_normal[2]
+        out[adr_slot + 0] = 1.0
+        out[adr_slot + 1] = 0.0
+        out[adr_slot + 2] = 0.0
         adr_slot += 3
       if tangent:
-        contact_tangent = contact_frame_in[cid][1]
-        out[adr_slot + 0] = dir * contact_tangent[0]
-        out[adr_slot + 1] = dir * contact_tangent[1]
-        out[adr_slot + 2] = dir * contact_tangent[2]
-        adr_slot += 3
+        out[adr_slot + 0] = 0.0
+        out[adr_slot + 1] = 1.0
+        out[adr_slot + 2] = 0.0
+    else:
+      for i in range(wp.min(nmatch, num)):
+        # sorted contact id
+        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
-    # zero remaining slots
-    for i in range(nmatch, num):
-      for j in range(size):
-        out[adr + i * size + j] = 0.0
+        # contact direction
+        dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+
+        adr_slot = adr + i * size
+
+        if found:
+          out[adr_slot] = float(nmatch)
+          adr_slot += 1
+        if force or torque:
+          contact_forcetorque = support.contact_force_fn(
+            opt_cone,
+            njmax_in,
+            ncon_in,
+            contact_frame_in,
+            contact_friction_in,
+            contact_dim_in,
+            contact_efc_address_in,
+            efc_force_in,
+            worldid,
+            cid,
+            False,
+          )
+        if force:
+          out[adr_slot + 0] = contact_forcetorque[0]
+          out[adr_slot + 1] = contact_forcetorque[1]
+          out[adr_slot + 2] = dir * contact_forcetorque[2]
+          adr_slot += 3
+        if torque:
+          out[adr_slot + 0] = contact_forcetorque[3]
+          out[adr_slot + 1] = contact_forcetorque[4]
+          out[adr_slot + 2] = dir * contact_forcetorque[5]
+          adr_slot += 3
+        if dist:
+          out[adr_slot] = contact_dist_in[cid]
+          adr_slot += 1
+        if pos:
+          contact_pos = contact_pos_in[cid]
+          out[adr_slot + 0] = contact_pos[0]
+          out[adr_slot + 1] = contact_pos[1]
+          out[adr_slot + 2] = contact_pos[2]
+          adr_slot += 3
+        if normal:
+          contact_normal = contact_frame_in[cid][0]
+          out[adr_slot + 0] = dir * contact_normal[0]
+          out[adr_slot + 1] = dir * contact_normal[1]
+          out[adr_slot + 2] = dir * contact_normal[2]
+          adr_slot += 3
+        if tangent:
+          contact_tangent = contact_frame_in[cid][1]
+          out[adr_slot + 0] = dir * contact_tangent[0]
+          out[adr_slot + 1] = dir * contact_tangent[1]
+          out[adr_slot + 2] = dir * contact_tangent[2]
+
+      # zero remaining slots
+      for i in range(nmatch, num):
+        for j in range(size):
+          out[adr + i * size + j] = 0.0
 
   elif sensortype == int(SensorType.ACCELEROMETER.value):
     vec3 = _accelerometer(
@@ -1970,6 +2072,9 @@ def _contact_match(
 
 @wp.kernel
 def _contact_sort(
+  # Model:
+  sensor_intprm: wp.array2d(dtype=int),
+  sensor_contact_adr: wp.array(dtype=int),
   # Data in:
   sensor_contact_nmatch_in: wp.array2d(dtype=int),
   sensor_contact_matchid_in: wp.array3d(dtype=int),
@@ -1978,6 +2083,11 @@ def _contact_sort(
   sensor_contact_matchid_out: wp.array3d(dtype=int),
 ):
   worldid, contactsensorid = wp.tid()
+  sensorid = sensor_contact_adr[contactsensorid]
+
+  reduce = sensor_intprm[sensorid, 1]
+  if reduce == 3:  # netforce
+    return
 
   nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
 
@@ -2098,6 +2208,8 @@ def sensor_acc(m: Model, d: Data):
       _contact_sort,
       dim=(d.nworld, m.sensor_contact_adr.size),
       inputs=[
+        m.sensor_intprm,
+        m.sensor_contact_adr,
         d.sensor_contact_nmatch,
         d.sensor_contact_matchid,
         d.sensor_contact_criteria,

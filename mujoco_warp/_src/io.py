@@ -129,8 +129,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
 
     # reduction
-    if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
-      raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
+    if (mjm.sensor_intprm[is_contact_sensor, 1] == 0).any():
+      raise NotImplementedError(f"Contact sensor: reduction 'none' is not implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
