@@ -1411,6 +1411,77 @@ def update_gradient_JTDAJ_sparse(
   efc_h_out[worldid, dofi, dofj] = sum_h
 
 
+TILE_SIZE = 16
+BLOCK_DIM = 256
+
+@wp.func
+def state_check(D: float, state: int) -> float:
+  if state == int(types.ConstraintState.QUADRATIC.value):
+    return D
+  else:
+    return 0.0
+
+@wp.kernel
+def compute_jtdj_tiled_kernel(
+  # Data in:
+  njmax_in: int,
+  nefc_in: wp.array(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  efc_h_out: wp.array3d(dtype=float),
+):
+    """
+    Compute J^T D J using a tiled kernel that processes one output element per tile.
+
+    Args:
+        J: Input matrix of size (njmax, nv)
+        D: Diagonal vector of size njmax
+        nefc: Number of effective constraints (valid entries)
+        result: Output matrix of size (nv, nv)
+    """
+    # Get the current tile indices for the output matrix
+    worldid, i, j, tid = wp.tid()
+
+    if efc_done_in[worldid]:
+      return
+
+    nefc = nefc_in[worldid]
+
+    # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
+    # Only sum over the valid entries (up to nefc)
+    sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
+
+    # Each tile processes one output element by looping over all constraints
+    for k in range(0, njmax_in, TILE_SIZE):
+        if k > nefc:
+            break
+
+        J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i))
+        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j))
+        D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k)
+        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k)
+
+        D_k = wp.tile_map(state_check, D_k, state)
+
+        # Force unused elements to be zero.
+        active = 1.0
+        if tid >= nefc - k:
+            active = 0.0
+
+        active_tile = wp.tile(active)
+        active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE,))
+
+        D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
+
+        J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
+        sum_val += wp.tile_matmul(J_ki, J_kj)
+
+    wp.tile_store(efc_h_out[worldid], sum_val, offset=(i, j))
+
+
 @wp.kernel
 def update_gradient_JTDAJ_dense(
   # Data in:
@@ -1672,19 +1743,37 @@ def _update_gradient(m: types.Model, d: types.Data):
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
     if m.opt.is_sparse:
-      wp.launch(
-        update_gradient_JTDAJ_sparse,
-        dim=(d.nworld, lower_triangle_dim),
-        inputs=[
-          d.njmax,
-          d.nefc,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          d.efc.done,
-        ],
-        outputs=[d.efc.h],
-      )
+      if 0:
+        wp.launch(
+          update_gradient_JTDAJ_sparse,
+          dim=(d.nworld, lower_triangle_dim),
+          inputs=[
+            d.njmax,
+            d.nefc,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            d.efc.done,
+          ],
+          outputs=[d.efc.h],
+        )
+      else:
+        #num_blocks_ceil = ceil(m.nv / BLOCK_SIZE)
+        #lower_triangle_dim_blocked = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
+        wp.launch(
+          compute_jtdj_tiled_kernel,
+          dim=(d.nworld, m.nv, m.nv, BLOCK_DIM),
+          inputs=[
+            d.njmax,
+            d.nefc,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            d.efc.done,
+          ],
+          outputs=[d.efc.h],
+          block_dim=BLOCK_DIM,
+        )
       wp.launch(
         update_gradient_set_h_qM_lower_sparse,
         dim=(d.nworld, m.qM_fullm_i.size),
