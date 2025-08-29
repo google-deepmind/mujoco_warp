@@ -1462,11 +1462,11 @@ def compute_jtdj_tiled_kernel(
       if k > nefc:
         break
 
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE))
-      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE))       
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE), bounds_check=False)
+      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE), bounds_check=False)       
 
-      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k)
-      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k)
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
 
       D_k = wp.tile_map(state_check, D_k, state)
 
@@ -1484,8 +1484,6 @@ def compute_jtdj_tiled_kernel(
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
     wp.tile_store(efc_h_out[worldid], sum_val, offset=(i * TILE_SIZE, j * TILE_SIZE))
-    #ones = wp.tile_ones(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
-    #wp.tile_store(efc_h_out[worldid], ones, offset=(i * TILE_SIZE, j * TILE_SIZE))
 
 
 @wp.kernel
