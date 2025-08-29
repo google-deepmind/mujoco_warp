@@ -71,22 +71,23 @@ class Geom:
 
 @wp.func
 def _geom(
+  # kernel_analyzer: off
   # Model:
-  geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  hfield_adr: wp.array(dtype=int),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
+  geom_type: int,
+  geom_dataid: int,
+  geom_size: wp.vec3,
+  hfield_adr: int,
+  hfield_nrow: int,
+  hfield_ncol: int,
+  hfield_size: wp.vec4,
   hfield_data: wp.array(dtype=float),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
+  mesh_vertadr: int,
+  mesh_vertnum: int,
   mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_graphadr: wp.array(dtype=int),
+  mesh_graphadr: int,
   mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
+  mesh_polynum: int,
+  mesh_polyadr: int,
   mesh_polynormal: wp.array(dtype=wp.vec3),
   mesh_polyvertadr: wp.array(dtype=int),
   mesh_polyvertnum: wp.array(dtype=int),
@@ -95,28 +96,25 @@ def _geom(
   mesh_polymapnum: wp.array(dtype=int),
   mesh_polymap: wp.array(dtype=int),
   # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xpos_in: wp.vec3,
+  geom_xmat_in: wp.mat33,
   # In:
-  worldid: int,
-  gid: int,
   hftri_index: int,
+  # kernel_analyzer: on
 ) -> Geom:
   geom = Geom()
-  geom.pos = geom_xpos_in[worldid, gid]
-  rot = geom_xmat_in[worldid, gid]
-  geom.rot = rot
-  geom.size = geom_size[worldid, gid]
-  geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
-  dataid = geom_dataid[gid]
+  geom.pos = geom_xpos_in
+  geom.rot = geom_xmat_in
+  geom.size = geom_size
+  geom.normal = wp.vec3(geom_xmat_in[0, 2], geom_xmat_in[1, 2], geom_xmat_in[2, 2])  # plane
 
   # If geom is MESH, get mesh verts
-  if dataid >= 0 and geom_type[gid] == int(GeomType.MESH.value):
-    geom.vertadr = mesh_vertadr[dataid]
-    geom.vertnum = mesh_vertnum[dataid]
-    geom.graphadr = mesh_graphadr[dataid]
-    geom.mesh_polynum = mesh_polynum[dataid]
-    geom.mesh_polyadr = mesh_polyadr[dataid]
+  if geom_dataid >= 0 and geom_type == int(GeomType.MESH.value):
+    geom.vertadr = mesh_vertadr
+    geom.vertnum = mesh_vertnum
+    geom.graphadr = mesh_graphadr
+    geom.mesh_polynum = mesh_polynum
+    geom.mesh_polyadr = mesh_polyadr
   else:
     geom.vertadr = -1
     geom.vertnum = -1
@@ -124,7 +122,7 @@ def _geom(
     geom.mesh_polynum = -1
     geom.mesh_polyadr = -1
 
-  if geom_type[gid] == int(GeomType.MESH.value):
+  if geom_type == int(GeomType.MESH.value):
     geom.vert = mesh_vert
     geom.graph = mesh_graph
     geom.mesh_polynormal = mesh_polynormal
@@ -136,9 +134,9 @@ def _geom(
     geom.mesh_polymap = mesh_polymap
 
   # If geom is HFIELD triangle, compute triangle prism verts
-  if geom_type[gid] == int(GeomType.HFIELD.value):
+  if geom_type == int(GeomType.HFIELD.value):
     geom.hfprism = hfield_triangle_prism(
-      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
+      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, hftri_index
     )
 
   geom.index = -1
@@ -2766,22 +2764,23 @@ def _primitive_narrowphase_builder(m: Model):
 
     hftri_index = collision_hftri_index_in[tid]
 
+    geom1_dataid = geom_dataid[g1]
     geom1 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      type1,
+      geom1_dataid,
+      geom_size[worldid, g1],
+      hfield_adr[geom1_dataid],
+      hfield_nrow[geom1_dataid],
+      hfield_ncol[geom1_dataid],
+      hfield_size[geom1_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom1_dataid],
+      mesh_vertnum[geom1_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom1_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom1_dataid],
+      mesh_polyadr[geom1_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -2789,29 +2788,28 @@ def _primitive_narrowphase_builder(m: Model):
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g1,
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
       hftri_index,
     )
 
+    geom2_dataid = geom_dataid[g2]
     geom2 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      type2,
+      geom2_dataid,
+      geom_size[worldid, g2],
+      hfield_adr[geom2_dataid],
+      hfield_nrow[geom2_dataid],
+      hfield_ncol[geom2_dataid],
+      hfield_size[geom2_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom2_dataid],
+      mesh_vertnum[geom2_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom2_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom2_dataid],
+      mesh_polyadr[geom2_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -2819,10 +2817,8 @@ def _primitive_narrowphase_builder(m: Model):
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g2,
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
       hftri_index,
     )
 
