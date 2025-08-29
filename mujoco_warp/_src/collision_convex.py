@@ -20,8 +20,8 @@ from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
 from .collision_hfield import hfield_prism_vertex
-from .collision_primitive import _geom
 from .collision_primitive import contact_params
+from .collision_primitive import geom
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_tri_index
@@ -117,6 +117,7 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     ngeom: int,
+    opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -226,7 +227,7 @@ def ccd_kernel_builder(
 
     hftri_index = collision_hftri_index_in[tid]
 
-    geom1 = _geom(
+    geom1 = geom(
       geom_type,
       geom_dataid,
       geom_size,
@@ -256,7 +257,7 @@ def ccd_kernel_builder(
       hftri_index,
     )
 
-    geom2 = _geom(
+    geom2 = geom(
       geom_type,
       geom_dataid,
       geom_size,
@@ -334,7 +335,7 @@ def ccd_kernel_builder(
 
       dist, count, witness1, witness2 = ccd(
         False,
-        1e-6,
+        opt_ccd_tolerance[worldid],
         0.0,
         gjk_iterations,
         epa_iterations,
@@ -432,6 +433,7 @@ def convex_narrowphase(m: Model, d: Data):
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.opt.ccd_tolerance,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,

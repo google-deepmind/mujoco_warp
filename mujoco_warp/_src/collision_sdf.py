@@ -18,8 +18,8 @@ from typing import Tuple
 import warp as wp
 
 from . import math
-from .collision_primitive import _geom
 from .collision_primitive import contact_params
+from .collision_primitive import geom
 from .collision_primitive import write_contact
 from .math import make_frame
 from .types import Data
@@ -430,7 +430,7 @@ def _sdf_narrowphase(
 
   hftri_index = collision_hftri_index_in[tid]
 
-  geom1 = _geom(
+  geom1 = geom(
     geom_type,
     geom_dataid,
     geom_size,
@@ -459,7 +459,7 @@ def _sdf_narrowphase(
     g1,
     hftri_index,
   )
-  geom2 = _geom(
+  geom2 = geom(
     geom_type,
     geom_dataid,
     geom_size,

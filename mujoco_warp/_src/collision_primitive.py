@@ -70,7 +70,7 @@ class Geom:
 
 
 @wp.func
-def _geom(
+def geom(
   # Model:
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
@@ -136,7 +136,7 @@ def _geom(
     geom.mesh_polymap = mesh_polymap
 
   # If geom is HFIELD triangle, compute triangle prism verts
-  if geom_type[gid] == int(GeomType.HFIELD.value):
+  if geom_type[gid] == int(GeomType.HFIELD.value) and hftri_index >= 0:
     geom.hfprism = hfield_triangle_prism(
       geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
     )
@@ -2766,7 +2766,7 @@ def _primitive_narrowphase_builder(m: Model):
 
     hftri_index = collision_hftri_index_in[tid]
 
-    geom1 = _geom(
+    geom1 = geom(
       geom_type,
       geom_dataid,
       geom_size,
@@ -2796,7 +2796,7 @@ def _primitive_narrowphase_builder(m: Model):
       hftri_index,
     )
 
-    geom2 = _geom(
+    geom2 = geom(
       geom_type,
       geom_dataid,
       geom_size,
