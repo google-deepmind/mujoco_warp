@@ -515,7 +515,7 @@ def _sdf_narrowphase(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
 ):
-  contact_tid, initpoint_tid = wp.tid()
+  initpoint_idx, contact_tid = wp.tid()
 
   if contact_tid >= ncollision_in[0]:
     return
@@ -636,7 +636,7 @@ def _sdf_narrowphase(
     volume_ids, oct_aabb, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
   )
 
-  i = initpoint_tid
+  i = initpoint_idx
   if i >= sdf_initpoints:
     return
 
@@ -695,7 +695,7 @@ def _sdf_narrowphase(
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
     _sdf_narrowphase,
-    dim=(int(d.nconmax/m.opt.sdf_initpoints), m.opt.sdf_initpoints),
+    dim=(m.opt.sdf_initpoints, int(d.nconmax/m.opt.sdf_initpoints)),
     inputs=[
       m.geom_type,
       m.geom_condim,
