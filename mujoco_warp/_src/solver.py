@@ -1443,12 +1443,15 @@ def compute_jtdj_tiled_kernel(
         result: Output matrix of size (nv, nv)
     """
     # Get the current tile indices for the output matrix
-    worldid, i, j, tid = wp.tid()
+    worldid, elementid, tid = wp.tid()
 
     if efc_done_in[worldid]:
       return
 
     nefc = nefc_in[worldid]
+
+    i = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
+    j = elementid - (i * (i + 1)) // 2
 
     # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
     # Only sum over the valid entries (up to nefc)
@@ -1765,9 +1768,10 @@ def _update_gradient(m: types.Model, d: types.Data):
         # Create temp array and run tiled kernel
         #temp_efc_h = wp.zeros(shape=(d.nworld, m.nv, m.nv), dtype=wp.float32)
         num_blocks_ceil = ceil(m.nv / TILE_SIZE)
+        lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
         wp.launch(
           compute_jtdj_tiled_kernel,
-          dim=(d.nworld, num_blocks_ceil, num_blocks_ceil, BLOCK_DIM),
+          dim=(d.nworld, lower_triangle_dim, BLOCK_DIM),
           inputs=[
             d.njmax,
             d.nefc,
