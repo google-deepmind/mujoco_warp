@@ -1465,7 +1465,11 @@ def compute_jtdj_tiled_kernel(
       # we are ok with not doing the bounds check because things will by multiplied by 0 anyway for anything beyond nefc.
       # question is what happens when we load beyond the end of the array.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE), bounds_check=False)
-      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE), bounds_check=False)       
+      
+      if i != j:
+        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE), bounds_check=False)       
+      else:
+        wp.tile_assign(J_kj, J_ki, (0, 0))
 
       D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
       state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
