@@ -1412,7 +1412,7 @@ def update_gradient_JTDAJ_sparse(
 
 
 TILE_SIZE = 16
-BLOCK_DIM = 256
+BLOCK_DIM = 64
 
 @wp.func
 def state_check(D: float, state: int) -> float:
@@ -1459,28 +1459,29 @@ def compute_jtdj_tiled_kernel(
 
     # Each tile processes one output element by looping over all constraints
     for k in range(0, min(njmax_in, nefc), TILE_SIZE):
-        if k > nefc:
-            break
+      if k > nefc:
+        break
 
-        J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE))
-        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE))
-        D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k)
-        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k)
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE))
+      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE))       
 
-        D_k = wp.tile_map(state_check, D_k, state)
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k)
 
-        # Force unused elements to be zero.
-        active = 1.0
-        if tid >= nefc - k:
-            active = 0.0
+      D_k = wp.tile_map(state_check, D_k, state)
 
-        active_tile = wp.tile(active)
-        active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE,))
+      # Force unused elements to be zero.
+      active = 1.0
+      if tid >= nefc - k:
+        active = 0.0
 
-        D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
+      active_tile = wp.tile(active)
+      active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE,))
 
-        J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
-        sum_val += wp.tile_matmul(J_ki, J_kj)
+      D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
+
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
+      sum_val += wp.tile_matmul(J_ki, J_kj)
 
     wp.tile_store(efc_h_out[worldid], sum_val, offset=(i * TILE_SIZE, j * TILE_SIZE))
     #ones = wp.tile_ones(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
