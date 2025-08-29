@@ -1455,7 +1455,7 @@ def compute_jtdj_tiled_kernel(
     sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
 
     # Each tile processes one output element by looping over all constraints
-    for k in range(0, njmax_in, TILE_SIZE):
+    for k in range(0, min(njmax_in, nefc), TILE_SIZE):
         if k > nefc:
             break
 
@@ -1758,11 +1758,11 @@ def _update_gradient(m: types.Model, d: types.Data):
           outputs=[d.efc.h],
         )
       else:
-        #num_blocks_ceil = ceil(m.nv / BLOCK_SIZE)
+        num_blocks_ceil = ceil(m.nv / TILE_SIZE)
         #lower_triangle_dim_blocked = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
         wp.launch(
           compute_jtdj_tiled_kernel,
-          dim=(d.nworld, m.nv, m.nv, BLOCK_DIM),
+          dim=(d.nworld, num_blocks_ceil, num_blocks_ceil, BLOCK_DIM),
           inputs=[
             d.njmax,
             d.nefc,
