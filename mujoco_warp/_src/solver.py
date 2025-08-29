@@ -1458,10 +1458,12 @@ def compute_jtdj_tiled_kernel(
     sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
 
     # Each tile processes one output element by looping over all constraints
-    for k in range(0, min(njmax_in, nefc), TILE_SIZE):
+    for k in range(0, njmax_in, TILE_SIZE):
       if k > nefc:
         break
 
+      # we are ok with not doing the bounds check because things will by multiplied by 0 anyway for anything beyond nefc.
+      # question is what happens when we load beyond the end of the array.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE), bounds_check=False)
       J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE), bounds_check=False)       
 
@@ -1481,6 +1483,7 @@ def compute_jtdj_tiled_kernel(
       D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
 
       J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
+
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
     wp.tile_store(efc_h_out[worldid], sum_val, offset=(i * TILE_SIZE, j * TILE_SIZE))
