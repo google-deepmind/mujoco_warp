@@ -422,10 +422,18 @@ class SensorTest(parameterized.TestCase):
     datas = ["found", "force dist normal", "torque pos tangent", "found force torque dist pos normal tangent"]
 
     for geoms in [
+      'geom1="plane"',
+      'geom2="plane"',
       'geom1="plane" geom2="geom"',
       'geom1="geom" geom2="plane"',
       'geom1="sphere" geom2="plane"',
       'geom1="geom" geom2="sphere"',
+      'body1="plane"',
+      'body2="plane"',
+      'body1="plane" body2="geom"',
+      'body1="geom" body2="plane"',
+      'body1="sphere" body2="plane"',
+      'body1="geom" body2="sphere"',
     ]:
       for num in [1, 3, 5]:
         for reduce in ["mindist", "maxforce"]:
@@ -437,12 +445,14 @@ class SensorTest(parameterized.TestCase):
       <compiler angle="degree"/>
       <option cone="pyramidal"/>
       <worldbody>
-        <geom name="plane" type="plane" size="10 10 .001"/>
-        <body>
+        <body name="plane">
+          <geom name="plane" type="plane" size="10 10 .001"/>
+        </body>
+        <body name="geom">
           <geom name="geom" {geom}/>
           <joint type="slide" axis="0 0 1"/>
         </body>
-        <body>
+        <body name="sphere">
           <geom name="sphere" type="sphere" size=".1"/>
           <joint type="slide" axis="0 0 1"/>
         </body>
@@ -464,6 +474,43 @@ class SensorTest(parameterized.TestCase):
     sensordata = d.sensordata.numpy()[0]
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
+
+  def test_contact_sensor_subtree(self):
+    """Test contact sensor with subtree matching semantics."""
+    _MJCF = f"""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="2 2 .01"/>
+        <body name="thigh" pos="-1 0 .1">
+          <joint type="slide"/>
+          <geom type="capsule" size=".1" fromto="0 0 0 .5 0 0"/>
+          <body name="shin" pos=".7 0 0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 .5"/>
+            <body name="foot" pos="0 0 .7">
+              <joint axis="0 1 0"/>
+              <geom type="capsule" size=".1" fromto="0 0 0 -.7 0 0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact name="all" reduce="mindist"/>
+        <contact name="world" subtree1="world" reduce="mindist"/>
+        <contact name="thigh" subtree1="thigh" reduce="mindist"/>
+        <contact name="shin" subtree1="shin" reduce="mindist"/>
+        <contact name="foot" subtree1="foot" reduce="mindist"/>
+        <contact name="foot_w" subtree1="foot" body2="world" reduce="mindist"/>
+        <contact name="foot_w2" subtree1="foot" subtree2="world" reduce="mindist"/>
+      </sensor>
+    </mujoco>
+    """
+    _, _, m, d = test_util.fixture(xml=_MJCF, nconmax=12, njmax=48, qpos0=True)
+
+    while d.time.numpy()[0] < 0.6:
+      mjwarp.step(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
 
 if __name__ == "__main__":
