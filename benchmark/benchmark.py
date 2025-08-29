@@ -26,6 +26,16 @@ class AlohaPot(mujoco_warp.BenchmarkSuite):
   njmax = 128
 
 
+class AlohaSdf(mujoco_warp.BenchmarkSuite):
+  """Aloha robot with SDF grippers and an SDF asset."""
+
+  path = "aloha_sdf/scene.xml"
+  params = mujoco_warp.BenchmarkSuite.params + ("step.euler",)
+  batch_size = 8192
+  nconmax = 275_000
+  njmax = 226
+
+
 class ApptronikApolloFlat(mujoco_warp.BenchmarkSuite):
   """Apptronik Apollo locomoting on an infinite plane."""
 
