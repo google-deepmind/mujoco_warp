@@ -152,7 +152,7 @@ class ConstraintTest(parameterized.TestCase):
     mjwarp.make_constraint(m, d)
 
     _assert_eq(d.ncon.numpy()[0], mjd.ncon, "ncon")
-    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
+    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, : m.nv].reshape(-1), mjd.efc_J, "efc_J")
     _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
     _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
     _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
