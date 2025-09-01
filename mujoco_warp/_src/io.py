@@ -935,6 +935,29 @@ def _mujoco_octree_to_warp_volume(
   return volume_ids_array, volumes_tuple, oct_aabb_array
 
 
+def get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_size):
+  # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
+  #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.
+  # if sparse - we pad to the next multiple of tile_size for njmax, and nv.
+
+  def round_up(x, multiple):
+    return ((x + multiple - 1) // multiple) * multiple
+
+  njmax_padded = round_up(njmax, tile_size)
+
+  if is_sparse:
+    nv_padded = round_up(nv, tile_size)
+  else:
+    nv_padded = round_up(nv, 4)
+
+  efc_J_padded_size = (nworld, njmax_padded, nv_padded)
+  efc_h_padded_size = (nworld, nv_padded, nv_padded)
+  efc_d_padded_size = (nworld, njmax_padded)
+  efc_state_padded_size = (nworld, njmax_padded)
+
+  return efc_J_padded_size, efc_h_padded_size, efc_d_padded_size, efc_state_padded_size
+
+
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
   """
   Creates a data object on device.
@@ -985,16 +1008,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
 
   TILE_SIZE = 16
 
-  def round_up(x, multiple):
-    return ((x + multiple - 1) // multiple) * multiple
-
-  njmax_padded = round_up(njmax, TILE_SIZE)
-  nv_padded = round_up(mjm.nv, TILE_SIZE)
-
-  J_padded_size = (nworld, njmax_padded, nv_padded)
-  h_padded_size = (nworld, nv_padded, nv_padded)
-  d_padded_size = (nworld, njmax_padded)
-  state_padded_size = (nworld, njmax_padded)
+  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), TILE_SIZE)
 
   return types.Data(
     nworld=nworld,
@@ -1316,16 +1330,7 @@ def put_data(
 
   TILE_SIZE = 16
 
-  def round_up(x, multiple):
-    return ((x + multiple - 1) // multiple) * multiple
-
-  njmax_padded = round_up(njmax, TILE_SIZE)
-  nv_padded = round_up(mjm.nv, TILE_SIZE)
-
-  J_padded_size = (nworld, njmax_padded, nv_padded)
-  h_padded_size = (nworld, nv_padded, nv_padded)
-  d_padded_size = (nworld, njmax_padded)
-  state_padded_size = (nworld, njmax_padded)
+  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), TILE_SIZE)
 
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
