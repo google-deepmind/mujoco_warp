@@ -1731,7 +1731,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch(
         update_gradient_JTDAJ_sparse_tiled(TILE_SIZE, d.njmax),
-        dim=(d.nworld, lower_triangle_dim, BLOCK_DIM),
+        dim=(d.nworld, lower_triangle_dim, m.block_dim.update_gradient_JTDAJ_sparse),
         inputs=[
           d.nefc,
           d.efc.J,
@@ -1740,7 +1740,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
-        block_dim=BLOCK_DIM,
+        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
       
       wp.launch(
@@ -1752,7 +1752,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch(
         update_gradient_JTDAJ_dense_tiled(m.nv, 32, d.njmax),
-        dim=(d.nworld, 128),
+        dim=(d.nworld, m.block_dim.update_gradient_JTDAJ_dense),
         inputs=[
           d.nefc,
           d.qM,
@@ -1762,7 +1762,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
-        block_dim=128,
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
       )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:

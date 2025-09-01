@@ -55,6 +55,8 @@ class BlockDim:
   cholesky_factorize_solve: int = 32
   # solver
   update_gradient_cholesky: int = 64
+  update_gradient_JTDAJ_sparse: int = 64
+  update_gradient_JTDAJ_dense: int = 128
   # support
   mul_m_dense: int = 32
 
