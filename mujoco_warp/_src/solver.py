@@ -1501,55 +1501,6 @@ def compute_jtdj_tiled_kernel(
     # AD: setting bounds_check to True explicitly here because for some reason it was slower to disable it.
     wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
 
-
-@wp.kernel
-def update_gradient_JTDAJ_dense(
-  # Data in:
-  njmax_in: int,
-  nefc_in: wp.array(dtype=int),
-  qM_in: wp.array3d(dtype=float),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_state_in: wp.array2d(dtype=int),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
-):
-  worldid, elementid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  nefc = nefc_in[worldid]
-
-  dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
-  dofj = elementid - (dofi * (dofi + 1)) // 2
-
-  # To optimize the loop, data for the next iteration is prefetched
-  # This allows to parallelize memory load and computation to hide memory latency
-  efc_state = efc_state_in[worldid, 0]
-  efc_D = efc_D_in[worldid, 0]
-  # TODO(team): sparse efc_J
-  efc_Ji = efc_J_in[worldid, 0, dofi]
-  efc_Jj = efc_J_in[worldid, 0, dofj]
-  sum_h = float(0.0)
-  for efcid in range(min(njmax_in, nefc) - 1):
-    if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
-      sum_h += efc_Ji * efc_Jj * efc_D
-
-    jj = efcid + 1
-    efc_D = efc_D_in[worldid, jj]
-    efc_Ji = efc_J_in[worldid, jj, dofi]
-    efc_Jj = efc_J_in[worldid, jj, dofj]
-    efc_state = efc_state_in[worldid, jj]
-
-  # Adding the contribution from the last constraint row
-  if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
-    sum_h += efc_Ji * efc_Jj * efc_D
-
-  qM = qM_in[worldid, dofi, dofj]
-  efc_h_out[worldid, dofi, dofj] = qM + sum_h
-
 @cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
   TILE_SIZE_DENSE = nv
