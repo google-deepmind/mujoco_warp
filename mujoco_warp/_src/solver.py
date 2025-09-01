@@ -1851,8 +1851,8 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch(
-        update_gradient_JTDAJ_dense_tiled(m.nv, TILE_SIZE, d.njmax),
-        dim=(d.nworld, 96),
+        update_gradient_JTDAJ_dense_tiled(m.nv, 32, d.njmax),
+        dim=(d.nworld, 128),
         inputs=[
           d.nefc,
           d.qM,
@@ -1862,7 +1862,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
-        block_dim=96,
+        block_dim=128,
       )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
