@@ -184,7 +184,14 @@ def _main(argv: Sequence[str]):
 
     fn = _FUNCS[_FUNCTION.value]
     res = mjw.test_util.benchmark(
-      fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value,
+      fn,
+      m,
+      d,
+      _NSTEP.value,
+      ctrls,
+      _EVENT_TRACE.value,
+      _MEASURE_ALLOC.value,
+      _MEASURE_SOLVER.value,
     )
     jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
