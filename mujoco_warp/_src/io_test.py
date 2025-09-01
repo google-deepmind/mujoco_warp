@@ -367,7 +367,6 @@ class IOTest(parameterized.TestCase):
     _dims_match(self, dm3, dp3)
 
   @parameterized.parameters(
-    '<contact site="site"/>',
     '<contact reduce="netforce"/>',
     '<contact geom1="plane" geom2="sphere"/>',
   )

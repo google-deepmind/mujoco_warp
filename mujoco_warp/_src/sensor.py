@@ -38,6 +38,7 @@ from .types import SensorType
 from .types import TrnType
 from .types import vec5
 from .types import vec6
+from .util_misc import inside_geom
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
@@ -1903,7 +1904,8 @@ def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objty
   """Check if a contact body/geom matches a sensor spec (objtype, objid)."""
   if objtype == int(ObjType.UNKNOWN.value):
     return True
-  # TODO(team): site
+  if objtype == int(ObjType.SITE.value):
+    return True  # already passed site filter test
   if objtype == int(ObjType.GEOM.value):
     return objid == geom
   if objtype == int(ObjType.BODY.value):
@@ -1922,6 +1924,8 @@ def _contact_match(
   opt_cone: int,
   body_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  site_type: wp.array(dtype=int),
+  site_size: wp.array(dtype=wp.vec3),
   sensor_objtype: wp.array(dtype=int),
   sensor_objid: wp.array(dtype=int),
   sensor_reftype: wp.array(dtype=int),
@@ -1931,7 +1935,10 @@ def _contact_match(
   # Data in:
   njmax_in: int,
   ncon_in: wp.array(dtype=int),
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
   contact_dist_in: wp.array(dtype=float),
+  contact_pos_in: wp.array(dtype=wp.vec3),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
@@ -1957,6 +1964,15 @@ def _contact_match(
   reftype = sensor_reftype[sensorid]
   refid = sensor_refid[sensorid]
   reduce = sensor_intprm[sensorid, 1]
+
+  worldid = contact_worldid_in[contactid]
+
+  # site filter
+  if objtype == int(ObjType.SITE.value):
+    if not inside_geom(
+      site_xpos_in[worldid, objid], site_xmat_in[worldid, objid], site_size[objid], site_type[objid], contact_pos_in[contactid]
+    ):
+      return
 
   # unknown-unknown match
   if objtype == int(ObjType.UNKNOWN.value) and reftype == int(ObjType.UNKNOWN.value):
@@ -1996,7 +2012,6 @@ def _contact_match(
       if not match22:
         dir = -1.0
 
-  worldid = contact_worldid_in[contactid]
   contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
 
   if contactmatchid >= MJ_MAXCONPAIR:
@@ -2139,6 +2154,8 @@ def sensor_acc(m: Model, d: Data):
         m.opt.cone,
         m.body_parentid,
         m.geom_bodyid,
+        m.site_type,
+        m.site_size,
         m.sensor_objtype,
         m.sensor_objid,
         m.sensor_reftype,
@@ -2147,7 +2164,10 @@ def sensor_acc(m: Model, d: Data):
         m.sensor_contact_adr,
         d.njmax,
         d.ncon,
+        d.site_xpos,
+        d.site_xmat,
         d.contact.dist,
+        d.contact.pos,
         d.contact.frame,
         d.contact.friction,
         d.contact.dim,

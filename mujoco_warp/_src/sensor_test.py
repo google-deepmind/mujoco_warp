@@ -512,6 +512,35 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
+  @parameterized.product(site_geom=["sphere", "capsule", "ellipsoid", "cylinder", "box"], key_pos=["0 0 10", "0 0 .09"])
+  def test_contact_sensor_site(self, site_geom, key_pos):
+    _, mjd, m, d = test_util.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .001"/>
+        <site name="site" type="{site_geom}" size=".1 .2 .3"/>
+        <body>
+          <geom type="sphere" size=".1"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact site="site" reduce="mindist"/>
+      </sensor>
+      <keyframe>
+        <key qpos="{key_pos} 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.sensordata.zero_()
+    mjwarp.forward(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
 
 if __name__ == "__main__":
   wp.init()

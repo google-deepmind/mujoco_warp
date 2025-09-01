@@ -122,14 +122,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # contact sensor
   is_contact_sensor = mjm.sensor_type == types.SensorType.CONTACT
   if is_contact_sensor.any():
-    # matching
-    match_site = (mjm.sensor_objtype[is_contact_sensor] == types.ObjType.SITE) | (
-      mjm.sensor_reftype[is_contact_sensor] == types.ObjType.SITE
-    )
-
-    if match_site.any():
-      raise NotImplementedError("Contact sensor: site matching is not implemented.")
-
     # reduction
     if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
       raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
