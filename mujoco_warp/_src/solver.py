@@ -1379,28 +1379,21 @@ def state_check(D: float, state: int) -> float:
   else:
     return 0.0
 
-@wp.kernel
-def compute_jtdj_tiled_kernel(
-  # Data in:
-  njmax_in: int,
-  nefc_in: wp.array(dtype=int),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_state_in: wp.array2d(dtype=int),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
-):
-    """
-    Compute J^T D J using a tiled kernel that processes one output element per tile.
+@cache_kernel
+def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
+  TILE_SIZE = tile_size
 
-    Args:
-        J: Input matrix of size (njmax, nv)
-        D: Diagonal vector of size njmax
-        nefc: Number of effective constraints (valid entries)
-        result: Output matrix of size (nv, nv)
-    """
-    # Get the current tile indices for the output matrix
+  @wp.kernel
+  def kernel(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    efc_J_in: wp.array3d(dtype=float),
+    efc_D_in: wp.array2d(dtype=float),
+    efc_state_in: wp.array2d(dtype=int),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_h_out: wp.array3d(dtype=float),
+  ):
     worldid, elementid, tid = wp.tid()
 
     if efc_done_in[worldid]:
@@ -1408,18 +1401,17 @@ def compute_jtdj_tiled_kernel(
 
     nefc = nefc_in[worldid]
 
+    # get lower diagonal index
     i = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
     j = elementid - (i * (i + 1)) // 2
 
     offset_i = i * TILE_SIZE
     offset_j = j * TILE_SIZE
 
-    # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
-    # Only sum over the valid entries (up to nefc)
     sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
 
-    # Each tile processes one output element by looping over all constraints
-    for k in range(0, njmax_in, TILE_SIZE):
+    # Each tile processes looping over all constraints, producing 1 output tile
+    for k in range(0, njmax, TILE_SIZE):
       if k >= nefc:
         break
 
@@ -1437,6 +1429,10 @@ def compute_jtdj_tiled_kernel(
 
       D_k = wp.tile_map(state_check, D_k, state)
 
+      # This is a bit of a dirty trick to allow for nefc not being a multiple of TILE_SIZE
+      # we set the value to 0 for all threads of the block, then set to 1 for all the threads
+      # that are < nefc. Using a tile_view to get a properly sized tile.
+
       # Force unused elements to be zero.
       active = 1.0
       if tid >= nefc - k:
@@ -1453,6 +1449,8 @@ def compute_jtdj_tiled_kernel(
 
     # AD: setting bounds_check to True explicitly here because for some reason it was slower to disable it.
     wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
+
+  return kernel
 
 @cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
@@ -1733,10 +1731,9 @@ def _update_gradient(m: types.Model, d: types.Data):
       num_blocks_ceil = ceil(m.nv / TILE_SIZE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch(
-        compute_jtdj_tiled_kernel,
+        update_gradient_JTDAJ_sparse_tiled(TILE_SIZE, d.njmax),
         dim=(d.nworld, lower_triangle_dim, BLOCK_DIM),
         inputs=[
-          d.njmax,
           d.nefc,
           d.efc.J,
           d.efc.D,
