@@ -983,6 +983,19 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
+  TILE_SIZE = 16
+
+  def round_up(x, multiple):
+    return ((x + multiple - 1) // multiple) * multiple
+
+  njmax_padded = round_up(njmax, TILE_SIZE)
+  nv_padded = round_up(mjm.nv, TILE_SIZE)
+
+  J_padded_size = (nworld, njmax_padded, nv_padded)
+  h_padded_size = (nworld, nv_padded, nv_padded)
+  d_padded_size = (nworld, njmax_padded)
+  state_padded_size = (nworld, njmax_padded)
+
   return types.Data(
     nworld=nworld,
     nconmax=nconmax,
@@ -1083,10 +1096,10 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     efc=types.Constraint(
       type=wp.zeros((nworld, njmax), dtype=int),
       id=wp.zeros((nworld, njmax), dtype=int),
-      J=wp.zeros((nworld, njmax, mjm.nv), dtype=float),
+      J=wp.zeros(J_padded_size, dtype=float),
       pos=wp.zeros((nworld, njmax), dtype=float),
       margin=wp.zeros((nworld, njmax), dtype=float),
-      D=wp.zeros((nworld, njmax), dtype=float),
+      D=wp.zeros(d_padded_size, dtype=float),
       vel=wp.zeros((nworld, njmax), dtype=float),
       aref=wp.zeros((nworld, njmax), dtype=float),
       frictionloss=wp.zeros((nworld, njmax), dtype=float),
@@ -1103,12 +1116,12 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       gauss=wp.zeros((nworld,), dtype=float),
       cost=wp.zeros((nworld,), dtype=float),
       prev_cost=wp.zeros((nworld,), dtype=float),
-      state=wp.zeros((nworld, njmax), dtype=int),
+      state=wp.zeros(state_padded_size, dtype=int),
       mv=wp.zeros((nworld, mjm.nv), dtype=float),
       jv=wp.zeros((nworld, njmax), dtype=float),
       quad=wp.zeros((nworld, njmax), dtype=wp.vec3f),
       quad_gauss=wp.zeros((nworld,), dtype=wp.vec3f),
-      h=wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float),
+      h=wp.zeros(h_padded_size, dtype=float),
       alpha=wp.zeros((nworld,), dtype=float),
       prev_grad=wp.zeros((nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1301,21 +1314,34 @@ def put_data(
   ne_jnt = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active))
   ne_ten = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active))
 
+  TILE_SIZE = 16
+
+  def round_up(x, multiple):
+    return ((x + multiple - 1) // multiple) * multiple
+
+  njmax_padded = round_up(njmax, TILE_SIZE)
+  nv_padded = round_up(mjm.nv, TILE_SIZE)
+
+  J_padded_size = (nworld, njmax_padded, nv_padded)
+  h_padded_size = (nworld, nv_padded, nv_padded)
+  d_padded_size = (nworld, njmax_padded)
+  state_padded_size = (nworld, njmax_padded)
+
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
-  efc_J_fill = np.zeros((nworld, njmax, mjm.nv))
-  efc_D_fill = np.zeros((nworld, njmax))
+  efc_J_fill = np.zeros(J_padded_size)
+  efc_D_fill = np.zeros(d_padded_size)
   efc_vel_fill = np.zeros((nworld, njmax))
   efc_pos_fill = np.zeros((nworld, njmax))
   efc_aref_fill = np.zeros((nworld, njmax))
-  efc_frictionloss_fill = np.zeros((nworld, njmax))
+  efc_frictionloss_fill = np.zeros(d_padded_size)
   efc_force_fill = np.zeros((nworld, njmax))
   efc_margin_fill = np.zeros((nworld, njmax))
 
   nefc = mjd.nefc
   efc_type_fill[:, :nefc] = np.tile(mjd.efc_type, (nworld, 1))
   efc_id_fill[:, :nefc] = np.tile(mjd.efc_id, (nworld, 1))
-  efc_J_fill[:, :nefc, :] = np.tile(efc_J, (nworld, 1, 1))
+  efc_J_fill[:, :nefc, :mjm.nv] = np.tile(efc_J, (nworld, 1, 1))
   efc_D_fill[:, :nefc] = np.tile(mjd.efc_D, (nworld, 1))
   efc_vel_fill[:, :nefc] = np.tile(mjd.efc_vel, (nworld, 1))
   efc_pos_fill[:, :nefc] = np.tile(mjd.efc_pos, (nworld, 1))
@@ -1469,12 +1495,12 @@ def put_data(
       gauss=wp.empty(shape=(nworld,), dtype=float),
       cost=wp.empty(shape=(nworld,), dtype=float),
       prev_cost=wp.empty(shape=(nworld,), dtype=float),
-      state=wp.empty(shape=(nworld, njmax), dtype=int),
+      state=wp.zeros(shape=state_padded_size, dtype=int),
       mv=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       jv=wp.empty(shape=(nworld, njmax), dtype=float),
       quad=wp.empty(shape=(nworld, njmax), dtype=wp.vec3f),
       quad_gauss=wp.empty(shape=(nworld,), dtype=wp.vec3f),
-      h=wp.empty(shape=(nworld, mjm.nv, mjm.nv), dtype=float),
+      h=wp.zeros(shape=h_padded_size, dtype=float),
       alpha=wp.empty(shape=(nworld,), dtype=float),
       prev_grad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),

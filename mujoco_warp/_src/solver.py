@@ -1470,12 +1470,12 @@ def compute_jtdj_tiled_kernel(
       if k > nefc:
         break
 
-      # we are ok with not doing the bounds check because things will by multiplied by 0 anyway for anything beyond nefc.
-      # question is what happens when we load beyond the end of the array - we might need some padding here.
+      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
+      # fast path. The padding takes care of any potential OOB accesses.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_i), bounds_check=False)
       
       if offset_i != offset_j:
-        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_j), bounds_check=False)       
+        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_j), bounds_check=False)
       else:
         wp.tile_assign(J_kj, J_ki, (0, 0))
 
@@ -1498,7 +1498,8 @@ def compute_jtdj_tiled_kernel(
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
-    wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j))
+    # AD: setting bounds_check to True explicitly here because for some reason it was slower to disable it.
+    wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
 
 
 @wp.kernel
