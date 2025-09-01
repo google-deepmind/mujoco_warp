@@ -117,6 +117,7 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     ngeom: int,
+    opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -325,7 +326,7 @@ def ccd_kernel_builder(
 
       dist, count, witness1, witness2 = ccd(
         False,
-        1e-6,
+        opt_ccd_tolerance[worldid],
         0.0,
         gjk_iterations,
         epa_iterations,
@@ -423,6 +424,7 @@ def convex_narrowphase(m: Model, d: Data):
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.opt.ccd_tolerance,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
