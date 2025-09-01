@@ -1713,15 +1713,13 @@ def _update_gradient(m: types.Model, d: types.Data):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      TILE_SIZE = 16
-
       # check that the wp.tile trick in the kernel works
-      assert TILE_SIZE < m.block_dim.update_gradient_JTDAJ_sparse
+      assert d.tile_sizes.jtdaj_sparse < m.block_dim.update_gradient_JTDAJ_sparse
 
-      num_blocks_ceil = ceil(m.nv / TILE_SIZE)
+      num_blocks_ceil = ceil(m.nv / d.tile_sizes.jtdaj_sparse)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch(
-        update_gradient_JTDAJ_sparse_tiled(TILE_SIZE, d.njmax),
+        update_gradient_JTDAJ_sparse_tiled(d.tile_sizes.jtdaj_sparse, d.njmax),
         dim=(d.nworld, lower_triangle_dim, m.block_dim.update_gradient_JTDAJ_sparse),
         inputs=[
           d.nefc,
@@ -1741,13 +1739,11 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
     else:
-      TILE_SIZE = 32
-
       # check that the wp.tile trick in the kernel works
-      assert TILE_SIZE < m.block_dim.update_gradient_JTDAJ_dense
+      assert d.tile_sizes.jtdaj_dense < m.block_dim.update_gradient_JTDAJ_dense
 
       wp.launch(
-        update_gradient_JTDAJ_dense_tiled(m.nv, TILE_SIZE, d.njmax),
+        update_gradient_JTDAJ_dense_tiled(m.nv, d.tile_sizes.jtdaj_dense, d.njmax),
         dim=(d.nworld, m.block_dim.update_gradient_JTDAJ_dense),
         inputs=[
           d.nefc,

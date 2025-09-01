@@ -60,6 +60,11 @@ class BlockDim:
   # support
   mul_m_dense: int = 32
 
+@dataclasses.dataclass
+class TileSizes:
+  jtdaj_sparse: int = 16
+  jtdaj_dense: int = 32
+
 
 class BroadphaseType(enum.IntEnum):
   """Type of broadphase algorithm.
@@ -1690,3 +1695,6 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
+
+  # tile sizes for JTDAJ
+  tile_sizes: TileSizes

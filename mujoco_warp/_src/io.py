@@ -935,15 +935,10 @@ def _mujoco_octree_to_warp_volume(
   return volume_ids_array, volumes_tuple, oct_aabb_array
 
 
-def get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool):
+def get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_size: int):
   # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
   #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.
   # if sparse - we pad to the next multiple of tile_size for njmax, and nv.
-
-  if is_sparse:
-    tile_size = 16
-  else:
-    tile_size = 32
 
   def round_up(x, multiple):
     return ((x + multiple - 1) // multiple) * multiple
@@ -1011,7 +1006,14 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
-  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm))
+  tile_sizes = types.TileSizes()
+
+  if mujoco.mj_isSparse(mjm):
+    tile_size = tile_sizes.jtdaj_sparse
+  else:
+    tile_size = tile_sizes.jtdaj_dense
+
+  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
 
   return types.Data(
     nworld=nworld,
@@ -1222,6 +1224,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    tile_sizes=tile_sizes,
   )
 
 
@@ -1331,7 +1334,14 @@ def put_data(
   ne_jnt = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active))
   ne_ten = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active))
 
-  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm))
+  tile_sizes = types.TileSizes()
+
+  if mujoco.mj_isSparse(mjm):
+    tile_size = tile_sizes.jtdaj_sparse
+  else:
+    tile_size = tile_sizes.jtdaj_dense
+
+  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
 
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
@@ -1587,6 +1597,7 @@ def put_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    tile_sizes=tile_sizes,
   )
 
 
