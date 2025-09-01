@@ -30,19 +30,14 @@ cd mujoco_warp
 python3 -m venv env
 source env/bin/activate
 pip install --upgrade pip
+pip install uv
 ```
 
-During early development, MJWarp is on the bleeding edge - you should install Warp and MuJoCo nightly:
-
-```bash
-pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
-pip install mujoco --pre --upgrade -f https://py.mujoco.org/
-```
 
 Then install MJWarp in editable mode for local development:
 
 ```
-pip install -e .[dev,cuda]
+uv pip install -e .[dev,cuda]
 ```
 
 Now make sure everything is working:
