@@ -1586,7 +1586,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
 
       # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
       # fast path. The padding takes care of any potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE_DENSE), offset=(k, 0), bounds_check=False, storage="shared")
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE_DENSE), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
 
       D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
