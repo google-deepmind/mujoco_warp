@@ -1762,61 +1762,23 @@ def _update_gradient(m: types.Model, d: types.Data):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
-    if m.opt.is_sparse:
-      # Run both kernels for comparison
-      # First, run the original sparse kernel
-      if 0:
-        wp.launch(
-          update_gradient_JTDAJ_sparse,
-          dim=(d.nworld, lower_triangle_dim),
-          inputs=[
-            d.njmax,
-            d.nefc,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            d.efc.done,
-          ],
-          outputs=[d.efc.h],
-        )
-      else:
-        # Create temp array and run tiled kernel
-        #temp_efc_h = wp.zeros(shape=(d.nworld, m.nv, m.nv), dtype=wp.float32)
-        num_blocks_ceil = ceil(m.nv / TILE_SIZE)
-        lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
-        wp.launch(
-          compute_jtdj_tiled_kernel,
-          dim=(d.nworld, lower_triangle_dim, BLOCK_DIM),
-          inputs=[
-            d.njmax,
-            d.nefc,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            d.efc.done,
-          ],
-          outputs=[d.efc.h],
-          block_dim=BLOCK_DIM,
-        )
-      
-      # Compare results using numpy
-      #wp.synchronize()
-      #sparse_result = d.efc.h.numpy()
-      #tiled_result = temp_efc_h.numpy()
-      
-      # Compare lower triangular elements (including diagonal)
-      #for worldid in range(d.nworld):
-      #  if not d.efc.done.numpy()[worldid]:
-      #    for i in range(m.nv):
-      #      for j in range(i + 1):  # Only lower triangular + diagonal (j <= i)
-      #        sparse_val = sparse_result[worldid, i, j]
-      #        tiled_val = tiled_result[worldid, i, j]
-
-      #        #print(f"World {worldid}, pos({i},{j}): sparse={sparse_val:.6f}, tiled={tiled_val:.6f}")
-      #        
-      #        if abs(sparse_val - tiled_val) > 1e-4:
-      #          print(f"World {worldid}, pos({i},{j}): sparse={sparse_val:.6f}, tiled={tiled_val:.6f}")
-      
+    if m.opt.is_sparse: 
+      num_blocks_ceil = ceil(m.nv / TILE_SIZE)
+      lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
+      wp.launch(
+        compute_jtdj_tiled_kernel,
+        dim=(d.nworld, lower_triangle_dim, BLOCK_DIM),
+        inputs=[
+          d.njmax,
+          d.nefc,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          d.efc.done,
+        ],
+        outputs=[d.efc.h],
+        block_dim=BLOCK_DIM,
+      )
       
       wp.launch(
         update_gradient_set_h_qM_lower_sparse,
