@@ -1726,7 +1726,6 @@ def _update_gradient(m: types.Model, d: types.Data):
     smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
     if m.opt.is_sparse: 
       num_blocks_ceil = ceil(m.nv / TILE_SIZE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
