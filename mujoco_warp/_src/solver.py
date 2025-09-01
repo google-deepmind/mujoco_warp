@@ -1550,6 +1550,74 @@ def update_gradient_JTDAJ_dense(
   qM = qM_in[worldid, dofi, dofj]
   efc_h_out[worldid, dofi, dofj] = qM + sum_h
 
+@cache_kernel
+def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int):
+  TILE_SIZE_DENSE = nv
+  TILE_SIZE = TILE_SIZE_K
+
+  @nested_kernel
+  def kernel(
+    # Data in:
+    njmax_in: int,
+    nefc_in: wp.array(dtype=int),
+    qM_in: wp.array3d(dtype=float),
+    efc_J_in: wp.array3d(dtype=float),
+    efc_D_in: wp.array2d(dtype=float),
+    efc_state_in: wp.array2d(dtype=int),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_h_out: wp.array3d(dtype=float),
+  ):
+    # Get the current tile indices for the output matrix
+    worldid, tid = wp.tid()
+
+    if efc_done_in[worldid]:
+      return
+
+    nefc = nefc_in[worldid]
+
+    # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
+    # Only sum over the valid entries (up to nefc)
+    sum_val = wp.tile_zeros(shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), dtype=wp.float32)
+
+    # Each tile processes one output element by looping over all constraints
+    for k in range(0, njmax_in, TILE_SIZE):
+      if k >= nefc:
+        break
+
+      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
+      # fast path. The padding takes care of any potential OOB accesses.
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE_DENSE), offset=(k, 0), bounds_check=False, storage="shared")
+      J_kj = J_ki
+
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
+
+      D_k = wp.tile_map(state_check, D_k, state)
+
+      # Force unused elements to be zero.
+      active = 1.0
+      if tid >= nefc - k:
+        active = 0.0
+
+      active_tile = wp.tile(active)
+      active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE,))
+
+      D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
+
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE_DENSE, TILE_SIZE)))
+
+      sum_val += wp.tile_matmul(J_ki, J_kj)
+
+    # add in the qM contribution
+    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=True)
+    sum_val += qM_tile
+
+    # AD: setting bounds_check to True explicitly here because for some reason it was slower to disable it.
+    wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=True)
+
+  return kernel
+
 
 # TODO(thowell): combine with JTDAJ ?
 @wp.kernel
@@ -1788,8 +1856,8 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch(
-        update_gradient_JTDAJ_dense,
-        dim=(d.nworld, lower_triangle_dim),
+        update_gradient_JTDAJ_dense_tiled(m.nv, TILE_SIZE),
+        dim=(d.nworld, 64),
         inputs=[
           d.njmax,
           d.nefc,
@@ -1800,6 +1868,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
+        block_dim=64,
       )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
