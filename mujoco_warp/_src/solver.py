@@ -1444,9 +1444,8 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
   return kernel
 
 @cache_kernel
-def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
-  TILE_SIZE_DENSE = nv
-  TILE_SIZE = TILE_SIZE_K
+def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
+  TILE_SIZE_K = tile_size
 
   @nested_kernel
   def kernel(
@@ -1460,7 +1459,6 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
     # Data out:
     efc_h_out: wp.array3d(dtype=float),
   ):
-    # Get the current tile indices for the output matrix
     worldid, tid = wp.tid()
 
     if efc_done_in[worldid]:
@@ -1468,22 +1466,20 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
 
     nefc = nefc_in[worldid]
 
-    # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
-    # Only sum over the valid entries (up to nefc)
-    sum_val = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=False)
+    sum_val = wp.tile_load(qM_in[worldid], shape=(nv, nv), bounds_check=False)
 
     # Each tile processes one output tile by looping over all constraints
-    for k in range(0, njmax, TILE_SIZE):
+    for k in range(0, njmax, TILE_SIZE_K):
       if k >= nefc:
         break
 
       # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
       # fast path. The padding takes care of any potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE_DENSE), offset=(k, 0), bounds_check=False)
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
 
-      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
-      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
 
       D_k = wp.tile_map(state_check, D_k, state)
 
@@ -1493,11 +1489,11 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
         active = 0.0
 
       active_tile = wp.tile(active)
-      active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE,))
+      active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE_K,))
 
       D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE_DENSE, TILE_SIZE)))
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv, TILE_SIZE_K)))
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
