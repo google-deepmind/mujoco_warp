@@ -1411,6 +1411,11 @@ def update_gradient_JTDAJ_sparse(
   efc_h_out[worldid, dofi, dofj] = sum_h
 
 
+# TODO opts
+# check alignment, whether we can use the aligned loads
+# padding to make sure we're not going out of bounds
+# maybe add a hint in warp to only load a subset?
+
 TILE_SIZE = 16
 BLOCK_DIM = 64
 
@@ -1463,7 +1468,7 @@ def compute_jtdj_tiled_kernel(
         break
 
       # we are ok with not doing the bounds check because things will by multiplied by 0 anyway for anything beyond nefc.
-      # question is what happens when we load beyond the end of the array.
+      # question is what happens when we load beyond the end of the array - we might need some padding here.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE), bounds_check=False)
       
       if i != j:
