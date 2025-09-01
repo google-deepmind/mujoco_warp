@@ -33,7 +33,6 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
   @nested_kernel
   def _gjk_kernel(
     # Model:
-    opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
     geom_size: wp.array2d(dtype=wp.vec3),
@@ -132,7 +131,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
       x2,
     ) = ccd(
       multiccd,
-      opt_ccd_tolerance[0],
+      1e-6,
       1.0e30,
       iterations,
       iterations,
@@ -178,7 +177,6 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     _gjk_kernel,
     dim=(1,),
     inputs=[
-      m.opt.ccd_tolerance,
       m.geom_type,
       m.geom_dataid,
       m.geom_size,
