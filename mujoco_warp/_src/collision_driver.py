@@ -26,6 +26,7 @@ from .collision_primitive import geom
 from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
+from .types import MJ_MAXCONPAIR
 from .types import MJ_MAXVAL
 from .types import BroadphaseFilter
 from .types import BroadphaseType
@@ -985,6 +986,7 @@ def _hfield_midphase(
   ccd_tolerance = opt_ccd_tolerance[worldid]
 
   # loop over subgrid triangles
+  count = int(0)
   firstprism = bool(True)
   for r in range(rmin, rmax):
     for c in range(cmin, cmax):
@@ -1017,6 +1019,11 @@ def _hfield_midphase(
           collision_hftri_index_out[new_pairid] = hftri_index
           collision_pairid_out[new_pairid] = pair_id
           collision_worldid_out[new_pairid] = worldid
+
+          count += 1
+
+          if count >= MJ_MAXCONPAIR:
+            return
 
 
 def _narrowphase(m, d):
