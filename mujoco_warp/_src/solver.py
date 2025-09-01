@@ -1610,11 +1610,11 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int):
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
     # add in the qM contribution
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=True)
+    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=False)
     sum_val += qM_tile
 
-    # AD: setting bounds_check to True explicitly here because for some reason it was slower to disable it.
-    wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=True)
+    # AD: in this case here now setting bounds_check to False helps a lot with performance.
+    wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=False)
 
   return kernel
 
