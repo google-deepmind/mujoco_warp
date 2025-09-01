@@ -50,6 +50,7 @@ _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "print a report of co
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of solver iterations per step")
 _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to summarize rollout measurements")
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
+_REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 
 
 def _print_table(matrix, headers, title):
@@ -145,7 +146,14 @@ def _main(argv: Sequence[str]):
 
   mjm = _load_model(epath.Path(argv[1]))
   mjd = mujoco.MjData(mjm)
-  if mjm.nkey > 0 and _KEYFRAME.value > -1:
+  ctrls = None
+  if _REPLAY.value:
+    keys = mjw.test_util.find_keys(mjm, _REPLAY.value)
+    if not keys:
+      raise app.UsageError(f"Key prefix not find: {_REPLAY.value}")
+    ctrls = mjw.test_util.make_trajectory(mjm, keys)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
+  elif mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
   # populate some constraints
   mujoco.mj_forward(mjm, mjd)
@@ -175,7 +183,9 @@ def _main(argv: Sequence[str]):
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
-    res = mjw.benchmark(fn, m, d, _NSTEP.value, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
+    res = mjw.test_util.benchmark(
+      fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value,
+    )
     jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 

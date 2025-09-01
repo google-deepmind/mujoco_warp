@@ -21,6 +21,7 @@ from ._src.types import Model as Model
 from ._src.types import Data as Data
 # isort: on
 
+from ._src import test_util as test_util  # used by viewer and testspeed, not meant for public consumption
 from ._src.collision_driver import collision as collision
 from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase
@@ -66,8 +67,6 @@ from ._src.solver import solve as solve
 from ._src.support import contact_force as contact_force
 from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate
-from ._src.test_util import BenchmarkSuite as BenchmarkSuite
-from ._src.test_util import benchmark as benchmark
 from ._src.types import BroadphaseFilter as BroadphaseFilter
 from ._src.types import BroadphaseType as BroadphaseType
 from ._src.types import ConeType as ConeType

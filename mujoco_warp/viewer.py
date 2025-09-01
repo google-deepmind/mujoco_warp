@@ -119,44 +119,14 @@ def _override(model: Union[mjw.Model, mujoco.MjModel]):
       setattr(obj, attr, val)
 
 
-def _make_traj(model: mujoco.MjModel, keyname_prefix: str) -> tuple[list[int], np.ndarray]:
-  """Make a ctrl trajectory with linear interpolation."""
-  keyids, ctrls = [], []
-  prev_ctrl_key = np.zeros(model.nu, dtype=np.float64)
-  prev_time, time = 0.0, 0.0
-
-  for keyid in range(model.nkey):
-    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_KEY, keyid)
-    if not name.startswith(keyname_prefix):
-      continue
-    ctrl_key, ctrl_time = model.key_ctrl[keyid], model.key_time[keyid]
-    if not ctrls and ctrl_time != 0.0:
-      raise ValueError("first keyframe must have time 0.0")
-    elif ctrls and ctrl_time <= prev_time:
-      raise ValueError("keyframes must be in time order")
-
-    while time < ctrl_time:
-      frac = (time - prev_time) / (ctrl_time - prev_time)
-      keyids.append(keyid)
-      ctrls.append(prev_ctrl_key * (1 - frac) + ctrl_key * frac)
-      time += model.opt.timestep
-
-    keyids.append(keyid)
-    ctrls.append(ctrl_key)
-    time += model.opt.timestep
-    prev_ctrl_key = ctrl_key
-    prev_time = time
-
-  return keyids, np.array(ctrls)
-
-
 def _compile_step(m, d):
-  mjw.step(m, d)
-  # double warmup to work around issues with compilation during graph capture:
-  mjw.step(m, d)
+  print("Compiling physics step...", end="", flush=True)
+  start = time.time()
   # capture the whole step function as a CUDA graph
   with wp.ScopedCapture() as capture:
     mjw.step(m, d)
+  elapsed = time.time() - start
+  print(f"done ({elapsed:0.2g}s).")
   return capture.graph
 
 
@@ -172,8 +142,11 @@ def _main(argv: Sequence[str]) -> None:
   ctrls = None
   ctrlid = 0
   if _REPLAY.value:
-    keyids, ctrls = _make_traj(mjm, _REPLAY.value)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, keyids[0])
+    keys = mjw.test_util.find_keys(mjm, _REPLAY.value)
+    if not keys:
+      raise app.UsageError(f"Key prefix not find: {_REPLAY.value}")
+    ctrls = mjw.test_util.make_trajectory(mjm, keys)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
   elif mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
   mujoco.mj_forward(mjm, mjd)
@@ -209,11 +182,7 @@ def _main(argv: Sequence[str]) -> None:
       )
       d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
       print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
-      print("Compiling physics step...", end="")
-      start = time.time()
       graph = _compile_step(m, d)
-      elapsed = time.time() - start
-      print(f"done ({elapsed:0.2}s).")
       print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
   with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
