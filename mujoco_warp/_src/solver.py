@@ -1363,15 +1363,6 @@ def update_gradient_set_h_qM_lower_sparse(
   j = qM_fullm_j[elementid]
   efc_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
 
-
-# TODO opts
-# check alignment, whether we can use the aligned loads
-# padding to make sure we're not going out of bounds
-# maybe add a hint in warp to only load a subset?
-
-TILE_SIZE = 16
-BLOCK_DIM = 64
-
 @wp.func
 def state_check(D: float, state: int) -> float:
   if state == int(types.ConstraintState.QUADRATIC.value):
@@ -1481,7 +1472,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
     # Only sum over the valid entries (up to nefc)
     sum_val = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=False)
 
-    # Each tile processes one output element by looping over all constraints
+    # Each tile processes one output tile by looping over all constraints
     for k in range(0, njmax, TILE_SIZE):
       if k >= nefc:
         break
@@ -1510,7 +1501,6 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
-    # AD: in this case here now setting bounds_check to False helps a lot with performance.
     wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=False)
 
   return kernel
@@ -1726,7 +1716,12 @@ def _update_gradient(m: types.Model, d: types.Data):
     smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    if m.opt.is_sparse: 
+    if m.opt.is_sparse:
+      TILE_SIZE = 16
+
+      # check that the wp.tile trick in the kernel works
+      assert TILE_SIZE < m.block_dim.update_gradient_JTDAJ_sparse
+
       num_blocks_ceil = ceil(m.nv / TILE_SIZE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch(
@@ -1750,8 +1745,13 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
     else:
+      TILE_SIZE = 32
+
+      # check that the wp.tile trick in the kernel works
+      assert TILE_SIZE < m.block_dim.update_gradient_JTDAJ_dense
+
       wp.launch(
-        update_gradient_JTDAJ_dense_tiled(m.nv, 32, d.njmax),
+        update_gradient_JTDAJ_dense_tiled(m.nv, TILE_SIZE, d.njmax),
         dim=(d.nworld, m.block_dim.update_gradient_JTDAJ_dense),
         inputs=[
           d.nefc,
