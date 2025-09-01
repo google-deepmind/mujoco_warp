@@ -426,7 +426,8 @@ class IOTest(parameterized.TestCase):
       "qM",
     ]
 
-    mjm, mjd, m, d = test_util.fixture(xml)
+    nworld = 1
+    mjm, mjd, m, d = test_util.fixture(xml, nworld=nworld)
     nconmax = d.nconmax
 
     # data fields
@@ -451,10 +452,12 @@ class IOTest(parameterized.TestCase):
     mjwarp.reset_data(m, d)
 
     for arr in reset_datafield:
-      d_arr = getattr(d, arr).numpy()[0]
-      if arr == "qM":
-        d_arr = d_arr.reshape(-1)[: mjd.qM.size]
-      _assert_eq(d_arr, getattr(mjd, arr), arr)
+      d_arr = getattr(d, arr).numpy()
+      for i in range(d_arr.shape[0]):
+        di_arr = d_arr[i]
+        if arr == "qM":
+          di_arr = di_arr.reshape(-1)[: mjd.qM.size]
+        _assert_eq(di_arr, getattr(mjd, arr), arr)
 
     for arr in d.contact.__dataclass_fields__:
       _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)

@@ -1720,9 +1720,17 @@ def get_data_into(
 
 
 @wp.kernel
-def _zero_nworld(
+def _set_nworld(
   # Model:
+  nq: int,
+  nv: int,
+  nu: int,
+  na: int,
+  neq: int,
+  nsensordata: int,
   nhfieldgeom: int,
+  qpos0: wp.array2d(dtype=float),
+  eq_active0: wp.array(dtype=bool),
   # Data in:
   nworld_in: int,
   # Data out:
@@ -1741,6 +1749,16 @@ def _zero_nworld(
   nsolving_out: wp.array(dtype=int),
   time_out: wp.array(dtype=float),
   energy_out: wp.array(dtype=wp.vec2),
+  qpos_out: wp.array2d(dtype=float),
+  qvel_out: wp.array2d(dtype=float),
+  act_out: wp.array2d(dtype=float),
+  qacc_warmstart_out: wp.array2d(dtype=float),
+  ctrl_out: wp.array2d(dtype=float),
+  qfrc_applied_out: wp.array2d(dtype=float),
+  eq_active_out: wp.array2d(dtype=bool),
+  qacc_out: wp.array2d(dtype=float),
+  act_dot_out: wp.array2d(dtype=float),
+  sensordata_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
 
@@ -1762,37 +1780,22 @@ def _zero_nworld(
     nsolving_out[0] = nworld_in
   time_out[worldid] = 0.0
   energy_out[worldid] = wp.vec2(0.0, 0.0)
-
-
-@wp.kernel
-def _zero_nv(
-  # Data out:
-  qvel_out: wp.array2d(dtype=float),
-  qacc_warmstart_out: wp.array2d(dtype=float),
-  qfrc_applied_out: wp.array2d(dtype=float),
-  qacc_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-  qvel_out[worldid, dofid] = 0.0
-  qacc_warmstart_out[worldid, dofid] = 0.0
-  qfrc_applied_out[worldid, dofid] = 0.0
-  qacc_out[worldid, dofid] = 0.0
-
-
-@wp.kernel
-def _zero_nu(
-  # Model:
-  na: int,
-  # Data out:
-  act_out: wp.array2d(dtype=float),
-  ctrl_out: wp.array2d(dtype=float),
-  act_dot_out: wp.array2d(dtype=float),
-):
-  worldid, actid = wp.tid()
-  ctrl_out[worldid, actid] = 0.0
-  if actid < na:
-    act_out[worldid, actid] = 0.0
-    act_dot_out[worldid, actid] = 0.0
+  for i in range(nq):
+    qpos_out[worldid, i] = qpos0[worldid, i]
+    if i < nv:
+      qvel_out[worldid, i] = 0.0
+      qacc_warmstart_out[worldid, i] = 0.0
+      qfrc_applied_out[worldid, i] = 0.0
+      qacc_out[worldid, i] = 0.0
+  for i in range(nu):
+    ctrl_out[worldid, i] = 0.0
+    if i < na:
+      act_out[worldid, i] = 0.0
+      act_dot_out[worldid, i] = 0.0
+  for i in range(neq):
+    eq_active_out[worldid, i] = eq_active0[i]
+  for i in range(nsensordata):
+    sensordata_out[worldid, i] = 0.0
 
 
 @wp.kernel
@@ -1856,15 +1859,7 @@ def _zero_contact(
 
 def reset_data(m: types.Model, d: types.Data):
   """Clear data, set defaults."""
-  # copy qpos0 from model
-  wp.copy(d.qpos, m.qpos0)
-
-  # # zero out arrays that are not affected by forward
-  wp.launch(_zero_nv, dim=(d.nworld, m.nv), outputs=[d.qvel, d.qacc_warmstart, d.qfrc_applied, d.qacc])
-  wp.launch(_zero_nu, dim=(d.nworld, m.nu), inputs=[m.na], outputs=[d.act, d.ctrl, d.act_dot])
-  wp.copy(d.eq_active, m.eq_active0)
   d.xfrc_applied.zero_()
-  d.sensordata.zero_()
   d.qM.zero_()
 
   # set mocap_pos/quat = body_pos/quat for mocap bodies
@@ -1893,11 +1888,10 @@ def reset_data(m: types.Model, d: types.Data):
     ],
   )
 
-  # clear variables sizes and global properties
   wp.launch(
-    _zero_nworld,
+    _set_nworld,
     dim=d.nworld,
-    inputs=[m.nhfieldgeom, d.nworld],
+    inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.nhfieldgeom, m.qpos0, m.eq_active0, d.nworld],
     outputs=[
       d.solver_niter,
       d.ncon,
@@ -1914,6 +1908,16 @@ def reset_data(m: types.Model, d: types.Data):
       d.nsolving,
       d.time,
       d.energy,
+      d.qpos,
+      d.qvel,
+      d.act,
+      d.qacc_warmstart,
+      d.ctrl,
+      d.qfrc_applied,
+      d.eq_active,
+      d.qacc,
+      d.act_dot,
+      d.sensordata,
     ],
   )
 
