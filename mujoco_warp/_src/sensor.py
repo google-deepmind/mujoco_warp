@@ -21,6 +21,7 @@ from . import math
 from . import ray
 from . import smooth
 from . import support
+from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
 from .types import MJ_MAXCONPAIR
 from .types import MJ_MINVAL
@@ -1787,12 +1788,16 @@ def _sensor_tactile(
   # Model:
   body_rootid: wp.array(dtype=int),
   body_weldid: wp.array(dtype=int),
+  geom_type: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_normaladr: wp.array(dtype=int),
   mesh_normal: wp.array(dtype=wp.vec3),
   mesh_quat: wp.array(dtype=wp.quat),
+  volume_ids: wp.array(dtype=wp.uint64),
+  oct_aabb: wp.array2d(dtype=wp.vec3),
   sensor_objid: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_dim: wp.array(dtype=int),
@@ -1852,9 +1857,15 @@ def _sensor_tactile(
   tmp = xpos - geom_xpos_in[worldid, geom]
   lpos = wp.transpose(geom_xmat_in[worldid, geom]) @ tmp
 
-  # compute distance
   plugin_id = geom_plugin_index[geom]
-  depth = wp.min(sdf(int(GeomType.SDF.value), lpos, plugin_attr[plugin_id], plugin[plugin_id]), 0.0)
+
+  contact_type = geom_type[geom]
+
+  plugin_attributes, plugin_index, volume_data = get_sdf_params(
+    volume_ids, oct_aabb, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
+  )
+
+  depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data), 0.0)
   if depth >= 0.0:
     return
 
@@ -2031,12 +2042,16 @@ def sensor_acc(m: Model, d: Data):
     inputs=[
       m.body_rootid,
       m.body_weldid,
+      m.geom_type,
       m.geom_bodyid,
+      m.geom_size,
       m.mesh_vertadr,
       m.mesh_vert,
       m.mesh_normaladr,
       m.mesh_normal,
       m.mesh_quat,
+      m.volume_ids,
+      m.oct_aabb,
       m.sensor_objid,
       m.sensor_refid,
       m.sensor_dim,

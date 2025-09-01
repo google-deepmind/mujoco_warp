@@ -28,6 +28,7 @@ from etils import epath
 from . import forward
 from . import io
 from . import warp_util
+from .types import BroadphaseType
 from .types import ConeType
 from .types import Data
 from .types import DisableBit
@@ -61,6 +62,7 @@ def fixture(
   ls_iterations: Optional[int] = None,
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
+  broadphase: Optional[BroadphaseType] = None,
   disableflags: Optional[int] = None,
   enableflags: Optional[int] = None,
   applied: bool = False,
@@ -150,6 +152,8 @@ def fixture(
   m = io.put_model(mjm)
   if ls_parallel is not None:
     m.opt.ls_parallel = ls_parallel
+  if broadphase is not None:
+    m.opt.broadphase = broadphase
 
   d = io.put_data(mjm, mjd, nworld=nworld, nconmax=nconmax, njmax=njmax)
   return mjm, mjd, m, d
