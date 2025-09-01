@@ -96,6 +96,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   plugin_id = np.array(plugin_id)
   plugin_attr = np.array(plugin_attr)
+  volume_ids, volumes, oct_aabb = _mujoco_octree_to_warp_volume(mjm)
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
@@ -129,8 +130,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
 
     # reduction
-    if (mjm.sensor_intprm[is_contact_sensor, 1] != 1).any():
-      raise NotImplementedError(f"Contact sensor: only mindist reduction is implemented.")
+    if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
+      raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
@@ -141,9 +142,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   # calculate some fields that cannot be easily computed inline
   nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
-
-  # unfortunately we must create Data in order to get some model fields like M_rownnz
-  mjd = mujoco.MjData(mjm)
 
   # dof lower triangle row and column indices (used in solver)
   dof_tri_row, dof_tri_col = np.tril_indices(mjm.nv)
@@ -182,11 +180,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   for k in range(mjm.nv):
     # skip diagonal rows
-    if mjd.M_rownnz[k] == 1:
+    if mjm.M_rownnz[k] == 1:
       continue
     dof_depth[k] = dof_depth[mjm.dof_parentid[k]] + 1
     i = mjm.dof_parentid[k]
-    diag_k = mjd.M_rowadr[k] + mjd.M_rownnz[k] - 1
+    diag_k = mjm.M_rowadr[k] + mjm.M_rownnz[k] - 1
     Madr_ki = diag_k - 1
     while i > -1:
       qLD_updates.setdefault(dof_depth[i], []).append((i, k, Madr_ki))
@@ -396,13 +394,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   rangefinder_sensor_adr = np.full(mjm.nsensor, -1)
   rangefinder_sensor_adr[sensor_rangefinder_adr] = np.arange(len(sensor_rangefinder_adr))
 
-  # TODO(team): improve heuristic for selecting broadphase routine
-  if mjm.ngeom > 1000:
-    broadphase = types.BroadphaseType.SAP_SEGMENTED
-  elif mjm.ngeom > 100:
+  # contact sensor
+  sensor_adr_to_contact_adr = np.clip(np.cumsum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT) - 1, a_min=0, a_max=None)
+
+  if nxn_geom_pair_filtered.shape[0] < 250_000:
+    broadphase = types.BroadphaseType.NXN
+  elif mjm.ngeom < 1000:
     broadphase = types.BroadphaseType.SAP_TILE
   else:
-    broadphase = types.BroadphaseType.NXN
+    broadphase = types.BroadphaseType.SAP_SEGMENTED
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
@@ -421,6 +421,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nsite=mjm.nsite,
     ncam=mjm.ncam,
     nlight=mjm.nlight,
+    nmat=mjm.nmat,
     nflex=mjm.nflex,
     nflexvert=mjm.nflexvert,
     nflexedge=mjm.nflexedge,
@@ -465,6 +466,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
       ls_parallel=False,
+      ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
       gjk_iterations=MJ_CCD_ITERATIONS,
       epa_iterations=MJ_CCD_ITERATIONS,
       broadphase=int(broadphase),
@@ -475,6 +477,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
+      legacy_gjk=False,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
@@ -487,10 +490,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     qM_mulm_j=wp.array(qM_mulm_j, dtype=int),
     qM_madr_ij=wp.array(qM_madr_ij, dtype=int),
     qLD_updates=qLD_updates,
-    M_rownnz=wp.array(mjd.M_rownnz, dtype=int),
-    M_rowadr=wp.array(mjd.M_rowadr, dtype=int),
-    M_colind=wp.array(mjd.M_colind, dtype=int),
-    mapM2M=wp.array(mjd.mapM2M, dtype=int),
+    M_rownnz=wp.array(mjm.M_rownnz, dtype=int),
+    M_rowadr=wp.array(mjm.M_rowadr, dtype=int),
+    M_colind=wp.array(mjm.M_colind, dtype=int),
+    mapM2M=wp.array(mjm.mapM2M, dtype=int),
     qM_tiles=qM_tiles,
     body_tree=body_tree,
     body_parentid=wp.array(mjm.body_parentid, dtype=int),
@@ -595,6 +598,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     light_mode=wp.array(mjm.light_mode, dtype=int),
     light_bodyid=wp.array(mjm.light_bodyid, dtype=int),
     light_targetbodyid=wp.array(mjm.light_targetbodyid, dtype=int),
+    light_type=create_nmodel_batched_array(mjm.light_type, dtype=int),
+    light_castshadow=create_nmodel_batched_array(mjm.light_castshadow, dtype=bool),
+    light_active=create_nmodel_batched_array(mjm.light_active, dtype=bool),
     light_pos=create_nmodel_batched_array(mjm.light_pos, dtype=wp.vec3),
     light_dir=create_nmodel_batched_array(mjm.light_dir, dtype=wp.vec3),
     light_poscom0=create_nmodel_batched_array(mjm.light_poscom0, dtype=wp.vec3),
@@ -612,7 +618,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     flex_elemedge=wp.array(mjm.flex_elemedge, dtype=int),
     flexedge_length0=wp.array(mjm.flexedge_length0, dtype=float),
     flex_stiffness=wp.array(mjm.flex_stiffness.flatten(), dtype=float),
-    flex_bending=wp.array(mjm.flex_bending, dtype=wp.mat44f),
+    flex_bending=wp.array(mjm.flex_bending.flatten(), dtype=float),
     flex_damping=wp.array(mjm.flex_damping, dtype=float),
     mesh_vertadr=wp.array(mjm.mesh_vertadr, dtype=int),
     mesh_vertnum=wp.array(mjm.mesh_vertnum, dtype=int),
@@ -633,6 +639,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_polymapadr=wp.array(mjm.mesh_polymapadr, dtype=int),
     mesh_polymapnum=wp.array(mjm.mesh_polymapnum, dtype=int),
     mesh_polymap=wp.array(mjm.mesh_polymap, dtype=int),
+    volume_ids=volume_ids,
+    volumes=volumes,
+    oct_aabb=oct_aabb,
     nhfield=mjm.nhfield,
     nhfielddata=mjm.nhfielddata,
     nhfieldgeom=nhfieldgeom,
@@ -804,6 +813,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       [mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM],
     ).any(),
     sensor_contact_adr=wp.array(np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)[0], dtype=int),
+    sensor_adr_to_contact_adr=wp.array(sensor_adr_to_contact_adr, dtype=int),
     sensor_rne_postconstraint=np.isin(
       mjm.sensor_type,
       [
@@ -820,6 +830,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     plugin=wp.array(plugin_id, dtype=int),
     plugin_attr=wp.array(plugin_attr, dtype=wp.vec3f),
     geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
+    mat_texid=create_nmodel_batched_array(mjm.mat_texid, dtype=int),
+    mat_texrepeat=create_nmodel_batched_array(mjm.mat_texrepeat, dtype=wp.vec2),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     actuator_trntype_body_adr=wp.array(np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0], dtype=int),
     geompair2hfgeompair=wp.array(geompair2hfgeom, dtype=int),
@@ -849,6 +861,84 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
+def _mujoco_octree_to_warp_volume(
+  mjm: mujoco.MjModel, resolution: int = 128
+) -> Tuple[wp.array, Tuple[wp.Volume, ...], wp.array]:
+  """Constructs volume data from MuJoCo octrees."""
+  volume_ids = [0] * len(mjm.mesh_octadr)
+  volumes = []
+  oct_aabbs = [None] * len(mjm.mesh_octadr)
+  for mesh_id in mjm.geom_dataid:
+    if mesh_id != -1 and mesh_id < len(mjm.mesh_octadr):
+      octadr = mjm.mesh_octadr[mesh_id]
+      if octadr != -1:
+        oct_child = mjm.oct_child[8 * octadr :].reshape(-1, 8)
+        oct_aabb = mjm.oct_aabb[6 * octadr :].reshape(-1, 6)
+        oct_coeff = mjm.oct_coeff[8 * octadr :].reshape(-1, 8)
+
+        root_aabb = oct_aabb[0]
+        center = root_aabb[:3]
+        half_size = root_aabb[3:]
+
+        original_mins = center - half_size
+        original_maxs = center + half_size
+
+        margin_factor = 0.02
+        extents = original_maxs - original_mins
+        margin = margin_factor * extents
+
+        mins = original_mins - margin
+        maxs = original_maxs + margin
+        expanded_extents = maxs - mins
+
+        voxel_size = expanded_extents.max() / resolution
+
+        nums = np.ceil(expanded_extents / voxel_size).astype(dtype=int)
+
+        actual_extents = nums * voxel_size
+        maxs = mins + actual_extents
+
+        sdf_values = np.zeros(tuple(nums), dtype=np.float32)
+
+        for x in range(nums[0]):
+          for y in range(nums[1]):
+            for z in range(nums[2]):
+              pos = mins + voxel_size * np.array([x, y, z])
+              within_bounds = np.all(pos >= original_mins) and np.all(pos <= original_maxs)
+              if within_bounds:
+                sdf_val = sample_octree_sdf(pos, oct_child, oct_aabb, oct_coeff)
+              else:
+                clamped_pos = np.clip(pos, original_mins, original_maxs)
+                sdf_val = sample_octree_sdf(clamped_pos, oct_child, oct_aabb, oct_coeff)
+              sdf_values[x, y, z] = sdf_val
+
+        device = wp.get_device()
+        if device.is_cuda:
+          volume = wp.Volume.load_from_numpy(sdf_values, mins, voxel_size, 1.0, device=device)
+          volume_ids[mesh_id] = volume.id
+          volumes.append(volume)
+        else:
+          volume_ids[mesh_id] = 0
+        oct_aabbs[mesh_id] = [center, half_size]
+
+  volume_ids_array = wp.array(data=volume_ids, dtype=wp.uint64)
+
+  processed_aabbs = []
+  for aabb in oct_aabbs:
+    if aabb is not None:
+      processed_aabbs.append(aabb)
+    else:
+      zero_center = np.zeros(3, dtype=np.float32)
+      zero_half_size = np.zeros(3, dtype=np.float32)
+      processed_aabbs.append([zero_center, zero_half_size])
+
+  aabb_array = np.array(processed_aabbs, dtype=np.float32)
+  oct_aabb_array = wp.array2d(data=aabb_array, dtype=wp.vec3)
+  volumes_tuple = tuple(volumes)
+
+  return volume_ids_array, volumes_tuple, oct_aabb_array
+
+
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
   """
   Creates a data object on device.
@@ -874,11 +964,11 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
-  if nconmax < 1:
-    raise ValueError("nconmax must be >= 1")
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
-  if njmax < 1:
-    raise ValueError("njmax must be >= 1")
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
@@ -1018,7 +1108,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       cost=wp.zeros((nworld,), dtype=float),
       prev_cost=wp.zeros((nworld,), dtype=float),
       state=wp.zeros((nworld, njmax), dtype=int),
-      gtol=wp.zeros((nworld,), dtype=float),
       mv=wp.zeros((nworld, mjm.nv), dtype=float),
       jv=wp.zeros((nworld, njmax), dtype=float),
       quad=wp.zeros((nworld, njmax), dtype=wp.vec3f),
@@ -1030,18 +1119,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
       beta=wp.zeros((nworld,), dtype=float),
       done=wp.zeros((nworld,), dtype=bool),
       # linesearch
-      ls_done=wp.zeros((nworld,), dtype=bool),
-      p0=wp.zeros((nworld,), dtype=wp.vec3),
-      lo=wp.zeros((nworld,), dtype=wp.vec3),
-      lo_alpha=wp.zeros((nworld,), dtype=float),
-      hi=wp.zeros((nworld,), dtype=wp.vec3),
-      hi_alpha=wp.zeros((nworld,), dtype=float),
-      lo_next=wp.zeros((nworld,), dtype=wp.vec3),
-      lo_next_alpha=wp.zeros((nworld,), dtype=float),
-      hi_next=wp.zeros((nworld,), dtype=wp.vec3),
-      hi_next_alpha=wp.zeros((nworld,), dtype=float),
-      mid=wp.zeros((nworld,), dtype=wp.vec3),
-      mid_alpha=wp.zeros((nworld,), dtype=float),
       cost_candidate=wp.zeros((nworld, mjm.opt.ls_iterations), dtype=float),
     ),
     # RK4
@@ -1155,11 +1232,11 @@ def put_data(
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
-  if nconmax < 1:
-    raise ValueError("nconmax must be >= 1")
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
-  if njmax < 1:
-    raise ValueError("njmax must be >= 1")
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   if nworld * mjd.ncon > nconmax:
     raise ValueError(f"nconmax overflow (nconmax must be >= {nworld * mjd.ncon})")
@@ -1397,7 +1474,6 @@ def put_data(
       cost=wp.empty(shape=(nworld,), dtype=float),
       prev_cost=wp.empty(shape=(nworld,), dtype=float),
       state=wp.empty(shape=(nworld, njmax), dtype=int),
-      gtol=wp.empty(shape=(nworld,), dtype=float),
       mv=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       jv=wp.empty(shape=(nworld, njmax), dtype=float),
       quad=wp.empty(shape=(nworld, njmax), dtype=wp.vec3f),
@@ -1408,18 +1484,6 @@ def put_data(
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       beta=wp.empty(shape=(nworld,), dtype=float),
       done=wp.empty(shape=(nworld,), dtype=bool),
-      ls_done=wp.zeros(shape=(nworld,), dtype=bool),
-      p0=wp.empty(shape=(nworld,), dtype=wp.vec3),
-      lo=wp.empty(shape=(nworld,), dtype=wp.vec3),
-      lo_alpha=wp.empty(shape=(nworld,), dtype=float),
-      hi=wp.empty(shape=(nworld,), dtype=wp.vec3),
-      hi_alpha=wp.empty(shape=(nworld,), dtype=float),
-      lo_next=wp.empty(shape=(nworld,), dtype=wp.vec3),
-      lo_next_alpha=wp.empty(shape=(nworld,), dtype=float),
-      hi_next=wp.empty(shape=(nworld,), dtype=wp.vec3),
-      hi_next_alpha=wp.empty(shape=(nworld,), dtype=float),
-      mid=wp.empty(shape=(nworld,), dtype=wp.vec3),
-      mid_alpha=wp.empty(shape=(nworld,), dtype=float),
       cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
     ),
     # TODO(team): skip allocation if integrator != RK4
@@ -1852,3 +1916,58 @@ def reset_data(m: types.Model, d: types.Data):
       d.energy,
     ],
   )
+
+
+def sample_octree_sdf(
+  point: np.ndarray, oct_child: np.ndarray, oct_aabb: np.ndarray, oct_coeff: np.ndarray, eps: float = 1e-6
+) -> float:
+  """Sample SDF value at a point using MuJoCo's octree structure.
+
+  Traverses octree to leaf nodes and interpolates between 8 corner coefficients.
+  """
+  node = 0
+
+  while True:
+    aabb = oct_aabb[node]
+    center = aabb[:3]
+    half_size = aabb[3:]
+    vmin = center - half_size
+    vmax = center + half_size
+
+    if (
+      point[0] + eps < vmin[0]
+      or point[0] - eps > vmax[0]
+      or point[1] + eps < vmin[1]
+      or point[1] - eps > vmax[1]
+      or point[2] + eps < vmin[2]
+      or point[2] - eps > vmax[2]
+    ):
+      return 1.0
+
+    coord = (point - vmin) / (vmax - vmin)
+
+    children = oct_child[node]
+    if np.all(children == -1):
+      sdf = 0.0
+      coeffs = oct_coeff[node]
+
+      for j in range(8):
+        w = (
+          (coord[0] if (j & 1) else (1 - coord[0]))
+          * (coord[1] if (j & 2) else (1 - coord[1]))
+          * (coord[2] if (j & 4) else (1 - coord[2]))
+        )
+        sdf += w * coeffs[j]
+
+      return sdf
+
+    x_child = 0 if coord[0] >= 0.5 else 1
+    y_child = 0 if coord[1] >= 0.5 else 1
+    z_child = 0 if coord[2] >= 0.5 else 1
+    child_idx = 4 * z_child + 2 * y_child + x_child
+
+    next_node = children[child_idx]
+    if next_node == -1:
+      return 1.0
+
+    node = next_node

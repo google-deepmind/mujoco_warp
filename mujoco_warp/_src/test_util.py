@@ -28,6 +28,7 @@ from etils import epath
 from . import forward
 from . import io
 from . import warp_util
+from .types import BroadphaseType
 from .types import ConeType
 from .types import Data
 from .types import DisableBit
@@ -46,7 +47,8 @@ def fixture(
   contact: bool = True,
   constraint: bool = True,
   equality: bool = True,
-  passive: bool = True,
+  spring: bool = True,
+  damper: bool = True,
   gravity: bool = True,
   clampctrl: bool = True,
   filterparent: bool = True,
@@ -61,6 +63,7 @@ def fixture(
   ls_iterations: Optional[int] = None,
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
+  broadphase: Optional[BroadphaseType] = None,
   disableflags: Optional[int] = None,
   enableflags: Optional[int] = None,
   applied: bool = False,
@@ -87,8 +90,10 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.CONSTRAINT
   if not equality:
     mjm.opt.disableflags |= DisableBit.EQUALITY
-  if not passive:
-    mjm.opt.disableflags |= DisableBit.PASSIVE
+  if not spring:
+    mjm.opt.disableflags |= DisableBit.SPRING
+  if not damper:
+    mjm.opt.disableflags |= DisableBit.DAMPER
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
   if not clampctrl:
@@ -146,9 +151,12 @@ def fixture(
     mjd.mocap_quat = mocap_quat
 
   mujoco.mj_forward(mjm, mjd)
+  mjd.qacc_warmstart = mjd.qacc
   m = io.put_model(mjm)
   if ls_parallel is not None:
     m.opt.ls_parallel = ls_parallel
+  if broadphase is not None:
+    m.opt.broadphase = broadphase
 
   d = io.put_data(mjm, mjd, nworld=nworld, nconmax=nconmax, njmax=njmax)
   return mjm, mjd, m, d
@@ -196,7 +204,7 @@ def benchmark(
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
-) -> Tuple[float, float, dict, list, list, list]:
+) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 
   Args:
@@ -217,22 +225,20 @@ def benchmark(
     list: Number of contacts.
     list: Number of constraints.
     list: Number of solver iterations.
+    int: Number of converged worlds.
   """
-  jit_beg = time.perf_counter()
-
-  fn(m, d)
-
-  jit_end = time.perf_counter()
-  jit_duration = jit_end - jit_beg
-  wp.synchronize()
 
   trace = {}
   ncon, nefc, solver_niter = [], [], []
 
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
+    jit_beg = time.perf_counter()
     with wp.ScopedCapture() as capture:
       fn(m, d)
+    jit_end = time.perf_counter()
+    jit_duration = jit_end - jit_beg
+
     graph = capture.graph
 
     time_vec = np.zeros(nstep)
@@ -258,14 +264,15 @@ def benchmark(
       else:
         trace = tracer.trace()
       if measure_alloc:
-        ncon.append(d.ncon.numpy()[0])
-        nefc.append(np.sum(d.nefc.numpy()))
+        ncon.append(np.max([d.ncon.numpy()[0], d.ncollision.numpy()[0]]))
+        nefc.append(np.max(d.nefc.numpy()))
       if measure_solver_niter:
         solver_niter.append(d.solver_niter.numpy())
 
+    nsuccess = np.sum(~np.any(np.isnan(d.qpos.numpy()), axis=1))
     run_duration = np.sum(time_vec)
 
-  return jit_duration, run_duration, trace, ncon, nefc, solver_niter
+  return jit_duration, run_duration, trace, ncon, nefc, solver_niter, nsuccess
 
 
 class BenchmarkSuite:
@@ -322,17 +329,20 @@ class BenchmarkSuite:
     mujoco.mj_forward(mjm, mjd)
 
     wp.init()
+    if os.environ.get("ASV_CACHE_KERNELS", "false").lower() == "false":
+      wp.clear_kernel_cache()
 
     free_before = wp.get_device().free_memory
     m = io.put_model(mjm)
     d = io.put_data(mjm, mjd, self.batch_size, self.nconmax, self.njmax)
+    free_after = wp.get_device().free_memory
 
-    jit_duration, _, trace, _, _, solver_niter = benchmark(forward.step, m, d, 1000, True, False, True)
+    jit_duration, _, trace, _, _, solver_niter, _ = benchmark(forward.step, m, d, 1000, True, False, True)
     metrics = {
       "jit_duration": jit_duration,
       "solver_niter_mean": np.mean(solver_niter),
       "solver_niter_p95": np.quantile(solver_niter, 0.95),
-      "device_memory_allocated": free_before - wp.get_device().free_memory,
+      "device_memory_allocated": free_before - free_after,
     }
 
     def tree_flatten(d, parent_k=""):

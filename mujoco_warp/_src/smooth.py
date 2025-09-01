@@ -242,7 +242,7 @@ def _flex_edges(
   j = body_dofadr[flex_vertbodyid[vbase + v[1]]]
   vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
   vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
-  flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, vec) / vecnorm
+  flexedge_velocity_out[worldid, edgeid] = math.safe_div(wp.dot(vel2 - vel1, vec), vecnorm)
 
 
 @wp.kernel
@@ -347,10 +347,10 @@ def _subtree_com_init(
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
-  xipos_out: wp.array2d(dtype=wp.vec3),
+  subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  xipos_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
+  subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
 
 
 @wp.kernel
@@ -374,11 +374,16 @@ def _subtree_com_acc(
 def _subtree_div(
   # Model:
   subtree_mass: wp.array2d(dtype=float),
+  # Data in:
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  subtree_com_out[worldid, bodyid] /= subtree_mass[worldid, bodyid]
+  com = subtree_com_in[worldid, bodyid]
+  mass = subtree_mass[worldid, bodyid]
+  if mass != 0.0:
+    subtree_com_out[worldid, bodyid] = com / mass
 
 
 @wp.kernel
@@ -481,7 +486,7 @@ def com_pos(m: Model, d: Data):
   Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
   computes composite inertias and motion degrees of freedom in the subtree CoM frame.
   """
-  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos, d.subtree_com])
+  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
@@ -492,7 +497,7 @@ def com_pos(m: Model, d: Data):
       outputs=[d.subtree_com],
     )
 
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.subtree_mass], outputs=[d.subtree_com])
+  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.subtree_mass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -510,36 +515,17 @@ def com_pos(m: Model, d: Data):
 @wp.kernel
 def _cam_local_to_global(
   # Model:
-  cam_bodyid: wp.array(dtype=int),
-  cam_pos: wp.array2d(dtype=wp.vec3),
-  cam_quat: wp.array2d(dtype=wp.quat),
-  # Data in:
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  # Data out:
-  cam_xpos_out: wp.array2d(dtype=wp.vec3),
-  cam_xmat_out: wp.array2d(dtype=wp.mat33),
-):
-  """Fixed cameras."""
-  worldid, camid = wp.tid()
-  bodyid = cam_bodyid[camid]
-  xpos = xpos_in[worldid, bodyid]
-  xquat = xquat_in[worldid, bodyid]
-  cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
-  cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
-
-
-@wp.kernel
-def _cam_fn(
-  # Model:
   cam_mode: wp.array(dtype=int),
   cam_bodyid: wp.array(dtype=int),
   cam_targetbodyid: wp.array(dtype=int),
+  cam_pos: wp.array2d(dtype=wp.vec3),
+  cam_quat: wp.array2d(dtype=wp.quat),
   cam_poscom0: wp.array2d(dtype=wp.vec3),
   cam_pos0: wp.array2d(dtype=wp.vec3),
   cam_mat0: wp.array2d(dtype=wp.mat33),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
+  xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   cam_xpos_out: wp.array2d(dtype=wp.vec3),
@@ -551,7 +537,11 @@ def _cam_fn(
   )
   invalid_target = is_target_cam and (cam_targetbodyid[camid] < 0)
   if invalid_target:
-    return
+    bodyid = cam_bodyid[camid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
+    cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
   elif cam_mode[camid] == wp.static(CamLightType.TRACK.value):
     cam_xmat_out[worldid, camid] = cam_mat0[worldid, camid]
     body_xpos = xpos_in[worldid, cam_bodyid[camid]]
@@ -562,6 +552,10 @@ def _cam_fn(
   elif cam_mode[camid] == wp.static(CamLightType.TARGETBODY.value) or cam_mode[camid] == wp.static(
     CamLightType.TARGETBODYCOM.value
   ):
+    bodyid = cam_bodyid[camid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
     pos = xpos_in[worldid, cam_targetbodyid[camid]]
     if cam_mode[camid] == wp.static(CamLightType.TARGETBODYCOM.value):
       pos = subtree_com_in[worldid, cam_targetbodyid[camid]]
@@ -577,42 +571,28 @@ def _cam_fn(
       mat_1[2], mat_2[2], mat_3[2]
     )
     # fmt: on
+  else:
+    bodyid = cam_bodyid[camid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
+    cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
 
 
 @wp.kernel
 def _light_local_to_global(
   # Model:
-  light_bodyid: wp.array(dtype=int),
-  light_pos: wp.array2d(dtype=wp.vec3),
-  light_dir: wp.array2d(dtype=wp.vec3),
-  # Data in:
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  # Data out:
-  light_xpos_out: wp.array2d(dtype=wp.vec3),
-  light_xdir_out: wp.array2d(dtype=wp.vec3),
-):
-  """Fixed lights."""
-  worldid, lightid = wp.tid()
-  bodyid = light_bodyid[lightid]
-  xpos = xpos_in[worldid, bodyid]
-  xquat = xquat_in[worldid, bodyid]
-  light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
-  light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
-
-
-@wp.kernel
-def _light_fn(
-  # Model:
   light_mode: wp.array(dtype=int),
   light_bodyid: wp.array(dtype=int),
   light_targetbodyid: wp.array(dtype=int),
+  light_pos: wp.array2d(dtype=wp.vec3),
+  light_dir: wp.array2d(dtype=wp.vec3),
   light_poscom0: wp.array2d(dtype=wp.vec3),
   light_pos0: wp.array2d(dtype=wp.vec3),
   light_dir0: wp.array2d(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
-  light_xpos_in: wp.array2d(dtype=wp.vec3),
+  xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   light_xpos_out: wp.array2d(dtype=wp.vec3),
@@ -624,6 +604,11 @@ def _light_fn(
   )
   invalid_target = is_target_light and (light_targetbodyid[lightid] < 0)
   if invalid_target:
+    bodyid = light_bodyid[lightid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
+    light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
     return
   elif light_mode[lightid] == wp.static(CamLightType.TRACK.value):
     light_xdir_out[worldid, lightid] = light_dir0[worldid, lightid]
@@ -635,10 +620,21 @@ def _light_fn(
   elif light_mode[lightid] == wp.static(CamLightType.TARGETBODY.value) or light_mode[lightid] == wp.static(
     CamLightType.TARGETBODYCOM.value
   ):
+    bodyid = light_bodyid[lightid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
     pos = xpos_in[worldid, light_targetbodyid[lightid]]
     if light_mode[lightid] == wp.static(CamLightType.TARGETBODYCOM.value):
       pos = subtree_com_in[worldid, light_targetbodyid[lightid]]
-    light_xdir_out[worldid, lightid] = pos - light_xpos_in[worldid, lightid]
+    light_xdir_out[worldid, lightid] = pos - light_xpos_out[worldid, lightid]
+  else:
+    bodyid = light_bodyid[lightid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
+    light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
+
   light_xdir_out[worldid, lightid] = wp.normalize(light_xdir_out[worldid, lightid])
 
 
@@ -653,33 +649,35 @@ def camlight(m: Model, d: Data):
   wp.launch(
     _cam_local_to_global,
     dim=(d.nworld, m.ncam),
-    inputs=[m.cam_bodyid, m.cam_pos, m.cam_quat, d.xpos, d.xquat],
-    outputs=[d.cam_xpos, d.cam_xmat],
-  )
-  wp.launch(
-    _cam_fn,
-    dim=(d.nworld, m.ncam),
-    inputs=[m.cam_mode, m.cam_bodyid, m.cam_targetbodyid, m.cam_poscom0, m.cam_pos0, m.cam_mat0, d.xpos, d.subtree_com],
+    inputs=[
+      m.cam_mode,
+      m.cam_bodyid,
+      m.cam_targetbodyid,
+      m.cam_pos,
+      m.cam_quat,
+      m.cam_poscom0,
+      m.cam_pos0,
+      m.cam_mat0,
+      d.xpos,
+      d.xquat,
+      d.subtree_com,
+    ],
     outputs=[d.cam_xpos, d.cam_xmat],
   )
   wp.launch(
     _light_local_to_global,
     dim=(d.nworld, m.nlight),
-    inputs=[m.light_bodyid, m.light_pos, m.light_dir, d.xpos, d.xquat],
-    outputs=[d.light_xpos, d.light_xdir],
-  )
-  wp.launch(
-    _light_fn,
-    dim=(d.nworld, m.nlight),
     inputs=[
       m.light_mode,
       m.light_bodyid,
       m.light_targetbodyid,
+      m.light_pos,
+      m.light_dir,
       m.light_poscom0,
       m.light_pos0,
       m.light_dir0,
       d.xpos,
-      d.light_xpos,
+      d.xquat,
       d.subtree_com,
     ],
     outputs=[d.light_xpos, d.light_xdir],
@@ -1546,7 +1544,7 @@ def _tendon_dot(
         # chain rule, second term: Jdot += (jac2 - jac1) * d / dt (dpnt)
         Jdot += wp.dot(jacdif, dvel)
 
-        ten_Jdot_out[worldid, tenid, i] += Jdot / divisor
+        ten_Jdot_out[worldid, tenid, i] += math.safe_div(Jdot, divisor)
 
     # TODO(team): j += 2 if geom wrapping
     j += 1
@@ -1867,8 +1865,8 @@ def _transmission(
 
     # compute derivatives of length w.r.t. vec and axis
     if ok == 1:
-      scale = 1.0 - av / sdet
-      dldv = axis * scale + vec / sdet
+      scale = 1.0 - math.safe_div(av, sdet)
+      dldv = axis * scale + math.safe_div(vec, sdet)
       dlda = vec * scale
     else:
       dldv = axis

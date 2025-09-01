@@ -16,6 +16,9 @@ benchmark/mujoco_menagerie/
 benchmark/kitchen/combined_assets/
 kitchen_robot.xml
 
+## airspeed velocity working directories
+asv/
+
 # Language-specific files
 # =======================
 
