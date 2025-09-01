@@ -1339,7 +1339,7 @@ def put_data(
   efc_vel_fill = np.zeros((nworld, njmax))
   efc_pos_fill = np.zeros((nworld, njmax))
   efc_aref_fill = np.zeros((nworld, njmax))
-  efc_frictionloss_fill = np.zeros(d_padded_size)
+  efc_frictionloss_fill = np.zeros((nworld, njmax))
   efc_force_fill = np.zeros((nworld, njmax))
   efc_margin_fill = np.zeros((nworld, njmax))
 
