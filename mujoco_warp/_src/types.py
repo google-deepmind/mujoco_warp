@@ -44,7 +44,6 @@ class BlockDim:
   euler_dense: int = 32
   actuator_velocity: int = 32
   tendon_velocity: int = 32
-  qfrc_actuator: int = 32
   # ray
   ray: int = 64
   # sensor
@@ -130,7 +129,8 @@ class DisableBit(enum.IntFlag):
     FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
-    PASSIVE:      passive forces
+    SPRING:       passive spring forces
+    DAMPER:       passive damper forces
     GRAVITY:      gravitational forces
     CLAMPCTRL:    clamp control to specified range
     ACTUATION:    apply actuation forces
@@ -145,7 +145,8 @@ class DisableBit(enum.IntFlag):
   FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
-  PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
+  SPRING = mujoco.mjtDisableBit.mjDSBL_SPRING
+  DAMPER = mujoco.mjtDisableBit.mjDSBL_DAMPER
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
   WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
@@ -570,6 +571,7 @@ class Option:
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
+    legacy_gjk: run legacy gjk algorithm
   """
 
   timestep: wp.array(dtype=float)
@@ -600,6 +602,7 @@ class Option:
   sdf_initpoints: int
   sdf_iterations: int
   run_collision_detection: bool  # warp only
+  legacy_gjk: bool
 
 
 @dataclasses.dataclass
@@ -722,6 +725,7 @@ class Model:
     nsite: number of sites
     ncam: number of cameras
     nlight: number of lights
+    nmat: number of materials
     nexclude: number of excluded geom pairs
     neq: number of equality constraints
     nmocap: number of mocap bodies
@@ -854,6 +858,9 @@ class Model:
     light_mode: light tracking mode (CamLightType)           (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
+    light_type: spot, directional, etc. (mjtLightType)       (nworld, nlight)
+    light_castshadow: does light cast shadows                (nworld, nlight)
+    light_active: is light active                            (nworld, nlight)
     light_pos: position rel. to body frame                   (nworld, nlight, 3)
     light_dir: direction rel. to body frame                  (nworld, nlight, 3)
     light_poscom0: global position rel. to sub-com in qpos0  (nworld, nlight, 3)
@@ -862,11 +869,10 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
-    mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_faceadr: first face address                         (nmesh,)
     mesh_face: face indices for all meshes                   (nface, 3)
     mesh_normaladr: first normal address                     (nmesh,)
-    mesh_normal: normals for all meshes                      (nmeshnormal x 3)
+    mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_graphadr: graph data address; -1: no graph          (nmesh,)
     mesh_graph: convex graph data                            (nmeshgraph,)
     mesh_quat: rotation applied to asset vertices            (nmesh, 4)
@@ -879,6 +885,9 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
+    volume_ids: Warp volume IDs for SDF sampling             (nmesh,)
+    volumes: Warp volume objects containing SDF data         (nvolume,)
+    oct_aabb: octree axis-aligned bounding boxes             (nmesh,)
     eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
@@ -999,6 +1008,8 @@ class Model:
     plugin_attr: config attributes of geom plugin            (nplugin, 3)
     geom_plugin_index: geom index in plugin array            (ngeom, )
     mocap_bodyid: id of body for mocap                       (nmocap,)
+    mat_texid: texture id for rendering                      (nworld, nmat, mjNTEXROLE)
+    mat_texrepeat: texture repeat for rendering              (nworld, nmat, 2)
     mat_rgba: rgba                                           (nworld, nmat, 4)
     actuator_trntype_body_adr: addresses for actuators       (<=nu,)
                                with body transmission
@@ -1019,6 +1030,7 @@ class Model:
   nsite: int
   ncam: int
   nlight: int
+  nmat: int
   nflex: int
   nflexvert: int
   nflexedge: int
@@ -1158,6 +1170,9 @@ class Model:
   light_mode: wp.array(dtype=int)
   light_bodyid: wp.array(dtype=int)
   light_targetbodyid: wp.array(dtype=int)
+  light_type: wp.array2d(dtype=int)
+  light_castshadow: wp.array2d(dtype=bool)
+  light_active: wp.array2d(dtype=bool)
   light_pos: wp.array2d(dtype=wp.vec3)
   light_dir: wp.array2d(dtype=wp.vec3)
   light_poscom0: wp.array2d(dtype=wp.vec3)
@@ -1196,6 +1211,9 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
+  volume_ids: wp.array(dtype=wp.uint64)
+  volumes: tuple[wp.Volume, ...]
+  oct_aabb: wp.array2d(dtype=wp.vec3)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)
@@ -1310,6 +1328,8 @@ class Model:
   plugin_attr: wp.array(dtype=wp.vec3f)
   geom_plugin_index: wp.array(dtype=int)  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
+  mat_texid: wp.array3d(dtype=int)
+  mat_texrepeat: wp.array2d(dtype=wp.vec2)
   mat_rgba: wp.array2d(dtype=wp.vec4)
   actuator_trntype_body_adr: wp.array(dtype=int)  # warp only
   geompair2hfgeompair: wp.array(dtype=int)  # warp only
