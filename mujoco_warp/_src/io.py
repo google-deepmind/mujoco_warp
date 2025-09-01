@@ -96,6 +96,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   plugin_id = np.array(plugin_id)
   plugin_attr = np.array(plugin_attr)
+  volume_ids, volumes, oct_aabb = _mujoco_octree_to_warp_volume(mjm)
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
@@ -417,6 +418,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nsite=mjm.nsite,
     ncam=mjm.ncam,
     nlight=mjm.nlight,
+    nmat=mjm.nmat,
     nflex=mjm.nflex,
     nflexvert=mjm.nflexvert,
     nflexedge=mjm.nflexedge,
@@ -593,6 +595,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     light_mode=wp.array(mjm.light_mode, dtype=int),
     light_bodyid=wp.array(mjm.light_bodyid, dtype=int),
     light_targetbodyid=wp.array(mjm.light_targetbodyid, dtype=int),
+    light_type=create_nmodel_batched_array(mjm.light_type, dtype=int),
+    light_castshadow=create_nmodel_batched_array(mjm.light_castshadow, dtype=bool),
+    light_active=create_nmodel_batched_array(mjm.light_active, dtype=bool),
     light_pos=create_nmodel_batched_array(mjm.light_pos, dtype=wp.vec3),
     light_dir=create_nmodel_batched_array(mjm.light_dir, dtype=wp.vec3),
     light_poscom0=create_nmodel_batched_array(mjm.light_poscom0, dtype=wp.vec3),
@@ -631,6 +636,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_polymapadr=wp.array(mjm.mesh_polymapadr, dtype=int),
     mesh_polymapnum=wp.array(mjm.mesh_polymapnum, dtype=int),
     mesh_polymap=wp.array(mjm.mesh_polymap, dtype=int),
+    volume_ids=volume_ids,
+    volumes=volumes,
+    oct_aabb=oct_aabb,
     nhfield=mjm.nhfield,
     nhfielddata=mjm.nhfielddata,
     hfield_adr=wp.array(mjm.hfield_adr, dtype=int),
@@ -818,6 +826,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     plugin=wp.array(plugin_id, dtype=int),
     plugin_attr=wp.array(plugin_attr, dtype=wp.vec3f),
     geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
+    mat_texid=create_nmodel_batched_array(mjm.mat_texid, dtype=int),
+    mat_texrepeat=create_nmodel_batched_array(mjm.mat_texrepeat, dtype=wp.vec2),
     mat_rgba=create_nmodel_batched_array(mjm.mat_rgba, dtype=wp.vec4),
     actuator_trntype_body_adr=wp.array(np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0], dtype=int),
     geompair2hfgeompair=wp.array(_hfield_geom_pair(mjm)[1], dtype=int),
@@ -845,6 +855,84 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
 
   return m
+
+
+def _mujoco_octree_to_warp_volume(
+  mjm: mujoco.MjModel, resolution: int = 128
+) -> Tuple[wp.array, Tuple[wp.Volume, ...], wp.array]:
+  """Constructs volume data from MuJoCo octrees."""
+  volume_ids = [0] * len(mjm.mesh_octadr)
+  volumes = []
+  oct_aabbs = [None] * len(mjm.mesh_octadr)
+  for mesh_id in mjm.geom_dataid:
+    if mesh_id != -1 and mesh_id < len(mjm.mesh_octadr):
+      octadr = mjm.mesh_octadr[mesh_id]
+      if octadr != -1:
+        oct_child = mjm.oct_child[8 * octadr :].reshape(-1, 8)
+        oct_aabb = mjm.oct_aabb[6 * octadr :].reshape(-1, 6)
+        oct_coeff = mjm.oct_coeff[8 * octadr :].reshape(-1, 8)
+
+        root_aabb = oct_aabb[0]
+        center = root_aabb[:3]
+        half_size = root_aabb[3:]
+
+        original_mins = center - half_size
+        original_maxs = center + half_size
+
+        margin_factor = 0.02
+        extents = original_maxs - original_mins
+        margin = margin_factor * extents
+
+        mins = original_mins - margin
+        maxs = original_maxs + margin
+        expanded_extents = maxs - mins
+
+        voxel_size = expanded_extents.max() / resolution
+
+        nums = np.ceil(expanded_extents / voxel_size).astype(dtype=int)
+
+        actual_extents = nums * voxel_size
+        maxs = mins + actual_extents
+
+        sdf_values = np.zeros(tuple(nums), dtype=np.float32)
+
+        for x in range(nums[0]):
+          for y in range(nums[1]):
+            for z in range(nums[2]):
+              pos = mins + voxel_size * np.array([x, y, z])
+              within_bounds = np.all(pos >= original_mins) and np.all(pos <= original_maxs)
+              if within_bounds:
+                sdf_val = sample_octree_sdf(pos, oct_child, oct_aabb, oct_coeff)
+              else:
+                clamped_pos = np.clip(pos, original_mins, original_maxs)
+                sdf_val = sample_octree_sdf(clamped_pos, oct_child, oct_aabb, oct_coeff)
+              sdf_values[x, y, z] = sdf_val
+
+        device = wp.get_device()
+        if device.is_cuda:
+          volume = wp.Volume.load_from_numpy(sdf_values, mins, voxel_size, 1.0, device=device)
+          volume_ids[mesh_id] = volume.id
+          volumes.append(volume)
+        else:
+          volume_ids[mesh_id] = 0
+        oct_aabbs[mesh_id] = [center, half_size]
+
+  volume_ids_array = wp.array(data=volume_ids, dtype=wp.uint64)
+
+  processed_aabbs = []
+  for aabb in oct_aabbs:
+    if aabb is not None:
+      processed_aabbs.append(aabb)
+    else:
+      zero_center = np.zeros(3, dtype=np.float32)
+      zero_half_size = np.zeros(3, dtype=np.float32)
+      processed_aabbs.append([zero_center, zero_half_size])
+
+  aabb_array = np.array(processed_aabbs, dtype=np.float32)
+  oct_aabb_array = wp.array2d(data=aabb_array, dtype=wp.vec3)
+  volumes_tuple = tuple(volumes)
+
+  return volume_ids_array, volumes_tuple, oct_aabb_array
 
 
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
@@ -1625,3 +1713,58 @@ def get_data_into(
 
   # sensors
   result.sensordata[:] = d.sensordata.numpy()
+
+
+def sample_octree_sdf(
+  point: np.ndarray, oct_child: np.ndarray, oct_aabb: np.ndarray, oct_coeff: np.ndarray, eps: float = 1e-6
+) -> float:
+  """Sample SDF value at a point using MuJoCo's octree structure.
+
+  Traverses octree to leaf nodes and interpolates between 8 corner coefficients.
+  """
+  node = 0
+
+  while True:
+    aabb = oct_aabb[node]
+    center = aabb[:3]
+    half_size = aabb[3:]
+    vmin = center - half_size
+    vmax = center + half_size
+
+    if (
+      point[0] + eps < vmin[0]
+      or point[0] - eps > vmax[0]
+      or point[1] + eps < vmin[1]
+      or point[1] - eps > vmax[1]
+      or point[2] + eps < vmin[2]
+      or point[2] - eps > vmax[2]
+    ):
+      return 1.0
+
+    coord = (point - vmin) / (vmax - vmin)
+
+    children = oct_child[node]
+    if np.all(children == -1):
+      sdf = 0.0
+      coeffs = oct_coeff[node]
+
+      for j in range(8):
+        w = (
+          (coord[0] if (j & 1) else (1 - coord[0]))
+          * (coord[1] if (j & 2) else (1 - coord[1]))
+          * (coord[2] if (j & 4) else (1 - coord[2]))
+        )
+        sdf += w * coeffs[j]
+
+      return sdf
+
+    x_child = 0 if coord[0] >= 0.5 else 1
+    y_child = 0 if coord[1] >= 0.5 else 1
+    z_child = 0 if coord[2] >= 0.5 else 1
+    child_idx = 4 * z_child + 2 * y_child + x_child
+
+    next_node = children[child_idx]
+    if next_node == -1:
+      return 1.0
+
+    node = next_node

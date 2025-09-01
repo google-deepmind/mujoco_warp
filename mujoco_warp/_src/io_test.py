@@ -69,6 +69,7 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
 
   for field in dataclasses.fields(obj):
     field_name = field.name
+
     val = getattr(obj, field_name)
     val_type = type(val)
     type_ = field.type
@@ -127,6 +128,9 @@ def _check_annotation_compat(
       continue
 
     if isinstance(v, wp.types.array):
+      continue
+
+    if v == wp.Volume:
       continue
 
     if v in wp.types.vector_types:
@@ -388,6 +392,30 @@ class IOTest(parameterized.TestCase):
 
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
+
+  def test_volumes(self):
+    """Tests that mujoco_octree_to_warp_volume properly processes SDF volumes."""
+    if not wp.get_device().is_cuda:
+      self.skipTest("SDF volumes require CUDA device")
+    mjm, mjd, m, d = test_util.fixture(fname="collision_sdf/cow.xml", qpos0=True)
+
+    self.assertIsInstance(m.volume_ids, wp.array)
+    self.assertEqual(m.volume_ids.dtype, wp.uint64)
+    self.assertGreater(m.volume_ids.size, 0)
+
+    self.assertIsInstance(m.volumes, tuple)
+    if len(m.volumes) > 0:
+      for volume in m.volumes:
+        self.assertIsInstance(volume, wp.Volume)
+
+    self.assertIsInstance(m.oct_aabb, wp.array)
+    self.assertEqual(m.oct_aabb.dtype, wp.vec3)
+    self.assertEqual(len(m.oct_aabb.shape), 2)
+    if m.oct_aabb.size > 0:
+      self.assertEqual(m.oct_aabb.shape[1], 2)
+
+    volume_ids_numpy = m.volume_ids.numpy()
+    self.assertEqual(len(m.volumes), np.unique(volume_ids_numpy).size)
 
 
 if __name__ == "__main__":
