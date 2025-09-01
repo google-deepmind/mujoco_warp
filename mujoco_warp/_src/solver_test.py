@@ -108,14 +108,14 @@ class SolverTest(parameterized.TestCase):
       mjwarp.step(m, d)
 
       # Calculate target values
+      nefc = d.nefc.numpy()[0]
       efc_search_np = d.efc.search.numpy()[0]
-      efc_J_np = d.efc.J.numpy()[0]
+      efc_J_np = d.efc.J.numpy()[0][:d.njmax, :m.nv]
       efc_gauss_np = d.efc.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
       efc_Jaref_np = d.efc.Jaref.numpy()[0]
-      efc_D_np = d.efc.D.numpy()[0]
+      efc_D_np = d.efc.D.numpy()[0][:d.njmax]
       qfrc_smooth_np = d.qfrc_smooth.numpy()[0]
-      nefc = d.nefc.numpy()[0]
 
       target_mv = np.zeros(mjm.nv)
       mujoco.mj_mulM(mjm, mjd, target_mv, efc_search_np)
