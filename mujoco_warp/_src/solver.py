@@ -1467,7 +1467,7 @@ def compute_jtdj_tiled_kernel(
 
     # Each tile processes one output element by looping over all constraints
     for k in range(0, njmax_in, TILE_SIZE):
-      if k > nefc:
+      if k >= nefc:
         break
 
       # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
