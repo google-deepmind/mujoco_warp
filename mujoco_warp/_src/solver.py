@@ -1551,14 +1551,13 @@ def update_gradient_JTDAJ_dense(
   efc_h_out[worldid, dofi, dofj] = qM + sum_h
 
 @cache_kernel
-def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int):
+def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int, njmax: int):
   TILE_SIZE_DENSE = nv
   TILE_SIZE = TILE_SIZE_K
 
   @nested_kernel
   def kernel(
     # Data in:
-    njmax_in: int,
     nefc_in: wp.array(dtype=int),
     qM_in: wp.array3d(dtype=float),
     efc_J_in: wp.array3d(dtype=float),
@@ -1578,10 +1577,10 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int):
 
     # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
     # Only sum over the valid entries (up to nefc)
-    sum_val = wp.tile_zeros(shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), dtype=wp.float32)
+    sum_val = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=False)
 
     # Each tile processes one output element by looping over all constraints
-    for k in range(0, njmax_in, TILE_SIZE):
+    for k in range(0, njmax, TILE_SIZE):
       if k >= nefc:
         break
 
@@ -1608,10 +1607,6 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, TILE_SIZE_K: int):
       J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE_DENSE, TILE_SIZE)))
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
-
-    # add in the qM contribution
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE_DENSE, TILE_SIZE_DENSE), bounds_check=False)
-    sum_val += qM_tile
 
     # AD: in this case here now setting bounds_check to False helps a lot with performance.
     wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=False)
@@ -1856,10 +1851,9 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch(
-        update_gradient_JTDAJ_dense_tiled(m.nv, TILE_SIZE),
-        dim=(d.nworld, 64),
+        update_gradient_JTDAJ_dense_tiled(m.nv, TILE_SIZE, d.njmax),
+        dim=(d.nworld, 96),
         inputs=[
-          d.njmax,
           d.nefc,
           d.qM,
           d.efc.J,
@@ -1868,7 +1862,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
-        block_dim=64,
+        block_dim=96,
       )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
