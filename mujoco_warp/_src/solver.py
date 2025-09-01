@@ -1458,6 +1458,9 @@ def compute_jtdj_tiled_kernel(
     i = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
     j = elementid - (i * (i + 1)) // 2
 
+    offset_i = i * TILE_SIZE
+    offset_j = j * TILE_SIZE
+
     # Compute (J^T D J)[i,j] = sum_k J[k,i] * D[k] * J[k,j]
     # Only sum over the valid entries (up to nefc)
     sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
@@ -1469,10 +1472,10 @@ def compute_jtdj_tiled_kernel(
 
       # we are ok with not doing the bounds check because things will by multiplied by 0 anyway for anything beyond nefc.
       # question is what happens when we load beyond the end of the array - we might need some padding here.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, i * TILE_SIZE), bounds_check=False)
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_i), bounds_check=False)
       
-      if i != j:
-        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, j * TILE_SIZE), bounds_check=False)       
+      if offset_i != offset_j:
+        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_j), bounds_check=False)       
       else:
         wp.tile_assign(J_kj, J_ki, (0, 0))
 
@@ -1495,7 +1498,7 @@ def compute_jtdj_tiled_kernel(
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
-    wp.tile_store(efc_h_out[worldid], sum_val, offset=(i * TILE_SIZE, j * TILE_SIZE))
+    wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j))
 
 
 @wp.kernel
