@@ -117,6 +117,7 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     ngeom: int,
+    opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -286,14 +287,6 @@ def ccd_kernel_builder(
 
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
     if wp.static(legacy_gjk):
-      # find prism center for height field
-      if geomtype1 == int(GeomType.HFIELD.value):
-        x1 = wp.vec3(0.0, 0.0, 0.0)
-        for i in range(6):
-          x1 += hfield_prism_vertex(geom1.hfprism, i)
-        x1 = geom1.pos + geom1.rot @ (x1 / 6.0)
-        geom1.pos = x1
-
       simplex, normal = gjk_legacy(
         gjk_iterations,
         geom1,
@@ -308,7 +301,6 @@ def ccd_kernel_builder(
       dist = -depth
 
       if dist >= 0.0 or depth < -depth_extension:
-        count = 0
         return
       sphere = int(GeomType.SPHERE.value)
       ellipsoid = int(GeomType.ELLIPSOID.value)
@@ -332,7 +324,7 @@ def ccd_kernel_builder(
 
       dist, count, witness1, witness2 = ccd(
         False,
-        1e-6,
+        opt_ccd_tolerance[worldid],
         0.0,
         gjk_iterations,
         epa_iterations,
@@ -430,6 +422,7 @@ def convex_narrowphase(m: Model, d: Data):
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.opt.ccd_tolerance,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
