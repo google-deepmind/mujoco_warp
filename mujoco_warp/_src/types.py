@@ -129,7 +129,8 @@ class DisableBit(enum.IntFlag):
     FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
-    PASSIVE:      passive forces
+    SPRING:       passive spring forces
+    DAMPER:       passive damper forces
     GRAVITY:      gravitational forces
     CLAMPCTRL:    clamp control to specified range
     ACTUATION:    apply actuation forces
@@ -144,7 +145,8 @@ class DisableBit(enum.IntFlag):
   FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
-  PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
+  SPRING = mujoco.mjtDisableBit.mjDSBL_SPRING
+  DAMPER = mujoco.mjtDisableBit.mjDSBL_DAMPER
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
   WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
@@ -543,6 +545,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
+    ccd_tolerance: convex collision solver tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -576,6 +579,7 @@ class Option:
   impratio: wp.array(dtype=float)
   tolerance: wp.array(dtype=float)
   ls_tolerance: wp.array(dtype=float)
+  ccd_tolerance: wp.array(dtype=float)
   gravity: wp.array(dtype=wp.vec3)
   magnetic: wp.array(dtype=wp.vec3)
   integrator: int
