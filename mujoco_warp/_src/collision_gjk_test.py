@@ -16,8 +16,8 @@
 import warp as wp
 from absl.testing import absltest
 
-from mujoco_warp._src.warp_util import cache_kernel
-from mujoco_warp._src.warp_util import kernel as nested_kernel
+from .warp_util import cache_kernel
+from .warp_util import kernel as nested_kernel
 
 from . import test_util
 from .collision_gjk import ccd

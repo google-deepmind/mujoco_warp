@@ -20,7 +20,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
-from mujoco_warp._src.test_util import fixture
+from .test_util import fixture
 
 # TODO(team): JAX test is temporary, remove after we land MJX:Warp
 

@@ -129,7 +129,8 @@ class DisableBit(enum.IntFlag):
     FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
-    PASSIVE:      passive forces
+    SPRING:       passive spring forces
+    DAMPER:       passive damper forces
     GRAVITY:      gravitational forces
     CLAMPCTRL:    clamp control to specified range
     ACTUATION:    apply actuation forces
@@ -144,7 +145,8 @@ class DisableBit(enum.IntFlag):
   FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
-  PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
+  SPRING = mujoco.mjtDisableBit.mjDSBL_SPRING
+  DAMPER = mujoco.mjtDisableBit.mjDSBL_DAMPER
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
   WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
@@ -543,6 +545,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
+    ccd_tolerance: convex collision solver tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -558,17 +561,19 @@ class Option:
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
-    has_fluid: True if wind, density, or viscosity are non-zero at put_model time
+    has_fluid: True if wind, density, or viscosity are non-zero at put_model
+      time
     density: density of medium
     viscosity: viscosity of medium
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
-    graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
+    graph_conditional: flag to use cuda graph conditional, should be False when
+      JAX is used
     sdf_initpoints: number of starting points for gradient descent
     sdf_iterations: max number of iterations for gradient descent
-    run_collision_detection: if False, skips collision detection and allows user-populated
-      contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
-      zeros out the contacts at each step)
+    run_collision_detection: if False, skips collision detection and allows
+      user-populated contacts during the physics step (as opposed to
+      DisableBit.CONTACT which explicitly zeros out the contacts at each step)
     legacy_gjk: run legacy gjk algorithm
   """
 
@@ -576,6 +581,7 @@ class Option:
   impratio: wp.array(dtype=float)
   tolerance: wp.array(dtype=float)
   ls_tolerance: wp.array(dtype=float)
+  ccd_tolerance: wp.array(dtype=float)
   gravity: wp.array(dtype=wp.vec3)
   magnetic: wp.array(dtype=wp.vec3)
   integrator: int
@@ -788,8 +794,10 @@ class Model:
     jnt_bodyid: id of joint's body                           (njnt,)
     jnt_limited: does joint have limits                      (njnt,)
     jnt_actfrclimited: does joint have actuator force limits (njnt,)
-    jnt_solref: constraint solver reference: limit           (nworld, njnt, mjNREF)
-    jnt_solimp: constraint solver impedance: limit           (nworld, njnt, mjNIMP)
+    jnt_solref: constraint solver reference: limit           (nworld, njnt,
+      mjNREF)
+    jnt_solimp: constraint solver impedance: limit           (nworld, njnt,
+      mjNIMP)
     jnt_pos: local anchor position                           (nworld, njnt, 3)
     jnt_axis: local joint axis                               (nworld, njnt, 3)
     jnt_stiffness: stiffness coefficient                     (nworld, njnt)
@@ -821,8 +829,10 @@ class Model:
     geom_matid: material id for rendering                    (nworld, ngeom,)
     geom_priority: geom contact priority                     (ngeom,)
     geom_solmix: mixing coef for solref/imp in geom pair     (nworld, ngeom,)
-    geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
-    geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
+    geom_solref: constraint solver reference: contact        (nworld, ngeom,
+      mjNREF)
+    geom_solimp: constraint solver impedance: contact        (nworld, ngeom,
+      mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
     geom_aabb: bounding box, (center, size)                  (ngeom, 6)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
@@ -848,7 +858,8 @@ class Model:
     cam_quat: orientation rel. to body frame                 (nworld, ncam, 4)
     cam_poscom0: global position rel. to sub-com in qpos0    (nworld, ncam, 3)
     cam_pos0: global position rel. to body in qpos0          (nworld, ncam, 3)
-    cam_mat0: global orientation in qpos0                    (nworld, ncam, 3, 3)
+    cam_mat0: global orientation in qpos0                    (nworld, ncam, 3,
+      3)
     cam_fovy: y field-of-view (ortho ? len : deg)            (ncam,)
     cam_resolution: resolution: pixels [width, height]       (ncam, 2)
     cam_sensorsize: sensor size: length [width, height]      (ncam, 2)
@@ -883,14 +894,20 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
+    volume_ids: Warp volume IDs for SDF sampling             (nmesh,)
+    volumes: Warp volume objects containing SDF data         (nvolume,)
+    oct_aabb: octree axis-aligned bounding boxes             (nmesh,)
     eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
     eq_objtype: type of both objects (ObjType)               (neq,)
     eq_active0: initial enable/disable constraint state      (neq,)
-    eq_solref: constraint solver reference                   (nworld, neq, mjNREF)
-    eq_solimp: constraint solver impedance                   (nworld, neq, mjNIMP)
-    eq_data: numeric data for constraint                     (nworld, neq, mjNEQDATA)
+    eq_solref: constraint solver reference                   (nworld, neq,
+      mjNREF)
+    eq_solimp: constraint solver impedance                   (nworld, neq,
+      mjNIMP)
+    eq_data: numeric data for constraint                     (nworld, neq,
+      mjNEQDATA)
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
@@ -908,9 +925,12 @@ class Model:
     actuator_ctrllimited: is control limited                 (nu,)
     actuator_forcelimited: is force limited                  (nu,)
     actuator_actlimited: is activation limited               (nu,)
-    actuator_dynprm: dynamics parameters                     (nworld, nu, mjNDYN)
-    actuator_gainprm: gain parameters                        (nworld, nu, mjNGAIN)
-    actuator_biasprm: bias parameters                        (nworld, nu, mjNBIAS)
+    actuator_dynprm: dynamics parameters                     (nworld, nu,
+      mjNDYN)
+    actuator_gainprm: gain parameters                        (nworld, nu,
+      mjNGAIN)
+    actuator_biasprm: bias parameters                        (nworld, nu,
+      mjNBIAS)
     actuator_actearly: step activation before force          (nu,)
     actuator_ctrlrange: range of controls                    (nworld, nu, 2)
     actuator_forcerange: range of forces                     (nworld, nu, 2)
@@ -919,19 +939,23 @@ class Model:
     actuator_cranklength: crank length for slider-crank      (nu,)
     actuator_acc0: acceleration from unit force in qpos0     (nu,)
     actuator_lengthrange: feasible actuator length range     (nu, 2)
-    nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
-    nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
-                            [-1, ngeom - 1]
-    nxn_pairid: predefined pair id, -1 if not predefined,    (<= ngeom * (ngeom - 1) // 2,)
-                -2 if skipped
-    nxn_pairid_filtered: predefined pair id, -1 if not       (<= ngeom * (ngeom - 1) // 2,)
-                         predefined
+    nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom
+      - 1) // 2,)
+    nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom
+      - 1) // 2,) [-1, ngeom - 1]
+    nxn_pairid: predefined pair id, -1 if not predefined,    (<= ngeom * (ngeom
+      - 1) // 2,) -2 if skipped
+    nxn_pairid_filtered: predefined pair id, -1 if not       (<= ngeom * (ngeom
+      - 1) // 2,) predefined
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
     pair_geom2: id of geom2                                  (npair,)
-    pair_solref: solver reference: contact normal            (nworld, npair, mjNREF)
-    pair_solreffriction: solver reference: contact friction  (nworld, npair, mjNREF)
-    pair_solimp: solver impedance: contact                   (nworld, npair, mjNIMP)
+    pair_solref: solver reference: contact normal            (nworld, npair,
+      mjNREF)
+    pair_solreffriction: solver reference: contact friction  (nworld, npair,
+      mjNREF)
+    pair_solimp: solver impedance: contact                   (nworld, npair,
+      mjNIMP)
     pair_margin: detect contact if dist<margin               (nworld, npair,)
     pair_gap: include in solver if dist<margin-gap           (nworld, npair,)
     pair_friction: tangent1, 2, spin, roll1, 2               (nworld, npair, 5)
@@ -942,18 +966,25 @@ class Model:
     tendon_limited: does tendon have length limits           (ntendon,)
     tendon_limited_adr: addresses for limited tendons        (<=ntendon,)
     tendon_actfrclimited: does ten have actuator force limit (ntendon,)
-    tendon_solref_lim: constraint solver reference: limit    (nworld, ntendon, mjNREF)
-    tendon_solimp_lim: constraint solver impedance: limit    (nworld, ntendon, mjNIMP)
-    tendon_solref_fri: constraint solver reference: friction (nworld, ntendon, mjNREF)
-    tendon_solimp_fri: constraint solver impedance: friction (nworld, ntendon, mjNIMP)
-    tendon_range: tendon length limits                       (nworld, ntendon, 2)
-    tendon_actfrcrange: range of total actuator force        (nworld, ntendon, 2)
+    tendon_solref_lim: constraint solver reference: limit    (nworld, ntendon,
+      mjNREF)
+    tendon_solimp_lim: constraint solver impedance: limit    (nworld, ntendon,
+      mjNIMP)
+    tendon_solref_fri: constraint solver reference: friction (nworld, ntendon,
+      mjNREF)
+    tendon_solimp_fri: constraint solver impedance: friction (nworld, ntendon,
+      mjNIMP)
+    tendon_range: tendon length limits                       (nworld, ntendon,
+      2)
+    tendon_actfrcrange: range of total actuator force        (nworld, ntendon,
+      2)
     tendon_margin: min distance for limit detection          (nworld, ntendon)
     tendon_stiffness: stiffness coefficient                  (nworld, ntendon)
     tendon_damping: damping coefficient                      (nworld, ntendon)
     tendon_armature: inertia associated with tendon velocity (nworld, ntendon)
     tendon_frictionloss: loss due to friction                (nworld, ntendon)
-    tendon_lengthspring: spring resting length range         (nworld, ntendon, 2)
+    tendon_lengthspring: spring resting length range         (nworld, ntendon,
+      2)
     tendon_length0: tendon length in qpos0                   (nworld, ntendon)
     tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
@@ -982,13 +1013,12 @@ class Model:
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
     sensor_limitpos_adr: address for limit position sensors  (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
-                    (excluding limit velocity sensors)
+      (excluding limit velocity sensors)
     sensor_limitvel_adr: address for limit velocity sensors  (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
     rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
-                    (excluding touch sensors)
-                    (excluding limit force sensors)
+      (excluding touch sensors) (excluding limit force sensors)
     sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
     sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
     sensor_e_potential: evaluate energy_pos
@@ -1003,13 +1033,14 @@ class Model:
     plugin_attr: config attributes of geom plugin            (nplugin, 3)
     geom_plugin_index: geom index in plugin array            (ngeom, )
     mocap_bodyid: id of body for mocap                       (nmocap,)
-    mat_texid: texture id for rendering                      (nworld, nmat, mjNTEXROLE)
+    mat_texid: texture id for rendering                      (nworld, nmat,
+      mjNTEXROLE)
     mat_texrepeat: texture repeat for rendering              (nworld, nmat, 2)
     mat_rgba: rgba                                           (nworld, nmat, 4)
-    actuator_trntype_body_adr: addresses for actuators       (<=nu,)
-                               with body transmission
-    geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
-                         height field mapping
+    actuator_trntype_body_adr: addresses for actuators       (<=nu,) with body
+      transmission
+    geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom -
+      1) // 2,) height field mapping
     block_dim: BlockDim
     geom_pair_type_count: count of max number of each potential collision
     has_sdf_geom: whether the model contains SDF geoms
@@ -1206,6 +1237,9 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
+  volume_ids: wp.array(dtype=wp.uint64)
+  volumes: tuple[wp.Volume, ...]
+  oct_aabb: wp.array2d(dtype=wp.vec3)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)

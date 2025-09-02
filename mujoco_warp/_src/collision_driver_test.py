@@ -14,17 +14,34 @@
 # ==============================================================================
 """Tests the collision driver."""
 
-import mujoco
-import numpy as np
-import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
-
+import mujoco
 import mujoco_warp as mjwarp
-from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
-
 from . import test_util
 from . import types
+from .collision_sdf import sample_volume_sdf
+from .collision_sdf import VolumeData
+from .io import sample_octree_sdf
+from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
+import numpy as np
+import warp as wp
+
+
+@wp.kernel
+def sample_sdf_kernel(
+    # In:
+    points: wp.array(dtype=wp.vec3),
+    volume_data: VolumeData,
+    # Out:
+    results_out: wp.array(dtype=float),
+):
+  """Kernel to sample SDF values at given points using Warp volume."""
+  tid = wp.tid()
+  point = points[tid]
+  sdf_value = sample_volume_sdf(point, volume_data)
+  results_out[tid] = sdf_value
+
 
 _TOLERANCE = 5e-5
 
@@ -507,6 +524,106 @@ class CollisionTest(parameterized.TestCase):
       result = check_dist
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
+  def test_sdf_volumes(self):
+    """Tests SDF volumes."""
+    if not wp.get_device().is_cuda:
+      self.skipTest("SDF volumes require CUDA device")
+    mjm, mjd, m, d = test_util.fixture(
+        fname="collision_sdf/cow.xml", qpos0=True
+    )
+
+    octadr = mjm.mesh_octadr[0]
+    oct_child = mjm.oct_child[8 * octadr :].reshape(-1, 8)
+    oct_aabb = mjm.oct_aabb[6 * octadr :].reshape(-1, 6)
+    oct_coeff = mjm.oct_coeff[8 * octadr :].reshape(-1, 8)
+
+    cow_geom_id = 2
+    root_aabb = oct_aabb[0]
+    vmin = root_aabb[:3] - root_aabb[3:]
+    vmax = root_aabb[:3] + root_aabb[3:]
+
+    test_points_local = []
+    margin = 0.02
+    vmin_safe = vmin + margin * (vmax - vmin)
+    vmax_safe = vmax - margin * (vmax - vmin)
+
+    center = (vmin + vmax) / 2.0
+    test_points_local.append(center)
+
+    corners = [
+        np.array([vmin[0], vmin[1], vmin[2]]),
+        np.array([vmax[0], vmin[1], vmin[2]]),
+        np.array([vmin[0], vmax[1], vmin[2]]),
+        np.array([vmin[0], vmin[1], vmax[2]]),
+        np.array([vmax[0], vmax[1], vmin[2]]),
+        np.array([vmax[0], vmin[1], vmax[2]]),
+        np.array([vmin[0], vmax[1], vmax[2]]),
+        np.array([vmax[0], vmax[1], vmax[2]]),
+    ]
+    test_points_local.extend(corners)
+
+    face_centers = [
+        np.array([vmin[0], center[1], center[2]]),
+        np.array([vmax[0], center[1], center[2]]),
+        np.array([center[0], vmin[1], center[2]]),
+        np.array([center[0], vmax[1], center[2]]),
+        np.array([center[0], center[1], vmin[2]]),
+        np.array([center[0], center[1], vmax[2]]),
+    ]
+    test_points_local.extend(face_centers)
+
+    for i in range(6):
+      t = i / 5.0
+      point_local = vmin_safe + t * (vmax_safe - vmin_safe)
+      for dim in range(3):
+        variation = 0.1 * (i % 3 - 1) / 6.0 * (vmax_safe[dim] - vmin_safe[dim])
+        point_local[dim] += variation
+      point_local = np.clip(point_local, vmin_safe, vmax_safe)
+      test_points_local.append(point_local)
+
+    num_test_points = len(test_points_local)
+    points_array = wp.array(
+        [wp.vec3(p[0], p[1], p[2]) for p in test_points_local], dtype=wp.vec3
+    )
+    results_array = wp.zeros(num_test_points, dtype=float)
+
+    volume_data = VolumeData()
+    cow_mesh_id = mjm.geom_dataid[cow_geom_id]
+    volume_ids_np = m.volume_ids.numpy()
+    volume_id = volume_ids_np[cow_mesh_id]
+
+    center = oct_aabb[0][:3]
+    half_size = oct_aabb[0][3:]
+
+    volume_data.volume_id = volume_id
+    volume_data.center = wp.vec3(center[0], center[1], center[2])
+    volume_data.half_size = wp.vec3(half_size[0], half_size[1], half_size[2])
+
+    wp.launch(
+        sample_sdf_kernel,
+        dim=num_test_points,
+        inputs=[points_array, volume_data, results_array],
+    )
+    wp.synchronize()
+
+    warp_results = results_array.numpy()
+    tolerance = 1e-2
+    matches = 0
+
+    for j, point_local in enumerate(test_points_local):
+      mj_sdf = sample_octree_sdf(
+          np.array(point_local), oct_child, oct_aabb, oct_coeff
+      )
+      warp_sdf = warp_results[j]
+      diff = abs(mj_sdf - warp_sdf)
+      if diff < tolerance:
+        matches += 1
+
+    success_rate = matches / num_test_points
+    assert (
+        success_rate >= 0.9
+    ), f"SDF matching rate too low: {success_rate:.1%} (expected >= 90%)"
+
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
     """Tests collisions with different geometries."""
@@ -599,11 +716,12 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(m.nxn_geom_pair.numpy().shape[0], 3)
     np.testing.assert_equal(m.nxn_pairid.numpy(), np.array([-2, -1, -1]))
 
-  def test_contact_pair(self):
+  @parameterized.parameters(list(types.BroadphaseType))
+  def test_contact_pair(self, broadphase):
     """Tests contact pair."""
     # no pairs
     _, _, m, _ = test_util.fixture(
-      xml="""
+        xml="""
       <mujoco>
         <worldbody>
           <body>
@@ -612,7 +730,8 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
       </mujoco>
-    """
+    """,
+        broadphase=broadphase,
     )
     self.assertTrue((m.nxn_pairid.numpy() == -1).all())
 
@@ -797,8 +916,6 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(d.contact.solref.numpy()[1], np.array([-0.25, -0.5]))
     np.testing.assert_allclose(d.contact.solreffriction.numpy()[1], np.array([2.0, 4.0]))
     np.testing.assert_allclose(d.contact.solimp.numpy()[1], np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
-
-    # TODO(team): test sap_broadphase
 
   @parameterized.parameters(
     (True, True),

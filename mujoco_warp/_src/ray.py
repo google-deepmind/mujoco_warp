@@ -534,19 +534,19 @@ def _ray_hfield(
 
 
 @wp.func
-def _ray_mesh(
-  # Model:
-  nmeshface: int,
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_face: wp.array(dtype=wp.vec3i),
-  # In:
-  data_id: int,
-  pos: wp.vec3,
-  mat: wp.mat33,
-  pnt: wp.vec3,
-  vec: wp.vec3,
+def ray_mesh(
+    # Model:
+    nmeshface: int,
+    mesh_vertadr: wp.array(dtype=int),
+    mesh_vert: wp.array(dtype=wp.vec3),
+    mesh_faceadr: wp.array(dtype=int),
+    mesh_face: wp.array(dtype=wp.vec3i),
+    # In:
+    data_id: int,
+    pos: wp.vec3,
+    mat: wp.mat33,
+    pnt: wp.vec3,
+    vec: wp.vec3,
 ) -> float:
   """Returns the distance and geomid for ray mesh intersections."""
   pnt, vec = _ray_map(pos, mat, pnt, vec)
@@ -674,17 +674,17 @@ def _ray_geom_mesh(
     type = geom_type[geomid]
 
     if type == int(GeomType.MESH.value):
-      return _ray_mesh(
-        nmeshface,
-        mesh_vertadr,
-        mesh_vert,
-        mesh_faceadr,
-        mesh_face,
-        geom_dataid[geomid],
-        pos,
-        mat,
-        pnt,
-        vec,
+      return ray_mesh(
+          nmeshface,
+          mesh_vertadr,
+          mesh_vert,
+          mesh_faceadr,
+          mesh_face,
+          geom_dataid[geomid],
+          pos,
+          mat,
+          pnt,
+          vec,
       )
     elif type == int(GeomType.HFIELD.value):
       return _ray_hfield(

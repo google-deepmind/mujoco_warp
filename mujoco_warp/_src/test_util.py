@@ -20,14 +20,12 @@ import os
 import time
 from typing import Callable, Optional, Tuple
 
-import mujoco
-import numpy as np
-import warp as wp
 from etils import epath
-
+import mujoco
 from . import forward
 from . import io
 from . import warp_util
+from .types import BroadphaseType
 from .types import ConeType
 from .types import Data
 from .types import DisableBit
@@ -36,39 +34,43 @@ from .types import IntegratorType
 from .types import Model
 from .types import SolverType
 from .util_misc import halton
+import numpy as np
+import warp as wp
 
 
 def fixture(
-  fname: Optional[str] = None,
-  xml: Optional[str] = None,
-  keyframe: int = -1,
-  actuation: bool = True,
-  contact: bool = True,
-  constraint: bool = True,
-  equality: bool = True,
-  passive: bool = True,
-  gravity: bool = True,
-  clampctrl: bool = True,
-  filterparent: bool = True,
-  qpos0: bool = False,
-  kick: bool = False,
-  energy: bool = False,
-  eulerdamp: Optional[bool] = None,
-  cone: Optional[ConeType] = None,
-  integrator: Optional[IntegratorType] = None,
-  solver: Optional[SolverType] = None,
-  iterations: Optional[int] = None,
-  ls_iterations: Optional[int] = None,
-  ls_parallel: Optional[bool] = None,
-  sparse: Optional[bool] = None,
-  disableflags: Optional[int] = None,
-  enableflags: Optional[int] = None,
-  applied: bool = False,
-  nstep: int = 3,
-  seed: int = 42,
-  nworld: int = None,
-  nconmax: int = None,
-  njmax: int = None,
+    fname: Optional[str] = None,
+    xml: Optional[str] = None,
+    keyframe: int = -1,
+    actuation: bool = True,
+    contact: bool = True,
+    constraint: bool = True,
+    equality: bool = True,
+    spring: bool = True,
+    damper: bool = True,
+    gravity: bool = True,
+    clampctrl: bool = True,
+    filterparent: bool = True,
+    qpos0: bool = False,
+    kick: bool = False,
+    energy: bool = False,
+    eulerdamp: Optional[bool] = None,
+    cone: Optional[ConeType] = None,
+    integrator: Optional[IntegratorType] = None,
+    solver: Optional[SolverType] = None,
+    iterations: Optional[int] = None,
+    ls_iterations: Optional[int] = None,
+    ls_parallel: Optional[bool] = None,
+    sparse: Optional[bool] = None,
+    broadphase: Optional[BroadphaseType] = None,
+    disableflags: Optional[int] = None,
+    enableflags: Optional[int] = None,
+    applied: bool = False,
+    nstep: int = 3,
+    seed: int = 42,
+    nworld: int = None,
+    nconmax: int = None,
+    njmax: int = None,
 ):
   np.random.seed(seed)
   if fname is not None:
@@ -87,8 +89,10 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.CONSTRAINT
   if not equality:
     mjm.opt.disableflags |= DisableBit.EQUALITY
-  if not passive:
-    mjm.opt.disableflags |= DisableBit.PASSIVE
+  if not spring:
+    mjm.opt.disableflags |= DisableBit.SPRING
+  if not damper:
+    mjm.opt.disableflags |= DisableBit.DAMPER
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
   if not clampctrl:
@@ -150,6 +154,8 @@ def fixture(
   m = io.put_model(mjm)
   if ls_parallel is not None:
     m.opt.ls_parallel = ls_parallel
+  if broadphase is not None:
+    m.opt.broadphase = broadphase
 
   d = io.put_data(mjm, mjd, nworld=nworld, nconmax=nconmax, njmax=njmax)
   return mjm, mjd, m, d
