@@ -1383,36 +1383,36 @@ def box_box_wrapper(
   )
 
   for i in range(8):
-    disti = dist[i]
+    if dist[i] - margin >= 0.0:
+      continue
 
-    if disti - margin < 0.0:
-      write_contact(
-        nconmax_in,
-        disti,
-        pos[i],
-        make_frame(normal[i]),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        ncon_out,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-      )
+    write_contact(
+      nconmax_in,
+      dist[i],
+      pos[i],
+      make_frame(normal[i]),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+    )
 
 
 _PRIMITIVE_COLLISIONS = {
