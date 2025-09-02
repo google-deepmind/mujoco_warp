@@ -117,6 +117,7 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     ngeom: int,
+    nmeshgraph: int,
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -227,6 +228,7 @@ def ccd_kernel_builder(
     hftri_index = collision_hftri_index_in[tid]
 
     geom1 = _geom(
+      nmeshgraph,
       geom_type,
       geom_dataid,
       geom_size,
@@ -257,6 +259,7 @@ def ccd_kernel_builder(
     )
 
     geom2 = _geom(
+      nmeshgraph,
       geom_type,
       geom_dataid,
       geom_size,
@@ -423,6 +426,7 @@ def convex_narrowphase(m: Model, d: Data):
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.nmeshgraph,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,

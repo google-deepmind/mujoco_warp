@@ -63,6 +63,7 @@ class Geom:
   vert: wp.array(dtype=wp.vec3)
   graphadr: int
   graph: wp.array(dtype=int)
+  nmeshgraph: int
   mesh_polynum: int
   mesh_polyadr: int
   mesh_polynormal: wp.array(dtype=wp.vec3)
@@ -78,6 +79,7 @@ class Geom:
 @wp.func
 def _geom(
   # Model:
+  nmeshgraph: int,
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
@@ -118,12 +120,14 @@ def _geom(
 
   # If geom is MESH, get mesh verts
   if dataid >= 0 and geom_type[gid] == int(GeomType.MESH.value):
+    geom.nmeshgraph = nmeshgraph
     geom.vertadr = mesh_vertadr[dataid]
     geom.vertnum = mesh_vertnum[dataid]
     geom.graphadr = mesh_graphadr[dataid]
     geom.mesh_polynum = mesh_polynum[dataid]
     geom.mesh_polyadr = mesh_polyadr[dataid]
   else:
+    geom.nmeshgraph = -1
     geom.vertadr = -1
     geom.vertnum = -1
     geom.graphadr = -1
@@ -131,6 +135,7 @@ def _geom(
     geom.mesh_polyadr = -1
 
   if geom_type[gid] == int(GeomType.MESH.value):
+    geom.nmeshgraph = nmeshgraph
     geom.vert = mesh_vert
     geom.graph = mesh_graph
     geom.mesh_polynormal = mesh_polynormal
@@ -534,6 +539,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
           max_support = support
           imax = int(subidx)
         i += int(1)
+        if edge_localid + i >= convex.nmeshgraph:
+          break
       if imax == prev:
         break
 
@@ -552,6 +559,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
           a_dist = dist
           imax = int(subidx)
         i += int(1)
+        if edge_localid + i >= convex.nmeshgraph:
+          break
       if imax == prev:
         break
     imax = convex.graph[vert_globalid + imax]
@@ -573,6 +582,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
           b_dist = dist
           imax = int(subidx)
         i += int(1)
+        if edge_localid + i >= convex.nmeshgraph:
+          break
       if imax == prev:
         break
     imax = convex.graph[vert_globalid + imax]
@@ -585,7 +596,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     while True:
       prev = int(imax)
       i = int(convex.graph[vert_edgeadr + imax])
-      while convex.graph[edge_localid + i] >= 0:
+      while convex.graph[edge_localid + i] >= 0 and convex.vertadr + i < convex.vertnum:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
         support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + idx], n)
@@ -596,6 +607,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
           c_dist = dist
           imax = int(subidx)
         i += int(1)
+        if edge_localid + i >= convex.nmeshgraph:
+          break
       if imax == prev:
         break
     imax = convex.graph[vert_globalid + imax]
@@ -622,6 +635,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
           d_dist = dist_ap + dist_bp
           imax = int(subidx)
         i += int(1)
+        if edge_localid + i >= convex.nmeshgraph:
+          break
       if imax == prev:
         break
     imax = convex.graph[vert_globalid + imax]
@@ -2793,6 +2808,7 @@ def _primitive_narrowphase_builder(m: Model):
   @wp.kernel
   def _primitive_narrowphase(
     # Model:
+    nmeshgraph: int,
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -2892,6 +2908,7 @@ def _primitive_narrowphase_builder(m: Model):
     hftri_index = collision_hftri_index_in[tid]
 
     geom1 = _geom(
+      nmeshgraph,
       geom_type,
       geom_dataid,
       geom_size,
@@ -2922,6 +2939,7 @@ def _primitive_narrowphase_builder(m: Model):
     )
 
     geom2 = _geom(
+      nmeshgraph,
       geom_type,
       geom_dataid,
       geom_size,
@@ -3008,6 +3026,7 @@ def primitive_narrowphase(m: Model, d: Data):
     _primitive_narrowphase_builder(m),
     dim=d.nconmax,
     inputs=[
+      m.nmeshgraph,
       m.geom_type,
       m.geom_condim,
       m.geom_dataid,
