@@ -222,7 +222,9 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 
 
 @wp.func
-def find_oct(p: wp.vec3, oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.array(dtype=vec8i), grad: bool) -> Tuple[int, Tuple[vec8f, vec8f, vec8f]]:
+def find_oct(
+  p: wp.vec3, oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.array(dtype=vec8i), grad: bool
+) -> Tuple[int, Tuple[vec8f, vec8f, vec8f]]:
   stack = int(0)
   eps = 1e-8
   niter = int(100)
@@ -242,36 +244,50 @@ def find_oct(p: wp.vec3, oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.arra
     vmax = oct_aabb[node, 1]
 
     # check if the point is inside the aabb of the octree node
-    if (p[0] + eps < vmin[0] or p[0] - eps > vmax[0] or
-        p[1] + eps < vmin[1] or p[1] - eps > vmax[1] or
-        p[2] + eps < vmin[2] or p[2] - eps > vmax[2]):
+    if (
+      p[0] + eps < vmin[0]
+      or p[0] - eps > vmax[0]
+      or p[1] + eps < vmin[1]
+      or p[1] - eps > vmax[1]
+      or p[2] + eps < vmin[2]
+      or p[2] - eps > vmax[2]
+    ):
       continue
 
     coord = wp.cw_div(p - vmin, vmax - vmin)
 
     # check if the node is a leaf
-    if (oct_child[node][0] == -1 and oct_child[node][1] == -1 and
-        oct_child[node][2] == -1 and oct_child[node][3] == -1 and
-        oct_child[node][4] == -1 and oct_child[node][5] == -1 and
-        oct_child[node][6] == -1 and oct_child[node][7] == -1):
+    if (
+      oct_child[node][0] == -1
+      and oct_child[node][1] == -1
+      and oct_child[node][2] == -1
+      and oct_child[node][3] == -1
+      and oct_child[node][4] == -1
+      and oct_child[node][5] == -1
+      and oct_child[node][6] == -1
+      and oct_child[node][7] == -1
+    ):
       for j in range(8):
         if not grad:
-          rx[j] = (coord[0] if j & 1 else 1. - coord[0]) * (coord[1] if j & 2 else 1. - coord[1]) * (coord[2] if j & 4 else 1. - coord[2])
+          rx[j] = (
+            (coord[0] if j & 1 else 1.0 - coord[0])
+            * (coord[1] if j & 2 else 1.0 - coord[1])
+            * (coord[2] if j & 4 else 1.0 - coord[2])
+          )
         else:
-          rx[j] = (1. if j & 1 else -1.) * (coord[1] if j & 2 else 1. - coord[1]) * (coord[2] if j & 4 else 1. - coord[2])
-          ry[j] = (coord[0] if j & 1 else 1. - coord[0]) * (1. if j & 2 else -1.) * (coord[2] if j & 4 else 1. - coord[2])
-          rz[j] = (coord[0] if j & 1 else 1. - coord[0]) * (coord[1] if j & 2 else 1. - coord[1]) * (1. if j & 4 else -1.)
+          rx[j] = (1.0 if j & 1 else -1.0) * (coord[1] if j & 2 else 1.0 - coord[1]) * (coord[2] if j & 4 else 1.0 - coord[2])
+          ry[j] = (coord[0] if j & 1 else 1.0 - coord[0]) * (1.0 if j & 2 else -1.0) * (coord[2] if j & 4 else 1.0 - coord[2])
+          rz[j] = (coord[0] if j & 1 else 1.0 - coord[0]) * (coord[1] if j & 2 else 1.0 - coord[1]) * (1.0 if j & 4 else -1.0)
         return node, (rx, ry, rz)
 
     # compute which of 8 children to visit next
-    x = 1 if coord[0] < .5 else 0
-    y = 1 if coord[1] < .5 else 0
-    z = 1 if coord[2] < .5 else 0
-    stack = oct_child[node][4*z + 2*y + x]
+    x = 1 if coord[0] < 0.5 else 0
+    y = 1 if coord[1] < 0.5 else 0
+    z = 1 if coord[2] < 0.5 else 0
+    stack = oct_child[node][4 * z + 2 * y + x]
 
   wp.print("ERROR: Node not found\n")
   return -1, (rx, ry, rz)
-
 
 
 @wp.func
