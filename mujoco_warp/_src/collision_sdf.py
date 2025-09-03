@@ -329,23 +329,28 @@ def box_project(center: wp.vec3, half_size: wp.vec3, xyz: wp.vec3) -> Tuple[floa
 
 @wp.func
 def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
-  center = volume_data.center
-  half_size = volume_data.half_size
-  dist0, point = box_project(center, half_size, xyz)
+  dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
   node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
   return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
 
 @wp.func
 def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
-  h = 1e-4
-  dx = wp.vec3(h, 0.0, 0.0)
-  dy = wp.vec3(0.0, h, 0.0)
-  dz = wp.vec3(0.0, 0.0, h)
-  f = sample_volume_sdf(xyz, volume_data)
-  grad_x = (sample_volume_sdf(xyz + dx, volume_data) - f) / h
-  grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
-  grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
+  dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
+  if dist0 > 0:
+    h = 1e-4
+    dx = wp.vec3(h, 0.0, 0.0)
+    dy = wp.vec3(0.0, h, 0.0)
+    dz = wp.vec3(0.0, 0.0, h)
+    f = sample_volume_sdf(xyz, volume_data)
+    grad_x = (sample_volume_sdf(xyz + dx, volume_data) - f) / h
+    grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
+    grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
+    return wp.vec3(grad_x, grad_y, grad_z)
+  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=True)
+  grad_x = wp.dot(weights[0], volume_data.oct_coeff[node])
+  grad_y = wp.dot(weights[1], volume_data.oct_coeff[node])
+  grad_z = wp.dot(weights[2], volume_data.oct_coeff[node])
   return wp.vec3(grad_x, grad_y, grad_z)
 
 
