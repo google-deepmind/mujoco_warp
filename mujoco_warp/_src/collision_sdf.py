@@ -292,14 +292,14 @@ def find_oct(
 
 @wp.func
 def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
+  node, weights = find_oct(xyz, volume_data.oct_aabb, volume_data.oct_child, grad=False)
+
   center = volume_data.center
   half_size = volume_data.half_size
-
   r = xyz - center
   q = wp.vec3(wp.abs(r[0]) - half_size[0], wp.abs(r[1]) - half_size[1], wp.abs(r[2]) - half_size[2])
 
   if q[0] <= 0.0 and q[1] <= 0.0 and q[2] <= 0.0:
-    node, weights = find_oct(xyz, volume_data.oct_aabb, volume_data.oct_child, grad=False)
     return wp.dot(weights[0], volume_data.oct_coeff[node])
 
   else:
@@ -330,7 +330,6 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
 
     dist0 = wp.sqrt(dist_sqr)
 
-    node, weights = find_oct(xyz, volume_data.oct_aabb, volume_data.oct_child, grad=False)
     return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
 
