@@ -223,7 +223,7 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 
 @wp.func
 def find_oct(
-  p: wp.vec3, oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.array(dtype=vec8i), grad: bool
+  oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.array(dtype=vec8i), p: wp.vec3, grad: bool
 ) -> Tuple[int, Tuple[vec8f, vec8f, vec8f]]:
   stack = int(0)
   eps = 1e-8
@@ -292,7 +292,7 @@ def find_oct(
 
 @wp.func
 def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
-  node, weights = find_oct(xyz, volume_data.oct_aabb, volume_data.oct_child, grad=False)
+  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, xyz, grad=False)
 
   center = volume_data.center
   half_size = volume_data.half_size
