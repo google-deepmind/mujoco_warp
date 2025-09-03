@@ -1209,7 +1209,7 @@ def _epa(tolerance: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom2
   upper2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
-  epsilon = wp.where(is_discrete, 1e-15, tolerance * tolerance)
+  epsilon = wp.where(is_discrete, 1e-15, tolerance)
 
   for k in range(epa_iterations):
     pidx = int(idx)

@@ -868,10 +868,11 @@ def _mujoco_octree_to_warp_volume(
   for mesh_id in mjm.geom_dataid:
     if mesh_id != -1 and mesh_id < len(mjm.mesh_octadr):
       octadr = mjm.mesh_octadr[mesh_id]
+      octnum = mjm.mesh_octnum[mesh_id]
       if octadr != -1:
-        oct_child = mjm.oct_child[8 * octadr :].reshape(-1, 8)
-        oct_aabb = mjm.oct_aabb[6 * octadr :].reshape(-1, 6)
-        oct_coeff = mjm.oct_coeff[8 * octadr :].reshape(-1, 8)
+        oct_child = mjm.oct_child[octadr : (octadr + octnum), :]
+        oct_aabb = mjm.oct_aabb[octadr : (octadr + octnum), :]
+        oct_coeff = mjm.oct_coeff[octadr : (octadr + octnum), :]
 
         root_aabb = oct_aabb[0]
         center = root_aabb[:3]

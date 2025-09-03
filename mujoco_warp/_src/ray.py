@@ -534,7 +534,7 @@ def _ray_hfield(
 
 
 @wp.func
-def _ray_mesh(
+def ray_mesh(
   # Model:
   nmeshface: int,
   mesh_vertadr: wp.array(dtype=int),
@@ -674,7 +674,7 @@ def _ray_geom_mesh(
     type = geom_type[geomid]
 
     if type == int(GeomType.MESH.value):
-      return _ray_mesh(
+      return ray_mesh(
         nmeshface,
         mesh_vertadr,
         mesh_vert,
