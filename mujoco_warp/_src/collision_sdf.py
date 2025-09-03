@@ -32,6 +32,7 @@ from .types import vec8i
 from .util_misc import halton
 from .warp_util import event_scope
 
+wp.set_module_options({"enable_backward": False})
 
 @wp.struct
 class OptimizationParams:
