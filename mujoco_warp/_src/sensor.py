@@ -38,6 +38,8 @@ from .types import SensorType
 from .types import TrnType
 from .types import vec5
 from .types import vec6
+from .types import vec8f
+from .types import vec8i
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
@@ -1898,8 +1900,9 @@ def _sensor_tactile(
   mesh_normaladr: wp.array(dtype=int),
   mesh_normal: wp.array(dtype=wp.vec3),
   mesh_quat: wp.array(dtype=wp.quat),
-  volume_ids: wp.array(dtype=wp.uint64),
   oct_aabb: wp.array2d(dtype=wp.vec3),
+  oct_child: wp.array(dtype=vec8i),
+  oct_coeff: wp.array(dtype=vec8f),
   sensor_objid: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_dim: wp.array(dtype=int),
@@ -1964,7 +1967,7 @@ def _sensor_tactile(
   contact_type = geom_type[geom]
 
   plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
-    volume_ids, oct_aabb, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
+    oct_aabb, oct_child, oct_coeff, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
   )
 
   depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)
@@ -2160,8 +2163,9 @@ def sensor_acc(m: Model, d: Data):
       m.mesh_normaladr,
       m.mesh_normal,
       m.mesh_quat,
-      m.volume_ids,
       m.oct_aabb,
+      m.oct_child,
+      m.oct_coeff,
       m.sensor_objid,
       m.sensor_refid,
       m.sensor_dim,

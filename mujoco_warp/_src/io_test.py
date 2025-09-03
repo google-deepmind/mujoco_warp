@@ -130,9 +130,6 @@ def _check_annotation_compat(
     if isinstance(v, wp.types.array):
       continue
 
-    if v == wp.Volume:
-      continue
-
     if v in wp.types.vector_types:
       raise AssertionError(f"Vector types are not allowed. {info}")
 
@@ -392,29 +389,15 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
-  def test_volumes(self):
-    """Tests that mujoco_octree_to_warp_volume properly processes SDF volumes."""
-    if not wp.get_device().is_cuda:
-      self.skipTest("SDF volumes require CUDA device")
+  def test_sdf(self):
+    """Tests that an SDF can be loaded."""
     mjm, mjd, m, d = test_util.fixture(fname="collision_sdf/cow.xml", qpos0=True)
-
-    self.assertIsInstance(m.volume_ids, wp.array)
-    self.assertEqual(m.volume_ids.dtype, wp.uint64)
-    self.assertGreater(m.volume_ids.size, 0)
-
-    self.assertIsInstance(m.volumes, tuple)
-    if len(m.volumes) > 0:
-      for volume in m.volumes:
-        self.assertIsInstance(volume, wp.Volume)
 
     self.assertIsInstance(m.oct_aabb, wp.array)
     self.assertEqual(m.oct_aabb.dtype, wp.vec3)
     self.assertEqual(len(m.oct_aabb.shape), 2)
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
-
-    volume_ids_numpy = m.volume_ids.numpy()
-    self.assertEqual(len(m.volumes), np.unique(volume_ids_numpy).size)
 
 
 if __name__ == "__main__":

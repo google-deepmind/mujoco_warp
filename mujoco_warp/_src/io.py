@@ -96,7 +96,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   plugin_id = np.array(plugin_id)
   plugin_attr = np.array(plugin_attr)
-  volume_ids, volumes, oct_aabb = _mujoco_octree_to_warp_volume(mjm)
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
@@ -637,9 +636,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_polymapadr=wp.array(mjm.mesh_polymapadr, dtype=int),
     mesh_polymapnum=wp.array(mjm.mesh_polymapnum, dtype=int),
     mesh_polymap=wp.array(mjm.mesh_polymap, dtype=int),
-    volume_ids=volume_ids,
-    volumes=volumes,
-    oct_aabb=oct_aabb,
+    oct_aabb=wp.array2d(mjm.oct_aabb, dtype=wp.vec3),
+    oct_child=wp.array(mjm.oct_child, dtype=types.vec8i),
+    oct_coeff=wp.array(mjm.oct_coeff, dtype=types.vec8f),
     nhfield=mjm.nhfield,
     nhfielddata=mjm.nhfielddata,
     hfield_adr=wp.array(mjm.hfield_adr, dtype=int),

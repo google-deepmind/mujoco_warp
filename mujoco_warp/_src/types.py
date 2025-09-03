@@ -530,6 +530,14 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec8f(wp.types.vector(length=8, dtype=float)):
+  pass
+
+
+class vec8i(wp.types.vector(length=8, dtype=int)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -1221,9 +1229,9 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
-  volume_ids: wp.array(dtype=wp.uint64)
-  volumes: tuple[wp.Volume, ...]
   oct_aabb: wp.array2d(dtype=wp.vec3)
+  oct_child: wp.array(dtype=vec8i)
+  oct_coeff: wp.array(dtype=vec8f)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)
