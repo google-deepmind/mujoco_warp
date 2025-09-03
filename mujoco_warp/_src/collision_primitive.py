@@ -40,6 +40,7 @@ from .types import GeomType
 from .types import Model
 from .types import vec5
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1458,7 +1459,7 @@ def _primitive_narrowphase_builder(m: Model):
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
 
-  @wp.kernel
+  @nested_kernel(module="unique")
   def _primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),

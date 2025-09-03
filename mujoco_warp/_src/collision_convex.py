@@ -36,7 +36,7 @@ from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
 MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
@@ -113,7 +113,7 @@ def ccd_kernel_builder(
   depth_extension: float,
 ):
   # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel
+  @nested_kernel(module="unique")
   def ccd_kernel(
     # Model:
     ngeom: int,
