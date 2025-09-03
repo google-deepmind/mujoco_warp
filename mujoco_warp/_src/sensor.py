@@ -2073,7 +2073,6 @@ def _contact_match(
         contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
       )
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
-    # TODO(thowell): netforce
 
     # contact direction
     if geom1geom0:
