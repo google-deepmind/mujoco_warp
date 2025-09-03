@@ -27,6 +27,16 @@ class AlohaPot(mujoco_warp.test_util.BenchmarkSuite):
   replay = "lift_pot"
 
 
+class AlohaSdf(mujoco_warp.test_util.BenchmarkSuite):
+  """Aloha robot with SDF grippers and an SDF asset."""
+
+  path = "aloha_sdf/scene.xml"
+  params = mujoco_warp.test_util.BenchmarkSuite.params + ("step.euler",)
+  batch_size = 8192
+  nconmax = 275_000
+  njmax = 226
+
+
 class ApptronikApolloFlat(mujoco_warp.test_util.BenchmarkSuite):
   """Apptronik Apollo locomoting on an infinite plane."""
 
@@ -103,6 +113,7 @@ class ThreeHumanoids(mujoco_warp.test_util.BenchmarkSuite):
 
 # attach a setup_cache to each test for one-time setup of benchmarks
 AlohaPot.setup_cache = lambda s: mujoco_warp.test_util.BenchmarkSuite.setup_cache(s)
+AlohaSdf.setup_cache = lambda s: mujoco_warp.test_util.BenchmarkSuite.setup_cache(s)
 ApptronikApolloFlat.setup_cache = lambda s: mujoco_warp.test_util.BenchmarkSuite.setup_cache(s)
 ApptronikApolloTerrain.setup_cache = lambda s: mujoco_warp.test_util.BenchmarkSuite.setup_cache(s)
 Cloth.setup_cache = lambda s: mujoco_warp.test_util.BenchmarkSuite.setup_cache(s)

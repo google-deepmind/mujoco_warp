@@ -522,6 +522,14 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec8f(wp.types.vector(length=8, dtype=float)):
+  pass
+
+
+class vec8i(wp.types.vector(length=8, dtype=int)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -545,6 +553,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
+    ccd_tolerance: convex collision solver tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -578,6 +587,7 @@ class Option:
   impratio: wp.array(dtype=float)
   tolerance: wp.array(dtype=float)
   ls_tolerance: wp.array(dtype=float)
+  ccd_tolerance: wp.array(dtype=float)
   gravity: wp.array(dtype=wp.vec3)
   magnetic: wp.array(dtype=wp.vec3)
   integrator: int
@@ -885,9 +895,9 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
-    volume_ids: Warp volume IDs for SDF sampling             (nmesh,)
-    volumes: Warp volume objects containing SDF data         (nvolume,)
-    oct_aabb: octree axis-aligned bounding boxes             (nmesh,)
+    oct_aabb: octree axis-aligned bounding boxes             (noct, 6)
+    oct_child: octree children                               (noct, 8)
+    oct_coeff: octree interpolation coefficients             (noct, 8)
     eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
@@ -1211,9 +1221,9 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
-  volume_ids: wp.array(dtype=wp.uint64)
-  volumes: tuple[wp.Volume, ...]
   oct_aabb: wp.array2d(dtype=wp.vec3)
+  oct_child: wp.array(dtype=vec8i)
+  oct_coeff: wp.array(dtype=vec8f)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)

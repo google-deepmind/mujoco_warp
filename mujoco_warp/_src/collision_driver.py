@@ -419,7 +419,7 @@ def _sap_range(
 
 @cache_kernel
 def _sap_broadphase(broadphase_filter):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     ngeom: int,
@@ -625,7 +625,7 @@ def sap_broadphase(m: Model, d: Data):
 
 @cache_kernel
 def _nxn_broadphase(broadphase_filter):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     geom_type: wp.array(dtype=int),
