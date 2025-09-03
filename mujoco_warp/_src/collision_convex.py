@@ -113,7 +113,7 @@ def ccd_kernel_builder(
   depth_extension: float,
 ):
   # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel(module="unique")
+  @nested_kernel(module="unique", enable_backward=False)
   def ccd_kernel(
     # Model:
     ngeom: int,

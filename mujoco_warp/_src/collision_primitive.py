@@ -1457,7 +1457,7 @@ def _primitive_narrowphase_builder(m: Model):
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
 
-  @nested_kernel(module="unique")
+  @nested_kernel(module="unique", enable_backward=False)
   def _primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),

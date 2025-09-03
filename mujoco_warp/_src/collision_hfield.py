@@ -22,6 +22,8 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def _hfield_subgrid(
