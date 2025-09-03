@@ -240,8 +240,8 @@ def find_oct(
       wp.printf("ERROR: Invalid node number\n")
       return -1, (rx, ry, rz)
 
-    vmin = oct_aabb[node, 0]
-    vmax = oct_aabb[node, 1]
+    vmin = oct_aabb[node, 0] - oct_aabb[node, 1]
+    vmax = oct_aabb[node, 0] + oct_aabb[node, 1]
 
     # check if the point is inside the aabb of the octree node
     if (
@@ -278,7 +278,7 @@ def find_oct(
           rx[j] = (1.0 if j & 1 else -1.0) * (coord[1] if j & 2 else 1.0 - coord[1]) * (coord[2] if j & 4 else 1.0 - coord[2])
           ry[j] = (coord[0] if j & 1 else 1.0 - coord[0]) * (1.0 if j & 2 else -1.0) * (coord[2] if j & 4 else 1.0 - coord[2])
           rz[j] = (coord[0] if j & 1 else 1.0 - coord[0]) * (coord[1] if j & 2 else 1.0 - coord[1]) * (1.0 if j & 4 else -1.0)
-        return node, (rx, ry, rz)
+      return node, (rx, ry, rz)
 
     # compute which of 8 children to visit next
     x = 1 if coord[0] < 0.5 else 0
@@ -292,18 +292,16 @@ def find_oct(
 
 @wp.func
 def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
-  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, xyz, grad=False)
-
   center = volume_data.center
   half_size = volume_data.half_size
   r = xyz - center
   q = wp.vec3(wp.abs(r[0]) - half_size[0], wp.abs(r[1]) - half_size[1], wp.abs(r[2]) - half_size[2])
+  point = wp.vec3(xyz[0], xyz[1], xyz[2])
 
   if q[0] <= 0.0 and q[1] <= 0.0 and q[2] <= 0.0:
-    return wp.dot(weights[0], volume_data.oct_coeff[node])
+    dist0 = 0.0
 
   else:
-    point = wp.vec3(xyz[0], xyz[1], xyz[2])
     dist_sqr = 0.0
     eps = 1e-4
 
@@ -330,6 +328,7 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
 
     dist0 = wp.sqrt(dist_sqr)
 
+    node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
     return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
 
