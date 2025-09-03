@@ -42,7 +42,6 @@ from .types import TrnType
 from .types import vec10f
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel
 from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
@@ -558,7 +557,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 def _actuator_velocity(m: Model, d: Data):
   NV = m.nv
 
-  @kernel
+  @nested_kernel
   def actuator_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
@@ -590,7 +589,7 @@ def _actuator_velocity(m: Model, d: Data):
 def _tendon_velocity(m: Model, d: Data):
   NV = m.nv
 
-  @kernel
+  @nested_kernel
   def tendon_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
