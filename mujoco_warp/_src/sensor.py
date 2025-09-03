@@ -2102,7 +2102,7 @@ def _contact_sort(
   sensorid = sensor_contact_adr[contactsensorid]
 
   reduce = sensor_intprm[sensorid, 1]
-  if reduce == 3:  # netforce
+  if reduce == 0 or reduce == 3:  # none or netforce
     return
 
   nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]

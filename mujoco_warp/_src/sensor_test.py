@@ -428,9 +428,12 @@ class SensorTest(parameterized.TestCase):
       'geom1="geom" geom2="sphere"',
     ]:
       for num in [1, 3, 5]:
-        for reduce in ["mindist", "maxforce"]:
+        for reduce in [None, "mindist", "maxforce"]:
           for data in datas:
-            contact_sensor += f'<contact {geoms} num="{num}" reduce="{reduce}" data="{data}"/>'
+            contact_sensor += f'<contact {geoms} num="{num}"'
+            if reduce is not None:
+              contact_sensor += f' reduce="{reduce}"'
+            contact_sensor += f' data="{data}"/>'
 
     _MJCF = f"""
     <mujoco>
