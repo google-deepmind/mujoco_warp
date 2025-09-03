@@ -46,6 +46,7 @@ from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
+
 @wp.func
 def _write_scalar(
   # Model:
@@ -2535,7 +2536,7 @@ def energy_pos(m: Model, d: Data):
 
 @cache_kernel
 def _energy_vel_kinetic(nv: int):
-  @nested_kernel(enable_backward=False)
+  @nested_kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(
     # Data in:
     qvel_in: wp.array2d(dtype=float),

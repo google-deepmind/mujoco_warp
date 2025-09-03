@@ -26,6 +26,7 @@ from .types import vec6
 
 wp.set_module_options({"enable_backward": False})
 
+
 @wp.func
 def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Maps ray to local geom frame coordinates.

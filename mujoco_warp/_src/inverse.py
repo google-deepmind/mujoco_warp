@@ -29,6 +29,7 @@ from .types import Model
 
 wp.set_module_options({"enable_backward": False})
 
+
 @wp.kernel
 def _qfrc_eulerdamp(
   # Model:

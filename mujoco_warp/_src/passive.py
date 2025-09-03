@@ -26,6 +26,7 @@ from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
+
 @wp.kernel
 def _spring_damper_dof_passive(
   # Model:

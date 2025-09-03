@@ -34,6 +34,7 @@ from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
+
 @wp.struct
 class OptimizationParams:
   rel_mat: wp.mat33
