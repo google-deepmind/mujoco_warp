@@ -1448,6 +1448,10 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
 @cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
+
+  if njmax < tile_size:
+    tile_size = njmax
+
   TILE_SIZE_K = tile_size
 
   @nested_kernel
