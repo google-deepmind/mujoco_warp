@@ -382,7 +382,7 @@ class ForwardTest(parameterized.TestCase):
         mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
         mjd_arr = ten_J
       elif arr == "efc_J":
-        d_arr = d_arr[:, :m.nv] # efc_J is padded up to the next multiple of the tile size
+        d_arr = d_arr[:, : m.nv]  # efc_J is padded up to the next multiple of the tile size
         if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
           efc_J = np.zeros((mjd.nefc, mjm.nv))
           mujoco.mju_sparse2dense(efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)

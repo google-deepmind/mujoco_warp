@@ -1015,7 +1015,9 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   else:
     tile_size = tile_sizes.jtdaj_dense
 
-  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
+  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(
+    mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size
+  )
 
   return types.Data(
     nworld=nworld,
@@ -1343,7 +1345,9 @@ def put_data(
   else:
     tile_size = tile_sizes.jtdaj_dense
 
-  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
+  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(
+    mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size
+  )
 
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
@@ -1359,7 +1363,7 @@ def put_data(
   nefc = mjd.nefc
   efc_type_fill[:, :nefc] = np.tile(mjd.efc_type, (nworld, 1))
   efc_id_fill[:, :nefc] = np.tile(mjd.efc_id, (nworld, 1))
-  efc_J_fill[:, :nefc, :mjm.nv] = np.tile(efc_J, (nworld, 1, 1))
+  efc_J_fill[:, :nefc, : mjm.nv] = np.tile(efc_J, (nworld, 1, 1))
   efc_D_fill[:, :nefc] = np.tile(mjd.efc_D, (nworld, 1))
   efc_vel_fill[:, :nefc] = np.tile(mjd.efc_vel, (nworld, 1))
   efc_pos_fill[:, :nefc] = np.tile(mjd.efc_pos, (nworld, 1))

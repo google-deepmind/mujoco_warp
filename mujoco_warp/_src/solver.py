@@ -1363,12 +1363,14 @@ def update_gradient_set_h_qM_lower_sparse(
   j = qM_fullm_j[elementid]
   efc_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
 
+
 @wp.func
 def state_check(D: float, state: int) -> float:
   if state == int(types.ConstraintState.QUADRATIC.value):
     return D
   else:
     return 0.0
+
 
 @cache_kernel
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
@@ -1406,10 +1408,10 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
       if k >= nefc:
         break
 
-      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
+      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the
       # fast path. The padding takes care of any potential OOB accesses.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_i), bounds_check=False)
-      
+
       if offset_i != offset_j:
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_j), bounds_check=False)
       else:
@@ -1443,6 +1445,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
   return kernel
 
+
 @cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
   TILE_SIZE_K = tile_size
@@ -1473,7 +1476,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
       if k >= nefc:
         break
 
-      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the 
+      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the
       # fast path. The padding takes care of any potential OOB accesses.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
@@ -1731,7 +1734,7 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
         block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
-      
+
       wp.launch(
         update_gradient_set_h_qM_lower_sparse,
         dim=(d.nworld, m.qM_fullm_i.size),
