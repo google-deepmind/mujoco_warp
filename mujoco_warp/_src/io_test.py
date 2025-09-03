@@ -391,8 +391,6 @@ class IOTest(parameterized.TestCase):
 
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
-    if not wp.get_device().is_cuda:
-      self.skipTest("SDF volumes require CUDA device")
     mjm, mjd, m, d = test_util.fixture(fname="collision_sdf/cow.xml", qpos0=True)
 
     self.assertIsInstance(m.oct_aabb, wp.array)
