@@ -328,8 +328,8 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
 
     dist0 = wp.sqrt(dist_sqr)
 
-    node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
-    return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
+  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
+  return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
 
 @wp.func
