@@ -291,19 +291,17 @@ def find_oct(
 
 
 @wp.func
-def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
-  center = volume_data.center
-  half_size = volume_data.half_size
+def box_project(center: wp.vec3, half_size: wp.vec3, xyz: wp.vec3) -> Tuple[float, wp.vec3]:
   r = xyz - center
   q = wp.vec3(wp.abs(r[0]) - half_size[0], wp.abs(r[1]) - half_size[1], wp.abs(r[2]) - half_size[2])
-  point = wp.vec3(xyz[0], xyz[1], xyz[2])
 
   if q[0] <= 0.0 and q[1] <= 0.0 and q[2] <= 0.0:
-    dist0 = 0.0
+    return 0.0, xyz
 
   else:
     dist_sqr = 0.0
     eps = 1e-4
+    point = wp.vec3(xyz[0], xyz[1], xyz[2])
 
     if q[0] >= 0.0:
       dist_sqr += q[0] * q[0]
@@ -326,8 +324,14 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
       else:
         point = wp.vec3(point[0], point[1], point[2] + (q[2] + eps))
 
-    dist0 = wp.sqrt(dist_sqr)
+    return wp.sqrt(dist_sqr), point
 
+
+@wp.func
+def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
+  center = volume_data.center
+  half_size = volume_data.half_size
+  dist0, point = box_project(center, half_size, xyz)
   node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
   return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
