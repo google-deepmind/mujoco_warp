@@ -465,6 +465,37 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
+  def test_contact_sensor_netforce(self):
+    """Test contact sensor with netforce reduction."""
+    _, mjd, m, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom name="plane" type="plane" size="10 10 .001"/>
+        <body>
+          <geom name="box" type="box" size=".1 .1 .1"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact geom1="plane" geom2="box" data="found force torque dist pos normal tangent" reduce="netforce" num="2"/>
+        <contact geom1="box" geom2="plane" data="force torque" reduce="netforce"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0 0 .09 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.sensordata.zero_()
+    mjwarp.forward(m, d)
+
+    sensordata = d.sensordata.numpy()[0]
+    _assert_eq(sensordata, mjd.sensordata, "sensordata")
+    self.assertTrue(sensordata.any())  # check that sensordata is not empty
+
 
 if __name__ == "__main__":
   wp.init()

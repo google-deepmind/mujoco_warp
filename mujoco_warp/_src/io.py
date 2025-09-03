@@ -130,8 +130,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
 
     # reduction
-    if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
-      raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
+    if (mjm.sensor_intprm[is_contact_sensor, 1] == 0).any():
+      raise NotImplementedError(f"Contact sensor: reduction 'none' is not implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
@@ -447,6 +447,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
       tolerance=create_nmodel_batched_array(np.array(mjm.opt.tolerance), dtype=float, expand_dim=False),
       ls_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ls_tolerance), dtype=float, expand_dim=False),
+      ccd_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ccd_tolerance), dtype=float, expand_dim=False),
       gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
       magnetic=create_nmodel_batched_array(mjm.opt.magnetic, dtype=wp.vec3, expand_dim=False),
       wind=create_nmodel_batched_array(mjm.opt.wind, dtype=wp.vec3, expand_dim=False),
@@ -867,10 +868,11 @@ def _mujoco_octree_to_warp_volume(
   for mesh_id in mjm.geom_dataid:
     if mesh_id != -1 and mesh_id < len(mjm.mesh_octadr):
       octadr = mjm.mesh_octadr[mesh_id]
+      octnum = mjm.mesh_octnum[mesh_id]
       if octadr != -1:
-        oct_child = mjm.oct_child[8 * octadr :].reshape(-1, 8)
-        oct_aabb = mjm.oct_aabb[6 * octadr :].reshape(-1, 6)
-        oct_coeff = mjm.oct_coeff[8 * octadr :].reshape(-1, 8)
+        oct_child = mjm.oct_child[octadr : (octadr + octnum), :]
+        oct_aabb = mjm.oct_aabb[octadr : (octadr + octnum), :]
+        oct_coeff = mjm.oct_coeff[octadr : (octadr + octnum), :]
 
         root_aabb = oct_aabb[0]
         center = root_aabb[:3]
