@@ -468,6 +468,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
       legacy_gjk=False,
+      contact_sensor_maxmatch=64,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,

@@ -23,7 +23,6 @@ from . import smooth
 from . import support
 from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
-from .types import MJ_MAXCONPAIR
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
@@ -1922,6 +1921,7 @@ def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objty
 def _contact_match(
   # Model:
   opt_cone: int,
+  opt_contact_sensor_maxmatch: int,
   body_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   site_type: wp.array(dtype=int),
@@ -2014,8 +2014,8 @@ def _contact_match(
 
   contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
 
-  if contactmatchid >= MJ_MAXCONPAIR:
-    wp.printf("contact match overflow: please increase MJ_MAXCONPAIR to %u\n", contactmatchid)
+  if contactmatchid >= opt_contact_sensor_maxmatch:
+    wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
     return
 
   sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
@@ -2046,27 +2046,30 @@ def _contact_match(
   sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
 
-@wp.kernel
-def _contact_sort(
-  # Data in:
-  sensor_contact_nmatch_in: wp.array2d(dtype=int),
-  sensor_contact_matchid_in: wp.array3d(dtype=int),
-  sensor_contact_criteria_in: wp.array3d(dtype=float),
-  # Data out:
-  sensor_contact_matchid_out: wp.array3d(dtype=int),
-):
-  worldid, contactsensorid = wp.tid()
+def _contact_sort(maxmatch: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def contact_sort(
+    # Data in:
+    sensor_contact_nmatch_in: wp.array2d(dtype=int),
+    sensor_contact_matchid_in: wp.array3d(dtype=int),
+    sensor_contact_criteria_in: wp.array3d(dtype=float),
+    # Data out:
+    sensor_contact_matchid_out: wp.array3d(dtype=int),
+  ):
+    worldid, contactsensorid = wp.tid()
 
-  nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
+    nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
 
-  # skip sort
-  if nmatch <= 1:
-    return
+    # skip sort
+    if nmatch <= 1:
+      return
 
-  criteria_tile = wp.tile_load(sensor_contact_criteria_in[worldid, contactsensorid], shape=MJ_MAXCONPAIR)
-  matchid_tile = wp.tile_load(sensor_contact_matchid_in[worldid, contactsensorid], shape=MJ_MAXCONPAIR)
-  wp.tile_sort(criteria_tile, matchid_tile)
-  wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], matchid_tile)
+    criteria_tile = wp.tile_load(sensor_contact_criteria_in[worldid, contactsensorid], shape=maxmatch)
+    matchid_tile = wp.tile_load(sensor_contact_matchid_in[worldid, contactsensorid], shape=maxmatch)
+    wp.tile_sort(criteria_tile, matchid_tile)
+    wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], matchid_tile)
+
+  return contact_sort
 
 
 @event_scope
@@ -2152,6 +2155,7 @@ def sensor_acc(m: Model, d: Data):
       dim=(m.sensor_contact_adr.size, d.nconmax),
       inputs=[
         m.opt.cone,
+        m.opt.contact_sensor_maxmatch,
         m.body_parentid,
         m.geom_bodyid,
         m.site_type,
@@ -2186,7 +2190,7 @@ def sensor_acc(m: Model, d: Data):
 
     # sorting
     wp.launch_tiled(
-      _contact_sort,
+      _contact_sort(m.opt.contact_sensor_maxmatch),
       dim=(d.nworld, m.sensor_contact_adr.size),
       inputs=[
         d.sensor_contact_nmatch,
