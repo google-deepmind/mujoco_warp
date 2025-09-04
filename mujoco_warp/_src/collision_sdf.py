@@ -27,8 +27,12 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .types import vec8f
+from .types import vec8i
 from .util_misc import halton
 from .warp_util import event_scope
+
+wp.set_module_options({"enable_backward": False})
 
 
 @wp.struct
@@ -47,9 +51,12 @@ class AABB:
 
 @wp.struct
 class VolumeData:
-  volume_id: wp.uint64
   center: wp.vec3
   half_size: wp.vec3
+  oct_aabb: wp.array2d(dtype=wp.vec3)
+  oct_child: wp.array(dtype=vec8i)
+  oct_coeff: wp.array(dtype=vec8f)
+  valid: bool = False
 
 
 @wp.struct
@@ -69,19 +76,11 @@ class MeshData:
 
 
 @wp.func
-def get_volume_data(volume_id: wp.uint64, center: wp.vec3, half_size: wp.vec3) -> VolumeData:
-  volume_data = VolumeData()
-  volume_data.volume_id = volume_id
-  volume_data.center = center
-  volume_data.half_size = half_size
-  return volume_data
-
-
-@wp.func
 def get_sdf_params(
   # Model:
-  volume_ids: wp.array(dtype=wp.uint64),
   oct_aabb: wp.array2d(dtype=wp.vec3),
+  oct_child: wp.array(dtype=vec8i),
+  oct_coeff: wp.array(dtype=vec8f),
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
   # In:
@@ -92,17 +91,19 @@ def get_sdf_params(
 ) -> Tuple[wp.vec3, int, VolumeData, MeshData]:
   attributes = g_size
   plugin_index = -1
-  volume_data = get_volume_data(wp.uint64(0), wp.vec3(0.0), wp.vec3(0.0))
+  volume_data = VolumeData()
 
   if g_type == int(GeomType.SDF.value) and plugin_id != -1:
     attributes = plugin_attr[plugin_id]
     plugin_index = plugin[plugin_id]
 
   elif g_type == int(GeomType.SDF.value) and mesh_id != -1:
-    volume_id = volume_ids[mesh_id]
-    center = oct_aabb[mesh_id, 0]
-    half_size = oct_aabb[mesh_id, 1]
-    volume_data = get_volume_data(volume_id, center, half_size)
+    volume_data.center = oct_aabb[mesh_id, 0]
+    volume_data.half_size = oct_aabb[mesh_id, 1]
+    volume_data.oct_aabb = oct_aabb
+    volume_data.oct_child = oct_child
+    volume_data.oct_coeff = oct_coeff
+    volume_data.valid = True
 
   return attributes, plugin_index, volume_data, MeshData()
 
@@ -223,22 +224,73 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 
 
 @wp.func
-def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
-  center = volume_data.center
-  half_size = volume_data.half_size
+def find_oct(
+  oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.array(dtype=vec8i), p: wp.vec3, grad: bool
+) -> Tuple[int, Tuple[vec8f, vec8f, vec8f]]:
+  stack = int(0)
+  niter = int(100)
+  rx = vec8f(0.0)
+  ry = vec8f(0.0)
+  rz = vec8f(0.0)
 
+  while niter > 0:
+    niter -= 1
+    node = stack
+
+    if node == -1:
+      wp.printf("ERROR: Invalid node number\n")
+      return -1, (rx, ry, rz)
+
+    vmin = oct_aabb[node, 0] - oct_aabb[node, 1]
+    vmax = oct_aabb[node, 0] + oct_aabb[node, 1]
+    coord = wp.cw_div(p - vmin, vmax - vmin)
+
+    # check if the node is a leaf
+    if (
+      oct_child[node][0] == -1
+      and oct_child[node][1] == -1
+      and oct_child[node][2] == -1
+      and oct_child[node][3] == -1
+      and oct_child[node][4] == -1
+      and oct_child[node][5] == -1
+      and oct_child[node][6] == -1
+      and oct_child[node][7] == -1
+    ):
+      for j in range(8):
+        if not grad:
+          rx[j] = (
+            (coord[0] if j & 1 else 1.0 - coord[0])
+            * (coord[1] if j & 2 else 1.0 - coord[1])
+            * (coord[2] if j & 4 else 1.0 - coord[2])
+          )
+        else:
+          rx[j] = (1.0 if j & 1 else -1.0) * (coord[1] if j & 2 else 1.0 - coord[1]) * (coord[2] if j & 4 else 1.0 - coord[2])
+          ry[j] = (coord[0] if j & 1 else 1.0 - coord[0]) * (1.0 if j & 2 else -1.0) * (coord[2] if j & 4 else 1.0 - coord[2])
+          rz[j] = (coord[0] if j & 1 else 1.0 - coord[0]) * (coord[1] if j & 2 else 1.0 - coord[1]) * (1.0 if j & 4 else -1.0)
+      return node, (rx, ry, rz)
+
+    # compute which of 8 children to visit next
+    x = 1 if coord[0] < 0.5 else 0
+    y = 1 if coord[1] < 0.5 else 0
+    z = 1 if coord[2] < 0.5 else 0
+    stack = oct_child[node][4 * z + 2 * y + x]
+
+  wp.print("ERROR: Node not found\n")
+  return -1, (rx, ry, rz)
+
+
+@wp.func
+def box_project(center: wp.vec3, half_size: wp.vec3, xyz: wp.vec3) -> Tuple[float, wp.vec3]:
   r = xyz - center
   q = wp.vec3(wp.abs(r[0]) - half_size[0], wp.abs(r[1]) - half_size[1], wp.abs(r[2]) - half_size[2])
 
   if q[0] <= 0.0 and q[1] <= 0.0 and q[2] <= 0.0:
-    uvw = wp.volume_world_to_index(volume_data.volume_id, xyz)
-    sdf = wp.volume_sample_f(volume_data.volume_id, uvw, wp.Volume.LINEAR)
-    return sdf
+    return 0.0, xyz
 
   else:
-    point = wp.vec3(xyz[0], xyz[1], xyz[2])
     dist_sqr = 0.0
     eps = 1e-4
+    point = wp.vec3(xyz[0], xyz[1], xyz[2])
 
     if q[0] >= 0.0:
       dist_sqr += q[0] * q[0]
@@ -261,23 +313,33 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
       else:
         point = wp.vec3(point[0], point[1], point[2] + (q[2] + eps))
 
-    dist0 = wp.sqrt(dist_sqr)
+    return wp.sqrt(dist_sqr), point
 
-    uvw = wp.volume_world_to_index(volume_data.volume_id, point)
-    sdf = wp.volume_sample_f(volume_data.volume_id, uvw, wp.Volume.LINEAR)
-    return dist0 + sdf
+
+@wp.func
+def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
+  dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
+  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
+  return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
 
 @wp.func
 def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
-  h = 1e-4
-  dx = wp.vec3(h, 0.0, 0.0)
-  dy = wp.vec3(0.0, h, 0.0)
-  dz = wp.vec3(0.0, 0.0, h)
-  f = sample_volume_sdf(xyz, volume_data)
-  grad_x = (sample_volume_sdf(xyz + dx, volume_data) - f) / h
-  grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
-  grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
+  dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
+  if dist0 > 0:
+    h = 1e-4
+    dx = wp.vec3(h, 0.0, 0.0)
+    dy = wp.vec3(0.0, h, 0.0)
+    dz = wp.vec3(0.0, 0.0, h)
+    f = sample_volume_sdf(xyz, volume_data)
+    grad_x = (sample_volume_sdf(xyz + dx, volume_data) - f) / h
+    grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
+    grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
+    return wp.vec3(grad_x, grad_y, grad_z)
+  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=True)
+  grad_x = wp.dot(weights[0], volume_data.oct_coeff[node])
+  grad_y = wp.dot(weights[1], volume_data.oct_coeff[node])
+  grad_z = wp.dot(weights[2], volume_data.oct_coeff[node])
   return wp.vec3(grad_x, grad_y, grad_z)
 
 
@@ -579,8 +641,9 @@ def _sdf_narrowphase(
   mesh_polymapadr: wp.array(dtype=int),
   mesh_polymapnum: wp.array(dtype=int),
   mesh_polymap: wp.array(dtype=int),
-  volume_ids: wp.array(dtype=wp.uint64),
   oct_aabb: wp.array2d(dtype=wp.vec3),
+  oct_child: wp.array(dtype=vec8i),
+  oct_coeff: wp.array(dtype=vec8f),
   pair_dim: wp.array(dtype=int),
   pair_solref: wp.array2d(dtype=wp.vec2),
   pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -650,66 +713,67 @@ def _sdf_narrowphase(
     worldid,
   )
   g1 = geoms[0]
-  hftri_index = collision_hftri_index_in[tid]
-  geom1 = _geom(
-    geom_type,
-    geom_dataid,
-    geom_size,
-    hfield_adr,
-    hfield_nrow,
-    hfield_ncol,
-    hfield_size,
-    hfield_data,
-    mesh_vertadr,
-    mesh_vertnum,
-    mesh_vert,
-    mesh_graphadr,
-    mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in,
-    geom_xmat_in,
-    worldid,
-    g1,
-    hftri_index,
-  )
-  geom2 = _geom(
-    geom_type,
-    geom_dataid,
-    geom_size,
-    hfield_adr,
-    hfield_nrow,
-    hfield_ncol,
-    hfield_size,
-    hfield_data,
-    mesh_vertadr,
-    mesh_vertnum,
-    mesh_vert,
-    mesh_graphadr,
-    mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in,
-    geom_xmat_in,
-    worldid,
-    g2,
-    hftri_index,
-  )
   type1 = geom_type[g1]
+
+  hftri_index = collision_hftri_index_in[tid]
+
+  geom1_dataid = geom_dataid[g1]
+  geom1 = _geom(
+    type1,
+    geom1_dataid,
+    geom_size[worldid, g1],
+    hfield_adr[geom1_dataid],
+    hfield_nrow[geom1_dataid],
+    hfield_ncol[geom1_dataid],
+    hfield_size[geom1_dataid],
+    hfield_data,
+    mesh_vertadr[geom1_dataid],
+    mesh_vertnum[geom1_dataid],
+    mesh_vert,
+    mesh_graphadr[geom1_dataid],
+    mesh_graph,
+    mesh_polynum[geom1_dataid],
+    mesh_polyadr[geom1_dataid],
+    mesh_polynormal,
+    mesh_polyvertadr,
+    mesh_polyvertnum,
+    mesh_polyvert,
+    mesh_polymapadr,
+    mesh_polymapnum,
+    mesh_polymap,
+    geom_xpos_in[worldid, g1],
+    geom_xmat_in[worldid, g1],
+    hftri_index,
+  )
+
+  geom2_dataid = geom_dataid[g2]
+  geom2 = _geom(
+    type2,
+    geom2_dataid,
+    geom_size[worldid, g2],
+    hfield_adr[geom2_dataid],
+    hfield_nrow[geom2_dataid],
+    hfield_ncol[geom2_dataid],
+    hfield_size[geom2_dataid],
+    hfield_data,
+    mesh_vertadr[geom2_dataid],
+    mesh_vertnum[geom2_dataid],
+    mesh_vert,
+    mesh_graphadr[geom2_dataid],
+    mesh_graph,
+    mesh_polynum[geom2_dataid],
+    mesh_polyadr[geom2_dataid],
+    mesh_polynormal,
+    mesh_polyvertadr,
+    mesh_polyvertnum,
+    mesh_polyvert,
+    mesh_polymapadr,
+    mesh_polymapnum,
+    mesh_polymap,
+    geom_xpos_in[worldid, g2],
+    geom_xmat_in[worldid, g2],
+    hftri_index,
+  )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
@@ -732,11 +796,11 @@ def _sdf_narrowphase(
   rot1 = geom1.rot
 
   attr1, g1_plugin_id, volume_data1, mesh_data1 = get_sdf_params(
-    volume_ids, oct_aabb, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
+    oct_aabb, oct_child, oct_coeff, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
   )
 
   attr2, g2_plugin_id, volume_data2, mesh_data2 = get_sdf_params(
-    volume_ids, oct_aabb, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
+    oct_aabb, oct_child, oct_coeff, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
   )
 
   mesh_data1.nmeshface = nmeshface
@@ -857,8 +921,9 @@ def sdf_narrowphase(m: Model, d: Data):
       m.mesh_polymapadr,
       m.mesh_polymapnum,
       m.mesh_polymap,
-      m.volume_ids,
       m.oct_aabb,
+      m.oct_child,
+      m.oct_coeff,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,

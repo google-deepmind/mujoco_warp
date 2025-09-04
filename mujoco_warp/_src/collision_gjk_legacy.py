@@ -26,7 +26,7 @@ from .types import MJ_MINVAL
 from .types import GeomType
 
 # TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
