@@ -546,7 +546,6 @@ def gradient_descent(
 def _sdf_narrowphase(
   # Model:
   nmeshface: int,
-  nmeshgraph: int,
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
@@ -653,7 +652,6 @@ def _sdf_narrowphase(
   g1 = geoms[0]
   hftri_index = collision_hftri_index_in[tid]
   geom1 = _geom(
-    nmeshgraph,
     geom_type,
     geom_dataid,
     geom_size,
@@ -683,7 +681,6 @@ def _sdf_narrowphase(
     hftri_index,
   )
   geom2 = _geom(
-    nmeshgraph,
     geom_type,
     geom_dataid,
     geom_size,
@@ -827,7 +824,6 @@ def sdf_narrowphase(m: Model, d: Data):
     dim=d.nconmax,
     inputs=[
       m.nmeshface,
-      m.nmeshgraph,
       m.geom_type,
       m.geom_condim,
       m.geom_dataid,
