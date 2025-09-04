@@ -501,12 +501,15 @@ class SensorTest(parameterized.TestCase):
         <contact name="foot_w" subtree1="foot" body2="world" reduce="mindist"/>
         <contact name="foot_w2" subtree1="foot" subtree2="world" reduce="mindist"/>
       </sensor>
+      <keyframe>
+        <key qpos="-6.96651e-05 -0.0478055 -0.746498"/>
+      </keyframe>
     </mujoco>
     """
-    _, _, m, d = test_util.fixture(xml=_MJCF, nconmax=12, njmax=48, qpos0=True)
+    _, _, m, d = test_util.fixture(xml=_MJCF, nconmax=12, njmax=48, keyframe=0)
 
-    while d.time.numpy()[0] < 0.6:
-      mjwarp.step(m, d)
+    d.sensordata.zero_()
+    mjwarp.forward(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
