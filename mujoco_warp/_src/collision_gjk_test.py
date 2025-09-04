@@ -30,7 +30,7 @@ MAX_ITERATIONS = 20
 
 
 def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multiccd=False):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def _gjk_kernel(
     # Model:
     geom_type: wp.array(dtype=int),

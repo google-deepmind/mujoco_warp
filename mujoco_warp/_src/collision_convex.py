@@ -36,7 +36,7 @@ from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
 MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
@@ -113,10 +113,11 @@ def ccd_kernel_builder(
   depth_extension: float,
 ):
   # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def ccd_kernel(
     # Model:
     ngeom: int,
+    opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -226,22 +227,23 @@ def ccd_kernel_builder(
 
     hftri_index = collision_hftri_index_in[tid]
 
+    geom1_dataid = geom_dataid[g1]
     geom1 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      geomtype1,
+      geom1_dataid,
+      geom_size[worldid, g1],
+      hfield_adr[geom1_dataid],
+      hfield_nrow[geom1_dataid],
+      hfield_ncol[geom1_dataid],
+      hfield_size[geom1_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom1_dataid],
+      mesh_vertnum[geom1_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom1_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom1_dataid],
+      mesh_polyadr[geom1_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -249,29 +251,28 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g1,
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
       hftri_index,
     )
 
+    geom2_dataid = geom_dataid[g2]
     geom2 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      geomtype2,
+      geom2_dataid,
+      geom_size[worldid, g2],
+      hfield_adr[geom2_dataid],
+      hfield_nrow[geom2_dataid],
+      hfield_ncol[geom2_dataid],
+      hfield_size[geom2_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom2_dataid],
+      mesh_vertnum[geom2_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom2_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom2_dataid],
+      mesh_polyadr[geom2_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -279,10 +280,8 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g2,
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
       hftri_index,
     )
 
@@ -325,7 +324,7 @@ def ccd_kernel_builder(
 
       dist, count, witness1, witness2 = ccd(
         False,
-        1e-6,
+        opt_ccd_tolerance[worldid],
         0.0,
         gjk_iterations,
         epa_iterations,
@@ -423,6 +422,7 @@ def convex_narrowphase(m: Model, d: Data):
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.opt.ccd_tolerance,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,

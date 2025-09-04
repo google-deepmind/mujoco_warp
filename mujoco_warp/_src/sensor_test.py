@@ -436,9 +436,12 @@ class SensorTest(parameterized.TestCase):
       'body1="geom" body2="sphere"',
     ]:
       for num in [1, 3, 5]:
-        for reduce in ["mindist", "maxforce"]:
+        for reduce in [None, "mindist", "maxforce"]:
           for data in datas:
-            contact_sensor += f'<contact {geoms} num="{num}" reduce="{reduce}" data="{data}"/>'
+            contact_sensor += f'<contact {geoms} num="{num}"'
+            if reduce is not None:
+              contact_sensor += f' reduce="{reduce}"'
+            contact_sensor += f' data="{data}"/>'
 
     _MJCF = f"""
     <mujoco>
@@ -458,7 +461,7 @@ class SensorTest(parameterized.TestCase):
         </body>
       </worldbody>
       <keyframe>
-        <key qpos=".09 1"/>
+        <key qpos=".08 1"/>
       </keyframe>
       <sensor>
         {contact_sensor}
@@ -470,6 +473,8 @@ class SensorTest(parameterized.TestCase):
 
     d.sensordata.zero_()
     mjwarp.forward(m, d)
+
+    print(f"ncon: {d.ncon.numpy()}")
 
     sensordata = d.sensordata.numpy()[0]
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
@@ -540,6 +545,36 @@ class SensorTest(parameterized.TestCase):
     mjwarp.forward(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_contact_sensor_netforce(self):
+    """Test contact sensor with netforce reduction."""
+    _, mjd, m, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom name="plane" type="plane" size="10 10 .001"/>
+        <body>
+          <geom name="box" type="box" size=".1 .1 .1"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact geom1="plane" geom2="box" data="found force torque dist pos normal tangent" reduce="netforce" num="2"/>
+        <contact geom1="box" geom2="plane" data="force torque" reduce="netforce"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0 0 .09 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.sensordata.zero_()
+    mjwarp.forward(m, d)
+    sensordata = d.sensordata.numpy()[0]
+    _assert_eq(sensordata, mjd.sensordata, "sensordata")
+    self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
 
 if __name__ == "__main__":
