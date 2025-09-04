@@ -17,6 +17,8 @@ from typing import Tuple
 
 import warp as wp
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def hfield_subgrid(
@@ -59,27 +61,24 @@ def hfield_subgrid(
 
 @wp.func
 def hfield_triangle_prism(
-  # Model:
-  geom_dataid: wp.array(dtype=int),
-  hfield_adr: wp.array(dtype=int),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
-  hfield_data: wp.array(dtype=float),
   # In:
-  hfieldid: int,
+  dataid: int,
+  adr: int,
+  nrow: int,
+  ncol: int,
+  size: wp.vec4,
+  data: wp.array(dtype=float),
   hftri_index: int,
 ) -> wp.mat33:
   """Returns triangular prism vertex information in compressed representation.
 
   Args:
-    geom_dataid: geom data ids
-    hfield_adr: address for height field
-    hfield_nrow: height field number of rows
-    hfield_ncol: height field number of columns
-    hfield_size: height field sizes
-    hfield_data: height field data
-    hfieldid: height field geom id
+    dataid: geom data ids
+    adr: address for height field
+    nrow: height field number of rows
+    ncol: height field number of columns
+    size: height field sizes
+    data: height field data
     hftri_index: height field triangle index
 
   Returns:
@@ -88,13 +87,8 @@ def hfield_triangle_prism(
   # https://mujoco.readthedocs.io/en/stable/XMLreference.html#asset-hfield
 
   # get heightfield dimensions
-  dataid = geom_dataid[hfieldid]
   if dataid < 0 or hftri_index < 0:
     return wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-  nrow = hfield_nrow[dataid]
-  ncol = hfield_ncol[dataid]
-  size = hfield_size[dataid]  # (x, y, z_top, z_bottom)
 
   # calculate which triangle in the grid
   row = (hftri_index // 2) // (ncol - 1)
@@ -117,11 +111,10 @@ def hfield_triangle_prism(
   y1 = float(j1) * y_scale - size[1]
 
   # get height values at corners from hfield_data
-  base_addr = hfield_adr[dataid]
-  z00 = hfield_data[base_addr + j0 * ncol + i0]
-  z01 = hfield_data[base_addr + j1 * ncol + i0]
-  z10 = hfield_data[base_addr + j0 * ncol + i1]
-  z11 = hfield_data[base_addr + j1 * ncol + i1]
+  z00 = data[adr + j0 * ncol + i0]
+  z01 = data[adr + j1 * ncol + i0]
+  z10 = data[adr + j0 * ncol + i1]
+  z11 = data[adr + j1 * ncol + i1]
 
   # scale heights from range [0, 1] to [0, z_top]
   z_top = size[2]

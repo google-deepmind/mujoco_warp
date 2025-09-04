@@ -21,7 +21,7 @@ from .types import MJ_MINVAL
 from .types import GeomType
 
 # TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
@@ -1209,7 +1209,7 @@ def _epa(tolerance: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom2
   upper2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
-  epsilon = wp.where(is_discrete, 1e-15, tolerance * tolerance)
+  epsilon = wp.where(is_discrete, 1e-15, tolerance)
 
   for k in range(epa_iterations):
     pidx = int(idx)

@@ -129,7 +129,8 @@ class DisableBit(enum.IntFlag):
     FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
-    PASSIVE:      passive forces
+    SPRING:       passive spring forces
+    DAMPER:       passive damper forces
     GRAVITY:      gravitational forces
     CLAMPCTRL:    clamp control to specified range
     ACTUATION:    apply actuation forces
@@ -144,7 +145,8 @@ class DisableBit(enum.IntFlag):
   FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
-  PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
+  SPRING = mujoco.mjtDisableBit.mjDSBL_SPRING
+  DAMPER = mujoco.mjtDisableBit.mjDSBL_DAMPER
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
   WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
@@ -520,6 +522,14 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec8f(wp.types.vector(length=8, dtype=float)):
+  pass
+
+
+class vec8i(wp.types.vector(length=8, dtype=int)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -885,6 +895,9 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
+    oct_aabb: octree axis-aligned bounding boxes             (noct, 6)
+    oct_child: octree children                               (noct, 8)
+    oct_coeff: octree interpolation coefficients             (noct, 8)
     eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
@@ -1208,6 +1221,9 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
+  oct_aabb: wp.array2d(dtype=wp.vec3)
+  oct_child: wp.array(dtype=vec8i)
+  oct_coeff: wp.array(dtype=vec8f)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)

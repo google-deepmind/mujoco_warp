@@ -424,7 +424,7 @@ def _sap_range(
 
 @cache_kernel
 def _sap_broadphase(broadphase_filter):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     ngeom: int,
@@ -630,7 +630,7 @@ def sap_broadphase(m: Model, d: Data):
 
 @cache_kernel
 def _nxn_broadphase(broadphase_filter):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -918,22 +918,23 @@ def _hfield_midphase(
   cmin, rmin, cmax, rmax = hfield_subgrid(nrow, ncol, size, xmax, xmin, ymax, ymin)
 
   # GJK setup
+  geom1_dataid = geom_dataid[hfieldid]
   geom1 = geom(
-    geom_type,
-    geom_dataid,
-    geom_size,
-    hfield_adr,
-    hfield_nrow,
-    hfield_ncol,
-    hfield_size,
+    geom_type[hfieldid],
+    geom1_dataid,
+    geom_size[worldid, hfieldid],
+    hfield_adr[geom1_dataid],
+    hfield_nrow[geom1_dataid],
+    hfield_ncol[geom1_dataid],
+    hfield_size[geom1_dataid],
     hfield_data,
-    mesh_vertadr,
-    mesh_vertnum,
+    mesh_vertadr[geom1_dataid],
+    mesh_vertnum[geom1_dataid],
     mesh_vert,
-    mesh_graphadr,
+    mesh_graphadr[geom1_dataid],
     mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
+    mesh_polynum[geom1_dataid],
+    mesh_polyadr[geom1_dataid],
     mesh_polynormal,
     mesh_polyvertadr,
     mesh_polyvertnum,
@@ -941,29 +942,28 @@ def _hfield_midphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
-    geom_xpos_in,
-    geom_xmat_in,
-    worldid,
-    hfieldid,
+    geom_xpos_in[worldid, hfieldid],
+    geom_xmat_in[worldid, hfieldid],
     -1,  # overwrite height field prism in loop below
   )
 
+  geom2_dataid = geom_dataid[geomid]
   geom2 = geom(
-    geom_type,
-    geom_dataid,
-    geom_size,
-    hfield_adr,
-    hfield_nrow,
-    hfield_ncol,
-    hfield_size,
+    geom_type[geomid],
+    geom2_dataid,
+    geom_size[worldid, geomid],
+    hfield_adr[geom2_dataid],
+    hfield_nrow[geom2_dataid],
+    hfield_ncol[geom2_dataid],
+    hfield_size[geom2_dataid],
     hfield_data,
-    mesh_vertadr,
-    mesh_vertnum,
+    mesh_vertadr[geom2_dataid],
+    mesh_vertnum[geom2_dataid],
     mesh_vert,
-    mesh_graphadr,
+    mesh_graphadr[geom2_dataid],
     mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
+    mesh_polynum[geom2_dataid],
+    mesh_polyadr[geom2_dataid],
     mesh_polynormal,
     mesh_polyvertadr,
     mesh_polyvertnum,
@@ -971,10 +971,8 @@ def _hfield_midphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
-    geom_xpos_in,
-    geom_xmat_in,
-    worldid,
-    geomid,
+    geom_xpos_in[worldid, geomid],
+    geom_xmat_in[worldid, geomid],
     -1,
   )
 
@@ -995,7 +993,13 @@ def _hfield_midphase(
         # height field prism
         hftri_index = 2 * (r * (ncol - 1) + c) + i
         geom1.hfprism = hfield_triangle_prism(
-          geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, g1, hftri_index
+          geom1_dataid,
+          hfield_adr[geom1_dataid],
+          hfield_nrow[geom1_dataid],
+          hfield_ncol[geom1_dataid],
+          hfield_size[geom1_dataid],
+          hfield_data,
+          hftri_index,
         )
 
         prism_pos = wp.vec3(0.0, 0.0, 0.0)

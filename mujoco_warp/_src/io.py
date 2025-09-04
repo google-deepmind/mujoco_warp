@@ -30,6 +30,9 @@ MJ_CCD_ITERATIONS = 12
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
+# tolerance override for float32
+_TOLERANCE_F32 = 1.0e-6
+
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
@@ -127,10 +130,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       | (mjm.sensor_reftype[is_contact_sensor] != types.ObjType.GEOM)
     ).any():
       raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
-
-    # reduction
-    if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
-      raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
@@ -444,7 +443,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     npair=mjm.npair,
     opt=types.Option(
       timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
-      tolerance=create_nmodel_batched_array(np.array(mjm.opt.tolerance), dtype=float, expand_dim=False),
+      tolerance=create_nmodel_batched_array(
+        np.array(np.maximum(mjm.opt.tolerance, _TOLERANCE_F32)), dtype=float, expand_dim=False
+      ),
       ls_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ls_tolerance), dtype=float, expand_dim=False),
       ccd_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ccd_tolerance), dtype=float, expand_dim=False),
       gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
@@ -636,6 +637,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_polymapadr=wp.array(mjm.mesh_polymapadr, dtype=int),
     mesh_polymapnum=wp.array(mjm.mesh_polymapnum, dtype=int),
     mesh_polymap=wp.array(mjm.mesh_polymap, dtype=int),
+    oct_aabb=wp.array2d(mjm.oct_aabb, dtype=wp.vec3),
+    oct_child=wp.array(mjm.oct_child, dtype=types.vec8i),
+    oct_coeff=wp.array(mjm.oct_coeff, dtype=types.vec8f),
     nhfield=mjm.nhfield,
     nhfielddata=mjm.nhfielddata,
     hfield_adr=wp.array(mjm.hfield_adr, dtype=int),

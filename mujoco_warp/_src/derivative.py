@@ -82,8 +82,8 @@ def _qderiv_actuator_passive(
 
       qderiv += actuator_moment_in[worldid, actid, dofiid] * actuator_moment_in[worldid, actid, dofjid] * vel
 
-    if passive_enabled and dofiid == dofjid:
-      qderiv -= dof_damping[worldid, dofiid] / float(nu)
+  if passive_enabled and dofiid == dofjid:
+    qderiv -= dof_damping[worldid, dofiid]
 
   qderiv *= opt_timestep[worldid]
 
@@ -140,7 +140,7 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
                                   Default is True.
   """
   actuation_enabled = not (m.opt.disableflags & DisableBit.ACTUATION)
-  passive_enabled = not (m.opt.disableflags & DisableBit.PASSIVE)
+  passive_enabled = not (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER))
 
   qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row
   qMj = m.qM_fullm_j if m.opt.is_sparse else m.dof_tri_col
