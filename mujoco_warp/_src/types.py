@@ -582,6 +582,7 @@ class Option:
       zeros out the contacts at each step)
     legacy_gjk: run legacy gjk algorithm
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
+                             contacts matched after this value is exceded will be ignored
   """
 
   timestep: wp.array(dtype=float)
