@@ -2015,6 +2015,7 @@ def _contact_match(
   contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
 
   if contactmatchid >= opt_contact_sensor_maxmatch:
+    # TODO(team): alternative to wp.printf for reporting overflow?
     wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
     return
 
