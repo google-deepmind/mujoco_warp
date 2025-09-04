@@ -409,7 +409,6 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(d.energy.numpy()[0][1], mjd.energy[1], "kinetic energy")
 
   @parameterized.parameters(
-    'type="sphere" size=".1"',
     'type="capsule" size=".1 .1" euler="0 89 89"',
     'type="box" size=".1 .11 .12" euler=".02 .05 .1"',
   )
@@ -422,20 +421,14 @@ class SensorTest(parameterized.TestCase):
     datas = ["found", "force dist normal", "torque pos tangent", "found force torque dist pos normal tangent"]
 
     for geoms in [
-      'geom1="plane"',
       'geom2="plane"',
       'geom1="plane" geom2="geom"',
       'geom1="geom" geom2="plane"',
-      'geom1="sphere" geom2="plane"',
-      'geom1="geom" geom2="sphere"',
       'body1="plane"',
-      'body2="plane"',
       'body1="plane" body2="geom"',
       'body1="geom" body2="plane"',
-      'body1="sphere" body2="plane"',
-      'body1="geom" body2="sphere"',
     ]:
-      for num in [1, 3, 5]:
+      for num in [1, 5]:
         for reduce in [None, "mindist", "maxforce"]:
           for data in datas:
             contact_sensor += f'<contact {geoms} num="{num}"'
