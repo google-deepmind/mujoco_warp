@@ -21,7 +21,6 @@ from .collision_convex import convex_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
-from .types import MJ_MAXCONPAIR
 from .types import MJ_MAXVAL
 from .types import BroadphaseFilter
 from .types import BroadphaseType
