@@ -513,6 +513,42 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
+  def test_contact_sensor_subtree_found_zero(self):
+    """Test contact sensor with subtree matching semantics generates found=0."""
+    _MJCF = f"""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="2 2 .01"/>
+        <body name="base">
+          <joint type="slide" axis="1 0 0"/>
+          <joint type="slide" axis="0 0 1"/>
+          <geom type="capsule" size=".1" fromto="0 0 0 1 0 0"/>
+          <body name="body0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 -1"/>
+          </body>
+          <body name="body1" pos="1 0 0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 -1"/>
+          </body>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact subtree1="base" subtree2="base"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0 1 0 0"/>
+      </keyframe>
+    </mujoco>
+    """
+    _, _, m, d = test_util.fixture(xml=_MJCF, nconmax=2, njmax=8, keyframe=0)
+
+    d.sensordata.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    _assert_eq(d.ncon.numpy()[0], 2, "ncon")
+    _assert_eq(d.sensordata.numpy()[0], 0, "found")
+
   @parameterized.product(site_geom=["sphere", "capsule", "ellipsoid", "cylinder", "box"], key_pos=["0 0 10", "0 0 .09"])
   def test_contact_sensor_site(self, site_geom, key_pos):
     _, mjd, m, d = test_util.fixture(
