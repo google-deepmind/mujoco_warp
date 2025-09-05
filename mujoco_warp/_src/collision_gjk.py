@@ -15,7 +15,6 @@
 
 import warp as wp
 
-from .collision_hfield import hfield_prism_vertex
 from .collision_primitive import Geom
 from .types import MJ_MINVAL
 from .types import GeomType
@@ -204,7 +203,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
   elif geomtype == int(GeomType.HFIELD.value):
     max_dist = float(FLOAT_MIN)
     for i in range(6):
-      vert = hfield_prism_vertex(geom.hfprism, i)
+      vert = geom.hfprism[i]
       dist = wp.dot(vert, local_dir)
       if dist > max_dist:
         max_dist = dist
@@ -584,7 +583,7 @@ def _S1D(s1: wp.vec3, s2: wp.vec3):
 
 
 @wp.func
-def _gjk(
+def gjk(
   # In:
   tolerance: float,
   gjk_iterations: int,
@@ -2095,7 +2094,7 @@ def ccd(
   # special handling for sphere and capsule (shrink to point and line respectively)
   if margin1 + margin2 > 0.0:
     cutoff += margin1 + margin2
-    result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, True)
+    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, True)
 
     # shallow penetration, inflate contact
     if result.dist > tolerance:
@@ -2111,7 +2110,7 @@ def ccd(
     # deep penetration, reset initial conditions and rerun GJK + EPA
     cutoff -= margin1 + margin2
 
-  result = _gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, False)
+  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, False)
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
