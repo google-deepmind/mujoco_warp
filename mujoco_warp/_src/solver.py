@@ -1408,8 +1408,9 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
       if k >= nefc:
         break
 
-      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the
-      # fast path. The padding takes care of any potential OOB accesses.
+      # AD: leaving bounds-check disabled here because I'm not entirely sure that
+      # everything always hits the fast path. The padding takes care of any
+      # potential OOB accesses.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_i), bounds_check=False)
 
       if offset_i != offset_j:
@@ -1440,7 +1441,8 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
-    # AD: setting bounds_check to True explicitly here because for some reason it was slower to disable it.
+    # AD: setting bounds_check to True explicitly here because for some reason it was
+    # slower to disable it.
     wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
 
   return kernel
@@ -1479,8 +1481,9 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
       if k >= nefc:
         break
 
-      # AD: leaving bounds-check disabled here because I'm not entirely sure the everything always hits the
-      # fast path. The padding takes care of any potential OOB accesses.
+      # AD: leaving bounds-check disabled here because I'm not entirely sure that
+      # everything always hits the fast path. The padding takes care of any
+      #  potential OOB accesses.
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
 
