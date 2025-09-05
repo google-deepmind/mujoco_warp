@@ -93,11 +93,11 @@ def get_sdf_params(
   plugin_index = -1
   volume_data = VolumeData()
 
-  if g_type == int(GeomType.SDF.value) and plugin_id != -1:
+  if g_type == GeomType.SDF and plugin_id != -1:
     attributes = plugin_attr[plugin_id]
     plugin_index = plugin[plugin_id]
 
-  elif g_type == int(GeomType.SDF.value) and mesh_id != -1:
+  elif g_type == GeomType.SDF and mesh_id != -1:
     volume_data.center = oct_aabb[mesh_id, 0]
     volume_data.half_size = oct_aabb[mesh_id, 1]
     volume_data.oct_aabb = oct_aabb
@@ -345,7 +345,7 @@ def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
 
 @wp.func
 def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> float:
-  if type == int(GeomType.PLANE.value):
+  if type == GeomType.PLANE:
     return p[2]
   elif type == GeomType.SPHERE:
     return sphere(p, attr)
@@ -382,7 +382,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
         -mesh_data.vec,
       )
     return dist
-  elif type == int(GeomType.SDF.value):
+  elif type == GeomType.SDF:
     if sdf_type == -1:
       return sample_volume_sdf(p, volume_data)
     else:
@@ -422,7 +422,7 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
     else:
       return wp.vec3(-1.0)
 
-  elif type == int(GeomType.SDF.value):
+  elif type == GeomType.SDF:
     if sdf_type == -1:
       return sample_volume_grad(p, volume_data)
     else:

@@ -177,7 +177,7 @@ def _eval_init(
     lo += _eval_pt(quad_f, alpha)
 
   for efcid in range(nef_clip, nefc_clip):
-    if type_in[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
+    if type_in[efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
       conid = id_in[efcid]
 
       efcid0 = contact_efc_address_in[conid, 0]
@@ -255,7 +255,7 @@ def _eval(
     mid += _eval_pt(quad_f, mid_alpha)
 
   for efcid in range(nef_clip, nefc_clip):
-    if type_in[efcid] == int(types.ConstraintType.CONTACT_ELLIPTIC.value):
+    if type_in[efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
       conid = id_in[efcid]
 
       efcid0 = contact_efc_address_in[conid, 0]
@@ -1443,7 +1443,7 @@ def update_gradient_JTDAJ_dense(
   efc_Jj = efc_J_in[worldid, 0, dofj]
   sum_h = float(0.0)
   for efcid in range(min(njmax_in, nefc) - 1):
-    if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
+    if efc_state == types.ConstraintState.QUADRATIC and efc_D != 0.0:
       sum_h += efc_Ji * efc_Jj * efc_D
 
     jj = efcid + 1
@@ -1453,7 +1453,7 @@ def update_gradient_JTDAJ_dense(
     efc_state = efc_state_in[worldid, jj]
 
   # Adding the contribution from the last constraint row
-  if efc_state == int(types.ConstraintState.QUADRATIC.value) and efc_D != 0.0:
+  if efc_state == types.ConstraintState.QUADRATIC and efc_D != 0.0:
     sum_h += efc_Ji * efc_Jj * efc_D
 
   qM = qM_in[worldid, dofi, dofj]

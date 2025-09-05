@@ -2004,15 +2004,15 @@ def _sensor_tactile(
 @wp.func
 def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objtype: int, objid: int) -> bool:
   """Check if a contact body/geom matches a sensor spec (objtype, objid)."""
-  if objtype == int(ObjType.UNKNOWN.value):
+  if objtype == ObjType.UNKNOWN:
     return True
-  if objtype == int(ObjType.SITE.value):
+  if objtype == ObjType.SITE:
     return True  # already passed site filter test
-  if objtype == int(ObjType.GEOM.value):
+  if objtype == ObjType.GEOM:
     return objid == geom
-  if objtype == int(ObjType.BODY.value):
+  if objtype == ObjType.BODY:
     return objid == body
-  if objtype == int(ObjType.XBODY.value):
+  if objtype == ObjType.XBODY:
     # traverse up the tree from body, return true if we land on id
     while body > objid:
       body = body_parentid[body]
@@ -2071,14 +2071,14 @@ def _contact_match(
   worldid = contact_worldid_in[contactid]
 
   # site filter
-  if objtype == int(ObjType.SITE.value):
+  if objtype == ObjType.SITE:
     if not inside_geom(
       site_xpos_in[worldid, objid], site_xmat_in[worldid, objid], site_size[objid], site_type[objid], contact_pos_in[contactid]
     ):
       return
 
   # unknown-unknown match
-  if objtype == int(ObjType.UNKNOWN.value) and reftype == int(ObjType.UNKNOWN.value):
+  if objtype == ObjType.UNKNOWN and reftype == ObjType.UNKNOWN:
     dir = 1.0
   else:
     # contact information
@@ -2102,16 +2102,16 @@ def _contact_match(
 
     # determine direction
     dir = 1.0
-    if objtype != int(ObjType.UNKNOWN.value) and reftype != int(ObjType.UNKNOWN.value):
+    if objtype != ObjType.UNKNOWN and reftype != ObjType.UNKNOWN:
       # both obj1 and obj2 specified: direction depends on order
       order_regular = match11 and match22
       order_reverse = match12 and match21
       if order_reverse and not order_regular:
         dir = -1.0
-    elif objtype != int(ObjType.UNKNOWN.value):
+    elif objtype != ObjType.UNKNOWN:
       if not match11:
         dir = -1.0
-    elif reftype != int(ObjType.UNKNOWN.value):
+    elif reftype != ObjType.UNKNOWN:
       if not match22:
         dir = -1.0
 

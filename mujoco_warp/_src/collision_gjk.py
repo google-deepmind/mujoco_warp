@@ -96,8 +96,8 @@ class SupportPoint:
 
 @wp.func
 def _discrete_geoms(g1: int, g2: int):
-  return (g1 == int(GeomType.MESH.value) or g1 == int(GeomType.BOX.value) or g1 == int(GeomType.HFIELD.value)) and (
-    g2 == int(GeomType.MESH.value) or g2 == int(GeomType.BOX.value) or g2 == int(GeomType.HFIELD.value)
+  return (g1 == GeomType.MESH or g1 == GeomType.BOX or g1 == GeomType.HFIELD) and (
+    g2 == GeomType.MESH or g2 == GeomType.BOX or g2 == GeomType.HFIELD
   )
 
 

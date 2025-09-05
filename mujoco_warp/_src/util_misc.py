@@ -611,27 +611,27 @@ def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point
   vec = point - pos
 
   # quick return for spheres, frame rotation not required
-  if geomtype == int(GeomType.SPHERE.value):
+  if geomtype == GeomType.SPHERE:
     return wp.dot(vec, vec) < size[0] * size[0]
 
   # rotate into local frame
   plocal = wp.transpose(mat) @ vec
 
   # handle other geom types
-  if geomtype == int(GeomType.CAPSULE.value):
+  if geomtype == GeomType.CAPSULE:
     z = plocal[2]
     z_clamped = wp.clamp(z, -size[1], size[1])
     z_dif = z - z_clamped
     z_dist_sq = z_dif * z_dif
     return plocal[0] * plocal[0] + plocal[1] * plocal[1] + z_dist_sq < size[0] * size[0]
-  elif geomtype == int(GeomType.ELLIPSOID.value):
+  elif geomtype == GeomType.ELLIPSOID:
     plocalsize = wp.cw_div(plocal, size)
     return wp.dot(plocalsize, plocalsize) < 1.0
-  elif geomtype == int(GeomType.CYLINDER.value):
+  elif geomtype == GeomType.CYLINDER:
     return (wp.abs(plocal[2]) < size[1]) and (plocal[0] * plocal[0] + plocal[1] * plocal[1] < size[0] * size[0])
-  elif geomtype == int(GeomType.BOX.value):
+  elif geomtype == GeomType.BOX:
     return wp.abs(plocal[0]) < size[0] and wp.abs(plocal[1]) < size[1] and wp.abs(plocal[2]) < size[2]
-  elif geomtype == int(GeomType.PLANE.value):
+  elif geomtype == GeomType.PLANE:
     return plocal[2] < 0.0
 
   return False
