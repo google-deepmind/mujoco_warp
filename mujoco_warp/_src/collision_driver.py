@@ -18,11 +18,6 @@ from typing import Any
 import warp as wp
 
 from .collision_convex import convex_narrowphase
-from .collision_gjk import gjk
-from .collision_hfield import hfield_prism_vertex
-from .collision_hfield import hfield_subgrid
-from .collision_hfield import hfield_triangle_prism
-from .collision_primitive import geom
 from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
@@ -42,29 +37,13 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.kernel
-def _zero_collision_arrays(
-  # Data in:
-  nworld_in: int,
-  # In:
-  hfield_geom_pair_in: int,
+def _zero_ncon_ncollision(
   # Data out:
   ncon_out: wp.array(dtype=int),
-  ncon_hfield_out: wp.array(dtype=int),  # kernel_analyzer: ignore
-  collision_hftri_index_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
-  tid = wp.tid()
-
-  if tid == 0:
-    # Zero the single collision counter
-    ncollision_out[0] = 0
-    ncon_out[0] = 0
-
-  if tid < hfield_geom_pair_in * nworld_in:
-    ncon_hfield_out[tid] = 0
-
-  # Zero collision pair indices
-  collision_hftri_index_out[tid] = 0
+  ncollision_out[0] = 0
+  ncon_out[0] = 0
 
 
 @wp.func
@@ -321,7 +300,6 @@ def _add_geom_pair(
   nxnid: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
-  collision_hftri_index_out: wp.array(dtype=int),
   collision_pairid_out: wp.array(dtype=int),
   collision_worldid_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
@@ -342,12 +320,6 @@ def _add_geom_pair(
   collision_pair_out[pairid] = pair
   collision_pairid_out[pairid] = nxn_pairid[nxnid]
   collision_worldid_out[pairid] = worldid
-
-  # Writing -1 to collision_hftri_index_out[pairid] signals
-  # hfield_midphase to generate a collision pair for every
-  # potentially colliding triangle
-  if type1 == int(GeomType.HFIELD.value) or type2 == int(GeomType.HFIELD.value):
-    collision_hftri_index_out[pairid] = -1
 
 
 @wp.func
@@ -444,7 +416,6 @@ def _sap_broadphase(broadphase_filter):
     nsweep_in: int,
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
-    collision_hftri_index_out: wp.array(dtype=int),
     collision_pairid_out: wp.array(dtype=int),
     collision_worldid_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
@@ -490,7 +461,6 @@ def _sap_broadphase(broadphase_filter):
           worldid,
           idx,
           collision_pair_out,
-          collision_hftri_index_out,
           collision_pairid_out,
           collision_worldid_out,
           ncollision_out,
@@ -620,7 +590,6 @@ def sap_broadphase(m: Model, d: Data):
     ],
     outputs=[
       d.collision_pair,
-      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
@@ -645,7 +614,6 @@ def _nxn_broadphase(broadphase_filter):
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
-    collision_hftri_index_out: wp.array(dtype=int),
     collision_pairid_out: wp.array(dtype=int),
     collision_worldid_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
@@ -666,7 +634,6 @@ def _nxn_broadphase(broadphase_filter):
         worldid,
         elementid,
         collision_pair_out,
-        collision_hftri_index_out,
         collision_pairid_out,
         collision_worldid_out,
         ncollision_out,
@@ -707,7 +674,6 @@ def nxn_broadphase(m: Model, d: Data):
     ],
     outputs=[
       d.collision_pair,
-      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
@@ -715,365 +681,7 @@ def nxn_broadphase(m: Model, d: Data):
   )
 
 
-@wp.kernel
-def _hfield_midphase(
-  # Model:
-  opt_ccd_tolerance: wp.array(dtype=float),
-  opt_gjk_iterations: int,
-  geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_aabb: wp.array2d(dtype=wp.vec3),
-  geom_rbound: wp.array2d(dtype=float),
-  geom_margin: wp.array2d(dtype=float),
-  hfield_adr: wp.array(dtype=int),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
-  hfield_data: wp.array(dtype=float),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_graphadr: wp.array(dtype=int),
-  mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
-  mesh_polynormal: wp.array(dtype=wp.vec3),
-  mesh_polyvertadr: wp.array(dtype=int),
-  mesh_polyvertnum: wp.array(dtype=int),
-  mesh_polyvert: wp.array(dtype=int),
-  mesh_polymapadr: wp.array(dtype=int),
-  mesh_polymapnum: wp.array(dtype=int),
-  mesh_polymap: wp.array(dtype=int),
-  # Data in:
-  nconmax_in: int,
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_hftri_index_in: wp.array(dtype=int),
-  collision_pairid_in: wp.array(dtype=int),
-  collision_worldid_in: wp.array(dtype=int),
-  # Data out:
-  collision_pair_out: wp.array(dtype=wp.vec2i),
-  collision_hftri_index_out: wp.array(dtype=int),
-  collision_pairid_out: wp.array(dtype=int),
-  collision_worldid_out: wp.array(dtype=int),
-  ncollision_out: wp.array(dtype=int),
-):
-  """Midphase collision detection for heightfield triangles with other geoms.
-
-  This kernel processes collision pairs where one geom is a heightfield (identified by
-  collision_hftri_index_in[pairid] == -1) and expands them into multiple collision pairs,
-  one for each potentially colliding triangle. Height field triangular prisms are filtered
-  by the GJK routine.
-
-  Args:
-    opt_ccd_tolerance: convex collision solver tolerance
-    opt_gjk_iterations: number of iterations for GJK routine
-    geom_type: geom type
-    geom_dataid: geom data id
-    geom_size: geom-specific size parameters
-    geom_rbound: geom bounding sphere radius
-    geom_margin: geom margin
-    hfield_adr: start address in hfield_data
-    hfield_nrow: height field number of rows
-    hfield_ncol: height field number of columns
-    hfield_size: height field size
-    hfield_data: elevation data
-    mesh_vertadr: first vertex address
-    mesh_vertnum: number of vertices
-    mesh_vert: vertex positions for all meshes
-    mesh_graphadr: graph data address; -1: no graph
-    mesh_graph: convex graph data
-    mesh_polynum: number of polygons per mesh
-    mesh_polyadr: first polygon address per mesh
-    mesh_polynormal: all polygon normals
-    mesh_polyvertadr: polygon vertex start address
-    mesh_polyvertnum: number of vertices per polygon
-    mesh_polyvert: all polygon vertices
-    mesh_polymapadr: first polygon address per vertex
-    mesh_polymapnum: number of polygons per vertex
-    mesh_polymap: vertex to polygon map
-    nconmax_in: maximum number of contacts
-    geom_xpos_in: geom position
-    geom_xmat_in: geom orientation
-    collision_pair_in: collision pair
-    collision_hftri_index_in: triangle indices, -1 for height field pair
-    collision_pairid_in: collision pair id from broadphase
-    collision_worldid_in: collision world id from broadphase
-    collision_pair_out: collision pair from midphase
-    collision_hftri_index_out: triangle indices from midphase
-    collision_pairid_out: collision pair id from midphase
-    collision_worldid_out: collision world id from midphase
-    ncollision_out: number of collisions from broadphase and midphase
-  """
-  pairid = wp.tid()
-
-  # only process pairs that are marked for height field collision (-1)
-  if collision_hftri_index_in[pairid] != -1:
-    return
-
-  # collision pair info
-  worldid = collision_worldid_in[pairid]
-  pair_id = collision_pairid_in[pairid]
-
-  pair = collision_pair_in[pairid]
-  g1 = pair[0]
-  g2 = pair[1]
-
-  hfieldid = g1
-  geomid = g2
-
-  # SHOULD NOT OCCUR: if the first geom is not a heightfield, swap
-  if geom_type[g1] != int(GeomType.HFIELD.value):
-    hfieldid = g2
-    geomid = g1
-
-  # height field info
-  hfdataid = geom_dataid[hfieldid]
-  size1 = hfield_size[hfdataid]
-  pos1 = geom_xpos_in[worldid, hfieldid]
-  mat1 = geom_xmat_in[worldid, hfieldid]
-  mat1T = wp.transpose(mat1)
-
-  # geom info
-  pos2 = geom_xpos_in[worldid, geomid]
-  pos = mat1T @ (pos2 - pos1)
-  r2 = geom_rbound[worldid, geomid]
-
-  # TODO(team): margin?
-  margin = wp.max(geom_margin[worldid, hfieldid], geom_margin[worldid, geomid])
-
-  # box-sphere test: horizontal plane
-  for i in range(2):
-    if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
-      return
-
-  # box-sphere test: vertical direction
-  if size1[2] < pos[2] - r2 - margin:  # up
-    return
-
-  if -size1[3] > pos[2] + r2 + margin:  # down
-    return
-
-  mat2 = geom_xmat_in[worldid, geomid]
-  mat = mat1T @ mat2
-
-  # aabb for geom in height field frame
-  xmax = -MJ_MAXVAL
-  ymax = -MJ_MAXVAL
-  zmax = -MJ_MAXVAL
-  xmin = MJ_MAXVAL
-  ymin = MJ_MAXVAL
-  zmin = MJ_MAXVAL
-
-  center2 = geom_aabb[geomid, 0]
-  size2 = geom_aabb[geomid, 1]
-
-  pos += mat1T @ center2
-
-  sign = wp.vec2(-1.0, 1.0)
-
-  for i in range(2):
-    for j in range(2):
-      for k in range(2):
-        corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-        corner_hf = mat @ corner_local
-
-        if corner_hf[0] > xmax:
-          xmax = corner_hf[0]
-        if corner_hf[1] > ymax:
-          ymax = corner_hf[1]
-        if corner_hf[2] > zmax:
-          zmax = corner_hf[2]
-        if corner_hf[0] < xmin:
-          xmin = corner_hf[0]
-        if corner_hf[1] < ymin:
-          ymin = corner_hf[1]
-        if corner_hf[2] < zmin:
-          zmin = corner_hf[2]
-
-  xmax += pos[0]
-  xmin += pos[0]
-  ymax += pos[1]
-  ymin += pos[1]
-  zmax += pos[2]
-  zmin += pos[2]
-
-  # box-box test
-  if (
-    (xmin - margin > size1[0])
-    or (xmax + margin < -size1[0])
-    or (ymin - margin > size1[1])
-    or (ymax + margin < -size1[1])
-    or (zmin - margin > size1[2])
-    or (zmax + margin < -size1[3])
-  ):
-    return
-
-  # height field subgrid
-  nrow = hfield_nrow[hfieldid]
-  ncol = hfield_ncol[hfieldid]
-  size = hfield_size[hfieldid]
-  cmin, rmin, cmax, rmax = hfield_subgrid(nrow, ncol, size, xmax, xmin, ymax, ymin)
-
-  # GJK setup
-  geom1_dataid = geom_dataid[hfieldid]
-  geom1 = geom(
-    geom_type[hfieldid],
-    geom1_dataid,
-    geom_size[worldid, hfieldid],
-    hfield_adr[geom1_dataid],
-    hfield_nrow[geom1_dataid],
-    hfield_ncol[geom1_dataid],
-    hfield_size[geom1_dataid],
-    hfield_data,
-    mesh_vertadr[geom1_dataid],
-    mesh_vertnum[geom1_dataid],
-    mesh_vert,
-    mesh_graphadr[geom1_dataid],
-    mesh_graph,
-    mesh_polynum[geom1_dataid],
-    mesh_polyadr[geom1_dataid],
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in[worldid, hfieldid],
-    geom_xmat_in[worldid, hfieldid],
-    -1,  # overwrite height field prism in loop below
-  )
-
-  geom2_dataid = geom_dataid[geomid]
-  geom2 = geom(
-    geom_type[geomid],
-    geom2_dataid,
-    geom_size[worldid, geomid],
-    hfield_adr[geom2_dataid],
-    hfield_nrow[geom2_dataid],
-    hfield_ncol[geom2_dataid],
-    hfield_size[geom2_dataid],
-    hfield_data,
-    mesh_vertadr[geom2_dataid],
-    mesh_vertnum[geom2_dataid],
-    mesh_vert,
-    mesh_graphadr[geom2_dataid],
-    mesh_graph,
-    mesh_polynum[geom2_dataid],
-    mesh_polyadr[geom2_dataid],
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in[worldid, geomid],
-    geom_xmat_in[worldid, geomid],
-    -1,
-  )
-
-  x_1 = geom1.pos
-  x_2 = geom2.pos
-  geomtype1 = geom_type[hfieldid]
-  geomtype2 = geom_type[geomid]
-
-  ccd_tolerance = opt_ccd_tolerance[worldid]
-
-  # loop over subgrid triangles
-  count = int(0)
-  firstprism = bool(True)
-  for r in range(rmin, rmax):
-    for c in range(cmin, cmax):
-      # add both triangles from this cell
-      for i in range(2):
-        # height field prism
-        hftri_index = 2 * (r * (ncol - 1) + c) + i
-        geom1.hfprism = hfield_triangle_prism(
-          geom1_dataid,
-          hfield_adr[geom1_dataid],
-          hfield_nrow[geom1_dataid],
-          hfield_ncol[geom1_dataid],
-          hfield_size[geom1_dataid],
-          hfield_data,
-          hftri_index,
-        )
-
-        prism_pos = wp.vec3(0.0, 0.0, 0.0)
-        for i in range(6):
-          prism_pos += hfield_prism_vertex(geom1.hfprism, i)
-        prism_pos = geom1.rot @ (prism_pos / 6.0)
-
-        result = gjk(ccd_tolerance, opt_gjk_iterations, geom1, geom2, x_1 + prism_pos, x_2, geomtype1, geomtype2, 0.0, False)
-
-        if result.dim != 0:
-          if firstprism:
-            new_pairid = pairid
-            firstprism = False
-          else:  # create a new pair
-            new_pairid = wp.atomic_add(ncollision_out, 0, 1)
-
-          if new_pairid >= nconmax_in:
-            return
-
-          collision_pair_out[new_pairid] = pair
-          collision_hftri_index_out[new_pairid] = hftri_index
-          collision_pairid_out[new_pairid] = pair_id
-          collision_worldid_out[new_pairid] = worldid
-
-          count += 1
-
-          if count >= MJ_MAXCONPAIR:
-            return
-
-
 def _narrowphase(m, d):
-  # Process heightfield collisions
-  if m.nhfield > 0:
-    wp.launch(
-      kernel=_hfield_midphase,
-      dim=d.nconmax,
-      inputs=[
-        m.opt.ccd_tolerance,
-        m.opt.gjk_iterations,
-        m.geom_type,
-        m.geom_dataid,
-        m.geom_size,
-        m.geom_aabb,
-        m.geom_rbound,
-        m.geom_margin,
-        m.hfield_adr,
-        m.hfield_nrow,
-        m.hfield_ncol,
-        m.hfield_size,
-        m.hfield_data,
-        m.mesh_vertadr,
-        m.mesh_vertnum,
-        m.mesh_vert,
-        m.mesh_graphadr,
-        m.mesh_graph,
-        m.mesh_polynum,
-        m.mesh_polyadr,
-        m.mesh_polynormal,
-        m.mesh_polyvertadr,
-        m.mesh_polyvertnum,
-        m.mesh_polyvert,
-        m.mesh_polymapadr,
-        m.mesh_polymapnum,
-        m.mesh_polymap,
-        d.nconmax,
-        d.geom_xpos,
-        d.geom_xmat,
-        d.collision_pair,
-        d.collision_hftri_index,
-        d.collision_pairid,
-        d.collision_worldid,
-      ],
-      outputs=[d.collision_pair, d.collision_hftri_index, d.collision_pairid, d.collision_worldid, d.ncollision],
-    )
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
   convex_narrowphase(m, d)
@@ -1102,19 +710,8 @@ def collision(m: Model, d: Data):
   via `m.opt.disableflags` or if `d.nconmax` is 0.
   """
 
-  # zero collision-related arrays
-  wp.launch(
-    _zero_collision_arrays,
-    dim=d.nconmax,
-    inputs=[
-      d.nworld,
-      d.ncon_hfield.shape[1],
-      d.ncon,
-      d.ncon_hfield.reshape(-1),
-      d.collision_hftri_index,
-      d.ncollision,
-    ],
-  )
+  # zero contact and collision counters
+  wp.launch(_zero_ncon_ncollision, dim=1, outputs=[d.ncon, d.ncollision])
 
   if d.nconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     return

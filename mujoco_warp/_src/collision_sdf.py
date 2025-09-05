@@ -660,7 +660,6 @@ def _sdf_narrowphase(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_hftri_index_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
@@ -715,18 +714,11 @@ def _sdf_narrowphase(
   g1 = geoms[0]
   type1 = geom_type[g1]
 
-  hftri_index = collision_hftri_index_in[tid]
-
   geom1_dataid = geom_dataid[g1]
   geom1 = geom(
     type1,
     geom1_dataid,
     geom_size[worldid, g1],
-    hfield_adr[geom1_dataid],
-    hfield_nrow[geom1_dataid],
-    hfield_ncol[geom1_dataid],
-    hfield_size[geom1_dataid],
-    hfield_data,
     mesh_vertadr[geom1_dataid],
     mesh_vertnum[geom1_dataid],
     mesh_vert,
@@ -743,7 +735,6 @@ def _sdf_narrowphase(
     mesh_polymap,
     geom_xpos_in[worldid, g1],
     geom_xmat_in[worldid, g1],
-    hftri_index,
   )
 
   geom2_dataid = geom_dataid[g2]
@@ -751,11 +742,6 @@ def _sdf_narrowphase(
     type2,
     geom2_dataid,
     geom_size[worldid, g2],
-    hfield_adr[geom2_dataid],
-    hfield_nrow[geom2_dataid],
-    hfield_ncol[geom2_dataid],
-    hfield_size[geom2_dataid],
-    hfield_data,
     mesh_vertadr[geom2_dataid],
     mesh_vertnum[geom2_dataid],
     mesh_vert,
@@ -772,7 +758,6 @@ def _sdf_narrowphase(
     mesh_polymap,
     geom_xpos_in[worldid, g2],
     geom_xmat_in[worldid, g2],
-    hftri_index,
   )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
@@ -938,7 +923,6 @@ def sdf_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
-      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
