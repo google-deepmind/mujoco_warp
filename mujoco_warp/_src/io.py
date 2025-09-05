@@ -1720,7 +1720,7 @@ def get_data_into(
 
 
 @wp.kernel
-def _set_nworld(
+def _reset_nworld(
   # Model:
   nq: int,
   nv: int,
@@ -1799,7 +1799,7 @@ def _set_nworld(
 
 
 @wp.kernel
-def _set_mocap(
+def _reset_mocap(
   # Model:
   body_mocapid: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
@@ -1818,7 +1818,7 @@ def _set_mocap(
 
 
 @wp.kernel
-def _zero_contact(
+def _reset_contact(
   # Data in:
   ncon_in: wp.array(dtype=int),
   # In:
@@ -1864,12 +1864,12 @@ def reset_data(m: types.Model, d: types.Data):
 
   # set mocap_pos/quat = body_pos/quat for mocap bodies
   wp.launch(
-    _set_mocap, dim=(d.nworld, m.nbody), inputs=[m.body_mocapid, m.body_pos, m.body_quat], outputs=[d.mocap_pos, d.mocap_quat]
+    _reset_mocap, dim=(d.nworld, m.nbody), inputs=[m.body_mocapid, m.body_pos, m.body_quat], outputs=[d.mocap_pos, d.mocap_quat]
   )
 
   # clear contacts
   wp.launch(
-    _zero_contact,
+    _reset_contact,
     dim=d.nconmax,
     inputs=[d.ncon, d.contact.efc_address.shape[1]],
     outputs=[
@@ -1889,7 +1889,7 @@ def reset_data(m: types.Model, d: types.Data):
   )
 
   wp.launch(
-    _set_nworld,
+    _reset_nworld,
     dim=d.nworld,
     inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.nhfieldgeom, m.qpos0, m.eq_active0, d.nworld],
     outputs=[
