@@ -278,9 +278,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    a = convex.vert[convex.vertadr + imax]
-    indices[0] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    a = convex.vert[convex.vertadr + imax_global]
+    indices[0] = imax_global
 
     # Find point b (furthest from a)
     b_dist = wp.float32(-_HUGE_VAL)
@@ -299,9 +299,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    b = convex.vert[convex.vertadr + imax]
-    indices[1] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    b = convex.vert[convex.vertadr + imax_global]
+    indices[1] = imax_global
 
     # Find point c (furthest along axis orthogonal to a-b)
     ab = wp.cross(n, a - b)
@@ -314,7 +314,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         idx = convex.graph[vert_globalid + subidx]
         support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        ap = a - convex.vert[convex.vertadr + i]
+        ap = a - convex.vert[convex.vertadr + idx]
         dist = wp.abs(wp.dot(ap, ab)) + dist_mask
         if dist > c_dist:
           c_dist = dist
@@ -322,9 +322,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    c = convex.vert[convex.vertadr + imax]
-    indices[2] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    c = convex.vert[convex.vertadr + imax_global]
+    indices[2] = imax_global
 
     # Find point d (furthest from other triangle edges)
     ac = wp.cross(n, a - c)
@@ -348,8 +348,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    indices[3] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    indices[3] = imax_global
 
   # Collect contacts from unique indices
   for i in range(3, -1, -1):
@@ -1457,7 +1457,7 @@ def _primitive_narrowphase_builder(m: Model):
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
 
-  @nested_kernel(module="unique")
+  @nested_kernel(module="unique", enable_backward=False)
   def _primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),

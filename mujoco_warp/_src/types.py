@@ -589,6 +589,8 @@ class Option:
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
     legacy_gjk: run legacy gjk algorithm
+    contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
+                             contacts matched after this value is exceded will be ignored
   """
 
   timestep: wp.array(dtype=float)
@@ -621,6 +623,7 @@ class Option:
   sdf_iterations: int
   run_collision_detection: bool  # warp only
   legacy_gjk: bool
+  contact_sensor_maxmatch: int  # warp only
 
 
 @dataclasses.dataclass
@@ -903,9 +906,9 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
-    volume_ids: Warp volume IDs for SDF sampling             (nmesh,)
-    volumes: Warp volume objects containing SDF data         (nvolume,)
-    oct_aabb: octree axis-aligned bounding boxes             (nmesh,)
+    oct_aabb: octree axis-aligned bounding boxes             (noct, 6)
+    oct_child: octree children                               (noct, 8)
+    oct_coeff: octree interpolation coefficients             (noct, 8)
     eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)

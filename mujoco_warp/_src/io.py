@@ -30,6 +30,9 @@ MJ_CCD_ITERATIONS = 12
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
+# tolerance override for float32
+_TOLERANCE_F32 = 1.0e-6
+
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
@@ -117,20 +120,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
-
-  # contact sensor
-  is_contact_sensor = mjm.sensor_type == types.SensorType.CONTACT
-  if is_contact_sensor.any():
-    # matching
-    if (
-      (mjm.sensor_objtype[is_contact_sensor] != types.ObjType.GEOM)
-      | (mjm.sensor_reftype[is_contact_sensor] != types.ObjType.GEOM)
-    ).any():
-      raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
-
-    # reduction
-    if (mjm.sensor_intprm[is_contact_sensor, 1] == 0).any():
-      raise NotImplementedError(f"Contact sensor: reduction 'none' is not implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
@@ -444,7 +433,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     npair=mjm.npair,
     opt=types.Option(
       timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
-      tolerance=create_nmodel_batched_array(np.array(mjm.opt.tolerance), dtype=float, expand_dim=False),
+      tolerance=create_nmodel_batched_array(
+        np.array(np.maximum(mjm.opt.tolerance, _TOLERANCE_F32)), dtype=float, expand_dim=False
+      ),
       ls_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ls_tolerance), dtype=float, expand_dim=False),
       ccd_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ccd_tolerance), dtype=float, expand_dim=False),
       gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
@@ -475,6 +466,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
       legacy_gjk=False,
+      contact_sensor_maxmatch=64,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
@@ -1761,58 +1753,3 @@ def get_data_into(
 
   # sensors
   result.sensordata[:] = d.sensordata.numpy()
-
-
-def sample_octree_sdf(
-  point: np.ndarray, oct_child: np.ndarray, oct_aabb: np.ndarray, oct_coeff: np.ndarray, eps: float = 1e-6
-) -> float:
-  """Sample SDF value at a point using MuJoCo's octree structure.
-
-  Traverses octree to leaf nodes and interpolates between 8 corner coefficients.
-  """
-  node = 0
-
-  while True:
-    aabb = oct_aabb[node]
-    center = aabb[:3]
-    half_size = aabb[3:]
-    vmin = center - half_size
-    vmax = center + half_size
-
-    if (
-      point[0] + eps < vmin[0]
-      or point[0] - eps > vmax[0]
-      or point[1] + eps < vmin[1]
-      or point[1] - eps > vmax[1]
-      or point[2] + eps < vmin[2]
-      or point[2] - eps > vmax[2]
-    ):
-      return 1.0
-
-    coord = (point - vmin) / (vmax - vmin)
-
-    children = oct_child[node]
-    if np.all(children == -1):
-      sdf = 0.0
-      coeffs = oct_coeff[node]
-
-      for j in range(8):
-        w = (
-          (coord[0] if (j & 1) else (1 - coord[0]))
-          * (coord[1] if (j & 2) else (1 - coord[1]))
-          * (coord[2] if (j & 4) else (1 - coord[2]))
-        )
-        sdf += w * coeffs[j]
-
-      return sdf
-
-    x_child = 0 if coord[0] >= 0.5 else 1
-    y_child = 0 if coord[1] >= 0.5 else 1
-    z_child = 0 if coord[2] >= 0.5 else 1
-    child_idx = 4 * z_child + 2 * y_child + x_child
-
-    next_node = children[child_idx]
-    if next_node == -1:
-      return 1.0
-
-    node = next_node
