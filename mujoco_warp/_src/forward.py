@@ -42,7 +42,6 @@ from .types import TrnType
 from .types import vec10f
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel
 from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
@@ -312,6 +311,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     ],
   )
 
+  wp.copy(d.qacc_warmstart, d.qacc)
+
 
 @wp.kernel
 def _euler_damp_qfrc_sparse(
@@ -319,11 +320,7 @@ def _euler_damp_qfrc_sparse(
   opt_timestep: wp.array(dtype=float),
   dof_Madr: wp.array(dtype=int),
   dof_damping: wp.array2d(dtype=float),
-  # Data in:
-  qfrc_smooth_in: wp.array2d(dtype=float),
-  qfrc_constraint_in: wp.array2d(dtype=float),
   # Data out:
-  qfrc_integration_out: wp.array2d(dtype=float),
   qM_integration_out: wp.array3d(dtype=float),
 ):
   worldid, tid = wp.tid()
@@ -331,7 +328,6 @@ def _euler_damp_qfrc_sparse(
 
   adr = dof_Madr[tid]
   qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
-  qfrc_integration_out[worldid, tid] = qfrc_smooth_in[worldid, tid] + qfrc_constraint_in[worldid, tid]
 
 
 def _euler_sparse(m: Model, d: Data):
@@ -343,11 +339,8 @@ def _euler_sparse(m: Model, d: Data):
       m.opt.timestep,
       m.dof_Madr,
       m.dof_damping,
-      d.qfrc_smooth,
-      d.qfrc_constraint,
     ],
     outputs=[
-      d.qfrc_integration,
       d.qM_integration,
     ],
   )
@@ -358,21 +351,20 @@ def _euler_sparse(m: Model, d: Data):
     d.qLD_integration,
     d.qLDiagInv_integration,
     d.qacc_integration,
-    d.qfrc_integration,
+    d.efc.Ma,
   )
 
 
 @cache_kernel
 def _tile_euler_dense(tile: TileSet):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def euler_dense(
     # Model:
     dof_damping: wp.array2d(dtype=float),
     opt_timestep: wp.array(dtype=float),
     # Data in:
     qM_in: wp.array3d(dtype=float),
-    qfrc_smooth_in: wp.array2d(dtype=float),
-    qfrc_constraint_in: wp.array2d(dtype=float),
+    efc_Ma_in: wp.array2d(dtype=float),
     # In:
     adr_in: wp.array(dtype=int),
     # Data out:
@@ -388,14 +380,10 @@ def _tile_euler_dense(tile: TileSet):
     damping_scaled = damping_tile * timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
-    qfrc_smooth_tile = wp.tile_load(qfrc_smooth_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    qfrc_constraint_tile = wp.tile_load(qfrc_constraint_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-
-    qfrc_tile = qfrc_smooth_tile + qfrc_constraint_tile
-
+    Ma_tile = wp.tile_load(efc_Ma_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     L_tile = wp.tile_cholesky(qm_integration_tile)
-    qacc_tile = wp.tile_cholesky_solve(L_tile, qfrc_tile)
-    wp.tile_store(qacc_integration_out[worldid], qacc_tile, offset=(dofid))
+    qacc_integration_tile = wp.tile_cholesky_solve(L_tile, Ma_tile)
+    wp.tile_store(qacc_integration_out[worldid], qacc_integration_tile, offset=(dofid))
 
   return euler_dense
 
@@ -413,7 +401,7 @@ def euler(m: Model, d: Data):
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
-          inputs=[m.dof_damping, m.opt.timestep, d.qM, d.qfrc_smooth, d.qfrc_constraint, tile.adr],
+          inputs=[m.dof_damping, m.opt.timestep, d.qM, d.efc.Ma, tile.adr],
           outputs=[d.qacc_integration],
           block_dim=m.block_dim.euler_dense,
         )
@@ -534,7 +522,7 @@ def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
 
   # compile-time constants
-  passive_enabled = not m.opt.disableflags & DisableBit.PASSIVE
+  passive_enabled = not m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)
   actuation_enabled = (not m.opt.disableflags & DisableBit.ACTUATION) and m.actuator_affine_bias_gain
 
   if passive_enabled or actuation_enabled:
@@ -569,7 +557,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 def _actuator_velocity(m: Model, d: Data):
   NV = m.nv
 
-  @kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def actuator_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
@@ -601,7 +589,7 @@ def _actuator_velocity(m: Model, d: Data):
 def _tendon_velocity(m: Model, d: Data):
   NV = m.nv
 
-  @kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def tendon_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
@@ -810,61 +798,39 @@ def _tendon_actuator_force_clamp(
         actuator_force_out[worldid, actid] *= actfrcrange[1] / ten_actfrc
 
 
-def _qfrc_actuator(m: Model, d: Data):
-  NU = m.nu
+@wp.kernel
+def _qfrc_actuator(
+  # Model:
+  nu: int,
+  ngravcomp: int,
+  jnt_actfrclimited: wp.array(dtype=bool),
+  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
+  jnt_actgravcomp: wp.array(dtype=int),
+  dof_jntid: wp.array(dtype=int),
+  # Data in:
+  actuator_moment_in: wp.array3d(dtype=float),
+  qfrc_gravcomp_in: wp.array2d(dtype=float),
+  actuator_force_in: wp.array2d(dtype=float),
+  # Data out:
+  qfrc_actuator_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
 
-  @wp.kernel
-  def qfrc_actuator(
-    # Model:
-    ngravcomp: int,
-    jnt_actfrclimited: wp.array(dtype=bool),
-    jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
-    jnt_actgravcomp: wp.array(dtype=int),
-    dof_jntid: wp.array(dtype=int),
-    # Data in:
-    actuator_moment_in: wp.array3d(dtype=float),
-    qfrc_gravcomp_in: wp.array2d(dtype=float),
-    actuator_force_in: wp.array2d(dtype=float),
-    # Data out:
-    qfrc_actuator_out: wp.array2d(dtype=float),
-  ):
-    worldid, dofid = wp.tid()
+  qfrc = float(0.0)
+  for uid in range(nu):
+    qfrc += actuator_moment_in[worldid, uid, dofid] * actuator_force_in[worldid, uid]
 
-    actuator_moment_tile = wp.tile_load(actuator_moment_in[worldid], shape=(NU, 1), offset=(0, dofid))
-    actuator_moment_tile = wp.tile_squeeze(actuator_moment_tile, axis=(1,))
-    actuator_force_tile = wp.tile_load(actuator_force_in[worldid], shape=NU)
-    actuator_moment_force_tile = wp.tile_map(wp.mul, actuator_moment_tile, actuator_force_tile)
-    qfrc_tile = wp.tile_reduce(wp.add, actuator_moment_force_tile)
-    qfrc = qfrc_tile[0]
+  jntid = dof_jntid[dofid]
 
-    jntid = dof_jntid[dofid]
+  # actuator-level gravity compensation, skip if added as passive force
+  if ngravcomp and jnt_actgravcomp[jntid]:
+    qfrc += qfrc_gravcomp_in[worldid, dofid]
 
-    # actuator-level gravity compensation, skip if added as passive force
-    if ngravcomp and jnt_actgravcomp[jntid]:
-      qfrc += qfrc_gravcomp_in[worldid, dofid]
+  if jnt_actfrclimited[jntid]:
+    frcrange = jnt_actfrcrange[worldid, jntid]
+    qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
 
-    if jnt_actfrclimited[jntid]:
-      frcrange = jnt_actfrcrange[worldid, jntid]
-      qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
-
-    qfrc_actuator_out[worldid, dofid] = qfrc
-
-  wp.launch_tiled(
-    qfrc_actuator,
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.ngravcomp,
-      m.jnt_actfrclimited,
-      m.jnt_actfrcrange,
-      m.jnt_actgravcomp,
-      m.dof_jntid,
-      d.actuator_moment,
-      d.qfrc_gravcomp,
-      d.actuator_force,
-    ],
-    outputs=[d.qfrc_actuator],
-    block_dim=m.block_dim.qfrc_actuator,
-  )
+  qfrc_actuator_out[worldid, dofid] = qfrc
 
 
 @event_scope
@@ -934,7 +900,22 @@ def fwd_actuation(m: Model, d: Data):
       outputs=[d.actuator_force],
     )
 
-  _qfrc_actuator(m, d)
+  wp.launch(
+    _qfrc_actuator,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.nu,
+      m.ngravcomp,
+      m.jnt_actfrclimited,
+      m.jnt_actfrcrange,
+      m.jnt_actgravcomp,
+      m.dof_jntid,
+      d.actuator_moment,
+      d.qfrc_gravcomp,
+      d.actuator_force,
+    ],
+    outputs=[d.qfrc_actuator],
+  )
 
 
 @wp.kernel
@@ -996,8 +977,8 @@ def forward(m: Model, d: Data):
   energy = m.opt.enableflags & EnableBit.ENERGY
 
   fwd_position(m, d, factorize=False)
+  d.sensordata.zero_()
   sensor.sensor_pos(m, d)
-
   if energy:
     if m.sensor_e_potential == 0:  # not computed by sensor
       sensor.energy_pos(m, d)

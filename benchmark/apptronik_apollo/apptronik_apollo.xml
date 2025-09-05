@@ -1,7 +1,7 @@
 <mujoco model="apptronik_apollo">
     <compiler angle="radian" eulerseq="zyx"/>
 
-    <option timestep="0.005" iterations="10" ls_iterations="20" integrator="Euler">
+    <option timestep="0.005" integrator="Euler">
         <flag eulerdamp="disable" />
     </option>
 

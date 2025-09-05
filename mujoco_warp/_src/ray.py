@@ -24,6 +24,8 @@ from .types import GeomType
 from .types import Model
 from .types import vec6
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
@@ -510,20 +512,20 @@ def _ray_hfield(
         y = safe_div(lpnt[1] + all[i] * lvec[1] + size[1], dy)
         y0 = wp.max(0.0, wp.min(float(nrow - 2), wp.floor(y)))
         if i == 1:
-          z0 = hfield_data[adr + int(wp.round(y0)) * nrow + ncol - 1]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * nrow + ncol - 1]
+          z0 = hfield_data[adr + int(wp.round(y0 + 0.0)) * ncol + ncol - 1]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * ncol + ncol - 1]
         else:
-          z0 = hfield_data[adr + int(wp.round(y0)) * nrow]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * nrow]
+          z0 = hfield_data[adr + int(wp.round(y0 + 0.0)) * ncol]
+          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * ncol]
       # side normal to y-axis
       else:
         y = safe_div(lpnt[0] + all[i] * lvec[0] + size[0], dx)
         y0 = wp.max(0.0, wp.min(float(ncol - 2), wp.floor(y)))
         if i == 3:
-          z0 = hfield_data[adr + int(wp.round(y0)) + (nrow - 1) * ncol]
+          z0 = hfield_data[adr + int(wp.round(y0 + 0.0)) + (nrow - 1) * ncol]
           z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) + (nrow - 1) * ncol]
         else:
-          z0 = hfield_data[adr + int(wp.round(y0))]
+          z0 = hfield_data[adr + int(wp.round(y0 + 0.0))]
           z1 = hfield_data[adr + int(wp.round(y0 + 1.0))]
 
       # check if point is below line segments
@@ -534,7 +536,7 @@ def _ray_hfield(
 
 
 @wp.func
-def _ray_mesh(
+def ray_mesh(
   # Model:
   nmeshface: int,
   mesh_vertadr: wp.array(dtype=int),
@@ -674,7 +676,7 @@ def _ray_geom_mesh(
     type = geom_type[geomid]
 
     if type == GeomType.MESH:
-      return _ray_mesh(
+      return ray_mesh(
         nmeshface,
         mesh_vertadr,
         mesh_vert,

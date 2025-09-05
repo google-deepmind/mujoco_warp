@@ -36,9 +36,9 @@ from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
-MULTI_CONTACT_COUNT = 4
+MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
 
 _CONVEX_COLLISION_PAIRS = [
@@ -103,7 +103,7 @@ def _max_contacts_height_field(
 
 @cache_kernel
 def ccd_kernel_builder(
-  default_gjk: bool,
+  legacy_gjk: bool,
   geomtype1: int,
   geomtype2: int,
   gjk_iterations: int,
@@ -112,10 +112,11 @@ def ccd_kernel_builder(
   depth_extension: float,
 ):
   # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def ccd_kernel(
     # Model:
     ngeom: int,
+    opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -225,22 +226,23 @@ def ccd_kernel_builder(
 
     hftri_index = collision_hftri_index_in[tid]
 
+    geom1_dataid = geom_dataid[g1]
     geom1 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      geomtype1,
+      geom1_dataid,
+      geom_size[worldid, g1],
+      hfield_adr[geom1_dataid],
+      hfield_nrow[geom1_dataid],
+      hfield_ncol[geom1_dataid],
+      hfield_size[geom1_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom1_dataid],
+      mesh_vertnum[geom1_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom1_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom1_dataid],
+      mesh_polyadr[geom1_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -248,29 +250,28 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g1,
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
       hftri_index,
     )
 
+    geom2_dataid = geom_dataid[g2]
     geom2 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      geomtype2,
+      geom2_dataid,
+      geom_size[worldid, g2],
+      hfield_adr[geom2_dataid],
+      hfield_nrow[geom2_dataid],
+      hfield_ncol[geom2_dataid],
+      hfield_size[geom2_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom2_dataid],
+      mesh_vertnum[geom2_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom2_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom2_dataid],
+      mesh_polyadr[geom2_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -278,16 +279,13 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g2,
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
       hftri_index,
     )
 
-    points = mat3c()
-
-    if default_gjk:
+    # TODO(kbayes): remove legacy GJK once multicontact can be enabled
+    if wp.static(legacy_gjk):
       simplex, normal = gjk_legacy(
         gjk_iterations,
         geom1,
@@ -301,7 +299,7 @@ def ccd_kernel_builder(
       )
       dist = -depth
 
-      if (dist - margin) >= 0.0 or depth != depth:
+      if dist >= 0.0 or depth < -depth_extension:
         return
 
       if (
@@ -312,21 +310,24 @@ def ccd_kernel_builder(
       ):  # fmt: off
         count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 1, 2, 1.0e-5)
       else:
-        count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 4, 8, 1.0e-3)
+        count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 4, 8, 1.0e-1)
+      frame = make_frame(normal)
     else:
+      points = mat3c()
+
       x1 = geom1.pos
       x2 = geom2.pos
 
       # find prism center for height field
       if geomtype1 == GeomType.HFIELD:
-        x1 = wp.vec3(0.0, 0.0, 0.0)
+        x1_ = wp.vec3(0.0, 0.0, 0.0)
         for i in range(6):
-          x1 += hfield_prism_vertex(geom1.hfprism, i)
-        x1 = x1 / 6.0
+          x1_ += hfield_prism_vertex(geom1.hfprism, i)
+        x1 += geom1.rot @ (x1_ / 6.0)
 
       dist, count, witness1, witness2 = ccd(
         False,
-        1e-6,
+        opt_ccd_tolerance[worldid],
         0.0,
         gjk_iterations,
         epa_iterations,
@@ -352,10 +353,11 @@ def ccd_kernel_builder(
         count = 0
         return
 
-    for i in range(count):
-      points[i] = 0.5 * (witness1[i] + witness2[i])
-    normal = witness1[0] - witness2[0]
-    frame = make_frame(normal)
+      for i in range(count):
+        points[i] = 0.5 * (witness1[i] + witness2[i])
+      normal = witness1[0] - witness2[0]
+      frame = make_frame(normal)
+
     for i in range(count):
       # limit maximum number of contacts with height field
       if _max_contacts_height_field(ngeom, geom_type, geompair2hfgeompair, g1, g2, worldid, ncon_hfield_out):
@@ -412,17 +414,18 @@ def convex_narrowphase(m: Model, d: Data):
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), geom_pair[0].value, geom_pair[1].value)]:
       wp.launch(
         ccd_kernel_builder(
-          False,
+          m.opt.legacy_gjk,
           geom_pair[0].value,
           geom_pair[1].value,
           m.opt.gjk_iterations,
           m.opt.epa_iterations,
-          False,
-          0.1,
+          True,
+          1e9,
         ),
         dim=d.nconmax,
         inputs=[
           m.ngeom,
+          m.opt.ccd_tolerance,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,

@@ -21,8 +21,8 @@ from . import math
 from . import ray
 from . import smooth
 from . import support
+from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
-from .types import MJ_MAXCONPAIR
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
@@ -37,9 +37,14 @@ from .types import SensorType
 from .types import TrnType
 from .types import vec5
 from .types import vec6
+from .types import vec8f
+from .types import vec8i
+from .util_misc import inside_geom
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
+
+wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
@@ -224,18 +229,6 @@ def _ball_quat(jnt_qposadr: wp.array(dtype=int), qpos_in: wp.array2d(dtype=float
     qpos_in[worldid, adr + 3],
   )
   return wp.normalize(quat)
-
-
-@wp.kernel
-def _limit_pos_zero(
-  # Model:
-  sensor_adr: wp.array(dtype=int),
-  sensor_limitpos_adr: wp.array(dtype=int),
-  # Data out:
-  sensordata_out: wp.array2d(dtype=float),
-):
-  worldid, limitposid = wp.tid()
-  sensordata_out[worldid, sensor_adr[sensor_limitpos_adr[limitposid]]] = 0.0
 
 
 @wp.kernel
@@ -691,13 +684,6 @@ def sensor_pos(m: Model, d: Data):
 
   # jointlimitpos and tendonlimitpos
   wp.launch(
-    _limit_pos_zero,
-    dim=(d.nworld, m.sensor_limitpos_adr.size),
-    inputs=[m.sensor_adr, m.sensor_limitpos_adr],
-    outputs=[d.sensordata],
-  )
-
-  wp.launch(
     _limit_pos,
     dim=(d.nworld, d.njmax, m.sensor_limitpos_adr.size),
     inputs=[
@@ -782,18 +768,6 @@ def _actuator_vel(actuator_velocity_in: wp.array2d(dtype=float), worldid: int, o
 def _ball_ang_vel(jnt_dofadr: wp.array(dtype=int), qvel_in: wp.array2d(dtype=float), worldid: int, objid: int) -> wp.vec3:
   adr = jnt_dofadr[objid]
   return wp.vec3(qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2])
-
-
-@wp.kernel
-def _limit_vel_zero(
-  # Model:
-  sensor_adr: wp.array(dtype=int),
-  sensor_limitvel_adr: wp.array(dtype=int),
-  # Data out:
-  sensordata_out: wp.array2d(dtype=float),
-):
-  worldid, limitvelid = wp.tid()
-  sensordata_out[worldid, sensor_adr[sensor_limitvel_adr[limitvelid]]] = 0.0
 
 
 @wp.kernel
@@ -1247,13 +1221,6 @@ def sensor_vel(m: Model, d: Data):
   )
 
   wp.launch(
-    _limit_vel_zero,
-    dim=(d.nworld, m.sensor_limitvel_adr.size),
-    inputs=[m.sensor_adr, m.sensor_limitvel_adr],
-    outputs=[d.sensordata],
-  )
-
-  wp.launch(
     _limit_vel,
     dim=(d.nworld, d.njmax, m.sensor_limitvel_adr.size),
     inputs=[
@@ -1364,20 +1331,6 @@ def _joint_actuator_force(
 
 
 @wp.kernel
-def _tendon_actuator_force_zero(
-  # Model:
-  sensor_adr: wp.array(dtype=int),
-  sensor_tendonactfrc_adr: wp.array(dtype=int),
-  # Data out:
-  sensordata_out: wp.array2d(dtype=float),
-):
-  worldid, tenactfrcid = wp.tid()
-  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
-  adr = sensor_adr[sensorid]
-  sensordata_out[worldid, adr] = 0.0
-
-
-@wp.kernel
 def _tendon_actuator_force(
   # Model:
   actuator_trntype: wp.array(dtype=int),
@@ -1416,18 +1369,6 @@ def _tendon_actuator_force_cutoff(
   val = sensordata_in[worldid, adr]
 
   _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
-
-
-@wp.kernel
-def _limit_frc_zero(
-  # Model:
-  sensor_adr: wp.array(dtype=int),
-  sensor_limitfrc_adr: wp.array(dtype=int),
-  # Data out:
-  sensordata_out: wp.array2d(dtype=float),
-):
-  worldid, limitfrcid = wp.tid()
-  sensordata_out[worldid, sensor_adr[sensor_limitfrc_adr[limitfrcid]]] = 0.0
 
 
 @wp.kernel
@@ -1600,6 +1541,7 @@ def _sensor_acc(
     dataspec = sensor_intprm[sensorid, 0]
     dim = sensor_dim[sensorid]
     objtype = sensor_objtype[sensorid]
+    reduce = sensor_intprm[sensorid, 1]
 
     # found, force, torque, dist, pos, normal, tangent
     # TODO(thowell): precompute slot size
@@ -1640,21 +1582,16 @@ def _sensor_acc(
 
     adr = sensor_adr[sensorid]
     contactsensorid = sensor_adr_to_contact_adr[sensorid]
-
     nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
-    for i in range(wp.min(nmatch, num)):
-      # sorted contact id
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
-      # contact direction
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+    if reduce == 3:  # netforce
+      # compute point: force-weighted centroid of contact position
+      net_pos = wp.vec3(0.0)
+      total_force_magnitude = float(0.0)
 
-      adr_slot = adr + i * size
+      for i in range(nmatch):
+        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
-      if found:
-        out[adr_slot] = float(nmatch)
-        adr_slot += 1
-      if force or torque:
         contact_forcetorque = support.contact_force_fn(
           opt_cone,
           njmax_in,
@@ -1668,42 +1605,148 @@ def _sensor_acc(
           cid,
           False,
         )
+
+        weight = wp.norm_l2(wp.spatial_top(contact_forcetorque))
+        net_pos += weight * contact_pos_in[cid]
+        total_force_magnitude += weight
+
+      net_pos /= wp.max(total_force_magnitude, MJ_MINVAL)
+
+      # TODO(team): iterate over matches once
+
+      # compute total wrench about point, in the global frame
+      net_force = wp.vec3(0.0)
+      net_torque = wp.vec3(0.0)
+
+      for i in range(nmatch):
+        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+        dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+
+        contact_forcetorque = support.contact_force_fn(
+          opt_cone,
+          njmax_in,
+          ncon_in,
+          contact_frame_in,
+          contact_friction_in,
+          contact_dim_in,
+          contact_efc_address_in,
+          efc_force_in,
+          worldid,
+          cid,
+          False,
+        )
+        contact_forcetorque *= dir
+
+        force_local = wp.spatial_top(contact_forcetorque)
+        torque_local = wp.spatial_bottom(contact_forcetorque)
+
+        frame = contact_frame_in[cid]
+        frameT = wp.transpose(frame)
+
+        force_global = frameT @ force_local
+        torque_global = frameT @ torque_local
+
+        # add to total force, torque
+        net_force += force_global
+        net_torque += torque_global
+
+        # add induced moment: torque += (pos - point) x force
+        net_torque += wp.cross(contact_pos_in[cid] - net_pos, force_global)
+
+      adr_slot = adr
+
+      if found:
+        out[adr_slot] = float(nmatch)
+        adr_slot += 1
       if force:
-        out[adr_slot + 0] = contact_forcetorque[0]
-        out[adr_slot + 1] = contact_forcetorque[1]
-        out[adr_slot + 2] = dir * contact_forcetorque[2]
+        out[adr_slot + 0] = net_force[0]
+        out[adr_slot + 1] = net_force[1]
+        out[adr_slot + 2] = net_force[2]
         adr_slot += 3
       if torque:
-        out[adr_slot + 0] = contact_forcetorque[3]
-        out[adr_slot + 1] = contact_forcetorque[4]
-        out[adr_slot + 2] = dir * contact_forcetorque[5]
+        out[adr_slot + 0] = net_torque[0]
+        out[adr_slot + 1] = net_torque[1]
+        out[adr_slot + 2] = net_torque[2]
         adr_slot += 3
       if dist:
-        out[adr_slot] = contact_dist_in[cid]
+        out[adr_slot] = 0.0
         adr_slot += 1
       if pos:
-        contact_pos = contact_pos_in[cid]
-        out[adr_slot + 0] = contact_pos[0]
-        out[adr_slot + 1] = contact_pos[1]
-        out[adr_slot + 2] = contact_pos[2]
+        out[adr_slot + 0] = net_pos[0]
+        out[adr_slot + 1] = net_pos[1]
+        out[adr_slot + 2] = net_pos[2]
         adr_slot += 3
       if normal:
-        contact_normal = contact_frame_in[cid][0]
-        out[adr_slot + 0] = dir * contact_normal[0]
-        out[adr_slot + 1] = dir * contact_normal[1]
-        out[adr_slot + 2] = dir * contact_normal[2]
+        out[adr_slot + 0] = 1.0
+        out[adr_slot + 1] = 0.0
+        out[adr_slot + 2] = 0.0
         adr_slot += 3
       if tangent:
-        contact_tangent = contact_frame_in[cid][1]
-        out[adr_slot + 0] = dir * contact_tangent[0]
-        out[adr_slot + 1] = dir * contact_tangent[1]
-        out[adr_slot + 2] = dir * contact_tangent[2]
-        adr_slot += 3
+        out[adr_slot + 0] = 0.0
+        out[adr_slot + 1] = 1.0
+        out[adr_slot + 2] = 0.0
+    else:
+      for i in range(wp.min(nmatch, num)):
+        # sorted contact id
+        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
-    # zero remaining slots
-    for i in range(nmatch, num):
-      for j in range(size):
-        out[adr + i * size + j] = 0.0
+        # contact direction
+        dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+
+        adr_slot = adr + i * size
+
+        if found:
+          out[adr_slot] = float(nmatch)
+          adr_slot += 1
+        if force or torque:
+          contact_forcetorque = support.contact_force_fn(
+            opt_cone,
+            njmax_in,
+            ncon_in,
+            contact_frame_in,
+            contact_friction_in,
+            contact_dim_in,
+            contact_efc_address_in,
+            efc_force_in,
+            worldid,
+            cid,
+            False,
+          )
+        if force:
+          out[adr_slot + 0] = contact_forcetorque[0]
+          out[adr_slot + 1] = contact_forcetorque[1]
+          out[adr_slot + 2] = dir * contact_forcetorque[2]
+          adr_slot += 3
+        if torque:
+          out[adr_slot + 0] = contact_forcetorque[3]
+          out[adr_slot + 1] = contact_forcetorque[4]
+          out[adr_slot + 2] = dir * contact_forcetorque[5]
+          adr_slot += 3
+        if dist:
+          out[adr_slot] = contact_dist_in[cid]
+          adr_slot += 1
+        if pos:
+          contact_pos = contact_pos_in[cid]
+          out[adr_slot + 0] = contact_pos[0]
+          out[adr_slot + 1] = contact_pos[1]
+          out[adr_slot + 2] = contact_pos[2]
+          adr_slot += 3
+        if normal:
+          contact_normal = contact_frame_in[cid][0]
+          out[adr_slot + 0] = dir * contact_normal[0]
+          out[adr_slot + 1] = dir * contact_normal[1]
+          out[adr_slot + 2] = dir * contact_normal[2]
+          adr_slot += 3
+        if tangent:
+          contact_tangent = contact_frame_in[cid][1]
+          out[adr_slot + 0] = dir * contact_tangent[0]
+          out[adr_slot + 1] = dir * contact_tangent[1]
+          out[adr_slot + 2] = dir * contact_tangent[2]
+
+      # zero remaining slots
+      for i in range(nmatch, num):
+        for j in range(size):
+          out[adr + i * size + j] = 0.0
 
   elif sensortype == SensorType.ACCELEROMETER:
     vec3 = _accelerometer(
@@ -1754,20 +1797,6 @@ def _sensor_acc(
       objtype,
     )
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-
-
-@wp.kernel
-def _sensor_touch_zero(
-  # Model:
-  sensor_adr: wp.array(dtype=int),
-  sensor_touch_adr: wp.array(dtype=int),
-  # Data out:
-  sensordata_out: wp.array2d(dtype=float),
-):
-  worldid, sensortouchadrid = wp.tid()
-  sensorid = sensor_touch_adr[sensortouchadrid]
-  adr = sensor_adr[sensorid]
-  sensordata_out[worldid, adr] = 0.0
 
 
 @wp.kernel
@@ -1851,24 +1880,6 @@ def _sensor_touch(
       wp.atomic_add(sensordata_out[worldid], adr, normalforce)
 
 
-@wp.kernel
-def _sensor_tactile_zero(
-  # Model:
-  sensor_type: wp.array(dtype=int),
-  sensor_dim: wp.array(dtype=int),
-  sensor_adr: wp.array(dtype=int),
-  # Data out:
-  sensordata_out: wp.array2d(dtype=float),
-):
-  worldid, sensorid = wp.tid()
-
-  if sensor_type[sensorid] != SensorType.TACTILE:
-    return
-
-  for i in range(sensor_dim[sensorid]):
-    sensordata_out[worldid, sensor_adr[sensorid] + i] = 0.0
-
-
 @wp.func
 def _transform_spatial(vec: wp.spatial_vector, dif: wp.vec3) -> wp.vec3:
   return wp.spatial_bottom(vec) - wp.cross(dif, wp.spatial_top(vec))
@@ -1879,12 +1890,17 @@ def _sensor_tactile(
   # Model:
   body_rootid: wp.array(dtype=int),
   body_weldid: wp.array(dtype=int),
+  geom_type: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_normaladr: wp.array(dtype=int),
   mesh_normal: wp.array(dtype=wp.vec3),
   mesh_quat: wp.array(dtype=wp.quat),
+  oct_aabb: wp.array2d(dtype=wp.vec3),
+  oct_child: wp.array(dtype=vec8i),
+  oct_coeff: wp.array(dtype=vec8f),
   sensor_objid: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_dim: wp.array(dtype=int),
@@ -1944,9 +1960,15 @@ def _sensor_tactile(
   tmp = xpos - geom_xpos_in[worldid, geom]
   lpos = wp.transpose(geom_xmat_in[worldid, geom]) @ tmp
 
-  # compute distance
   plugin_id = geom_plugin_index[geom]
-  depth = wp.min(sdf(GeomType.SDF, lpos, plugin_attr[plugin_id], plugin[plugin_id]), 0.0)
+
+  contact_type = geom_type[geom]
+
+  plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
+    oct_aabb, oct_child, oct_coeff, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
+  )
+
+  depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)
   if depth >= 0.0:
     return
 
@@ -1979,17 +2001,54 @@ def _sensor_tactile(
   wp.atomic_add(sensordata_out[worldid], sensor_adr[sensor_id] + 2 * dim + vertid, forceT[2])
 
 
+@wp.func
+def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objtype: int, objid: int) -> bool:
+  """Check if a contact body/geom matches a sensor spec (objtype, objid)."""
+  if objtype == int(ObjType.UNKNOWN.value):
+    return True
+  if objtype == int(ObjType.SITE.value):
+    return True  # already passed site filter test
+  if objtype == int(ObjType.GEOM.value):
+    return objid == geom
+  if objtype == int(ObjType.BODY.value):
+    return objid == body
+  if objtype == int(ObjType.XBODY.value):
+    # traverse up the tree from body, return true if we land on id
+    while body > objid:
+      body = body_parentid[body]
+    return body == objid
+  return False
+
+
 @wp.kernel
 def _contact_match(
   # Model:
+  opt_cone: int,
+  opt_contact_sensor_maxmatch: int,
+  body_parentid: wp.array(dtype=int),
+  geom_bodyid: wp.array(dtype=int),
+  site_type: wp.array(dtype=int),
+  site_size: wp.array(dtype=wp.vec3),
+  sensor_objtype: wp.array(dtype=int),
   sensor_objid: wp.array(dtype=int),
+  sensor_reftype: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
+  sensor_intprm: wp.array2d(dtype=int),
   sensor_contact_adr: wp.array(dtype=int),
   # Data in:
+  njmax_in: int,
   ncon_in: wp.array(dtype=int),
+  site_xpos_in: wp.array2d(dtype=wp.vec3),
+  site_xmat_in: wp.array2d(dtype=wp.mat33),
   contact_dist_in: wp.array(dtype=float),
+  contact_pos_in: wp.array(dtype=wp.vec3),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_friction_in: wp.array(dtype=vec5),
+  contact_dim_in: wp.array(dtype=int),
   contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
+  efc_force_in: wp.array2d(dtype=float),
   # Data out:
   sensor_contact_nmatch_out: wp.array2d(dtype=int),
   sensor_contact_matchid_out: wp.array3d(dtype=int),
@@ -2003,56 +2062,127 @@ def _contact_match(
     return
 
   # sensor information
+  objtype = sensor_objtype[sensorid]
   objid = sensor_objid[sensorid]
+  reftype = sensor_reftype[sensorid]
   refid = sensor_refid[sensorid]
+  reduce = sensor_intprm[sensorid, 1]
 
-  # contact information
-  geom = contact_geom_in[contactid]
+  worldid = contact_worldid_in[contactid]
 
-  # geom-geom match
-  geom0geom1 = objid == geom[0] and refid == geom[1]
-  geom1geom0 = objid == geom[1] and refid == geom[0]
-  if geom0geom1 or geom1geom0:
-    worldid = contact_worldid_in[contactid]
+  # site filter
+  if objtype == int(ObjType.SITE.value):
+    if not inside_geom(
+      site_xpos_in[worldid, objid], site_xmat_in[worldid, objid], site_size[objid], site_type[objid], contact_pos_in[contactid]
+    ):
+      return
 
-    contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
-    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+  # unknown-unknown match
+  if objtype == int(ObjType.UNKNOWN.value) and reftype == int(ObjType.UNKNOWN.value):
+    dir = 1.0
+  else:
+    # contact information
+    geom = contact_geom_in[contactid]
+    geom1 = geom[0]
+    geom2 = geom[1]
+    body1 = geom_bodyid[geom1]
+    body2 = geom_bodyid[geom2]
 
-    # TODO(thowell): alternative criteria
+    # check match of sensor objects with contact objects
+    match11 = _check_match(body_parentid, body1, geom1, objtype, objid)
+    match12 = _check_match(body_parentid, body2, geom2, objtype, objid)
+    match21 = _check_match(body_parentid, body1, geom1, reftype, refid)
+    match22 = _check_match(body_parentid, body2, geom2, reftype, refid)
+
+    # if a sensor object is specified, it must be involved in the contact
+    if not match11 and not match12:
+      return
+    if not match21 and not match22:
+      return
+
+    # determine direction
+    dir = 1.0
+    if objtype != int(ObjType.UNKNOWN.value) and reftype != int(ObjType.UNKNOWN.value):
+      # both obj1 and obj2 specified: direction depends on order
+      order_regular = match11 and match22
+      order_reverse = match12 and match21
+      if order_reverse and not order_regular:
+        dir = -1.0
+    elif objtype != int(ObjType.UNKNOWN.value):
+      if not match11:
+        dir = -1.0
+    elif reftype != int(ObjType.UNKNOWN.value):
+      if not match22:
+        dir = -1.0
+
+  contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
+
+  if contactmatchid >= opt_contact_sensor_maxmatch:
+    # TODO(team): alternative to wp.printf for reporting overflow?
+    wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
+    return
+
+  sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+
+  if reduce == 1:  # mindist
     sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
+  elif reduce == 2:  # maxforce
+    contact_force = support.contact_force_fn(
+      opt_cone,
+      njmax_in,
+      ncon_in,
+      contact_frame_in,
+      contact_friction_in,
+      contact_dim_in,
+      contact_efc_address_in,
+      efc_force_in,
+      worldid,
+      contactid,
+      False,
+    )
+    force_magnitude = (
+      contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
+    )
+    sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
 
-    # contact direction
-    if geom1geom0:
-      sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = -1.0
-    else:
-      sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = 1.0
-
-    return
-
-  # TODO(thowell): alternative matching
+  # contact direction
+  sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
 
-@wp.kernel
-def _contact_sort(
-  # Data in:
-  sensor_contact_nmatch_in: wp.array2d(dtype=int),
-  sensor_contact_matchid_in: wp.array3d(dtype=int),
-  sensor_contact_criteria_in: wp.array3d(dtype=float),
-  # Data out:
-  sensor_contact_matchid_out: wp.array3d(dtype=int),
-):
-  worldid, contactsensorid = wp.tid()
+def _contact_sort(maxmatch: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def contact_sort(
+    # Model:
+    sensor_intprm: wp.array2d(dtype=int),
+    sensor_contact_adr: wp.array(dtype=int),
+    # Data in:
+    sensor_contact_nmatch_in: wp.array2d(dtype=int),
+    sensor_contact_matchid_in: wp.array3d(dtype=int),
+    sensor_contact_criteria_in: wp.array3d(dtype=float),
+    # Data out:
+    sensor_contact_matchid_out: wp.array3d(dtype=int),
+  ):
+    worldid, contactsensorid = wp.tid()
 
-  nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
+    worldid, contactsensorid = wp.tid()
+    sensorid = sensor_contact_adr[contactsensorid]
 
-  # skip sort
-  if nmatch <= 1:
-    return
+    reduce = sensor_intprm[sensorid, 1]
+    if reduce == 0 or reduce == 3:  # none or netforce
+      return
 
-  criteria_tile = wp.tile_load(sensor_contact_criteria_in[worldid, contactsensorid], shape=MJ_MAXCONPAIR)
-  matchid_tile = wp.tile_load(sensor_contact_matchid_in[worldid, contactsensorid], shape=MJ_MAXCONPAIR)
-  wp.tile_sort(criteria_tile, matchid_tile)
-  wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], matchid_tile)
+    nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
+
+    # skip sort
+    if nmatch <= 1:
+      return
+
+    criteria_tile = wp.tile_load(sensor_contact_criteria_in[worldid, contactsensorid], shape=maxmatch)
+    matchid_tile = wp.tile_load(sensor_contact_matchid_in[worldid, contactsensorid], shape=maxmatch)
+    wp.tile_sort(criteria_tile, matchid_tile)
+    wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], matchid_tile)
+
+  return contact_sort
 
 
 @event_scope
@@ -2060,18 +2190,6 @@ def sensor_acc(m: Model, d: Data):
   """Compute acceleration-dependent sensor values."""
   if m.opt.disableflags & DisableBit.SENSOR:
     return
-
-  wp.launch(
-    _sensor_touch_zero,
-    dim=(d.nworld, m.sensor_touch_adr.size),
-    inputs=[
-      m.sensor_adr,
-      m.sensor_touch_adr,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
 
   wp.launch(
     _sensor_touch,
@@ -2102,30 +2220,22 @@ def sensor_acc(m: Model, d: Data):
   )
 
   wp.launch(
-    _sensor_tactile_zero,
-    dim=(d.nworld, m.nsensor),
-    inputs=[
-      m.sensor_type,
-      m.sensor_dim,
-      m.sensor_adr,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
-
-  wp.launch(
     _sensor_tactile,
     dim=(d.nconmax, m.nsensortaxel),
     inputs=[
       m.body_rootid,
       m.body_weldid,
+      m.geom_type,
       m.geom_bodyid,
+      m.geom_size,
       m.mesh_vertadr,
       m.mesh_vert,
       m.mesh_normaladr,
       m.mesh_normal,
       m.mesh_quat,
+      m.oct_aabb,
+      m.oct_child,
+      m.oct_coeff,
       m.sensor_objid,
       m.sensor_refid,
       m.sensor_dim,
@@ -2151,20 +2261,38 @@ def sensor_acc(m: Model, d: Data):
   if m.sensor_contact_adr.size:
     # match criteria
     d.sensor_contact_nmatch.zero_()
-    d.sensor_contact_matchid.zero_()
-    d.sensor_contact_criteria.zero_()
+    d.sensor_contact_matchid.fill_(-1)
+    d.sensor_contact_criteria.fill_(1.0e32)
 
     wp.launch(
       _contact_match,
       dim=(m.sensor_contact_adr.size, d.nconmax),
       inputs=[
+        m.opt.cone,
+        m.opt.contact_sensor_maxmatch,
+        m.body_parentid,
+        m.geom_bodyid,
+        m.site_type,
+        m.site_size,
+        m.sensor_objtype,
         m.sensor_objid,
+        m.sensor_reftype,
         m.sensor_refid,
+        m.sensor_intprm,
         m.sensor_contact_adr,
+        d.njmax,
         d.ncon,
+        d.site_xpos,
+        d.site_xmat,
         d.contact.dist,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.friction,
+        d.contact.dim,
         d.contact.geom,
+        d.contact.efc_address,
         d.contact.worldid,
+        d.efc.force,
       ],
       outputs=[
         d.sensor_contact_nmatch,
@@ -2176,9 +2304,11 @@ def sensor_acc(m: Model, d: Data):
 
     # sorting
     wp.launch_tiled(
-      _contact_sort,
+      _contact_sort(m.opt.contact_sensor_maxmatch),
       dim=(d.nworld, m.sensor_contact_adr.size),
       inputs=[
+        m.sensor_intprm,
+        m.sensor_contact_adr,
         d.sensor_contact_nmatch,
         d.sensor_contact_matchid,
         d.sensor_contact_criteria,
@@ -2241,18 +2371,6 @@ def sensor_acc(m: Model, d: Data):
   )
 
   wp.launch(
-    _tendon_actuator_force_zero,
-    dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
-    inputs=[
-      m.sensor_adr,
-      m.sensor_tendonactfrc_adr,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
-
-  wp.launch(
     _tendon_actuator_force,
     dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nu),
     inputs=[
@@ -2278,13 +2396,6 @@ def sensor_acc(m: Model, d: Data):
       m.sensor_tendonactfrc_adr,
       d.sensordata,
     ],
-    outputs=[d.sensordata],
-  )
-
-  wp.launch(
-    _limit_frc_zero,
-    dim=(d.nworld, m.sensor_limitfrc_adr.size),
-    inputs=[m.sensor_adr, m.sensor_limitfrc_adr],
     outputs=[d.sensordata],
   )
 
@@ -2470,7 +2581,7 @@ def energy_pos(m: Model, d: Data):
       _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
     )
 
-  if not m.opt.disableflags & DisableBit.PASSIVE:
+  if not m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER):
     # add joint-level springs
     wp.launch(
       _energy_pos_passive_joint,
@@ -2503,7 +2614,7 @@ def energy_pos(m: Model, d: Data):
 
 @cache_kernel
 def _energy_vel_kinetic(nv: int):
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(
     # Data in:
     qvel_in: wp.array2d(dtype=float),

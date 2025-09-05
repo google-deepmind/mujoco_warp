@@ -347,10 +347,10 @@ def _subtree_com_init(
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
-  xipos_out: wp.array2d(dtype=wp.vec3),
+  subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, bodyid = wp.tid()
-  xipos_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
+  subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid, bodyid]
 
 
 @wp.kernel
@@ -486,7 +486,7 @@ def com_pos(m: Model, d: Data):
   Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
   computes composite inertias and motion degrees of freedom in the subtree CoM frame.
   """
-  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos, d.subtree_com])
+  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
@@ -515,36 +515,17 @@ def com_pos(m: Model, d: Data):
 @wp.kernel
 def _cam_local_to_global(
   # Model:
-  cam_bodyid: wp.array(dtype=int),
-  cam_pos: wp.array2d(dtype=wp.vec3),
-  cam_quat: wp.array2d(dtype=wp.quat),
-  # Data in:
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  # Data out:
-  cam_xpos_out: wp.array2d(dtype=wp.vec3),
-  cam_xmat_out: wp.array2d(dtype=wp.mat33),
-):
-  """Fixed cameras."""
-  worldid, camid = wp.tid()
-  bodyid = cam_bodyid[camid]
-  xpos = xpos_in[worldid, bodyid]
-  xquat = xquat_in[worldid, bodyid]
-  cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
-  cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
-
-
-@wp.kernel
-def _cam_fn(
-  # Model:
   cam_mode: wp.array(dtype=int),
   cam_bodyid: wp.array(dtype=int),
   cam_targetbodyid: wp.array(dtype=int),
+  cam_pos: wp.array2d(dtype=wp.vec3),
+  cam_quat: wp.array2d(dtype=wp.quat),
   cam_poscom0: wp.array2d(dtype=wp.vec3),
   cam_pos0: wp.array2d(dtype=wp.vec3),
   cam_mat0: wp.array2d(dtype=wp.mat33),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
+  xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   cam_xpos_out: wp.array2d(dtype=wp.vec3),
@@ -554,7 +535,11 @@ def _cam_fn(
   is_target_cam = (cam_mode[camid] == CamLightType.TARGETBODY) or (cam_mode[camid] == CamLightType.TARGETBODYCOM)
   invalid_target = is_target_cam and (cam_targetbodyid[camid] < 0)
   if invalid_target:
-    return
+    bodyid = cam_bodyid[camid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
+    cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
   elif cam_mode[camid] == CamLightType.TRACK:
     cam_xmat_out[worldid, camid] = cam_mat0[worldid, camid]
     body_xpos = xpos_in[worldid, cam_bodyid[camid]]
@@ -563,6 +548,10 @@ def _cam_fn(
     cam_xmat_out[worldid, camid] = cam_mat0[worldid, camid]
     cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[worldid, camid]
   elif cam_mode[camid] == CamLightType.TARGETBODY or cam_mode[camid] == CamLightType.TARGETBODYCOM:
+    bodyid = cam_bodyid[camid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
     pos = xpos_in[worldid, cam_targetbodyid[camid]]
     if cam_mode[camid] == CamLightType.TARGETBODYCOM:
       pos = subtree_com_in[worldid, cam_targetbodyid[camid]]
@@ -578,42 +567,28 @@ def _cam_fn(
       mat_1[2], mat_2[2], mat_3[2]
     )
     # fmt: on
+  else:
+    bodyid = cam_bodyid[camid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    cam_xpos_out[worldid, camid] = xpos + math.rot_vec_quat(cam_pos[worldid, camid], xquat)
+    cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[worldid, camid]))
 
 
 @wp.kernel
 def _light_local_to_global(
   # Model:
-  light_bodyid: wp.array(dtype=int),
-  light_pos: wp.array2d(dtype=wp.vec3),
-  light_dir: wp.array2d(dtype=wp.vec3),
-  # Data in:
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  # Data out:
-  light_xpos_out: wp.array2d(dtype=wp.vec3),
-  light_xdir_out: wp.array2d(dtype=wp.vec3),
-):
-  """Fixed lights."""
-  worldid, lightid = wp.tid()
-  bodyid = light_bodyid[lightid]
-  xpos = xpos_in[worldid, bodyid]
-  xquat = xquat_in[worldid, bodyid]
-  light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
-  light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
-
-
-@wp.kernel
-def _light_fn(
-  # Model:
   light_mode: wp.array(dtype=int),
   light_bodyid: wp.array(dtype=int),
   light_targetbodyid: wp.array(dtype=int),
+  light_pos: wp.array2d(dtype=wp.vec3),
+  light_dir: wp.array2d(dtype=wp.vec3),
   light_poscom0: wp.array2d(dtype=wp.vec3),
   light_pos0: wp.array2d(dtype=wp.vec3),
   light_dir0: wp.array2d(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
-  light_xpos_in: wp.array2d(dtype=wp.vec3),
+  xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   light_xpos_out: wp.array2d(dtype=wp.vec3),
@@ -623,6 +598,11 @@ def _light_fn(
   is_target_light = (light_mode[lightid] == CamLightType.TARGETBODY) or (light_mode[lightid] == CamLightType.TARGETBODYCOM)
   invalid_target = is_target_light and (light_targetbodyid[lightid] < 0)
   if invalid_target:
+    bodyid = light_bodyid[lightid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
+    light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
     return
   elif light_mode[lightid] == CamLightType.TRACK:
     light_xdir_out[worldid, lightid] = light_dir0[worldid, lightid]
@@ -632,10 +612,21 @@ def _light_fn(
     light_xdir_out[worldid, lightid] = light_dir0[worldid, lightid]
     light_xpos_out[worldid, lightid] = subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[worldid, lightid]
   elif light_mode[lightid] == CamLightType.TARGETBODY or light_mode[lightid] == CamLightType.TARGETBODYCOM:
+    bodyid = light_bodyid[lightid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
     pos = xpos_in[worldid, light_targetbodyid[lightid]]
     if light_mode[lightid] == CamLightType.TARGETBODYCOM:
       pos = subtree_com_in[worldid, light_targetbodyid[lightid]]
-    light_xdir_out[worldid, lightid] = pos - light_xpos_in[worldid, lightid]
+    light_xdir_out[worldid, lightid] = pos - light_xpos_out[worldid, lightid]
+  else:
+    bodyid = light_bodyid[lightid]
+    xpos = xpos_in[worldid, bodyid]
+    xquat = xquat_in[worldid, bodyid]
+    light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[worldid, lightid], xquat)
+    light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[worldid, lightid], xquat)
+
   light_xdir_out[worldid, lightid] = wp.normalize(light_xdir_out[worldid, lightid])
 
 
@@ -650,33 +641,35 @@ def camlight(m: Model, d: Data):
   wp.launch(
     _cam_local_to_global,
     dim=(d.nworld, m.ncam),
-    inputs=[m.cam_bodyid, m.cam_pos, m.cam_quat, d.xpos, d.xquat],
-    outputs=[d.cam_xpos, d.cam_xmat],
-  )
-  wp.launch(
-    _cam_fn,
-    dim=(d.nworld, m.ncam),
-    inputs=[m.cam_mode, m.cam_bodyid, m.cam_targetbodyid, m.cam_poscom0, m.cam_pos0, m.cam_mat0, d.xpos, d.subtree_com],
+    inputs=[
+      m.cam_mode,
+      m.cam_bodyid,
+      m.cam_targetbodyid,
+      m.cam_pos,
+      m.cam_quat,
+      m.cam_poscom0,
+      m.cam_pos0,
+      m.cam_mat0,
+      d.xpos,
+      d.xquat,
+      d.subtree_com,
+    ],
     outputs=[d.cam_xpos, d.cam_xmat],
   )
   wp.launch(
     _light_local_to_global,
     dim=(d.nworld, m.nlight),
-    inputs=[m.light_bodyid, m.light_pos, m.light_dir, d.xpos, d.xquat],
-    outputs=[d.light_xpos, d.light_xdir],
-  )
-  wp.launch(
-    _light_fn,
-    dim=(d.nworld, m.nlight),
     inputs=[
       m.light_mode,
       m.light_bodyid,
       m.light_targetbodyid,
+      m.light_pos,
+      m.light_dir,
       m.light_poscom0,
       m.light_pos0,
       m.light_dir0,
       d.xpos,
-      d.light_xpos,
+      d.xquat,
       d.subtree_com,
     ],
     outputs=[d.light_xpos, d.light_xdir],
@@ -920,7 +913,7 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array3d(dtype=float), L: wp.array3
 def _tile_cholesky_factorize(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization of a tile."""
 
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def cholesky_factorize(
     # Data In:
     qM_in: wp.array3d(dtype=float),
@@ -2361,7 +2354,7 @@ def _solve_LD_sparse(
 def _tile_cholesky_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky backsubstitution of a tile."""
 
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def cholesky_solve(
     # In:
     L: wp.array3d(dtype=float),
@@ -2440,7 +2433,7 @@ def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=f
 def _tile_cholesky_factorize_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization and backsubstitution of a tile."""
 
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def cholesky_factorize_solve(
     # In:
     M: wp.array3d(dtype=float),

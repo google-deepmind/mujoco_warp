@@ -28,6 +28,7 @@ from etils import epath
 from . import forward
 from . import io
 from . import warp_util
+from .types import BroadphaseType
 from .types import ConeType
 from .types import Data
 from .types import DisableBit
@@ -46,7 +47,8 @@ def fixture(
   contact: bool = True,
   constraint: bool = True,
   equality: bool = True,
-  passive: bool = True,
+  spring: bool = True,
+  damper: bool = True,
   gravity: bool = True,
   clampctrl: bool = True,
   filterparent: bool = True,
@@ -61,6 +63,7 @@ def fixture(
   ls_iterations: Optional[int] = None,
   ls_parallel: Optional[bool] = None,
   sparse: Optional[bool] = None,
+  broadphase: Optional[BroadphaseType] = None,
   disableflags: Optional[int] = None,
   enableflags: Optional[int] = None,
   applied: bool = False,
@@ -87,8 +90,10 @@ def fixture(
     mjm.opt.disableflags |= DisableBit.CONSTRAINT
   if not equality:
     mjm.opt.disableflags |= DisableBit.EQUALITY
-  if not passive:
-    mjm.opt.disableflags |= DisableBit.PASSIVE
+  if not spring:
+    mjm.opt.disableflags |= DisableBit.SPRING
+  if not damper:
+    mjm.opt.disableflags |= DisableBit.DAMPER
   if not gravity:
     mjm.opt.disableflags |= DisableBit.GRAVITY
   if not clampctrl:
@@ -146,12 +151,53 @@ def fixture(
     mjd.mocap_quat = mocap_quat
 
   mujoco.mj_forward(mjm, mjd)
+  mjd.qacc_warmstart = mjd.qacc
   m = io.put_model(mjm)
   if ls_parallel is not None:
     m.opt.ls_parallel = ls_parallel
+  if broadphase is not None:
+    m.opt.broadphase = broadphase
 
   d = io.put_data(mjm, mjd, nworld=nworld, nconmax=nconmax, njmax=njmax)
   return mjm, mjd, m, d
+
+
+def find_keys(model: mujoco.MjModel, keyname_prefix: str) -> list[int]:
+  """Finds keyframes that start with keyname_prefix."""
+  keys = []
+
+  for keyid in range(model.nkey):
+    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_KEY, keyid)
+    if name.startswith(keyname_prefix):
+      keys.append(keyid)
+
+  return keys
+
+
+def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
+  """Make a ctrl trajectory with linear interpolation."""
+  ctrls = []
+  prev_ctrl_key = np.zeros(model.nu, dtype=np.float64)
+  prev_time, time = 0.0, 0.0
+
+  for key in keys:
+    ctrl_key, ctrl_time = model.key_ctrl[key], model.key_time[key]
+    if not ctrls and ctrl_time != 0.0:
+      raise ValueError("first keyframe must have time 0.0")
+    elif ctrls and ctrl_time <= prev_time:
+      raise ValueError("keyframes must be in time order")
+
+    while time < ctrl_time:
+      frac = (time - prev_time) / (ctrl_time - prev_time)
+      ctrls.append(prev_ctrl_key * (1 - frac) + ctrl_key * frac)
+      time += model.opt.timestep
+
+    ctrls.append(ctrl_key)
+    time += model.opt.timestep
+    prev_ctrl_key = ctrl_key
+    prev_time = time
+
+  return np.array(ctrls)
 
 
 def _sum(stack1, stack2):
@@ -170,6 +216,7 @@ def ctrl_noise(
   actuator_ctrllimited: wp.array(dtype=bool),
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   # In:
+  ctrl_center: wp.array1d(dtype=float),
   step: int,
   ctrlnoise: float,
   # Data out:
@@ -180,7 +227,9 @@ def ctrl_noise(
   center = 0.0
   radius = 1.0
   ctrlrange = actuator_ctrlrange[0, actid]
-  if actuator_ctrllimited[actid]:
+  if ctrl_center.shape[0] > 0:
+    center = ctrl_center[actid]
+  elif actuator_ctrllimited[actid]:
     center = (ctrlrange[1] + ctrlrange[0]) / 2.0
     radius = (ctrlrange[1] - ctrlrange[0]) / 2.0
   radius *= ctrlnoise
@@ -193,10 +242,11 @@ def benchmark(
   m: Model,
   d: Data,
   nstep: int,
+  ctrls: Optional[np.ndarray] = None,
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
-) -> Tuple[float, float, dict, list, list, list]:
+) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 
   Args:
@@ -204,6 +254,8 @@ def benchmark(
     m (Model): The model containing kinematic and dynamic information (device).
     d (Data): The data object containing the current state and output information (device).
     nstep (int): Number of timesteps.
+    ctrls (list, optional): control sequence to apply during benchmarking.
+                            Default is None.
     event_trace (bool, optional): If True, time routines decorated with @event_scope.
                                   Default is False.
     measure_alloc (bool, optional): If True, record number of contacts and constraints.
@@ -217,34 +269,34 @@ def benchmark(
     list: Number of contacts.
     list: Number of constraints.
     list: Number of solver iterations.
+    int: Number of converged worlds.
   """
-  jit_beg = time.perf_counter()
-
-  fn(m, d)
-
-  jit_end = time.perf_counter()
-  jit_duration = jit_end - jit_beg
-  wp.synchronize()
 
   trace = {}
   ncon, nefc, solver_niter = [], [], []
+  center = wp.array([], dtype=wp.float32)
 
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
+    jit_beg = time.perf_counter()
     with wp.ScopedCapture() as capture:
       fn(m, d)
+    jit_end = time.perf_counter()
+    jit_duration = jit_end - jit_beg
+
     graph = capture.graph
 
     time_vec = np.zeros(nstep)
     for i in range(nstep):
       with wp.ScopedStream(wp.get_stream()):
+        if ctrls is not None:
+          center = wp.array(ctrls[i], dtype=wp.float32)
         wp.launch(
           ctrl_noise,
           dim=(d.nworld, m.nu),
-          inputs=[
-            m.actuator_ctrllimited, m.actuator_ctrlrange, i, 0.01
-          ],
-          outputs=[d.ctrl])  # fmt: skip
+          inputs=[m.actuator_ctrllimited, m.actuator_ctrlrange, center, i, 0.01],
+          outputs=[d.ctrl],
+        )
         wp.synchronize()
 
         run_beg = time.perf_counter()
@@ -258,14 +310,15 @@ def benchmark(
       else:
         trace = tracer.trace()
       if measure_alloc:
-        ncon.append(d.ncon.numpy()[0])
-        nefc.append(np.sum(d.nefc.numpy()))
+        ncon.append(np.max([d.ncon.numpy()[0], d.ncollision.numpy()[0]]))
+        nefc.append(np.max(d.nefc.numpy()))
       if measure_solver_niter:
         solver_niter.append(d.solver_niter.numpy())
 
+    nsuccess = np.sum(~np.any(np.isnan(d.qpos.numpy()), axis=1))
     run_duration = np.sum(time_vec)
 
-  return jit_duration, run_duration, trace, ncon, nefc, solver_niter
+  return jit_duration, run_duration, trace, ncon, nefc, solver_niter, nsuccess
 
 
 class BenchmarkSuite:
@@ -309,12 +362,22 @@ class BenchmarkSuite:
   rounds = 1
   sample_time = 0
   repeat = 1
+  replay = ""
 
   def setup_cache(self):
     module = importlib.import_module(self.__module__)
     path = os.path.join(os.path.realpath(os.path.dirname(module.__file__)), self.path)
     mjm = mujoco.MjModel.from_xml_path(path)
     mjd = mujoco.MjData(mjm)
+    ctrls = None
+
+    if self.replay:
+      keys = find_keys(mjm, self.replay)
+      if not keys:
+        raise ValueError(f"Key prefix not find: {self.replay}")
+      ctrls = make_trajectory(mjm, keys)
+      mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
+
     if mjm.nkey > 0:
       mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
 
@@ -322,17 +385,20 @@ class BenchmarkSuite:
     mujoco.mj_forward(mjm, mjd)
 
     wp.init()
+    if os.environ.get("ASV_CACHE_KERNELS", "false").lower() == "false":
+      wp.clear_kernel_cache()
 
     free_before = wp.get_device().free_memory
     m = io.put_model(mjm)
     d = io.put_data(mjm, mjd, self.batch_size, self.nconmax, self.njmax)
+    free_after = wp.get_device().free_memory
 
-    jit_duration, _, trace, _, _, solver_niter = benchmark(forward.step, m, d, 1000, True, False, True)
+    jit_duration, _, trace, _, _, solver_niter, _ = benchmark(forward.step, m, d, 1000, ctrls, True, False, True)
     metrics = {
       "jit_duration": jit_duration,
       "solver_niter_mean": np.mean(solver_niter),
       "solver_niter_p95": np.quantile(solver_niter, 0.95),
-      "device_memory_allocated": free_before - wp.get_device().free_memory,
+      "device_memory_allocated": free_before - free_after,
     }
 
     def tree_flatten(d, parent_k=""):

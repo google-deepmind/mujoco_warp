@@ -19,13 +19,14 @@ from .collision_hfield import hfield_prism_vertex
 from .collision_primitive import Geom
 from .math import gjk_normalize
 from .math import orthonormal
+from .math import orthonormal_to_z
 from .support import all_same
 from .support import any_different
 from .types import MJ_MINVAL
 from .types import GeomType
 
 # TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
+wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
@@ -203,8 +204,8 @@ def gjk_legacy(
     depth = dist_min
     normal = dir_n
 
-  sd = simplex0 - simplex1
-  dir = orthonormal(sd)
+  sd = wp.normalize(simplex0 - simplex1)
+  dir = orthonormal_to_z(sd)
 
   dist_max, simplex3 = _gjk_support(geom1, geom2, geomtype1, geomtype2, dir)
 
@@ -304,14 +305,15 @@ def epa_legacy(
   normal: wp.vec3,
 ):
   # get the support, if depth < 0: objects do not intersect
-  depth, _ = _gjk_support(geom1, geom2, geomtype1, geomtype2, normal)
+  depth, simplex0 = _gjk_support(geom1, geom2, geomtype1, geomtype2, normal)
+  simplex[0] = simplex0
 
   if depth < -depth_extension:
     # Objects are not intersecting, and we do not obtain the closest points as
     # specified by depth_extension.
-    return wp.nan, wp.vec3(wp.nan, wp.nan, wp.nan)
+    return FLOAT_MAX, wp.vec3(wp.nan, wp.nan, wp.nan)
 
-  if wp.static(epa_exact_neg_distance):
+  if epa_exact_neg_distance:
     # Check closest points to all edges of the simplex, rather than just the
     # face normals. This gives the exact depth/normal for the non-intersecting
     # case.
@@ -364,7 +366,7 @@ def epa_legacy(
   # This is a hack to reduce compile time
   count = int(4)
   it = int(0)
-  for _ in range(wp.static(epa_iterations)):
+  for _ in range(epa_iterations):
     it += count
     count = wp.min(count * 3, EPS_BEST_COUNT)
 
@@ -391,7 +393,7 @@ def epa_legacy(
 
     # iterate over edges and get distance using support point
     for j in range(3):
-      if wp.static(epa_exact_neg_distance):
+      if epa_exact_neg_distance:
         # obtain closest point between new triangle edge and origin
         tqj = tris[ti + j]
 
@@ -663,7 +665,7 @@ def multicontact_legacy(
         m2 = v2[j]
         dd = (m1[0] - m2[0]) * (m1[0] - m2[0]) + (m1[1] - m2[1]) * (m1[1] - m2[1])
 
-        if i != 0 and j != 0 or dd < minDist:
+        if (i == 0 and j == 0) or (dd < minDist):
           minDist = dd
           var_rx = ((m1[0] + m2[0]) * dir + (m1[1] + m2[1]) * dir2 + (m1[2] + m2[2]) * normal) * 0.5
 

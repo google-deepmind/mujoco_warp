@@ -44,7 +44,6 @@ class BlockDim:
   euler_dense: int = 32
   actuator_velocity: int = 32
   tendon_velocity: int = 32
-  qfrc_actuator: int = 32
   # ray
   ray: int = 64
   # sensor
@@ -55,7 +54,7 @@ class BlockDim:
   cholesky_solve: int = 32
   cholesky_factorize_solve: int = 32
   # solver
-  update_gradient_cholesky: int = 32
+  update_gradient_cholesky: int = 64
   # support
   mul_m_dense: int = 32
 
@@ -130,7 +129,8 @@ class DisableBit(enum.IntFlag):
     FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
-    PASSIVE:      passive forces
+    SPRING:       passive spring forces
+    DAMPER:       passive damper forces
     GRAVITY:      gravitational forces
     CLAMPCTRL:    clamp control to specified range
     ACTUATION:    apply actuation forces
@@ -145,7 +145,8 @@ class DisableBit(enum.IntFlag):
   FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
-  PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
+  SPRING = mujoco.mjtDisableBit.mjDSBL_SPRING
+  DAMPER = mujoco.mjtDisableBit.mjDSBL_DAMPER
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
   WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
@@ -253,12 +254,6 @@ class JointType(enum.IntEnum):
   BALL = mujoco.mjtJoint.mjJNT_BALL
   SLIDE = mujoco.mjtJoint.mjJNT_SLIDE
   HINGE = mujoco.mjtJoint.mjJNT_HINGE
-
-  def dof_width(self) -> int:
-    return {0: 6, 1: 3, 2: 1, 3: 1}[self.value]
-
-  def qpos_width(self) -> int:
-    return {0: 7, 1: 4, 2: 1, 3: 1}[self.value]
 
 
 class ConeType(enum.IntEnum):
@@ -491,6 +486,7 @@ class EqType(enum.IntEnum):
     CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
     WELD: fix relative position and orientation of two bodies
+    TENDON: couple the lengths of two tendons with cubic
   """
 
   CONNECT = mujoco.mjtEq.mjEQ_CONNECT
@@ -526,6 +522,14 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec8f(wp.types.vector(length=8, dtype=float)):
+  pass
+
+
+class vec8i(wp.types.vector(length=8, dtype=int)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -549,6 +553,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
+    ccd_tolerance: convex collision solver tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -562,6 +567,7 @@ class Option:
     gjk_iterations: number of Gjk iterations in the convex narrowphase
     epa_iterations: number of Epa iterations in the convex narrowphase
     ls_parallel: evaluate engine solver step sizes in parallel
+    ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     density: density of medium
@@ -574,12 +580,16 @@ class Option:
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
+    legacy_gjk: run legacy gjk algorithm
+    contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
+                             contacts matched after this value is exceded will be ignored
   """
 
   timestep: wp.array(dtype=float)
   impratio: wp.array(dtype=float)
   tolerance: wp.array(dtype=float)
   ls_tolerance: wp.array(dtype=float)
+  ccd_tolerance: wp.array(dtype=float)
   gravity: wp.array(dtype=wp.vec3)
   magnetic: wp.array(dtype=wp.vec3)
   integrator: int
@@ -592,7 +602,8 @@ class Option:
   is_sparse: bool
   gjk_iterations: int  # warp only
   epa_iterations: int  # warp only
-  ls_parallel: bool
+  ls_parallel: bool  # warp only
+  ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
   has_fluid: bool
   density: wp.array(dtype=float)
@@ -603,6 +614,8 @@ class Option:
   sdf_initpoints: int
   sdf_iterations: int
   run_collision_detection: bool  # warp only
+  legacy_gjk: bool
+  contact_sensor_maxmatch: int  # warp only
 
 
 @dataclasses.dataclass
@@ -642,7 +655,6 @@ class Constraint:
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
     state: constraint state                           (nworld, njmax)
-    gtol: linesearch termination tolerance            (nworld,)
     mv: qM @ search                                   (nworld, nv)
     jv: efc_J @ search                                (nworld, njmax)
     quad: quadratic cost coefficients                 (nworld, njmax, 3)
@@ -653,18 +665,6 @@ class Constraint:
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    ls_done: linesearch done                          (nworld,)
-    p0: initial point                                 (nworld, 3)
-    lo: low point bounding the line search interval   (nworld, 3)
-    lo_alpha: alpha for low point                     (nworld,)
-    hi: high point bounding the line search interval  (nworld, 3)
-    hi_alpha: alpha for high point                    (nworld,)
-    lo_next: next low point                           (nworld, 3)
-    lo_next_alpha: alpha for next low point           (nworld,)
-    hi_next: next high point                          (nworld, 3)
-    hi_next_alpha: alpha for next high point          (nworld,)
-    mid: loss at mid_alpha                            (nworld, 3)
-    mid_alpha: midpoint between lo_alpha and hi_alpha (nworld,)
     cost_candidate: costs associated with step sizes  (nworld, nlsp)
   """
 
@@ -691,7 +691,6 @@ class Constraint:
   cost: wp.array(dtype=float)
   prev_cost: wp.array(dtype=float)
   state: wp.array2d(dtype=int)
-  gtol: wp.array(dtype=float)
   mv: wp.array2d(dtype=float)
   jv: wp.array2d(dtype=float)
   quad: wp.array2d(dtype=wp.vec3)
@@ -703,18 +702,6 @@ class Constraint:
   beta: wp.array(dtype=float)
   done: wp.array(dtype=bool)
   # linesearch
-  ls_done: wp.array(dtype=bool)
-  p0: wp.array(dtype=wp.vec3)
-  lo: wp.array(dtype=wp.vec3)
-  lo_alpha: wp.array(dtype=float)
-  hi: wp.array(dtype=wp.vec3)
-  hi_alpha: wp.array(dtype=float)
-  lo_next: wp.array(dtype=wp.vec3)
-  lo_next_alpha: wp.array(dtype=float)
-  hi_next: wp.array(dtype=wp.vec3)
-  hi_next_alpha: wp.array(dtype=float)
-  mid: wp.array(dtype=wp.vec3)
-  mid_alpha: wp.array(dtype=float)
   cost_candidate: wp.array2d(dtype=float)
 
 
@@ -751,6 +738,7 @@ class Model:
     nsite: number of sites
     ncam: number of cameras
     nlight: number of lights
+    nmat: number of materials
     nexclude: number of excluded geom pairs
     neq: number of equality constraints
     nmocap: number of mocap bodies
@@ -883,6 +871,9 @@ class Model:
     light_mode: light tracking mode (CamLightType)           (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
+    light_type: spot, directional, etc. (mjtLightType)       (nworld, nlight)
+    light_castshadow: does light cast shadows                (nworld, nlight)
+    light_active: is light active                            (nworld, nlight)
     light_pos: position rel. to body frame                   (nworld, nlight, 3)
     light_dir: direction rel. to body frame                  (nworld, nlight, 3)
     light_poscom0: global position rel. to sub-com in qpos0  (nworld, nlight, 3)
@@ -891,11 +882,10 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
-    mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_faceadr: first face address                         (nmesh,)
     mesh_face: face indices for all meshes                   (nface, 3)
     mesh_normaladr: first normal address                     (nmesh,)
-    mesh_normal: normals for all meshes                      (nmeshnormal x 3)
+    mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_graphadr: graph data address; -1: no graph          (nmesh,)
     mesh_graph: convex graph data                            (nmeshgraph,)
     mesh_quat: rotation applied to asset vertices            (nmesh, 4)
@@ -908,6 +898,9 @@ class Model:
     mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
     mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
     mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
+    oct_aabb: octree axis-aligned bounding boxes             (noct, 6)
+    oct_child: octree children                               (noct, 8)
+    oct_coeff: octree interpolation coefficients             (noct, 8)
     eq_type: constraint type (EqType)                        (neq,)
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
@@ -1028,6 +1021,8 @@ class Model:
     plugin_attr: config attributes of geom plugin            (nplugin, 3)
     geom_plugin_index: geom index in plugin array            (ngeom, )
     mocap_bodyid: id of body for mocap                       (nmocap,)
+    mat_texid: texture id for rendering                      (nworld, nmat, mjNTEXROLE)
+    mat_texrepeat: texture repeat for rendering              (nworld, nmat, 2)
     mat_rgba: rgba                                           (nworld, nmat, 4)
     actuator_trntype_body_adr: addresses for actuators       (<=nu,)
                                with body transmission
@@ -1048,6 +1043,7 @@ class Model:
   nsite: int
   ncam: int
   nlight: int
+  nmat: int
   nflex: int
   nflexvert: int
   nflexedge: int
@@ -1187,6 +1183,9 @@ class Model:
   light_mode: wp.array(dtype=int)
   light_bodyid: wp.array(dtype=int)
   light_targetbodyid: wp.array(dtype=int)
+  light_type: wp.array2d(dtype=int)
+  light_castshadow: wp.array2d(dtype=bool)
+  light_active: wp.array2d(dtype=bool)
   light_pos: wp.array2d(dtype=wp.vec3)
   light_dir: wp.array2d(dtype=wp.vec3)
   light_poscom0: wp.array2d(dtype=wp.vec3)
@@ -1204,7 +1203,7 @@ class Model:
   flex_elemedge: wp.array(dtype=int)
   flexedge_length0: wp.array(dtype=float)
   flex_stiffness: wp.array(dtype=float)
-  flex_bending: wp.array(dtype=wp.mat44f)
+  flex_bending: wp.array(dtype=float)
   flex_damping: wp.array(dtype=float)
   mesh_vertadr: wp.array(dtype=int)
   mesh_vertnum: wp.array(dtype=int)
@@ -1225,6 +1224,9 @@ class Model:
   mesh_polymapadr: wp.array(dtype=int)
   mesh_polymapnum: wp.array(dtype=int)
   mesh_polymap: wp.array(dtype=int)
+  oct_aabb: wp.array2d(dtype=wp.vec3)
+  oct_child: wp.array(dtype=vec8i)
+  oct_coeff: wp.array(dtype=vec8f)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)
@@ -1339,6 +1341,8 @@ class Model:
   plugin_attr: wp.array(dtype=wp.vec3f)
   geom_plugin_index: wp.array(dtype=int)  # warp only
   mocap_bodyid: wp.array(dtype=int)  # warp only
+  mat_texid: wp.array3d(dtype=int)
+  mat_texrepeat: wp.array2d(dtype=wp.vec2)
   mat_rgba: wp.array2d(dtype=wp.vec4)
   actuator_trntype_body_adr: wp.array(dtype=int)  # warp only
   geompair2hfgeompair: wp.array(dtype=int)  # warp only
