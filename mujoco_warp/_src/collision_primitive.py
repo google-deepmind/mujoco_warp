@@ -40,6 +40,7 @@ from .types import GeomType
 from .types import Model
 from .types import vec5
 from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -76,22 +77,23 @@ class Geom:
 
 @wp.func
 def _geom(
+  # kernel_analyzer: off
   # Model:
-  geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  hfield_adr: wp.array(dtype=int),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
+  geom_type: int,
+  geom_dataid: int,
+  geom_size: wp.vec3,
+  hfield_adr: int,
+  hfield_nrow: int,
+  hfield_ncol: int,
+  hfield_size: wp.vec4,
   hfield_data: wp.array(dtype=float),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
+  mesh_vertadr: int,
+  mesh_vertnum: int,
   mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_graphadr: wp.array(dtype=int),
+  mesh_graphadr: int,
   mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
+  mesh_polynum: int,
+  mesh_polyadr: int,
   mesh_polynormal: wp.array(dtype=wp.vec3),
   mesh_polyvertadr: wp.array(dtype=int),
   mesh_polyvertnum: wp.array(dtype=int),
@@ -100,28 +102,25 @@ def _geom(
   mesh_polymapnum: wp.array(dtype=int),
   mesh_polymap: wp.array(dtype=int),
   # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xpos_in: wp.vec3,
+  geom_xmat_in: wp.mat33,
   # In:
-  worldid: int,
-  gid: int,
   hftri_index: int,
+  # kernel_analyzer: on
 ) -> Geom:
   geom = Geom()
-  geom.pos = geom_xpos_in[worldid, gid]
-  rot = geom_xmat_in[worldid, gid]
-  geom.rot = rot
-  geom.size = geom_size[worldid, gid]
-  geom.normal = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])  # plane
-  dataid = geom_dataid[gid]
+  geom.pos = geom_xpos_in
+  geom.rot = geom_xmat_in
+  geom.size = geom_size
+  geom.normal = wp.vec3(geom_xmat_in[0, 2], geom_xmat_in[1, 2], geom_xmat_in[2, 2])  # plane
 
   # If geom is MESH, get mesh verts
-  if dataid >= 0 and geom_type[gid] == int(GeomType.MESH.value):
-    geom.vertadr = mesh_vertadr[dataid]
-    geom.vertnum = mesh_vertnum[dataid]
-    geom.graphadr = mesh_graphadr[dataid]
-    geom.mesh_polynum = mesh_polynum[dataid]
-    geom.mesh_polyadr = mesh_polyadr[dataid]
+  if geom_dataid >= 0 and geom_type == int(GeomType.MESH.value):
+    geom.vertadr = mesh_vertadr
+    geom.vertnum = mesh_vertnum
+    geom.graphadr = mesh_graphadr
+    geom.mesh_polynum = mesh_polynum
+    geom.mesh_polyadr = mesh_polyadr
   else:
     geom.vertadr = -1
     geom.vertnum = -1
@@ -129,7 +128,7 @@ def _geom(
     geom.mesh_polynum = -1
     geom.mesh_polyadr = -1
 
-  if geom_type[gid] == int(GeomType.MESH.value):
+  if geom_type == int(GeomType.MESH.value):
     geom.vert = mesh_vert
     geom.graph = mesh_graph
     geom.mesh_polynormal = mesh_polynormal
@@ -141,9 +140,9 @@ def _geom(
     geom.mesh_polymap = mesh_polymap
 
   # If geom is HFIELD triangle, compute triangle prism verts
-  if geom_type[gid] == int(GeomType.HFIELD.value):
+  if geom_type == int(GeomType.HFIELD.value):
     geom.hfprism = hfield_triangle_prism(
-      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, gid, hftri_index
+      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, hftri_index
     )
 
   geom.index = -1
@@ -279,9 +278,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    a = convex.vert[convex.vertadr + imax]
-    indices[0] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    a = convex.vert[convex.vertadr + imax_global]
+    indices[0] = imax_global
 
     # Find point b (furthest from a)
     b_dist = wp.float32(-_HUGE_VAL)
@@ -300,9 +299,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    b = convex.vert[convex.vertadr + imax]
-    indices[1] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    b = convex.vert[convex.vertadr + imax_global]
+    indices[1] = imax_global
 
     # Find point c (furthest along axis orthogonal to a-b)
     ab = wp.cross(n, a - b)
@@ -315,7 +314,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         idx = convex.graph[vert_globalid + subidx]
         support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + idx], n)
         dist_mask = wp.where(support > threshold, 0.0, -_HUGE_VAL)
-        ap = a - convex.vert[convex.vertadr + i]
+        ap = a - convex.vert[convex.vertadr + idx]
         dist = wp.abs(wp.dot(ap, ab)) + dist_mask
         if dist > c_dist:
           c_dist = dist
@@ -323,9 +322,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    c = convex.vert[convex.vertadr + imax]
-    indices[2] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    c = convex.vert[convex.vertadr + imax_global]
+    indices[2] = imax_global
 
     # Find point d (furthest from other triangle edges)
     ac = wp.cross(n, a - c)
@@ -349,8 +348,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
         i += int(1)
       if imax == prev:
         break
-    imax = convex.graph[vert_globalid + imax]
-    indices[3] = imax
+    imax_global = convex.graph[vert_globalid + imax]
+    indices[3] = imax_global
 
   # Collect contacts from unique indices
   for i in range(3, -1, -1):
@@ -1385,36 +1384,36 @@ def box_box_wrapper(
   )
 
   for i in range(8):
-    disti = dist[i]
+    if dist[i] - margin >= 0.0:
+      continue
 
-    if disti - margin < 0.0:
-      write_contact(
-        nconmax_in,
-        disti,
-        pos[i],
-        make_frame(normal[i]),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        ncon_out,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-      )
+    write_contact(
+      nconmax_in,
+      dist[i],
+      pos[i],
+      make_frame(normal[i]),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      worldid,
+      ncon_out,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+    )
 
 
 _PRIMITIVE_COLLISIONS = {
@@ -1458,7 +1457,7 @@ def _primitive_narrowphase_builder(m: Model):
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
 
-  @wp.kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def _primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -1559,22 +1558,23 @@ def _primitive_narrowphase_builder(m: Model):
 
     hftri_index = collision_hftri_index_in[tid]
 
+    geom1_dataid = geom_dataid[g1]
     geom1 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      type1,
+      geom1_dataid,
+      geom_size[worldid, g1],
+      hfield_adr[geom1_dataid],
+      hfield_nrow[geom1_dataid],
+      hfield_ncol[geom1_dataid],
+      hfield_size[geom1_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom1_dataid],
+      mesh_vertnum[geom1_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom1_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom1_dataid],
+      mesh_polyadr[geom1_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -1582,29 +1582,28 @@ def _primitive_narrowphase_builder(m: Model):
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g1,
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
       hftri_index,
     )
 
+    geom2_dataid = geom_dataid[g2]
     geom2 = _geom(
-      geom_type,
-      geom_dataid,
-      geom_size,
-      hfield_adr,
-      hfield_nrow,
-      hfield_ncol,
-      hfield_size,
+      type2,
+      geom2_dataid,
+      geom_size[worldid, g2],
+      hfield_adr[geom2_dataid],
+      hfield_nrow[geom2_dataid],
+      hfield_ncol[geom2_dataid],
+      hfield_size[geom2_dataid],
       hfield_data,
-      mesh_vertadr,
-      mesh_vertnum,
+      mesh_vertadr[geom2_dataid],
+      mesh_vertnum[geom2_dataid],
       mesh_vert,
-      mesh_graphadr,
+      mesh_graphadr[geom2_dataid],
       mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
+      mesh_polynum[geom2_dataid],
+      mesh_polyadr[geom2_dataid],
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -1612,10 +1611,8 @@ def _primitive_narrowphase_builder(m: Model):
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-      g2,
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
       hftri_index,
     )
 

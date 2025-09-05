@@ -30,6 +30,9 @@ MJ_CCD_ITERATIONS = 12
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
+# tolerance override for float32
+_TOLERANCE_F32 = 1.0e-6
+
 
 def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
   geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
@@ -96,7 +99,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   plugin_id = np.array(plugin_id)
   plugin_attr = np.array(plugin_attr)
-  volume_ids, volumes, oct_aabb = _mujoco_octree_to_warp_volume(mjm)
 
   if mjm.nflex > 1:
     raise NotImplementedError("Only one flex is unsupported.")
@@ -118,20 +120,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
-
-  # contact sensor
-  is_contact_sensor = mjm.sensor_type == types.SensorType.CONTACT
-  if is_contact_sensor.any():
-    # matching
-    if (
-      (mjm.sensor_objtype[is_contact_sensor] != types.ObjType.GEOM)
-      | (mjm.sensor_reftype[is_contact_sensor] != types.ObjType.GEOM)
-    ).any():
-      raise NotImplementedError("Contact sensor: only geom1-geom2 matching is implemented.")
-
-    # reduction
-    if (~((mjm.sensor_intprm[is_contact_sensor, 1] == 1) | (mjm.sensor_intprm[is_contact_sensor, 1] == 2))).any():
-      raise NotImplementedError(f"Contact sensor: only mindist and maxforce reduction are implemented.")
 
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
@@ -448,8 +436,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     npair=mjm.npair,
     opt=types.Option(
       timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
-      tolerance=create_nmodel_batched_array(np.array(mjm.opt.tolerance), dtype=float, expand_dim=False),
+      tolerance=create_nmodel_batched_array(
+        np.array(np.maximum(mjm.opt.tolerance, _TOLERANCE_F32)), dtype=float, expand_dim=False
+      ),
       ls_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ls_tolerance), dtype=float, expand_dim=False),
+      ccd_tolerance=create_nmodel_batched_array(np.array(mjm.opt.ccd_tolerance), dtype=float, expand_dim=False),
       gravity=create_nmodel_batched_array(mjm.opt.gravity, dtype=wp.vec3, expand_dim=False),
       magnetic=create_nmodel_batched_array(mjm.opt.magnetic, dtype=wp.vec3, expand_dim=False),
       wind=create_nmodel_batched_array(mjm.opt.wind, dtype=wp.vec3, expand_dim=False),
@@ -478,6 +469,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
       legacy_gjk=False,
+      contact_sensor_maxmatch=64,
     ),
     stat=types.Statistic(
       meaninertia=mjm.stat.meaninertia,
@@ -639,9 +631,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh_polymapadr=wp.array(mjm.mesh_polymapadr, dtype=int),
     mesh_polymapnum=wp.array(mjm.mesh_polymapnum, dtype=int),
     mesh_polymap=wp.array(mjm.mesh_polymap, dtype=int),
-    volume_ids=volume_ids,
-    volumes=volumes,
-    oct_aabb=oct_aabb,
+    oct_aabb=wp.array2d(mjm.oct_aabb, dtype=wp.vec3),
+    oct_child=wp.array(mjm.oct_child, dtype=types.vec8i),
+    oct_coeff=wp.array(mjm.oct_coeff, dtype=types.vec8f),
     nhfield=mjm.nhfield,
     nhfielddata=mjm.nhfielddata,
     nhfieldgeom=nhfieldgeom,
@@ -859,84 +851,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
 
   return m
-
-
-def _mujoco_octree_to_warp_volume(
-  mjm: mujoco.MjModel, resolution: int = 128
-) -> Tuple[wp.array, Tuple[wp.Volume, ...], wp.array]:
-  """Constructs volume data from MuJoCo octrees."""
-  volume_ids = [0] * len(mjm.mesh_octadr)
-  volumes = []
-  oct_aabbs = [None] * len(mjm.mesh_octadr)
-  for mesh_id in mjm.geom_dataid:
-    if mesh_id != -1 and mesh_id < len(mjm.mesh_octadr):
-      octadr = mjm.mesh_octadr[mesh_id]
-      if octadr != -1:
-        oct_child = mjm.oct_child[8 * octadr :].reshape(-1, 8)
-        oct_aabb = mjm.oct_aabb[6 * octadr :].reshape(-1, 6)
-        oct_coeff = mjm.oct_coeff[8 * octadr :].reshape(-1, 8)
-
-        root_aabb = oct_aabb[0]
-        center = root_aabb[:3]
-        half_size = root_aabb[3:]
-
-        original_mins = center - half_size
-        original_maxs = center + half_size
-
-        margin_factor = 0.02
-        extents = original_maxs - original_mins
-        margin = margin_factor * extents
-
-        mins = original_mins - margin
-        maxs = original_maxs + margin
-        expanded_extents = maxs - mins
-
-        voxel_size = expanded_extents.max() / resolution
-
-        nums = np.ceil(expanded_extents / voxel_size).astype(dtype=int)
-
-        actual_extents = nums * voxel_size
-        maxs = mins + actual_extents
-
-        sdf_values = np.zeros(tuple(nums), dtype=np.float32)
-
-        for x in range(nums[0]):
-          for y in range(nums[1]):
-            for z in range(nums[2]):
-              pos = mins + voxel_size * np.array([x, y, z])
-              within_bounds = np.all(pos >= original_mins) and np.all(pos <= original_maxs)
-              if within_bounds:
-                sdf_val = sample_octree_sdf(pos, oct_child, oct_aabb, oct_coeff)
-              else:
-                clamped_pos = np.clip(pos, original_mins, original_maxs)
-                sdf_val = sample_octree_sdf(clamped_pos, oct_child, oct_aabb, oct_coeff)
-              sdf_values[x, y, z] = sdf_val
-
-        device = wp.get_device()
-        if device.is_cuda:
-          volume = wp.Volume.load_from_numpy(sdf_values, mins, voxel_size, 1.0, device=device)
-          volume_ids[mesh_id] = volume.id
-          volumes.append(volume)
-        else:
-          volume_ids[mesh_id] = 0
-        oct_aabbs[mesh_id] = [center, half_size]
-
-  volume_ids_array = wp.array(data=volume_ids, dtype=wp.uint64)
-
-  processed_aabbs = []
-  for aabb in oct_aabbs:
-    if aabb is not None:
-      processed_aabbs.append(aabb)
-    else:
-      zero_center = np.zeros(3, dtype=np.float32)
-      zero_half_size = np.zeros(3, dtype=np.float32)
-      processed_aabbs.append([zero_center, zero_half_size])
-
-  aabb_array = np.array(processed_aabbs, dtype=np.float32)
-  oct_aabb_array = wp.array2d(data=aabb_array, dtype=wp.vec3)
-  volumes_tuple = tuple(volumes)
-
-  return volume_ids_array, volumes_tuple, oct_aabb_array
 
 
 def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
