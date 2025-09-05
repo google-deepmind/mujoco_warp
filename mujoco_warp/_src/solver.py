@@ -1376,7 +1376,7 @@ def state_check(D: float, state: int) -> float:
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
   TILE_SIZE = tile_size
 
-  @wp.kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1455,7 +1455,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
 
   TILE_SIZE_K = tile_size
 
-  @nested_kernel
+  @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
