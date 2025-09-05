@@ -24,6 +24,7 @@ from .collision_primitive import geom
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
+from .types import MJ_MAXCONPAIR
 from .types import MJ_MAXVAL
 from .types import Data
 from .types import GeomType
@@ -617,6 +618,7 @@ def ccd_hf_kernel_builder(
     adr = hfield_adr[geom1_dataid]
 
     # process all prisms in subgrid
+    cnt = int(0)
     for r in range(rmin, rmax):
       nvert = int(0)
       for c in range(cmin, cmax + 1):
@@ -749,6 +751,11 @@ def ccd_hf_kernel_builder(
               contact_geom_out,
               contact_worldid_out,
             )
+
+            cnt += 1
+
+            if cnt >= MJ_MAXCONPAIR:
+              return
 
   return ccd_hf_kernel
 

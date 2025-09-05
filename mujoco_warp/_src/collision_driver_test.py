@@ -839,31 +839,30 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
 
-  # TODO(team):
-  # def test_hfield_maxconpair(self):
-  #   _XML = f"""
-  #   <mujoco>
-  #     <asset>
-  #       <hfield name="hfield" nrow="10" ncol="10" size="1e-6 1e-6 1 1"/>
-  #     </asset>
-  #     <worldbody>
-  #       <body>
-  #         <joint type="slide" axis="0 0 1"/>
-  #         <geom type="sphere" size=".1"/>
-  #       </body>
-  #       <geom type="hfield" hfield="hfield"/>
-  #     </worldbody>
-  #     <keyframe>
-  #       <key qpos=".0999"/>
-  #     </keyframe>
-  #   </mujoco>
-  #   """
+  def test_hfield_maxconpair(self):
+    _XML = f"""
+    <mujoco>
+      <asset>
+        <hfield name="hfield" nrow="10" ncol="10" size="1e-6 1e-6 1 1"/>
+      </asset>
+      <worldbody>
+        <body>
+          <joint type="slide" axis="0 0 1"/>
+          <geom type="sphere" size=".1"/>
+        </body>
+        <geom type="hfield" hfield="hfield"/>
+      </worldbody>
+      <keyframe>
+        <key qpos=".0999"/>
+      </keyframe>
+    </mujoco>
+    """
 
-  #   _, _, m, d = test_util.fixture(xml=_XML, keyframe=0)
+    _, _, m, d = test_util.fixture(xml=_XML, keyframe=0)
 
-  #   mjwarp.collision(m, d)
+    mjwarp.collision(m, d)
 
-  #   np.testing.assert_equal(d.ncon.numpy()[0], types.MJ_MAXCONPAIR)
+    np.testing.assert_equal(d.ncon.numpy()[0], types.MJ_MAXCONPAIR)
 
   def test_min_friction(self):
     _, _, _, d = test_util.fixture(
