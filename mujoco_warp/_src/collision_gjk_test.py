@@ -71,8 +71,6 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     ncon_out: wp.array(dtype=int),
     pos_out: wp.array(dtype=wp.vec3),
   ):
-    MESHGEOM = int(GeomType.MESH.value)
-
     geom1 = Geom()
     geom1.index = -1
     geomtype1 = geom_type[gid1]
@@ -82,7 +80,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
-    if geom_dataid[gid1] >= 0 and geom_type[gid1] == MESHGEOM:
+    if geom_dataid[gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
       dataid = geom_dataid[gid1]
       geom1.vertadr = mesh_vertadr[dataid]
       geom1.vertnum = mesh_vertnum[dataid]
@@ -106,7 +104,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 
-    if geom_dataid[gid2] >= 0 and geom_type[gid2] == MESHGEOM:
+    if geom_dataid[gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
       dataid = geom_dataid[gid2]
       geom2.vertadr = mesh_vertadr[dataid]
       geom2.vertnum = mesh_vertnum[dataid]
