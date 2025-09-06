@@ -1648,7 +1648,6 @@ def _reset_nworld(
   # Data out:
   solver_niter_out: wp.array(dtype=int),
   ncon_out: wp.array(dtype=int),
-  ncon_world_out: wp.array(dtype=int),
   ncon_hfield_out: wp.array2d(dtype=int),
   ne_out: wp.array(dtype=int),
   ne_connect_out: wp.array(dtype=int),
@@ -1677,7 +1676,6 @@ def _reset_nworld(
   solver_niter_out[worldid] = 0
   if worldid == 0:
     ncon_out[0] = 0
-  ncon_world_out[worldid] = 0
   for i in range(nhfieldgeom):
     ncon_hfield_out[worldid, i] = 0
   ne_out[worldid] = 0
@@ -1807,7 +1805,6 @@ def reset_data(m: types.Model, d: types.Data):
     outputs=[
       d.solver_niter,
       d.ncon,
-      d.ncon_world,
       d.ncon_hfield,
       d.ne,
       d.ne_connect,
