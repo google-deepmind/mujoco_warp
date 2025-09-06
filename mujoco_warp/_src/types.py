@@ -906,7 +906,7 @@ class Model:
     eq_obj1id: id of object 1                                (neq,)
     eq_obj2id: id of object 2                                (neq,)
     eq_objtype: type of both objects (ObjType)               (neq,)
-    eq_active0: initial enable/disable constraint state      (nworld, neq,)
+    eq_active0: initial enable/disable constraint state      (neq,)
     eq_solref: constraint solver reference                   (nworld, neq, mjNREF)
     eq_solimp: constraint solver impedance                   (nworld, neq, mjNIMP)
     eq_data: numeric data for constraint                     (nworld, neq, mjNEQDATA)
