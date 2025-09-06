@@ -1398,7 +1398,6 @@ class Data:
     njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
-    ncon_world: number of detected contacts per world           (nworld,)
     ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeom)
     ne: number of equality constraints                          (nworld,)
     ne_connect: number of equality connect constraints          (nworld,)
@@ -1545,7 +1544,6 @@ class Data:
   njmax: int  # warp only
   solver_niter: wp.array(dtype=int)
   ncon: wp.array(dtype=int)
-  ncon_world: wp.array(dtype=int)  # warp only
   ncon_hfield: wp.array2d(dtype=int)  # warp only
   ne: wp.array(dtype=int)
   ne_connect: wp.array(dtype=int)  # warp only
