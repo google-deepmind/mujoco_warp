@@ -608,6 +608,41 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
+  @parameterized.parameters(0, 1)
+  def test_insidesite(self, keyframe):
+    _, mjd, m, d = test_util.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <site name="refsite" type="sphere" size=".1"/>
+        <body name="body">
+          <geom name="geom" type="sphere" size=".1"/>
+          <site name="site"/>
+          <camera name="camera"/>
+          <joint type="slide" axis="1 0 0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <insidesite site="refsite" objtype="xbody" objname="body"/>
+        <insidesite site="refsite" objtype="body" objname="body"/>
+        <insidesite site="refsite" objtype="geom" objname="geom"/>
+        <insidesite site="refsite" objtype="site" objname="site"/>
+        <insidesite site="refsite" objtype="camera" objname="camera"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0"/>
+        <key qpos="1"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=keyframe,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
 
 if __name__ == "__main__":
   wp.init()
