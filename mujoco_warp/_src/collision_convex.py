@@ -19,6 +19,7 @@ from .collision_gjk import ccd
 from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
+from .collision_primitive import Geom
 from .collision_primitive import contact_params
 from .collision_primitive import geom
 from .collision_primitive import write_contact
@@ -87,57 +88,15 @@ def ccd_kernel_builder(
   epa_iterations: int,
   epa_exact_neg_distance: bool,
   depth_extension: float,
+  is_hfield: bool,
 ):
-  # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel(module="unique", enable_backward=False)
-  def ccd_kernel(
+  @wp.func
+  def ccd_write(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
-    geom_condim: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
-    geom_priority: wp.array(dtype=int),
-    geom_solmix: wp.array2d(dtype=float),
-    geom_solref: wp.array2d(dtype=wp.vec2),
-    geom_solimp: wp.array2d(dtype=vec5),
-    geom_size: wp.array2d(dtype=wp.vec3),
-    geom_friction: wp.array2d(dtype=wp.vec3),
-    geom_margin: wp.array2d(dtype=float),
-    geom_gap: wp.array2d(dtype=float),
-    hfield_adr: wp.array(dtype=int),
-    hfield_nrow: wp.array(dtype=int),
-    hfield_ncol: wp.array(dtype=int),
-    hfield_size: wp.array(dtype=wp.vec4),
-    hfield_data: wp.array(dtype=float),
-    mesh_vertadr: wp.array(dtype=int),
-    mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
-    mesh_graphadr: wp.array(dtype=int),
-    mesh_graph: wp.array(dtype=int),
-    mesh_polynum: wp.array(dtype=int),
-    mesh_polyadr: wp.array(dtype=int),
-    mesh_polynormal: wp.array(dtype=wp.vec3),
-    mesh_polyvertadr: wp.array(dtype=int),
-    mesh_polyvertnum: wp.array(dtype=int),
-    mesh_polyvert: wp.array(dtype=int),
-    mesh_polymapadr: wp.array(dtype=int),
-    mesh_polymapnum: wp.array(dtype=int),
-    mesh_polymap: wp.array(dtype=int),
-    pair_dim: wp.array(dtype=int),
-    pair_solref: wp.array2d(dtype=wp.vec2),
-    pair_solreffriction: wp.array2d(dtype=wp.vec2),
-    pair_solimp: wp.array2d(dtype=vec5),
-    pair_margin: wp.array2d(dtype=float),
-    pair_gap: wp.array2d(dtype=float),
-    pair_friction: wp.array2d(dtype=vec5),
     # Data in:
     nconmax_in: int,
-    geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
-    collision_pair_in: wp.array(dtype=wp.vec2i),
-    collision_pairid_in: wp.array(dtype=int),
-    collision_worldid_in: wp.array(dtype=int),
-    ncollision_in: wp.array(dtype=int),
     epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
@@ -149,6 +108,22 @@ def ccd_kernel_builder(
     epa_index_in: wp.array2d(dtype=int),
     epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
+    # In:
+    geom1: Geom,
+    geom2: Geom,
+    geoms: wp.vec2i,
+    worldid: int,
+    tid: int,
+    margin: float,
+    gap: float,
+    condim: int,
+    friction: vec5,
+    solref: wp.vec2,
+    solreffriction: wp.vec2,
+    solimp: vec5,
+    x1: wp.vec3,
+    x2: wp.vec3,
+    count: int,
     # Data out:
     ncon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
@@ -162,87 +137,7 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
-  ):
-    tid = wp.tid()
-    if tid >= ncollision_in[0]:
-      return
-
-    geoms = collision_pair_in[tid]
-    g1 = geoms[0]
-    g2 = geoms[1]
-
-    if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
-      return
-
-    worldid = collision_worldid_in[tid]
-    _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
-      geom_condim,
-      geom_priority,
-      geom_solmix,
-      geom_solref,
-      geom_solimp,
-      geom_friction,
-      geom_margin,
-      geom_gap,
-      pair_dim,
-      pair_solref,
-      pair_solreffriction,
-      pair_solimp,
-      pair_margin,
-      pair_gap,
-      pair_friction,
-      collision_pair_in,
-      collision_pairid_in,
-      tid,
-      worldid,
-    )
-
-    geom1_dataid = geom_dataid[g1]
-    geom1 = geom(
-      geomtype1,
-      geom1_dataid,
-      geom_size[worldid, g1],
-      mesh_vertadr[geom1_dataid],
-      mesh_vertnum[geom1_dataid],
-      mesh_vert,
-      mesh_graphadr[geom1_dataid],
-      mesh_graph,
-      mesh_polynum[geom1_dataid],
-      mesh_polyadr[geom1_dataid],
-      mesh_polynormal,
-      mesh_polyvertadr,
-      mesh_polyvertnum,
-      mesh_polyvert,
-      mesh_polymapadr,
-      mesh_polymapnum,
-      mesh_polymap,
-      geom_xpos_in[worldid, g1],
-      geom_xmat_in[worldid, g1],
-    )
-
-    geom2_dataid = geom_dataid[g2]
-    geom2 = geom(
-      geomtype2,
-      geom2_dataid,
-      geom_size[worldid, g2],
-      mesh_vertadr[geom2_dataid],
-      mesh_vertnum[geom2_dataid],
-      mesh_vert,
-      mesh_graphadr[geom2_dataid],
-      mesh_graph,
-      mesh_polynum[geom2_dataid],
-      mesh_polyadr[geom2_dataid],
-      mesh_polynormal,
-      mesh_polyvertadr,
-      mesh_polyvertnum,
-      mesh_polyvert,
-      mesh_polymapadr,
-      mesh_polymapnum,
-      mesh_polymap,
-      geom_xpos_in[worldid, g2],
-      geom_xmat_in[worldid, g2],
-    )
-
+  ) -> int:
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
     if wp.static(legacy_gjk):
       simplex, normal = gjk_legacy(
@@ -259,21 +154,19 @@ def ccd_kernel_builder(
       dist = -depth
 
       if dist >= 0.0 or depth < -depth_extension:
-        return
+        return 0
       sphere = int(GeomType.SPHERE.value)
       ellipsoid = int(GeomType.ELLIPSOID.value)
+      g1 = geoms[0]
+      g2 = geoms[1]
       if geom_type[g1] == sphere or geom_type[g1] == ellipsoid or geom_type[g2] == sphere or geom_type[g2] == ellipsoid:
-        count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 1, 2, 1.0e-5)
+        ncontact, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 1, 2, 1.0e-5)
       else:
-        count, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 4, 8, 1.0e-1)
+        ncontact, points = multicontact_legacy(geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 4, 8, 1.0e-1)
       frame = make_frame(normal)
     else:
       points = mat3c()
-
-      x1 = geom1.pos
-      x2 = geom2.pos
-
-      dist, count, witness1, witness2 = ccd(
+      dist, ncontact, witness1, witness2 = ccd(
         False,
         opt_ccd_tolerance[worldid],
         0.0,
@@ -298,15 +191,14 @@ def ccd_kernel_builder(
         epa_horizon_in[tid],
       )
       if dist >= 0.0:
-        count = 0
-        return
+        return 0
 
-      for i in range(count):
+      for i in range(ncontact):
         points[i] = 0.5 * (witness1[i] + witness2[i])
       normal = witness1[0] - witness2[0]
       frame = make_frame(normal)
 
-    for i in range(count):
+    for i in range(ncontact):
       write_contact(
         nconmax_in,
         dist,
@@ -334,23 +226,14 @@ def ccd_kernel_builder(
         contact_geom_out,
         contact_worldid_out,
       )
+      if count + (i + 1) >= MJ_MAXCONPAIR:
+        return i + 1
 
-  return ccd_kernel
+    return ncontact
 
-
-@cache_kernel
-def ccd_hf_kernel_builder(
-  legacy_gjk: bool,
-  geomtype1: int,
-  geomtype2: int,
-  gjk_iterations: int,
-  epa_iterations: int,
-  epa_exact_neg_distance: bool,
-  depth_extension: float,
-):
   # runs convex collision on a set of geom pairs to recover contact info
   @nested_kernel(module="unique", enable_backward=False)
-  def ccd_hf_kernel(
+  def ccd_kernel(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
@@ -438,100 +321,89 @@ def ccd_hf_kernel_builder(
 
     worldid = collision_worldid_in[tid]
 
-    # height field info
-    hfdataid = geom_dataid[g1]
-    size1 = hfield_size[hfdataid]
-    pos1 = geom_xpos_in[worldid, g1]
-    mat1 = geom_xmat_in[worldid, g1]
-    mat1T = wp.transpose(mat1)
+    # height field filter
+    if wp.static(is_hfield):
+      # height field info
+      hfdataid = geom_dataid[g1]
+      size1 = hfield_size[hfdataid]
+      pos1 = geom_xpos_in[worldid, g1]
+      mat1 = geom_xmat_in[worldid, g1]
+      mat1T = wp.transpose(mat1)
 
-    # geom info
-    pos2 = geom_xpos_in[worldid, g2]
-    pos = mat1T @ (pos2 - pos1)
-    r2 = geom_rbound[worldid, g2]
+      # geom info
+      pos2 = geom_xpos_in[worldid, g2]
+      pos = mat1T @ (pos2 - pos1)
+      r2 = geom_rbound[worldid, g2]
 
-    # TODO(team): margin?
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
+      # TODO(team): margin?
+      margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
 
-    # box-sphere test: horizontal plane
-    for i in range(2):
-      if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
+      # box-sphere test: horizontal plane
+      for i in range(2):
+        if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
+          return
+
+      # box-sphere test: vertical direction
+      if size1[2] < pos[2] - r2 - margin:  # up
         return
 
-    # box-sphere test: vertical direction
-    if size1[2] < pos[2] - r2 - margin:  # up
-      return
+      if -size1[3] > pos[2] + r2 + margin:  # down
+        return
 
-    if -size1[3] > pos[2] + r2 + margin:  # down
-      return
+      mat2 = geom_xmat_in[worldid, g2]
+      mat = mat1T @ mat2
 
-    mat2 = geom_xmat_in[worldid, g2]
-    mat = mat1T @ mat2
+      # aabb for geom in height field frame
+      xmax = -MJ_MAXVAL
+      ymax = -MJ_MAXVAL
+      zmax = -MJ_MAXVAL
+      xmin = MJ_MAXVAL
+      ymin = MJ_MAXVAL
+      zmin = MJ_MAXVAL
 
-    # aabb for geom in height field frame
-    xmax = -MJ_MAXVAL
-    ymax = -MJ_MAXVAL
-    zmax = -MJ_MAXVAL
-    xmin = MJ_MAXVAL
-    ymin = MJ_MAXVAL
-    zmin = MJ_MAXVAL
+      center2 = geom_aabb[g2, 0]
+      size2 = geom_aabb[g2, 1]
 
-    center2 = geom_aabb[g2, 0]
-    size2 = geom_aabb[g2, 1]
+      pos += mat1T @ center2
 
-    pos += mat1T @ center2
+      sign = wp.vec2(-1.0, 1.0)
 
-    sign = wp.vec2(-1.0, 1.0)
+      for i in range(2):
+        for j in range(2):
+          for k in range(2):
+            corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
+            corner_hf = mat @ corner_local
 
-    for i in range(2):
-      for j in range(2):
-        for k in range(2):
-          corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-          corner_hf = mat @ corner_local
+            if corner_hf[0] > xmax:
+              xmax = corner_hf[0]
+            if corner_hf[1] > ymax:
+              ymax = corner_hf[1]
+            if corner_hf[2] > zmax:
+              zmax = corner_hf[2]
+            if corner_hf[0] < xmin:
+              xmin = corner_hf[0]
+            if corner_hf[1] < ymin:
+              ymin = corner_hf[1]
+            if corner_hf[2] < zmin:
+              zmin = corner_hf[2]
 
-          if corner_hf[0] > xmax:
-            xmax = corner_hf[0]
-          if corner_hf[1] > ymax:
-            ymax = corner_hf[1]
-          if corner_hf[2] > zmax:
-            zmax = corner_hf[2]
-          if corner_hf[0] < xmin:
-            xmin = corner_hf[0]
-          if corner_hf[1] < ymin:
-            ymin = corner_hf[1]
-          if corner_hf[2] < zmin:
-            zmin = corner_hf[2]
+      xmax += pos[0]
+      xmin += pos[0]
+      ymax += pos[1]
+      ymin += pos[1]
+      zmax += pos[2]
+      zmin += pos[2]
 
-    xmax += pos[0]
-    xmin += pos[0]
-    ymax += pos[1]
-    ymin += pos[1]
-    zmax += pos[2]
-    zmin += pos[2]
-
-    # box-box test
-    if (
-      (xmin - margin > size1[0])
-      or (xmax + margin < -size1[0])
-      or (ymin - margin > size1[1])
-      or (ymax + margin < -size1[1])
-      or (zmin - margin > size1[2])
-      or (zmax + margin < -size1[3])
-    ):
-      return
-
-    # height field subgrid
-    nrow = hfield_nrow[g1]
-    ncol = hfield_ncol[g1]
-    size = hfield_size[g1]
-
-    # subgrid
-    x_scale = 0.5 * float(ncol - 1) / size[0]
-    y_scale = 0.5 * float(nrow - 1) / size[1]
-    cmin = wp.max(0, int(wp.floor((xmin + size[0]) * x_scale)))
-    cmax = wp.min(ncol - 1, int(wp.ceil((xmax + size[0]) * x_scale)))
-    rmin = wp.max(0, int(wp.floor((ymin + size[1]) * y_scale)))
-    rmax = wp.min(nrow - 1, int(wp.ceil((ymax + size[1]) * y_scale)))
+      # box-box test
+      if (
+        (xmin - margin > size1[0])
+        or (xmax + margin < -size1[0])
+        or (ymin - margin > size1[1])
+        or (ymax + margin < -size1[1])
+        or (zmin - margin > size1[2])
+        or (zmax + margin < -size1[3])
+      ):
+        return
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
       geom_condim,
@@ -601,134 +473,95 @@ def ccd_hf_kernel_builder(
       geom_xmat_in[worldid, g2],
     )
 
-    x1 = geom1.pos
-    x2 = geom2.pos
+    if wp.static(is_hfield):
+      # height field subgrid
+      nrow = hfield_nrow[g1]
+      ncol = hfield_ncol[g1]
+      size = hfield_size[g1]
 
-    dx = (2.0 * size[0]) / float(ncol - 1)
-    dy = (2.0 * size[1]) / float(nrow - 1)
-    dr = wp.vec2i(1, 0)
+      # subgrid
+      x_scale = 0.5 * float(ncol - 1) / size[0]
+      y_scale = 0.5 * float(nrow - 1) / size[1]
+      cmin = wp.max(0, int(wp.floor((xmin + size[0]) * x_scale)))
+      cmax = wp.min(ncol - 1, int(wp.ceil((xmax + size[0]) * x_scale)))
+      rmin = wp.max(0, int(wp.floor((ymin + size[1]) * y_scale)))
+      rmax = wp.min(nrow - 1, int(wp.ceil((ymax + size[1]) * y_scale)))
 
-    prism = mat63()
+      dx = (2.0 * size[0]) / float(ncol - 1)
+      dy = (2.0 * size[1]) / float(nrow - 1)
+      dr = wp.vec2i(1, 0)
 
-    # set zbottom value using base size
-    prism[0, 2] = -size[3]
-    prism[1, 2] = -size[3]
-    prism[2, 2] = -size[3]
+      prism = mat63()
 
-    adr = hfield_adr[geom1_dataid]
+      # set zbottom value using base size
+      prism[0, 2] = -size[3]
+      prism[1, 2] = -size[3]
+      prism[2, 2] = -size[3]
 
-    # process all prisms in subgrid
-    cnt = int(0)
-    for r in range(rmin, rmax):
-      nvert = int(0)
-      for c in range(cmin, cmax + 1):
-        # add both triangles from this cell
-        for i in range(2):
-          # add vert
-          x = dx * float(c) - size[0]
-          y = dy * float(r + dr[i]) - size[1]
-          z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2] + margin
+      adr = hfield_adr[geom1_dataid]
 
-          prism[0] = prism[1]
-          prism[1] = prism[2]
-          prism[3] = prism[4]
-          prism[4] = prism[5]
+      # process all prisms in subgrid
+      count = int(0)
+      for r in range(rmin, rmax):
+        nvert = int(0)
+        for c in range(cmin, cmax + 1):
+          # add both triangles from this cell
+          for i in range(2):
+            # add vert
+            x = dx * float(c) - size[0]
+            y = dy * float(r + dr[i]) - size[1]
+            z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2] + margin
 
-          prism[2, 0] = x
-          prism[5, 0] = x
-          prism[2, 1] = y
-          prism[5, 1] = y
-          prism[5, 2] = z
+            prism[0] = prism[1]
+            prism[1] = prism[2]
+            prism[3] = prism[4]
+            prism[4] = prism[5]
 
-          nvert += 1
+            prism[2, 0] = x
+            prism[5, 0] = x
+            prism[2, 1] = y
+            prism[5, 1] = y
+            prism[5, 2] = z
 
-          if nvert <= 2:
-            continue
+            nvert += 1
 
-          # prism height test
-          if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
-            continue
-
-          geom1.hfprism = prism
-
-          # TODO(kbayes): remove legacy GJK once multicontact can be enabled
-          if wp.static(legacy_gjk):
-            simplex, normal = gjk_legacy(gjk_iterations, geom1, geom2, geom_type[g1], geom_type[g2])
-
-            depth, normal = epa_legacy(
-              epa_iterations,
-              geom1,
-              geom2,
-              geomtype1,
-              geomtype2,
-              depth_extension,
-              epa_exact_neg_distance,
-              simplex,
-              normal,
-            )
-            dist = -depth
-
-            if dist - margin >= 0.0 or depth < -depth_extension:
+            if nvert <= 2:
               continue
 
-            sphere = int(GeomType.SPHERE.value)
-            ellipsoid = int(GeomType.ELLIPSOID.value)
-            if geomtype1 == sphere or geomtype1 == ellipsoid or geomtype2 == sphere or geomtype2 == ellipsoid:
-              count, points = multicontact_legacy(
-                geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 1, 2, 1.0e-5
-              )
-            else:
-              count, points = multicontact_legacy(
-                geom1, geom2, geomtype1, geomtype2, depth_extension, depth, normal, 4, 8, 1.0e-1
-              )
-          else:
-            points = mat3c()
-
-            # find prism center for height field
-            x1_ = wp.vec3(0.0, 0.0, 0.0)
-            for i in range(6):
-              x1_ += prism[i]
-
-            dist, count, witness1, witness2 = ccd(
-              False,
-              opt_ccd_tolerance[worldid],
-              0.0,
-              gjk_iterations,
-              epa_iterations,
-              geom1,
-              geom2,
-              geomtype1,
-              geomtype2,
-              x1 + geom1.rot @ (x1_ / 6.0),
-              x2,
-              epa_vert_in[tid],
-              epa_vert1_in[tid],
-              epa_vert2_in[tid],
-              epa_vert_index1_in[tid],
-              epa_vert_index2_in[tid],
-              epa_face_in[tid],
-              epa_pr_in[tid],
-              epa_norm2_in[tid],
-              epa_index_in[tid],
-              epa_map_in[tid],
-              epa_horizon_in[tid],
-            )
-
-            if dist - margin >= 0.0:
+            # prism height test
+            if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
               continue
 
-            for i in range(count):
-              points[i] = 0.5 * (witness1[i] + witness2[i])
-            normal = witness1[0] - witness2[0]
+            geom1.hfprism = prism
 
-          frame = make_frame(normal)
+            # prism center
+            x1 = geom1.pos
+            if wp.static(not legacy_gjk):
+              x1_ = wp.vec3(0.0, 0.0, 0.0)
+              for i in range(6):
+                x1_ += prism[i]
+              x1 += geom1.rot @ (x1_ / 6.0)
 
-          for i in range(count):
-            write_contact(
+            ncontact = ccd_write(
+              opt_ccd_tolerance,
+              geom_type,
               nconmax_in,
-              dist,
-              points[i],
-              frame,
+              epa_vert_in,
+              epa_vert1_in,
+              epa_vert2_in,
+              epa_vert_index1_in,
+              epa_vert_index2_in,
+              epa_face_in,
+              epa_pr_in,
+              epa_norm2_in,
+              epa_index_in,
+              epa_map_in,
+              epa_horizon_in,
+              geom1,
+              geom2,
+              geoms,
+              worldid,
+              tid,
               margin,
               gap,
               condim,
@@ -736,8 +569,9 @@ def ccd_hf_kernel_builder(
               solref,
               solreffriction,
               solimp,
-              geoms,
-              worldid,
+              x1,
+              geom2.pos,
+              count,
               ncon_out,
               contact_dist_out,
               contact_pos_out,
@@ -751,13 +585,55 @@ def ccd_hf_kernel_builder(
               contact_geom_out,
               contact_worldid_out,
             )
-
-            cnt += 1
-
-            if cnt >= MJ_MAXCONPAIR:
+            count += ncontact
+            if count >= MJ_MAXCONPAIR:
               return
+    else:
+      ccd_write(
+        opt_ccd_tolerance,
+        geom_type,
+        nconmax_in,
+        epa_vert_in,
+        epa_vert1_in,
+        epa_vert2_in,
+        epa_vert_index1_in,
+        epa_vert_index2_in,
+        epa_face_in,
+        epa_pr_in,
+        epa_norm2_in,
+        epa_index_in,
+        epa_map_in,
+        epa_horizon_in,
+        geom1,
+        geom2,
+        geoms,
+        worldid,
+        tid,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geom1.pos,
+        geom2.pos,
+        0,
+        ncon_out,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+      )
 
-  return ccd_hf_kernel
+  return ccd_kernel
 
 
 @event_scope
@@ -780,159 +656,83 @@ def convex_narrowphase(m: Model, d: Data):
     g1 = geom_pair[0]
     g2 = geom_pair[1]
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
-      if g1 == int(GeomType.HFIELD.value):
-        wp.launch(
-          ccd_hf_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.gjk_iterations, m.opt.epa_iterations, True, 1e9),
-          dim=d.nconmax,
-          inputs=[
-            m.opt.ccd_tolerance,
-            m.geom_type,
-            m.geom_condim,
-            m.geom_dataid,
-            m.geom_priority,
-            m.geom_solmix,
-            m.geom_solref,
-            m.geom_solimp,
-            m.geom_size,
-            m.geom_aabb,
-            m.geom_rbound,
-            m.geom_friction,
-            m.geom_margin,
-            m.geom_gap,
-            m.hfield_adr,
-            m.hfield_nrow,
-            m.hfield_ncol,
-            m.hfield_size,
-            m.hfield_data,
-            m.mesh_vertadr,
-            m.mesh_vertnum,
-            m.mesh_vert,
-            m.mesh_graphadr,
-            m.mesh_graph,
-            m.mesh_polynum,
-            m.mesh_polyadr,
-            m.mesh_polynormal,
-            m.mesh_polyvertadr,
-            m.mesh_polyvertnum,
-            m.mesh_polyvert,
-            m.mesh_polymapadr,
-            m.mesh_polymapnum,
-            m.mesh_polymap,
-            m.pair_dim,
-            m.pair_solref,
-            m.pair_solreffriction,
-            m.pair_solimp,
-            m.pair_margin,
-            m.pair_gap,
-            m.pair_friction,
-            d.nconmax,
-            d.geom_xpos,
-            d.geom_xmat,
-            d.collision_pair,
-            d.collision_pairid,
-            d.collision_worldid,
-            d.ncollision,
-            d.epa_vert,
-            d.epa_vert1,
-            d.epa_vert2,
-            d.epa_vert_index1,
-            d.epa_vert_index2,
-            d.epa_face,
-            d.epa_pr,
-            d.epa_norm2,
-            d.epa_index,
-            d.epa_map,
-            d.epa_horizon,
-          ],
-          outputs=[
-            d.ncon,
-            d.contact.dist,
-            d.contact.pos,
-            d.contact.frame,
-            d.contact.includemargin,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.dim,
-            d.contact.geom,
-            d.contact.worldid,
-          ],
-        )
-      else:
-        wp.launch(
-          ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.gjk_iterations, m.opt.epa_iterations, True, 1e9),
-          dim=d.nconmax,
-          inputs=[
-            m.opt.ccd_tolerance,
-            m.geom_type,
-            m.geom_condim,
-            m.geom_dataid,
-            m.geom_priority,
-            m.geom_solmix,
-            m.geom_solref,
-            m.geom_solimp,
-            m.geom_size,
-            m.geom_friction,
-            m.geom_margin,
-            m.geom_gap,
-            m.hfield_adr,
-            m.hfield_nrow,
-            m.hfield_ncol,
-            m.hfield_size,
-            m.hfield_data,
-            m.mesh_vertadr,
-            m.mesh_vertnum,
-            m.mesh_vert,
-            m.mesh_graphadr,
-            m.mesh_graph,
-            m.mesh_polynum,
-            m.mesh_polyadr,
-            m.mesh_polynormal,
-            m.mesh_polyvertadr,
-            m.mesh_polyvertnum,
-            m.mesh_polyvert,
-            m.mesh_polymapadr,
-            m.mesh_polymapnum,
-            m.mesh_polymap,
-            m.pair_dim,
-            m.pair_solref,
-            m.pair_solreffriction,
-            m.pair_solimp,
-            m.pair_margin,
-            m.pair_gap,
-            m.pair_friction,
-            d.nconmax,
-            d.geom_xpos,
-            d.geom_xmat,
-            d.collision_pair,
-            d.collision_pairid,
-            d.collision_worldid,
-            d.ncollision,
-            d.epa_vert,
-            d.epa_vert1,
-            d.epa_vert2,
-            d.epa_vert_index1,
-            d.epa_vert_index2,
-            d.epa_face,
-            d.epa_pr,
-            d.epa_norm2,
-            d.epa_index,
-            d.epa_map,
-            d.epa_horizon,
-          ],
-          outputs=[
-            d.ncon,
-            d.contact.dist,
-            d.contact.pos,
-            d.contact.frame,
-            d.contact.includemargin,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.dim,
-            d.contact.geom,
-            d.contact.worldid,
-          ],
-        )
+      wp.launch(
+        ccd_kernel_builder(
+          m.opt.legacy_gjk, g1, g2, m.opt.gjk_iterations, m.opt.epa_iterations, True, 1e9, g1 == int(GeomType.HFIELD.value)
+        ),
+        dim=d.nconmax,
+        inputs=[
+          m.opt.ccd_tolerance,
+          m.geom_type,
+          m.geom_condim,
+          m.geom_dataid,
+          m.geom_priority,
+          m.geom_solmix,
+          m.geom_solref,
+          m.geom_solimp,
+          m.geom_size,
+          m.geom_aabb,
+          m.geom_rbound,
+          m.geom_friction,
+          m.geom_margin,
+          m.geom_gap,
+          m.hfield_adr,
+          m.hfield_nrow,
+          m.hfield_ncol,
+          m.hfield_size,
+          m.hfield_data,
+          m.mesh_vertadr,
+          m.mesh_vertnum,
+          m.mesh_vert,
+          m.mesh_graphadr,
+          m.mesh_graph,
+          m.mesh_polynum,
+          m.mesh_polyadr,
+          m.mesh_polynormal,
+          m.mesh_polyvertadr,
+          m.mesh_polyvertnum,
+          m.mesh_polyvert,
+          m.mesh_polymapadr,
+          m.mesh_polymapnum,
+          m.mesh_polymap,
+          m.pair_dim,
+          m.pair_solref,
+          m.pair_solreffriction,
+          m.pair_solimp,
+          m.pair_margin,
+          m.pair_gap,
+          m.pair_friction,
+          d.nconmax,
+          d.geom_xpos,
+          d.geom_xmat,
+          d.collision_pair,
+          d.collision_pairid,
+          d.collision_worldid,
+          d.ncollision,
+          d.epa_vert,
+          d.epa_vert1,
+          d.epa_vert2,
+          d.epa_vert_index1,
+          d.epa_vert_index2,
+          d.epa_face,
+          d.epa_pr,
+          d.epa_norm2,
+          d.epa_index,
+          d.epa_map,
+          d.epa_horizon,
+        ],
+        outputs=[
+          d.ncon,
+          d.contact.dist,
+          d.contact.pos,
+          d.contact.frame,
+          d.contact.includemargin,
+          d.contact.friction,
+          d.contact.solref,
+          d.contact.solreffriction,
+          d.contact.solimp,
+          d.contact.dim,
+          d.contact.geom,
+          d.contact.worldid,
+        ],
+      )
