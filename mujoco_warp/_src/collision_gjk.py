@@ -1904,7 +1904,7 @@ def _polygon_clip(
 
 @wp.func
 def _set_edge(
-  vert1: wp.array(dtype=(wp.vec3)), vert2: wp.array(dtype=(wp.vec3)), start: int, end: int, face_out: wp.array(dtype=(wp.vec3))
+  vert1: wp.array(dtype=wp.vec3), vert2: wp.array(dtype=wp.vec3), start: int, end: int, face_out: wp.array(dtype=wp.vec3)
 ) -> int:
   face_out[0] = vert1[start]
   face_out[1] = vert2[end]
