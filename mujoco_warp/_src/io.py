@@ -46,12 +46,15 @@ def _hfield_geom_pair(mjm: mujoco.MjModel) -> Tuple[int, np.array]:
 
 
 def _max_meshdegree(mjm: mujoco.MjModel) -> int:
+  if mjm.mesh_polyvertnum.size == 0:
+    return 4
   return max(3, mjm.mesh_polymapnum.max())
 
 
 def _max_npolygon(mjm: mujoco.MjModel) -> int:
+  if mjm.mesh_polyvertnum.size == 0:
+    return 4
   return max(4, mjm.mesh_polyvertnum.max())
-
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:

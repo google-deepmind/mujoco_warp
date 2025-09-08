@@ -1326,7 +1326,7 @@ def _next(n: int, i: int) -> int:
 
 
 @wp.func
-def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int):
+def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int) -> wp.vec4i:
   """Returns the indices of a quadrilateral of maximum area in a convex polygon."""
   b = _next(npolygon, 0)
   c = _next(npolygon, b)
@@ -1392,7 +1392,9 @@ def _feature_dim(
 
 # find two normals that are facing each other within a tolerance, return 1 if found
 @wp.func
-def _aligned_faces(vert1: wp.array(dtype=wp.vec3), len1: int, vert2: wp.array(dtype=wp.vec3), len2: int):
+def _aligned_faces(
+  vert1: wp.array(dtype=wp.vec3), len1: int, vert2: wp.array(dtype=wp.vec3), len2: int
+) -> Tuple[int, wp.vec2i]:
   res = wp.vec2i()
   for i in range(len1):
     for j in range(len2):
@@ -1406,7 +1408,9 @@ def _aligned_faces(vert1: wp.array(dtype=wp.vec3), len1: int, vert2: wp.array(dt
 # find two normals that are perpendicular to each other within a tolerance
 # return 1 if found
 @wp.func
-def _aligned_face_edge(edge: polyverts, nedge: int, face: polyverts, nface: int):
+def _aligned_face_edge(
+  edge: wp.array(dtype=wp.vec3), nedge: int, face: wp.array(dtype=wp.vec3), nface: int
+) -> Tuple[int, wp.vec2i]:
   res = wp.vec2i()
   for i in range(nface):
     for j in range(nedge):
@@ -1463,10 +1467,7 @@ def _mesh_normals(
   polymapadr: wp.array(dtype=int),
   polymapnum: wp.array(dtype=int),
   polymap: wp.array(dtype=int),
-):
-  normals = polyverts()
-  indices = polyindices()
-
+) -> int:
   v1 = feature_index[0]
   v2 = feature_index[1]
   v3 = feature_index[2]
@@ -1542,7 +1543,7 @@ def _mesh_edge_normals(
   v1: wp.vec3,
   v2: wp.vec3,
   v1i: int,
-):
+) -> int:
   # only one edge
   if dim == 2:
     endverts[0] = v2
@@ -1571,7 +1572,7 @@ def _mesh_edge_normals(
 
 # try recovering box normal from collision normal
 @wp.func
-def _box_normals2(normals: wp.array(dtype=wp.vec3), indices: wp.array(dtype=int), mat: wp.mat33, n: wp.vec3):
+def _box_normals2(normals: wp.array(dtype=wp.vec3), indices: wp.array(dtype=int), mat: wp.mat33, n: wp.vec3) -> int:
   # list of box face normals
   face_normals = mat63(1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0)
 
@@ -1604,7 +1605,7 @@ def _box_normals(
   feature_index: wp.vec3i,
   mat: wp.mat33,
   dir: wp.vec3,
-):
+) -> int:
   v1 = feature_index[0]
   v2 = feature_index[1]
   v3 = feature_index[2]
@@ -1677,7 +1678,7 @@ def _box_edge_normals(
   v1: wp.vec3,
   v2: wp.vec3,
   v1i: int,
-):
+) -> int:
   if dim == 2:
     endverts[0] = v2
     normals[0] = wp.normalize(v2 - v1)
@@ -1703,7 +1704,7 @@ def _box_edge_normals(
 
 # recover face of a box from its index
 @wp.func
-def _box_face(face: wp.array(dtype=wp.vec3), mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int):
+def _box_face(face: wp.array(dtype=wp.vec3), mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int) -> int:
   # compute global coordinates of the box face and face normal
   if idx == 0:  # right
     face[0] = mat @ wp.vec(size[0], size[1], size[2]) + pos
@@ -1758,7 +1759,7 @@ def _mesh_face(
   polyvert: wp.array(dtype=int),
   face: wp.array(dtype=wp.vec3),
   idx: int,
-):
+) -> int:
   adr = polyvertadr[polyadr + idx]
   j = int(0)
   nvert = polyvertnum[polyadr + idx]
@@ -1810,7 +1811,7 @@ def _polygon_clip(
   nface2: int,
   n: wp.vec3,
   dir: wp.vec3,
-):
+) -> Tuple[int, mat3c, mat3c]:
   witness1 = mat3c()
   witness2 = mat3c()
 
@@ -1914,7 +1915,7 @@ def _multicontact(
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
-):
+) -> Tuple[int, mat3c, mat3c]:
   witness1 = mat3c()
   witness2 = mat3c()
   witness1[0] = x1
@@ -2150,7 +2151,6 @@ def ccd(
   endvert: wp.array(dtype=wp.vec3),
   face1: wp.array(dtype=wp.vec3),
   face2: wp.array(dtype=wp.vec3),
-):
 ) -> Tuple[float, int, mat3c, mat3c]:
   """General convex collision detection via GJK/EPA."""
   witness1 = mat3c()
