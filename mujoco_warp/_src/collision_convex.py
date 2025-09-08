@@ -19,6 +19,7 @@ from .collision_gjk import ccd
 from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
+from .collision_hfield import hfield_filter
 from .collision_primitive import Geom
 from .collision_primitive import contact_params
 from .collision_primitive import geom
@@ -26,7 +27,6 @@ from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
 from .types import MJ_MAXCONPAIR
-from .types import MJ_MAXVAL
 from .types import Data
 from .types import GeomType
 from .types import Model
@@ -323,86 +323,10 @@ def ccd_kernel_builder(
 
     # height field filter
     if wp.static(is_hfield):
-      # height field info
-      hfdataid = geom_dataid[g1]
-      size1 = hfield_size[hfdataid]
-      pos1 = geom_xpos_in[worldid, g1]
-      mat1 = geom_xmat_in[worldid, g1]
-      mat1T = wp.transpose(mat1)
-
-      # geom info
-      pos2 = geom_xpos_in[worldid, g2]
-      pos = mat1T @ (pos2 - pos1)
-      r2 = geom_rbound[worldid, g2]
-
-      # TODO(team): margin?
-      margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
-
-      # box-sphere test: horizontal plane
-      for i in range(2):
-        if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
-          return
-
-      # box-sphere test: vertical direction
-      if size1[2] < pos[2] - r2 - margin:  # up
-        return
-
-      if -size1[3] > pos[2] + r2 + margin:  # down
-        return
-
-      mat2 = geom_xmat_in[worldid, g2]
-      mat = mat1T @ mat2
-
-      # aabb for geom in height field frame
-      xmax = -MJ_MAXVAL
-      ymax = -MJ_MAXVAL
-      zmax = -MJ_MAXVAL
-      xmin = MJ_MAXVAL
-      ymin = MJ_MAXVAL
-      zmin = MJ_MAXVAL
-
-      center2 = geom_aabb[g2, 0]
-      size2 = geom_aabb[g2, 1]
-
-      pos += mat1T @ center2
-
-      sign = wp.vec2(-1.0, 1.0)
-
-      for i in range(2):
-        for j in range(2):
-          for k in range(2):
-            corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-            corner_hf = mat @ corner_local
-
-            if corner_hf[0] > xmax:
-              xmax = corner_hf[0]
-            if corner_hf[1] > ymax:
-              ymax = corner_hf[1]
-            if corner_hf[2] > zmax:
-              zmax = corner_hf[2]
-            if corner_hf[0] < xmin:
-              xmin = corner_hf[0]
-            if corner_hf[1] < ymin:
-              ymin = corner_hf[1]
-            if corner_hf[2] < zmin:
-              zmin = corner_hf[2]
-
-      xmax += pos[0]
-      xmin += pos[0]
-      ymax += pos[1]
-      ymin += pos[1]
-      zmax += pos[2]
-      zmin += pos[2]
-
-      # box-box test
-      if (
-        (xmin - margin > size1[0])
-        or (xmax + margin < -size1[0])
-        or (ymin - margin > size1[1])
-        or (ymax + margin < -size1[1])
-        or (zmin - margin > size1[2])
-        or (zmax + margin < -size1[3])
-      ):
+      no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = hfield_filter(
+        geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+      )
+      if no_hf_collision:
         return
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
