@@ -33,10 +33,6 @@ MJ_MINVAL2 = MJ_MINVAL * MJ_MINVAL
 FACE_TOL = 0.99999872
 EDGE_TOL = 0.00159999931
 
-MAX_POLYVERT = 15
-polyverts = wp.types.matrix(shape=(MAX_POLYVERT, 3), dtype=float)
-
-
 mat43 = wp.types.matrix(shape=(4, 3), dtype=float)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
 
@@ -1456,8 +1452,6 @@ def _intersect2(a1: wp.vec2i, a2: wp.array(dtype=int), start2: int, len1: int, l
 @wp.func
 def _mesh_normals(
   # In:
-  normals: wp.array(dtype=wp.vec3),
-  indices: wp.array(dtype=int),
   feature_dim: int,
   feature_index: wp.vec3i,
   mat: wp.mat33,
@@ -1467,6 +1461,9 @@ def _mesh_normals(
   polymapadr: wp.array(dtype=int),
   polymapnum: wp.array(dtype=int),
   polymap: wp.array(dtype=int),
+  # Out:
+  normals_out: wp.array(dtype=wp.vec3),
+  indices_out: wp.array(dtype=int),
 ) -> int:
   v1 = feature_index[0]
   v2 = feature_index[1]
@@ -1490,8 +1487,8 @@ def _mesh_normals(
       return 0
 
     # three vertices on mesh define a unique face
-    normals[0] = mat @ polynormal[polyadr + faceset[0]]
-    indices[0] = faceset[0]
+    normals_out[0] = mat @ polynormal[polyadr + faceset[0]]
+    indices_out[0] = faceset[0]
     return 1
 
   if feature_dim == 2:
@@ -1506,18 +1503,17 @@ def _mesh_normals(
     if n == 0:
       return 0
     for i in range(n):
-      normals[i] = mat @ polynormal[polyadr + edgeset[i]]
-      indices[i] = edgeset[i]
+      normals_out[i] = mat @ polynormal[polyadr + edgeset[i]]
+      indices_out[i] = edgeset[i]
     return n
 
   if feature_dim == 1:
     v1_adr = polymapadr[vertadr + v1]
     v1_num = polymapnum[vertadr + v1]
-    v1_num = wp.where(v1_num <= MAX_POLYVERT, v1_num, MAX_POLYVERT)
     for i in range(v1_num):
       index = polymap[v1_adr + i]
-      normals[i] = mat @ polynormal[polyadr + index]
-      indices[i] = index
+      normals_out[i] = mat @ polynormal[polyadr + index]
+      indices_out[i] = index
     return v1_num
   return 0
 
@@ -1526,8 +1522,6 @@ def _mesh_normals(
 @wp.func
 def _mesh_edge_normals(
   # In:
-  normals: wp.array(dtype=wp.vec3),
-  endverts: wp.array(dtype=wp.vec3),
   dim: int,
   mat: wp.mat33,
   pos: wp.vec3,
@@ -1543,17 +1537,19 @@ def _mesh_edge_normals(
   v1: wp.vec3,
   v2: wp.vec3,
   v1i: int,
+  # Out:
+  normals_out: wp.array(dtype=wp.vec3),
+  endverts_out: wp.array(dtype=wp.vec3),
 ) -> int:
   # only one edge
   if dim == 2:
-    endverts[0] = v2
-    normals[0] = wp.normalize(v2 - v1)
+    endverts_out[0] = v2
+    normals_out[0] = wp.normalize(v2 - v1)
     return 1
 
   if dim == 1:
     v1_adr = polymapadr[vertadr + v1i]
     v1_num = polymapnum[vertadr + v1i]
-    v1_num = wp.where(v1_num <= MAX_POLYVERT, v1_num, MAX_POLYVERT)
 
     # loop through all faces with vertex v1
     for i in range(v1_num):
@@ -1564,15 +1560,22 @@ def _mesh_edge_normals(
       for j in range(nvert):
         if polyvert[adr + j] == v1i:
           k = wp.where(j == 0, nvert - 1, j - 1)
-          endverts[i] = mat @ vert[vertadr + polyvert[adr + k]] + pos
-          normals[i] = wp.normalize(endverts[i] - v1)
+          endverts_out[i] = mat @ vert[vertadr + polyvert[adr + k]] + pos
+          normals_out[i] = wp.normalize(endverts_out[i] - v1)
     return v1_num
   return 0
 
 
 # try recovering box normal from collision normal
 @wp.func
-def _box_normals2(normals: wp.array(dtype=wp.vec3), indices: wp.array(dtype=int), mat: wp.mat33, n: wp.vec3) -> int:
+def _box_normals2(
+  # In:
+  mat: wp.mat33,
+  n: wp.vec3,
+  # Out:
+  normal_out: wp.array(dtype=wp.vec3),
+  index_out: wp.array(dtype=int),
+) -> int:
   # list of box face normals
   face_normals = mat63(1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0)
 
@@ -1589,8 +1592,8 @@ def _box_normals2(normals: wp.array(dtype=wp.vec3), indices: wp.array(dtype=int)
   # determine if there is a side close to the normal
   for i in range(6):
     if wp.dot(local_n, face_normals[i]) > FACE_TOL:
-      normals[0] = mat @ face_normals[i]
-      indices[0] = i
+      normal_out[0] = mat @ face_normals[i]
+      index_out[0] = i
       return 1
 
   return 0
@@ -1599,12 +1602,14 @@ def _box_normals2(normals: wp.array(dtype=wp.vec3), indices: wp.array(dtype=int)
 # compute possible face normals of a box given up to 3 vertices
 @wp.func
 def _box_normals(
-  normals: wp.array(dtype=wp.vec3),
-  indices: wp.array(dtype=int),
+  # In:
   feature_dim: int,
   feature_index: wp.vec3i,
   mat: wp.mat33,
   dir: wp.vec3,
+  # Out:
+  normal_out: wp.array(dtype=wp.vec3),
+  index_out: wp.array(dtype=int),
 ) -> int:
   v1 = feature_index[0]
   v2 = feature_index[1]
@@ -1615,53 +1620,53 @@ def _box_normals(
     x = float((v1 & 1) and (v2 & 1) and (v3 & 1)) - float(not (v1 & 1) and not (v2 & 1) and not (v3 & 1))
     y = float((v1 & 2) and (v2 & 2) and (v3 & 2)) - float(not (v1 & 2) and not (v2 & 2) and not (v3 & 2))
     z = float((v1 & 4) and (v2 & 4) and (v3 & 4)) - float(not (v1 & 4) and not (v2 & 4) and not (v3 & 4))
-    normals[0] = mat @ wp.vec3(x, y, z)
+    normal_out[0] = mat @ wp.vec3(x, y, z)
     sgn = x + y + z
     if x != 0.0:
-      indices[c] = 0
+      index_out[c] = 0
       c += 1
     if y != 0.0:
-      indices[c] = 2
+      index_out[c] = 2
       c += 1
     if z != 0.0:
-      indices[c] = 4
+      index_out[c] = 4
       c += 1
     if sgn == -1.0:
-      indices[0] = indices[0] + 1
+      index_out[0] = index_out[0] + 1
     if c == 1:
       return 1
-    return _box_normals2(normals, indices, mat, dir)
+    return _box_normals2(mat, dir, normal_out, index_out)
   if feature_dim == 2:
     c = 0
     x = float((v1 & 1) and (v2 & 1)) - float(not (v1 & 1) and not (v2 & 1))
     y = float((v1 & 2) and (v2 & 2)) - float(not (v1 & 2) and not (v2 & 2))
     z = float((v1 & 4) and (v2 & 4)) - float(not (v1 & 4) and not (v2 & 4))
     if x != 0.0:
-      normals[c] = mat @ wp.vec3(float(x), 0.0, 0.0)
-      indices[c] = wp.where(x > 0.0, 0, 1)
+      normal_out[c] = mat @ wp.vec3(float(x), 0.0, 0.0)
+      index_out[c] = wp.where(x > 0.0, 0, 1)
       c += 1
     if y != 0.0:
-      normals[c] = mat @ wp.vec3(0.0, y, 0.0)
-      indices[c] = wp.where(y > 0.0, 2, 3)
+      normal_out[c] = mat @ wp.vec3(0.0, y, 0.0)
+      index_out[c] = wp.where(y > 0.0, 2, 3)
       c += 1
     if z != 0.0:
-      normals[c] = mat @ wp.vec3(0.0, 0.0, z)
-      indices[c] = wp.where(z > 0.0, 4, 5)
+      normal_out[c] = mat @ wp.vec3(0.0, 0.0, z)
+      index_out[c] = wp.where(z > 0.0, 4, 5)
       c += 1
     if c == 2:
       return 2
-    return _box_normals2(normals, indices, mat, dir)
+    return _box_normals2(mat, dir, normal_out, index_out)
 
   if feature_dim == 1:
     x = wp.where(v1 & 1, 1.0, -1.0)
     y = wp.where(v1 & 2, 1.0, -1.0)
     z = wp.where(v1 & 4, 1.0, -1.0)
-    normals[0] = mat @ wp.vec3(x, 0.0, 0.0)
-    normals[1] = mat @ wp.vec3(0.0, y, 0.0)
-    normals[2] = mat @ wp.vec3(0.0, 0.0, z)
-    indices[0] = wp.where(x > 0.0, 0, 1)
-    indices[1] = wp.where(y > 0.0, 2, 3)
-    indices[2] = wp.where(z > 0.0, 4, 5)
+    normal_out[0] = mat @ wp.vec3(x, 0.0, 0.0)
+    normal_out[1] = mat @ wp.vec3(0.0, y, 0.0)
+    normal_out[2] = mat @ wp.vec3(0.0, 0.0, z)
+    index_out[0] = wp.where(x > 0.0, 0, 1)
+    index_out[1] = wp.where(y > 0.0, 2, 3)
+    index_out[2] = wp.where(z > 0.0, 4, 5)
     return 3
   return 0
 
@@ -1669,8 +1674,7 @@ def _box_normals(
 # compute possible edge normals for box for edge collisions
 @wp.func
 def _box_edge_normals(
-  normals: wp.array(dtype=wp.vec3),
-  endverts: wp.array(dtype=wp.vec3),
+  # In:
   dim: int,
   mat: wp.mat33,
   pos: wp.vec3,
@@ -1678,10 +1682,13 @@ def _box_edge_normals(
   v1: wp.vec3,
   v2: wp.vec3,
   v1i: int,
+  # Out:
+  normal_out: wp.array(dtype=wp.vec3),
+  endvert_out: wp.array(dtype=wp.vec3),
 ) -> int:
   if dim == 2:
-    endverts[0] = v2
-    normals[0] = wp.normalize(v2 - v1)
+    endvert_out[0] = v2
+    normal_out[0] = wp.normalize(v2 - v1)
     return 1
 
   # return 3 adjacent vertices
@@ -1690,57 +1697,57 @@ def _box_edge_normals(
     y = wp.where(v1i & 2, size[1], -size[1])
     z = wp.where(v1i & 4, size[2], -size[2])
 
-    endverts[0] = mat @ wp.vec3(-x, y, z) + pos
-    normals[0] = wp.normalize(endverts[0] - v1)
+    endvert_out[0] = mat @ wp.vec3(-x, y, z) + pos
+    normal_out[0] = wp.normalize(endvert_out[0] - v1)
 
-    endverts[1] = mat @ wp.vec3(x, -y, z) + pos
-    normals[1] = wp.normalize(endverts[1] - v1)
+    endvert_out[1] = mat @ wp.vec3(x, -y, z) + pos
+    normal_out[1] = wp.normalize(endvert_out[1] - v1)
 
-    endverts[2] = mat @ wp.vec3(x, y, -z) + pos
-    normals[2] = wp.normalize(endverts[2] - v1)
+    endvert_out[2] = mat @ wp.vec3(x, y, -z) + pos
+    normal_out[2] = wp.normalize(endvert_out[2] - v1)
     return 3
   return 0
 
 
 # recover face of a box from its index
 @wp.func
-def _box_face(face: wp.array(dtype=wp.vec3), mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int) -> int:
+def _box_face(mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp.array(dtype=wp.vec3)) -> int:
   # compute global coordinates of the box face and face normal
   if idx == 0:  # right
-    face[0] = mat @ wp.vec(size[0], size[1], size[2]) + pos
-    face[1] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
-    face[2] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
-    face[3] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
+    face_out[0] = mat @ wp.vec(size[0], size[1], size[2]) + pos
+    face_out[1] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
+    face_out[2] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
+    face_out[3] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
     return 4
   if idx == 1:  # left
-    face[0] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
-    face[1] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
-    face[2] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
-    face[3] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
+    face_out[0] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
+    face_out[1] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
+    face_out[2] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
+    face_out[3] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
     return 4
   if idx == 2:  # top
-    face[0] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
-    face[1] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
-    face[2] = mat @ wp.vec(size[0], size[1], size[2]) + pos
-    face[3] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
+    face_out[0] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
+    face_out[1] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
+    face_out[2] = mat @ wp.vec(size[0], size[1], size[2]) + pos
+    face_out[3] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
     return 4
   if idx == 3:  # bottom
-    face[0] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
-    face[1] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
-    face[2] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
-    face[3] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
+    face_out[0] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
+    face_out[1] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
+    face_out[2] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
+    face_out[3] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
     return 4
   if idx == 4:  # front
-    face[0] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
-    face[1] = mat @ wp.vec(size[0], size[1], size[2]) + pos
-    face[2] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
-    face[3] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
+    face_out[0] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
+    face_out[1] = mat @ wp.vec(size[0], size[1], size[2]) + pos
+    face_out[2] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
+    face_out[3] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
     return 4
   if idx == 5:  # back
-    face[0] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
-    face[1] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
-    face[2] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
-    face[3] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
+    face_out[0] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
+    face_out[1] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
+    face_out[2] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
+    face_out[3] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
     return 4
   return 0
 
@@ -1757,16 +1764,16 @@ def _mesh_face(
   polyvertadr: wp.array(dtype=int),
   polyvertnum: wp.array(dtype=int),
   polyvert: wp.array(dtype=int),
-  face: wp.array(dtype=wp.vec3),
   idx: int,
+  # Out:
+  face_out: wp.array(dtype=wp.vec3),
 ) -> int:
   adr = polyvertadr[polyadr + idx]
   j = int(0)
   nvert = polyvertnum[polyadr + idx]
-  nvert = wp.where(nvert <= MAX_POLYVERT, nvert, MAX_POLYVERT)
   for i in range(nvert - 1, -1, -1):
     v = vert[vertadr + polyvert[adr + i]]
-    face[j] = mat @ v + pos
+    face_out[j] = mat @ v + pos
     j += 1
   return nvert
 
@@ -1801,8 +1808,7 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[fl
 # clip a polygon against another polygon
 @wp.func
 def _polygon_clip(
-  polygon: wp.array(dtype=wp.vec3),
-  clipped: wp.array(dtype=wp.vec3),
+  # In:
   plane_normal: wp.array(dtype=wp.vec3),
   plane_dist: wp.array(dtype=float),
   face1: wp.array(dtype=wp.vec3),
@@ -1811,6 +1817,9 @@ def _polygon_clip(
   nface2: int,
   n: wp.vec3,
   dir: wp.vec3,
+  # Out:
+  polygon_out: wp.array(dtype=wp.vec3),
+  clipped_out: wp.array(dtype=wp.vec3),
 ) -> Tuple[int, mat3c, mat3c]:
   witness1 = mat3c()
   witness2 = mat3c()
@@ -1835,14 +1844,14 @@ def _polygon_clip(
   nclipped = int(0)
 
   for i in range(nface2):
-    polygon[i] = face2[i]
+    polygon_out[i] = face2[i]
 
   # clip the polygon by one edge e at a time
   for e in range(nface1):
     for i in range(npolygon):
       # get edge PQ of the polygon
-      P = polygon[i]
-      Q = wp.where(i < npolygon - 1, polygon[i + 1], polygon[0])
+      P = polygon_out[i]
+      Q = wp.where(i < npolygon - 1, polygon_out[i + 1], polygon_out[0])
 
       # determine if P and Q are in the halfspace of the clipping edge
       inside1 = _halfspace(face1[e], pn[e], P)
@@ -1854,25 +1863,25 @@ def _polygon_clip(
 
       # edge PQ is inside the clipping edge, add Q
       if inside1 and inside2:
-        clipped[nclipped] = Q
+        clipped_out[nclipped] = Q
         nclipped += 1
         continue
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
       t, res = _plane_intersect(pn[e], pd[e], P, Q)
       if t >= 0.0 and t <= 1.0:
-        clipped[nclipped] = res
+        clipped_out[nclipped] = res
         nclipped += 1
 
       # add Q as PQ is now back inside the clipping edge
       if inside2:
-        clipped[nclipped] = Q
+        clipped_out[nclipped] = Q
         nclipped += 1
 
     # swap clipped and polygon
-    tmp = polygon
-    polygon = clipped
-    clipped = tmp
+    tmp = polygon_out
+    polygon_out = clipped_out
+    clipped_out = tmp
     npolygon = nclipped
     nclipped = 0
 
@@ -1880,22 +1889,32 @@ def _polygon_clip(
     return 0, witness1, witness2
 
   if npolygon > 4:
-    quad = _polygon_quad(polygon, npolygon)
+    quad = _polygon_quad(polygon_out, npolygon)
     for i in range(4):
-      witness2[i] = polygon[quad[i]]
+      witness2[i] = polygon_out[quad[i]]
       witness1[i] = witness2[i] - dir
     return 4, witness1, witness2
 
   # no pruning needed
   for i in range(npolygon):
-    witness2[i] = polygon[i]
+    witness2[i] = polygon_out[i]
     witness1[i] = witness2[i] - dir
   return npolygon, witness1, witness2
+
+
+@wp.func
+def _set_edge(
+  vert1: wp.array(dtype=(wp.vec3)), vert2: wp.array(dtype=(wp.vec3)), start: int, end: int, face_out: wp.array(dtype=(wp.vec3))
+) -> int:
+  face_out[0] = vert1[start]
+  face_out[1] = vert2[end]
+  return 2
 
 
 # recover multiple contacts from EPA polytope
 @wp.func
 def _multicontact(
+  # In:
   polygon: wp.array(dtype=wp.vec3),
   clipped: wp.array(dtype=wp.vec3),
   plane_normal: wp.array(dtype=wp.vec3),
@@ -1949,11 +1968,9 @@ def _multicontact(
 
   # get all possible face normals for each geom
   if geomtype1 == int(GeomType.BOX.value):
-    nnorms1 = _box_normals(n1, idx1, nface1, feature_index1, geom1.rot, dir_neg)
+    nnorms1 = _box_normals(nface1, feature_index1, geom1.rot, dir_neg, n1, idx1)
   elif geomtype1 == int(GeomType.MESH.value):
     nnorms1 = _mesh_normals(
-      n1,
-      idx1,
       nface1,
       feature_index1,
       geom1.rot,
@@ -1963,13 +1980,13 @@ def _multicontact(
       polymapadr,
       polymapnum,
       polymap,
+      n1,
+      idx1,
     )
   if geomtype2 == int(GeomType.BOX.value):
-    nnorms2 = _box_normals(n2, idx2, nface2, feature_index2, geom2.rot, dir)
+    nnorms2 = _box_normals(nface2, feature_index2, geom2.rot, dir, n2, idx2)
   elif geomtype2 == int(GeomType.MESH.value):
     nnorms2 = _mesh_normals(
-      n2,
-      idx2,
       nface2,
       feature_index2,
       geom2.rot,
@@ -1979,6 +1996,8 @@ def _multicontact(
       polymapadr,
       polymapnum,
       polymap,
+      n2,
+      idx2,
     )
 
   # determine if any two face normals match
@@ -1991,12 +2010,10 @@ def _multicontact(
       nnorms1 = 0
       if geomtype1 == int(GeomType.BOX.value):
         nnorms1 = _box_edge_normals(
-          n1, endvert, nface1, geom1.rot, geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0]
+          nface1, geom1.rot, geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0], n1, endvert
         )
       elif geomtype1 == int(GeomType.MESH.value):
         nnorms1 = _mesh_edge_normals(
-          n1,
-          endvert,
           nface1,
           geom1.rot,
           geom1.pos,
@@ -2012,6 +2029,8 @@ def _multicontact(
           feature_vertex1[0],
           feature_vertex1[1],
           feature_index1[0],
+          n1,
+          endvert,
         )
       nres, res = _aligned_face_edge(n1, nnorms1, n2, nnorms2)
       if not nres:
@@ -2023,12 +2042,10 @@ def _multicontact(
       nnorms2 = 0
       if geomtype2 == int(GeomType.BOX.value):
         nnorms2 = _box_edge_normals(
-          n2, endvert, nface2, geom2.rot, geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0]
+          nface2, geom2.rot, geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0], n2, endvert
         )
       elif geomtype2 == int(GeomType.MESH.value):
         nnorms2 = _mesh_edge_normals(
-          n2,
-          endvert,
           nface2,
           geom2.rot,
           geom2.pos,
@@ -2044,6 +2061,8 @@ def _multicontact(
           feature_vertex2[0],
           feature_vertex2[1],
           feature_index2[0],
+          n2,
+          endvert,
         )
       nres, res = _aligned_face_edge(n2, nnorms2, n1, nnorms1)
       if not nres:
@@ -2058,29 +2077,43 @@ def _multicontact(
 
   # recover geom1 matching edge or face
   if is_edge_contact_geom1:
-    face1[0] = pt.vert1[face[0]]
-    face1[1] = endvert[i]
-    nface1 = 2
+    nface1 = _set_edge(pt.vert1, endvert, face[0], i, face1)
   else:
     ind = wp.where(is_edge_contact_geom2, idx1[j], idx1[i])
     if geomtype1 == int(GeomType.BOX.value):
-      nface1 = _box_face(face1, geom1.rot, geom1.pos, geom1.size, ind)
+      nface1 = _box_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
     elif geomtype1 == int(GeomType.MESH.value):
       nface1 = _mesh_face(
-        geom1.rot, geom1.pos, geom1.vertadr, geom1.mesh_polyadr, vert, polyvertadr, polyvertnum, polyvert, face1, ind
+        geom1.rot,
+        geom1.pos,
+        geom1.vertadr,
+        geom1.mesh_polyadr,
+        vert,
+        polyvertadr,
+        polyvertnum,
+        polyvert,
+        ind,
+        face1,
       )
 
   # recover geom2 matching edge or face
   if is_edge_contact_geom2:
-    face2[0] = pt.vert2[face[0]]
-    face2[1] = endvert[i]
-    nface2 = 2
+    nface2 = _set_edge(pt.vert2, endvert, face[0], i, face2)
   else:
     if geomtype2 == int(GeomType.BOX.value):
-      nface2 = _box_face(face2, geom2.rot, geom2.pos, geom2.size, idx2[j])
+      nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
     elif geomtype2 == int(GeomType.MESH.value):
       nface2 = _mesh_face(
-        geom2.rot, geom2.pos, geom2.vertadr, geom2.mesh_polyadr, vert, polyvertadr, polyvertnum, polyvert, face2, idx2[j]
+        geom2.rot,
+        geom2.pos,
+        geom2.vertadr,
+        geom2.mesh_polyadr,
+        vert,
+        polyvertadr,
+        polyvertnum,
+        polyvert,
+        idx2[j],
+        face2,
       )
 
   # TODO(kbayes): this approximates the contact direction, by scaling the face normal by the
@@ -2091,16 +2124,16 @@ def _multicontact(
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
     approx_dir = wp.norm_l2(dir) * n2[j]
-    return _polygon_clip(polygon, clipped, plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir)
+    return _polygon_clip(plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped)
 
   # face2 is an edge; clip face2 against face1
   if is_edge_contact_geom2:
     approx_dir = -wp.norm_l2(dir) * n1[j]
-    return _polygon_clip(polygon, clipped, plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir)
+    return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir, polygon, clipped)
 
   # face-face collision
   approx_dir = wp.norm_l2(dir) * n2[j]
-  return _polygon_clip(polygon, clipped, plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir)
+  return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir, polygon, clipped)
 
 
 @wp.func
