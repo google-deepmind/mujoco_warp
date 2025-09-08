@@ -250,7 +250,7 @@ def _hfield_midphase(
   geomid = g2
 
   # SHOULD NOT OCCUR: if the first geom is not a heightfield, swap
-  if geom_type[g1] != int(GeomType.HFIELD.value):
+  if geom_type[g1] != GeomType.HFIELD:
     hfieldid = g2
     geomid = g1
 
