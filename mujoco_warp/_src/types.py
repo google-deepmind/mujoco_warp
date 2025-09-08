@@ -581,6 +581,8 @@ class Option:
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
     legacy_gjk: run legacy gjk algorithm
+    contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
+                             contacts matched after this value is exceded will be ignored
   """
 
   timestep: wp.array(dtype=float)
@@ -613,6 +615,7 @@ class Option:
   sdf_iterations: int
   run_collision_detection: bool  # warp only
   legacy_gjk: bool
+  contact_sensor_maxmatch: int  # warp only
 
 
 @dataclasses.dataclass
@@ -1390,7 +1393,6 @@ class Data:
     njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
-    ncon_world: number of detected contacts per world           (nworld,)
     ne: number of equality constraints                          (nworld,)
     ne_connect: number of equality connect constraints          (nworld,)
     ne_weld: number of equality weld constraints                (nworld,)
@@ -1535,7 +1537,6 @@ class Data:
   njmax: int  # warp only
   solver_niter: wp.array(dtype=int)
   ncon: wp.array(dtype=int)
-  ncon_world: wp.array(dtype=int)  # warp only
   ne: wp.array(dtype=int)
   ne_connect: wp.array(dtype=int)  # warp only
   ne_weld: wp.array(dtype=int)  # warp only
