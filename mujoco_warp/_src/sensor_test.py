@@ -608,6 +608,58 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
+  def test_sensor_collision(self):
+    """Tests collision sensors: distance, normal, fromto."""
+
+    # TODO(team): test plane
+
+    _, mjd, m, d = test_util.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="geom0">
+            <geom name="geom0" type="sphere" size=".1"/>
+          </body>
+          <body name="geom1">
+            <geom name="geom1" type="sphere" size=".1"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="geomgeom" pos="1 0 0">
+            <geom type="sphere" size=".075" pos=".2 0 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="1 2"/>
+        </keyframe>
+        <sensor>
+          <distance geom1="geom0" geom2="geom1" cutoff=".001"/>
+          <distance geom1="geom0" geom2="geom1" cutoff=".9"/>
+          <distance geom1="geom0" geom2="geom1" cutoff=".91"/>
+          <distance geom1="geom0" geom2="geom1" cutoff="1"/>
+          <normal geom1="geom0" geom2="geom1" cutoff=".001"/>
+          <normal geom1="geom0" geom2="geom1" cutoff="1"/>
+          <normal geom1="geom1" geom2="geom0" cutoff="1"/>
+          <fromto geom1="geom0" geom2="geom1" cutoff=".001"/>
+          <fromto geom1="geom0" geom2="geom1" cutoff="1"/>
+          <fromto geom1="geom1" geom2="geom0" cutoff="1"/>
+          <distance body1="geom0" body2="geomgeom" cutoff="3"/>
+          <distance body1="geomgeom" body2="geom0" cutoff="3"/>
+          <normal body1="geom0" body2="geomgeom" cutoff="3"/>
+          <normal body1="geomgeom" body2="geom0" cutoff="3"/>
+          <fromto body1="geom0" body2="geomgeom" cutoff="3"/>
+          <fromto body1="geomgeom" body2="geom0" cutoff="3"/>
+        </sensor>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
 
 if __name__ == "__main__":
   wp.init()
