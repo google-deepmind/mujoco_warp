@@ -32,7 +32,17 @@ source env/bin/activate
 pip install --upgrade pip
 pip install uv
 ```
+<details><summary>Windows (native Python only, not MSYS2 or WSL)</summary>
 
+```powershell
+git clone https://github.com/google-deepmind/mujoco_warp.git
+cd mujoco_warp
+python -m venv env
+.\env\Scripts\Activate.ps1  # For MSYS2 Python: env\bin\activate
+pip install --upgrade pip
+pip install uv
+```
+</details>
 
 Then install MJWarp in editable mode for local development:
 
