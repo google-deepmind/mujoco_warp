@@ -36,6 +36,10 @@ def hfield_filter(
   g1: int,
   g2: int,
 ) -> Tuple[bool, float, float, float, float, float, float]:
+  """Filter for height field collisions.
+
+  See MuJoCo mjc_ConvexHField.
+  """
   # height field info
   hfdataid = geom_dataid[g1]
   size1 = hfield_size[hfdataid]

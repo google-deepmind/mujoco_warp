@@ -397,6 +397,7 @@ def ccd_kernel_builder(
       geom_xmat_in[worldid, g2],
     )
 
+    # see MuJoCo mjc_ConvexHField
     if wp.static(is_hfield):
       # height field subgrid
       nrow = hfield_nrow[g1]
