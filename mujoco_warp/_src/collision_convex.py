@@ -91,7 +91,7 @@ def ccd_kernel_builder(
   is_hfield: bool,
 ):
   @wp.func
-  def ccd_write(
+  def eval_ccd_write_contact(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
@@ -466,7 +466,7 @@ def ccd_kernel_builder(
                 x1_ += prism[i]
               x1 += geom1.rot @ (x1_ / 6.0)
 
-            ncontact = ccd_write(
+            ncontact = eval_ccd_write_contact(
               opt_ccd_tolerance,
               geom_type,
               nconmax_in,
@@ -513,7 +513,7 @@ def ccd_kernel_builder(
             if count >= MJ_MAXCONPAIR:
               return
     else:
-      ccd_write(
+      eval_ccd_write_contact(
         opt_ccd_tolerance,
         geom_type,
         nconmax_in,
