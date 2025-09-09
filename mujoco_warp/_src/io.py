@@ -436,7 +436,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     _collision_sensor_check(
       sensor_collision_objtype,
       sensor_collision_objid,
-      mujoco.mjtGeom.mjGEOM.HFIELD,
+      mujoco.mjtGeom.mjGEOM_HFIELD,
       "Collision sensors with height fields are not implemented.",
     )
     _collision_sensor_check(
