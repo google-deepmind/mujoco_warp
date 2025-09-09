@@ -13,23 +13,21 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
-
 import warp as wp
+from newton.geometry import collide_box_box as box_box
+from newton.geometry import collide_capsule_box as capsule_box
+from newton.geometry import collide_capsule_capsule as capsule_capsule
+from newton.geometry import collide_plane_box as plane_box
+from newton.geometry import collide_plane_capsule as plane_capsule
+from newton.geometry import collide_plane_cylinder as plane_cylinder
+from newton.geometry import collide_plane_ellipsoid as plane_ellipsoid
+from newton.geometry import collide_plane_sphere as plane_sphere
+from newton.geometry import collide_sphere_box as sphere_box
+from newton.geometry import collide_sphere_capsule as sphere_capsule
+from newton.geometry import collide_sphere_cylinder as sphere_cylinder
+from newton.geometry import collide_sphere_sphere as sphere_sphere
 
 from .collision_hfield import hfield_triangle_prism
-from .collision_primitive_core import box_box
-from .collision_primitive_core import capsule_box
-from .collision_primitive_core import capsule_capsule
-from .collision_primitive_core import plane_box
-from .collision_primitive_core import plane_capsule
-from .collision_primitive_core import plane_cylinder
-from .collision_primitive_core import plane_ellipsoid
-from .collision_primitive_core import plane_sphere
-from .collision_primitive_core import sphere_box
-from .collision_primitive_core import sphere_capsule
-from .collision_primitive_core import sphere_cylinder
-from .collision_primitive_core import sphere_sphere
 from .math import make_frame
 from .math import safe_div
 from .math import upper_trid_index
@@ -46,9 +44,7 @@ wp.set_module_options({"enable_backward": False})
 
 _HUGE_VAL = 1e6
 
-
-class mat43f(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
-  pass
+_mat43f = wp.types.matrix((4, 3), wp.float32)
 
 
 @wp.struct
@@ -150,7 +146,9 @@ def _geom(
 
 
 @wp.func
-def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tuple[wp.vec4, mat43f, wp.vec3]:
+def plane_convex(
+  plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom
+) -> tuple[wp.vec4, wp.types.matrix((4, 3), wp.float32), wp.vec3]:
   """Core contact geometry calculation for plane-convex collision.
 
   Args:
@@ -166,7 +164,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   """
 
   contact_dist = wp.vec4(wp.inf)
-  contact_pos = mat43f()
+  contact_pos = _mat43f()
   contact_count = int(0)
 
   # get points in the convex frame
