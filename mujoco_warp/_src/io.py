@@ -34,6 +34,18 @@ MAX_WORLDS = 2**24
 _TOLERANCE_F32 = 1.0e-6
 
 
+def _max_meshdegree(mjm: mujoco.MjModel) -> int:
+  if mjm.mesh_polyvertnum.size == 0:
+    return 4
+  return max(3, mjm.mesh_polymapnum.max())
+
+
+def _max_npolygon(mjm: mujoco.MjModel) -> int:
+  if mjm.mesh_polyvertnum.size == 0:
+    return 4
+  return max(4, mjm.mesh_polyvertnum.max())
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """
   Creates a model on device.
@@ -871,6 +883,9 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
 
+  max_npolygon = _max_npolygon(mjm)
+  max_meshdegree = _max_meshdegree(mjm)
+
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
@@ -1057,6 +1072,17 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     epa_index=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
     epa_map=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
     epa_horizon=wp.zeros(shape=(nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
+    multiccd_polygon=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
+    multiccd_clipped=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
+    multiccd_pnormal=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
+    multicdd_pdist=wp.zeros(shape=(nconmax, max_npolygon), dtype=float),
+    multicdd_idx1=wp.zeros(shape=(nconmax, max_meshdegree), dtype=int),
+    multicdd_idx2=wp.zeros(shape=(nconmax, max_meshdegree), dtype=int),
+    multicdd_n1=wp.zeros(shape=(nconmax, max_meshdegree), dtype=wp.vec3),
+    multicdd_n2=wp.zeros(shape=(nconmax, max_meshdegree), dtype=wp.vec3),
+    multicdd_endvert=wp.zeros(shape=(nconmax, max_meshdegree), dtype=wp.vec3),
+    multicdd_face1=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
+    multicdd_face2=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
     # rne_postconstraint
     cacc=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     cfrc_int=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
@@ -1138,6 +1164,9 @@ def put_data(
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
+
+  max_npolygon = _max_npolygon(mjm)
+  max_meshdegree = _max_meshdegree(mjm)
 
   # calculate some fields that cannot be easily computed inline:
   if mujoco.mj_isSparse(mjm):
@@ -1417,6 +1446,17 @@ def put_data(
     epa_index=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
     epa_map=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
     epa_horizon=wp.zeros(shape=(nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
+    multiccd_polygon=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
+    multiccd_clipped=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
+    multiccd_pnormal=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
+    multicdd_pdist=wp.zeros(shape=(nconmax, max_npolygon), dtype=float),
+    multicdd_idx1=wp.zeros(shape=(nconmax, max_meshdegree), dtype=int),
+    multicdd_idx2=wp.zeros(shape=(nconmax, max_meshdegree), dtype=int),
+    multicdd_n1=wp.zeros(shape=(nconmax, max_meshdegree), dtype=wp.vec3),
+    multicdd_n2=wp.zeros(shape=(nconmax, max_meshdegree), dtype=wp.vec3),
+    multicdd_endvert=wp.zeros(shape=(nconmax, max_meshdegree), dtype=wp.vec3),
+    multicdd_face1=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
+    multicdd_face2=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
     # rne_postconstraint but also smooth
     cacc=tile(mjd.cacc, dtype=wp.spatial_vector),
     cfrc_int=tile(mjd.cfrc_int, dtype=wp.spatial_vector),
