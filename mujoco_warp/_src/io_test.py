@@ -228,6 +228,36 @@ class IOTest(parameterized.TestCase):
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
+  @parameterized.parameters(
+    ('<distance geom1="plane" geom2="sphere"/>', NotImplementedError),
+    ('<distance geom1="sphere" geom2="plane"/>', NotImplementedError),
+    ('<distance geom1="hfield" geom2="sphere"/>', ValueError),
+    ('<distance geom1="sphere" geom2="hfield"/>', ValueError),
+  )
+  def test_collision_sensors(self, sensor, err):
+    """Tests for collision sensors that are not implemented."""
+    with self.assertRaises(err):
+      test_util.fixture(
+        xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="2" ncol="2" size="1 1 1 1"/>
+        </asset>
+        <worldbody>
+          <geom name="plane" type="plane" size="10 10 .01"/>
+          <geom name="hfield" type="hfield" hfield="hfield"/>
+          <body>
+            <geom name="sphere" type="sphere" size=".1"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          {sensor}
+        </sensor>
+      </mujoco>
+      """
+      )
+
 
 if __name__ == "__main__":
   wp.init()

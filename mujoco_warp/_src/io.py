@@ -398,6 +398,54 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # height field
   nhfieldgeom, geompair2hfgeom = _hfield_geom_pair(mjm)
 
+  # collision sensors
+  is_collision_sensor = np.isin(
+    mjm.sensor_type, [mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO]
+  )
+  if is_collision_sensor.any():
+
+    def _collision_sensor_check(sensor_type, sensor_id, geom_type, err_msg):
+      for type_, id_ in zip(sensor_type, sensor_id):
+        if type_ == mujoco.mjtObj.mjOBJ_BODY:
+          geomnum = mjm.body_geomnum[id_]
+          geomadr = mjm.body_geomadr[id_]
+          for geomid in range(geomadr, geomadr + geomnum):
+            if mjm.geom_type[geomid] == geom_type:
+              raise NotImplementedError(err_msg)
+        elif type_ == mujoco.mjtObj.mjOBJ_GEOM:
+          if mjm.geom_type[id_] == geom_type:
+            raise NotImplementedError(err_msg)
+
+    sensor_collision_objtype = mjm.sensor_objtype[is_collision_sensor]
+    sensor_collision_objid = mjm.sensor_objid[is_collision_sensor]
+    sensor_collision_reftype = mjm.sensor_reftype[is_collision_sensor]
+    sensor_collision_refid = mjm.sensor_refid[is_collision_sensor]
+
+    _collision_sensor_check(
+      sensor_collision_objtype,
+      sensor_collision_objid,
+      mujoco.mjtGeom.mjGEOM_PLANE,
+      "Collision sensors with planes are not implemented.",
+    )
+    _collision_sensor_check(
+      sensor_collision_reftype,
+      sensor_collision_refid,
+      mujoco.mjtGeom.mjGEOM_PLANE,
+      "Collision sensors with planes are not implemented.",
+    )
+    _collision_sensor_check(
+      sensor_collision_objtype,
+      sensor_collision_objid,
+      mujoco.mjtGeom.mjGEOM.HFIELD,
+      "Collision sensors with height fields are not implemented.",
+    )
+    _collision_sensor_check(
+      sensor_collision_reftype,
+      sensor_collision_refid,
+      mujoco.mjtGeom.mjGEOM_HFIELD,
+      "Collision sensors with height fields are not implemented.",
+    )
+
   m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,

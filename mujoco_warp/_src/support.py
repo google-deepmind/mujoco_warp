@@ -17,6 +17,8 @@ from typing import Tuple
 
 import warp as wp
 
+from .collision_gjk import _gjk
+from .collision_primitive import Geom
 from .math import motion_cross
 from .types import ConeType
 from .types import Data
@@ -24,6 +26,7 @@ from .types import JointType
 from .types import Model
 from .types import TileSet
 from .types import vec5
+from .types import vec6
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
@@ -530,3 +533,32 @@ def jac_dot(
   jacr = cdof_dot_ang
 
   return jacp, jacr
+
+
+@wp.func
+def geom_distance(
+  # In:
+  tolerance: float,
+  iterations: int,
+  geom1: Geom,
+  geom2: Geom,
+  x1_0: wp.vec3,
+  x2_0: wp.vec3,
+  type1: int,
+  type2: int,
+  distmax: float,
+) -> Tuple[float, vec6]:
+  """Returns the smallest distance and fromto between two geoms."""
+
+  # TODO(team): planes
+  # TODO(team): special casing for sphere and capsule
+  result = _gjk(tolerance, iterations, geom1, geom2, x1_0, x2_0, type1, type2, distmax, False)
+
+  dist = result.dist
+  if result.dist <= distmax:
+    dist = wp.min(dist, distmax)
+    fromto = vec6(result.x1[0], result.x1[1], result.x1[2], result.x2[0], result.x2[1], result.x2[2])
+  else:
+    fromto = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+  return dist, fromto
