@@ -24,6 +24,8 @@ from .types import JointType
 from .types import Model
 from .warp_util import event_scope
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def _spring_damper_dof_passive(
@@ -505,7 +507,7 @@ def _flex_bending(
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
 
-  if m.opt.disableflags & DisableBit.PASSIVE:
+  if m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER):
     d.qfrc_spring.zero_()
     d.qfrc_damper.zero_()
     d.qfrc_gravcomp.zero_()
