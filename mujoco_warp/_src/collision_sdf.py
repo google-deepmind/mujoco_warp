@@ -695,7 +695,7 @@ def _sdf_narrowphase(
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
     _sdf_narrowphase,
-    dim=(m.opt.sdf_initpoints, int(d.nconmax / m.opt.sdf_initpoints)),
+    dim=(m.opt.sdf_initpoints, d.nconmax),
     inputs=[
       m.geom_type,
       m.geom_condim,
