@@ -228,6 +228,23 @@ class IOTest(parameterized.TestCase):
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
+  def test_implicit_integrator_fluid_model(self):
+    """Tests for implicit integrator with fluid model."""
+    with self.assertRaises(NotImplementedError):
+      test_util.fixture(
+        xml="""
+        <mujoco>
+          <option viscosity="1" density="1" integrator="implicitfast"/>
+          <worldbody>
+            <body>
+              <geom type="sphere" size=".1"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+      )
+
 
 if __name__ == "__main__":
   wp.init()
