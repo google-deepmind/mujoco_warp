@@ -361,16 +361,33 @@ class SmoothTest(parameterized.TestCase):
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
 
-    d.qLD.zero_()
+    d.qLD.fill_(wp.inf)
     if sparse:
-      d.qLDiagInv.zero_()
+      d.qLDiagInv.fill_(wp.inf)
 
     res = wp.zeros((1, mjm.nv), dtype=float)
     vec = wp.ones((1, mjm.nv), dtype=float)
 
     mjwarp._src.smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, res, vec)
-
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "qM \\ 1")
+
+    if sparse:
+      qLD = wp.empty((1, 1, mjm.nC), dtype=float)
+      qLDiagInv = wp.empty((1, mjm.nv), dtype=float)
+      qLD.fill_(wp.inf)
+      qLDiagInv.fill_(wp.inf)
+
+      mjwarp._src.smooth._factor_i_sparse(m, d, d.qM, qLD, qLDiagInv)
+
+      _assert_eq(d.qLD.numpy()[0], qLD.numpy()[0], "qLD")
+      _assert_eq(d.qLDiagInv.numpy()[0], qLDiagInv.numpy()[0], "qLDiagInv")
+    else:
+      qLD = wp.empty((1, mjm.nv, mjm.nv), dtype=float)
+      qLD.fill_(wp.inf)
+
+      mjwarp._src.smooth._factor_i_dense(m, d, d.qM, qLD)
+
+      _assert_eq(d.qLD.numpy()[0], qLD.numpy()[0], "qLD")
 
   def test_tendon_armature(self):
     mjm, mjd, m, d = test_util.fixture("tendon/armature.xml", keyframe=0)
