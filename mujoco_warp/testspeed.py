@@ -35,6 +35,12 @@ from etils import epath
 
 import mujoco_warp as mjw
 
+# mjwarp-testspeed has priviledged access to a few internal methods
+from mujoco_warp._src.benchmark import benchmark
+from mujoco_warp._src.io import find_keys
+from mujoco_warp._src.io import make_trajectory
+from mujoco_warp._src.io import override_model
+
 _FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
 
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
@@ -102,40 +108,6 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
   return spec.compile()
 
 
-def _override(model: mjw.Model):
-  enum_fields = {
-    "opt.integrator": mjw.IntegratorType,
-    "opt.cone": mjw.ConeType,
-    "opt.solver": mjw.SolverType,
-    "opt.broadphase": mjw.BroadphaseType,
-    "opt.broadphase_filter": mjw.BroadphaseFilter,
-  }
-  for override in _OVERRIDE.value:
-    if "=" not in override:
-      raise app.UsageError(f"Invalid override format: {override}")
-    key, val = override.split("=", 1)
-    key, val = key.strip(), val.strip()
-
-    if key in enum_fields:
-      try:
-        val = int(enum_fields[key][val.upper()])
-      except KeyError:
-        raise app.UsageError(f"Unrecognized enum value: {val}")
-
-    obj, attrs = model, key.split(".")
-    for i, attr in enumerate(attrs):
-      if not hasattr(obj, attr):
-        raise app.UsageError(f"Unrecognized model field: {key}")
-      if i < len(attrs) - 1:
-        obj = getattr(obj, attr)
-      elif key not in enum_fields:
-        try:
-          val = type(getattr(obj, attr))(ast.literal_eval(val))
-        except (SyntaxError, ValueError):
-          raise app.UsageError(f"Unrecognized value for field: {key}")
-      setattr(obj, attr, val)
-
-
 def _main(argv: Sequence[str]):
   """Runs testpeed app."""
 
@@ -148,10 +120,10 @@ def _main(argv: Sequence[str]):
   mjd = mujoco.MjData(mjm)
   ctrls = None
   if _REPLAY.value:
-    keys = mjw.test_util.find_keys(mjm, _REPLAY.value)
+    keys = find_keys(mjm, _REPLAY.value)
     if not keys:
       raise app.UsageError(f"Key prefix not find: {_REPLAY.value}")
-    ctrls = mjw.test_util.make_trajectory(mjm, keys)
+    ctrls = make_trajectory(mjm, keys)
     mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
   elif mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
@@ -165,7 +137,7 @@ def _main(argv: Sequence[str]):
 
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)
-    _override(m)
+    override_model(m, _OVERRIDE.value)
 
     broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
     solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
@@ -183,16 +155,7 @@ def _main(argv: Sequence[str]):
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
-    res = mjw.test_util.benchmark(
-      fn,
-      m,
-      d,
-      _NSTEP.value,
-      ctrls,
-      _EVENT_TRACE.value,
-      _MEASURE_ALLOC.value,
-      _MEASURE_SOLVER.value,
-    )
+    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
     jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
