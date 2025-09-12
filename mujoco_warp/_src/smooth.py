@@ -2449,6 +2449,7 @@ def _tile_cholesky_factorize_solve(tile: TileSet):
     adr: wp.array(dtype=int),
     # Out:
     x: wp.array2d(dtype=float),
+    L: wp.array3d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
     TILE_SIZE = wp.static(tile.size)
@@ -2458,6 +2459,7 @@ def _tile_cholesky_factorize_solve(tile: TileSet):
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
 
     L_tile = wp.tile_cholesky(M_tile)
+    wp.tile_store(L[worldid], L_tile, offset=(dofid, dofid))
     x_slice = wp.tile_cholesky_solve(L_tile, y_slice)
     wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
@@ -2465,14 +2467,19 @@ def _tile_cholesky_factorize_solve(tile: TileSet):
 
 
 def _factor_solve_i_dense(
-  m: Model, d: Data, M: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)
+  m: Model,
+  d: Data,
+  M: wp.array3d(dtype=float),
+  x: wp.array2d(dtype=float),
+  y: wp.array2d(dtype=float),
+  L: wp.array3d(dtype=float),
 ):
   for tile in m.qM_tiles:
     wp.launch_tiled(
       _tile_cholesky_factorize_solve(tile),
       dim=(d.nworld, tile.adr.size),
       inputs=[M, y, tile.adr],
-      outputs=[x],
+      outputs=[x, L],
       block_dim=m.block_dim.cholesky_factorize_solve,
     )
 
@@ -2498,7 +2505,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _factor_i_sparse(m, d, M, L, D)
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
-    _factor_solve_i_dense(m, d, M, x, y)
+    _factor_solve_i_dense(m, d, M, x, y, L)
 
 
 @wp.kernel
