@@ -188,14 +188,14 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
-  @parameterized.product(actuation=[True, False], passive=[True, False], sparse=[True, False])
-  def test_implicit(self, actuation, passive, sparse):
+  @parameterized.product(actuation=[True, False], spring=[True, False], damper=[True, False], sparse=[True, False])
+  def test_implicit(self, actuation, spring, damper, sparse):
     mjm, mjd, _, _ = test_util.fixture(
       "pendula.xml",
       integrator=IntegratorType.IMPLICITFAST,
       actuation=actuation,
-      spring=passive,
-      damper=passive,
+      spring=spring,
+      damper=damper,
       sparse=sparse,
     )
 

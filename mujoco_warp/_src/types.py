@@ -915,7 +915,6 @@ class Model:
     eq_ten_adr: eq_* addresses of type `TENDON`              (<=neq,)
     actuator_moment_tiles_nv: tiling configuration
     actuator_moment_tiles_nu: tiling configuration
-    actuator_affine_bias_gain: affine bias/gain present
     actuator_trntype: transmission type (TrnType)            (nu,)
     actuator_dyntype: dynamics type (DynType)                (nu,)
     actuator_gaintype: gain type (GainType)                  (nu,)
@@ -1239,7 +1238,6 @@ class Model:
   eq_ten_adr: wp.array(dtype=int)
   actuator_moment_tiles_nv: tuple[TileSet, ...]
   actuator_moment_tiles_nu: tuple[TileSet, ...]
-  actuator_affine_bias_gain: bool  # warp only
   actuator_trntype: wp.array(dtype=int)
   actuator_dyntype: wp.array(dtype=int)
   actuator_gaintype: wp.array(dtype=int)

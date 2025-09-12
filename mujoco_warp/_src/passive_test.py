@@ -36,10 +36,10 @@ def _assert_eq(a, b, name):
 
 
 class PassiveTest(parameterized.TestCase):
-  @parameterized.product(passive=[True, False], gravity=[True, False])
-  def test_passive(self, passive, gravity):
+  @parameterized.product(spring=[True, False], damper=[True, False], gravity=[True, False])
+  def test_passive(self, spring, damper, gravity):
     """Tests passive."""
-    _, mjd, m, d = test_util.fixture("pendula.xml", spring=passive, damper=passive, gravity=gravity, kick=True, applied=True)
+    _, mjd, m, d = test_util.fixture("pendula.xml", spring=spring, damper=damper, gravity=gravity, kick=True, applied=True)
 
     for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_gravcomp, d.qfrc_passive):
       arr.zero_()

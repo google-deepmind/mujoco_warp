@@ -676,11 +676,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     actuator_acc0=wp.array(mjm.actuator_acc0, dtype=float),
     actuator_lengthrange=wp.array(mjm.actuator_lengthrange, dtype=wp.vec2),
     exclude_signature=wp.array(mjm.exclude_signature, dtype=int),
-    # short-circuiting here allows us to skip a lot of code in implicit integration
-    actuator_affine_bias_gain=bool(
-      np.any(mjm.actuator_biastype == types.BiasType.AFFINE.value)
-      or np.any(mjm.actuator_gaintype == types.GainType.AFFINE.value)
-    ),
     nxn_geom_pair=wp.array(nxn_geom_pair, dtype=wp.vec2i),
     nxn_geom_pair_filtered=wp.array(nxn_geom_pair_filtered, dtype=wp.vec2i),
     nxn_pairid=wp.array(nxn_pairid, dtype=int),

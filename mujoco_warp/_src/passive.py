@@ -39,6 +39,9 @@ def _spring_damper_dof_passive(
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   qvel_in: wp.array2d(dtype=float),
+  # In:
+  dsbl_spring: bool,
+  dsbl_damper: bool,
   # Data out:
   qfrc_spring_out: wp.array2d(dtype=float),
   qfrc_damper_out: wp.array2d(dtype=float),
@@ -48,8 +51,8 @@ def _spring_damper_dof_passive(
   stiffness = jnt_stiffness[worldid, jntid]
   damping = dof_damping[worldid, dofid]
 
-  has_stiffness = stiffness != 0.0
-  has_damping = damping != 0.0
+  has_stiffness = stiffness != 0.0 and not dsbl_spring
+  has_damping = damping != 0.0 and not dsbl_damper
 
   if not has_stiffness:
     qfrc_spring_out[worldid, dofid] = 0.0
@@ -147,6 +150,9 @@ def _spring_damper_tendon_passive(
   ten_velocity_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   ten_J_in: wp.array3d(dtype=float),
+  # In:
+  dsbl_spring: bool,
+  dsbl_damper: bool,
   # Data out:
   qfrc_spring_out: wp.array2d(dtype=float),
   qfrc_damper_out: wp.array2d(dtype=float),
@@ -156,12 +162,15 @@ def _spring_damper_tendon_passive(
   stiffness = tendon_stiffness[worldid, tenid]
   damping = tendon_damping[worldid, tenid]
 
-  if stiffness == 0.0 and damping == 0.0:
+  has_stiffness = stiffness != 0.0 and not dsbl_spring
+  has_damping = damping != 0.0 and not dsbl_damper
+
+  if not has_stiffness and not has_damping:
     return
 
   J = ten_J_in[worldid, tenid, dofid]
 
-  if stiffness:
+  if has_stiffness:
     # compute spring force along tendon
     length = ten_length_in[worldid, tenid]
     lengthspring = tendon_lengthspring[worldid, tenid]
@@ -178,7 +187,7 @@ def _spring_damper_tendon_passive(
     # transform to joint torque
     wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
 
-  if damping:
+  if has_damping:
     # compute damper linear force along tendon
     frc_damper = -damping * ten_velocity_in[worldid, tenid]
 
@@ -388,6 +397,8 @@ def _flex_elasticity(
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   flexedge_length_in: wp.array2d(dtype=float),
   flexedge_velocity_in: wp.array2d(dtype=float),
+  # In:
+  dsbl_damper: bool,
   # Data out:
   qfrc_spring_out: wp.array2d(dtype=float),
 ):
@@ -403,7 +414,10 @@ def _flex_elasticity(
     wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
     wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
   )
-  kD = flex_damping[f] / timestep
+  if timestep > 0.0 and not dsbl_damper:
+    kD = flex_damping[f] / timestep
+  else:
+    kD = 0.0
 
   gradient = wp.mat(0.0, shape=(6, 6))
   for e in range(nedge):
@@ -506,8 +520,10 @@ def _flex_bending(
 @event_scope
 def passive(m: Model, d: Data):
   """Adds all passive forces."""
+  dsbl_spring = m.opt.disableflags & DisableBit.SPRING
+  dsbl_damper = m.opt.disableflags & DisableBit.DAMPER
 
-  if m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER):
+  if dsbl_spring and dsbl_damper:
     d.qfrc_spring.zero_()
     d.qfrc_damper.zero_()
     d.qfrc_gravcomp.zero_()
@@ -527,6 +543,8 @@ def passive(m: Model, d: Data):
       m.dof_damping,
       d.qpos,
       d.qvel,
+      dsbl_spring,
+      dsbl_damper,
     ],
     outputs=[d.qfrc_spring, d.qfrc_damper],
   )
@@ -542,6 +560,8 @@ def passive(m: Model, d: Data):
         d.ten_velocity,
         d.ten_length,
         d.ten_J,
+        dsbl_spring,
+        dsbl_damper,
       ],
       outputs=[
         d.qfrc_spring,
@@ -549,28 +569,30 @@ def passive(m: Model, d: Data):
       ],
     )
 
-  wp.launch(
-    _flex_elasticity,
-    dim=(d.nworld, m.nflexelem),
-    inputs=[
-      m.opt.timestep,
-      m.body_dofadr,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_edgeadr,
-      m.flex_elemedgeadr,
-      m.flex_vertbodyid,
-      m.flex_elem,
-      m.flex_elemedge,
-      m.flexedge_length0,
-      m.flex_stiffness,
-      m.flex_damping,
-      d.flexvert_xpos,
-      d.flexedge_length,
-      d.flexedge_velocity,
-    ],
-    outputs=[d.qfrc_spring],
-  )
+  if not dsbl_spring:
+    wp.launch(
+      _flex_elasticity,
+      dim=(d.nworld, m.nflexelem),
+      inputs=[
+        m.opt.timestep,
+        m.body_dofadr,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_edgeadr,
+        m.flex_elemedgeadr,
+        m.flex_vertbodyid,
+        m.flex_elem,
+        m.flex_elemedge,
+        m.flexedge_length0,
+        m.flex_stiffness,
+        m.flex_damping,
+        d.flexvert_xpos,
+        d.flexedge_length,
+        d.flexedge_velocity,
+        dsbl_damper,
+      ],
+      outputs=[d.qfrc_spring],
+    )
   wp.launch(
     _flex_bending,
     dim=(d.nworld, m.nflexedge),

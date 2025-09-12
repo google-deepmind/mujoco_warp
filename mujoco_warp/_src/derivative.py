@@ -51,8 +51,8 @@ def _qderiv_actuator_passive(
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
-  actuation_enabled: bool,
-  passive_enabled: bool,
+  dsbl_actuation: bool,
+  dsbl_damper: bool,
   # Data out:
   qM_integration_out: wp.array3d(dtype=float),
 ):
@@ -61,8 +61,8 @@ def _qderiv_actuator_passive(
   dofjid = qMj[elemid]
 
   qderiv = float(0.0)
-  for actid in range(nu):
-    if actuation_enabled:
+  if not dsbl_actuation:
+    for actid in range(nu):
       if actuator_gaintype[actid] == int(GainType.AFFINE.value):
         gain = actuator_gainprm[worldid, actid][2]
       else:
@@ -82,7 +82,7 @@ def _qderiv_actuator_passive(
 
       qderiv += actuator_moment_in[worldid, actid, dofiid] * actuator_moment_in[worldid, actid, dofjid] * vel
 
-  if passive_enabled and dofiid == dofjid:
+  if not dsbl_damper and dofiid == dofjid:
     qderiv -= dof_damping[worldid, dofiid]
 
   qderiv *= opt_timestep[worldid]
@@ -139,40 +139,40 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
     flg_forward (bool, optional): If True forward dynamics else inverse dynamics routine.
                                   Default is True.
   """
-  actuation_enabled = not (m.opt.disableflags & DisableBit.ACTUATION)
-  passive_enabled = not (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER))
+  dsbl_actuation = m.opt.disableflags & DisableBit.ACTUATION
+  dsbl_damper = m.opt.disableflags & DisableBit.DAMPER
 
   qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row
   qMj = m.qM_fullm_j if m.opt.is_sparse else m.dof_tri_col
-  if actuation_enabled or passive_enabled:
-    wp.launch(
-      _qderiv_actuator_passive,
-      dim=(d.nworld, qMi.size),
-      inputs=[
-        m.nu,
-        m.opt.timestep,
-        m.opt.is_sparse,
-        m.dof_damping,
-        m.actuator_dyntype,
-        m.actuator_gaintype,
-        m.actuator_biastype,
-        m.actuator_actadr,
-        m.actuator_actnum,
-        m.actuator_gainprm,
-        m.actuator_biasprm,
-        d.act,
-        d.ctrl,
-        d.actuator_moment,
-        d.qM,
-        qMi,
-        qMj,
-        actuation_enabled,
-        passive_enabled,
-      ],
-      outputs=[d.qM_integration],
-    )
 
-  if passive_enabled:
+  wp.launch(
+    _qderiv_actuator_passive,
+    dim=(d.nworld, qMi.size),
+    inputs=[
+      m.nu,
+      m.opt.timestep,
+      m.opt.is_sparse,
+      m.dof_damping,
+      m.actuator_dyntype,
+      m.actuator_gaintype,
+      m.actuator_biastype,
+      m.actuator_actadr,
+      m.actuator_actnum,
+      m.actuator_gainprm,
+      m.actuator_biasprm,
+      d.act,
+      d.ctrl,
+      d.actuator_moment,
+      d.qM,
+      qMi,
+      qMj,
+      dsbl_actuation,
+      dsbl_damper,
+    ],
+    outputs=[d.qM_integration],
+  )
+
+  if not dsbl_damper:
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
