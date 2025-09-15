@@ -15,10 +15,6 @@
 
 """Tests for io functions."""
 
-import dataclasses
-import typing
-from typing import Any, Dict, Optional, Union
-
 import mujoco
 import numpy as np
 import warp as wp
@@ -28,7 +24,13 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 
 from . import test_util
-from .io import MAX_WORLDS
+
+
+def _assert_eq(a, b, name):
+  tol = 5e-4
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
 
 # NOTE: modify io_jax_test _IO_TEST_MODELS if changed here.
 _IO_TEST_MODELS = (
@@ -154,31 +156,67 @@ class IOTest(parameterized.TestCase):
       """
       )
 
-  @parameterized.parameters(
-    '<contact geom1="plane"/>',
-    '<contact geom2="plane"/>',
-    '<contact site="site"/>',
-    '<contact geom1="plane" geom2="sphere"/>',
-  )
-  def test_contact_sensor(self, contact_sensor):
-    mjm = mujoco.MjModel.from_xml_string(f"""
-      <mujoco>
-        <worldbody>
-          <site name="site"/>
-          <geom name="plane" type="plane" size="10 10 .001"/>
-          <body name="body">
-            <geom name="sphere" size=".1"/>
-            <joint type="slide" axis="0 0 1"/>
-          </body>
-        </worldbody>
-        <sensor>
-          {contact_sensor}
-        </sensor>
-      </mujoco>
-    """)
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_reset_data(self, xml):
+    reset_datafield = [
+      "ncon",
+      "ne",
+      "nf",
+      "nl",
+      "nefc",
+      "time",
+      "energy",
+      "qpos",
+      "qvel",
+      "act",
+      "ctrl",
+      "eq_active",
+      "qfrc_applied",
+      "xfrc_applied",
+      "qacc",
+      "qacc_warmstart",
+      "act_dot",
+      "sensordata",
+      "mocap_pos",
+      "mocap_quat",
+      "qM",
+    ]
 
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    nworld = 1
+    mjm, mjd, m, d = test_util.fixture(xml, nworld=nworld)
+    nconmax = d.nconmax
+
+    # data fields
+    for arr in reset_datafield:
+      attr = getattr(d, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      else:
+        attr.fill_(-1)
+
+    for arr in d.contact.__dataclass_fields__:
+      attr = getattr(d.contact, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      else:
+        attr.fill_(-1)
+
+    mujoco.mj_resetData(mjm, mjd)
+
+    # set ncon in order to zero all contact memory
+    wp.copy(d.ncon, wp.array([nconmax], dtype=int))
+    mjwarp.reset_data(m, d)
+
+    for arr in reset_datafield:
+      d_arr = getattr(d, arr).numpy()
+      for i in range(d_arr.shape[0]):
+        di_arr = d_arr[i]
+        if arr == "qM":
+          di_arr = di_arr.reshape(-1)[: mjd.qM.size]
+        _assert_eq(di_arr, getattr(mjd, arr), arr)
+
+    for arr in d.contact.__dataclass_fields__:
+      _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
@@ -189,6 +227,23 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(len(m.oct_aabb.shape), 2)
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
+
+  def test_implicit_integrator_fluid_model(self):
+    """Tests for implicit integrator with fluid model."""
+    with self.assertRaises(NotImplementedError):
+      test_util.fixture(
+        xml="""
+        <mujoco>
+          <option viscosity="1" density="1" integrator="implicitfast"/>
+          <worldbody>
+            <body>
+              <geom type="sphere" size=".1"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+      )
 
 
 if __name__ == "__main__":

@@ -22,9 +22,9 @@ Example:
 """
 
 import ast
+import copy
 import enum
 import logging
-import pickle
 import sys
 import time
 from typing import Sequence, Union
@@ -169,7 +169,6 @@ def _main(argv: Sequence[str]) -> None:
     with wp.ScopedDevice(_DEVICE.value):
       m = mjw.put_model(mjm)
       _override(m)
-      mjm_hash = pickle.dumps(mjm)
       broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
       solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
       integrator = mjw.IntegratorType(m.opt.integrator).name
@@ -186,6 +185,8 @@ def _main(argv: Sequence[str]) -> None:
       print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
   with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
+    opt = copy.copy(mjm.opt)
+
     while True:
       start = time.time()
 
@@ -203,9 +204,9 @@ def _main(argv: Sequence[str]) -> None:
         wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
         wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
 
-        hash = pickle.dumps(mjm)
-        if hash != mjm_hash:
-          mjm_hash = hash
+        # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
+        if mjm.opt != opt:
+          opt = copy.copy(mjm.opt)
           m = mjw.put_model(mjm)
           graph = _compile_step(m, d)
 
