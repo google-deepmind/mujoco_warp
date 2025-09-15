@@ -488,7 +488,7 @@ class GJKTest(absltest.TestCase):
 
     _, ncon, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS, multiccd=True)
     self.assertEqual(ncon, 4)
-  
+
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""
     _, _, m, d = test_util.fixture(
@@ -506,8 +506,9 @@ class GJKTest(absltest.TestCase):
        """
     )
 
-    dist, _, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS, multiccd=False, margin=.05)
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS, multiccd=False, margin=0.05)
     self.assertAlmostEqual(dist, -0.001)
+
 
 if __name__ == "__main__":
   wp.init()
