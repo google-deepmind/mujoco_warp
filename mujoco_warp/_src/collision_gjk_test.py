@@ -90,6 +90,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     geom1.pos = geom_xpos_in[0, gid1]
     geom1.rot = geom_xmat_in[0, gid1]
     geom1.size = geom_size[0, gid1]
+    geom1.margin = 0.0
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
@@ -114,6 +115,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     geom2.pos = geom_xpos_in[0, gid2]
     geom2.rot = geom_xmat_in[0, gid2]
     geom2.size = geom_size[0, gid2]
+    geom2.margin = 0.0
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 

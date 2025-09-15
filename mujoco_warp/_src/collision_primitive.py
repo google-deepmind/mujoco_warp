@@ -59,6 +59,7 @@ class Geom:
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
+  margin: float
   hfprism: mat63
   vertadr: int
   vertnum: int
@@ -135,6 +136,7 @@ def geom(
     geom.mesh_polymap = mesh_polymap
 
   geom.index = -1
+  geom.margin = 0.0
   return geom
 
 
