@@ -270,9 +270,9 @@ def find_oct(
       return node, (rx, ry, rz)
 
     # compute which of 8 children to visit next
-    x = 1 if coord[0] < 0.5 else 0
-    y = 1 if coord[1] < 0.5 else 0
-    z = 1 if coord[2] < 0.5 else 0
+    x = 0 if coord[0] < 0.5 else 1
+    y = 0 if coord[1] < 0.5 else 1
+    z = 0 if coord[2] < 0.5 else 1
     stack = oct_child[node][4 * z + 2 * y + x]
 
   wp.print("ERROR: Node not found\n")
