@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Utilities for becnchmarking MuJoCo Warp."""
+"""Utilities for benchmarking MuJoCo Warp."""
 
 import importlib
 import os

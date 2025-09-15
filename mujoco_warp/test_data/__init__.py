@@ -40,8 +40,8 @@ def fixture(
   """Loads MuJoCo MjModel / MjData and corresponding mjw.Model / mjw.Data.
 
   Args:
-    path: path to the XML file to load, relative to the `test_data` root
-    xml: XML string to load (instead of fname)
+    path: path to the XML file to load, relative to the `test_data` root.
+    xml: XML string to load (instead of fname).
     keyframe: if provided, the data will be reset to the specified keyframe.
     qpos_noise: initialize `qpos` with uniform noise with this magnitude.
     qvel_noise: initialize `qvel` with uniform noise with this magnitude.
