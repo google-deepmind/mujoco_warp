@@ -491,7 +491,7 @@ class GJKTest(absltest.TestCase):
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
        <mujoco>
          <asset>
