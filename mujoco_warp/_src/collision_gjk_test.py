@@ -16,15 +16,14 @@
 import warp as wp
 from absl.testing import absltest
 
-from mujoco_warp._src.warp_util import cache_kernel
-from mujoco_warp._src.warp_util import kernel as nested_kernel
+from mujoco_warp import Data
+from mujoco_warp import GeomType
+from mujoco_warp import Model
+from mujoco_warp import test_data
 
-from . import test_util
 from .collision_gjk import ccd
 from .collision_primitive import Geom
-from .types import Data
-from .types import GeomType
-from .types import Model
+from .warp_util import kernel as nested_kernel
 
 MAX_ITERATIONS = 20
 
@@ -66,6 +65,17 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     face_index: wp.array(dtype=int),
     face_map: wp.array(dtype=int),
     horizon: wp.array(dtype=int),
+    polygon: wp.array(dtype=wp.vec3),
+    clipped: wp.array(dtype=wp.vec3),
+    pnormal: wp.array(dtype=wp.vec3),
+    pdist: wp.array(dtype=float),
+    idx1: wp.array(dtype=int),
+    idx2: wp.array(dtype=int),
+    n1: wp.array(dtype=wp.vec3),
+    n2: wp.array(dtype=wp.vec3),
+    endvert: wp.array(dtype=wp.vec3),
+    face1: wp.array(dtype=wp.vec3),
+    face2: wp.array(dtype=wp.vec3),
     # Out:
     dist_out: wp.array(dtype=float),
     ncon_out: wp.array(dtype=int),
@@ -150,6 +160,17 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
       face_index,
       face_map,
       horizon,
+      polygon,
+      clipped,
+      pnormal,
+      pdist,
+      idx1,
+      idx2,
+      n1,
+      n2,
+      endvert,
+      face1,
+      face2,
     )
 
     dist_out[0] = dist
@@ -168,6 +189,17 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
   face_index = wp.array(shape=(6 * iterations,), dtype=int)
   face_map = wp.array(shape=(6 * iterations,), dtype=int)
   horizon = wp.array(shape=(6 * iterations,), dtype=int)
+  polygon = wp.array(shape=(150,), dtype=wp.vec3)
+  clipped = wp.array(shape=(150,), dtype=wp.vec3)
+  pnormal = wp.array(shape=(150,), dtype=wp.vec3)
+  pdist = wp.array(shape=(150,), dtype=float)
+  idx1 = wp.array(shape=(150,), dtype=int)
+  idx2 = wp.array(shape=(150,), dtype=int)
+  n1 = wp.array(shape=(150,), dtype=wp.vec3)
+  n2 = wp.array(shape=(150,), dtype=wp.vec3)
+  endvert = wp.array(shape=(150,), dtype=wp.vec3)
+  face1 = wp.array(shape=(150,), dtype=wp.vec3)
+  face2 = wp.array(shape=(150,), dtype=wp.vec3)
   dist_out = wp.array(shape=(1,), dtype=float)
   ncon_out = wp.array(shape=(1,), dtype=int)
   pos_out = wp.array(shape=(2,), dtype=wp.vec3)
@@ -206,6 +238,17 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
       face_index,
       face_map,
       horizon,
+      polygon,
+      clipped,
+      pnormal,
+      pdist,
+      idx1,
+      idx2,
+      n1,
+      n2,
+      endvert,
+      face1,
+      face2,
     ],
     outputs=[
       dist_out,
@@ -222,8 +265,8 @@ class GJKTest(absltest.TestCase):
   def test_spheres_distance(self):
     """Test distance between two spheres."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <geom name="geom1" type="sphere" pos="-1.5 0 0" size="1"/>
@@ -239,7 +282,7 @@ class GJKTest(absltest.TestCase):
   def test_spheres_touching(self):
     """Test two touching spheres have zero distance"""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <worldbody>
@@ -256,7 +299,7 @@ class GJKTest(absltest.TestCase):
   def test_box_mesh_distance(self):
     """Test distance between a mesh and box"""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco model="MuJoCo Model">
         <asset>
@@ -284,7 +327,7 @@ class GJKTest(absltest.TestCase):
   def test_sphere_sphere_contact(self):
     """Test penetration depth between two spheres."""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <worldbody>
@@ -301,8 +344,8 @@ class GJKTest(absltest.TestCase):
   def test_box_box_contact(self):
     """Test penetration between two boxes."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <geom type="box" pos="-1 0 0" size="2.5 2.5 2.5"/>
@@ -321,8 +364,8 @@ class GJKTest(absltest.TestCase):
   def test_mesh_mesh_contact(self):
     """Test penetration between two meshes."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <asset>
         <mesh name="box" scale=".5 .5 .1"
@@ -358,8 +401,8 @@ class GJKTest(absltest.TestCase):
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <geom pos="0 0 0" type="cylinder" size="1 .5"/>
@@ -375,8 +418,8 @@ class GJKTest(absltest.TestCase):
   def test_box_edge(self):
     """Test box edge."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <geom pos="0 0 2" type="box" name="box2" size="1 1 1"/>
@@ -390,8 +433,8 @@ class GJKTest(absltest.TestCase):
   def test_box_box_ccd(self):
     """Test box box."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
        <mujoco>
          <worldbody>
            <geom name="geom1" type="box" pos="0 0 1.9" size="1 1 1"/>
@@ -406,8 +449,8 @@ class GJKTest(absltest.TestCase):
   def test_mesh_mesh_ccd(self):
     """Test mesh-mesh multiccd."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
        <mujoco>
          <asset>
            <mesh name="smallbox"
@@ -427,8 +470,8 @@ class GJKTest(absltest.TestCase):
   def test_box_box_ccd2(self):
     """Test box-box multiccd 2."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
        <mujoco>
          <worldbody>
            <geom size="1 1 1" pos="0 0 2" type="box"/>

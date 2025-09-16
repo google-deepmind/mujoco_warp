@@ -21,7 +21,6 @@ from ._src.types import Model as Model
 from ._src.types import Data as Data
 # isort: on
 
-from ._src import test_util as test_util  # used by viewer and testspeed, not meant for public consumption
 from ._src.collision_driver import collision as collision
 from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase
@@ -44,6 +43,7 @@ from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
 from ._src.io import put_data as put_data
 from ._src.io import put_model as put_model
+from ._src.io import reset_data as reset_data
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
 from ._src.sensor import energy_pos as energy_pos
@@ -67,6 +67,7 @@ from ._src.solver import solve as solve
 from ._src.support import contact_force as contact_force
 from ._src.support import mul_m as mul_m
 from ._src.support import xfrc_accumulate as xfrc_accumulate
+from ._src.types import BiasType as BiasType
 from ._src.types import BroadphaseFilter as BroadphaseFilter
 from ._src.types import BroadphaseType as BroadphaseType
 from ._src.types import ConeType as ConeType
@@ -75,6 +76,8 @@ from ._src.types import Contact as Contact
 from ._src.types import DisableBit as DisableBit
 from ._src.types import DynType as DynType
 from ._src.types import EnableBit as EnableBit
+from ._src.types import GainType as GainType
+from ._src.types import GeomType as GeomType
 from ._src.types import IntegratorType as IntegratorType
 from ._src.types import JointType as JointType
 from ._src.types import Option as Option

@@ -2106,6 +2106,8 @@ def _contact_match(
       # both obj1 and obj2 specified: direction depends on order
       order_regular = match11 and match22
       order_reverse = match12 and match21
+      if not order_regular and not order_reverse:
+        return
       if order_reverse and not order_regular:
         dir = -1.0
     elif objtype != ObjType.UNKNOWN:

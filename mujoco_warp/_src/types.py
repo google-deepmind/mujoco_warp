@@ -1026,8 +1026,6 @@ class Model:
     mat_rgba: rgba                                           (nworld, nmat, 4)
     actuator_trntype_body_adr: addresses for actuators       (<=nu,)
                                with body transmission
-    geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
-                         height field mapping
     block_dim: BlockDim
     geom_pair_type_count: count of max number of each potential collision
     has_sdf_geom: whether the model contains SDF geoms
@@ -1345,7 +1343,6 @@ class Model:
   mat_texrepeat: wp.array2d(dtype=wp.vec2)
   mat_rgba: wp.array2d(dtype=wp.vec4)
   actuator_trntype_body_adr: wp.array(dtype=int)  # warp only
-  geompair2hfgeompair: wp.array(dtype=int)  # warp only
   block_dim: BlockDim  # warp only
   geom_pair_type_count: tuple[int, ...]  # warp only
   has_sdf_geom: bool  # warp only
@@ -1396,8 +1393,6 @@ class Data:
     njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
-    ncon_world: number of detected contacts per world           (nworld,)
-    ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeompair)
     ne: number of equality constraints                          (nworld,)
     ne_connect: number of equality connect constraints          (nworld,)
     ne_weld: number of equality weld constraints                (nworld,)
@@ -1494,7 +1489,6 @@ class Data:
     sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (nconmax,)
-    collision_hftri_index: collision index for hfield pairs     (nconmax,)
     collision_worldid: collision world ids from broadphase      (nconmax,)
     ncollision: collision count from broadphase
     epa_vert: vertices in EPA polytope in Minkowski space       (nconmax, 5 + CCDiter)
@@ -1508,6 +1502,17 @@ class Data:
     epa_index: index of face in polytope map                    (nconmax, 6 + 6 * CCDiter)
     epa_map: status of faces in polytope                        (nconmax, 6 + 6 * CCDiter)
     epa_horizon: index pair (i j) of edges on horizon           (nconmax, 3 * 2 * CCDiter)
+    multiccd_polygon: clipped contact surface                   (nconmax, 2 * max_npolygon)
+    multiccd_clipped: clipped contact surface (intermediate)    (nconmax, 2 * max_npolygon)
+    multiccd_pnormal: plane normal of clipping polygon          (nconmax, max_npolygon)
+    multiccd_pdist: plane distance of clipping polygon          (nconmax, max_npolygon)
+    multiccd_idx1: list of normal index candidates for Geom 1   (nconmax, max_meshdegree)
+    multiccd_idx2: list of normal index candidates for Geom 2   (nconmax, max_meshdegree)
+    multiccd_n1: list of normal candidates for Geom 1           (nconmax, max_meshdegree)
+    multiccd_n2: list of normal candidates for Geom 1           (nconmax, max_meshdegree)
+    multiccd_endvert: list of edge vertices candidates          (nconmax, max_meshdegree)
+    multiccd_face1: contact face                                (nconmax, max_npolygon)
+    multiccd_face2: contact face                                (nconmax, max_npolygon)
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
@@ -1543,8 +1548,6 @@ class Data:
   njmax: int  # warp only
   solver_niter: wp.array(dtype=int)
   ncon: wp.array(dtype=int)
-  ncon_world: wp.array(dtype=int)  # warp only
-  ncon_hfield: wp.array2d(dtype=int)  # warp only
   ne: wp.array(dtype=int)
   ne_connect: wp.array(dtype=int)  # warp only
   ne_weld: wp.array(dtype=int)  # warp only
@@ -1646,7 +1649,6 @@ class Data:
 
   # collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
-  collision_hftri_index: wp.array(dtype=int)
   collision_pairid: wp.array(dtype=int)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
@@ -1663,6 +1665,19 @@ class Data:
   epa_index: wp.array2d(dtype=int)
   epa_map: wp.array2d(dtype=int)
   epa_horizon: wp.array2d(dtype=int)
+
+  # narrowphase collision (multicontact)
+  multiccd_polygon: wp.array2d(dtype=wp.vec3)
+  multiccd_clipped: wp.array2d(dtype=wp.vec3)
+  multiccd_pnormal: wp.array2d(dtype=wp.vec3)
+  multiccd_pdist: wp.array2d(dtype=float)
+  multiccd_idx1: wp.array2d(dtype=int)
+  multiccd_idx2: wp.array2d(dtype=int)
+  multiccd_n1: wp.array2d(dtype=wp.vec3)
+  multiccd_n2: wp.array2d(dtype=wp.vec3)
+  multiccd_endvert: wp.array2d(dtype=wp.vec3)
+  multiccd_face1: wp.array2d(dtype=wp.vec3)
+  multiccd_face2: wp.array2d(dtype=wp.vec3)
 
   # rne_postconstraint
   cacc: wp.array2d(dtype=wp.spatial_vector)

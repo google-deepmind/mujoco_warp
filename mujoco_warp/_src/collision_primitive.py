@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_hfield import hfield_triangle_prism
 from .collision_primitive_core import box_box
 from .collision_primitive_core import capsule_box
 from .collision_primitive_core import capsule_capsule
@@ -51,13 +50,16 @@ class mat43f(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
   pass
 
 
+mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
+
+
 @wp.struct
 class Geom:
   pos: wp.vec3
   rot: wp.mat33
   normal: wp.vec3
   size: wp.vec3
-  hfprism: wp.mat33
+  hfprism: mat63
   vertadr: int
   vertnum: int
   vert: wp.array(dtype=wp.vec3)
@@ -76,17 +78,12 @@ class Geom:
 
 
 @wp.func
-def _geom(
+def geom(
   # kernel_analyzer: off
   # Model:
   geom_type: int,
   geom_dataid: int,
   geom_size: wp.vec3,
-  hfield_adr: int,
-  hfield_nrow: int,
-  hfield_ncol: int,
-  hfield_size: wp.vec4,
-  hfield_data: wp.array(dtype=float),
   mesh_vertadr: int,
   mesh_vertnum: int,
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -104,8 +101,6 @@ def _geom(
   # Data in:
   geom_xpos_in: wp.vec3,
   geom_xmat_in: wp.mat33,
-  # In:
-  hftri_index: int,
   # kernel_analyzer: on
 ) -> Geom:
   geom = Geom()
@@ -138,12 +133,6 @@ def _geom(
     geom.mesh_polymapadr = mesh_polymapadr
     geom.mesh_polymapnum = mesh_polymapnum
     geom.mesh_polymap = mesh_polymap
-
-  # If geom is HFIELD triangle, compute triangle prism verts
-  if geom_type == GeomType.HFIELD:
-    geom.hfprism = hfield_triangle_prism(
-      geom_dataid, hfield_adr, hfield_nrow, hfield_ncol, hfield_size, hfield_data, hftri_index
-    )
 
   geom.index = -1
   return geom
@@ -1502,7 +1491,6 @@ def _primitive_narrowphase_builder(m: Model):
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
-    collision_hftri_index_in: wp.array(dtype=int),
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
@@ -1556,18 +1544,11 @@ def _primitive_narrowphase_builder(m: Model):
       worldid,
     )
 
-    hftri_index = collision_hftri_index_in[tid]
-
     geom1_dataid = geom_dataid[g1]
-    geom1 = _geom(
+    geom1 = geom(
       type1,
       geom1_dataid,
       geom_size[worldid, g1],
-      hfield_adr[geom1_dataid],
-      hfield_nrow[geom1_dataid],
-      hfield_ncol[geom1_dataid],
-      hfield_size[geom1_dataid],
-      hfield_data,
       mesh_vertadr[geom1_dataid],
       mesh_vertnum[geom1_dataid],
       mesh_vert,
@@ -1584,19 +1565,13 @@ def _primitive_narrowphase_builder(m: Model):
       mesh_polymap,
       geom_xpos_in[worldid, g1],
       geom_xmat_in[worldid, g1],
-      hftri_index,
     )
 
     geom2_dataid = geom_dataid[g2]
-    geom2 = _geom(
+    geom2 = geom(
       type2,
       geom2_dataid,
       geom_size[worldid, g2],
-      hfield_adr[geom2_dataid],
-      hfield_nrow[geom2_dataid],
-      hfield_ncol[geom2_dataid],
-      hfield_size[geom2_dataid],
-      hfield_data,
       mesh_vertadr[geom2_dataid],
       mesh_vertnum[geom2_dataid],
       mesh_vert,
@@ -1613,7 +1588,6 @@ def _primitive_narrowphase_builder(m: Model):
       mesh_polymap,
       geom_xpos_in[worldid, g2],
       geom_xmat_in[worldid, g2],
-      hftri_index,
     )
 
     for i in range(wp.static(len(_primitive_collisions_func))):
@@ -1714,7 +1688,6 @@ def primitive_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
-      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
