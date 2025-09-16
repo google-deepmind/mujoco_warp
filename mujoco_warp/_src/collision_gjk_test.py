@@ -16,15 +16,14 @@
 import warp as wp
 from absl.testing import absltest
 
-from mujoco_warp._src.warp_util import cache_kernel
-from mujoco_warp._src.warp_util import kernel as nested_kernel
+from mujoco_warp import Data
+from mujoco_warp import GeomType
+from mujoco_warp import Model
+from mujoco_warp import test_data
 
-from . import test_util
 from .collision_gjk import ccd
 from .collision_primitive import Geom
-from .types import Data
-from .types import GeomType
-from .types import Model
+from .warp_util import kernel as nested_kernel
 
 MAX_ITERATIONS = 20
 
@@ -270,8 +269,8 @@ class GJKTest(absltest.TestCase):
   def test_spheres_distance(self):
     """Test distance between two spheres."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <geom name="geom1" type="sphere" pos="-1.5 0 0" size="1"/>
@@ -287,7 +286,7 @@ class GJKTest(absltest.TestCase):
   def test_spheres_touching(self):
     """Test two touching spheres have zero distance"""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <worldbody>
@@ -304,7 +303,7 @@ class GJKTest(absltest.TestCase):
   def test_box_mesh_distance(self):
     """Test distance between a mesh and box"""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco model="MuJoCo Model">
         <asset>
@@ -332,7 +331,7 @@ class GJKTest(absltest.TestCase):
   def test_sphere_sphere_contact(self):
     """Test penetration depth between two spheres."""
 
-    _, _, m, d = test_util.fixture(
+    _, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <worldbody>
@@ -349,8 +348,8 @@ class GJKTest(absltest.TestCase):
   def test_box_box_contact(self):
     """Test penetration between two boxes."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <geom type="box" pos="-1 0 0" size="2.5 2.5 2.5"/>
@@ -369,8 +368,8 @@ class GJKTest(absltest.TestCase):
   def test_mesh_mesh_contact(self):
     """Test penetration between two meshes."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <asset>
         <mesh name="box" scale=".5 .5 .1"
@@ -406,8 +405,8 @@ class GJKTest(absltest.TestCase):
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <geom pos="0 0 0" type="cylinder" size="1 .5"/>
@@ -423,8 +422,8 @@ class GJKTest(absltest.TestCase):
   def test_box_edge(self):
     """Test box edge."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <geom pos="0 0 2" type="box" name="box2" size="1 1 1"/>
@@ -438,8 +437,8 @@ class GJKTest(absltest.TestCase):
   def test_box_box_ccd(self):
     """Test box box."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
        <mujoco>
          <worldbody>
            <geom name="geom1" type="box" pos="0 0 1.9" size="1 1 1"/>
@@ -454,8 +453,8 @@ class GJKTest(absltest.TestCase):
   def test_mesh_mesh_ccd(self):
     """Test mesh-mesh multiccd."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
        <mujoco>
          <asset>
            <mesh name="smallbox"
@@ -475,8 +474,8 @@ class GJKTest(absltest.TestCase):
   def test_box_box_ccd2(self):
     """Test box-box multiccd 2."""
 
-    _, _, m, d = test_util.fixture(
-      xml=f"""
+    _, _, m, d = test_data.fixture(
+      xml="""
        <mujoco>
          <worldbody>
            <geom size="1 1 1" pos="0 0 2" type="box"/>
