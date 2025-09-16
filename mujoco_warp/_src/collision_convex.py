@@ -166,8 +166,8 @@ def ccd_kernel_builder(
 
       if dist >= 0.0 or depth < -depth_extension:
         return 0
-      sphere = int(GeomType.SPHERE.value)
-      ellipsoid = int(GeomType.ELLIPSOID.value)
+      sphere = GeomType.SPHERE
+      ellipsoid = GeomType.ELLIPSOID
       g1 = geoms[0]
       g2 = geoms[1]
       if geom_type[g1] == sphere or geom_type[g1] == ellipsoid or geom_type[g2] == sphere or geom_type[g2] == ellipsoid:
@@ -633,8 +633,8 @@ def convex_narrowphase(m: Model, d: Data):
   computations for non-existent pair types.
   """
   for geom_pair in _CONVEX_COLLISION_PAIRS:
-    g1 = geom_pair[0]
-    g2 = geom_pair[1]
+    g1 = geom_pair[0].value
+    g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
         ccd_kernel_builder(
