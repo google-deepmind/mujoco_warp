@@ -635,9 +635,7 @@ def convex_narrowphase(m: Model, d: Data):
     g2 = geom_pair[1]
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
-        ccd_kernel_builder(
-          m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == int(GeomType.HFIELD.value)
-        ),
+        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == int(GeomType.HFIELD.value)),
         dim=d.nconmax,
         inputs=[
           m.opt.ccd_tolerance,
