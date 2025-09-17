@@ -176,6 +176,8 @@ def ccd_kernel_builder(
       frame = make_frame(normal)
     else:
       points = mat3c()
+      geom1.margin = margin
+      geom2.margin = margin
       dist, ncontact, witness1, witness2 = ccd(
         False,
         opt_ccd_tolerance[worldid],

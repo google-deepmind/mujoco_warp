@@ -28,7 +28,7 @@ from .warp_util import kernel as nested_kernel
 MAX_ITERATIONS = 20
 
 
-def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multiccd=False):
+def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multiccd=False, margin=0.0):
   @nested_kernel(module="unique", enable_backward=False)
   def _gjk_kernel(
     # Model:
@@ -89,6 +89,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     geom1.pos = geom_xpos_in[0, gid1]
     geom1.rot = geom_xmat_in[0, gid1]
     geom1.size = geom_size[0, gid1]
+    geom1.margin = margin
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
@@ -113,6 +114,7 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
     geom2.pos = geom_xpos_in[0, gid2]
     geom2.rot = geom_xmat_in[0, gid2]
     geom2.size = geom_size[0, gid2]
+    geom2.margin = margin
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 
@@ -484,6 +486,27 @@ class GJKTest(absltest.TestCase):
 
     _, ncon, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS, multiccd=True)
     self.assertEqual(ncon, 4)
+
+  def test_sphere_mesh_margin(self):
+    """Test sphere-mesh margin."""
+
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+       <mujoco>
+         <asset>
+           <mesh name="box" scale=".2 .2 .2"
+                 vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1 1 -1 1 -1 1 -1 -1 1 1 -1 -1 1"/>
+         </asset>
+         <worldbody>
+           <geom type="sphere" pos="0 0 .349" size=".1"/>
+           <geom type="mesh" mesh="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS, multiccd=False, margin=0.05)
+    self.assertAlmostEqual(dist, -0.001)
 
 
 if __name__ == "__main__":
