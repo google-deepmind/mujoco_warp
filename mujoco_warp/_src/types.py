@@ -553,7 +553,6 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
-    ccd_iterations: convex collision detection iterations
     ccd_tolerance: convex collision detection tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
@@ -565,8 +564,7 @@ class Option:
     disableflags: bit flags for disabling standard features
     enableflags: bit flags for enabling optional features
     is_sparse: whether to use sparse representations
-    gjk_iterations: number of Gjk iterations in the convex narrowphase
-    epa_iterations: number of Epa iterations in the convex narrowphase
+    ccd_iterations: number of iterations in convex collision detection
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
