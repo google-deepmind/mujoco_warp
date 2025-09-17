@@ -232,6 +232,7 @@ def find_oct(
   rx = vec8f(0.0)
   ry = vec8f(0.0)
   rz = vec8f(0.0)
+  eps = 1e-6
 
   while niter > 0:
     niter -= 1
@@ -243,6 +244,17 @@ def find_oct(
 
     vmin = oct_aabb[node, 0] - oct_aabb[node, 1]
     vmax = oct_aabb[node, 0] + oct_aabb[node, 1]
+
+    if (
+      p[0] + eps < vmin[0]
+      or p[0] - eps > vmax[0]
+      or p[1] + eps < vmin[1]
+      or p[1] - eps > vmax[1]
+      or p[2] + eps < vmin[2]
+      or p[2] - eps > vmax[2]
+    ):
+      continue
+
     coord = wp.cw_div(p - vmin, vmax - vmin)
 
     # check if the node is a leaf
