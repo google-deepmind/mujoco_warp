@@ -84,8 +84,7 @@ def ccd_kernel_builder(
   legacy_gjk: bool,
   geomtype1: int,
   geomtype2: int,
-  gjk_iterations: int,
-  epa_iterations: int,
+  ccd_iterations: int,
   epa_exact_neg_distance: bool,
   depth_extension: float,
   is_hfield: bool,
@@ -152,7 +151,7 @@ def ccd_kernel_builder(
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
     if wp.static(legacy_gjk):
       simplex, normal = gjk_legacy(
-        gjk_iterations,
+        ccd_iterations,
         geom1,
         geom2,
         geomtype1,
@@ -160,7 +159,7 @@ def ccd_kernel_builder(
       )
 
       depth, normal = epa_legacy(
-        epa_iterations, geom1, geom2, geomtype1, geomtype2, depth_extension, epa_exact_neg_distance, simplex, normal
+        ccd_iterations, geom1, geom2, geomtype1, geomtype2, depth_extension, epa_exact_neg_distance, simplex, normal
       )
       dist = -depth
 
@@ -181,8 +180,7 @@ def ccd_kernel_builder(
         False,
         opt_ccd_tolerance[worldid],
         0.0,
-        gjk_iterations,
-        epa_iterations,
+        ccd_iterations,
         geom1,
         geom2,
         geomtype1,
@@ -638,7 +636,7 @@ def convex_narrowphase(m: Model, d: Data):
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
         ccd_kernel_builder(
-          m.opt.legacy_gjk, g1, g2, m.opt.gjk_iterations, m.opt.epa_iterations, True, 1e9, g1 == int(GeomType.HFIELD.value)
+          m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == int(GeomType.HFIELD.value)
         ),
         dim=d.nconmax,
         inputs=[

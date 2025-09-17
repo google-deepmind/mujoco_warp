@@ -144,7 +144,6 @@ def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int, multicc
       1e-6,
       1.0e30,
       iterations,
-      iterations,
       geom1,
       geom2,
       geomtype1,

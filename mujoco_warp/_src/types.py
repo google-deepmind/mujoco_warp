@@ -553,7 +553,8 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
-    ccd_tolerance: convex collision solver tolerance
+    ccd_iterations: convex collision detection iterations
+    ccd_tolerance: convex collision detection tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -600,8 +601,7 @@ class Option:
   disableflags: int
   enableflags: int
   is_sparse: bool
-  gjk_iterations: int  # warp only
-  epa_iterations: int  # warp only
+  ccd_iterations: int
   ls_parallel: bool  # warp only
   ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)

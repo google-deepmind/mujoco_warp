@@ -458,8 +458,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       is_sparse=bool(is_sparse),
       ls_parallel=False,
       ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
-      gjk_iterations=mjm.opt.ccd_iterations,
-      epa_iterations=mjm.opt.ccd_iterations,
+      ccd_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),
       broadphase_filter=int(
         types.BroadphaseFilter.PLANE.value | types.BroadphaseFilter.SPHERE.value | types.BroadphaseFilter.OBB.value

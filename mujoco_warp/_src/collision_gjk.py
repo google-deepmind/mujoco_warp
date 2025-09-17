@@ -2153,8 +2153,7 @@ def ccd(
   multiccd: bool,
   tolerance: float,
   cutoff: float,
-  gjk_iterations: int,
-  epa_iterations: int,
+  ccd_iterations: int,
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
@@ -2199,7 +2198,7 @@ def ccd(
   # special handling for sphere and capsule (shrink to point and line respectively)
   if margin1 + margin2 > 0.0:
     cutoff += margin1 + margin2
-    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, True)
+    result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, True)
 
     # shallow penetration, inflate contact
     if result.dist > tolerance:
@@ -2215,7 +2214,7 @@ def ccd(
     # deep penetration, reset initial conditions and rerun GJK + EPA
     cutoff -= margin1 + margin2
 
-  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, False)
+  result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, False)
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
@@ -2305,7 +2304,7 @@ def ccd(
     witness2[0] = result.x2
     return result.dist, 1, witness1, witness2
 
-  dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
+  dist, x1, x2, idx = _epa(tolerance, ccd_iterations, pt, geom1, geom2, geomtype1, geomtype2)
   if idx == -1:
     return FLOAT_MAX, 0, witness1, witness2
 
