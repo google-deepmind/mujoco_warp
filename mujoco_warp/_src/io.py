@@ -23,9 +23,6 @@ from . import math
 from . import types
 from . import warp_util
 
-# number of max iterations to run GJK/EPA
-MJ_CCD_ITERATIONS = 12
-
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
@@ -461,8 +458,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       is_sparse=bool(is_sparse),
       ls_parallel=False,
       ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
-      gjk_iterations=MJ_CCD_ITERATIONS,
-      epa_iterations=MJ_CCD_ITERATIONS,
+      gjk_iterations=mjm.opt.ccd_iterations,
+      epa_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),
       broadphase_filter=int(
         types.BroadphaseFilter.PLANE.value | types.BroadphaseFilter.SPHERE.value | types.BroadphaseFilter.OBB.value
@@ -1066,17 +1063,17 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     collision_worldid=wp.zeros((nconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
     # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_face=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=float),
-    epa_index=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_map=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_horizon=wp.zeros(shape=(nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_vert=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_vert1=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_vert2=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_vert_index1=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
+    epa_vert_index2=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
+    epa_face=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=wp.vec3i),
+    epa_pr=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_norm2=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=float),
+    epa_index=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=int),
+    epa_map=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=int),
+    epa_horizon=wp.zeros(shape=(nconmax, 6 * mjm.opt.ccd_iterations), dtype=int),
     multiccd_polygon=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
     multiccd_clipped=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
     multiccd_pnormal=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
@@ -1440,17 +1437,17 @@ def put_data(
     collision_worldid=wp.empty(nconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
     # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(nconmax, 5 + MJ_CCD_ITERATIONS), dtype=int),
-    epa_face=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=float),
-    epa_index=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_map=wp.zeros(shape=(nconmax, 6 + 6 * MJ_CCD_ITERATIONS), dtype=int),
-    epa_horizon=wp.zeros(shape=(nconmax, 6 * MJ_CCD_ITERATIONS), dtype=int),
+    epa_vert=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_vert1=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_vert2=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_vert_index1=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
+    epa_vert_index2=wp.zeros(shape=(nconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
+    epa_face=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=wp.vec3i),
+    epa_pr=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=wp.vec3),
+    epa_norm2=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=float),
+    epa_index=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=int),
+    epa_map=wp.zeros(shape=(nconmax, 6 + 6 * mjm.opt.ccd_iterations), dtype=int),
+    epa_horizon=wp.zeros(shape=(nconmax, 6 * mjm.opt.ccd_iterations), dtype=int),
     multiccd_polygon=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
     multiccd_clipped=wp.zeros(shape=(nconmax, 2 * max_npolygon), dtype=wp.vec3),
     multiccd_pnormal=wp.zeros(shape=(nconmax, max_npolygon), dtype=wp.vec3),
