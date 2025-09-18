@@ -597,7 +597,7 @@ def _sensor_pos(
     refid = sensor_refid[sensorid]
     val_bool = inside_geom(site_xpos_in[worldid, refid], site_xmat_in[worldid, refid], site_size[refid], site_type[refid], xpos)
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, float(val_bool), out)
-  elif sensortype == int(SensorType.E_POTENTIAL.value):
+  elif sensortype == SensorType.E_POTENTIAL:
     val = energy_in[worldid][0]
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == SensorType.E_KINETIC:
