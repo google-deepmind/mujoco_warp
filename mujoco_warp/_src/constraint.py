@@ -172,11 +172,11 @@ def _efc_equality_connect(
   if not eq_active_in[worldid, eqid]:
     return
 
+  wp.atomic_add(ne_connect_out, worldid, 3)
   efcid = wp.atomic_add(nefc_out, worldid, 3)
+
   if efcid + 3 >= njmax_in:
     return
-
-  wp.atomic_add(ne_connect_out, worldid, 3)
 
   data = eq_data[worldid, eqid]
   anchor1 = wp.vec3f(data[0], data[1], data[2])
@@ -307,11 +307,11 @@ def _efc_equality_joint(
   if not eq_active_in[worldid, eqid]:
     return
 
+  wp.atomic_add(ne_jnt_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
+
   if efcid >= njmax_in:
     return
-
-  wp.atomic_add(ne_jnt_out, worldid, 1)
 
   for i in range(nv):
     efc_J_out[worldid, efcid, i] = 0.0
@@ -411,11 +411,11 @@ def _efc_equality_tendon(
   if not eq_active_in[worldid, eqid]:
     return
 
+  wp.atomic_add(ne_ten_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
+
   if efcid >= njmax_in:
     return
-
-  wp.atomic_add(ne_ten_out, worldid, 1)
 
   obj1id = eq_obj1id[eqid]
   obj2id = eq_obj2id[eqid]
@@ -511,11 +511,11 @@ def _efc_friction_dof(
   if dof_frictionloss[worldid, dofid] <= 0.0:
     return
 
+  wp.atomic_add(nf_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
+
   if efcid >= njmax_in:
     return
-
-  wp.atomic_add(nf_out, worldid, 1)
 
   for i in range(nv):
     efc_J_out[worldid, efcid, i] = 0.0
@@ -669,11 +669,11 @@ def _efc_equality_weld(
   if not eq_active_in[worldid, eqid]:
     return
 
+  wp.atomic_add(ne_weld_out, worldid, 6)
   efcid = wp.atomic_add(nefc_out, worldid, 6)
+
   if efcid + 6 >= njmax_in:
     return
-
-  wp.atomic_add(ne_weld_out, worldid, 6)
 
   is_site = eq_objtype[eqid] == wp.static(types.ObjType.SITE.value) and nsite > 0
 
@@ -860,11 +860,11 @@ def _efc_limit_slide_hinge(
   active = pos < 0
 
   if active:
+    wp.atomic_add(nl_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
+
     if efcid >= njmax_in:
       return
-
-    wp.atomic_add(nl_out, worldid, 1)
 
     for i in range(nv):
       efc_J_out[worldid, efcid, i] = 0.0
@@ -949,11 +949,11 @@ def _efc_limit_ball(
   active = pos < 0
 
   if active:
+    wp.atomic_add(nl_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
+
     if efcid >= njmax_in:
       return
-
-    wp.atomic_add(nl_out, worldid, 1)
 
     for i in range(nv):
       efc_J_out[worldid, efcid, i] = 0.0
@@ -1041,11 +1041,11 @@ def _efc_limit_tendon(
   active = pos < 0
 
   if active:
+    wp.atomic_add(nl_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
+
     if efcid >= njmax_in:
       return
-
-    wp.atomic_add(nl_out, worldid, 1)
 
     for i in range(nv):
       efc_J_out[worldid, efcid, i] = 0.0
