@@ -24,6 +24,10 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+# maximum size (by number of edges) of an horizon in EPA algorithm
+MJ_MAX_EPAHORIZON = 12
+# maximum average number of trianglarfaces EPA can insert at each iteration
+MJ_MAX_EPAFACES = 5
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
@@ -1494,12 +1498,12 @@ class Data:
     epa_vert2: vertices in EPA polytope in geom 2 space         (nconmax, 5 + CCDiter)
     epa_vert_index1: vertex indices in EPA polytope for geom 1  (nconmax, 5 + CCDiter)
     epa_vert_index2: vertex indices in EPA polytope for geom 2  (nconmax, 5 + CCDiter)
-    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 6 * CCDiter)
-    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 6 * CCDiter)
-    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 6 * CCDiter)
-    epa_index: index of face in polytope map                    (nconmax, 6 + 6 * CCDiter)
-    epa_map: status of faces in polytope                        (nconmax, 6 + 6 * CCDiter)
-    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 3 * 2 * CCDiter)
+    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 5 * CCDiter)
+    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 5 * CCDiter)
+    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 5 * CCDiter)
+    epa_index: index of face in polytope map                    (nconmax, 6 + 5 * CCDiter)
+    epa_map: status of faces in polytope                        (nconmax, 6 + 5 * CCDiter)
+    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 2 * 12)
     multiccd_polygon: clipped contact surface                   (nconmax, 2 * max_npolygon)
     multiccd_clipped: clipped contact surface (intermediate)    (nconmax, 2 * max_npolygon)
     multiccd_pnormal: plane normal of clipping polygon          (nconmax, max_npolygon)
