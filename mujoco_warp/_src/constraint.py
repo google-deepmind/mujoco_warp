@@ -559,6 +559,7 @@ def _efc_friction_tendon(
   tendon_frictionloss: wp.array2d(dtype=float),
   tendon_invweight0: wp.array2d(dtype=float),
   # Data in:
+  njmax_in: int,
   qvel_in: wp.array2d(dtype=float),
   ten_J_in: wp.array3d(dtype=float),
   # In:
@@ -582,8 +583,11 @@ def _efc_friction_tendon(
   if frictionloss <= 0.0:
     return
 
-  efcid = wp.atomic_add(nefc_out, worldid, 1)
   wp.atomic_add(nf_out, worldid, 1)
+  efcid = wp.atomic_add(nefc_out, worldid, 1)
+
+  if efcid >= njmax_in:
+    return
 
   Jqvel = float(0.0)
 
@@ -1662,6 +1666,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_solimp_fri,
           m.tendon_frictionloss,
           m.tendon_invweight0,
+          d.njmax,
           d.qvel,
           d.ten_J,
           refsafe,
