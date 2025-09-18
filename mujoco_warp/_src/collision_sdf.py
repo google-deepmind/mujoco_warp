@@ -18,8 +18,8 @@ from typing import Tuple
 import warp as wp
 
 from . import math
-from .collision_primitive import _geom
 from .collision_primitive import contact_params
+from .collision_primitive import geom
 from .collision_primitive import write_contact
 from .math import make_frame
 from .ray import ray_mesh
@@ -232,6 +232,7 @@ def find_oct(
   rx = vec8f(0.0)
   ry = vec8f(0.0)
   rz = vec8f(0.0)
+  eps = 1e-6
 
   while niter > 0:
     niter -= 1
@@ -243,6 +244,17 @@ def find_oct(
 
     vmin = oct_aabb[node, 0] - oct_aabb[node, 1]
     vmax = oct_aabb[node, 0] + oct_aabb[node, 1]
+
+    if (
+      p[0] + eps < vmin[0]
+      or p[0] - eps > vmax[0]
+      or p[1] + eps < vmin[1]
+      or p[1] - eps > vmax[1]
+      or p[2] + eps < vmin[2]
+      or p[2] - eps > vmax[2]
+    ):
+      continue
+
     coord = wp.cw_div(p - vmin, vmax - vmin)
 
     # check if the node is a leaf
@@ -270,9 +282,9 @@ def find_oct(
       return node, (rx, ry, rz)
 
     # compute which of 8 children to visit next
-    x = 1 if coord[0] < 0.5 else 0
-    y = 1 if coord[1] < 0.5 else 0
-    z = 1 if coord[2] < 0.5 else 0
+    x = 0 if coord[0] < 0.5 else 1
+    y = 0 if coord[1] < 0.5 else 1
+    z = 0 if coord[2] < 0.5 else 1
     stack = oct_child[node][4 * z + 2 * y + x]
 
   wp.print("ERROR: Node not found\n")
@@ -660,7 +672,6 @@ def _sdf_narrowphase(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_hftri_index_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
@@ -681,16 +692,17 @@ def _sdf_narrowphase(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
 ):
-  tid = wp.tid()
-
-  if tid >= ncollision_in[0]:
+  i, contact_tid = wp.tid()
+  if i >= sdf_initpoints:
     return
-  geoms = collision_pair_in[tid]
+  if contact_tid >= ncollision_in[0]:
+    return
+  geoms = collision_pair_in[contact_tid]
   g2 = geoms[1]
   type2 = geom_type[g2]
   if type2 != int(GeomType.SDF.value):
     return
-  worldid = collision_worldid_in[tid]
+  worldid = collision_worldid_in[contact_tid]
   _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
     geom_condim,
     geom_priority,
@@ -709,24 +721,17 @@ def _sdf_narrowphase(
     pair_friction,
     collision_pair_in,
     collision_pairid_in,
-    tid,
+    contact_tid,
     worldid,
   )
   g1 = geoms[0]
   type1 = geom_type[g1]
 
-  hftri_index = collision_hftri_index_in[tid]
-
   geom1_dataid = geom_dataid[g1]
-  geom1 = _geom(
+  geom1 = geom(
     type1,
     geom1_dataid,
     geom_size[worldid, g1],
-    hfield_adr[geom1_dataid],
-    hfield_nrow[geom1_dataid],
-    hfield_ncol[geom1_dataid],
-    hfield_size[geom1_dataid],
-    hfield_data,
     mesh_vertadr[geom1_dataid],
     mesh_vertnum[geom1_dataid],
     mesh_vert,
@@ -743,19 +748,13 @@ def _sdf_narrowphase(
     mesh_polymap,
     geom_xpos_in[worldid, g1],
     geom_xmat_in[worldid, g1],
-    hftri_index,
   )
 
   geom2_dataid = geom_dataid[g2]
-  geom2 = _geom(
+  geom2 = geom(
     type2,
     geom2_dataid,
     geom_size[worldid, g2],
-    hfield_adr[geom2_dataid],
-    hfield_nrow[geom2_dataid],
-    hfield_ncol[geom2_dataid],
-    hfield_size[geom2_dataid],
-    hfield_data,
     mesh_vertadr[geom2_dataid],
     mesh_vertnum[geom2_dataid],
     mesh_vert,
@@ -772,7 +771,6 @@ def _sdf_narrowphase(
     mesh_polymap,
     geom_xpos_in[worldid, g2],
     geom_xmat_in[worldid, g2],
-    hftri_index,
   )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
@@ -827,65 +825,64 @@ def _sdf_narrowphase(
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
 
-  for i in range(sdf_initpoints):
-    x_g2 = wp.vec3(
-      aabb_intersection.min[0] + (aabb_intersection.max[0] - aabb_intersection.min[0]) * halton(i, 2),
-      aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
-      aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
-    )
-    x = geom1.rot * x_g2 + geom1.pos
-    x0_initial = wp.transpose(rot2) * (x - pos2)
-    dist, pos, n = gradient_descent(
-      type1,
-      x0_initial,
-      attr1,
-      attr2,
-      pos1,
-      rot1,
-      pos2,
-      rot2,
-      g1_plugin_id,
-      g2_plugin_id,
-      sdf_iterations,
-      volume_data1,
-      volume_data2,
-      mesh_data1,
-      mesh_data2,
-    )
-    write_contact(
-      nconmax_in,
-      dist,
-      pos,
-      make_frame(n),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      ncon_out,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-    )
+  x_g2 = wp.vec3(
+    aabb_intersection.min[0] + (aabb_intersection.max[0] - aabb_intersection.min[0]) * halton(i, 2),
+    aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
+    aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
+  )
+  x = geom1.rot * x_g2 + geom1.pos
+  x0_initial = wp.transpose(rot2) * (x - pos2)
+  dist, pos, n = gradient_descent(
+    type1,
+    x0_initial,
+    attr1,
+    attr2,
+    pos1,
+    rot1,
+    pos2,
+    rot2,
+    g1_plugin_id,
+    g2_plugin_id,
+    sdf_iterations,
+    volume_data1,
+    volume_data2,
+    mesh_data1,
+    mesh_data2,
+  )
+  write_contact(
+    nconmax_in,
+    dist,
+    pos,
+    make_frame(n),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    worldid,
+    ncon_out,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+  )
 
 
 @event_scope
 def sdf_narrowphase(m: Model, d: Data):
   wp.launch(
     _sdf_narrowphase,
-    dim=d.nconmax,
+    dim=(m.opt.sdf_initpoints, d.nconmax),
     inputs=[
       m.nmeshface,
       m.geom_type,
@@ -938,7 +935,6 @@ def sdf_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
-      d.collision_hftri_index,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
