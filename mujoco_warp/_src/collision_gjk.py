@@ -96,30 +96,16 @@ def _discrete_geoms(g1: int, g2: int) -> bool:
 
 
 @wp.func
-def _support_margin(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
-  sp = SupportPoint()
-  sp.cached_index = -1
-  sp.vertex_index = -1
-  if geomtype == int(GeomType.SPHERE.value):
-    sp.point = geom.pos
-    return sp
-  elif geomtype == int(GeomType.CAPSULE.value):
-    local_dir = wp.transpose(geom.rot) @ dir
-    res = wp.vec3()
-    res[2] = wp.where(local_dir[2] >= 0, geom.size[1], -geom.size[1])
-    sp.point = geom.rot @ res + geom.pos
-    return sp
-
-
-@wp.func
 def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp = SupportPoint()
   sp.cached_index = -1
   sp.vertex_index = -1
-  local_dir = wp.transpose(geom.rot) @ dir
   if geomtype == int(GeomType.SPHERE.value):
-    sp.point = geom.pos + geom.size[0] * dir
-  elif geomtype == int(GeomType.BOX.value):
+    sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
+    return sp
+
+  local_dir = wp.transpose(geom.rot) @ dir
+  if geomtype == int(GeomType.BOX.value):
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
     sp.point = geom.rot @ res + geom.pos
@@ -205,6 +191,8 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
         sp.point = vert
     sp.point = geom.rot @ sp.point + geom.pos
 
+  if geom.margin > 0.0:
+    sp.point += dir * (0.5 * geom.margin)
   return sp
 
 
@@ -591,10 +579,9 @@ def gjk(
   geomtype1: int,
   geomtype2: int,
   cutoff: float,
-  use_margin: bool,
+  is_discrete: bool,
 ) -> GJKResult:
   """Find distance within a tolerance between two geoms."""
-  is_discrete = _discrete_geoms(geomtype1, geomtype2)
   cutoff2 = cutoff * cutoff
   simplex = mat43()
   simplex1 = mat43()
@@ -608,9 +595,6 @@ def gjk(
   # set initial guess
   x_k = x1_0 - x2_0
 
-  use_margin1 = use_margin and (geomtype1 == int(GeomType.SPHERE.value) or geomtype1 == int(GeomType.CAPSULE.value))
-  use_margin2 = use_margin and (geomtype2 == int(GeomType.SPHERE.value) or geomtype2 == int(GeomType.CAPSULE.value))
-
   for k in range(gjk_iterations):
     xnorm = wp.dot(x_k, x_k)
     # TODO(kbayes): determine new constant here
@@ -619,13 +603,13 @@ def gjk(
     dir_neg = x_k / wp.sqrt(xnorm)
 
     # compute kth support point in geom1
-    sp = wp.where(use_margin1, _support_margin(geom1, geomtype1, -dir_neg), _support(geom1, geomtype1, -dir_neg))
+    sp = _support(geom1, geomtype1, -dir_neg)
     simplex1[n] = sp.point
     geom1.index = sp.cached_index
     simplex_index1[n] = sp.vertex_index
 
     # compute kth support point in geom2
-    sp = wp.where(use_margin2, _support_margin(geom2, geomtype2, dir_neg), _support(geom2, geomtype2, dir_neg))
+    sp = _support(geom2, geomtype2, dir_neg)
     simplex2[n] = sp.point
     geom2.index = sp.cached_index
     simplex_index2[n] = sp.vertex_index
@@ -1199,10 +1183,17 @@ def _polytope4(
 
 @wp.func
 def _epa(
-  tolerance: float, epa_iterations: int, pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int
+  # In:
+  tolerance: float,
+  epa_iterations: int,
+  pt: Polytope,
+  geom1: Geom,
+  geom2: Geom,
+  geomtype1: int,
+  geomtype2: int,
+  is_discrete: bool,
 ) -> Tuple[float, wp.vec3, wp.vec3, int]:
   """Recover penetration data from two geoms in contact given an initial polytope."""
-  is_discrete = _discrete_geoms(geomtype1, geomtype2)
   upper = FLOAT_MAX
   upper2 = FLOAT_MAX
   idx = int(-1)
@@ -2187,19 +2178,30 @@ def ccd(
   """General convex collision detection via GJK/EPA."""
   witness1 = mat3c()
   witness2 = mat3c()
-  margin1 = 0.0
-  margin2 = 0.0
+  full_margin1 = 0.0
+  full_margin2 = 0.0
+  size1 = 0.0
+  size2 = 0.0
+
+  # determine if the geoms being tested are discrete
+  is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
 
   if geomtype1 == int(GeomType.SPHERE.value) or geomtype1 == int(GeomType.CAPSULE.value):
-    margin1 = geom1.size[0]
+    size1 = geom1.size[0]
+    full_margin1 = size1 + 0.5 * geom1.margin
+    geom1.margin = 0.0
+    geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
 
   if geomtype2 == int(GeomType.SPHERE.value) or geomtype2 == int(GeomType.CAPSULE.value):
-    margin2 = geom2.size[0]
+    size2 = geom2.size[0]
+    full_margin2 = size2 + 0.5 * geom2.margin
+    geom2.margin = 0.0
+    geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
 
   # special handling for sphere and capsule (shrink to point and line respectively)
-  if margin1 + margin2 > 0.0:
-    cutoff += margin1 + margin2
-    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, True)
+  if size1 + size2 > 0.0:
+    cutoff += full_margin1 + full_margin2
+    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
     # shallow penetration, inflate contact
     if result.dist > tolerance:
@@ -2207,15 +2209,19 @@ def ccd(
         witness1[0] = result.x1
         witness2[0] = result.x2
         return result.dist, 1, witness1, witness2
-      dist, x1, x2 = _inflate(result.dist, result.x1, result.x2, margin1, margin2)
+      dist, x1, x2 = _inflate(result.dist, result.x1, result.x2, full_margin1, full_margin2)
       witness1[0] = x1
       witness2[0] = x2
       return dist, 1, witness1, witness2
 
     # deep penetration, reset initial conditions and rerun GJK + EPA
-    cutoff -= margin1 + margin2
+    geom1.margin = full_margin1 - size1
+    geom1.size = wp.vec3(size1, geom1.size[1], geom1.size[2])
+    geom2.margin = full_margin2 - size2
+    geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
+    cutoff -= full_margin1 + full_margin2
 
-  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, False)
+  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
@@ -2305,12 +2311,13 @@ def ccd(
     witness2[0] = result.x2
     return result.dist, 1, witness1, witness2
 
-  dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2)
+  dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
   if idx == -1:
     return FLOAT_MAX, 0, witness1, witness2
 
   if (
     multiccd
+    and (geom1.margin == 0.0 and geom2.margin == 0.0)
     and (geomtype1 == int(GeomType.BOX.value) or (geomtype1 == int(GeomType.MESH.value) and geom1.mesh_polyadr > -1))
     and (geomtype2 == int(GeomType.BOX.value) or (geomtype2 == int(GeomType.MESH.value) and geom2.mesh_polyadr > -1))
   ):
