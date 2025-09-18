@@ -607,7 +607,7 @@ class SensorTest(parameterized.TestCase):
 
   @parameterized.parameters(0, 1)
   def test_insidesite(self, keyframe):
-    _, mjd, m, d = test_util.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
       <worldbody>
@@ -636,7 +636,7 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.fill_(wp.inf)
-    mjwarp.forward(m, d)
+    mjw.forward(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
