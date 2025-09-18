@@ -449,7 +449,9 @@ def _sensor_pos(
   jnt_qposadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_quat: wp.array2d(dtype=wp.quat),
+  site_type: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
+  site_size: wp.array(dtype=wp.vec3),
   site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
   cam_quat: wp.array2d(dtype=wp.quat),
@@ -578,7 +580,24 @@ def _sensor_pos(
   elif sensortype == SensorType.SUBTREECOM:
     vec3 = _subtree_com(subtree_com_in, worldid, objid)
     _write_vector(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif sensortype == SensorType.E_POTENTIAL:
+  elif sensortype == SensorType.INSIDESITE:
+    objtype = sensor_objtype[sensorid]
+    if objtype == ObjType.XBODY:
+      xpos = xpos_in[worldid, objid]
+    elif objtype == ObjType.BODY:
+      xpos = xipos_in[worldid, objid]
+    elif objtype == ObjType.GEOM:
+      xpos = geom_xpos_in[worldid, objid]
+    elif objtype == ObjType.SITE:
+      xpos = site_xpos_in[worldid, objid]
+    elif objtype == ObjType.CAMERA:
+      xpos = cam_xpos_in[worldid, objid]
+    else:
+      return  # should not occur
+    refid = sensor_refid[sensorid]
+    val_bool = inside_geom(site_xpos_in[worldid, refid], site_xmat_in[worldid, refid], site_size[refid], site_type[refid], xpos)
+    _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, float(val_bool), out)
+  elif sensortype == int(SensorType.E_POTENTIAL.value):
     val = energy_in[worldid][0]
     _write_scalar(sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == SensorType.E_KINETIC:
@@ -642,7 +661,9 @@ def sensor_pos(m: Model, d: Data):
       m.jnt_qposadr,
       m.geom_bodyid,
       m.geom_quat,
+      m.site_type,
       m.site_bodyid,
+      m.site_size,
       m.site_quat,
       m.cam_bodyid,
       m.cam_quat,
