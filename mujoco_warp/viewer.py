@@ -175,6 +175,7 @@ def _main(argv: Sequence[str]) -> None:
         wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
 
         # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
+        # TODO: update memory tied to option max iterations
         if mjm.opt != opt:
           opt = copy.copy(mjm.opt)
           m = mjw.put_model(mjm)
