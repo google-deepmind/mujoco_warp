@@ -216,6 +216,35 @@ class IOTest(parameterized.TestCase):
     for arr in d.contact.__dataclass_fields__:
       _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
+  def test_reset_data_world(self):
+    """Tests per-world reset."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    # set to nonzero values
+    d.qvel = wp.array(np.array([[1.0], [2.0]]), dtype=float)
+
+    # don't reset second world
+    d.reset = wp.array(np.array([True, False]), dtype=bool)
+
+    mjwarp.reset_data(m, d)
+
+    qvel = d.qvel.numpy()
+
+    _assert_eq(qvel[0], 0.0, "qvel[0]")
+    _assert_eq(qvel[1], 2.0, "qvel[1]")
+
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
     mjm, mjd, m, d = test_data.fixture("collision_sdf/cow.xml")

@@ -1119,6 +1119,8 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    # reset
+    reset=wp.array(np.ones(nworld), dtype=bool),
   )
 
 
@@ -1493,6 +1495,8 @@ def put_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    # reset
+    reset=wp.array(np.ones(nworld), dtype=bool),
   )
 
 
@@ -1654,6 +1658,26 @@ def get_data_into(
 
 
 @wp.kernel
+def _reset_xfrc_applied(reset_in: wp.array(dtype=bool), xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector)):
+  worldid, bodyid, elemid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  xfrc_applied_out[worldid, bodyid][elemid] = 0.0
+
+
+@wp.kernel
+def _reset_qM(reset_in: wp.array(dtype=bool), qM_out: wp.array3d(dtype=float)):
+  worldid, elemid1, elemid2 = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  qM_out[worldid, elemid1, elemid2] = 0.0
+
+
+@wp.kernel
 def _reset_nworld(
   # Model:
   nq: int,
@@ -1666,6 +1690,7 @@ def _reset_nworld(
   eq_active0: wp.array(dtype=bool),
   # Data in:
   nworld_in: int,
+  reset_in: wp.array(dtype=bool),
   # Data out:
   solver_niter_out: wp.array(dtype=int),
   ncon_out: wp.array(dtype=int),
@@ -1692,6 +1717,9 @@ def _reset_nworld(
   sensordata_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
 
   solver_niter_out[worldid] = 0
   if worldid == 0:
@@ -1732,11 +1760,16 @@ def _reset_mocap(
   body_mocapid: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
   body_quat: wp.array2d(dtype=wp.quat),
+  # Data in:
+  reset_in: wp.array(dtype=bool),
   # Data out:
   mocap_pos_out: wp.array2d(dtype=wp.vec3),
   mocap_quat_out: wp.array2d(dtype=wp.quat),
 ):
   worldid, bodyid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
 
   mocapid = body_mocapid[bodyid]
 
@@ -1749,6 +1782,7 @@ def _reset_mocap(
 def _reset_contact(
   # Data in:
   ncon_in: wp.array(dtype=int),
+  reset_in: wp.array(dtype=bool),
   # In:
   nefcaddress: int,
   # Data out:
@@ -1770,6 +1804,11 @@ def _reset_contact(
   if conid >= ncon_in[0]:
     return
 
+  worldid = contact_worldid_out[conid]
+  if worldid >= 0:
+    if not reset_in[worldid]:
+      return
+
   contact_dist_out[conid] = 0.0
   contact_pos_out[conid] = wp.vec3(0.0)
   contact_frame_out[conid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1787,19 +1826,28 @@ def _reset_contact(
 
 def reset_data(m: types.Model, d: types.Data):
   """Clear data, set defaults."""
-  d.xfrc_applied.zero_()
-  d.qM.zero_()
+  wp.launch(_reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[d.reset], outputs=[d.xfrc_applied])
+
+  if m.opt.is_sparse:
+    qM_dim = (1, m.nM)
+  else:
+    qM_dim = (m.nv, m.nv)
+
+  wp.launch(_reset_qM, dim=(d.nworld, qM_dim[0], qM_dim[1]), inputs=[d.reset], outputs=[d.qM])
 
   # set mocap_pos/quat = body_pos/quat for mocap bodies
   wp.launch(
-    _reset_mocap, dim=(d.nworld, m.nbody), inputs=[m.body_mocapid, m.body_pos, m.body_quat], outputs=[d.mocap_pos, d.mocap_quat]
+    _reset_mocap,
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_mocapid, m.body_pos, m.body_quat, d.reset],
+    outputs=[d.mocap_pos, d.mocap_quat],
   )
 
   # clear contacts
   wp.launch(
     _reset_contact,
     dim=d.nconmax,
-    inputs=[d.ncon, d.contact.efc_address.shape[1]],
+    inputs=[d.ncon, d.reset, d.contact.efc_address.shape[1]],
     outputs=[
       d.contact.dist,
       d.contact.pos,
@@ -1819,7 +1867,7 @@ def reset_data(m: types.Model, d: types.Data):
   wp.launch(
     _reset_nworld,
     dim=d.nworld,
-    inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld],
+    inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, d.reset],
     outputs=[
       d.solver_niter,
       d.ncon,
