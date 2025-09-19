@@ -171,6 +171,7 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
       outputs=[d.qM_integration],
     )
   else:
+    # TODO(team): directly utilize qM for these settings
     wp.copy(d.qM_integration, d.qM)
 
   if not m.opt.disableflags & DisableBit.DAMPER:
