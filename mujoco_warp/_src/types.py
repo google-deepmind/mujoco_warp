@@ -24,6 +24,10 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+# maximum size (by number of edges) of an horizon in EPA algorithm
+MJ_MAX_EPAHORIZON = 12
+# maximum average number of trianglarfaces EPA can insert at each iteration
+MJ_MAX_EPAFACES = 5
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
@@ -384,6 +388,7 @@ class SensorType(enum.IntEnum):
     FRAMEZAXIS: frame z-axis
     FRAMEQUAT: frame orientation, represented as quaternion
     SUBTREECOM: subtree center of mass
+    INSIDESITE: 1 if object is inside site, 0 otherwise
     E_POTENTIAL: potential energy
     E_KINETIC: kinetic energy
     CLOCK: simulation time
@@ -429,6 +434,7 @@ class SensorType(enum.IntEnum):
   FRAMEZAXIS = mujoco.mjtSensor.mjSENS_FRAMEZAXIS
   FRAMEQUAT = mujoco.mjtSensor.mjSENS_FRAMEQUAT
   SUBTREECOM = mujoco.mjtSensor.mjSENS_SUBTREECOM
+  INSIDESITE = mujoco.mjtSensor.mjSENS_INSIDESITE
   E_POTENTIAL = mujoco.mjtSensor.mjSENS_E_POTENTIAL
   E_KINETIC = mujoco.mjtSensor.mjSENS_E_KINETIC
   CLOCK = mujoco.mjtSensor.mjSENS_CLOCK
@@ -553,7 +559,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
-    ccd_tolerance: convex collision solver tolerance
+    ccd_tolerance: convex collision detection tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -564,8 +570,7 @@ class Option:
     disableflags: bit flags for disabling standard features
     enableflags: bit flags for enabling optional features
     is_sparse: whether to use sparse representations
-    gjk_iterations: number of Gjk iterations in the convex narrowphase
-    epa_iterations: number of Epa iterations in the convex narrowphase
+    ccd_iterations: number of iterations in convex collision detection
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
@@ -600,8 +605,7 @@ class Option:
   disableflags: int
   enableflags: int
   is_sparse: bool
-  gjk_iterations: int  # warp only
-  epa_iterations: int  # warp only
+  ccd_iterations: int
   ls_parallel: bool  # warp only
   ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
@@ -1494,12 +1498,12 @@ class Data:
     epa_vert2: vertices in EPA polytope in geom 2 space         (nconmax, 5 + CCDiter)
     epa_vert_index1: vertex indices in EPA polytope for geom 1  (nconmax, 5 + CCDiter)
     epa_vert_index2: vertex indices in EPA polytope for geom 2  (nconmax, 5 + CCDiter)
-    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 6 * CCDiter)
-    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 6 * CCDiter)
-    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 6 * CCDiter)
-    epa_index: index of face in polytope map                    (nconmax, 6 + 6 * CCDiter)
-    epa_map: status of faces in polytope                        (nconmax, 6 + 6 * CCDiter)
-    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 3 * 2 * CCDiter)
+    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 5 * CCDiter)
+    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 5 * CCDiter)
+    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 5 * CCDiter)
+    epa_index: index of face in polytope map                    (nconmax, 6 + 5 * CCDiter)
+    epa_map: status of faces in polytope                        (nconmax, 6 + 5 * CCDiter)
+    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 2 * 12)
     multiccd_polygon: clipped contact surface                   (nconmax, 2 * max_npolygon)
     multiccd_clipped: clipped contact surface (intermediate)    (nconmax, 2 * max_npolygon)
     multiccd_pnormal: plane normal of clipping polygon          (nconmax, max_npolygon)

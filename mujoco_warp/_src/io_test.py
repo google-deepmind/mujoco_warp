@@ -22,8 +22,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
-
-from . import test_util
+from mujoco_warp import test_data
 
 
 def _assert_eq(a, b, name):
@@ -45,7 +44,7 @@ _IO_TEST_MODELS = (
 class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
-    mjm, _, _, d = test_util.fixture("pendula.xml")
+    mjm, _, _, d = test_data.fixture("pendula.xml")
     md = mjwarp.make_data(mjm, nconmax=512, njmax=512)
 
     # same number of fields
@@ -148,7 +147,7 @@ class IOTest(parameterized.TestCase):
 
   def test_noslip_solver(self):
     with self.assertRaises(NotImplementedError):
-      test_util.fixture(
+      test_data.fixture(
         xml="""
       <mujoco>
         <option noslip_iterations="1"/>
@@ -182,8 +181,7 @@ class IOTest(parameterized.TestCase):
       "qM",
     ]
 
-    nworld = 1
-    mjm, mjd, m, d = test_util.fixture(xml, nworld=nworld)
+    mjm, mjd, m, d = test_data.fixture(xml)
     nconmax = d.nconmax
 
     # data fields
@@ -220,13 +218,30 @@ class IOTest(parameterized.TestCase):
 
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
-    mjm, mjd, m, d = test_util.fixture(fname="collision_sdf/cow.xml", qpos0=True)
+    mjm, mjd, m, d = test_data.fixture("collision_sdf/cow.xml")
 
     self.assertIsInstance(m.oct_aabb, wp.array)
     self.assertEqual(m.oct_aabb.dtype, wp.vec3)
     self.assertEqual(len(m.oct_aabb.shape), 2)
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
+
+  def test_implicit_integrator_fluid_model(self):
+    """Tests for implicit integrator with fluid model."""
+    with self.assertRaises(NotImplementedError):
+      test_data.fixture(
+        xml="""
+        <mujoco>
+          <option viscosity="1" density="1" integrator="implicitfast"/>
+          <worldbody>
+            <body>
+              <geom type="sphere" size=".1"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+      )
 
 
 if __name__ == "__main__":
