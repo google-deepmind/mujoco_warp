@@ -393,7 +393,7 @@ def euler(m: Model, d: Data):
   """Euler integrator, semi-implicit in velocity."""
 
   # integrate damping implicitly
-  if not m.opt.disableflags & DisableBit.EULERDAMP and not m.opt.disableflags & DisableBit.DAMPER:
+  if not m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
     if m.opt.is_sparse:
       _euler_sparse(m, d)
     else:
@@ -520,13 +520,7 @@ def rungekutta4(m: Model, d: Data):
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
-
-  # compile-time constants
-  dsbl_actuation = m.opt.disableflags & DisableBit.ACTUATION.value
-  dsbl_spring = m.opt.disableflags & DisableBit.SPRING.value
-  dsbl_damper = m.opt.disableflags & DisableBit.DAMPER.value
-
-  if not dsbl_actuation or not dsbl_spring or not dsbl_damper:
+  if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
     derivative.deriv_smooth_vel(m, d)
     smooth.factor_solve_i(
       m, d, d.qM_integration, d.qLD_integration, d.qLDiagInv_integration, d.qacc_integration, d.qfrc_integration

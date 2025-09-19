@@ -30,6 +30,7 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _spring_damper_dof_passive(
   # Model:
+  opt_disableflags: int,
   qpos_spring: wp.array2d(dtype=float),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
@@ -39,9 +40,6 @@ def _spring_damper_dof_passive(
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   qvel_in: wp.array2d(dtype=float),
-  # In:
-  dsbl_spring: bool,
-  dsbl_damper: bool,
   # Data out:
   qfrc_spring_out: wp.array2d(dtype=float),
   qfrc_damper_out: wp.array2d(dtype=float),
@@ -51,8 +49,8 @@ def _spring_damper_dof_passive(
   stiffness = jnt_stiffness[worldid, jntid]
   damping = dof_damping[worldid, dofid]
 
-  has_stiffness = stiffness != 0.0 and not dsbl_spring
-  has_damping = damping != 0.0 and not dsbl_damper
+  has_stiffness = stiffness != 0.0 and not opt_disableflags & DisableBit.SPRING
+  has_damping = damping != 0.0 and not opt_disableflags & DisableBit.DAMPER
 
   if not has_stiffness:
     qfrc_spring_out[worldid, dofid] = 0.0
@@ -535,6 +533,7 @@ def passive(m: Model, d: Data):
     _spring_damper_dof_passive,
     dim=(d.nworld, m.njnt),
     inputs=[
+      m.opt.disableflags,
       m.qpos_spring,
       m.jnt_type,
       m.jnt_qposadr,
@@ -543,8 +542,6 @@ def passive(m: Model, d: Data):
       m.dof_damping,
       d.qpos,
       d.qvel,
-      dsbl_spring,
-      dsbl_damper,
     ],
     outputs=[d.qfrc_spring, d.qfrc_damper],
   )
