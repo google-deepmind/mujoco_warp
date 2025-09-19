@@ -433,7 +433,17 @@ def _rk_perturb_state(m: Model, d: Data, scale: float):
     wp.launch(
       _next_activation,
       dim=(d.nworld, m.na),
-      inputs=[m.opt.timestep, d.act_t0, d.act_dot, scale, False],
+      inputs=[
+        m.opt.timestep,
+        m.actuator_dyntype,
+        m.actuator_actlimited,
+        m.actuator_dynprm,
+        m.actuator_actrange,
+        d.act_t0,
+        d.act_dot,
+        scale,
+        False,
+      ],
       outputs=[d.act],
     )
 
