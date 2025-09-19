@@ -643,18 +643,19 @@ class ForwardTest(parameterized.TestCase):
     mjw.step(m, d)
     mjw.forward(m, d)
 
-    qvel = d.qvel.numpy()[0]
-    qacc = d.qacc.numpy()[0]
+    qvel = d.qvel.numpy().copy()[0]
+    qacc = d.qacc.numpy().copy()[0]
 
     # second step
     mjw.step(m, d)
 
-    if eulerdamp:
-      # compute finite-difference acceleration
-      qacc_fd = (d.qvel.numpy()[0] - qvel) / m.opt.timestep.numpy()[0]
+    # compute finite-difference acceleration
+    qacc_fd = (d.qvel.numpy()[0] - qvel) / m.opt.timestep.numpy()[0]
+
+    if m.opt.disableflags & DisableBit.EULERDAMP:
       _assert_eq(qacc_fd, qacc, "qacc")
     else:
-      self.assertGreater(np.linalg.norm(qacc), 1.0)
+      self.assertGreater(np.linalg.norm(qacc_fd), 1.0)
 
   def test_eulerdamp_limit(self):
     """Reducing the timesteps reduces the difference between implicit/explicit."""
@@ -1032,6 +1033,7 @@ class ForwardTest(parameterized.TestCase):
     # expect that the body has snapped back
     self.assertLess(np.abs(d.qpos.numpy()[0, 0]), 0.001)
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test requiring GPU.")
   def test_actuator_force_clamping(self):
     """Tests actuator force clamping at joints."""
     _, _, m, d = test_data.fixture(
