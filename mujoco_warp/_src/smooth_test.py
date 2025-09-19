@@ -355,9 +355,11 @@ class SmoothTest(parameterized.TestCase):
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
 
-    d.qLD.zero_()
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      d.qLDiagInv.zero_()
+    sparse = jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
+
+    d.qLD.fill_(wp.inf)
+    if sparse:
+      d.qLDiagInv.fill_(wp.inf)
 
     res = wp.zeros((1, mjm.nv), dtype=float)
     vec = wp.ones((1, mjm.nv), dtype=float)
@@ -365,6 +367,13 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, res, vec)
 
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "qM \\ 1")
+
+    if sparse:
+      _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
+      _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
+    else:
+      qLD = np.linalg.cholesky(qM)
+      _assert_eq(d.qLD.numpy()[0], qLD, "qLD")
 
   def test_tendon_armature(self):
     mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0)

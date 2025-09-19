@@ -111,7 +111,7 @@ def geom(
   geom.normal = wp.vec3(geom_xmat_in[0, 2], geom_xmat_in[1, 2], geom_xmat_in[2, 2])  # plane
 
   # If geom is MESH, get mesh verts
-  if geom_dataid >= 0 and geom_type == int(GeomType.MESH.value):
+  if geom_dataid >= 0 and geom_type == GeomType.MESH:
     geom.vertadr = mesh_vertadr
     geom.vertnum = mesh_vertnum
     geom.graphadr = mesh_graphadr
@@ -124,7 +124,7 @@ def geom(
     geom.mesh_polynum = -1
     geom.mesh_polyadr = -1
 
-  if geom_type == int(GeomType.MESH.value):
+  if geom_type == GeomType.MESH:
     geom.vert = mesh_vert
     geom.graph = mesh_graph
     geom.mesh_polynormal = mesh_polynormal
@@ -1408,19 +1408,19 @@ def box_box_wrapper(
 
 
 _PRIMITIVE_COLLISIONS = {
-  (GeomType.PLANE.value, GeomType.SPHERE.value): plane_sphere_wrapper,
-  (GeomType.PLANE.value, GeomType.CAPSULE.value): plane_capsule_wrapper,
-  (GeomType.PLANE.value, GeomType.ELLIPSOID.value): plane_ellipsoid_wrapper,
-  (GeomType.PLANE.value, GeomType.CYLINDER.value): plane_cylinder_wrapper,
-  (GeomType.PLANE.value, GeomType.BOX.value): plane_box_wrapper,
-  (GeomType.PLANE.value, GeomType.MESH.value): plane_convex_wrapper,
-  (GeomType.SPHERE.value, GeomType.SPHERE.value): sphere_sphere_wrapper,
-  (GeomType.SPHERE.value, GeomType.CAPSULE.value): sphere_capsule_wrapper,
-  (GeomType.SPHERE.value, GeomType.CYLINDER.value): sphere_cylinder_wrapper,
-  (GeomType.SPHERE.value, GeomType.BOX.value): sphere_box_wrapper,
-  (GeomType.CAPSULE.value, GeomType.CAPSULE.value): capsule_capsule_wrapper,
-  (GeomType.CAPSULE.value, GeomType.BOX.value): capsule_box_wrapper,
-  (GeomType.BOX.value, GeomType.BOX.value): box_box_wrapper,
+  (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
+  (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
+  (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid_wrapper,
+  (GeomType.PLANE, GeomType.CYLINDER): plane_cylinder_wrapper,
+  (GeomType.PLANE, GeomType.BOX): plane_box_wrapper,
+  (GeomType.PLANE, GeomType.MESH): plane_convex_wrapper,
+  (GeomType.SPHERE, GeomType.SPHERE): sphere_sphere_wrapper,
+  (GeomType.SPHERE, GeomType.CAPSULE): sphere_capsule_wrapper,
+  (GeomType.SPHERE, GeomType.CYLINDER): sphere_cylinder_wrapper,
+  (GeomType.SPHERE, GeomType.BOX): sphere_box_wrapper,
+  (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule_wrapper,
+  (GeomType.CAPSULE, GeomType.BOX): capsule_box_wrapper,
+  (GeomType.BOX, GeomType.BOX): box_box_wrapper,
 }
 
 
@@ -1428,7 +1428,7 @@ _PRIMITIVE_COLLISIONS = {
 def _check_primitive_collisions():
   prev_idx = -1
   for types in _PRIMITIVE_COLLISIONS.keys():
-    idx = upper_trid_index(len(GeomType), types[0], types[1])
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if types[1] < types[0] or idx <= prev_idx:
       return False
     prev_idx = idx
@@ -1443,7 +1443,7 @@ _primitive_collisions_func = []
 
 def _primitive_narrowphase_builder(m: Model):
   for types, func in _PRIMITIVE_COLLISIONS.items():
-    idx = upper_trid_index(len(GeomType), types[0], types[1])
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)

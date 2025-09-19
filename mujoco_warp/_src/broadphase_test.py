@@ -30,7 +30,7 @@ from . import collision_driver
 
 
 def broadphase_caller(m, d):
-  if m.opt.broadphase == int(BroadphaseType.NXN):
+  if m.opt.broadphase == BroadphaseType.NXN:
     collision_driver.nxn_broadphase(m, d)
   else:
     collision_driver.sap_broadphase(m, d)
@@ -38,12 +38,12 @@ def broadphase_caller(m, d):
 
 class BroadphaseTest(parameterized.TestCase):
   # filter combinations
-  plane_sphere = BroadphaseFilter.PLANE.value | BroadphaseFilter.SPHERE.value
-  plane_aabb = BroadphaseFilter.PLANE.value | BroadphaseFilter.AABB.value
-  plane_obb = BroadphaseFilter.PLANE | BroadphaseFilter.OBB.value
-  plane_sphere_aabb = plane_sphere | BroadphaseFilter.AABB.value
-  plane_sphere_obb = plane_sphere | BroadphaseFilter.OBB.value
-  plane_sphere_aabb_obb = plane_sphere_aabb | BroadphaseFilter.OBB.value
+  plane_sphere = BroadphaseFilter.PLANE | BroadphaseFilter.SPHERE
+  plane_aabb = BroadphaseFilter.PLANE | BroadphaseFilter.AABB
+  plane_obb = BroadphaseFilter.PLANE | BroadphaseFilter.OBB
+  plane_sphere_aabb = plane_sphere | BroadphaseFilter.AABB
+  plane_sphere_obb = plane_sphere | BroadphaseFilter.OBB
+  plane_sphere_aabb_obb = plane_sphere_aabb | BroadphaseFilter.OBB
 
   @parameterized.product(
     broadphase=list(BroadphaseType),
@@ -225,10 +225,10 @@ class BroadphaseTest(parameterized.TestCase):
     self.assertEqual(d.ncollision.numpy()[0], expected_collisions)
 
   def test_broadphase_filter(self):
-    plane = BroadphaseFilter.PLANE.value
-    sphere = BroadphaseFilter.SPHERE.value
-    aabb = BroadphaseFilter.AABB.value
-    obb = BroadphaseFilter.OBB.value
+    plane = BroadphaseFilter.PLANE
+    sphere = BroadphaseFilter.SPHERE
+    aabb = BroadphaseFilter.AABB
+    obb = BroadphaseFilter.OBB
     plane_sphere = plane | sphere
     plane_aabb = plane | aabb
     plane_obb = plane | obb

@@ -90,8 +90,8 @@ class SupportPoint:
 
 @wp.func
 def _discrete_geoms(g1: int, g2: int) -> bool:
-  return (g1 == int(GeomType.MESH.value) or g1 == int(GeomType.BOX.value) or g1 == int(GeomType.HFIELD.value)) and (
-    g2 == int(GeomType.MESH.value) or g2 == int(GeomType.BOX.value) or g2 == int(GeomType.HFIELD.value)
+  return (g1 == GeomType.MESH or g1 == GeomType.BOX or g1 == GeomType.HFIELD) and (
+    g2 == GeomType.MESH or g2 == GeomType.BOX or g2 == GeomType.HFIELD
   )
 
 
@@ -100,30 +100,30 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp = SupportPoint()
   sp.cached_index = -1
   sp.vertex_index = -1
-  if geomtype == int(GeomType.SPHERE.value):
+  if geomtype == GeomType.SPHERE:
     sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
     return sp
 
   local_dir = wp.transpose(geom.rot) @ dir
-  if geomtype == int(GeomType.BOX.value):
+  if geomtype == GeomType.BOX:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
     sp.point = geom.rot @ res + geom.pos
     sp.vertex_index = wp.where(tmp[0] > 0, 1, 0)
     sp.vertex_index += wp.where(tmp[1] > 0, 2, 0)
     sp.vertex_index += wp.where(tmp[2] > 0, 4, 0)
-  elif geomtype == int(GeomType.CAPSULE.value):
+  elif geomtype == GeomType.CAPSULE:
     res = local_dir * geom.size[0]
     # add cylinder contribution
     res[2] += wp.sign(local_dir[2]) * geom.size[1]
     sp.point = geom.rot @ res + geom.pos
-  elif geomtype == int(GeomType.ELLIPSOID.value):
+  elif geomtype == GeomType.ELLIPSOID:
     res = wp.cw_mul(local_dir, geom.size)
     res = wp.normalize(res)
     # transform to ellipsoid
     res = wp.cw_mul(res, geom.size)
     sp.point = geom.rot @ res + geom.pos
-  elif geomtype == int(GeomType.CYLINDER.value):
+  elif geomtype == GeomType.CYLINDER:
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
     d = wp.sqrt(local_dir[0] * local_dir[0] + local_dir[1] * local_dir[1])
@@ -134,7 +134,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     # set result in Z direction
     res[2] = wp.sign(local_dir[2]) * geom.size[1]
     sp.point = geom.rot @ res + geom.pos
-  elif geomtype == int(GeomType.MESH.value):
+  elif geomtype == GeomType.MESH:
     max_dist = float(FLOAT_MIN)
     if geom.graphadr == -1 or geom.vertnum < 10:
       if geom.index > -1:
@@ -181,7 +181,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       sp.point = geom.vert[geom.vertadr + imax]
 
     sp.point = geom.rot @ sp.point + geom.pos
-  elif geomtype == int(GeomType.HFIELD.value):
+  elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     for i in range(6):
       vert = geom.hfprism[i]
@@ -1930,7 +1930,7 @@ def _multicontact(
   witness1[0] = x1
   witness2[0] = x2
 
-  if geomtype1 == int(GeomType.MESH.value):
+  if geomtype1 == GeomType.MESH:
     vert = geom1.vert
     polynormal = geom1.mesh_polynormal
     polyvertadr = geom1.mesh_polyvertadr
@@ -1939,7 +1939,7 @@ def _multicontact(
     polymapadr = geom1.mesh_polymapadr
     polymapnum = geom1.mesh_polymapnum
     polymap = geom1.mesh_polymap
-  elif geomtype2 == int(GeomType.MESH.value):
+  elif geomtype2 == GeomType.MESH:
     vert = geom2.vert
     polynormal = geom2.mesh_polynormal
     polyvertadr = geom2.mesh_polyvertadr
@@ -1957,9 +1957,9 @@ def _multicontact(
   dir_neg = -dir
 
   # get all possible face normals for each geom
-  if geomtype1 == int(GeomType.BOX.value):
+  if geomtype1 == GeomType.BOX:
     nnorms1 = _box_normals(nface1, feature_index1, geom1.rot, dir_neg, n1, idx1)
-  elif geomtype1 == int(GeomType.MESH.value):
+  elif geomtype1 == GeomType.MESH:
     nnorms1 = _mesh_normals(
       nface1,
       feature_index1,
@@ -1973,9 +1973,9 @@ def _multicontact(
       n1,
       idx1,
     )
-  if geomtype2 == int(GeomType.BOX.value):
+  if geomtype2 == GeomType.BOX:
     nnorms2 = _box_normals(nface2, feature_index2, geom2.rot, dir, n2, idx2)
-  elif geomtype2 == int(GeomType.MESH.value):
+  elif geomtype2 == GeomType.MESH:
     nnorms2 = _mesh_normals(
       nface2,
       feature_index2,
@@ -1998,11 +1998,11 @@ def _multicontact(
     # check if edge-face collision
     if nface1 < 3 and nface1 <= nface2:
       nnorms1 = 0
-      if geomtype1 == int(GeomType.BOX.value):
+      if geomtype1 == GeomType.BOX:
         nnorms1 = _box_edge_normals(
           nface1, geom1.rot, geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0], n1, endvert
         )
-      elif geomtype1 == int(GeomType.MESH.value):
+      elif geomtype1 == GeomType.MESH:
         nnorms1 = _mesh_edge_normals(
           nface1,
           geom1.rot,
@@ -2030,11 +2030,11 @@ def _multicontact(
     # check if face-edge collision
     elif nface2 < 3:
       nnorms2 = 0
-      if geomtype2 == int(GeomType.BOX.value):
+      if geomtype2 == GeomType.BOX:
         nnorms2 = _box_edge_normals(
           nface2, geom2.rot, geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0], n2, endvert
         )
-      elif geomtype2 == int(GeomType.MESH.value):
+      elif geomtype2 == GeomType.MESH:
         nnorms2 = _mesh_edge_normals(
           nface2,
           geom2.rot,
@@ -2070,9 +2070,9 @@ def _multicontact(
     nface1 = _set_edge(pt.vert1, endvert, face[0], i, face1)
   else:
     ind = wp.where(is_edge_contact_geom2, idx1[j], idx1[i])
-    if geomtype1 == int(GeomType.BOX.value):
+    if geomtype1 == GeomType.BOX:
       nface1 = _box_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
-    elif geomtype1 == int(GeomType.MESH.value):
+    elif geomtype1 == GeomType.MESH:
       nface1 = _mesh_face(
         geom1.rot,
         geom1.pos,
@@ -2090,9 +2090,9 @@ def _multicontact(
   if is_edge_contact_geom2:
     nface2 = _set_edge(pt.vert2, endvert, face[0], i, face2)
   else:
-    if geomtype2 == int(GeomType.BOX.value):
+    if geomtype2 == GeomType.BOX:
       nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
-    elif geomtype2 == int(GeomType.MESH.value):
+    elif geomtype2 == GeomType.MESH:
       nface2 = _mesh_face(
         geom2.rot,
         geom2.pos,
@@ -2185,13 +2185,13 @@ def ccd(
   # determine if the geoms being tested are discrete
   is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
 
-  if geomtype1 == int(GeomType.SPHERE.value) or geomtype1 == int(GeomType.CAPSULE.value):
+  if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
     size1 = geom1.size[0]
     full_margin1 = size1 + 0.5 * geom1.margin
     geom1.margin = 0.0
     geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
 
-  if geomtype2 == int(GeomType.SPHERE.value) or geomtype2 == int(GeomType.CAPSULE.value):
+  if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
     size2 = geom2.size[0]
     full_margin2 = size2 + 0.5 * geom2.margin
     geom2.margin = 0.0
@@ -2317,8 +2317,8 @@ def ccd(
   if (
     multiccd
     and (geom1.margin == 0.0 and geom2.margin == 0.0)
-    and (geomtype1 == int(GeomType.BOX.value) or (geomtype1 == int(GeomType.MESH.value) and geom1.mesh_polyadr > -1))
-    and (geomtype2 == int(GeomType.BOX.value) or (geomtype2 == int(GeomType.MESH.value) and geom2.mesh_polyadr > -1))
+    and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
+    and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
   ):
     num, w1, w2 = _multicontact(
       polygon,

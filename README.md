@@ -24,11 +24,25 @@ MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA]
 
 # Installing for development
 
+MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon).
+
+**Linux**
 ```bash
 git clone https://github.com/google-deepmind/mujoco_warp.git
 cd mujoco_warp
 python3 -m venv env
 source env/bin/activate
+pip install --upgrade pip
+pip install uv
+```
+**Windows**
+(native Python only, not MSYS2 or WSL)
+
+```powershell
+git clone https://github.com/google-deepmind/mujoco_warp.git
+cd mujoco_warp
+python -m venv env
+.\env\Scripts\Activate.ps1  # For MSYS2 Python: env\bin\activate
 pip install --upgrade pip
 pip install uv
 ```
