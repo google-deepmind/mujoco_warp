@@ -565,7 +565,10 @@ class ForwardTest(parameterized.TestCase):
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   @parameterized.parameters(0, DisableBit.ACTUATION)
   def test_armature_equivalence(self, actuation):
-    """Test that joint armature is equivalent to a coupled rotating mass with a gear ratio enforced by an equality."""
+    """
+    Test that joint armature is equivalent to a coupled rotating mass with a gear ratio enforced
+    by an equality.
+    """
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -702,7 +705,10 @@ class ForwardTest(parameterized.TestCase):
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   def test_euler_implicitfast_equivalent(self):
-    """Test that Euler and implicitfast integrators produce equivalent results (to numerical tolerance)."""
+    """
+    Test that Euler and implicitfast integrators produce equivalent results
+    (to numerical tolerance).
+    """
     _MJCF = """
     <mujoco>
       <worldbody>
