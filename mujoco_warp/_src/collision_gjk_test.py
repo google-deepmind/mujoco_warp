@@ -357,8 +357,8 @@ class GJKTest(absltest.TestCase):
       """
     )
     dist, _, x1, x2 = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
-    dif = x1 - x2
-    normal = dif / np.linalg.norm(dif)
+    diff = x1 - x2
+    normal = diff / np.linalg.norm(diff)
 
     self.assertAlmostEqual(-1, dist)
     self.assertAlmostEqual(normal[0], 1)
