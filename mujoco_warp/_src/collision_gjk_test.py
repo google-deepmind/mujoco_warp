@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import numpy as np
 import warp as wp
 from absl.testing import absltest
 
@@ -284,7 +285,7 @@ class GJKTest(absltest.TestCase):
     """Test two touching spheres have zero distance"""
 
     _, _, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
       <mujoco>
         <worldbody>
           <geom type="sphere" pos="-1 0 0" size="1"/>
@@ -301,7 +302,7 @@ class GJKTest(absltest.TestCase):
     """Test distance between a mesh and box"""
 
     _, _, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
       <mujoco model="MuJoCo Model">
         <asset>
           <mesh name="smallbox" scale="0.1 0.1 0.1"
@@ -329,7 +330,7 @@ class GJKTest(absltest.TestCase):
     """Test penetration depth between two spheres."""
 
     _, _, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
       <mujoco>
         <worldbody>
           <geom type="sphere" pos="-1 0 0" size="3"/>
@@ -356,8 +357,10 @@ class GJKTest(absltest.TestCase):
       """
     )
     dist, _, x1, x2 = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
+    dif = x1 - x2
+    normal = dif / np.linalg.norm(dif)
+
     self.assertAlmostEqual(-1, dist)
-    normal = wp.normalize(x1 - x2)
     self.assertAlmostEqual(normal[0], 1)
     self.assertAlmostEqual(normal[1], 0)
     self.assertAlmostEqual(normal[2], 0)
@@ -489,7 +492,7 @@ class GJKTest(absltest.TestCase):
     """Test sphere-mesh margin."""
 
     _, _, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
        <mujoco>
          <asset>
            <mesh name="box" scale=".2 .2 .2"
