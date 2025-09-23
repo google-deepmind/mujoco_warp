@@ -85,13 +85,13 @@ def geom(
   geom_type: int,
   geom_dataid: int,
   geom_size: wp.vec3,
-  mesh_vertadr: int,
-  mesh_vertnum: int,
+  mesh_vertadr: wp.array(dtype=int),
+  mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_graphadr: int,
+  mesh_graphadr: wp.array(dtype=int),
   mesh_graph: wp.array(dtype=int),
-  mesh_polynum: int,
-  mesh_polyadr: int,
+  mesh_polynum: wp.array(dtype=int),
+  mesh_polyadr: wp.array(dtype=int),
   mesh_polynormal: wp.array(dtype=wp.vec3),
   mesh_polyvertadr: wp.array(dtype=int),
   mesh_polyvertnum: wp.array(dtype=int),
@@ -110,21 +110,20 @@ def geom(
   geom.size = geom_size
   geom.normal = wp.vec3(geom_xmat_in[0, 2], geom_xmat_in[1, 2], geom_xmat_in[2, 2])  # plane
 
-  # If geom is MESH, get mesh verts
-  if geom_dataid >= 0 and geom_type == GeomType.MESH:
-    geom.vertadr = mesh_vertadr
-    geom.vertnum = mesh_vertnum
-    geom.graphadr = mesh_graphadr
-    geom.mesh_polynum = mesh_polynum
-    geom.mesh_polyadr = mesh_polyadr
-  else:
-    geom.vertadr = -1
-    geom.vertnum = -1
-    geom.graphadr = -1
-    geom.mesh_polynum = -1
-    geom.mesh_polyadr = -1
-
   if geom_type == GeomType.MESH:
+    if geom_dataid >= 0:
+      geom.vertadr = mesh_vertadr[geom_dataid]
+      geom.vertnum = mesh_vertnum[geom_dataid]
+      geom.graphadr = mesh_graphadr[geom_dataid]
+      geom.mesh_polynum = mesh_polynum[geom_dataid]
+      geom.mesh_polyadr = mesh_polyadr[geom_dataid]
+    else:
+      geom.vertadr = -1
+      geom.vertnum = -1
+      geom.graphadr = -1
+      geom.mesh_polynum = -1
+      geom.mesh_polyadr = -1
+
     geom.vert = mesh_vert
     geom.graph = mesh_graph
     geom.mesh_polynormal = mesh_polynormal
@@ -137,6 +136,7 @@ def geom(
 
   geom.index = -1
   geom.margin = 0.0
+
   return geom
 
 
@@ -1551,13 +1551,13 @@ def _primitive_narrowphase_builder(m: Model):
       type1,
       geom1_dataid,
       geom_size[worldid, g1],
-      mesh_vertadr[geom1_dataid],
-      mesh_vertnum[geom1_dataid],
+      mesh_vertadr,
+      mesh_vertnum,
       mesh_vert,
-      mesh_graphadr[geom1_dataid],
+      mesh_graphadr,
       mesh_graph,
-      mesh_polynum[geom1_dataid],
-      mesh_polyadr[geom1_dataid],
+      mesh_polynum,
+      mesh_polyadr,
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
@@ -1574,13 +1574,13 @@ def _primitive_narrowphase_builder(m: Model):
       type2,
       geom2_dataid,
       geom_size[worldid, g2],
-      mesh_vertadr[geom2_dataid],
-      mesh_vertnum[geom2_dataid],
+      mesh_vertadr,
+      mesh_vertnum,
       mesh_vert,
-      mesh_graphadr[geom2_dataid],
+      mesh_graphadr,
       mesh_graph,
-      mesh_polynum[geom2_dataid],
-      mesh_polyadr[geom2_dataid],
+      mesh_polynum,
+      mesh_polyadr,
       mesh_polynormal,
       mesh_polyvertadr,
       mesh_polyvertnum,
