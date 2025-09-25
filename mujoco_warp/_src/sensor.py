@@ -21,10 +21,10 @@ from . import math
 from . import ray
 from . import smooth
 from . import support
+from .collision_gjk import ccd
 from .collision_primitive import geom
 from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
-from .support import geom_distance
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
@@ -499,6 +499,7 @@ def _sensor_pos(
   sensor_cutoff: wp.array(dtype=float),
   sensor_pos_adr: wp.array(dtype=int),
   rangefinder_sensor_adr: wp.array(dtype=int),
+  collision_sensor_adr: wp.array(dtype=int),
   # Data in:
   time_in: wp.array(dtype=float),
   energy_in: wp.array(dtype=wp.vec2),
@@ -516,8 +517,32 @@ def _sensor_pos(
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   actuator_length_in: wp.array2d(dtype=float),
+  epa_vert_in: wp.array2d(dtype=wp.vec3),
+  epa_vert1_in: wp.array2d(dtype=wp.vec3),
+  epa_vert2_in: wp.array2d(dtype=wp.vec3),
+  epa_vert_index1_in: wp.array2d(dtype=int),
+  epa_vert_index2_in: wp.array2d(dtype=int),
+  epa_face_in: wp.array2d(dtype=wp.vec3i),
+  epa_pr_in: wp.array2d(dtype=wp.vec3),
+  epa_norm2_in: wp.array2d(dtype=float),
+  epa_index_in: wp.array2d(dtype=int),
+  epa_map_in: wp.array2d(dtype=int),
+  epa_horizon_in: wp.array2d(dtype=int),
+  multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
+  multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
+  multiccd_pnormal_in: wp.array2d(dtype=wp.vec3),
+  multiccd_pdist_in: wp.array2d(dtype=float),
+  multiccd_idx1_in: wp.array2d(dtype=int),
+  multiccd_idx2_in: wp.array2d(dtype=int),
+  multiccd_n1_in: wp.array2d(dtype=wp.vec3),
+  multiccd_n2_in: wp.array2d(dtype=wp.vec3),
+  multiccd_endvert_in: wp.array2d(dtype=wp.vec3),
+  multiccd_face1_in: wp.array2d(dtype=wp.vec3),
+  multiccd_face2_in: wp.array2d(dtype=wp.vec3),
   ten_length_in: wp.array2d(dtype=float),
   sensor_rangefinder_dist_in: wp.array2d(dtype=float),
+  # In:
+  nsensor_collision: int,
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
@@ -643,6 +668,8 @@ def _sensor_pos(
       n2 = 1
       id2 = refid
 
+    tid = worldid * nsensor_collision + collision_sensor_adr[sensorid]
+
     # collide all pairs
     for geom1id in range(id1, id1 + n1):
       geomtype1 = geom_type[geom1id]
@@ -695,13 +722,51 @@ def _sensor_pos(
           geom_xmat_in[worldid, geom2id],
         )
 
-        dist_new, fromto_new = geom_distance(
-          tolerance, opt_ccd_iterations, geom1, geom2, pos1, pos2, geomtype1, geomtype2, margin
+        dist_new, _, witness1_new, witness2_new = ccd(
+          False,  # no multiccd
+          tolerance,
+          margin,
+          opt_ccd_iterations,
+          geom1,
+          geom2,
+          geomtype1,
+          geomtype2,
+          pos1,
+          pos2,
+          epa_vert_in[tid],
+          epa_vert1_in[tid],
+          epa_vert2_in[tid],
+          epa_vert_index1_in[tid],
+          epa_vert_index2_in[tid],
+          epa_face_in[tid],
+          epa_pr_in[tid],
+          epa_norm2_in[tid],
+          epa_index_in[tid],
+          epa_map_in[tid],
+          epa_horizon_in[tid],
+          multiccd_polygon_in[tid],
+          multiccd_clipped_in[tid],
+          multiccd_pnormal_in[tid],
+          multiccd_pdist_in[tid],
+          multiccd_idx1_in[tid],
+          multiccd_idx2_in[tid],
+          multiccd_n1_in[tid],
+          multiccd_n2_in[tid],
+          multiccd_endvert_in[tid],
+          multiccd_face1_in[tid],
+          multiccd_face2_in[tid],
         )
 
         if dist_new < dist:
           dist = dist_new
-          fromto = fromto_new
+          fromto = vec6(
+            witness1_new[0][0],
+            witness1_new[0][1],
+            witness1_new[0][2],
+            witness2_new[0][0],
+            witness2_new[0][1],
+            witness2_new[0][2],
+          )
 
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
@@ -833,6 +898,7 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_cutoff,
       m.sensor_pos_adr,
       m.rangefinder_sensor_adr,
+      m.collision_sensor_adr,
       d.time,
       d.energy,
       d.qpos,
@@ -849,8 +915,31 @@ def sensor_pos(m: Model, d: Data):
       d.cam_xmat,
       d.subtree_com,
       d.actuator_length,
+      d.epa_vert,
+      d.epa_vert1,
+      d.epa_vert2,
+      d.epa_vert_index1,
+      d.epa_vert_index2,
+      d.epa_face,
+      d.epa_pr,
+      d.epa_norm2,
+      d.epa_index,
+      d.epa_map,
+      d.epa_horizon,
+      d.multiccd_polygon,
+      d.multiccd_clipped,
+      d.multiccd_pnormal,
+      d.multiccd_pdist,
+      d.multiccd_idx1,
+      d.multiccd_idx2,
+      d.multiccd_n1,
+      d.multiccd_n2,
+      d.multiccd_endvert,
+      d.multiccd_face1,
+      d.multiccd_face2,
       d.ten_length,
       d.sensor_rangefinder_dist,
+      m.collision_sensor_adr.size,
     ],
     outputs=[d.sensordata],
   )

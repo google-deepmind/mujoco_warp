@@ -402,6 +402,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   is_collision_sensor = np.isin(
     mjm.sensor_type, [mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO]
   )
+  sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
+  collision_sensor_adr = np.full(mjm.nsensor, -1)
+  collision_sensor_adr[sensor_collision_adr] = np.arange(len(sensor_collision_adr))
+
   if is_collision_sensor.any():
 
     def _collision_sensor_check(sensor_type, sensor_id, geom_type, err_msg):
@@ -823,6 +827,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ),
     sensor_rangefinder_adr=wp.array(sensor_rangefinder_adr, dtype=int),
     rangefinder_sensor_adr=wp.array(rangefinder_sensor_adr, dtype=int),
+    collision_sensor_adr=wp.array(collision_sensor_adr, dtype=int),
     sensor_touch_adr=wp.array(
       np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TOUCH)[0],
       dtype=int,

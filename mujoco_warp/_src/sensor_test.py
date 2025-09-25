@@ -615,14 +615,14 @@ class SensorTest(parameterized.TestCase):
       <mujoco>
         <worldbody>
           <body name="geom0">
-            <geom name="geom0" type="sphere" size=".1"/>
+            <geom name="geom0" type="box" size=".1 .1 .1"/>
           </body>
           <body name="geom1">
-            <geom name="geom1" type="sphere" size=".1"/>
+            <geom name="geom1" type="box" size=".1 .1 .1"/>
             <joint type="slide" axis="0 0 1"/>
           </body>
           <body name="geomgeom" pos="1 0 0">
-            <geom type="sphere" size=".075" pos=".2 0 0"/>
+            <geom type="box" size=".075 .075 .075" pos=".2 0 0"/>
             <joint type="slide" axis="0 0 1"/>
           </body>
         </worldbody>
