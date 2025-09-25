@@ -1824,7 +1824,7 @@ def _reset_contact(
   contact_worldid_out[conid] = 0
 
 
-def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array(dtype=int)] = None):
+def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array(dtype=bool)] = None):
   """Clear data, set defaults."""
   if reset is None:
     reset = d.reset
