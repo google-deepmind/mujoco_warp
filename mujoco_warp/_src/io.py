@@ -1824,22 +1824,25 @@ def _reset_contact(
   contact_worldid_out[conid] = 0
 
 
-def reset_data(m: types.Model, d: types.Data):
+def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array(dtype=int)] = None):
   """Clear data, set defaults."""
-  wp.launch(_reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[d.reset], outputs=[d.xfrc_applied])
+  if reset is None:
+    reset = d.reset
+
+  wp.launch(_reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset], outputs=[d.xfrc_applied])
 
   if m.opt.is_sparse:
     qM_dim = (1, m.nM)
   else:
     qM_dim = (m.nv, m.nv)
 
-  wp.launch(_reset_qM, dim=(d.nworld, qM_dim[0], qM_dim[1]), inputs=[d.reset], outputs=[d.qM])
+  wp.launch(_reset_qM, dim=(d.nworld, qM_dim[0], qM_dim[1]), inputs=[reset], outputs=[d.qM])
 
   # set mocap_pos/quat = body_pos/quat for mocap bodies
   wp.launch(
     _reset_mocap,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_mocapid, m.body_pos, m.body_quat, d.reset],
+    inputs=[m.body_mocapid, m.body_pos, m.body_quat, reset],
     outputs=[d.mocap_pos, d.mocap_quat],
   )
 
@@ -1847,7 +1850,7 @@ def reset_data(m: types.Model, d: types.Data):
   wp.launch(
     _reset_contact,
     dim=d.nconmax,
-    inputs=[d.ncon, d.reset, d.contact.efc_address.shape[1]],
+    inputs=[d.ncon, reset, d.contact.efc_address.shape[1]],
     outputs=[
       d.contact.dist,
       d.contact.pos,
@@ -1867,7 +1870,7 @@ def reset_data(m: types.Model, d: types.Data):
   wp.launch(
     _reset_nworld,
     dim=d.nworld,
-    inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, d.reset],
+    inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, reset],
     outputs=[
       d.solver_niter,
       d.ncon,
