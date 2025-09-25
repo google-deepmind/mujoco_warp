@@ -24,6 +24,10 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+# maximum size (by number of edges) of an horizon in EPA algorithm
+MJ_MAX_EPAHORIZON = 12
+# maximum average number of trianglarfaces EPA can insert at each iteration
+MJ_MAX_EPAFACES = 5
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
@@ -387,6 +391,7 @@ class SensorType(enum.IntEnum):
     GEOMDIST: signed distance between two geoms
     GEOMNORMAL: normal direction between two geoms
     GEOMFROMTO: segment between two geoms
+    INSIDESITE: 1 if object is inside site, 0 otherwise
     E_POTENTIAL: potential energy
     E_KINETIC: kinetic energy
     CLOCK: simulation time
@@ -435,6 +440,7 @@ class SensorType(enum.IntEnum):
   GEOMDIST = mujoco.mjtSensor.mjSENS_GEOMDIST
   GEOMNORMAL = mujoco.mjtSensor.mjSENS_GEOMNORMAL
   GEOMFROMTO = mujoco.mjtSensor.mjSENS_GEOMFROMTO
+  INSIDESITE = mujoco.mjtSensor.mjSENS_INSIDESITE
   E_POTENTIAL = mujoco.mjtSensor.mjSENS_E_POTENTIAL
   E_KINETIC = mujoco.mjtSensor.mjSENS_E_KINETIC
   CLOCK = mujoco.mjtSensor.mjSENS_CLOCK
@@ -559,7 +565,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
-    ccd_tolerance: convex collision solver tolerance
+    ccd_tolerance: convex collision detection tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -570,8 +576,7 @@ class Option:
     disableflags: bit flags for disabling standard features
     enableflags: bit flags for enabling optional features
     is_sparse: whether to use sparse representations
-    gjk_iterations: number of Gjk iterations in the convex narrowphase
-    epa_iterations: number of Epa iterations in the convex narrowphase
+    ccd_iterations: number of iterations in convex collision detection
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
@@ -606,8 +611,7 @@ class Option:
   disableflags: int
   enableflags: int
   is_sparse: bool
-  gjk_iterations: int  # warp only
-  epa_iterations: int  # warp only
+  ccd_iterations: int
   ls_parallel: bool  # warp only
   ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
@@ -766,7 +770,6 @@ class Model:
     npair: number of predefined geom pairs
     nhfield: number of heightfields
     nhfielddata: size of elevation data
-    nhfieldgeom: number of hfield-geom pairs
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nworld, nq)
@@ -922,7 +925,6 @@ class Model:
     eq_ten_adr: eq_* addresses of type `TENDON`              (<=neq,)
     actuator_moment_tiles_nv: tiling configuration
     actuator_moment_tiles_nu: tiling configuration
-    actuator_affine_bias_gain: affine bias/gain present
     actuator_trntype: transmission type (TrnType)            (nu,)
     actuator_dyntype: dynamics type (DynType)                (nu,)
     actuator_gaintype: gain type (GainType)                  (nu,)
@@ -1033,8 +1035,6 @@ class Model:
     mat_rgba: rgba                                           (nworld, nmat, 4)
     actuator_trntype_body_adr: addresses for actuators       (<=nu,)
                                with body transmission
-    geompair2hfgeompair: geom pair to geom pair with         (ngeom * (ngeom - 1) // 2,)
-                         height field mapping
     block_dim: BlockDim
     geom_pair_type_count: count of max number of each potential collision
     has_sdf_geom: whether the model contains SDF geoms
@@ -1077,7 +1077,6 @@ class Model:
   npair: int
   nhfield: int
   nhfielddata: int
-  nhfieldgeom: int
   opt: Option
   stat: Statistic
   qpos0: wp.array2d(dtype=float)
@@ -1249,7 +1248,6 @@ class Model:
   eq_ten_adr: wp.array(dtype=int)
   actuator_moment_tiles_nv: tuple[TileSet, ...]
   actuator_moment_tiles_nu: tuple[TileSet, ...]
-  actuator_affine_bias_gain: bool  # warp only
   actuator_trntype: wp.array(dtype=int)
   actuator_dyntype: wp.array(dtype=int)
   actuator_gaintype: wp.array(dtype=int)
@@ -1353,7 +1351,6 @@ class Model:
   mat_texrepeat: wp.array2d(dtype=wp.vec2)
   mat_rgba: wp.array2d(dtype=wp.vec4)
   actuator_trntype_body_adr: wp.array(dtype=int)  # warp only
-  geompair2hfgeompair: wp.array(dtype=int)  # warp only
   block_dim: BlockDim  # warp only
   geom_pair_type_count: tuple[int, ...]  # warp only
   has_sdf_geom: bool  # warp only
@@ -1404,7 +1401,6 @@ class Data:
     njmax: maximum number of constraints per world
     solver_niter: number of solver iterations                   (nworld,)
     ncon: number of detected contacts
-    ncon_hfield: number of contacts per geom pair with hfield   (nworld, nhfieldgeom)
     ne: number of equality constraints                          (nworld,)
     ne_connect: number of equality connect constraints          (nworld,)
     ne_weld: number of equality weld constraints                (nworld,)
@@ -1501,7 +1497,6 @@ class Data:
     sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (nconmax,)
-    collision_hftri_index: collision index for hfield pairs     (nconmax,)
     collision_worldid: collision world ids from broadphase      (nconmax,)
     ncollision: collision count from broadphase
     epa_vert: vertices in EPA polytope in Minkowski space       (nconmax, 5 + CCDiter)
@@ -1509,12 +1504,23 @@ class Data:
     epa_vert2: vertices in EPA polytope in geom 2 space         (nconmax, 5 + CCDiter)
     epa_vert_index1: vertex indices in EPA polytope for geom 1  (nconmax, 5 + CCDiter)
     epa_vert_index2: vertex indices in EPA polytope for geom 2  (nconmax, 5 + CCDiter)
-    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 6 * CCDiter)
-    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 6 * CCDiter)
-    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 6 * CCDiter)
-    epa_index: index of face in polytope map                    (nconmax, 6 + 6 * CCDiter)
-    epa_map: status of faces in polytope                        (nconmax, 6 + 6 * CCDiter)
-    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 3 * 2 * CCDiter)
+    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 5 * CCDiter)
+    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 5 * CCDiter)
+    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 5 * CCDiter)
+    epa_index: index of face in polytope map                    (nconmax, 6 + 5 * CCDiter)
+    epa_map: status of faces in polytope                        (nconmax, 6 + 5 * CCDiter)
+    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 2 * 12)
+    multiccd_polygon: clipped contact surface                   (nconmax, 2 * max_npolygon)
+    multiccd_clipped: clipped contact surface (intermediate)    (nconmax, 2 * max_npolygon)
+    multiccd_pnormal: plane normal of clipping polygon          (nconmax, max_npolygon)
+    multiccd_pdist: plane distance of clipping polygon          (nconmax, max_npolygon)
+    multiccd_idx1: list of normal index candidates for Geom 1   (nconmax, max_meshdegree)
+    multiccd_idx2: list of normal index candidates for Geom 2   (nconmax, max_meshdegree)
+    multiccd_n1: list of normal candidates for Geom 1           (nconmax, max_meshdegree)
+    multiccd_n2: list of normal candidates for Geom 1           (nconmax, max_meshdegree)
+    multiccd_endvert: list of edge vertices candidates          (nconmax, max_meshdegree)
+    multiccd_face1: contact face                                (nconmax, max_npolygon)
+    multiccd_face2: contact face                                (nconmax, max_npolygon)
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
@@ -1550,7 +1556,6 @@ class Data:
   njmax: int  # warp only
   solver_niter: wp.array(dtype=int)
   ncon: wp.array(dtype=int)
-  ncon_hfield: wp.array2d(dtype=int)  # warp only
   ne: wp.array(dtype=int)
   ne_connect: wp.array(dtype=int)  # warp only
   ne_weld: wp.array(dtype=int)  # warp only
@@ -1652,7 +1657,6 @@ class Data:
 
   # collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
-  collision_hftri_index: wp.array(dtype=int)
   collision_pairid: wp.array(dtype=int)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
@@ -1669,6 +1673,19 @@ class Data:
   epa_index: wp.array2d(dtype=int)
   epa_map: wp.array2d(dtype=int)
   epa_horizon: wp.array2d(dtype=int)
+
+  # narrowphase collision (multicontact)
+  multiccd_polygon: wp.array2d(dtype=wp.vec3)
+  multiccd_clipped: wp.array2d(dtype=wp.vec3)
+  multiccd_pnormal: wp.array2d(dtype=wp.vec3)
+  multiccd_pdist: wp.array2d(dtype=float)
+  multiccd_idx1: wp.array2d(dtype=int)
+  multiccd_idx2: wp.array2d(dtype=int)
+  multiccd_n1: wp.array2d(dtype=wp.vec3)
+  multiccd_n2: wp.array2d(dtype=wp.vec3)
+  multiccd_endvert: wp.array2d(dtype=wp.vec3)
+  multiccd_face1: wp.array2d(dtype=wp.vec3)
+  multiccd_face2: wp.array2d(dtype=wp.vec3)
 
   # rne_postconstraint
   cacc: wp.array2d(dtype=wp.spatial_vector)
