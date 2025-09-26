@@ -1774,6 +1774,7 @@ def _reset_nworld(
   eq_active0: wp.array(dtype=bool),
   # Data in:
   nworld_in: int,
+  # In:
   reset_in: wp.array(dtype=bool),
   # Data out:
   solver_niter_out: wp.array(dtype=int),
@@ -1863,7 +1864,7 @@ def _reset_mocap(
   body_mocapid: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
   body_quat: wp.array2d(dtype=wp.quat),
-  # Data in:
+  # In:
   reset_in: wp.array(dtype=bool),
   # Data out:
   mocap_pos_out: wp.array2d(dtype=wp.vec3),
@@ -1925,8 +1926,8 @@ def _reset_contact_all(
 def _reset_contact(
   # Data in:
   ncon_in: wp.array(dtype=int),
-  reset_in: wp.array(dtype=bool),
   # In:
+  reset_in: wp.array(dtype=bool),
   nefcaddress: int,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
