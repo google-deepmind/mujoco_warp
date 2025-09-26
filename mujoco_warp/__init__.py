@@ -17,10 +17,13 @@
 
 # isort: off
 from ._src.forward import step as step
+from ._src.render import render as render
 from ._src.types import Model as Model
 from ._src.types import Data as Data
 # isort: on
 
+from ._src.bvh import build_warp_bvh as build_warp_bvh
+from ._src.bvh import refit_warp_bvh as refit_warp_bvh
 from ._src.collision_driver import collision as collision
 from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase

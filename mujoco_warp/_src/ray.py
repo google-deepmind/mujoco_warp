@@ -207,6 +207,24 @@ def _ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp
 
 
 @wp.func
+def ray_plane_with_normal(
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns distance and normal at which a ray intersects with a plane."""
+  x = _ray_plane(pos, mat, size, pnt, vec)
+  if x == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
+  # Local plane normal is +Z; rotate to world space
+  normal_world = mat @ wp.vec3(0.0, 0.0, 1.0)
+  normal_world = wp.normalize(normal_world)
+  return True, x, normal_world
+
+
+@wp.func
 def _ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a sphere."""
   dif = pnt - pos
@@ -217,6 +235,21 @@ def _ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> fl
 
   sol, _ = _ray_quad(a, b, c)
   return sol
+
+
+@wp.func
+def ray_sphere_with_normal(
+  pos: wp.vec3,
+  dist_sqr: float,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns distance and normal at which a ray intersects with a sphere."""
+  sol = _ray_sphere(pos, dist_sqr, pnt, vec)
+  if sol == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
+  normal = wp.normalize(pnt + sol * vec - pos)
+  return True, sol, normal
 
 
 @wp.func
@@ -274,6 +307,42 @@ def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
         x = xx[i]
 
   return x
+
+
+@wp.func
+def ray_capsule_with_normal(
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns distance and normal at which a ray intersects with a capsule."""
+  x = _ray_capsule(pos, mat, size, pnt, vec)
+  if x == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
+  # Recompute local hit point to determine which part (side or caps) we hit
+  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  hit_local = lpnt + x * lvec
+  # Determine normal in local space
+  eps = 1.0e-6
+  normal_local = wp.vec3(0.0, 0.0, 0.0)
+  if wp.abs(hit_local[2]) < size[1] - eps:
+    # Cylinder side: project onto XY
+    normal_local = wp.normalize(wp.vec3(hit_local[0], hit_local[1], 0.0))
+  elif hit_local[2] >= size[1]:
+    # Top cap
+    cap_center = wp.vec3(0.0, 0.0, size[1])
+    normal_local = wp.normalize(hit_local - cap_center)
+  else:
+    # Bottom cap
+    cap_center = wp.vec3(0.0, 0.0, -size[1])
+    normal_local = wp.normalize(hit_local - cap_center)
+  # Rotate back to world space
+  normal_world = mat @ normal_local
+  normal_world = wp.normalize(normal_world)
+  return True, x, normal_world
+
 
 
 @wp.func
@@ -388,6 +457,27 @@ def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.v
             all[2 * i + (side + 1) // 2] = sol
 
   return x, all
+
+
+@wp.func
+def ray_box_with_normal(
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns distance and normal at which a ray intersects with a box."""
+  x, all = _ray_box(pos, mat, size, pnt, vec)
+  if x == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
+  normal = wp.vec3(0.0, 0.0, 0.0)
+  for i in range(3):
+    if all[2 * i] != -1.0:
+      normal[i] = -wp.sign(all[2 * i])
+  normal_world = mat @ normal
+  normal_world = wp.normalize(normal_world)
+  return True, x, normal_world
 
 
 @wp.func
@@ -601,6 +691,38 @@ def ray_mesh(
       min_dist = dist
 
   return min_dist
+
+
+@wp.func
+def ray_mesh_with_bvh(
+  mesh_bvh_ids: wp.array(dtype=wp.uint64),
+  mesh_geom_id: int,
+  pos: wp.vec3,
+  mat: wp.mat33,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+  max_t: wp.float32,
+) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int, int]:
+  """Returns intersection information at which a ray intersects with a mesh.
+  
+  Requires wp.Mesh be constructed and their ids to be passed"""
+  t = wp.float32(wp.inf)
+  u = wp.float32(0.0)
+  v = wp.float32(0.0)
+  sign = wp.float32(0.0)
+  n = wp.vec3()
+  f = int(-1)
+
+  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  hit = wp.mesh_query_ray(
+    mesh_bvh_ids[mesh_geom_id], lpnt, lvec, max_t, t, u, v, sign, n, f)
+
+  if hit and wp.dot(lvec, n) < 0.0: # Backface culling in local space
+    normal = mat @ n
+    normal = wp.normalize(normal)
+    return True, t, normal, u, v, f, mesh_geom_id
+
+  return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
 
 
 @wp.func
