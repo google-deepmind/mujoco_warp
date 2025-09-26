@@ -644,11 +644,10 @@ def _sensor_pos(
     reftype = sensor_reftype[sensorid]
     refid = sensor_refid[sensorid]
 
-    # use cutoff for collision margin
-    margin = sensor_cutoff[sensorid]
+    cutoff = sensor_cutoff[sensorid]
 
     # initialize
-    dist = margin
+    dist = cutoff
     fromto = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     # settings
@@ -725,7 +724,7 @@ def _sensor_pos(
         dist_new, _, witness1_new, witness2_new = ccd(
           False,  # no multiccd
           tolerance,
-          margin,
+          cutoff,
           opt_ccd_iterations,
           geom1,
           geom2,
