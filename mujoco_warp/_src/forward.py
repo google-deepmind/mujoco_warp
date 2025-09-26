@@ -237,25 +237,24 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   # TODO(team): can we assume static timesteps?
 
   # advance activations
-  if m.na:
-    wp.launch(
-      _next_activation,
-      dim=(d.nworld, m.na),
-      inputs=[
-        m.opt.timestep,
-        m.actuator_dyntype,
-        m.actuator_actlimited,
-        m.actuator_dynprm,
-        m.actuator_actrange,
-        d.act,
-        d.act_dot,
-        1.0,
-        True,
-      ],
-      outputs=[
-        d.act,
-      ],
-    )
+  wp.launch(
+    _next_activation,
+    dim=(d.nworld, m.na),
+    inputs=[
+      m.opt.timestep,
+      m.actuator_dyntype,
+      m.actuator_actlimited,
+      m.actuator_dynprm,
+      m.actuator_actrange,
+      d.act,
+      d.act_dot,
+      1.0,
+      True,
+    ],
+    outputs=[
+      d.act,
+    ],
+  )
 
   wp.launch(
     _next_velocity,
@@ -429,23 +428,22 @@ def _rk_perturb_state(m: Model, d: Data, scale: float):
   )
 
   # activation
-  if m.na:
-    wp.launch(
-      _next_activation,
-      dim=(d.nworld, m.na),
-      inputs=[
-        m.opt.timestep,
-        m.actuator_dyntype,
-        m.actuator_actlimited,
-        m.actuator_dynprm,
-        m.actuator_actrange,
-        d.act_t0,
-        d.act_dot,
-        scale,
-        False,
-      ],
-      outputs=[d.act],
-    )
+  wp.launch(
+    _next_activation,
+    dim=(d.nworld, m.na),
+    inputs=[
+      m.opt.timestep,
+      m.actuator_dyntype,
+      m.actuator_actlimited,
+      m.actuator_dynprm,
+      m.actuator_actrange,
+      d.act_t0,
+      d.act_dot,
+      scale,
+      False,
+    ],
+    outputs=[d.act],
+  )
 
 
 @wp.kernel
@@ -487,13 +485,12 @@ def _rk_accumulate(m: Model, d: Data, scale: float):
     outputs=[d.qvel_rk, d.qacc_rk],
   )
 
-  if m.na:
-    wp.launch(
-      _rk_accumulate_activation_velocity,
-      dim=(d.nworld, m.na),
-      inputs=[d.act_dot, scale],
-      outputs=[d.act_dot_rk],
-    )
+  wp.launch(
+    _rk_accumulate_activation_velocity,
+    dim=(d.nworld, m.na),
+    inputs=[d.act_dot, scale],
+    outputs=[d.act_dot_rk],
+  )
 
 
 @event_scope
