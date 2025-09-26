@@ -1653,6 +1653,9 @@ def get_data_into(
   result.sensordata[:] = d.sensordata.numpy()
 
 
+# TODO(thowell): shared @wp.func for _reset kernel?
+
+
 @wp.kernel
 def _reset_xfrc_applied_all(xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector)):
   worldid, bodyid, elemid = wp.tid()
