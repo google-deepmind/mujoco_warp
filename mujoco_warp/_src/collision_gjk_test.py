@@ -278,8 +278,10 @@ class GJKTest(absltest.TestCase):
        """
     )
 
-    dist, _, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
+    dist, _, x1, x2 = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
     self.assertEqual(1.0, dist)
+    self.assertEqual(-0.5, x1[0])
+    self.assertEqual(0.5, x2[0])
 
   def test_spheres_touching(self):
     """Test two touching spheres have zero distance"""
