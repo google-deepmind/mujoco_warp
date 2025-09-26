@@ -494,7 +494,7 @@ class CollisionTest(parameterized.TestCase):
 
     mujoco.mj_collision(mjm, mjd)
     mjw.collision(m, d)
-    for i in range(min(mjd.ncon, d.ncon.numpy()[0])):
+    for i in range(min(mjd.ncon, d.nacon.numpy()[0])):
       actual_dist = mjd.contact.dist[i]
       actual_pos = mjd.contact.pos[i]
       actual_frame = mjd.contact.frame[i][0:3]
@@ -520,7 +520,7 @@ class CollisionTest(parameterized.TestCase):
     mujoco.mj_collision(mjm, mjd)
     mjw.collision(m, d)
 
-    self.assertGreater(d.ncon.numpy()[0], 0)
+    self.assertGreater(d.nacon.numpy()[0], 0)
     self.assertGreater(mjd.ncon, 0)
 
     for i in range(mjd.ncon):
@@ -528,7 +528,7 @@ class CollisionTest(parameterized.TestCase):
       actual_pos = mjd.contact.pos[i]
       actual_frame = mjd.contact.frame[i]
       result = False
-      for j in range(d.ncon.numpy()[0]):
+      for j in range(d.nacon.numpy()[0]):
         test_dist = d.contact.dist.numpy()[j]
         test_pos = d.contact.pos.numpy()[j, :]
         test_frame = d.contact.frame.numpy()[j].flatten()
@@ -541,7 +541,7 @@ class CollisionTest(parameterized.TestCase):
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
     if not allow_different_contact_count:
-      self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
+      self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """
@@ -570,7 +570,7 @@ class CollisionTest(parameterized.TestCase):
     mujoco.mj_collision(mjm, mjd)
     mjw.collision(m, d)
 
-    self.assertEqual(mjd.ncon > 0, d.ncon.numpy()[0] > 0, "If MJ collides, MJW should too")
+    self.assertEqual(mjd.ncon > 0, d.nacon.numpy()[0] > 0, "If MJ collides, MJW should too")
 
   def test_contact_exclude(self):
     """Tests contact exclude."""
@@ -642,7 +642,7 @@ class CollisionTest(parameterized.TestCase):
     self.assertTrue((m.nxn_pairid.numpy() == 0).all())
 
     for arr in (
-      d.ncon,
+      d.nacon,
       d.contact.includemargin,
       d.contact.dim,
       d.contact.friction,
@@ -654,7 +654,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    self.assertEqual(d.ncon.numpy()[0], 1)
+    self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.includemargin.numpy()[0], -1)
     self.assertEqual(d.contact.dim.numpy()[0], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], np.array([5, 4, 3, 2, 1]))
@@ -685,7 +685,7 @@ class CollisionTest(parameterized.TestCase):
     self.assertTrue((m.nxn_pairid.numpy() == 0).all())
 
     for arr in (
-      d.ncon,
+      d.nacon,
       d.contact.includemargin,
       d.contact.dim,
       d.contact.friction,
@@ -697,7 +697,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    self.assertEqual(d.ncon.numpy()[0], 1)
+    self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.includemargin.numpy()[0], -1)
     self.assertEqual(d.contact.dim.numpy()[0], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], np.array([5, 4, 3, 2, 1]))
@@ -729,7 +729,7 @@ class CollisionTest(parameterized.TestCase):
     self.assertTrue((m.nxn_pairid.numpy() == 0).all())
 
     for arr in (
-      d.ncon,
+      d.nacon,
       d.contact.includemargin,
       d.contact.dim,
       d.contact.friction,
@@ -741,7 +741,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    self.assertEqual(d.ncon.numpy()[0], 1)
+    self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.includemargin.numpy()[0], -1)
     self.assertEqual(d.contact.dim.numpy()[0], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], np.array([5, 4, 3, 2, 1]))
@@ -777,7 +777,7 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(m.nxn_pairid.numpy(), np.array([-2, -1, 0]))
 
     for arr in (
-      d.ncon,
+      d.nacon,
       d.contact.includemargin,
       d.contact.dim,
       d.contact.friction,
@@ -789,7 +789,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    self.assertEqual(d.ncon.numpy()[0], 2)
+    self.assertEqual(d.nacon.numpy()[0], 2)
     self.assertEqual(d.contact.includemargin.numpy()[1], -1)
     self.assertEqual(d.contact.dim.numpy()[1], 6)
     np.testing.assert_allclose(d.contact.friction.numpy()[1], np.array([5, 4, 3, 2, 1]))
@@ -807,7 +807,7 @@ class CollisionTest(parameterized.TestCase):
     mujoco.mj_collision(mjm, mjd)
     mjw.collision(m, d)
 
-    self.assertEqual(d.ncon.numpy()[0], mjd.ncon)
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   def test_hfield_maxconpair(self):
     _XML = """
@@ -832,7 +832,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.ncon.numpy()[0], types.MJ_MAXCONPAIR)
+    np.testing.assert_equal(d.nacon.numpy()[0], types.MJ_MAXCONPAIR)
 
   def test_min_friction(self):
     _, _, _, d = test_data.fixture(
@@ -856,7 +856,7 @@ class CollisionTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    self.assertEqual(d.ncon.numpy()[0], 1)
+    self.assertEqual(d.nacon.numpy()[0], 1)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)
 
   @parameterized.parameters(("1", "1"), ("1", "2"), ("2", "1"))
@@ -881,8 +881,8 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    ncon = d.ncon.numpy()[0]
-    _assert_eq(ncon, 1, "ncon")
+    nacon = d.nacon.numpy()[0]
+    _assert_eq(nacon, 1, "nacon")
     _assert_eq(d.contact.friction.numpy()[0], mjd.contact.friction[0], "friction")
     _assert_eq(d.contact.solref.numpy()[0], mjd.contact.solref[0], "solref")
     _assert_eq(d.contact.solimp.numpy()[0], mjd.contact.solimp[0], "solimp")

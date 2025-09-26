@@ -158,7 +158,6 @@ class IOTest(parameterized.TestCase):
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
     reset_datafield = [
-      "ncon",
       "ne",
       "nf",
       "nl",
@@ -182,7 +181,7 @@ class IOTest(parameterized.TestCase):
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
-    nconmax = d.nconmax
+    naconmax = d.naconmax
 
     # data fields
     for arr in reset_datafield:
@@ -201,8 +200,8 @@ class IOTest(parameterized.TestCase):
 
     mujoco.mj_resetData(mjm, mjd)
 
-    # set ncon in order to zero all contact memory
-    wp.copy(d.ncon, wp.array([nconmax], dtype=int))
+    # set nacon in order to zero all contact memory
+    wp.copy(d.nacon, wp.array([naconmax], dtype=int))
     mjwarp.reset_data(m, d)
 
     for arr in reset_datafield:
@@ -212,6 +211,8 @@ class IOTest(parameterized.TestCase):
         if arr == "qM":
           di_arr = di_arr.reshape(-1)[: mjd.qM.size]
         _assert_eq(di_arr, getattr(mjd, arr), arr)
+
+    _assert_eq(d.nacon.numpy(), 0, "nacon")
 
     for arr in d.contact.__dataclass_fields__:
       _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
