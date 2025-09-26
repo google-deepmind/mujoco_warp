@@ -605,20 +605,25 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
-  def test_sensor_collision(self):
+  @parameterized.parameters(
+    ("sphere", "sphere"),
+    ("box", "box"),
+    ("capsule", "box"),
+  )
+  def test_sensor_collision(self, geom1, geom2):
     """Tests collision sensors: distance, normal, fromto."""
 
     # TODO(team): test plane
 
     _, mjd, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <worldbody>
           <body name="geom0">
-            <geom name="geom0" type="box" size=".1 .1 .1"/>
+            <geom name="geom0" type="{geom1}" size=".1 .1 .1"/>
           </body>
           <body name="geom1">
-            <geom name="geom1" type="box" size=".1 .1 .1"/>
+            <geom name="geom1" type="{geom2}" size=".1 .1 .1"/>
             <joint type="slide" axis="0 0 1"/>
           </body>
           <body name="geomgeom" pos="1 0 0">
@@ -640,12 +645,12 @@ class SensorTest(parameterized.TestCase):
           <fromto geom1="geom0" geom2="geom1" cutoff=".001"/>
           <fromto geom1="geom0" geom2="geom1" cutoff="1"/>
           <fromto geom1="geom1" geom2="geom0" cutoff="1"/>
-          <distance body1="geom0" body2="geomgeom" cutoff="3"/>
-          <distance body1="geomgeom" body2="geom0" cutoff="3"/>
-          <normal body1="geom0" body2="geomgeom" cutoff="3"/>
-          <normal body1="geomgeom" body2="geom0" cutoff="3"/>
-          <fromto body1="geom0" body2="geomgeom" cutoff="3"/>
-          <fromto body1="geomgeom" body2="geom0" cutoff="3"/>
+          <distance body1="geom0" body2="geomgeom" cutoff="5"/>
+          <distance body1="geomgeom" body2="geom0" cutoff="5"/>
+          <normal body1="geom0" body2="geomgeom" cutoff="5"/>
+          <normal body1="geomgeom" body2="geom0" cutoff="5"/>
+          <fromto body1="geom0" body2="geomgeom" cutoff="5"/>
+          <fromto body1="geomgeom" body2="geom0" cutoff="5"/>
         </sensor>
       </mujoco>
       """,
