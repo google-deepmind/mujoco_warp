@@ -677,7 +677,7 @@ def gjk(
 
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
-  #  are the witness points
+  # are the witness points
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coordinates, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coordinates, simplex2))
   result.dist = wp.norm_l2(x_k)
