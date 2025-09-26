@@ -216,6 +216,51 @@ class IOTest(parameterized.TestCase):
     for arr in d.contact.__dataclass_fields__:
       _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
+  def test_reset_data_world(self):
+    """Tests per-world reset."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    # nonzero values
+    qvel = wp.array(np.array([[1.0], [2.0]]), dtype=float)
+
+    wp.copy(d.qvel, qvel)
+
+    # reset both worlds
+    mjwarp.reset_data(m, d)
+
+    _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
+    _assert_eq(d.qvel.numpy()[1], 0.0, "qvel[1]")
+
+    wp.copy(d.qvel, qvel)
+
+    # don't reset second world
+    reset10 = wp.array(np.array([True, False]), dtype=bool)
+    mjwarp.reset_data(m, d, reset=reset10)
+
+    _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
+    _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+
+    wp.copy(d.qvel, qvel)
+
+    # don't reset both worlds
+    reset00 = wp.array(np.array([False, False], dtype=bool))
+    mjwarp.reset_data(m, d, reset=reset00)
+
+    _assert_eq(d.qvel.numpy()[0], 1.0, "qvel[0]")
+    _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
     mjm, mjd, m, d = test_data.fixture("collision_sdf/cow.xml")
