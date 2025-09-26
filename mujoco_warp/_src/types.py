@@ -1543,7 +1543,6 @@ class Data:
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
-    reset: flag for resetting world in reset_data               (nworld,)
   """
 
   nworld: int  # warp only
@@ -1721,6 +1720,3 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
-
-  # reset
-  reset: wp.array(dtype=bool)  # warp only
