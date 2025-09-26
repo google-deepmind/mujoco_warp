@@ -623,6 +623,28 @@ class Option:
 
 
 @dataclasses.dataclass
+class RenderOptions:
+  """Render options.
+
+  Attributes:
+    render_rgb: whether to render rgb image
+    render_depth: whether to render depth image
+    use_textures: whether to use textures
+    use_shadows: whether to use shadows
+    width: width of the rendered image
+    height: height of the rendered image
+    fov_rad: field of view in radians
+  """
+  render_rgb: bool
+  render_depth: bool
+  use_textures: bool
+  use_shadows: bool
+  width: int
+  height: int
+  fov_rad: float
+
+
+@dataclasses.dataclass
 class Statistic:
   """Model statistics (in qpos0).
 
@@ -1032,6 +1054,20 @@ class Model:
     block_dim: BlockDim
     geom_pair_type_count: count of max number of each potential collision
     has_sdf_geom: whether the model contains SDF geoms
+    taxel_vertadr: address of first vertex in taxel mesh    (nsensor,)
+    taxel_sensorid: sensor id for taxel mesh                (nsensor,)
+    render_opt: render options
+    enabled_geom_ids: ids of enabled geoms                    (ngeom,)
+    mesh_bvh_ids: ids of mesh BVH                             (nmesh,)
+    mesh_bounds_size: bounds size of mesh                     (nmesh,)
+    mesh_texcoord: texcoord of mesh                           (nmeshvert, 2)
+    mesh_texcoord_offsets: offsets of texcoord                (nmesh,)
+    mesh_texcoord_num: number of texcoord                     (nmesh,)
+    tex_adr: texture adr                                     (nworld, ntex,)
+    tex_data: texture data                                    (nworld, ntex,)
+    tex_nchannel: number of channels in texture               (nworld, ntex,)
+    tex_height: height of texture                             (nworld, ntex,)
+    tex_width: width of texture                               (nworld, ntex,)
   """
 
   nq: int
@@ -1350,6 +1386,22 @@ class Model:
   has_sdf_geom: bool  # warp only
   taxel_vertadr: wp.array(dtype=int)  # warp only
   taxel_sensorid: wp.array(dtype=int)  # warp only
+  
+  # render
+  render_opt: RenderOptions
+  bvh_ngeom: int
+  enabled_geom_ids: wp.array(dtype=int)
+  mesh_bvhs: list
+  mesh_bvh_ids: wp.array(dtype=wp.uint64)
+  mesh_bounds_size: wp.array(dtype=wp.vec3)
+  mesh_texcoord: wp.array(dtype=wp.vec2)
+  mesh_texcoord_offsets: wp.array(dtype=int)
+  mesh_texcoord_num: wp.array(dtype=int)
+  tex_adr: wp.array(dtype=int)
+  tex_data: wp.array(dtype=wp.uint32)
+  tex_height: wp.array(dtype=int)
+  tex_width: wp.array(dtype=int)
+
 
 
 @dataclasses.dataclass
@@ -1720,3 +1772,13 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
+  
+  # render
+  bvh_id: wp.uint64
+  bvh: wp.Bvh
+  lowers: wp.array(dtype=wp.vec3)
+  uppers: wp.array(dtype=wp.vec3)
+  groups: wp.array(dtype=wp.int32)
+  group_roots: wp.array(dtype=wp.int32)
+  pixels: wp.array3d(dtype=wp.vec3)
+  depth: wp.array3d(dtype=float)

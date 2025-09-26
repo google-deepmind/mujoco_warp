@@ -42,6 +42,55 @@ def _max_npolygon(mjm: mujoco.MjModel) -> int:
   return max(4, mjm.mesh_polyvertnum.max())
 
 
+@wp.kernel
+def convert_texture_to_packed(
+  size: int,
+  nchannel: int,
+  tex_data_uint8: wp.array(dtype=wp.uint8),
+  tex_data_packed: wp.array(dtype=wp.uint32),
+):
+  """
+  Convert uint8 texture data to packed uint32 format for efficient sampling.
+  """
+  tid = wp.tid()
+  if tid >= size:
+    return
+
+  src_idx = tid * nchannel
+
+  r = tex_data_uint8[src_idx + 0] if nchannel > 0 else wp.uint8(0)
+  g = tex_data_uint8[src_idx + 1] if nchannel > 1 else wp.uint8(0)
+  b = tex_data_uint8[src_idx + 2] if nchannel > 2 else wp.uint8(0)
+  a = wp.uint8(255)  # Always use full alpha
+
+  packed = (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
+  tex_data_packed[tid] = packed
+
+
+def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array]:
+  """Create packed uint32 texture data from uint8 texture data for optimized sampling."""
+  if mjm.ntex == 0:
+    return wp.array([], dtype=wp.uint32), wp.array([], dtype=int)
+
+  total_size = 0
+  for i in range(mjm.ntex):
+    total_size += mjm.tex_width[i] * mjm.tex_height[i]
+
+  tex_data_packed = wp.zeros((total_size,), dtype=wp.uint32)
+  tex_adr_packed = []
+
+  for i in range(mjm.ntex):
+    tex_adr_packed.append(mjm.tex_adr[i] // mjm.tex_nchannel[i])
+
+  wp.launch(
+    convert_texture_to_packed,
+    dim=(total_size,),
+    inputs=[total_size, mjm.tex_nchannel[0], wp.array(mjm.tex_data, dtype=wp.uint8), tex_data_packed]
+  )
+
+  return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """
   Creates a model on device.
@@ -397,6 +446,46 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
+
+  # render
+  nmesh = mjm.nmesh
+  # TODO: What is the best way to pass in the render options?
+  geom_enabled_idx = [i for i in range(mjm.ngeom) if mjm.geom_group[i] in [0, 1, 2]]
+  used_mesh_ids = set(
+    int(mjm.geom_dataid[g])
+    for g in geom_enabled_idx
+    if mjm.geom_type[g] == types.GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
+  )
+  mesh_bvh_ids = [wp.uint64(0) for _ in range(nmesh)]
+  mesh_bounds_size = [np.array([0.0, 0.0, 0.0], dtype=np.float32) for _ in range(nmesh)]
+  mesh_bvhs = []
+
+  for i in range(nmesh):
+    if i not in used_mesh_ids:
+      continue
+
+    v_start = mjm.mesh_vertadr[i]
+    v_end = v_start + mjm.mesh_vertnum[i]
+    points = mjm.mesh_vert[v_start:v_end]
+
+    f_start = mjm.mesh_faceadr[i]
+    f_end = mjm.mesh_face.shape[0] if (i + 1) >= nmesh else mjm.mesh_faceadr[i + 1]
+    indices = mjm.mesh_face[f_start:f_end]
+    indices = indices.flatten()
+
+    mesh = wp.Mesh(
+      points=wp.array(points, dtype=wp.vec3),
+      indices=wp.array(indices, dtype=wp.int32),
+    )
+    mesh_bvhs.append(mesh)
+    mesh_bvh_ids[i] = mesh.id
+
+    pmin = points.min(axis=0)
+    pmax = points.max(axis=0)
+    half = 0.5 * (pmax - pmin)
+    mesh_bounds_size[i] = half
+  
+  tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
   m = types.Model(
     nq=mjm.nq,
@@ -838,12 +927,35 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       ],
       dtype=int,
     ),
+    # render
+    render_opt=types.RenderOptions(
+      render_rgb=True,
+      render_depth=True,
+      use_textures=True,
+      use_shadows=True,
+      width=64,
+      height=64,
+      fov_rad=wp.radians(60.0),
+    ),
+    bvh_ngeom=len(geom_enabled_idx),
+    enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
+    mesh_bvhs=mesh_bvhs,
+    mesh_bvh_ids=wp.array(mesh_bvh_ids, dtype=wp.uint64),
+    mesh_bounds_size=wp.array(mesh_bounds_size, dtype=wp.vec3),
+    mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
+    mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
+    mesh_texcoord_num=wp.array(mjm.mesh_texcoordnum, dtype=int),
+    tex_adr=tex_adr_packed,
+    tex_data=tex_data_packed,
+    tex_height=wp.array(mjm.tex_height, dtype=int),
+    tex_width=wp.array(mjm.tex_width, dtype=int),
+
   )
 
   return m
 
 
-def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1) -> types.Data:
+def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: int = -1, bvh_ngeom: int = 1, pixels: int = 1) -> types.Data:
   """
   Creates a data object on device.
 
@@ -1111,6 +1223,14 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    # render
+    bvh_id=wp.uint64(0),
+    lowers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
+    uppers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
+    groups=wp.zeros((nworld * bvh_ngeom,), dtype=wp.int32),
+    group_roots=wp.zeros((nworld,), dtype=wp.int32),
+    pixels=wp.zeros((nworld, mjm.ncam, pixels), dtype=wp.uint32),
+    depth=wp.zeros((nworld, mjm.ncam, pixels), dtype=wp.float32),
   )
 
 
@@ -1120,6 +1240,8 @@ def put_data(
   nworld: Optional[int] = None,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
+  bvh_ngeom: Optional[int] = None,
+  pixels: Optional[int] = None,
 ) -> types.Data:
   """
   Moves data from host to a device.
@@ -1485,6 +1607,15 @@ def put_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    # render
+    bvh_id=wp.uint64(0),
+    bvh=None,
+    lowers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
+    uppers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
+    groups=wp.zeros((nworld * bvh_ngeom,), dtype=wp.int32),
+    group_roots=wp.zeros((nworld,), dtype=wp.int32),
+    pixels=wp.zeros((nworld, mjm.ncam, pixels), dtype=wp.uint32),
+    depth=wp.zeros((nworld, mjm.ncam, pixels), dtype=wp.float32),
   )
 
 

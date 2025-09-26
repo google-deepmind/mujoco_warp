@@ -149,7 +149,9 @@ def _main(argv: Sequence[str]):
       f"  solver: {solver} cone: {cone} iterations: {iterations} ls_iterations: {ls_iterations} ls_parallel: {ls_parallel}\n"
       f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
     )
-    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value, bvh_ngeom=m.bvh_ngeom, pixels=m.render_opt.width * m.render_opt.height)
+    mjw.build_warp_bvh(m, d)
+
     print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
