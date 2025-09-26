@@ -1132,9 +1132,9 @@ def put_data(
   #             we need to ensure these are only workspace fields and don't carry state
 
   # TODO(team): better heuristic for nconmax
-  nconmax = nconmax or max(512 // nworld, 4 * mjd.ncon)
+  nconmax = nconmax or max(1, 512 // nworld, 4 * mjd.ncon)
   # TODO(team): better heuristic for njmax
-  njmax = njmax or nconmax * 6
+  njmax = njmax or max(5, 4 * mjd.nefc)
 
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
