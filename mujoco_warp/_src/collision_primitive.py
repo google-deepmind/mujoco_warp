@@ -178,7 +178,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
 
     threshold = max_support - 1e-3
     if max_support < 0:
-        return
+      return
 
     # find first support point (a)
     a_dist = wp.float32(-_HUGE_VAL)
