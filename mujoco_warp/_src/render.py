@@ -464,7 +464,9 @@ def compute_lighting(
 def render_raytrace_megakernel(m: Model, d: Data):
   total_views = d.nworld * m.ncam
   total_pixels = m.render_opt.width * m.render_opt.height
-  num_blocks = total_views // MAX_NUM_VIEWS_PER_THREAD
+  num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
+  if num_view_groups == 0:
+    return
 
   if m.render_opt.render_rgb:
     d.pixels.fill_(wp.uint32(BACKGROUND_COLOR))
@@ -679,7 +681,7 @@ def render_raytrace_megakernel(m: Model, d: Data):
 
   wp.launch(
     kernel=_raytrace_megakernel,
-    dim=(num_blocks * total_pixels),
+    dim=(num_view_groups * total_pixels),
     inputs=[
       # Model and Options
       d.nworld,
