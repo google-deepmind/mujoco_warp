@@ -743,6 +743,7 @@ def _sensor_pos(
           epa_index_in[tid],
           epa_map_in[tid],
           epa_horizon_in[tid],
+          # TODO(team): since multiccd will always be off, empty arrays?
           multiccd_polygon_in[tid],
           multiccd_clipped_in[tid],
           multiccd_pnormal_in[tid],
