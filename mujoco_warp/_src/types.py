@@ -24,6 +24,7 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+MJ_NFLUID = getattr(mujoco, "mjNFLUID", 12)
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 12
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -807,6 +808,7 @@ class Model:
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
     body_gravcomp: antigravity force, units of body weight   (nworld, nbody)
+    body_has_fluid_ellipsoid: does body use ellipsoid fluid  (nbody,)
     jnt_type: type of joint (JointType)                      (njnt,)
     jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
@@ -849,6 +851,7 @@ class Model:
     geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
+    geom_fluid: fluid interaction parameters                 (ngeom, MJ_NFLUID)
     geom_aabb: bounding box, (center, size)                  (ngeom, 6)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
     geom_pos: local position offset rel. to body             (nworld, ngeom, 3)
@@ -1116,6 +1119,7 @@ class Model:
   body_contype: wp.array(dtype=int)
   body_conaffinity: wp.array(dtype=int)
   body_gravcomp: wp.array2d(dtype=float)
+  body_has_fluid_ellipsoid: wp.array(dtype=bool)
   jnt_type: wp.array(dtype=int)
   jnt_qposadr: wp.array(dtype=int)
   jnt_dofadr: wp.array(dtype=int)
@@ -1158,6 +1162,7 @@ class Model:
   geom_solref: wp.array2d(dtype=wp.vec2)
   geom_solimp: wp.array2d(dtype=vec5)
   geom_size: wp.array2d(dtype=wp.vec3)
+  geom_fluid: wp.array2d(dtype=float)
   geom_aabb: wp.array2d(dtype=wp.vec3)
   geom_rbound: wp.array2d(dtype=float)
   geom_pos: wp.array2d(dtype=wp.vec3)

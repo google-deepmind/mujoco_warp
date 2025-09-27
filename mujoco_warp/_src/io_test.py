@@ -88,21 +88,28 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
   def test_ellipsoid_fluid_model(self):
-    with self.assertRaises(NotImplementedError):
-      mjm = mujoco.MjModel.from_xml_string(
-        """
-      <mujoco>
-        <option density="1"/>
-        <worldbody>
-          <body>
-            <geom type="sphere" size=".1" fluidshape="ellipsoid"/>
-            <freejoint/>
-          </body>
-        </worldbody>
-      </mujoco>
+    mjm = mujoco.MjModel.from_xml_string(
       """
-      )
-      mjwarp.put_model(mjm)
+    <mujoco>
+      <option density="1.1" viscosity="0.05"/>
+      <worldbody>
+        <body>
+          <geom type="sphere" size=".15" fluidshape="ellipsoid"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    model = mjwarp.put_model(mjm)
+
+    np.testing.assert_allclose(model.geom_fluid.numpy(), mjm.geom_fluid)
+    self.assertTrue(model.opt.has_fluid)
+
+    body_has = model.body_has_fluid_ellipsoid.numpy()
+    self.assertTrue(body_has[mjm.geom_bodyid[0]])
+    self.assertFalse(body_has[0])
 
   def test_jacobian_auto(self):
     mjm = mujoco.MjModel.from_xml_string("""

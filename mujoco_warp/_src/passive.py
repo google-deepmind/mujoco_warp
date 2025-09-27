@@ -17,6 +17,7 @@ import warp as wp
 
 from . import math
 from . import support
+from .types import GeomType
 from .types import MJ_MINVAL
 from .types import Data
 from .types import DisableBit
@@ -25,6 +26,51 @@ from .types import Model
 from .warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+_GEOM_SPHERE = int(GeomType.SPHERE)
+_GEOM_CAPSULE = int(GeomType.CAPSULE)
+_GEOM_ELLIPSOID = int(GeomType.ELLIPSOID)
+_GEOM_CYLINDER = int(GeomType.CYLINDER)
+
+
+@wp.func
+def _pow2(val: float) -> float:
+  return val * val
+
+
+@wp.func
+def _pow4(val: float) -> float:
+  sq = val * val
+  return sq * sq
+
+
+@wp.func
+def _geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:
+  if geom_type == _GEOM_SPHERE:
+    r = size[0]
+    return wp.vec3(r, r, r)
+
+  if geom_type == _GEOM_CAPSULE:
+    radius = size[0]
+    half_length = size[1]
+    return wp.vec3(radius, radius, half_length + radius)
+
+  if geom_type == _GEOM_CYLINDER:
+    radius = size[0]
+    half_length = size[1]
+    return wp.vec3(radius, radius, half_length)
+
+  # ellipsoid, box, mesh, sdf -> use size directly
+  return size
+
+
+@wp.func
+def _ellipsoid_max_moment(size: wp.vec3, axis: int) -> float:
+  d0 = size[axis]
+  d1 = size[(axis + 1) % 3]
+  d2 = size[(axis + 2) % 3]
+  return (8.0 / 15.0) * wp.pi * d0 * _pow4(wp.max(d1, d2))
 
 
 @wp.kernel
@@ -230,6 +276,7 @@ def _box_fluid(
   opt_density: wp.array(dtype=float),
   opt_viscosity: wp.array(dtype=float),
   body_rootid: wp.array(dtype=int),
+  body_has_fluid_ellipsoid: wp.array(dtype=bool),
   body_mass: wp.array2d(dtype=float),
   body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
@@ -243,6 +290,9 @@ def _box_fluid(
   """Fluid forces based on inertia-box approximation."""
 
   worldid, bodyid = wp.tid()
+  if body_has_fluid_ellipsoid[bodyid]:
+    fluid_applied_out[worldid, bodyid] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
+    return
   wind = opt_wind[worldid]
   density = opt_density[worldid]
   viscosity = opt_viscosity[worldid]
@@ -319,6 +369,164 @@ def _box_fluid(
   fluid_applied_out[worldid, bodyid] = wp.spatial_vector(force, torque)
 
 
+@wp.kernel
+def _ellipsoid_fluid(
+  # Model:
+  opt_wind: wp.array(dtype=wp.vec3),
+  opt_density: wp.array(dtype=float),
+  opt_viscosity: wp.array(dtype=float),
+  body_rootid: wp.array(dtype=int),
+  geom_bodyid: wp.array(dtype=int),
+  geom_type: wp.array(dtype=int),
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_fluid: wp.array2d(dtype=float),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # Data out:
+  fluid_applied_out: wp.array2d(dtype=wp.spatial_vector),
+):
+  worldid, geomid = wp.tid()
+  bodyid = geom_bodyid[geomid]
+  if bodyid == 0:
+    return
+
+  coef = geom_fluid[geomid, 0]
+  if coef <= 0.0:
+    return
+
+  density = opt_density[worldid]
+  viscosity = opt_viscosity[worldid]
+  if density <= 0.0 and viscosity <= 0.0:
+    return
+
+  wind = opt_wind[worldid]
+  size = geom_size[worldid, geomid]
+  semiaxes = _geom_semiaxes(size, geom_type[geomid])
+  rot = geom_xmat_in[worldid, geomid]
+  rotT = wp.transpose(rot)
+
+  cvel = cvel_in[worldid, bodyid]
+  ang_global = wp.spatial_top(cvel)
+  lin_global = wp.spatial_bottom(cvel)
+
+  root = subtree_com_in[worldid, body_rootid[bodyid]]
+  xipos = xipos_in[worldid, bodyid]
+  geom_pos = geom_xpos_in[worldid, geomid]
+
+  lin_com = lin_global - wp.cross(xipos - root, ang_global)
+  lin_point = lin_com + wp.cross(ang_global, geom_pos - xipos)
+
+  l_ang = rotT @ ang_global
+  l_lin = rotT @ lin_point
+
+  if wind[0] or wind[1] or wind[2]:
+    l_lin -= rotT @ wind
+
+  lfrc_torque = wp.vec3(0.0)
+  lfrc_force = wp.vec3(0.0)
+
+  if density > 0.0:
+    virtual_mass = wp.vec3(
+      geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8]
+    )
+    virtual_inertia = wp.vec3(
+      geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11]
+    )
+
+    virtual_lin_mom = wp.vec3(
+      density * virtual_mass[0] * l_lin[0],
+      density * virtual_mass[1] * l_lin[1],
+      density * virtual_mass[2] * l_lin[2],
+    )
+    virtual_ang_mom = wp.vec3(
+      density * virtual_inertia[0] * l_ang[0],
+      density * virtual_inertia[1] * l_ang[1],
+      density * virtual_inertia[2] * l_ang[2],
+    )
+
+    added_mass_force = wp.cross(virtual_lin_mom, l_ang)
+    added_mass_torque = wp.cross(virtual_lin_mom, l_lin) + wp.cross(virtual_ang_mom, l_ang)
+
+    lfrc_force += added_mass_force
+    lfrc_torque += added_mass_torque
+
+  magnus_coef = geom_fluid[geomid, 5]
+  kutta_coef = geom_fluid[geomid, 4]
+  blunt_drag_coef = geom_fluid[geomid, 1]
+  slender_drag_coef = geom_fluid[geomid, 2]
+  ang_drag_coef = geom_fluid[geomid, 3]
+
+  volume = (4.0 / 3.0) * wp.pi * semiaxes[0] * semiaxes[1] * semiaxes[2]
+  d_max = wp.max(wp.max(semiaxes[0], semiaxes[1]), semiaxes[2])
+  d_min = wp.min(wp.min(semiaxes[0], semiaxes[1]), semiaxes[2])
+  d_mid = semiaxes[0] + semiaxes[1] + semiaxes[2] - d_max - d_min
+  A_max = wp.pi * d_max * d_mid
+
+  lin_speed = wp.length(l_lin)
+
+  magnus_force = wp.cross(l_ang, l_lin) * (magnus_coef * density * volume)
+
+  s12 = semiaxes[1] * semiaxes[2]
+  s20 = semiaxes[2] * semiaxes[0]
+  s01 = semiaxes[0] * semiaxes[1]
+
+  proj_denom = _pow4(s12) * _pow2(l_lin[0]) + _pow4(s20) * _pow2(l_lin[1]) + _pow4(s01) * _pow2(l_lin[2])
+  proj_num = _pow2(s12 * l_lin[0]) + _pow2(s20 * l_lin[1]) + _pow2(s01 * l_lin[2])
+
+  A_proj = 0.0
+  cos_alpha = 0.0
+  if proj_num > MJ_MINVAL and proj_denom > MJ_MINVAL:
+    A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
+    if lin_speed > MJ_MINVAL:
+      cos_alpha = proj_num / wp.max(MJ_MINVAL, lin_speed * proj_denom)
+
+  norm = wp.vec3(
+    _pow2(s12) * l_lin[0],
+    _pow2(s20) * l_lin[1],
+    _pow2(s01) * l_lin[2],
+  )
+
+  kutta_force = wp.vec3(0.0)
+  if density > 0.0 and kutta_coef != 0.0 and lin_speed > MJ_MINVAL:
+    kutta_circ = wp.cross(norm, l_lin) * (kutta_coef * density * cos_alpha * A_proj)
+    kutta_force = wp.cross(kutta_circ, l_lin)
+
+  eq_sphere_D = (2.0 / 3.0) * (semiaxes[0] + semiaxes[1] + semiaxes[2])
+  lin_visc_force_coef = 3.0 * wp.pi * eq_sphere_D
+  lin_visc_torq_coef = wp.pi * eq_sphere_D * eq_sphere_D * eq_sphere_D
+
+  I_max = (8.0 / 15.0) * wp.pi * d_mid * _pow4(d_max)
+  II0 = _ellipsoid_max_moment(semiaxes, 0)
+  II1 = _ellipsoid_max_moment(semiaxes, 1)
+  II2 = _ellipsoid_max_moment(semiaxes, 2)
+
+  mom_visc = wp.vec3(
+    l_ang[0] * (ang_drag_coef * II0 + slender_drag_coef * (I_max - II0)),
+    l_ang[1] * (ang_drag_coef * II1 + slender_drag_coef * (I_max - II1)),
+    l_ang[2] * (ang_drag_coef * II2 + slender_drag_coef * (I_max - II2)),
+  )
+
+  drag_lin_coef = viscosity * lin_visc_force_coef + density * lin_speed * (
+    A_proj * blunt_drag_coef + slender_drag_coef * (A_max - A_proj)
+  )
+  drag_ang_coef = viscosity * lin_visc_torq_coef + density * wp.length(mom_visc)
+
+  lfrc_torque -= drag_ang_coef * l_ang
+  lfrc_force += magnus_force + kutta_force - drag_lin_coef * l_lin
+
+  lfrc_torque *= coef
+  lfrc_force *= coef
+
+  torque = rot @ lfrc_torque
+  force = rot @ lfrc_force
+
+  wp.atomic_add(fluid_applied_out[worldid], bodyid, wp.spatial_vector(force, torque))
+
+
 def _fluid(m: Model, d: Data):
   wp.launch(
     _box_fluid,
@@ -328,6 +536,7 @@ def _fluid(m: Model, d: Data):
       m.opt.density,
       m.opt.viscosity,
       m.body_rootid,
+      m.body_has_fluid_ellipsoid,
       m.body_mass,
       m.body_inertia,
       d.xipos,
@@ -340,7 +549,29 @@ def _fluid(m: Model, d: Data):
     ],
   )
 
-  # TODO(team): ellipsoid fluid model
+  if m.ngeom > 0:
+    wp.launch(
+      _ellipsoid_fluid,
+      dim=(d.nworld, m.ngeom),
+      inputs=[
+        m.opt.wind,
+        m.opt.density,
+        m.opt.viscosity,
+        m.body_rootid,
+        m.geom_bodyid,
+        m.geom_type,
+        m.geom_size,
+        m.geom_fluid,
+        d.xipos,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.subtree_com,
+        d.cvel,
+      ],
+      outputs=[
+        d.fluid_applied,
+      ],
+    )
 
   support.apply_ft(m, d, d.fluid_applied, d.qfrc_fluid, False)
 
