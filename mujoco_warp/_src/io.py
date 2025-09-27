@@ -476,6 +476,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     mesh = wp.Mesh(
       points=wp.array(points, dtype=wp.vec3),
       indices=wp.array(indices, dtype=wp.int32),
+      bvh_constructor="sah"
     )
     mesh_bvhs.append(mesh)
     mesh_bvh_ids[i] = mesh.id

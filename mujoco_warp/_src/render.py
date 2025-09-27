@@ -27,6 +27,32 @@ BACKGROUND_COLOR = (
   int(0.1 * 255.0)
 )
 
+TILE_W: int = 32
+TILE_H: int = 8
+THREADS_PER_TILE: int = TILE_W * TILE_H
+
+@wp.func
+def ceil_div(a: int, b: int):
+  return (a + b - 1) // b
+
+# Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
+@wp.func
+def tile_coords(tid: int, W: int, H: int):
+  tile_id = tid // THREADS_PER_TILE
+  local = tid - tile_id * THREADS_PER_TILE
+
+  u = local % TILE_W
+  v = local // TILE_W
+
+  tiles_x = ceil_div(W, TILE_W)
+  tile_x = (tile_id % tiles_x) * TILE_W
+  tile_y = (tile_id // tiles_x) * TILE_H
+
+  i = tile_x + u
+  j = tile_y + v
+  return i, j
+
+
 @event_scope
 def render(m: Model, d: Data):
   bvh.refit_warp_bvh(m, d)
@@ -552,8 +578,11 @@ def render_raytrace_megakernel(m: Model, d: Data):
     if group_idx >= num_view_groups:
       return
 
-    px = pixel_idx % img_width
-    py = pixel_idx // img_width
+    px, py = tile_coords(pixel_idx, img_width, img_height)
+    if px >= img_width or py >= img_height:
+      return
+    mapped_idx = py * img_width + px
+    
     base_view = group_idx * MAX_NUM_VIEWS_PER_THREAD
 
     for i in range(MAX_NUM_VIEWS_PER_THREAD):
@@ -670,14 +699,14 @@ def render_raytrace_megakernel(m: Model, d: Data):
       hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 
       if render_rgb:
-        out_pixels[world_idx, cam_idx, pixel_idx] = pack_rgba_to_uint32(
+        out_pixels[world_idx, cam_idx, mapped_idx] = pack_rgba_to_uint32(
           hit_color[0] * 255.0,
           hit_color[1] * 255.0,
           hit_color[2] * 255.0,
           1.0,
         )
       if render_depth:
-        out_depth[world_idx, cam_idx, pixel_idx] = dist
+        out_depth[world_idx, cam_idx, mapped_idx] = dist
 
   wp.launch(
     kernel=_raytrace_megakernel,
@@ -742,6 +771,7 @@ def render_raytrace_megakernel(m: Model, d: Data):
       d.pixels,
       d.depth,
     ],
+    block_dim=THREADS_PER_TILE,
   )
 
 
