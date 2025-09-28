@@ -1391,7 +1391,6 @@ class Model:
   render_opt: RenderOptions
   bvh_ngeom: int
   enabled_geom_ids: wp.array(dtype=int)
-  mesh_bvhs: list
   mesh_bvh_ids: wp.array(dtype=wp.uint64)
   mesh_bounds_size: wp.array(dtype=wp.vec3)
   mesh_texcoord: wp.array(dtype=wp.vec2)
@@ -1774,8 +1773,7 @@ class Data:
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
   
   # render
-  bvh_id: wp.uint64
-  bvh: wp.Bvh
+  bvh_id: int
   lowers: wp.array(dtype=wp.vec3)
   uppers: wp.array(dtype=wp.vec3)
   groups: wp.array(dtype=wp.int32)

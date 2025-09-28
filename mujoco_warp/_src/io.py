@@ -29,6 +29,8 @@ MAX_WORLDS = 2**24
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
+REGISTRY = {}
+
 
 def _max_meshdegree(mjm: mujoco.MjModel) -> int:
   if mjm.mesh_polyvertnum.size == 0:
@@ -458,7 +460,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
   mesh_bvh_ids = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [np.array([0.0, 0.0, 0.0], dtype=np.float32) for _ in range(nmesh)]
-  mesh_bvhs = []
 
   for i in range(nmesh):
     if i not in used_mesh_ids:
@@ -478,7 +479,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       indices=wp.array(indices, dtype=wp.int32),
       bvh_constructor="sah"
     )
-    mesh_bvhs.append(mesh)
+    REGISTRY[mesh.id] = mesh
     mesh_bvh_ids[i] = mesh.id
 
     pmin = points.min(axis=0)
@@ -940,7 +941,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ),
     bvh_ngeom=len(geom_enabled_idx),
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
-    mesh_bvhs=mesh_bvhs,
     mesh_bvh_ids=wp.array(mesh_bvh_ids, dtype=wp.uint64),
     mesh_bounds_size=wp.array(mesh_bounds_size, dtype=wp.vec3),
     mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
@@ -1225,7 +1225,7 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: int = -1, njmax: in
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
     # render
-    bvh_id=wp.uint64(0),
+    bvh_id=0,
     lowers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
     uppers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
     groups=wp.zeros((nworld * bvh_ngeom,), dtype=wp.int32),
@@ -1241,8 +1241,8 @@ def put_data(
   nworld: Optional[int] = None,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
-  bvh_ngeom: Optional[int] = None,
-  pixels: Optional[int] = None,
+  bvh_ngeom: Optional[int] = 1,
+  pixels: Optional[int] = 1,
 ) -> types.Data:
   """
   Moves data from host to a device.
@@ -1609,8 +1609,7 @@ def put_data(
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
     # render
-    bvh_id=wp.uint64(0),
-    bvh=None,
+    bvh_id=0,
     lowers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
     uppers=wp.zeros((nworld * bvh_ngeom,), dtype=wp.vec3),
     groups=wp.zeros((nworld * bvh_ngeom,), dtype=wp.int32),
