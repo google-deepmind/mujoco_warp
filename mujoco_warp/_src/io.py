@@ -26,6 +26,8 @@ from . import warp_util
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
+REGISTRY = {}
+
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """
@@ -493,7 +495,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
   mesh_bvh_ids = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [np.array([0.0, 0.0, 0.0], dtype=np.float32) for _ in range(nmesh)]
-  mesh_bvhs = []
 
   for i in range(nmesh):
     if i not in used_mesh_ids:
@@ -513,7 +514,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       indices=wp.array(indices, dtype=wp.int32),
       bvh_constructor="sah"
     )
-    mesh_bvhs.append(mesh)
+    REGISTRY[mesh.id] = mesh
     mesh_bvh_ids[i] = mesh.id
 
     pmin = points.min(axis=0)

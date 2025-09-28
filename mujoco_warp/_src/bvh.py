@@ -5,7 +5,7 @@ import warp as wp
 from .types import GeomType
 from .types import Model
 from .types import Data
-
+from .io import REGISTRY
 
 @wp.func
 def compute_box_bounds(
@@ -185,11 +185,10 @@ def build_warp_bvh(m: Model, d: Data):
     d.lowers,
     d.uppers,
     groups=d.groups,
-    num_groups=d.nworld,
   )
 
   # Store BVH handles for later queries
-  d.bvh = bvh
+  REGISTRY[bvh.id] = bvh
   d.bvh_id = bvh.id
 
   wp.launch(
@@ -219,4 +218,4 @@ def refit_warp_bvh(m: Model, d: Data):
     ],
   )
 
-  d.bvh.refit()
+  REGISTRY[d.bvh_id].refit()
