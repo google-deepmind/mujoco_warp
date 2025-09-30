@@ -72,6 +72,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   geom_plugin_index = np.full_like(mjm.geom_type, -1)
 
   if mjm.nplugin > 0:
+    if (mjm.body_plugin != -1).any():
+      raise NotImplementedError("Body plugins not supported.")
+    if (mjm.actuator_plugin != -1).any():
+      raise NotImplementedError("Actuator plugins not supported.")
+    if (mjm.sensor_plugin != -1).any():
+      raise NotImplementedError("Sensor plugins not supported.")
     for i in range(len(mjm.geom_plugin)):
       if mjm.geom_plugin[i] != -1:
         p = mjm.geom_plugin[i]

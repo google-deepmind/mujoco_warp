@@ -243,6 +243,48 @@ class IOTest(parameterized.TestCase):
         """
       )
 
+  def test_plugin(self):
+    with self.assertRaises(NotImplementedError):
+      test_data.fixture(
+        xml="""
+      <mujoco>
+        <extension>
+          <plugin plugin="mujoco.pid"/>
+          <plugin plugin="mujoco.sensor.touch_grid"/>
+          <plugin plugin="mujoco.elasticity.cable"/>
+        </extension>
+        <worldbody>
+          <geom type="plane" size="10 10 .001"/>
+          <body>
+            <joint name="joint" type="slide"/>
+            <geom type="sphere" size=".1"/>
+            <site name="site"/>
+          </body>
+          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
+            <plugin plugin="mujoco.elasticity.cable">
+              <config key="twist" value="1e7"/>
+              <config key="bend" value="4e6"/>
+              <config key="vmax" value="0.05"/>
+            </plugin>
+            <joint kind="main" damping=".015"/>
+            <geom type="capsule" size=".005" rgba=".8 .2 .1 .1" condim="1"/>
+          </composite>
+        </worldbody>
+        <actuator>
+          <plugin plugin="mujoco.pid" joint="joint"/>
+        </actuator>
+        <sensor>
+          <plugin plugin="mujoco.sensor.touch_grid" objtype="site" objname="site">
+            <config key="size" value="7 7"/>
+            <config key="fov" value="45 45"/>
+            <config key="gamma" value="0"/>
+            <config key="nchannel" value="3"/>
+          </plugin>
+        </sensor>
+      </mujoco>
+      """
+      )
+
 
 if __name__ == "__main__":
   wp.init()
