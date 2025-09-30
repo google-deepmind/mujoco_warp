@@ -2321,7 +2321,7 @@ def ccd(
     return FLOAT_MAX, 0, witness1, witness2
 
   # multiccd is always on for box-box collisions
-  if geomtype1 == GeomType.BOX and geom2 == GeomType.BOX:
+  if geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX:
     multiccd = True
 
   if (
