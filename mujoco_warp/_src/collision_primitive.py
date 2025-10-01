@@ -1446,6 +1446,7 @@ def _check_primitive_collisions():
 
 assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order"
 
+
 @cache_kernel
 def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_func):
   @nested_kernel(module="unique", enable_backward=False)
