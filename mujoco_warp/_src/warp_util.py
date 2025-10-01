@@ -157,6 +157,7 @@ def kernel(
         tid = wp.tid()
         b[tid] = a[tid] + 1.0
 
+
       @kernel(enable_backward=False, module=None)
       def my_kernel_with_args(a: wp.array(dtype=float), b: wp.array(dtype=float)):
         # can now use arguments even when module=None
@@ -174,6 +175,7 @@ def kernel(
   Returns:
       The registered kernel.
   """
+
   def decorator(func):
     if module is None:
       # create a module name based on the name of the nested function
@@ -184,9 +186,9 @@ def kernel(
       module_name = get_module(".".join([func.__module__] + outer_functions))
     else:
       module_name = module
-    
+
     return wp.kernel(func, enable_backward=enable_backward, module=module_name)
-  
+
   # Handle both @kernel and @kernel(...) usage patterns
   if f is None:
     # Called with arguments: @kernel(enable_backward=False)

@@ -1449,7 +1449,6 @@ assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order
 
 @cache_kernel
 def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_func):
-
   # AD: no unique here:
   # * we expect this generator to be called only once per model, so no repeated compilation
   # * module="unique" is generating problems because it uses the function name as the key
