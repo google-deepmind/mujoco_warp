@@ -186,7 +186,13 @@ def cache_kernel(func):
   # caching kernels to avoid crashes in graph_conditional code
   @functools.wraps(func)
   def wrapper(*args):
-    key = tuple(a.size if hasattr(a, "size") else hash(a) for a in args) + (hash(func.__name__),)
+    def _hash_arg(a):
+        if hasattr(a, "size"):
+            return a.size
+        if isinstance(a, list):
+            return hash(tuple(a))
+        return hash(a)
+    key = tuple(_hash_arg(a) for a in args) + (hash(func.__name__),)
     if key not in _KERNEL_CACHE:
       _KERNEL_CACHE[key] = func(*args)
     return _KERNEL_CACHE[key]
