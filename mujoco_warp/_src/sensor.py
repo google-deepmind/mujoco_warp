@@ -2421,7 +2421,7 @@ def _contact_match(
   # contact direction
   sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
-
+#@cache_kernel
 def _contact_sort(maxmatch: int):
   @nested_kernel(module="unique", enable_backward=False)
   def contact_sort(
