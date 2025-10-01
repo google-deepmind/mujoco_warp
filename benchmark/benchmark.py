@@ -22,7 +22,7 @@ class AlohaPot(benchmark.BenchmarkSuite):
   path = "aloha_pot/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 200_000
+  nconmax = 24
   njmax = 128
   replay = "lift_pot"
 
@@ -33,7 +33,7 @@ class AlohaSdf(benchmark.BenchmarkSuite):
   path = "aloha_sdf/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 275_000
+  nconmax = 32
   njmax = 226
 
 
@@ -43,7 +43,7 @@ class ApptronikApolloFlat(benchmark.BenchmarkSuite):
   path = "apptronik_apollo/scene_flat.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 100_000
+  nconmax = 16
   njmax = 64
 
 
@@ -53,7 +53,7 @@ class ApptronikApolloHfield(benchmark.BenchmarkSuite):
   path = "apptronik_apollo/scene_hfield.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 300_000
+  nconmax = 32
   njmax = 128
 
 
@@ -63,7 +63,7 @@ class ApptronikApolloTerrain(benchmark.BenchmarkSuite):
   path = "apptronik_apollo/scene_terrain.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 400_000
+  nconmax = 48
   njmax = 96
 
 
@@ -73,7 +73,7 @@ class Cloth(benchmark.BenchmarkSuite):
   path = "cloth/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 2048
-  nconmax = 165_000
+  nconmax = 84
   njmax = 140
 
 
@@ -83,7 +83,7 @@ class FrankaEmikaPanda(benchmark.BenchmarkSuite):
   path = "franka_emika_panda/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.implicit",)
   batch_size = 32768
-  nconmax = 10_000
+  nconmax = 1
   njmax = 5
 
 
@@ -93,7 +93,7 @@ class Humanoid(benchmark.BenchmarkSuite):
   path = "humanoid/humanoid.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 8192
-  nconmax = 200_000
+  nconmax = 24
   njmax = 64
 
 
@@ -106,7 +106,7 @@ class ThreeHumanoids(benchmark.BenchmarkSuite):
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   # TODO: use batch_size=8192 once performance is fixed
   batch_size = 1024
-  nconmax = 100_000
+  nconmax = 100
   njmax = 192
 
 

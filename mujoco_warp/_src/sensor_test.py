@@ -543,7 +543,7 @@ class SensorTest(parameterized.TestCase):
     d.sensordata.fill_(wp.inf)
     mjw.forward(m, d)
 
-    _assert_eq(d.ncon.numpy()[0], 2, "ncon")
+    _assert_eq(d.nacon.numpy()[0], 2, "nacon")
     _assert_eq(d.sensordata.numpy()[0], 0, "found")
 
   @parameterized.product(site_geom=["sphere", "capsule", "ellipsoid", "cylinder", "box"], key_pos=["0 0 10", "0 0 .09"])
