@@ -264,7 +264,7 @@ def cast_ray(
   face_idx = wp.int32(-1)
   geom_mesh_id = wp.int32(-1)
 
-  query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root, dist)
+  query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
   bounds_nr = wp.int32(0)
 
   while wp.bvh_query_next(query, bounds_nr, dist):
@@ -343,7 +343,7 @@ def cast_ray_first_hit(
   max_dist: wp.float32,
 ) -> bool:
   """ A simpler version of cast_ray_first_hit that only checks for the first hit."""
-  query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root, max_dist)
+  query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
   bounds_nr = wp.int32(0)
 
   while wp.bvh_query_next(query, bounds_nr, max_dist):
