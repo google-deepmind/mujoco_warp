@@ -536,6 +536,16 @@
       </body>
     </body>
   </worldbody>
+  <tendon>
+    <fixed name="left\fixed">
+      <joint joint="left\left_finger" coef=".5"/>
+      <joint joint="left\right_finger" coef=".5"/>
+    </fixed>
+    <fixed name="right\fixed">
+      <joint joint="right\left_finger" coef=".5"/>
+      <joint joint="right\right_finger" coef=".5"/>
+    </fixed>
+  </tendon>
   <contact>
     <exclude name="//unnamed_contact_0" body1="left\base_link" body2="left\shoulder_link"/>
     <exclude name="//unnamed_contact_1" body1="right\base_link" body2="right\shoulder_link"/>
@@ -551,14 +561,14 @@
     <position name="left\forearm_roll" class="forearm_roll" joint="left\forearm_roll"/>
     <position name="left\wrist_angle" class="wrist_angle" joint="left\wrist_angle"/>
     <position name="left\wrist_rotate" class="wrist_rotate" joint="left\wrist_rotate"/>
-    <position name="left\gripper" class="finger" joint="left\left_finger"/>
+    <position name="left\gripper" class="finger" tendon="left\fixed"/>
     <position name="right\waist" class="waist" joint="right\waist"/>
     <position name="right\shoulder" class="shoulder" joint="right\shoulder"/>
     <position name="right\elbow" class="elbow" joint="right\elbow"/>
     <position name="right\forearm_roll" class="forearm_roll" joint="right\forearm_roll"/>
     <position name="right\wrist_angle" class="wrist_angle" joint="right\wrist_angle"/>
     <position name="right\wrist_rotate" class="wrist_rotate" joint="right\wrist_rotate"/>
-    <position name="right\gripper" class="finger" joint="right\left_finger"/>
+    <position name="right\gripper" class="finger" tendon="right\fixed"/>
   </actuator>
   <keyframe>
     <key
