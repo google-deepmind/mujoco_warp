@@ -906,6 +906,7 @@ def linesearch_jaref(
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
+
   support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
 
   # jv = efc_J @ search
@@ -1371,6 +1372,12 @@ def state_check(D: float, state: int) -> float:
   else:
     return 0.0
 
+@wp.func
+def check_active(tid: int, nefc: int) -> float:
+  if tid >= nefc:
+    return 0.0
+  else:
+    return 1.0
 
 @cache_kernel
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
@@ -1387,7 +1394,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
     # Data out:
     efc_h_out: wp.array3d(dtype=float),
   ):
-    worldid, elementid, tid = wp.tid()
+    worldid, elementid = wp.tid()
 
     if efc_done_in[worldid]:
       return
@@ -1423,19 +1430,12 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
       D_k = wp.tile_map(state_check, D_k, state)
 
-      # This is a bit of a dirty trick to allow for nefc not being a multiple of TILE_SIZE
-      # we set the value to 0 for all threads of the block, then set to 1 for all the threads
-      # that are < nefc. Using a tile_view to get a properly sized tile.
+      # force unused elements to be zero
+      tid_tile = wp.tile_arange(TILE_SIZE, dtype=int)
+      threshold_tile = wp.tile_ones(shape=TILE_SIZE, dtype=int) * (nefc - k)
 
-      # Force unused elements to be zero.
-      active = 1.0
-      if tid >= nefc - k:
-        active = 0.0
-
-      active_tile = wp.tile(active)
-      active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE,))
-
-      D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
+      active_tile = wp.tile_map(check_active, tid_tile, threshold_tile)
+      D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
       J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
 
@@ -1467,7 +1467,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
     # Data out:
     efc_h_out: wp.array3d(dtype=float),
   ):
-    worldid, tid = wp.tid()
+    worldid = wp.tid()
 
     if efc_done_in[worldid]:
       return
@@ -1487,20 +1487,18 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
       J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
 
+      # state check
       D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
       state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
 
       D_k = wp.tile_map(state_check, D_k, state)
 
-      # Force unused elements to be zero.
-      active = 1.0
-      if tid >= nefc - k:
-        active = 0.0
+      # force unused elements to be zero
+      tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
+      threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
 
-      active_tile = wp.tile(active)
-      active_tile_small = wp.tile_view(active_tile, offset=(0,), shape=(TILE_SIZE_K,))
-
-      D_k = wp.tile_map(wp.mul, active_tile_small, D_k)
+      active_tile = wp.tile_map(check_active, tid_tile, threshold_tile)
+      D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
       J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv, TILE_SIZE_K)))
 
@@ -1722,14 +1720,12 @@ def _update_gradient(m: types.Model, d: types.Data):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      # check that the wp.tile trick in the kernel works
-      assert d.tile_sizes.jtdaj_sparse < m.block_dim.update_gradient_JTDAJ_sparse
 
       num_blocks_ceil = ceil(m.nv / d.tile_sizes.jtdaj_sparse)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
-      wp.launch(
+      wp.launch_tiled(
         update_gradient_JTDAJ_sparse_tiled(d.tile_sizes.jtdaj_sparse, d.njmax),
-        dim=(d.nworld, lower_triangle_dim, m.block_dim.update_gradient_JTDAJ_sparse),
+        dim=(d.nworld, lower_triangle_dim),
         inputs=[
           d.nefc,
           d.efc.J,
@@ -1748,12 +1744,9 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
     else:
-      # check that the wp.tile trick in the kernel works
-      assert d.tile_sizes.jtdaj_dense < m.block_dim.update_gradient_JTDAJ_dense
-
-      wp.launch(
+      wp.launch_tiled(
         update_gradient_JTDAJ_dense_tiled(m.nv, d.tile_sizes.jtdaj_dense, d.njmax),
-        dim=(d.nworld, m.block_dim.update_gradient_JTDAJ_dense),
+        dim=(d.nworld),
         inputs=[
           d.nefc,
           d.qM,
