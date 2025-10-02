@@ -1372,12 +1372,14 @@ def state_check(D: float, state: int) -> float:
   else:
     return 0.0
 
+
 @wp.func
 def check_active(tid: int, nefc: int) -> float:
   if tid >= nefc:
     return 0.0
   else:
     return 1.0
+
 
 @cache_kernel
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
@@ -1720,7 +1722,6 @@ def _update_gradient(m: types.Model, d: types.Data):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-
       num_blocks_ceil = ceil(m.nv / d.tile_sizes.jtdaj_sparse)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch_tiled(
