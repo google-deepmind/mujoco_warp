@@ -60,7 +60,7 @@ class BlockDim:
   # solver
   update_gradient_cholesky: int = 64
   update_gradient_JTDAJ_sparse: int = 64
-  update_gradient_JTDAJ_dense: int = 128
+  update_gradient_JTDAJ_dense: int = 96
   # support
   mul_m_dense: int = 32
 
