@@ -24,10 +24,9 @@ import mujoco_warp as mjw
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
-
-
-from mujoco_warp._src.collision_primitive import Geom, plane_convex
 
 from . import types
 
