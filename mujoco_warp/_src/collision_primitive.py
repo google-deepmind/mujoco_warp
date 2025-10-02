@@ -170,25 +170,21 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
 
   # exhaustive search over all vertices
   if convex.graphadr == -1 or convex.vertnum < 10:
-    # find support points
-    max_support = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + i], n)
-      max_support = wp.max(support, max_support)
-
-    threshold = wp.max(0.0, max_support - 1e-3)
-
     # find first support point (a)
-    a_dist = wp.float32(-_HUGE_VAL)
+    max_support = wp.float32(-_HUGE_VAL)
     a = wp.vec3()
     for i in range(convex.vertnum):
       vert = convex.vert[convex.vertadr + i]
       support = wp.dot(plane_pos_local - vert, n)
-      dist = wp.where(support > threshold, support, -_HUGE_VAL)
-      if dist > a_dist:
+      if support > max_support:
+        max_support = support
         indices[0] = i
-        a_dist = dist
         a = vert
+
+    if max_support < 0:
+      return contact_dist, contact_pos, plane_normal
+
+    threshold = max_support - 1e-3
 
     # find point (b) furthest from a
     b_dist = wp.float32(-_HUGE_VAL)
