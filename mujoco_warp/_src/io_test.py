@@ -102,12 +102,12 @@ class IOTest(parameterized.TestCase):
     """
     )
 
-    model = mjwarp.put_model(mjm)
+    m = mjwarp.put_model(mjm)
 
-    np.testing.assert_allclose(model.geom_fluid.numpy(), mjm.geom_fluid)
-    self.assertTrue(model.opt.has_fluid)
+    np.testing.assert_allclose(m.geom_fluid.numpy(), mjm.geom_fluid)
+    self.assertTrue(m.opt.has_fluid)
 
-    body_has = model.body_has_fluid_ellipsoid.numpy()
+    body_has = m.body_fluid_ellipsoid.numpy()
     self.assertTrue(body_has[mjm.geom_bodyid[0]])
     self.assertFalse(body_has[0])
 

@@ -22,7 +22,6 @@ import warp as wp
 from . import math
 from . import types
 from . import warp_util
-from .types import MJ_NFLUID
 
 # max number of worlds supported
 MAX_WORLDS = 2**24
@@ -455,15 +454,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
 
   if mjm.geom_fluid.size:
-    geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, MJ_NFLUID)
+    geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)
   else:
-    geom_fluid_params = np.zeros((mjm.ngeom, MJ_NFLUID))
+    geom_fluid_params = np.zeros((mjm.ngeom, mujoco.mjNFLUID))
 
-  body_has_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
+  body_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
   if mjm.ngeom:
     active_geom = geom_fluid_params[:, 0] > 0
     if np.any(active_geom):
-      body_has_fluid_ellipsoid[mjm.geom_bodyid[active_geom]] = True
+      body_fluid_ellipsoid[mjm.geom_bodyid[active_geom]] = True
 
   m = types.Model(
     nq=mjm.nq,
@@ -575,7 +574,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     body_contype=wp.array(mjm.body_contype, dtype=int),
     body_conaffinity=wp.array(mjm.body_conaffinity, dtype=int),
     body_gravcomp=create_nmodel_batched_array(mjm.body_gravcomp, dtype=float),
-    body_has_fluid_ellipsoid=wp.array(body_has_fluid_ellipsoid, dtype=bool),
+    body_fluid_ellipsoid=wp.array(body_fluid_ellipsoid, dtype=bool),
     jnt_type=wp.array(mjm.jnt_type, dtype=int),
     jnt_qposadr=wp.array(mjm.jnt_qposadr, dtype=int),
     jnt_dofadr=wp.array(mjm.jnt_dofadr, dtype=int),

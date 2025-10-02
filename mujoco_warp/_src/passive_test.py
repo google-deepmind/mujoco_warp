@@ -96,27 +96,24 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
     _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
 
-  def test_ellipsoid_fluid_matches_mujoco_over_time(self):
-    xml = """
-    <mujoco>
-      <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05"/>
-      <worldbody>
-        <body>
-          <geom type="sphere" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
-          <freejoint/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-
-    mjm = mujoco.MjModel.from_xml_string(xml)
-    mjd = mujoco.MjData(mjm)
-
-    mjd.qvel[:] = np.array([0.7, -0.3, 0.4, -0.6, 0.8, -0.2])
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjw.put_model(mjm)
-    d = mjw.put_data(mjm, mjd)
+  def test_ellipsoid_fluid(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <geom type="sphere" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <freejoint/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.7 -0.3 0.4 -0.6 0.8 -0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
 
     max_err = 0.0
     for _ in range(25):
