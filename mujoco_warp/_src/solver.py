@@ -1374,8 +1374,8 @@ def state_check(D: float, state: int) -> float:
 
 
 @wp.func
-def check_active(tid: int, nefc: int) -> float:
-  if tid >= nefc:
+def check_active(tid: int, threshold: int) -> float:
+  if tid >= threshold:
     return 0.0
   else:
     return 1.0
