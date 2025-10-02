@@ -1442,12 +1442,17 @@ def _check_primitive_collisions():
 
 assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order"
 
-_primitive_collisions_types = []
-_primitive_collisions_func = []
 
+@cache_kernel
+def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_func):
+  # AD: no unique here:
+  # * we expect this generator to be called only once per model, so no repeated compilation
+  # * module="unique" is generating problems because it uses the function name as the key
+  #   that in turn will cause multiple kernels to be generated with the same name
+  #   this is mostly problematic in cases like the UTs where we don't clear the kernel cache
+  #   between different tests.
 
-def _create_narrowphase_kernel():
-  @nested_kernel(module="unique", enable_backward=False)
+  @nested_kernel(enable_backward=False)
   def _primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -1591,12 +1596,12 @@ def _create_narrowphase_kernel():
       geom_xmat_in[worldid, g2],
     )
 
-    for i in range(wp.static(len(_primitive_collisions_func))):
-      collision_type1 = wp.static(_primitive_collisions_types[i][0])
-      collision_type2 = wp.static(_primitive_collisions_types[i][1])
+    for i in range(wp.static(len(primitive_collisions_func))):
+      collision_type1 = wp.static(primitive_collisions_types[i][0])
+      collision_type2 = wp.static(primitive_collisions_types[i][1])
 
       if collision_type1 == type1 and collision_type2 == type2:
-        wp.static(_primitive_collisions_func[i])(
+        wp.static(primitive_collisions_func[i])(
           nconmax_in,
           geom1,
           geom2,
@@ -1627,13 +1632,16 @@ def _create_narrowphase_kernel():
 
 
 def _primitive_narrowphase_builder(m: Model):
+  _primitive_collisions_types = []
+  _primitive_collisions_func = []
+
   for types, func in _PRIMITIVE_COLLISIONS.items():
     idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
 
-  return _create_narrowphase_kernel()
+  return _create_narrowphase_kernel(_primitive_collisions_types, _primitive_collisions_func)
 
 
 @event_scope

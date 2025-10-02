@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 from etils import epath
 from jax import numpy as jp
+from warp.jax_experimental.ffi import GraphMode
 from warp.jax_experimental.ffi import jax_callable
 
 import mujoco_warp as mjwarp
@@ -23,7 +24,7 @@ UNROLL_LENGTH = 1000
 
 wp.clear_kernel_cache()
 
-path = epath.resource_path("mujoco_warp") / "test_data" / "humanoid/humanoid.xml"
+path = epath.resource_path("mujoco_warp") / "../benchmark" / "humanoid/humanoid.xml"
 mjm = mujoco.MjModel.from_xml_path(path.as_posix())
 mjm.opt.iterations = 1
 mjm.opt.ls_iterations = 4
@@ -33,7 +34,7 @@ mjd.qvel = np.random.uniform(-0.01, 0.01, mjm.nv)
 mujoco.mj_step(mjm, mjd, 3)  # let dynamics get state significantly non-zero
 mujoco.mj_forward(mjm, mjd)
 m = mjwarp.put_model(mjm)
-d = mjwarp.put_data(mjm, mjd, nworld=NWORLDS, nconmax=131012, njmax=131012 * 4)
+d = mjwarp.put_data(mjm, mjd, nworld=NWORLDS, nconmax=64 * NWORLDS, njmax=128)
 
 
 def warp_step(
@@ -52,10 +53,11 @@ def warp_step(
 warp_step_fn = jax_callable(
   warp_step,
   num_outputs=2,
+  graph_mode=GraphMode.WARP,
   output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
 )
 
-jax_qpos = jp.tile(jp.array(m.qpos0), (8192, 1))
+jax_qpos = jp.tile(jp.array(mjm.qpos0), (8192, 1))
 jax_qvel = jp.zeros((8192, m.nv))
 
 

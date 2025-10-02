@@ -226,6 +226,36 @@ class IOTest(parameterized.TestCase):
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
+  @parameterized.parameters(
+    ('<distance geom1="plane" geom2="sphere"/>', NotImplementedError),
+    ('<distance geom1="sphere" geom2="plane"/>', NotImplementedError),
+    ('<distance geom1="hfield" geom2="sphere"/>', ValueError),
+    ('<distance geom1="sphere" geom2="hfield"/>', ValueError),
+  )
+  def test_collision_sensors(self, sensor, err):
+    """Tests for collision sensors that are not implemented."""
+    with self.assertRaises(err):
+      test_data.fixture(
+        xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="2" ncol="2" size="1 1 1 1"/>
+        </asset>
+        <worldbody>
+          <geom name="plane" type="plane" size="10 10 .01"/>
+          <geom name="hfield" type="hfield" hfield="hfield"/>
+          <body>
+            <geom name="sphere" type="sphere" size=".1"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          {sensor}
+        </sensor>
+      </mujoco>
+      """
+      )
+
   def test_implicit_integrator_fluid_model(self):
     """Tests for implicit integrator with fluid model."""
     with self.assertRaises(NotImplementedError):
@@ -241,6 +271,48 @@ class IOTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """
+      )
+
+  def test_plugin(self):
+    with self.assertRaises(NotImplementedError):
+      test_data.fixture(
+        xml="""
+      <mujoco>
+        <extension>
+          <plugin plugin="mujoco.pid"/>
+          <plugin plugin="mujoco.sensor.touch_grid"/>
+          <plugin plugin="mujoco.elasticity.cable"/>
+        </extension>
+        <worldbody>
+          <geom type="plane" size="10 10 .001"/>
+          <body>
+            <joint name="joint" type="slide"/>
+            <geom type="sphere" size=".1"/>
+            <site name="site"/>
+          </body>
+          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
+            <plugin plugin="mujoco.elasticity.cable">
+              <config key="twist" value="1e7"/>
+              <config key="bend" value="4e6"/>
+              <config key="vmax" value="0.05"/>
+            </plugin>
+            <joint kind="main" damping=".015"/>
+            <geom type="capsule" size=".005" rgba=".8 .2 .1 .1" condim="1"/>
+          </composite>
+        </worldbody>
+        <actuator>
+          <plugin plugin="mujoco.pid" joint="joint"/>
+        </actuator>
+        <sensor>
+          <plugin plugin="mujoco.sensor.touch_grid" objtype="site" objname="site">
+            <config key="size" value="7 7"/>
+            <config key="fov" value="45 45"/>
+            <config key="gamma" value="0"/>
+            <config key="nchannel" value="3"/>
+          </plugin>
+        </sensor>
+      </mujoco>
+      """
       )
 
 
