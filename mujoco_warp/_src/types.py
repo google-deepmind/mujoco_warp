@@ -396,6 +396,9 @@ class SensorType(enum.IntEnum):
     FRAMEZAXIS: frame z-axis
     FRAMEQUAT: frame orientation, represented as quaternion
     SUBTREECOM: subtree center of mass
+    GEOMDIST: signed distance between two geoms
+    GEOMNORMAL: normal direction between two geoms
+    GEOMFROMTO: segment between two geoms
     INSIDESITE: 1 if object is inside site, 0 otherwise
     E_POTENTIAL: potential energy
     E_KINETIC: kinetic energy
@@ -442,6 +445,9 @@ class SensorType(enum.IntEnum):
   FRAMEZAXIS = mujoco.mjtSensor.mjSENS_FRAMEZAXIS
   FRAMEQUAT = mujoco.mjtSensor.mjSENS_FRAMEQUAT
   SUBTREECOM = mujoco.mjtSensor.mjSENS_SUBTREECOM
+  GEOMDIST = mujoco.mjtSensor.mjSENS_GEOMDIST
+  GEOMNORMAL = mujoco.mjtSensor.mjSENS_GEOMNORMAL
+  GEOMFROMTO = mujoco.mjtSensor.mjSENS_GEOMFROMTO
   INSIDESITE = mujoco.mjtSensor.mjSENS_INSIDESITE
   E_POTENTIAL = mujoco.mjtSensor.mjSENS_E_POTENTIAL
   E_KINETIC = mujoco.mjtSensor.mjSENS_E_KINETIC
@@ -1018,6 +1024,7 @@ class Model:
     rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
                     (excluding limit force sensors)
+    collision_sensor_adr: map sensor id to collision id      (nsensor,)
     sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
     sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
     sensor_e_potential: evaluate energy_pos
@@ -1335,6 +1342,7 @@ class Model:
   sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_rangefinder_adr: wp.array(dtype=int)  # warp only
   rangefinder_sensor_adr: wp.array(dtype=int)  # warp only
+  collision_sensor_adr: wp.array(dtype=int)  # warp only
   sensor_touch_adr: wp.array(dtype=int)  # warp only
   sensor_limitfrc_adr: wp.array(dtype=int)  # warp only
   sensor_e_potential: bool  # warp only

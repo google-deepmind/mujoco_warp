@@ -170,25 +170,21 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
 
   # exhaustive search over all vertices
   if convex.graphadr == -1 or convex.vertnum < 10:
-    # find support points
-    max_support = wp.float32(-_HUGE_VAL)
-    for i in range(convex.vertnum):
-      support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + i], n)
-      max_support = wp.max(support, max_support)
-
-    threshold = wp.max(0.0, max_support - 1e-3)
-
     # find first support point (a)
-    a_dist = wp.float32(-_HUGE_VAL)
+    max_support = wp.float32(-_HUGE_VAL)
     a = wp.vec3()
     for i in range(convex.vertnum):
       vert = convex.vert[convex.vertadr + i]
       support = wp.dot(plane_pos_local - vert, n)
-      dist = wp.where(support > threshold, support, -_HUGE_VAL)
-      if dist > a_dist:
+      if support > max_support:
+        max_support = support
         indices[0] = i
-        a_dist = dist
         a = vert
+
+    if max_support < 0:
+      return contact_dist, contact_pos, plane_normal
+
+    threshold = max_support - 1e-3
 
     # find point (b) furthest from a
     b_dist = wp.float32(-_HUGE_VAL)
@@ -1446,12 +1442,17 @@ def _check_primitive_collisions():
 
 assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order"
 
-_primitive_collisions_types = []
-_primitive_collisions_func = []
 
+@cache_kernel
+def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_func):
+  # AD: no unique here:
+  # * we expect this generator to be called only once per model, so no repeated compilation
+  # * module="unique" is generating problems because it uses the function name as the key
+  #   that in turn will cause multiple kernels to be generated with the same name
+  #   this is mostly problematic in cases like the UTs where we don't clear the kernel cache
+  #   between different tests.
 
-def _create_narrowphase_kernel():
-  @nested_kernel(module="unique", enable_backward=False)
+  @nested_kernel(enable_backward=False)
   def _primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -1595,12 +1596,12 @@ def _create_narrowphase_kernel():
       geom_xmat_in[worldid, g2],
     )
 
-    for i in range(wp.static(len(_primitive_collisions_func))):
-      collision_type1 = wp.static(_primitive_collisions_types[i][0])
-      collision_type2 = wp.static(_primitive_collisions_types[i][1])
+    for i in range(wp.static(len(primitive_collisions_func))):
+      collision_type1 = wp.static(primitive_collisions_types[i][0])
+      collision_type2 = wp.static(primitive_collisions_types[i][1])
 
       if collision_type1 == type1 and collision_type2 == type2:
-        wp.static(_primitive_collisions_func[i])(
+        wp.static(primitive_collisions_func[i])(
           nconmax_in,
           geom1,
           geom2,
@@ -1631,13 +1632,16 @@ def _create_narrowphase_kernel():
 
 
 def _primitive_narrowphase_builder(m: Model):
+  _primitive_collisions_types = []
+  _primitive_collisions_func = []
+
   for types, func in _PRIMITIVE_COLLISIONS.items():
     idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
       _primitive_collisions_types.append(types)
       _primitive_collisions_func.append(func)
 
-  return _create_narrowphase_kernel()
+  return _create_narrowphase_kernel(_primitive_collisions_types, _primitive_collisions_func)
 
 
 @event_scope
