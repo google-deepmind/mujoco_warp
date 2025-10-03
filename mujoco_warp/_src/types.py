@@ -68,7 +68,7 @@ class BlockDim:
 @dataclasses.dataclass
 class TileSizes:
   jtdaj_sparse: int = 16
-  jtdaj_dense: int = 32
+  jtdaj_dense: int = 16
 
 
 class BroadphaseType(enum.IntEnum):
