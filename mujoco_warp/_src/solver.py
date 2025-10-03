@@ -1374,7 +1374,7 @@ def state_check(D: float, state: int) -> float:
 
 
 @wp.func
-def check_active(tid: int, threshold: int) -> float:
+def active_check(tid: int, threshold: int) -> float:
   if tid >= threshold:
     return 0.0
   else:
@@ -1436,7 +1436,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
       tid_tile = wp.tile_arange(TILE_SIZE, dtype=int)
       threshold_tile = wp.tile_ones(shape=TILE_SIZE, dtype=int) * (nefc - k)
 
-      active_tile = wp.tile_map(check_active, tid_tile, threshold_tile)
+      active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
       J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
@@ -1499,7 +1499,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
       tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
       threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
 
-      active_tile = wp.tile_map(check_active, tid_tile, threshold_tile)
+      active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
       J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv, TILE_SIZE_K)))
