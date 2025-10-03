@@ -906,6 +906,7 @@ def linesearch_jaref(
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
+
   support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
 
   # jv = efc_J @ search
@@ -1364,100 +1365,150 @@ def update_gradient_set_h_qM_lower_sparse(
   efc_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
 
 
-@wp.kernel
-def update_gradient_JTDAJ_sparse(
-  # Data in:
-  njmax_in: int,
-  nefc_in: wp.array(dtype=int),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_state_in: wp.array2d(dtype=int),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
-):
-  worldid, elementid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  nefc = nefc_in[worldid]
-
-  dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
-  dofj = elementid - (dofi * (dofi + 1)) // 2
-
-  # To optimize the loop, data for the next iteration is prefetched
-  # This allows to parallelize memory load and computation to hide memory latency
-  efc_state = efc_state_in[worldid, 0]
-  efc_D = efc_D_in[worldid, 0]
-  # TODO(team): sparse efc_J
-  efc_Ji = efc_J_in[worldid, 0, dofi]
-  efc_Jj = efc_J_in[worldid, 0, dofj]
-  sum_h = float(0.0)
-  for efcid in range(min(njmax_in, nefc) - 1):
-    if efc_state == types.ConstraintState.QUADRATIC and efc_D != 0.0:
-      sum_h += efc_Ji * efc_Jj * efc_D
-
-    jj = efcid + 1
-    efc_D = efc_D_in[worldid, jj]
-    efc_Ji = efc_J_in[worldid, jj, dofi]
-    efc_Jj = efc_J_in[worldid, jj, dofj]
-    efc_state = efc_state_in[worldid, jj]
-
-  # Adding the contribution from the last constraint row
-  if efc_state == types.ConstraintState.QUADRATIC and efc_D != 0.0:
-    sum_h += efc_Ji * efc_Jj * efc_D
-
-  efc_h_out[worldid, dofi, dofj] = sum_h
+@wp.func
+def state_check(D: float, state: int) -> float:
+  if state == int(types.ConstraintState.QUADRATIC.value):
+    return D
+  else:
+    return 0.0
 
 
-@wp.kernel
-def update_gradient_JTDAJ_dense(
-  # Data in:
-  njmax_in: int,
-  nefc_in: wp.array(dtype=int),
-  qM_in: wp.array3d(dtype=float),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_state_in: wp.array2d(dtype=int),
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
-):
-  worldid, elementid = wp.tid()
+@wp.func
+def active_check(tid: int, threshold: int) -> float:
+  if tid >= threshold:
+    return 0.0
+  else:
+    return 1.0
 
-  if efc_done_in[worldid]:
-    return
 
-  nefc = nefc_in[worldid]
+@cache_kernel
+def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
+  TILE_SIZE = tile_size
 
-  dofi = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
-  dofj = elementid - (dofi * (dofi + 1)) // 2
+  @nested_kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    efc_J_in: wp.array3d(dtype=float),
+    efc_D_in: wp.array2d(dtype=float),
+    efc_state_in: wp.array2d(dtype=int),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_h_out: wp.array3d(dtype=float),
+  ):
+    worldid, elementid = wp.tid()
 
-  # To optimize the loop, data for the next iteration is prefetched
-  # This allows to parallelize memory load and computation to hide memory latency
-  efc_state = efc_state_in[worldid, 0]
-  efc_D = efc_D_in[worldid, 0]
-  # TODO(team): sparse efc_J
-  efc_Ji = efc_J_in[worldid, 0, dofi]
-  efc_Jj = efc_J_in[worldid, 0, dofj]
-  sum_h = float(0.0)
-  for efcid in range(min(njmax_in, nefc) - 1):
-    if efc_state == types.ConstraintState.QUADRATIC and efc_D != 0.0:
-      sum_h += efc_Ji * efc_Jj * efc_D
+    if efc_done_in[worldid]:
+      return
 
-    jj = efcid + 1
-    efc_D = efc_D_in[worldid, jj]
-    efc_Ji = efc_J_in[worldid, jj, dofi]
-    efc_Jj = efc_J_in[worldid, jj, dofj]
-    efc_state = efc_state_in[worldid, jj]
+    nefc = nefc_in[worldid]
 
-  # Adding the contribution from the last constraint row
-  if efc_state == types.ConstraintState.QUADRATIC and efc_D != 0.0:
-    sum_h += efc_Ji * efc_Jj * efc_D
+    # get lower diagonal index
+    i = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
+    j = elementid - (i * (i + 1)) // 2
 
-  qM = qM_in[worldid, dofi, dofj]
-  efc_h_out[worldid, dofi, dofj] = qM + sum_h
+    offset_i = i * TILE_SIZE
+    offset_j = j * TILE_SIZE
+
+    sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
+
+    # Each tile processes looping over all constraints, producing 1 output tile
+    for k in range(0, njmax, TILE_SIZE):
+      if k >= nefc:
+        break
+
+      # AD: leaving bounds-check disabled here because I'm not entirely sure that
+      # everything always hits the fast path. The padding takes care of any
+      # potential OOB accesses.
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_i), bounds_check=False)
+
+      if offset_i != offset_j:
+        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_j), bounds_check=False)
+      else:
+        wp.tile_assign(J_kj, J_ki, (0, 0))
+
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
+
+      D_k = wp.tile_map(state_check, D_k, state)
+
+      # force unused elements to be zero
+      tid_tile = wp.tile_arange(TILE_SIZE, dtype=int)
+      threshold_tile = wp.tile_ones(shape=TILE_SIZE, dtype=int) * (nefc - k)
+
+      active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
+      D_k = wp.tile_map(wp.mul, active_tile, D_k)
+
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
+
+      sum_val += wp.tile_matmul(J_ki, J_kj)
+
+    # AD: setting bounds_check to True explicitly here because for some reason it was
+    # slower to disable it.
+    wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
+
+  return kernel
+
+
+@cache_kernel
+def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
+  if njmax < tile_size:
+    tile_size = njmax
+
+  TILE_SIZE_K = tile_size
+
+  @nested_kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    qM_in: wp.array3d(dtype=float),
+    efc_J_in: wp.array3d(dtype=float),
+    efc_D_in: wp.array2d(dtype=float),
+    efc_state_in: wp.array2d(dtype=int),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_h_out: wp.array3d(dtype=float),
+  ):
+    worldid = wp.tid()
+
+    if efc_done_in[worldid]:
+      return
+
+    nefc = nefc_in[worldid]
+
+    sum_val = wp.tile_load(qM_in[worldid], shape=(nv, nv), bounds_check=False)
+
+    # Each tile processes one output tile by looping over all constraints
+    for k in range(0, njmax, TILE_SIZE_K):
+      if k >= nefc:
+        break
+
+      # AD: leaving bounds-check disabled here because I'm not entirely sure that
+      # everything always hits the fast path. The padding takes care of any
+      #  potential OOB accesses.
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv), offset=(k, 0), bounds_check=False)
+      J_kj = J_ki
+
+      # state check
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+
+      D_k = wp.tile_map(state_check, D_k, state)
+
+      # force unused elements to be zero
+      tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
+      threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
+
+      active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
+      D_k = wp.tile_map(wp.mul, active_tile, D_k)
+
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv, TILE_SIZE_K)))
+
+      sum_val += wp.tile_matmul(J_ki, J_kj)
+
+    wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=False)
+
+  return kernel
 
 
 # TODO(thowell): combine with JTDAJ ?
@@ -1670,13 +1721,13 @@ def _update_gradient(m: types.Model, d: types.Data):
     smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    lower_triangle_dim = int(m.nv * (m.nv + 1) / 2)
     if m.opt.is_sparse:
-      wp.launch(
-        update_gradient_JTDAJ_sparse,
+      num_blocks_ceil = ceil(m.nv / d.tile_sizes.jtdaj_sparse)
+      lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
+      wp.launch_tiled(
+        update_gradient_JTDAJ_sparse_tiled(d.tile_sizes.jtdaj_sparse, d.njmax),
         dim=(d.nworld, lower_triangle_dim),
         inputs=[
-          d.njmax,
           d.nefc,
           d.efc.J,
           d.efc.D,
@@ -1684,7 +1735,9 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
+
       wp.launch(
         update_gradient_set_h_qM_lower_sparse,
         dim=(d.nworld, m.qM_fullm_i.size),
@@ -1692,11 +1745,10 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
     else:
-      wp.launch(
-        update_gradient_JTDAJ_dense,
-        dim=(d.nworld, lower_triangle_dim),
+      wp.launch_tiled(
+        update_gradient_JTDAJ_dense_tiled(m.nv, d.tile_sizes.jtdaj_dense, d.njmax),
+        dim=(d.nworld),
         inputs=[
-          d.njmax,
           d.nefc,
           d.qM,
           d.efc.J,
@@ -1705,6 +1757,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.done,
         ],
         outputs=[d.efc.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
       )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
