@@ -26,11 +26,6 @@ from . import warp_util
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
-try:
-    _NFLUID = mujoco.mjNFLUID  # use the real binding when available
-except AttributeError:  # local/dev fallback
-    _NFLUID = 12  # TODO(jasper): remove once mujoco wheel exports mjNFLUID
-
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
@@ -459,9 +454,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
 
   if mjm.geom_fluid.size:
-    geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, _NFLUID)
+    geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)
   else:
-    geom_fluid_params = np.zeros((mjm.ngeom, _NFLUID))
+    geom_fluid_params = np.zeros((mjm.ngeom, mujoco.mjNFLUID))
 
   body_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
   if mjm.ngeom:

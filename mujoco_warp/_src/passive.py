@@ -17,10 +17,10 @@ import warp as wp
 
 from . import math
 from . import support
-from .types import GeomType
 from .types import MJ_MINVAL
 from .types import Data
 from .types import DisableBit
+from .types import GeomType
 from .types import JointType
 from .types import Model
 from .warp_util import event_scope
@@ -41,16 +41,16 @@ def _pow4(val: float) -> float:
 
 @wp.func
 def _geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:
-  if geom_type == int(GeomType.SPHERE):
+  if geom_type == GeomType.SPHERE:
     r = size[0]
     return wp.vec3(r, r, r)
 
-  if geom_type == int(GeomType.CAPSULE):
+  if geom_type == GeomType.CAPSULE:
     radius = size[0]
     half_length = size[1]
     return wp.vec3(radius, radius, half_length + radius)
 
-  if geom_type == int(GeomType.CYLINDER):
+  if geom_type == GeomType.CYLINDER:
     radius = size[0]
     half_length = size[1]
     return wp.vec3(radius, radius, half_length)
@@ -64,7 +64,7 @@ def _ellipsoid_max_moment(size: wp.vec3, dir: int) -> float:
   d0 = size[dir]
   d1 = size[(dir + 1) % 3]
   d2 = size[(dir + 2) % 3]
-  return (8.0 / 15.0) * wp.pi * d0 * _pow4(wp.max(d1, d2))
+  return wp.static(8.0 / 15.0 * wp.pi) * d0 * _pow4(wp.max(d1, d2))
 
 
 @wp.kernel
@@ -342,12 +342,9 @@ def _fluid_force(
       lfrc_force = wp.vec3(0.0)
 
       if density > 0.0:
-        virtual_mass = wp.vec3(
-          geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8]
-        )
-        virtual_inertia = wp.vec3(
-          geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11]
-        )
+        # added-mass forces and torques
+        virtual_mass = wp.vec3(geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8])
+        virtual_inertia = wp.vec3(geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11])
 
         virtual_lin_mom = wp.vec3(
           density * virtual_mass[0] * l_lin[0],
@@ -366,13 +363,14 @@ def _fluid_force(
         lfrc_force += added_mass_force
         lfrc_torque += added_mass_torque
 
+      # lift force orthogonal to velocity from Kutta-Joukowski theorem
       magnus_coef = geom_fluid[geomid, 5]
       kutta_coef = geom_fluid[geomid, 4]
       blunt_drag_coef = geom_fluid[geomid, 1]
       slender_drag_coef = geom_fluid[geomid, 2]
       ang_drag_coef = geom_fluid[geomid, 3]
 
-      volume = (4.0 / 3.0) * wp.pi * semiaxes[0] * semiaxes[1] * semiaxes[2]
+      volume = wp.static(4.0 / 3.0 * wp.pi) * semiaxes[0] * semiaxes[1] * semiaxes[2]
       d_max = wp.max(wp.max(semiaxes[0], semiaxes[1]), semiaxes[2])
       d_min = wp.min(wp.min(semiaxes[0], semiaxes[1]), semiaxes[2])
       d_mid = semiaxes[0] + semiaxes[1] + semiaxes[2] - d_max - d_min
@@ -407,11 +405,11 @@ def _fluid_force(
         kutta_circ = wp.cross(norm, l_lin) * (kutta_coef * density * cos_alpha * A_proj)
         kutta_force = wp.cross(kutta_circ, l_lin)
 
-      eq_sphere_D = (2.0 / 3.0) * (semiaxes[0] + semiaxes[1] + semiaxes[2])
-      lin_visc_force_coef = 3.0 * wp.pi * eq_sphere_D
+      eq_sphere_D = wp.static(2.0 / 3.0) * (semiaxes[0] + semiaxes[1] + semiaxes[2])
+      lin_visc_force_coef = wp.static(3.0 * wp.pi) * eq_sphere_D
       lin_visc_torq_coef = wp.pi * eq_sphere_D * eq_sphere_D * eq_sphere_D
 
-      I_max = (8.0 / 15.0) * wp.pi * d_mid * _pow4(d_max)
+      I_max = wp.static(8.0 / 15.0 * wp.pi) * d_mid * _pow4(d_max)
       II0 = _ellipsoid_max_moment(semiaxes, 0)
       II1 = _ellipsoid_max_moment(semiaxes, 1)
       II2 = _ellipsoid_max_moment(semiaxes, 2)
@@ -433,6 +431,7 @@ def _fluid_force(
       lfrc_torque *= coef
       lfrc_force *= coef
 
+      # map force/torque from local to world frame: lfrc -> bfrc
       torque_global += geom_rot @ lfrc_torque
       force_global += geom_rot @ lfrc_force
 
