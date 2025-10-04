@@ -109,9 +109,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
     raise NotImplementedError("Flex collisions are not implemented.")
 
-  if mjm.geom_fluid.any():
-    raise NotImplementedError("Ellipsoid fluid model not implemented.")
-
   # check options
   for opt, opt_types, msg in (
     (mjm.opt.integrator, types.IntegratorType, "Integrator"),
@@ -456,6 +453,17 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       "Collision sensors with height fields are not implemented.",
     )
 
+  if mjm.geom_fluid.size:
+    geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)
+  else:
+    geom_fluid_params = np.zeros((mjm.ngeom, mujoco.mjNFLUID))
+
+  body_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
+  if mjm.ngeom:
+    active_geom = geom_fluid_params[:, 0] > 0
+    if np.any(active_geom):
+      body_fluid_ellipsoid[mjm.geom_bodyid[active_geom]] = True
+
   m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,
@@ -566,6 +574,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     body_contype=wp.array(mjm.body_contype, dtype=int),
     body_conaffinity=wp.array(mjm.body_conaffinity, dtype=int),
     body_gravcomp=create_nmodel_batched_array(mjm.body_gravcomp, dtype=float),
+    body_fluid_ellipsoid=wp.array(body_fluid_ellipsoid, dtype=bool),
     jnt_type=wp.array(mjm.jnt_type, dtype=int),
     jnt_qposadr=wp.array(mjm.jnt_qposadr, dtype=int),
     jnt_dofadr=wp.array(mjm.jnt_dofadr, dtype=int),
@@ -617,6 +626,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_solref=create_nmodel_batched_array(mjm.geom_solref, dtype=wp.vec2),
     geom_solimp=create_nmodel_batched_array(mjm.geom_solimp, dtype=types.vec5),
     geom_size=create_nmodel_batched_array(mjm.geom_size, dtype=wp.vec3),
+    geom_fluid=wp.array(geom_fluid_params, dtype=float),
     geom_aabb=wp.array2d(mjm.geom_aabb, dtype=wp.vec3),
     geom_rbound=create_nmodel_batched_array(mjm.geom_rbound, dtype=float),
     geom_pos=create_nmodel_batched_array(mjm.geom_pos, dtype=wp.vec3),

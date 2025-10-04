@@ -96,6 +96,37 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
     _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
 
+  def test_ellipsoid_fluid(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <geom type="sphere" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <freejoint/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.7 -0.3 0.4 -0.6 0.8 -0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    max_err = 0.0
+    for _ in range(25):
+      mjw.step(m, d)
+      mujoco.mj_step(mjm, mjd)
+
+      warp_force = d.qfrc_fluid.numpy()[0]
+      mj_force = mjd.qfrc_fluid
+      diff = np.abs(warp_force - mj_force)
+      max_err = max(max_err, float(np.max(diff)))
+
+    self.assertLess(max_err, 5e-4)
+
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE), gravity=(0, DisableBit.GRAVITY)
   )
