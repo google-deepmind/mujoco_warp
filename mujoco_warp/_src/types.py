@@ -59,8 +59,16 @@ class BlockDim:
   cholesky_factorize_solve: int = 32
   # solver
   update_gradient_cholesky: int = 64
+  update_gradient_JTDAJ_sparse: int = 64
+  update_gradient_JTDAJ_dense: int = 96
   # support
   mul_m_dense: int = 32
+
+
+@dataclasses.dataclass
+class TileSizes:
+  jtdaj_sparse: int = 16
+  jtdaj_dense: int = 16
 
 
 class BroadphaseType(enum.IntEnum):
@@ -1732,3 +1740,6 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
+
+  # tile sizes for JTDAJ
+  tile_sizes: TileSizes
