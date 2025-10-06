@@ -902,15 +902,25 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: Optional[int] = None, njmax: Optional[int] = None) -> types.Data:
+def make_data(
+  mjm: mujoco.MjModel,
+  nworld: int = 1,
+  nconmax: Optional[int] = None,
+  njmax: Optional[int] = None,
+  naconmax: Optional[int] = None,
+) -> types.Data:
   """
   Creates a data object on device.
 
   Args:
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     nworld (int, optional): Number of worlds. Defaults to 1.
-    nconmax (int, optional): Maximum number of contacts per world.
-    njmax (int, optional): Maximum number of constraints per world.
+    nworld (int, optional): The number of worlds. Defaults to 1.
+    nconmax (int, optional): Number of contacts to allocate per world.  Contacts exist in large
+                             heterogenous arrays: one world may have more than nconmax contacts.
+    njmax (int, optional): Number of constraints to allocate per world.  Constraint arrays are
+                           batched by world: no world may have more than njmax constraints.
+    naconmax (int, optional): Number of contacts to allocate for all worlds.  Overrides nconmax.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).
@@ -924,8 +934,12 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: Optional[int] = Non
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
+  if naconmax is None:
+    if nconmax < 0:
+      raise ValueError("nconmax must be >= 0")
+    naconmax = max(512, nworld * nconmax)
+  elif naconmax < 0:
+    raise ValueError("naconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -943,7 +957,6 @@ def make_data(mjm: mujoco.MjModel, nworld: int = 1, nconmax: Optional[int] = Non
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  naconmax = nworld * nconmax
   max_npolygon = _max_npolygon(mjm)
   max_meshdegree = _max_meshdegree(mjm)
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
@@ -1172,6 +1185,7 @@ def put_data(
   nworld: int = 1,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
+  naconmax: Optional[int] = None,
 ) -> types.Data:
   """
   Moves data from host to a device.
@@ -1180,8 +1194,11 @@ def put_data(
     mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
     mjd (mujoco.MjData): The data object containing current state and output arrays (host).
     nworld (int, optional): The number of worlds. Defaults to 1.
-    nconmax (int, optional): The maximum number of contacts per world.
-    njmax (int, optional): The maximum number of constraints per world.
+    nconmax (int, optional): Number of contacts to allocate per world.  Contacts exist in large
+                             heterogenous arrays: one world may have more than nconmax contacts.
+    njmax (int, optional): Number of constraints to allocate per world.  Constraint arrays are
+                           batched by world: no world may have more than njmax constraints.
+    naconmax (int, optional): Number of contacts to allocate for all worlds.  Overrides nconmax.
 
   Returns:
     Data: The data object containing the current state and output arrays (device).
@@ -1190,27 +1207,30 @@ def put_data(
   # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
 
-  # TODO(team): better heuristic for nconmax
-  nconmax = nconmax or max(1, 512 // nworld, 4 * mjd.ncon)
-  # TODO(team): better heuristic for njmax
+  # TODO(team): better heuristic for nconmax and njmax
+  nconmax = nconmax or max(5, 4 * mjd.ncon)
   njmax = njmax or max(5, 4 * mjd.nefc)
 
   if nworld < 1 or nworld > MAX_WORLDS:
     raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
+  if naconmax is None:
+    if nconmax < 0:
+      raise ValueError("nconmax must be >= 0")
+
+    if mjd.ncon > nconmax:
+      raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
+
+    naconmax = max(512, nworld * nconmax)
+  elif naconmax < mjd.ncon * nworld:
+    raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
 
-  if mjd.ncon > nconmax:
-    raise ValueError(f"nconmax overflow (nconmax must be >= {nworld * mjd.ncon})")
-
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
-  naconmax = nworld * nconmax
   max_npolygon = _max_npolygon(mjm)
   max_meshdegree = _max_meshdegree(mjm)
 
@@ -2035,7 +2055,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     wp.launch(
       _reset_contact,
       dim=d.naconmax,
-      inputs=[d.ncon, reset, d.contact.efc_address.shape[1]],
+      inputs=[d.nacon, reset, d.contact.efc_address.shape[1]],
       outputs=[
         d.contact.dist,
         d.contact.pos,
@@ -2094,7 +2114,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     wp.launch(
       _reset_contact_all,
       dim=d.naconmax,
-      inputs=[d.ncon, d.contact.efc_address.shape[1]],
+      inputs=[d.nacon, d.contact.efc_address.shape[1]],
       outputs=[
         d.contact.dist,
         d.contact.pos,
