@@ -18,19 +18,19 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "absl-py",
     "etils[epath]",
     "mujoco>=3.3.6.dev802089588",
     "numpy",
-    "warp-lang>=1.9.0.dev20250825",
+    "warp-lang>=1.10.0.dev20250909",
+	"newton @ git+https://github.com/newton-physics/newton@main",
 ]
 
 [[tool.uv.index]]
