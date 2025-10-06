@@ -40,7 +40,7 @@ def _pow4(val: float) -> float:
 
 
 @wp.func
-def _geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:
+def _geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:  # kernel_analyzer: ignore
   if geom_type == GeomType.SPHERE:
     r = size[0]
     return wp.vec3(r, r, r)
@@ -272,9 +272,9 @@ def _fluid_force(
   body_rootid: wp.array(dtype=int),
   body_geomnum: wp.array(dtype=int),
   body_geomadr: wp.array(dtype=int),
-  body_fluid_ellipsoid: wp.array(dtype=bool),
   body_mass: wp.array2d(dtype=float),
   body_inertia: wp.array2d(dtype=wp.vec3),
+  body_fluid_ellipsoid: wp.array(dtype=bool),
   geom_type: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_fluid: wp.array2d(dtype=float),
@@ -497,9 +497,9 @@ def _fluid(m: Model, d: Data):
       m.body_rootid,
       m.body_geomnum,
       m.body_geomadr,
-      m.body_fluid_ellipsoid,
       m.body_mass,
       m.body_inertia,
+      m.body_fluid_ellipsoid,
       m.geom_type,
       m.geom_size,
       m.geom_fluid,
