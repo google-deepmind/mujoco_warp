@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from .collision_primitive import Geom
 from .math import motion_cross
 from .types import ConeType
 from .types import Data
@@ -24,6 +25,7 @@ from .types import JointType
 from .types import Model
 from .types import TileSet
 from .types import vec5
+from .types import vec6
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel

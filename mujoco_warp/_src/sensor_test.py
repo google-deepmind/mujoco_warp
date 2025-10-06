@@ -605,6 +605,63 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
+  @parameterized.parameters(
+    ("sphere", "sphere"),
+    ("box", "box"),
+    ("capsule", "box"),
+  )
+  def test_sensor_collision(self, geom1, geom2):
+    """Tests collision sensors: distance, normal, fromto."""
+
+    # TODO(team): test plane
+
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body name="geom0">
+            <geom name="geom0" type="{geom1}" size=".1 .1 .1"/>
+          </body>
+          <body name="geom1">
+            <geom name="geom1" type="{geom2}" size=".1 .1 .1"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="geomgeom" pos="1 0 0">
+            <geom type="box" size=".075 .075 .075" pos=".2 0 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="1 2"/>
+        </keyframe>
+        <sensor>
+          <distance geom1="geom0" geom2="geom1" cutoff=".001"/>
+          <distance geom1="geom0" geom2="geom1" cutoff=".9"/>
+          <distance geom1="geom0" geom2="geom1" cutoff=".91"/>
+          <distance geom1="geom0" geom2="geom1" cutoff="1"/>
+          <normal geom1="geom0" geom2="geom1" cutoff=".001"/>
+          <normal geom1="geom0" geom2="geom1" cutoff="1"/>
+          <normal geom1="geom1" geom2="geom0" cutoff="1"/>
+          <fromto geom1="geom0" geom2="geom1" cutoff=".001"/>
+          <fromto geom1="geom0" geom2="geom1" cutoff="1"/>
+          <fromto geom1="geom1" geom2="geom0" cutoff="1"/>
+          <distance body1="geom0" body2="geomgeom" cutoff="5"/>
+          <distance body1="geomgeom" body2="geom0" cutoff="5"/>
+          <normal body1="geom0" body2="geomgeom" cutoff="5"/>
+          <normal body1="geomgeom" body2="geom0" cutoff="5"/>
+          <fromto body1="geom0" body2="geomgeom" cutoff="5"/>
+          <fromto body1="geomgeom" body2="geom0" cutoff="5"/>
+        </sensor>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   @parameterized.parameters(0, 1)
   def test_insidesite(self, keyframe):
     _, mjd, m, d = test_data.fixture(

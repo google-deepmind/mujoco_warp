@@ -16,6 +16,7 @@
 
 import mujoco
 import numpy as np
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
@@ -23,11 +24,19 @@ import mujoco_warp as mjw
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 from . import types
 
 _TOLERANCE = 5e-5
+
+
+@wp.kernel
+def plane_convex_test(convex_in: Geom, dist_out: wp.array(dtype=wp.vec4)):
+  dist, pos, normal = plane_convex(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), convex_in)
+  dist_out[0] = dist
 
 
 def _assert_eq(a, b, name):
@@ -599,6 +608,28 @@ class CollisionTest(parameterized.TestCase):
     )
     self.assertEqual(m.nxn_geom_pair.numpy().shape[0], 3)
     np.testing.assert_equal(m.nxn_pairid.numpy(), np.array([-2, -1, -1]))
+
+  def test_plane_meshtet(self):
+    # tetrahedron, separated in z by 0.1
+    convex = Geom()
+    convex.pos = wp.vec3(0.0)
+    convex.rot = wp.mat33(np.eye(3))
+    convex.graphadr = -1
+    convex.vertnum = 4
+    convex.vertadr = 0
+    verts = np.array(
+      [
+        [-1, 0, 0.1],
+        [1, 0, 0.1],
+        [0, 1, 0.1],
+        [0, 0.5, 1.1],
+      ]
+    )
+    convex.vert = wp.array(verts, dtype=wp.vec3)
+
+    dist = wp.empty(1, dtype=wp.vec4)
+    wp.launch(plane_convex_test, inputs=[convex], outputs=[dist], dim=1)
+    self.assertTrue((dist.numpy() > 0.05).all())
 
   @parameterized.parameters(list(BroadphaseType))
   def test_contact_pair(self, broadphase):

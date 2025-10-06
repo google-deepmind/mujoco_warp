@@ -1801,6 +1801,7 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[fl
 @wp.func
 def _polygon_clip(
   # In:
+  prune: bool,
   plane_normal: wp.array(dtype=wp.vec3),
   plane_dist: wp.array(dtype=float),
   face1: wp.array(dtype=wp.vec3),
@@ -1880,7 +1881,7 @@ def _polygon_clip(
   if npolygon < 1:
     return 0, witness1, witness2
 
-  if npolygon > 4:
+  if prune and npolygon > 4:
     quad = _polygon_quad(polygon_out, npolygon)
     for i in range(4):
       witness2[i] = polygon_out[quad[i]]
@@ -2116,16 +2117,19 @@ def _multicontact(
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
     approx_dir = wp.norm_l2(dir) * n2[j]
-    return _polygon_clip(plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped)
+    return _polygon_clip(False, plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped)
 
   # face2 is an edge; clip face2 against face1
   if is_edge_contact_geom2:
     approx_dir = -wp.norm_l2(dir) * n1[j]
-    return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir, polygon, clipped)
+    return _polygon_clip(False, plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir, polygon, clipped)
 
   # face-face collision
   approx_dir = wp.norm_l2(dir) * n2[j]
-  return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir, polygon, clipped)
+
+  # don't prune box-box collisions (expect up to 8 contacts)
+  prune = not (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)
+  return _polygon_clip(prune, plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir, polygon, clipped)
 
 
 @wp.func
@@ -2315,6 +2319,10 @@ def ccd(
   dist, x1, x2, idx = _epa(tolerance, ccd_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
   if idx == -1:
     return FLOAT_MAX, 0, witness1, witness2
+
+  # multiccd is always on for box-box collisions
+  if geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX:
+    multiccd = True
 
   if (
     multiccd

@@ -179,7 +179,7 @@ def ccd_kernel_builder(
       geom1.margin = margin
       geom2.margin = margin
       dist, ncontact, witness1, witness2 = ccd(
-        False,
+        False,  # ignored for box-box, multiccd always on
         opt_ccd_tolerance[worldid],
         0.0,
         ccd_iterations,
