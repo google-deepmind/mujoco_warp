@@ -906,7 +906,6 @@ def linesearch_jaref(
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
-
   support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
 
   # jv = efc_J @ search
@@ -1367,7 +1366,7 @@ def update_gradient_set_h_qM_lower_sparse(
 
 @wp.func
 def state_check(D: float, state: int) -> float:
-  if state == int(types.ConstraintState.QUADRATIC.value):
+  if state == types.ConstraintState.QUADRATIC.value:
     return D
   else:
     return 0.0
@@ -1747,7 +1746,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch_tiled(
         update_gradient_JTDAJ_dense_tiled(m.nv, d.tile_sizes.jtdaj_dense, d.njmax),
-        dim=(d.nworld),
+        dim=d.nworld,
         inputs=[
           d.nefc,
           d.qM,
