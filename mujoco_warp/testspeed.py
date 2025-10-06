@@ -127,6 +127,9 @@ def _main(argv: Sequence[str]):
     mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
   elif mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
+    if ctrls is None:
+      ctrls = [mjd.ctrl.copy() for _ in range(_NSTEP.value)]
+
   # populate some constraints
   mujoco.mj_forward(mjm, mjd)
 
