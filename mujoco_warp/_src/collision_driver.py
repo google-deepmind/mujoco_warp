@@ -18,7 +18,6 @@ from typing import Any
 import warp as wp
 
 from .collision_convex import convex_narrowphase
-from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
 from .types import MJ_MAXVAL
@@ -685,7 +684,6 @@ def _narrowphase(m, d):
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
   convex_narrowphase(m, d)
-  # primitive_narrowphase(m, d)
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d)
