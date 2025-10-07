@@ -122,7 +122,7 @@ def ccd_kernel_builder(
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     # Data in:
-    nconmax_in: int,
+    naconmax_in: int,
     epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
@@ -162,7 +162,7 @@ def ccd_kernel_builder(
     x2: wp.vec3,
     count: int,
     # Data out:
-    ncon_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -249,7 +249,7 @@ def ccd_kernel_builder(
 
     for i in range(ncontact):
       write_contact(
-        nconmax_in,
+        naconmax_in,
         dist,
         points[i],
         frame,
@@ -262,7 +262,7 @@ def ccd_kernel_builder(
         solimp,
         geoms,
         worldid,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -325,7 +325,7 @@ def ccd_kernel_builder(
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    nconmax_in: int,
+    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
@@ -355,7 +355,7 @@ def ccd_kernel_builder(
     multiccd_face1_in: wp.array2d(dtype=wp.vec3),
     multiccd_face2_in: wp.array2d(dtype=wp.vec3),
     # Data out:
-    ncon_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -559,7 +559,7 @@ def ccd_kernel_builder(
             ncontact = eval_ccd_write_contact(
               opt_ccd_tolerance,
               geom_type,
-              nconmax_in,
+              naconmax_in,
               epa_vert_in,
               epa_vert1_in,
               epa_vert2_in,
@@ -597,7 +597,7 @@ def ccd_kernel_builder(
               x1,
               geom2.pos,
               count,
-              ncon_out,
+              nacon_out,
               contact_dist_out,
               contact_pos_out,
               contact_frame_out,
@@ -617,7 +617,7 @@ def ccd_kernel_builder(
       eval_ccd_write_contact(
         opt_ccd_tolerance,
         geom_type,
-        nconmax_in,
+        naconmax_in,
         epa_vert_in,
         epa_vert1_in,
         epa_vert2_in,
@@ -655,7 +655,7 @@ def ccd_kernel_builder(
         geom1.pos,
         geom2.pos,
         0,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -694,7 +694,7 @@ def convex_narrowphase(m: Model, d: Data):
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
         ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD),
-        dim=d.nconmax,
+        dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
           m.geom_type,
@@ -736,7 +736,7 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_margin,
           m.pair_gap,
           m.pair_friction,
-          d.nconmax,
+          d.naconmax,
           d.geom_xpos,
           d.geom_xmat,
           d.collision_pair,
@@ -767,7 +767,7 @@ def convex_narrowphase(m: Model, d: Data):
           d.multiccd_face2,
         ],
         outputs=[
-          d.ncon,
+          d.nacon,
           d.contact.dist,
           d.contact.pos,
           d.contact.frame,
