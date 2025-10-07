@@ -15,11 +15,20 @@
 
 import warp as wp
 
+from .collision_gjk import ccd
+from .collision_gjk_legacy import epa_legacy
+from .collision_gjk_legacy import gjk_legacy
+from .collision_gjk_legacy import multicontact_legacy
+from .collision_hfield import hfield_filter
+from .collision_primitive import Geom
 from .collision_primitive import box_box_wrapper
 from .collision_primitive import capsule_box_wrapper
 from .collision_primitive import capsule_capsule_wrapper
+from .collision_primitive import contact_params
+from .collision_primitive import geom
 from .collision_primitive import plane_box_wrapper
 from .collision_primitive import plane_capsule_wrapper
+from .collision_primitive import plane_convex_wrapper
 from .collision_primitive import plane_cylinder_wrapper
 from .collision_primitive import plane_ellipsoid_wrapper
 from .collision_primitive import plane_sphere_wrapper
@@ -27,15 +36,6 @@ from .collision_primitive import sphere_box_wrapper
 from .collision_primitive import sphere_capsule_wrapper
 from .collision_primitive import sphere_cylinder_wrapper
 from .collision_primitive import sphere_sphere_wrapper
-from .collision_primitive import plane_convex_wrapper
-from .collision_gjk import ccd
-from .collision_gjk_legacy import epa_legacy
-from .collision_gjk_legacy import gjk_legacy
-from .collision_gjk_legacy import multicontact_legacy
-from .collision_hfield import hfield_filter
-from .collision_primitive import Geom
-from .collision_primitive import contact_params
-from .collision_primitive import geom
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
@@ -459,7 +459,7 @@ def ccd_kernel_builder(
 
     if wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)] != None):
       wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)])(
-        nconmax_in,
+        naconmax_in,
         geom1,
         geom2,
         worldid,
@@ -471,7 +471,7 @@ def ccd_kernel_builder(
         solreffriction,
         solimp,
         geoms,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
