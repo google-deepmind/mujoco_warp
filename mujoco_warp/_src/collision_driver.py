@@ -685,7 +685,7 @@ def _narrowphase(m, d):
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
   convex_narrowphase(m, d)
-  #primitive_narrowphase(m, d)
+  # primitive_narrowphase(m, d)
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d)

@@ -102,6 +102,7 @@ def _check_convex_collision_pairs():
     prev_idx = idx
   return True
 
+
 assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid order."
 
 
@@ -377,7 +378,7 @@ def ccd_kernel_builder(
 
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
-        
+
     worldid = collision_worldid_in[tid]
 
     # height field filter
@@ -456,35 +457,34 @@ def ccd_kernel_builder(
       geom_xmat_in[worldid, g2],
     )
 
-    if wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)]):
-      _CONVEX_COLLISION_PAIRS(
-          nconmax_in,
-          geom1,
-          geom2,
-          worldid,
-          margin,
-          gap,
-          condim,
-          friction,
-          solref,
-          solreffriction,
-          solimp,
-          geoms,
-          ncon_out,
-          contact_dist_out,
-          contact_pos_out,
-          contact_frame_out,
-          contact_includemargin_out,
-          contact_friction_out,
-          contact_solref_out,
-          contact_solreffriction_out,
-          contact_solimp_out,
-          contact_dim_out,
-          contact_geom_out,
-          contact_worldid_out,
-        )
+    if wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)] != None):
+      wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)])(
+        nconmax_in,
+        geom1,
+        geom2,
+        worldid,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        ncon_out,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+      )
       return
-
 
     # see MuJoCo mjc_ConvexHField
     if wp.static(is_hfield):
