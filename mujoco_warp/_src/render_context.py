@@ -220,9 +220,6 @@ class RenderContext:
     tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
     bvh_ngeom = len(geom_enabled_idx)
-    print(f"bvh_ngeom: {bvh_ngeom}")
-    print(f"nworld: {nworld}")
-    print(f"ncam: {mjm.ncam}")
     self.bvh_ngeom=bvh_ngeom
     self.nworld=nworld
     self.ncam=mjm.ncam
