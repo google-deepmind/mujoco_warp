@@ -2,6 +2,8 @@ import dataclasses
 
 import warp as wp
 import mujoco
+import threading
+
 from .types import Model
 from .types import Data
 from .types import GeomType
@@ -43,7 +45,7 @@ def create_render_context(
   return rc
 
 
-def create_render_context_registry(
+def create_render_context_in_registry(
   mjm: mujoco.MjModel,
   m: Model,
   d: Data,
@@ -71,10 +73,10 @@ def create_render_context_registry(
     render_depth,
     enabled_geom_groups,
   )
-  
-  key = len(_RENDER_CONTEXT_BUFFERS) + 1
-  _RENDER_CONTEXT_BUFFERS[key] = rc
-  return key
+  with threading.Lock():
+    key = len(_RENDER_CONTEXT_BUFFERS) + 1
+    _RENDER_CONTEXT_BUFFERS[key] = rc
+  return RenderContextRegistry(key)
 
 
 def render_registry(m: Model, d: Data, rc_id: int):
@@ -129,6 +131,18 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array
   )
 
   return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
+
+
+@dataclasses.dataclass
+class RenderContextRegistry:
+  key: int
+
+  def __init__(self, key: int):
+    self.key = key
+  
+  def __del__(self):
+    with threading.Lock():
+      del _RENDER_CONTEXT_BUFFERS[self.key]
 
 
 @dataclasses.dataclass
