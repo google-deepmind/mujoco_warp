@@ -22,8 +22,6 @@ from ._src.types import Model as Model
 from ._src.types import Data as Data
 # isort: on
 
-from ._src.bvh import build_warp_bvh as build_warp_bvh
-from ._src.bvh import refit_warp_bvh as refit_warp_bvh
 from ._src.collision_driver import collision as collision
 from ._src.collision_driver import nxn_broadphase as nxn_broadphase
 from ._src.collision_driver import sap_broadphase as sap_broadphase
@@ -49,6 +47,7 @@ from ._src.io import put_model as put_model
 from ._src.io import reset_data as reset_data
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
+from ._src.render_context import create_render_context as create_render_context
 from ._src.sensor import energy_pos as energy_pos
 from ._src.sensor import energy_vel as energy_vel
 from ._src.sensor import sensor_acc as sensor_acc

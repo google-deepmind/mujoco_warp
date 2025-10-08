@@ -5,7 +5,7 @@ import warp as wp
 from .types import GeomType
 from .types import Model
 from .types import Data
-from .io import REGISTRY
+from .render_context import RenderContext
 
 @wp.func
 def compute_box_bounds(
@@ -159,63 +159,63 @@ def compute_bvh_group_roots(
   group_roots[tid] = root
 
 
-def build_warp_bvh(m: Model, d: Data):
+def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
   """Build a Warp BVH for all geometries in all worlds."""
 
   wp.launch(
     kernel=compute_bvh_bounds,
-    dim=(d.nworld * m.bvh_ngeom),
+    dim=(rc.nworld * rc.bvh_ngeom),
     inputs=[
-      m.bvh_ngeom,
-      d.nworld,
-      m.enabled_geom_ids,
+      rc.bvh_ngeom,
+      rc.nworld,
+      rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,
       m.geom_size,
       d.geom_xpos,
       d.geom_xmat,
-      m.mesh_bounds_size,
-      d.lowers,
-      d.uppers,
-      d.groups,
+      rc.mesh_bounds_size,
+      rc.lowers,
+      rc.uppers,
+      rc.groups,
     ],
   )
 
   bvh = wp.Bvh(
-    d.lowers,
-    d.uppers,
-    groups=d.groups,
+    rc.lowers,
+    rc.uppers,
+    groups=rc.groups,
   )
 
   # Store BVH handles for later queries
-  REGISTRY[bvh.id] = bvh
-  d.bvh_id = bvh.id
+  rc.bvh = bvh
+  rc.bvh_id = bvh.id
 
   wp.launch(
     kernel=compute_bvh_group_roots,
-    dim=d.nworld,
-    inputs=[bvh.id, d.group_roots],
+    dim=rc.nworld,
+    inputs=[bvh.id, rc.group_roots],
   )
 
 
-def refit_warp_bvh(m: Model, d: Data):
+def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
   wp.launch(
     kernel=compute_bvh_bounds,
-    dim=(d.nworld * m.bvh_ngeom),
+    dim=(rc.nworld * rc.bvh_ngeom),
     inputs=[
-      m.bvh_ngeom,
-      d.nworld,
-      m.enabled_geom_ids,
+      rc.bvh_ngeom,
+      rc.nworld,
+      rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,
       m.geom_size,
       d.geom_xpos,
       d.geom_xmat,
-      m.mesh_bounds_size,
-      d.lowers,
-      d.uppers,
-      d.groups,
+      rc.mesh_bounds_size,
+      rc.lowers,
+      rc.uppers,
+      rc.groups,
     ],
   )
 
-  REGISTRY[d.bvh_id].refit()
+  rc.bvh.refit()

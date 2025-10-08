@@ -16,7 +16,7 @@ from .types import Data
 from .types import Model
 from .types import GeomType
 from .warp_util import event_scope
-
+from .render_context import RenderContext
 
 MAX_NUM_VIEWS_PER_THREAD = 8
 
@@ -54,9 +54,9 @@ def tile_coords(tid: int, W: int, H: int):
 
 
 @event_scope
-def render(m: Model, d: Data):
-  bvh.refit_warp_bvh(m, d)
-  render_raytrace_megakernel(m, d)
+def render(m: Model, d: Data, rc: RenderContext):
+  bvh.refit_warp_bvh(m, d, rc)
+  render_raytrace_megakernel(m, d, rc)
 
 
 @wp.func
@@ -487,18 +487,18 @@ def compute_lighting(
 
 
 @event_scope
-def render_raytrace_megakernel(m: Model, d: Data):
-  total_views = d.nworld * m.ncam
-  total_pixels = m.render_opt.width * m.render_opt.height
+def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
+  total_views = rc.nworld * m.ncam
+  total_pixels = rc.width * rc.height
   num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
   if num_view_groups == 0:
     return
 
-  if m.render_opt.render_rgb:
-    d.pixels.fill_(wp.uint32(BACKGROUND_COLOR))
+  if rc.render_rgb:
+    rc.pixels.fill_(wp.uint32(BACKGROUND_COLOR))
 
-  if m.render_opt.render_depth:
-    d.depth.fill_(wp.float32(0.0))
+  if rc.render_depth:
+    rc.depth.fill_(wp.float32(0.0))
 
   static_nlight = wp.static(m.nlight)
 
@@ -713,48 +713,48 @@ def render_raytrace_megakernel(m: Model, d: Data):
     dim=(num_view_groups * total_pixels),
     inputs=[
       # Model and Options
-      d.nworld,
+      rc.nworld,
       m.ncam,
       m.nlight,
       m.ngeom,
-      m.bvh_ngeom,
-      m.render_opt.width,
-      m.render_opt.height,
-      m.render_opt.use_textures,
-      m.render_opt.use_shadows,
-      m.render_opt.render_rgb,
-      m.render_opt.render_depth,
+      rc.bvh_ngeom,
+      rc.width,
+      rc.height,
+      rc.use_textures,
+      rc.use_shadows,
+      rc.render_rgb,
+      rc.render_depth,
 
       # Camera
-      m.render_opt.fov_rad,
+      rc.fov_rad,
       d.cam_xpos,
       d.cam_xmat,
 
       # BVH
-      d.bvh_id,
-      d.group_roots,
+      rc.bvh_id,
+      rc.group_roots,
 
       # Geometry
-      m.enabled_geom_ids,
+      rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,
       m.geom_matid,
       m.geom_size,
       m.geom_rgba,
-      m.mesh_bvh_ids,
+      rc.mesh_bvh_ids,
       m.mesh_faceadr,
       m.mesh_face,
-      m.mesh_texcoord,
-      m.mesh_texcoord_offsets,
+      rc.mesh_texcoord,
+      rc.mesh_texcoord_offsets,
 
       # Textures
       m.mat_texid,
       m.mat_texrepeat,
       m.mat_rgba,
-      m.tex_adr,
-      m.tex_data,
-      m.tex_height,
-      m.tex_width,
+      rc.tex_adr,
+      rc.tex_data,
+      rc.tex_height,
+      rc.tex_width,
 
       # Lights
       m.light_active,
@@ -768,8 +768,8 @@ def render_raytrace_megakernel(m: Model, d: Data):
       d.geom_xmat,
     ],
     outputs=[
-      d.pixels,
-      d.depth,
+      rc.pixels,
+      rc.depth,
     ],
     block_dim=THREADS_PER_TILE,
   )

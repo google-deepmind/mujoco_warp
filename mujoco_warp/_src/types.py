@@ -676,28 +676,6 @@ class Option:
 
 
 @dataclasses.dataclass
-class RenderOptions:
-  """Render options.
-
-  Attributes:
-    render_rgb: whether to render rgb image
-    render_depth: whether to render depth image
-    use_textures: whether to use textures
-    use_shadows: whether to use shadows
-    width: width of the rendered image
-    height: height of the rendered image
-    fov_rad: field of view in radians
-  """
-  render_rgb: bool
-  render_depth: bool
-  use_textures: bool
-  use_shadows: bool
-  width: int
-  height: int
-  fov_rad: float
-
-
-@dataclasses.dataclass
 class Statistic:
   """Model statistics (in qpos0).
 

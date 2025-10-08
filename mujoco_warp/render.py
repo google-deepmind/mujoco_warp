@@ -115,26 +115,26 @@ def _main(argv: Sequence[str]):
         if _OVERRIDE.value:
             override_model(m, _OVERRIDE.value)
 
-        # apply render options
-        m.render_opt.render_rgb = bool(_RENDER_RGB.value)
-        m.render_opt.render_depth = bool(_RENDER_DEPTH.value)
-        m.render_opt.use_textures = bool(_USE_TEXTURES.value)
-        m.render_opt.use_shadows = bool(_USE_SHADOWS.value)
-        m.render_opt.width = int(_WIDTH.value)
-        m.render_opt.height = int(_HEIGHT.value)
-        m.render_opt.fov_rad = float(wp.radians(_FOV_DEG.value))
-
         # prepare Data from current MuJoCo state so camera/light transforms are valid
         d = mjw.put_data(
             mjm,
             mjd,
             nworld=_NWORLD.value,
-            bvh_ngeom=m.bvh_ngeom,
-            pixels=m.render_opt.width * m.render_opt.height,
         )
 
-        # build BVH once
-        mjw.build_warp_bvh(m, d)
+        rc = mjw.create_render_context(
+            mjm,
+            m,
+            d,
+            _NWORLD.value,
+            _WIDTH.value,
+            _HEIGHT.value,
+            _USE_TEXTURES.value,
+            _USE_SHADOWS.value,
+            wp.radians(_FOV_DEG.value),
+            _RENDER_RGB.value,
+            _RENDER_DEPTH.value,
+        )
 
         # optionally advance the simulation before rendering
         if _ROLL.value and _ROLL_STEPS.value > 0:
@@ -144,12 +144,12 @@ def _main(argv: Sequence[str]):
 
         print(
             f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n"
-            f"Render: {m.render_opt.width}x{m.render_opt.height} rgb={m.render_opt.render_rgb} depth={m.render_opt.render_depth}"
+            f"Render: {rc.width}x{rc.height} rgb={rc.render_rgb} depth={rc.render_depth}"
         )
 
         # render
         print("Rendering...")
-        mjw.render(m, d)
+        mjw.render(m, d, rc)
 
         world = int(_WORLD.value)
         cam = int(_CAM.value)
@@ -158,20 +158,20 @@ def _main(argv: Sequence[str]):
         if cam < 0 or cam >= m.ncam:
             raise ValueError(f"camera index out of range: {cam} not in [0, {m.ncam - 1}]")
 
-        width = m.render_opt.width
-        height = m.render_opt.height
+        width = rc.width
+        height = rc.height
         num_pixels = width * height
 
-        if m.render_opt.render_rgb:
-            pixels = d.pixels.numpy()
+        if rc.render_rgb:
+            pixels = rc.pixels.numpy()
             row = pixels[world, cam]
             if row.shape[0] != num_pixels:
                 raise RuntimeError("unexpected pixel buffer size")
             _save_rgb_from_packed(row, width, height, _OUTPUT_RGB.value)
             print(f"Saved RGB to: {_OUTPUT_RGB.value}")
 
-        if m.render_opt.render_depth:
-            depth = d.depth.numpy()
+        if rc.render_depth:
+            depth = rc.depth.numpy()
             row = depth[world, cam]
             if row.shape[0] != num_pixels:
                 raise RuntimeError("unexpected depth buffer size")

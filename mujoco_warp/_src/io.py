@@ -26,8 +26,6 @@ from . import warp_util
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
-REGISTRY = {}
-
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """
@@ -483,46 +481,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     ls_parallel = True
   else:
     ls_parallel = False
-
-  # render
-  nmesh = mjm.nmesh
-  # TODO: What is the best way to pass in the render options?
-  geom_enabled_idx = [i for i in range(mjm.ngeom) if mjm.geom_group[i] in [0, 1, 2]]
-  used_mesh_ids = set(
-    int(mjm.geom_dataid[g])
-    for g in geom_enabled_idx
-    if mjm.geom_type[g] == types.GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
-  )
-  mesh_bvh_ids = [wp.uint64(0) for _ in range(nmesh)]
-  mesh_bounds_size = [np.array([0.0, 0.0, 0.0], dtype=np.float32) for _ in range(nmesh)]
-
-  for i in range(nmesh):
-    if i not in used_mesh_ids:
-      continue
-
-    v_start = mjm.mesh_vertadr[i]
-    v_end = v_start + mjm.mesh_vertnum[i]
-    points = mjm.mesh_vert[v_start:v_end]
-
-    f_start = mjm.mesh_faceadr[i]
-    f_end = mjm.mesh_face.shape[0] if (i + 1) >= nmesh else mjm.mesh_faceadr[i + 1]
-    indices = mjm.mesh_face[f_start:f_end]
-    indices = indices.flatten()
-
-    mesh = wp.Mesh(
-      points=wp.array(points, dtype=wp.vec3),
-      indices=wp.array(indices, dtype=wp.int32),
-      bvh_constructor="sah"
-    )
-    REGISTRY[mesh.id] = mesh
-    mesh_bvh_ids[i] = mesh.id
-
-    pmin = points.min(axis=0)
-    pmax = points.max(axis=0)
-    half = 0.5 * (pmax - pmin)
-    mesh_bounds_size[i] = half
-  
-  tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
   m = types.Model(
     nq=mjm.nq,
