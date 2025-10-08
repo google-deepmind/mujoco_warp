@@ -31,6 +31,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
+from .types import vec7
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
@@ -134,6 +135,7 @@ def ccd_kernel_builder(
     x1: wp.vec3,
     x2: wp.vec3,
     count: int,
+    pairid: wp.vec3i,
     # Data out:
     nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
@@ -147,6 +149,7 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    sensor_collision_out: wp.array3d(dtype=vec7),
   ) -> int:
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
     if wp.static(legacy_gjk):
@@ -178,10 +181,16 @@ def ccd_kernel_builder(
       points = mat3c()
       geom1.margin = margin
       geom2.margin = margin
+      if pairid[1] >= 0:
+        cutoff = (
+          1.0e32  # if there is a collision sensor set large cutoff here in order to work with various sensor cutoff values
+        )
+      else:
+        cutoff = 0.0
       dist, ncontact, witness1, witness2 = ccd(
         False,  # ignored for box-box, multiccd always on
         opt_ccd_tolerance[worldid],
-        0.0,
+        cutoff,
         ccd_iterations,
         geom1,
         geom2,
@@ -212,6 +221,15 @@ def ccd_kernel_builder(
         multiccd_face1_in[tid],
         multiccd_face2_in[tid],
       )
+
+      # write collision for sensor
+      collisionid = pairid[1]
+      if collisionid >= 0:
+        geomgeomid = pairid[2]
+        sensor_collision_out[worldid, collisionid, geomgeomid] = vec7(
+          dist, witness1[0][0], witness1[0][1], witness1[0][2], witness2[0][0], witness2[0][1], witness2[0][2]
+        )
+
       if dist >= 0.0:
         return 0
 
@@ -234,6 +252,7 @@ def ccd_kernel_builder(
         solreffriction,
         solimp,
         geoms,
+        pairid,
         worldid,
         nacon_out,
         contact_dist_out,
@@ -302,7 +321,7 @@ def ccd_kernel_builder(
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
-    collision_pairid_in: wp.array(dtype=int),
+    collision_pairid_in: wp.array(dtype=wp.vec3i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     epa_vert_in: wp.array2d(dtype=wp.vec3),
@@ -340,6 +359,7 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    sensor_collision_out: wp.array3d(dtype=vec7),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -541,6 +561,7 @@ def ccd_kernel_builder(
               x1,
               geom2.pos,
               count,
+              collision_pairid_in[tid],
               nacon_out,
               contact_dist_out,
               contact_pos_out,
@@ -553,6 +574,7 @@ def ccd_kernel_builder(
               contact_dim_out,
               contact_geom_out,
               contact_worldid_out,
+              sensor_collision_out,
             )
             count += ncontact
             if count >= MJ_MAXCONPAIR:
@@ -599,6 +621,7 @@ def ccd_kernel_builder(
         geom1.pos,
         geom2.pos,
         0,
+        collision_pairid_in[tid],
         nacon_out,
         contact_dist_out,
         contact_pos_out,
@@ -611,6 +634,7 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        sensor_collision_out,
       )
 
   return ccd_kernel
@@ -723,5 +747,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.contact.dim,
           d.contact.geom,
           d.contact.worldid,
+          d.sensor_collision,
         ],
       )
