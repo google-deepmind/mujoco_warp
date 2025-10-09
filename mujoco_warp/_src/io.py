@@ -1586,78 +1586,109 @@ def get_data_into(
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 
-  result.solver_niter[0] = d.solver_niter.numpy()[0]
-
   nacon = d.nacon.numpy()[0]
   nefc = d.nefc.numpy()[0]
 
   if nacon != result.ncon or nefc != result.nefc:
-    mujoco._functions._realloc_con_efc(result, ncon=nacon, nefc=nefc)
+    # TODO(team): if sparse, set nJ based on sparse efc_J
+    mujoco._functions._realloc_con_efc(result, ncon=nacon, nefc=nefc, nJ=nefc * mjm.nv)
 
+  ne = d.ne.numpy()[0]
+  nf = d.nf.numpy()[0]
+  nl = d.nl.numpy()[0]
+
+  # efc indexing
+  # mujoco expects contigious efc ordering for contacts
+  # this ordering is not guarenteed with mujoco warp, we enforce order here
+  if nacon > 0:
+    efc_idx_efl = np.arange(ne + nf + nl)
+
+    contact_dim = d.contact.dim.numpy()
+    contact_efc_address = d.contact.efc_address.numpy()
+
+    efc_idx_c = []
+    contact_efc_address_ordered = [ne + nf + nl]
+    for i in range(nacon):
+      dim = contact_dim[i]
+      if mjm.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL:
+        ndim = np.maximum(1, 2 * (dim - 1))
+      else:
+        ndim = dim
+      efc_idx_c.append(contact_efc_address[i, :ndim])
+      if i < nacon - 1:
+        contact_efc_address_ordered.append(contact_efc_address_ordered[-1] + ndim)
+    efc_idx = np.concatenate((efc_idx_efl, *efc_idx_c))
+    contact_efc_address_ordered = np.array(contact_efc_address_ordered)
+  else:
+    efc_idx = np.array(np.arange(nefc))
+    contact_efc_address_ordered = np.empty(0)
+
+  result.solver_niter[0] = d.solver_niter.numpy()[0]
+  result.ncon = nacon
+  result.ne = ne
+  result.nf = nf
+  result.nl = nl
   result.time = d.time.numpy()[0]
-  result.energy = d.energy.numpy()[0]
-  result.ne = d.ne.numpy()[0]
+  result.energy[:] = d.energy.numpy()[0]
   result.qpos[:] = d.qpos.numpy()[0]
   result.qvel[:] = d.qvel.numpy()[0]
-  result.qacc_warmstart = d.qacc_warmstart.numpy()[0]
-  result.qfrc_applied = d.qfrc_applied.numpy()[0]
-  result.mocap_pos = d.mocap_pos.numpy()[0]
-  result.mocap_quat = d.mocap_quat.numpy()[0]
-  result.qacc = d.qacc.numpy()[0]
-  result.xanchor = d.xanchor.numpy()[0]
-  result.xaxis = d.xaxis.numpy()[0]
-  result.xmat = d.xmat.numpy().reshape((-1, 9))
-  result.xpos = d.xpos.numpy()[0]
-  result.xquat = d.xquat.numpy()[0]
-  result.xipos = d.xipos.numpy()[0]
-  result.ximat = d.ximat.numpy().reshape((-1, 9))
-  result.subtree_com = d.subtree_com.numpy()[0]
-  result.geom_xpos = d.geom_xpos.numpy()[0]
-  result.geom_xmat = d.geom_xmat.numpy().reshape((-1, 9))
-  result.site_xpos = d.site_xpos.numpy()[0]
-  result.site_xmat = d.site_xmat.numpy().reshape((-1, 9))
-  result.cam_xpos = d.cam_xpos.numpy()[0]
-  result.cam_xmat = d.cam_xmat.numpy().reshape((-1, 9))
-  result.light_xpos = d.light_xpos.numpy()[0]
-  result.light_xdir = d.light_xdir.numpy()[0]
-  result.cinert = d.cinert.numpy()[0]
-  result.flexvert_xpos = d.flexvert_xpos.numpy()[0]
-  result.flexedge_length = d.flexedge_length.numpy()[0]
-  result.flexedge_velocity = d.flexedge_velocity.numpy()[0]
-  result.cdof = d.cdof.numpy()[0]
-  result.crb = d.crb.numpy()[0]
-  result.qLDiagInv = d.qLDiagInv.numpy()[0]
-  result.ctrl = d.ctrl.numpy()[0]
-  result.ten_velocity = d.ten_velocity.numpy()[0]
-  result.actuator_velocity = d.actuator_velocity.numpy()[0]
-  result.actuator_force = d.actuator_force.numpy()[0]
-  result.actuator_length = d.actuator_length.numpy()[0]
+  result.act[:] = d.act.numpy()[0]
+  result.qacc_warmstart[:] = d.qacc_warmstart.numpy()[0]
+  result.ctrl[:] = d.ctrl.numpy()[0]
+  result.qfrc_applied[:] = d.qfrc_applied.numpy()[0]
+  result.xfrc_applied[:] = d.xfrc_applied.numpy()[0]
+  result.eq_active[:] = d.eq_active.numpy()[0]
+  result.mocap_pos[:] = d.mocap_pos.numpy()[0]
+  result.mocap_quat[:] = d.mocap_quat.numpy()[0]
+  result.qacc[:] = d.qacc.numpy()[0]
+  result.act_dot[:] = d.act_dot.numpy()[0]
+  result.xpos[:] = d.xpos.numpy()[0]
+  result.xquat[:] = d.xquat.numpy()[0]
+  result.xmat[:] = d.xmat.numpy().reshape((-1, 9))
+  result.xipos[:] = d.xipos.numpy()[0]
+  result.ximat[:] = d.ximat.numpy().reshape((-1, 9))
+  result.xanchor[:] = d.xanchor.numpy()[0]
+  result.xaxis[:] = d.xaxis.numpy()[0]
+  result.geom_xpos[:] = d.geom_xpos.numpy()[0]
+  result.geom_xmat[:] = d.geom_xmat.numpy().reshape((-1, 9))
+  result.site_xpos[:] = d.site_xpos.numpy()[0]
+  result.site_xmat[:] = d.site_xmat.numpy().reshape((-1, 9))
+  result.cam_xpos[:] = d.cam_xpos.numpy()[0]
+  result.cam_xmat[:] = d.cam_xmat.numpy().reshape((-1, 9))
+  result.light_xpos[:] = d.light_xpos.numpy()[0]
+  result.light_xdir[:] = d.light_xdir.numpy()[0]
+  result.subtree_com[:] = d.subtree_com.numpy()[0]
+  result.cdof[:] = d.cdof.numpy()[0]
+  result.cinert[:] = d.cinert.numpy()[0]
+  result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[0]
+  result.flexedge_length[:] = d.flexedge_length.numpy()[0]
+  result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[0]
+  result.actuator_length[:] = d.actuator_length.numpy()[0]
   mujoco.mju_dense2sparse(
-    result.actuator_moment,
-    d.actuator_moment.numpy()[0],
-    result.moment_rownnz,
-    result.moment_rowadr,
-    result.moment_colind,
+    result.actuator_moment, d.actuator_moment.numpy()[0], result.moment_rownnz, result.moment_rowadr, result.moment_colind
   )
-  result.cvel = d.cvel.numpy()[0]
-  result.cdof_dot = d.cdof_dot.numpy()[0]
-  result.qfrc_bias = d.qfrc_bias.numpy()[0]
-  result.qfrc_fluid = d.qfrc_fluid.numpy()[0]
-  result.qfrc_passive = d.qfrc_passive.numpy()[0]
-  result.subtree_linvel = d.subtree_linvel.numpy()[0]
-  result.subtree_angmom = d.subtree_angmom.numpy()[0]
-  result.qfrc_spring = d.qfrc_spring.numpy()[0]
-  result.qfrc_damper = d.qfrc_damper.numpy()[0]
-  result.qfrc_gravcomp = d.qfrc_gravcomp.numpy()[0]
-  result.qfrc_fluid = d.qfrc_fluid.numpy()[0]
-  result.qfrc_actuator = d.qfrc_actuator.numpy()[0]
-  result.qfrc_smooth = d.qfrc_smooth.numpy()[0]
-  result.qfrc_constraint = d.qfrc_constraint.numpy()[0]
-  result.qfrc_inverse = d.qfrc_inverse.numpy()[0]
-  result.qacc_smooth = d.qacc_smooth.numpy()[0]
-  result.act = d.act.numpy()[0]
-  result.act_dot = d.act_dot.numpy()[0]
+  result.crb[:] = d.crb.numpy()[0]
+  result.qLDiagInv[:] = d.qLDiagInv.numpy()[0]
+  result.ten_velocity[:] = d.ten_velocity.numpy()[0]
+  result.actuator_velocity[:] = d.actuator_velocity.numpy()[0]
+  result.cvel[:] = d.cvel.numpy()[0]
+  result.cdof_dot[:] = d.cdof_dot.numpy()[0]
+  result.qfrc_bias[:] = d.qfrc_bias.numpy()[0]
+  result.qfrc_spring[:] = d.qfrc_spring.numpy()[0]
+  result.qfrc_damper[:] = d.qfrc_damper.numpy()[0]
+  result.qfrc_gravcomp[:] = d.qfrc_gravcomp.numpy()[0]
+  result.qfrc_fluid[:] = d.qfrc_fluid.numpy()[0]
+  result.qfrc_passive[:] = d.qfrc_passive.numpy()[0]
+  result.subtree_linvel[:] = d.subtree_linvel.numpy()[0]
+  result.subtree_angmom[:] = d.subtree_angmom.numpy()[0]
+  result.actuator_force[:] = d.actuator_force.numpy()[0]
+  result.qfrc_actuator[:] = d.qfrc_actuator.numpy()[0]
+  result.qfrc_smooth[:] = d.qfrc_smooth.numpy()[0]
+  result.qacc_smooth[:] = d.qacc_smooth.numpy()[0]
+  result.qfrc_constraint[:] = d.qfrc_constraint.numpy()[0]
+  result.qfrc_inverse[:] = d.qfrc_inverse.numpy()[0]
 
+  # contact
   result.contact.dist[:] = d.contact.dist.numpy()[:nacon]
   result.contact.pos[:] = d.contact.pos.numpy()[:nacon]
   result.contact.frame[:] = d.contact.frame.numpy()[:nacon].reshape((-1, 9))
@@ -1667,16 +1698,15 @@ def get_data_into(
   result.contact.solreffriction[:] = d.contact.solreffriction.numpy()[:nacon]
   result.contact.solimp[:] = d.contact.solimp.numpy()[:nacon]
   result.contact.dim[:] = d.contact.dim.numpy()[:nacon]
-  result.contact.efc_address[:] = d.contact.efc_address.numpy()[:nacon, 0]
+  result.contact.geom[:] = d.contact.geom.numpy()[:nacon]
+  result.contact.efc_address[:] = contact_efc_address_ordered[:nacon]
 
   if mujoco.mj_isSparse(mjm):
     result.qM[:] = d.qM.numpy()[0, 0]
     result.qLD[:] = d.qLD.numpy()[0, 0]
-    # TODO(team): set efc_J after fix to _realloc_con_efc lands
-    # efc_J = d.efc_J.numpy()[0, :nefc]
-    # mujoco.mju_dense2sparse(
-    #   result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind
-    # )
+    if nefc > 0:
+      efc_J = d.efc.J.numpy()[0, efc_idx, : mjm.nv]
+      mujoco.mju_dense2sparse(result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
   else:
     qM = d.qM.numpy()
     adr = 0
@@ -1687,33 +1717,25 @@ def get_data_into(
         j = mjm.dof_parentid[j]
         adr += 1
     mujoco.mj_factorM(mjm, result)
-    # TODO(team): set efc_J after fix to _realloc_con_efc lands
-    # if nefc > 0:
-    #   result.efc_J[:nefc * mjm.nv] = d.efc_J.numpy()[:nefc].flatten()
-  result.xfrc_applied[:] = d.xfrc_applied.numpy()[0]
-  result.eq_active[:] = d.eq_active.numpy()[0]
+    if nefc > 0:
+      result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[0, :nefc].flatten()
 
-  # TODO(team): set these efc_* fields after fix to _realloc_con_efc
-  # Safely copy only up to the minimum of the destination and source sizes
-  # n = min(result.efc_D.shape[0], d.efc.D.numpy()[:nefc].shape[0])
-  # result.efc_D[:n] = d.efc.D.numpy()[:nefc][:n]
-  # n_pos = min(result.efc_pos.shape[0], d.efc.pos.numpy()[:nefc].shape[0])
-  # result.efc_pos[:n_pos] = d.efc.pos.numpy()[:nefc][:n_pos]
+  # efc
+  result.efc_type[:] = d.efc.type.numpy()[0, efc_idx]
+  result.efc_id[:] = d.efc.id.numpy()[0, efc_idx]
+  result.efc_pos[:] = d.efc.pos.numpy()[0, efc_idx]
+  result.efc_margin[:] = d.efc.margin.numpy()[0, efc_idx]
+  result.efc_D[:] = d.efc.D.numpy()[0, efc_idx]
+  result.efc_vel[:] = d.efc.vel.numpy()[0, efc_idx]
+  result.efc_aref[:] = d.efc.aref.numpy()[0, efc_idx]
+  result.efc_frictionloss[:] = d.efc.frictionloss.numpy()[0, efc_idx]
+  result.efc_state[:] = d.efc.state.numpy()[0, efc_idx]
+  result.efc_force[:] = d.efc.force.numpy()[0, efc_idx]
 
-  # n_aref = min(result.efc_aref.shape[0], d.efc.aref.numpy()[:nefc].shape[0])
-  # result.efc_aref[:n_aref] = d.efc.aref.numpy()[:nefc][:n_aref]
-
-  # n_force = min(result.efc_force.shape[0], d.efc.force.numpy()[:nefc].shape[0])
-  # result.efc_force[:n_force] = d.efc.force.numpy()[:nefc][:n_force]
-
-  # n_margin = min(result.efc_margin.shape[0], d.efc.margin.numpy()[:nefc].shape[0])
-  # result.efc_margin[:n_margin] = d.efc.margin.numpy()[:nefc][:n_margin]
-
+  # rne_postconstraint
   result.cacc[:] = d.cacc.numpy()[0]
   result.cfrc_int[:] = d.cfrc_int.numpy()[0]
   result.cfrc_ext[:] = d.cfrc_ext.numpy()[0]
-
-  # TODO: other efc_ fields, anything else missing
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[0]
