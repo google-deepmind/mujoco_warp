@@ -368,6 +368,35 @@ class IOTest(parameterized.TestCase):
       """
       )
 
+  def test_convex_collision_memory(self):
+    """Test that memory for EPA and multiccd is not allocated if there are no convex collisions."""
+    _, _, _, d = test_data.fixture("humanoid/humanoid.xml")
+    for field in [
+      "epa_vert",
+      "epa_vert1",
+      "epa_vert2",
+      "epa_vert_index1",
+      "epa_vert_index2",
+      "epa_face",
+      "epa_pr",
+      "epa_norm2",
+      "epa_index",
+      "epa_map",
+      "epa_horizon",
+      "multiccd_polygon",
+      "multiccd_clipped",
+      "multiccd_pnormal",
+      "multiccd_pdist",
+      "multiccd_idx1",
+      "multiccd_idx2",
+      "multiccd_n1",
+      "multiccd_n2",
+      "multiccd_endvert",
+      "multiccd_face1",
+      "multiccd_face2",
+    ]:
+      self.assertEqual(np.prod(getattr(d, field).shape), 0)
+
 
 if __name__ == "__main__":
   wp.init()

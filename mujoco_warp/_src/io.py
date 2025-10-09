@@ -22,12 +22,18 @@ import warp as wp
 from . import math
 from . import types
 from . import warp_util
+from .collision_convex import _CONVEX_COLLISION_PAIRS
 
 # max number of worlds supported
 MAX_WORLDS = 2**24
 
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
+
+
+def _convex_collision(mjm: mujoco.MjModel) -> bool:
+  geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
+  return len(set(zip(mjm.geom_type[geom1], mjm.geom_type[geom2])) & set(_CONVEX_COLLISION_PAIRS)) > 0
 
 
 def _max_meshdegree(mjm: mujoco.MjModel) -> int:
@@ -965,10 +971,11 @@ def make_data(
     qM_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     qLD_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
+  convex_collision = _convex_collision(mjm)
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  max_npolygon = _max_npolygon(mjm)
-  max_meshdegree = _max_meshdegree(mjm)
+  max_npolygon = _max_npolygon(mjm) if convex_collision else 0
+  max_meshdegree = _max_meshdegree(mjm) if convex_collision else 0
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
@@ -1130,28 +1137,38 @@ def make_data(
     collision_worldid=wp.zeros((naconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
     # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_face=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=float),
-    epa_index=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_map=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_horizon=wp.zeros(shape=(naconmax, 2 * types.MJ_MAX_EPAHORIZON), dtype=int),
-    multiccd_polygon=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_clipped=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_pnormal=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_pdist=wp.zeros(shape=(naconmax, max_npolygon), dtype=float),
-    multiccd_idx1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_idx2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_n1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_n2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_endvert=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_face1=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_face2=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
+    epa_vert=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3),
+    epa_vert1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3),
+    epa_vert2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3),
+    epa_vert_index1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=int),
+    epa_vert_index2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=int),
+    epa_face=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3i
+    ),
+    epa_pr=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3
+    ),
+    epa_norm2=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=float
+    ),
+    epa_index=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=int
+    ),
+    epa_map=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=int
+    ),
+    epa_horizon=wp.zeros(shape=(naconmax, 2 * types.MJ_MAX_EPAHORIZON if convex_collision else 0), dtype=int),
+    multiccd_polygon=wp.zeros(shape=(naconmax, 2 * max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_clipped=wp.zeros(shape=(naconmax, 2 * max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_pnormal=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_pdist=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=float),
+    multiccd_idx1=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=int),
+    multiccd_idx2=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=int),
+    multiccd_n1=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=wp.vec3),
+    multiccd_n2=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=wp.vec3),
+    multiccd_endvert=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=wp.vec3),
+    multiccd_face1=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_face2=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=wp.vec3),
     # rne_postconstraint
     cacc=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     cfrc_int=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
@@ -1241,8 +1258,9 @@ def put_data(
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
-  max_npolygon = _max_npolygon(mjm)
-  max_meshdegree = _max_meshdegree(mjm)
+  convex_collision = _convex_collision(mjm)
+  max_npolygon = _max_npolygon(mjm) if convex_collision else 0
+  max_meshdegree = _max_meshdegree(mjm) if convex_collision else 0
 
   # calculate some fields that cannot be easily computed inline:
   if mujoco.mj_isSparse(mjm):
@@ -1511,28 +1529,38 @@ def put_data(
     collision_worldid=wp.empty(naconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
     # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_face=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=float),
-    epa_index=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_map=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_horizon=wp.zeros(shape=(naconmax, 2 * types.MJ_MAX_EPAHORIZON), dtype=int),
-    multiccd_polygon=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_clipped=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_pnormal=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_pdist=wp.zeros(shape=(naconmax, max_npolygon), dtype=float),
-    multiccd_idx1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_idx2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_n1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_n2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_endvert=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_face1=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_face2=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
+    epa_vert=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3),
+    epa_vert1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3),
+    epa_vert2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3),
+    epa_vert_index1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=int),
+    epa_vert_index2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations if convex_collision else 0), dtype=int),
+    epa_face=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3i
+    ),
+    epa_pr=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=wp.vec3
+    ),
+    epa_norm2=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=float
+    ),
+    epa_index=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=int
+    ),
+    epa_map=wp.zeros(
+      shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations if convex_collision else 0), dtype=int
+    ),
+    epa_horizon=wp.zeros(shape=(naconmax, 2 * types.MJ_MAX_EPAHORIZON if convex_collision else 0), dtype=int),
+    multiccd_polygon=wp.zeros(shape=(naconmax, 2 * max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_clipped=wp.zeros(shape=(naconmax, 2 * max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_pnormal=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_pdist=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=float),
+    multiccd_idx1=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=int),
+    multiccd_idx2=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=int),
+    multiccd_n1=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=wp.vec3),
+    multiccd_n2=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=wp.vec3),
+    multiccd_endvert=wp.zeros(shape=(naconmax, max_meshdegree if convex_collision else 0), dtype=wp.vec3),
+    multiccd_face1=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=wp.vec3),
+    multiccd_face2=wp.zeros(shape=(naconmax, max_npolygon if convex_collision else 0), dtype=wp.vec3),
     # rne_postconstraint but also smooth
     cacc=tile(mjd.cacc, dtype=wp.spatial_vector),
     cfrc_int=tile(mjd.cfrc_int, dtype=wp.spatial_vector),
