@@ -280,27 +280,23 @@ class IOTest(parameterized.TestCase):
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
   @parameterized.parameters(
-    ('<distance geom1="plane" geom2="sphere"/>', NotImplementedError),
-    ('<distance geom1="sphere" geom2="plane"/>', NotImplementedError),
-    ('<distance geom1="hfield" geom2="sphere"/>', ValueError),
-    ('<distance geom1="sphere" geom2="hfield"/>', ValueError),
+    '<distance geom1="box1" geom2="box2"/>',
+    '<distance geom1="capsule" geom2="box1"/>',
+    '<distance geom1="cylinder" geom2="box1"/>',
+    '<distance geom1="plane" geom2="box1"/>',
   )
-  def test_collision_sensors(self, sensor, err):
+  def test_collision_sensors(self, sensor):
     """Tests for collision sensors that are not implemented."""
-    with self.assertRaises(err):
+    with self.assertRaises(NotImplementedError):
       test_data.fixture(
         xml=f"""
       <mujoco>
-        <asset>
-          <hfield name="hfield" nrow="2" ncol="2" size="1 1 1 1"/>
-        </asset>
         <worldbody>
           <geom name="plane" type="plane" size="10 10 .01"/>
-          <geom name="hfield" type="hfield" hfield="hfield"/>
-          <body>
-            <geom name="sphere" type="sphere" size=".1"/>
-            <joint type="slide" axis="0 0 1"/>
-          </body>
+          <geom name="capsule" type="capsule" size=".1 .1"/>
+          <geom name="cylinder" type="cylinder" size=".1 .1"/>
+          <geom name="box1" type="box" size=".1 .1 .1"/>
+          <geom name="box2" type="box" size=".1 .1 .1"/>
         </worldbody>
         <sensor>
           {sensor}

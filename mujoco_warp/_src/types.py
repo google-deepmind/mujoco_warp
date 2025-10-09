@@ -534,6 +534,10 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec7f(wp.types.vector(length=7, dtype=float)):
+  pass
+
+
 class vec8f(wp.types.vector(length=8, dtype=float)):
   pass
 
@@ -552,6 +556,7 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
 
 vec5 = vec5f
 vec6 = vec6f
+vec7 = vec7f
 vec10 = vec10f
 vec11 = vec11f
 
@@ -951,10 +956,12 @@ class Model:
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
     nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
                             [-1, ngeom - 1]
-    nxn_pairid: predefined pair id, -1 if not predefined,    (<= ngeom * (ngeom - 1) // 2,)
-                -2 if skipped
-    nxn_pairid_filtered: predefined pair id, -1 if not       (<= ngeom * (ngeom - 1) // 2,)
-                         predefined
+    nxn_pairid: predefined pair id                           (<= ngeom * (ngeom - 1) // 2, 3)
+                0: -1 if not predefined, -2 if skipped
+                1: collision id, else -1
+                2: geom distance id, else -1
+    nxn_pairid_filtered: predefined pair id                  (<= ngeom * (ngeom - 1) // 2, 3)
+                         same format as nxn_pairid
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
     pair_geom2: id of geom2                                  (npair,)
@@ -1276,8 +1283,8 @@ class Model:
   actuator_lengthrange: wp.array(dtype=wp.vec2)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
   nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)  # warp only
-  nxn_pairid: wp.array(dtype=int)  # warp only
-  nxn_pairid_filtered: wp.array(dtype=int)  # warp only
+  nxn_pairid: wp.array(dtype=wp.vec3i)  # warp only
+  nxn_pairid_filtered: wp.array(dtype=wp.vec3i)  # warp only
   pair_dim: wp.array(dtype=int)
   pair_geom1: wp.array(dtype=int)
   pair_geom2: wp.array(dtype=int)
@@ -1503,6 +1510,7 @@ class Data:
     sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (naconmax,)
+    collision_pairid: collision pair ids from broadphase        (naconmax, 3)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
     epa_vert: vertices in EPA polytope in Minkowski space       (naconmax, 5 + CCDiter)
@@ -1550,6 +1558,7 @@ class Data:
     sensor_contact_matchid: id for matching contact             (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_criteria: critera for reduction              (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_direction: direction of contact              (nworld, <=nsensor, MJ_MAXCONPAIR)
+    sensor_collision: distance, position, normal                (nworld, <=nsensor, nbodygeom, 7)
     ray_bodyexclude: id of body to exclude from ray computation
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
@@ -1663,7 +1672,7 @@ class Data:
 
   # collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
-  collision_pairid: wp.array(dtype=int)
+  collision_pairid: wp.array(dtype=wp.vec3i)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
 
@@ -1720,6 +1729,7 @@ class Data:
   sensor_contact_matchid: wp.array3d(dtype=int)  # warp only
   sensor_contact_criteria: wp.array3d(dtype=float)  # warp only
   sensor_contact_direction: wp.array3d(dtype=float)  # warp only
+  sensor_collision: wp.array3d(dtype=vec7)  # warp only
 
   # ray
   ray_bodyexclude: wp.array(dtype=int)  # warp only

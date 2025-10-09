@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from . import math
 from .collision_primitive import contact_params
 from .collision_primitive import geom
 from .collision_primitive import write_contact
@@ -632,11 +631,6 @@ def _sdf_narrowphase(
   geom_friction: wp.array2d(dtype=wp.vec3),
   geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array2d(dtype=float),
-  hfield_adr: wp.array(dtype=int),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
-  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
@@ -672,7 +666,7 @@ def _sdf_narrowphase(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=int),
+  collision_pairid_in: wp.array(dtype=wp.vec3i),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
   # In:
@@ -862,6 +856,7 @@ def _sdf_narrowphase(
     solreffriction,
     solimp,
     geoms,
+    collision_pairid_in[contact_tid],
     worldid,
     nacon_out,
     contact_dist_out,
@@ -897,11 +892,6 @@ def sdf_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
-      m.hfield_adr,
-      m.hfield_nrow,
-      m.hfield_ncol,
-      m.hfield_size,
-      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_vert,
