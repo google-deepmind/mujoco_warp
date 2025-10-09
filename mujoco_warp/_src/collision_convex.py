@@ -21,8 +21,21 @@ from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
 from .collision_hfield import hfield_filter
 from .collision_primitive import Geom
+from .collision_primitive import box_box_wrapper
+from .collision_primitive import capsule_box_wrapper
+from .collision_primitive import capsule_capsule_wrapper
 from .collision_primitive import contact_params
 from .collision_primitive import geom
+from .collision_primitive import plane_box_wrapper
+from .collision_primitive import plane_capsule_wrapper
+from .collision_primitive import plane_convex_wrapper
+from .collision_primitive import plane_cylinder_wrapper
+from .collision_primitive import plane_ellipsoid_wrapper
+from .collision_primitive import plane_sphere_wrapper
+from .collision_primitive import sphere_box_wrapper
+from .collision_primitive import sphere_capsule_wrapper
+from .collision_primitive import sphere_cylinder_wrapper
+from .collision_primitive import sphere_sphere_wrapper
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
@@ -42,33 +55,47 @@ MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
 
-_CONVEX_COLLISION_PAIRS = [
-  (GeomType.HFIELD, GeomType.SPHERE),
-  (GeomType.HFIELD, GeomType.CAPSULE),
-  (GeomType.HFIELD, GeomType.ELLIPSOID),
-  (GeomType.HFIELD, GeomType.CYLINDER),
-  (GeomType.HFIELD, GeomType.BOX),
-  (GeomType.HFIELD, GeomType.MESH),
-  (GeomType.SPHERE, GeomType.ELLIPSOID),
-  (GeomType.SPHERE, GeomType.MESH),
-  (GeomType.CAPSULE, GeomType.ELLIPSOID),
-  (GeomType.CAPSULE, GeomType.CYLINDER),
-  (GeomType.CAPSULE, GeomType.MESH),
-  (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
-  (GeomType.ELLIPSOID, GeomType.CYLINDER),
-  (GeomType.ELLIPSOID, GeomType.BOX),
-  (GeomType.ELLIPSOID, GeomType.MESH),
-  (GeomType.CYLINDER, GeomType.CYLINDER),
-  (GeomType.CYLINDER, GeomType.BOX),
-  (GeomType.CYLINDER, GeomType.MESH),
-  (GeomType.BOX, GeomType.MESH),
-  (GeomType.MESH, GeomType.MESH),
-]
+
+_CONVEX_COLLISION_PAIRS = {
+  (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
+  (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
+  (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid_wrapper,
+  (GeomType.PLANE, GeomType.CYLINDER): plane_cylinder_wrapper,
+  (GeomType.PLANE, GeomType.BOX): plane_box_wrapper,
+  (GeomType.PLANE, GeomType.MESH): plane_convex_wrapper,
+  (GeomType.HFIELD, GeomType.SPHERE): None,
+  (GeomType.HFIELD, GeomType.CAPSULE): None,
+  (GeomType.HFIELD, GeomType.ELLIPSOID): None,
+  (GeomType.HFIELD, GeomType.CYLINDER): None,
+  (GeomType.HFIELD, GeomType.BOX): None,
+  (GeomType.HFIELD, GeomType.MESH): None,
+  (GeomType.SPHERE, GeomType.SPHERE): sphere_sphere_wrapper,
+  (GeomType.SPHERE, GeomType.CAPSULE): sphere_capsule_wrapper,
+  (GeomType.SPHERE, GeomType.ELLIPSOID): None,
+  (GeomType.SPHERE, GeomType.CYLINDER): sphere_cylinder_wrapper,
+  (GeomType.SPHERE, GeomType.BOX): sphere_box_wrapper,
+  (GeomType.SPHERE, GeomType.MESH): None,
+  (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule_wrapper,
+  (GeomType.CAPSULE, GeomType.ELLIPSOID): None,
+  (GeomType.CAPSULE, GeomType.CYLINDER): None,
+  (GeomType.CAPSULE, GeomType.BOX): capsule_box_wrapper,
+  (GeomType.CAPSULE, GeomType.MESH): None,
+  (GeomType.ELLIPSOID, GeomType.ELLIPSOID): None,
+  (GeomType.ELLIPSOID, GeomType.CYLINDER): None,
+  (GeomType.ELLIPSOID, GeomType.BOX): None,
+  (GeomType.ELLIPSOID, GeomType.MESH): None,
+  (GeomType.CYLINDER, GeomType.CYLINDER): None,
+  (GeomType.CYLINDER, GeomType.BOX): None,
+  (GeomType.CYLINDER, GeomType.MESH): None,
+  (GeomType.BOX, GeomType.BOX): box_box_wrapper,
+  (GeomType.BOX, GeomType.MESH): None,
+  (GeomType.MESH, GeomType.MESH): None,
+}
 
 
 def _check_convex_collision_pairs():
   prev_idx = -1
-  for pair in _CONVEX_COLLISION_PAIRS:
+  for pair in _CONVEX_COLLISION_PAIRS.keys():
     idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
     if pair[1] < pair[0] or idx <= prev_idx:
       return False
@@ -430,6 +457,35 @@ def ccd_kernel_builder(
       geom_xmat_in[worldid, g2],
     )
 
+    if wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)] != None):
+      wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)])(
+        naconmax_in,
+        geom1,
+        geom2,
+        worldid,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        nacon_out,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+      )
+      return
+
     # see MuJoCo mjc_ConvexHField
     if wp.static(is_hfield):
       # height field subgrid
@@ -632,7 +688,7 @@ def convex_narrowphase(m: Model, d: Data):
   kernel for each type of convex collision pair present in the model, avoiding unnecessary
   computations for non-existent pair types.
   """
-  for geom_pair in _CONVEX_COLLISION_PAIRS:
+  for geom_pair in _CONVEX_COLLISION_PAIRS.keys():
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
