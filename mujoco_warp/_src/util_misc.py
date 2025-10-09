@@ -19,11 +19,11 @@ from typing import Tuple
 
 import warp as wp
 
-from . import math
-from .types import MJ_MINVAL
-from .types import GeomType
-from .types import WrapType
-from .types import vec10
+from mujoco_warp._src import math
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import WrapType
+from mujoco_warp._src.types import vec10
 
 
 @wp.func

@@ -29,8 +29,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
-
-from .io import MAX_WORLDS
+from mujoco_warp._src.io import MAX_WORLDS
 
 _IO_TEST_MODELS = (
   "pendula.xml",

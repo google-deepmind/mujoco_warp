@@ -19,9 +19,9 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from . import math
-from . import types
-from . import warp_util
+from mujoco_warp._src import math
+from mujoco_warp._src import types
+from mujoco_warp._src import warp_util
 
 # max number of worlds supported
 MAX_WORLDS = 2**24

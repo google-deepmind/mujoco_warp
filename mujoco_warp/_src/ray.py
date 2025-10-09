@@ -17,12 +17,12 @@ from typing import Tuple
 
 import warp as wp
 
-from .math import safe_div
-from .types import MJ_MINVAL
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import vec6
+from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import vec6
 
 wp.set_module_options({"enable_backward": False})
 

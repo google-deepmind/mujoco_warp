@@ -15,25 +15,25 @@
 
 import warp as wp
 
-from .collision_gjk import ccd
-from .collision_gjk_legacy import epa_legacy
-from .collision_gjk_legacy import gjk_legacy
-from .collision_gjk_legacy import multicontact_legacy
-from .collision_hfield import hfield_filter
-from .collision_primitive import Geom
-from .collision_primitive import contact_params
-from .collision_primitive import geom
-from .collision_primitive import write_contact
-from .math import make_frame
-from .math import upper_trid_index
-from .types import MJ_MAXCONPAIR
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk_legacy import epa_legacy
+from mujoco_warp._src.collision_gjk_legacy import gjk_legacy
+from mujoco_warp._src.collision_gjk_legacy import multicontact_legacy
+from mujoco_warp._src.collision_hfield import hfield_filter
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_primitive import contact_params
+from mujoco_warp._src.collision_primitive import geom
+from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})

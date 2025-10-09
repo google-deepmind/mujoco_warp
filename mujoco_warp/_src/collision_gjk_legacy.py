@@ -15,14 +15,14 @@
 
 import warp as wp
 
-from .collision_primitive import Geom
-from .math import gjk_normalize
-from .math import orthonormal
-from .math import orthonormal_to_z
-from .support import all_same
-from .support import any_different
-from .types import MJ_MINVAL
-from .types import GeomType
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.math import gjk_normalize
+from mujoco_warp._src.math import orthonormal
+from mujoco_warp._src.math import orthonormal_to_z
+from mujoco_warp._src.support import all_same
+from mujoco_warp._src.support import any_different
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import GeomType
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})

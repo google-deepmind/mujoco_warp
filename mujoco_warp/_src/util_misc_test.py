@@ -22,10 +22,10 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
-from . import util_misc
-from .types import MJ_MINVAL
-from .types import WrapType
-from .types import vec10
+from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import WrapType
+from mujoco_warp._src.types import vec10
 
 
 def _assert_eq(a, b, name):
