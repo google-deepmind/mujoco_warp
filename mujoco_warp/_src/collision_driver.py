@@ -17,20 +17,19 @@ from typing import Any
 
 import warp as wp
 
-from .collision_convex import convex_narrowphase
-from .collision_primitive import primitive_narrowphase
-from .collision_sdf import sdf_narrowphase
-from .math import upper_tri_index
-from .types import MJ_MAXVAL
-from .types import BroadphaseFilter
-from .types import BroadphaseType
-from .types import Data
-from .types import DisableBit
-from .types import GeomType
-from .types import Model
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from mujoco_warp._src.collision_convex import convex_narrowphase
+from mujoco_warp._src.collision_primitive import primitive_narrowphase
+from mujoco_warp._src.collision_sdf import sdf_narrowphase
+from mujoco_warp._src.math import upper_tri_index
+from mujoco_warp._src.types import MJ_MAXVAL
+from mujoco_warp._src.types import BroadphaseFilter
+from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 

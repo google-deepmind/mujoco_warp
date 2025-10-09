@@ -21,10 +21,9 @@ from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
-
-from .collision_gjk import ccd
-from .collision_primitive import Geom
-from .warp_util import kernel as nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 MAX_ITERATIONS = 20
 

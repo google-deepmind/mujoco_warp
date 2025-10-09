@@ -19,15 +19,15 @@ from typing import Tuple
 
 import warp as wp
 
-from . import math
-from . import smooth
-from . import support
-from . import types
-from .block_cholesky import create_blocked_cholesky_func
-from .block_cholesky import create_blocked_cholesky_solve_func
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import smooth
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 

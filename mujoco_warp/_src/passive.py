@@ -15,15 +15,15 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from .types import MJ_MINVAL
-from .types import Data
-from .types import DisableBit
-from .types import GeomType
-from .types import JointType
-from .types import Model
-from .warp_util import event_scope
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 

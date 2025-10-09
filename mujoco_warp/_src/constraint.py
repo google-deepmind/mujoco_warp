@@ -15,13 +15,13 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from . import types
-from .types import ConstraintType
-from .types import vec5
-from .types import vec11
-from .warp_util import event_scope
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 

@@ -15,26 +15,26 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from . import util_misc
-from .types import MJ_MINVAL
-from .types import CamLightType
-from .types import ConeType
-from .types import Data
-from .types import DisableBit
-from .types import JointType
-from .types import Model
-from .types import ObjType
-from .types import TileSet
-from .types import TrnType
-from .types import WrapType
-from .types import vec5
-from .types import vec10
-from .types import vec11
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import CamLightType
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import WrapType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec10
+from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 

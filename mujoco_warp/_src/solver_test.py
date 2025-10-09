@@ -25,9 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
-
-from . import solver
-from .math import safe_div
+from mujoco_warp._src import solver
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision

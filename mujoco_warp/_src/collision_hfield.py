@@ -17,7 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
-from .types import MJ_MAXVAL
+from mujoco_warp._src.types import MJ_MAXVAL
 
 
 @wp.func
