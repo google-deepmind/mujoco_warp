@@ -182,9 +182,8 @@ def ccd_kernel_builder(
       geom1.margin = margin
       geom2.margin = margin
       if pairid[1] >= 0:
-        cutoff = (
-          1.0e32  # if there is a collision sensor set large cutoff here in order to work with various sensor cutoff values
-        )
+        # if collision sensor, set large cutoff to work with various sensor cutoff values
+        cutoff = 1.0e32
       else:
         cutoff = 0.0
       dist, ncontact, witness1, witness2 = ccd(
