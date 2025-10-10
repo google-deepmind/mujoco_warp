@@ -75,10 +75,7 @@ def ctrl_noise(
     midpoint = ctrl_center[actid]
 
   # exponential convergence to midpoint at ctrlnoiserate
-  if step > 0:
-    ctrl = rate * ctrl_in[worldid, actid] + (1.0 - rate) * midpoint
-  else:
-    ctrl = midpoint
+  ctrl = rate * ctrl_in[worldid, actid] + (1.0 - rate) * midpoint
 
   # add noise
   ctrl += scale * halfrange * (2.0 * halton((step + 1) * (worldid + 1), actid + 2) - 1.0)
