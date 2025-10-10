@@ -41,9 +41,6 @@ class BlockDim:
 
   # collision_driver
   segmented_sort: int = 128
-  # derivative
-  qderiv_actuator_passive_actuation: int = 64
-  qderiv_actuator_passive_no_actuation: int = 256
   # forward
   euler_dense: int = 32
   actuator_velocity: int = 32
