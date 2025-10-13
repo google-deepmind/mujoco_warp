@@ -927,12 +927,7 @@ def _get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_si
   else:
     nv_padded = round_up(nv, 4)
 
-  efc_J_padded_size = (nworld, njmax_padded, nv_padded)
-  efc_h_padded_size = (nworld, nv_padded, nv_padded)
-  efc_d_padded_size = (nworld, njmax_padded)
-  efc_state_padded_size = (nworld, njmax_padded)
-
-  return efc_J_padded_size, efc_h_padded_size, efc_d_padded_size, efc_state_padded_size
+  return njmax_padded, nv_padded
 
 
 def make_data(
