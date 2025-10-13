@@ -197,12 +197,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   qM_tiles = tuple(types.TileSet(adr=wp.array(tiles[sz], dtype=int), size=sz) for sz in sorted(tiles.keys()))
 
-  # subtree_mass is a precalculated array used in smooth
-  subtree_mass = np.copy(mjm.body_mass)
-  # TODO(team): should this be [mjm.nbody - 1, 0) ?
-  for i in range(mjm.nbody - 1, -1, -1):
-    subtree_mass[mjm.body_parentid[i]] += subtree_mass[i]
-
   # actuator_moment tiles are grouped by dof size and number of actuators
   tree_id = np.arange(len(tile_corners), dtype=np.int32)
   num_trees = int(np.max(tree_id)) if len(tree_id) > 0 else 0
@@ -568,7 +562,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     body_iquat=create_nmodel_batched_array(mjm.body_iquat, dtype=wp.quat),
     body_mass=create_nmodel_batched_array(mjm.body_mass, dtype=float),
     body_subtreemass=create_nmodel_batched_array(mjm.body_subtreemass, dtype=float),
-    subtree_mass=create_nmodel_batched_array(subtree_mass, dtype=float),
     body_inertia=create_nmodel_batched_array(mjm.body_inertia, dtype=wp.vec3),
     body_invweight0=create_nmodel_batched_array(mjm.body_invweight0, dtype=wp.vec2),
     body_contype=wp.array(mjm.body_contype, dtype=int),

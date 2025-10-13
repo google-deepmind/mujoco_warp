@@ -801,7 +801,6 @@ class Model:
     body_iquat: local orientation of inertia ellipsoid       (nworld, nbody, 4)
     body_mass: mass                                          (nworld, nbody,)
     body_subtreemass: mass of subtree starting at this body  (nworld, nbody,)
-    subtree_mass: mass of subtree                            (nworld, nbody,)
     body_inertia: diagonal inertia in ipos/iquat frame       (nworld, nbody, 3)
     body_invweight0: mean inv inert in qpos0 (trn, rot)      (nworld, nbody, 2)
     body_contype: OR over all geom contypes                  (nbody,)
@@ -1112,7 +1111,6 @@ class Model:
   body_iquat: wp.array2d(dtype=wp.quat)
   body_mass: wp.array2d(dtype=float)
   body_subtreemass: wp.array2d(dtype=float)
-  subtree_mass: wp.array2d(dtype=float)  # warp only
   body_inertia: wp.array2d(dtype=wp.vec3)
   body_invweight0: wp.array2d(dtype=wp.vec2)
   body_contype: wp.array(dtype=int)
