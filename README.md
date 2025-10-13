@@ -84,7 +84,7 @@ The following features are implemented:
 | Cone               | All                                                                                                     |
 | Condim             | All                                                                                                     |
 | Solver             | All except `PGS`, `noslip`                                                                              |
-| Fluid Model        | `BOX` only                                                                                              |
+| Fluid Model        | All                                                                                             |
 | Tendon Wrap        | All                                                                                                     |
 | Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, `GEOMFROMTO`, `PLUGIN`, `USER`                                     |
 | Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |

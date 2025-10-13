@@ -373,7 +373,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
 @wp.func
 def write_contact(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   dist_in: float,
   pos_in: wp.vec3,
@@ -388,7 +388,7 @@ def write_contact(
   geoms_in: wp.vec2i,
   worldid_in: int,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -402,8 +402,8 @@ def write_contact(
   contact_worldid_out: wp.array(dtype=int),
 ):
   if dist_in - margin_in < 0.0:
-    cid = wp.atomic_add(ncon_out, 0, 1)
-    if cid < nconmax_in:
+    cid = wp.atomic_add(nacon_out, 0, 1)
+    if cid < naconmax_in:
       contact_dist_out[cid] = dist_in
       contact_pos_out[cid] = pos_in
       contact_frame_out[cid] = frame_in
@@ -511,7 +511,7 @@ def contact_params(
 @wp.func
 def plane_sphere_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   plane: Geom,
   sphere: Geom,
@@ -525,7 +525,7 @@ def plane_sphere_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -543,7 +543,7 @@ def plane_sphere_wrapper(
 
   if dist - margin < 0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(plane.normal),
@@ -556,7 +556,7 @@ def plane_sphere_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -574,7 +574,7 @@ def plane_sphere_wrapper(
 @wp.func
 def sphere_sphere_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   sphere1: Geom,
   sphere2: Geom,
@@ -588,7 +588,7 @@ def sphere_sphere_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -606,7 +606,7 @@ def sphere_sphere_wrapper(
 
   if dist - margin < 0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(normal),
@@ -619,7 +619,7 @@ def sphere_sphere_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -637,7 +637,7 @@ def sphere_sphere_wrapper(
 @wp.func
 def sphere_capsule_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   sphere: Geom,
   cap: Geom,
@@ -651,7 +651,7 @@ def sphere_capsule_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -672,7 +672,7 @@ def sphere_capsule_wrapper(
 
   if dist - margin < 0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(normal),
@@ -685,7 +685,7 @@ def sphere_capsule_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -703,7 +703,7 @@ def sphere_capsule_wrapper(
 @wp.func
 def capsule_capsule_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   cap1: Geom,
   cap2: Geom,
@@ -717,7 +717,7 @@ def capsule_capsule_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -748,7 +748,7 @@ def capsule_capsule_wrapper(
 
   if dist - margin < 0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(normal),
@@ -761,7 +761,7 @@ def capsule_capsule_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -779,7 +779,7 @@ def capsule_capsule_wrapper(
 @wp.func
 def plane_capsule_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   plane: Geom,
   cap: Geom,
@@ -793,7 +793,7 @@ def plane_capsule_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -823,7 +823,7 @@ def plane_capsule_wrapper(
     disti = dist[i]
     if disti - margin < 0.0:
       write_contact(
-        nconmax_in,
+        naconmax_in,
         disti,
         pos[i],
         frame,
@@ -836,7 +836,7 @@ def plane_capsule_wrapper(
         solimp,
         geoms,
         worldid,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -854,7 +854,7 @@ def plane_capsule_wrapper(
 @wp.func
 def plane_ellipsoid_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   plane: Geom,
   ellipsoid: Geom,
@@ -868,7 +868,7 @@ def plane_ellipsoid_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -886,7 +886,7 @@ def plane_ellipsoid_wrapper(
 
   if dist - margin < 0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(normal),
@@ -899,7 +899,7 @@ def plane_ellipsoid_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -917,7 +917,7 @@ def plane_ellipsoid_wrapper(
 @wp.func
 def plane_box_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   plane: Geom,
   box: Geom,
@@ -931,7 +931,7 @@ def plane_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -952,7 +952,7 @@ def plane_box_wrapper(
     disti = dist[i]
     if disti - margin < 0.0:
       write_contact(
-        nconmax_in,
+        naconmax_in,
         disti,
         pos[i],
         frame,
@@ -965,7 +965,7 @@ def plane_box_wrapper(
         solimp,
         geoms,
         worldid,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -986,7 +986,7 @@ _HUGE_VAL = 1e6
 @wp.func
 def plane_convex_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   plane: Geom,
   convex: Geom,
@@ -1000,7 +1000,7 @@ def plane_convex_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1021,7 +1021,7 @@ def plane_convex_wrapper(
     disti = dist[i]
     if disti - margin < 0.0:
       write_contact(
-        nconmax_in,
+        naconmax_in,
         disti,
         pos[i],
         frame,
@@ -1034,7 +1034,7 @@ def plane_convex_wrapper(
         solimp,
         geoms,
         worldid,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1052,7 +1052,7 @@ def plane_convex_wrapper(
 @wp.func
 def sphere_cylinder_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   sphere: Geom,
   cylinder: Geom,
@@ -1066,7 +1066,7 @@ def sphere_cylinder_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1094,7 +1094,7 @@ def sphere_cylinder_wrapper(
 
   if dist - margin < 0.0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(normal),
@@ -1107,7 +1107,7 @@ def sphere_cylinder_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -1125,7 +1125,7 @@ def sphere_cylinder_wrapper(
 @wp.func
 def plane_cylinder_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   plane: Geom,
   cylinder: Geom,
@@ -1139,7 +1139,7 @@ def plane_cylinder_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1170,7 +1170,7 @@ def plane_cylinder_wrapper(
     disti = dist[i]
     if disti - margin < 0.0:
       write_contact(
-        nconmax_in,
+        naconmax_in,
         disti,
         pos[i],
         frame,
@@ -1183,7 +1183,7 @@ def plane_cylinder_wrapper(
         solimp,
         geoms,
         worldid,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1201,7 +1201,7 @@ def plane_cylinder_wrapper(
 @wp.func
 def sphere_box_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   sphere: Geom,
   box: Geom,
@@ -1215,7 +1215,7 @@ def sphere_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1232,7 +1232,7 @@ def sphere_box_wrapper(
 
   if dist - margin < 0.0:
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist,
       pos,
       make_frame(normal),
@@ -1245,7 +1245,7 @@ def sphere_box_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -1263,7 +1263,7 @@ def sphere_box_wrapper(
 @wp.func
 def capsule_box_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   cap: Geom,
   box: Geom,
@@ -1277,7 +1277,7 @@ def capsule_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1310,7 +1310,7 @@ def capsule_box_wrapper(
     disti = dist[i]
     if disti - margin < 0.0:
       write_contact(
-        nconmax_in,
+        naconmax_in,
         disti,
         pos[i],
         make_frame(normal[i]),
@@ -1323,7 +1323,7 @@ def capsule_box_wrapper(
         solimp,
         geoms,
         worldid,
-        ncon_out,
+        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1341,7 +1341,7 @@ def capsule_box_wrapper(
 @wp.func
 def box_box_wrapper(
   # Data in:
-  nconmax_in: int,
+  naconmax_in: int,
   # In:
   box1: Geom,
   box2: Geom,
@@ -1355,7 +1355,7 @@ def box_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  ncon_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1384,7 +1384,7 @@ def box_box_wrapper(
       continue
 
     write_contact(
-      nconmax_in,
+      naconmax_in,
       dist[i],
       pos[i],
       make_frame(normal[i]),
@@ -1397,7 +1397,7 @@ def box_box_wrapper(
       solimp,
       geoms,
       worldid,
-      ncon_out,
+      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -1493,7 +1493,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    nconmax_in: int,
+    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
@@ -1501,7 +1501,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # Data out:
-    ncon_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1602,7 +1602,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
 
       if collision_type1 == type1 and collision_type2 == type2:
         wp.static(primitive_collisions_func[i])(
-          nconmax_in,
+          naconmax_in,
           geom1,
           geom2,
           worldid,
@@ -1614,7 +1614,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           solreffriction,
           solimp,
           geoms,
-          ncon_out,
+          nacon_out,
           contact_dist_out,
           contact_pos_out,
           contact_frame_out,
@@ -1664,7 +1664,7 @@ def primitive_narrowphase(m: Model, d: Data):
   # for pair types without collisions, as well as updating the launch dimensions.
   wp.launch(
     _primitive_narrowphase_builder(m),
-    dim=d.nconmax,
+    dim=d.naconmax,
     inputs=[
       m.geom_type,
       m.geom_condim,
@@ -1703,7 +1703,7 @@ def primitive_narrowphase(m: Model, d: Data):
       m.pair_margin,
       m.pair_gap,
       m.pair_friction,
-      d.nconmax,
+      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
       d.collision_pair,
@@ -1712,7 +1712,7 @@ def primitive_narrowphase(m: Model, d: Data):
       d.ncollision,
     ],
     outputs=[
-      d.ncon,
+      d.nacon,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,

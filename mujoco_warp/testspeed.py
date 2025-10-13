@@ -150,13 +150,13 @@ def _main(argv: Sequence[str]):
       f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-    print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
+    print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
     res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
-    jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
+    jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
     print(f"""
@@ -172,12 +172,12 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
     if trace:
       _print_trace(trace, 0, steps)
 
-    if ncon and nefc:
+    if nacon and nefc:
       idx = 0
       ncon_matrix, nefc_matrix = [], []
       for i in range(_NUM_BUCKETS.value):
         size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
-        ncon_arr = np.array(ncon[idx : idx + size])
+        ncon_arr = np.array(nacon[idx : idx + size])
         nefc_arr = np.array(nefc[idx : idx + size])
         ncon_matrix.append([np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)])
         nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])

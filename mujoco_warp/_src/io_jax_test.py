@@ -209,9 +209,9 @@ class IOTest(parameterized.TestCase):
   def test_put_data_nworld_array(self, xml):
     """Tests that put_data arrays that scale with nworld have leading dim nworld."""
     mjm, mjd, _, _ = test_data.fixture(xml)
-    d1 = mjw.put_data(mjm, mjd, nworld=1, nconmax=3_000, njmax=3_000)
-    dn = mjw.put_data(mjm, mjd, nworld=133, nconmax=3_000, njmax=3_000)
-    _leading_dims_scale_w_nworld(self, d1, dn, 1, 133)
+    d1 = mjw.put_data(mjm, mjd, nworld=2, nconmax=1, njmax=40)
+    dn = mjw.put_data(mjm, mjd, nworld=133, nconmax=1, njmax=40)
+    _leading_dims_scale_w_nworld(self, d1, dn, 2, 133)
 
   def test_public_api_jax_compat(self):
     """Tests that annotations meet a set of criteria for JAX compat."""
@@ -233,11 +233,11 @@ class IOTest(parameterized.TestCase):
   def test_make_put_data_dims_match(self, xml):
     """Tests that make_data and put_data have matching dimensions."""
     mjm, mjd, _, _ = test_data.fixture(xml)
-    dm2 = mjw.make_data(mjm, nworld=2, nconmax=3_000, njmax=4_200)
-    dm3 = mjw.make_data(mjm, nworld=3, nconmax=3_000, njmax=4_200)
+    dm2 = mjw.make_data(mjm, nworld=2, nconmax=30, njmax=40)
+    dm3 = mjw.make_data(mjm, nworld=3, nconmax=30, njmax=40)
 
-    dp2 = mjw.put_data(mjm, mjd, nworld=2, nconmax=3_000, njmax=4_200)
-    dp3 = mjw.put_data(mjm, mjd, nworld=3, nconmax=3_000, njmax=4_200)
+    dp2 = mjw.put_data(mjm, mjd, nworld=2, nconmax=30, njmax=40)
+    dp3 = mjw.put_data(mjm, mjd, nworld=3, nconmax=30, njmax=40)
 
     _dims_match(self, dm2, dp2)
     _dims_match(self, dm3, dp3)

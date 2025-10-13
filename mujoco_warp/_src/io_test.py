@@ -87,22 +87,153 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
+  def test_get_data_into(self):
+    # keyframe=0: ncon=8, nefc=32
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+
+    # keyframe=2: ncon=0, nefc=0
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
+
+    # check that mujoco._functions._realloc_con_efc allocates for contact and efc
+    mjwarp.get_data_into(mjd, mjm, d)
+    self.assertEqual(mjd.ncon, 8)
+    self.assertEqual(mjd.nefc, 32)
+
+    # compare fields
+    self.assertEqual(d.solver_niter.numpy()[0], mjd.solver_niter[0])
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    self.assertEqual(d.ne.numpy()[0], mjd.ne)
+    self.assertEqual(d.nf.numpy()[0], mjd.nf)
+    self.assertEqual(d.nl.numpy()[0], mjd.nl)
+
+    for field in [
+      "energy",
+      "qpos",
+      "qvel",
+      "act",
+      "qacc_warmstart",
+      "ctrl",
+      "qfrc_applied",
+      "xfrc_applied",
+      "eq_active",
+      "mocap_pos",
+      "mocap_quat",
+      "qacc",
+      "act_dot",
+      "xpos",
+      "xquat",
+      "xmat",
+      "xipos",
+      "ximat",
+      "xanchor",
+      "xaxis",
+      "geom_xpos",
+      "geom_xmat",
+      "site_xpos",
+      "site_xmat",
+      "cam_xpos",
+      "cam_xmat",
+      "light_xpos",
+      "light_xdir",
+      "subtree_com",
+      "cdof",
+      "cinert",
+      "flexvert_xpos",
+      "flexedge_length",
+      "flexedge_velocity",
+      "actuator_length",
+      # TODO(team): actuator_moment mjd sparse2dense
+      "crb",
+      # TODO(team): qLDiagInv sparse factorization
+      "ten_velocity",
+      "actuator_velocity",
+      "cvel",
+      "cdof_dot",
+      "qfrc_bias",
+      "qfrc_spring",
+      "qfrc_damper",
+      "qfrc_gravcomp",
+      "qfrc_fluid",
+      "qfrc_passive",
+      "subtree_linvel",
+      "subtree_angmom",
+      "actuator_force",
+      "qfrc_actuator",
+      "qfrc_smooth",
+      "qacc_smooth",
+      "qfrc_constraint",
+      "qfrc_inverse",
+      # TODO(team): qM
+      # TODO(team): qLD
+      "cacc",
+      "cfrc_int",
+      "cfrc_ext",
+      "ten_length",
+      "ten_J",
+      "ten_wrapadr",
+      "ten_wrapnum",
+      "wrap_obj",
+      "wrap_xpos",
+      "sensordata",
+    ]:
+      _assert_eq(getattr(d, field).numpy()[0].reshape(-1), getattr(mjd, field).reshape(-1), field)
+
+    # contact
+    ncon = d.nacon.numpy()[0]
+    for field in [
+      "dist",
+      "pos",
+      "frame",
+      "includemargin",
+      "friction",
+      "solref",
+      "solreffriction",
+      "solimp",
+      "dim",
+      "geom",
+      # TODO(team): efc_address
+    ]:
+      _assert_eq(getattr(d.contact, field).numpy()[:ncon].reshape(-1), getattr(mjd.contact, field).reshape(-1), field)
+
+    # efc
+    nefc = d.nefc.numpy()[0]
+    for field in [
+      "type",
+      "id",
+      "pos",
+      "margin",
+      "D",
+      "vel",
+      "aref",
+      "frictionloss",
+      "state",
+      "force",
+    ]:
+      _assert_eq(getattr(d.efc, field).numpy()[0, :nefc].reshape(-1), getattr(mjd, "efc_" + field).reshape(-1), field)
+
   def test_ellipsoid_fluid_model(self):
-    with self.assertRaises(NotImplementedError):
-      mjm = mujoco.MjModel.from_xml_string(
-        """
-      <mujoco>
-        <option density="1"/>
-        <worldbody>
-          <body>
-            <geom type="sphere" size=".1" fluidshape="ellipsoid"/>
-            <freejoint/>
-          </body>
-        </worldbody>
-      </mujoco>
+    mjm = mujoco.MjModel.from_xml_string(
       """
-      )
-      mjwarp.put_model(mjm)
+    <mujoco>
+      <option density="1.1" viscosity="0.05"/>
+      <worldbody>
+        <body>
+          <geom type="sphere" size=".15" fluidshape="ellipsoid"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    m = mjwarp.put_model(mjm)
+
+    np.testing.assert_allclose(m.geom_fluid.numpy(), mjm.geom_fluid)
+    self.assertTrue(m.opt.has_fluid)
+
+    body_has = m.body_fluid_ellipsoid.numpy()
+    self.assertTrue(body_has[mjm.geom_bodyid[0]])
+    self.assertFalse(body_has[0])
 
   def test_jacobian_auto(self):
     mjm = mujoco.MjModel.from_xml_string("""
@@ -158,7 +289,6 @@ class IOTest(parameterized.TestCase):
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
     reset_datafield = [
-      "ncon",
       "ne",
       "nf",
       "nl",
@@ -182,7 +312,7 @@ class IOTest(parameterized.TestCase):
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
-    nconmax = d.nconmax
+    naconmax = d.naconmax
 
     # data fields
     for arr in reset_datafield:
@@ -201,8 +331,8 @@ class IOTest(parameterized.TestCase):
 
     mujoco.mj_resetData(mjm, mjd)
 
-    # set ncon in order to zero all contact memory
-    wp.copy(d.ncon, wp.array([nconmax], dtype=int))
+    # set nacon in order to zero all contact memory
+    wp.copy(d.nacon, wp.array([naconmax], dtype=int))
     mjwarp.reset_data(m, d)
 
     for arr in reset_datafield:
@@ -212,6 +342,8 @@ class IOTest(parameterized.TestCase):
         if arr == "qM":
           di_arr = di_arr.reshape(-1)[: mjd.qM.size]
         _assert_eq(di_arr, getattr(mjd, arr), arr)
+
+    _assert_eq(d.nacon.numpy(), 0, "nacon")
 
     for arr in d.contact.__dataclass_fields__:
       _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
