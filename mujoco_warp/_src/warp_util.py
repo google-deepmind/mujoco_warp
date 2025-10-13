@@ -15,6 +15,7 @@
 
 import functools
 import inspect
+import warnings
 from typing import Callable, Optional
 
 import warp as wp
@@ -226,3 +227,11 @@ def conditional_graph_supported():
   except Exception:
     return False
   return True
+
+
+def check_toolkit_driver():
+  runtime = wp.context.Runtime()
+  if runtime.toolkit_version < (12, 0) or runtime.driver_version < (12, 0):
+    raise RuntimeError("Minimum CUDA version: 12.0")
+  if runtime.toolkit_version < (12, 4) or runtime.driver_version < (12, 4):
+    warnings.warn("Recommended CUDA version: >=12.4")

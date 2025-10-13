@@ -26,6 +26,10 @@ MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA]
 
 MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon).
 
+**CUDA**
+
+The recommended CUDA version is `>=12.4` and the minimum version is `12.0`.
+
 **Linux**
 ```bash
 git clone https://github.com/google-deepmind/mujoco_warp.git

@@ -52,6 +52,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   Returns:
     Model: The model containing kinematic and dynamic information (device).
   """
+  # check for compatible cuda toolkit and driver versions
+  warp_util.check_toolkit_driver()
+
   # check supported features
   for field, field_types, field_str in (
     (mjm.actuator_trntype, types.TrnType, "Actuator transmission type"),
