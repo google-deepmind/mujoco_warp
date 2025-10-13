@@ -1750,7 +1750,7 @@ def get_data_into(
         adr += 1
     mujoco.mj_factorM(mjm, result)
     if nefc > 0:
-      result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[0, :nefc].flatten()
+      result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[0, :nefc, :mjm.nv].flatten()
 
   # efc
   result.efc_type[:] = d.efc.type.numpy()[0, efc_idx]
