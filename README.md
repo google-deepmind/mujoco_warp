@@ -79,12 +79,12 @@ The following features are implemented:
 | Actuator Bias      | All except `USER`                                                                                       |
 | Geom               | All                                                                                                     |
 | Constraint         | All                                                                                                     |
-| Equality           | All except `FLEX`, `DISTANCE`                                                                           |
+| Equality           | All except `FLEX`.                                                                                      |
 | Integrator         | All except `IMPLICIT`                                                                                   |
 | Cone               | All                                                                                                     |
 | Condim             | All                                                                                                     |
 | Solver             | All except `PGS`, `noslip`                                                                              |
-| Fluid Model        | All                                                                                             |
+| Fluid Model        | All                                                                                                     |
 | Tendon Wrap        | All                                                                                                     |
 | Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, `GEOMFROMTO`, `PLUGIN`, `USER`                                     |
 | Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
