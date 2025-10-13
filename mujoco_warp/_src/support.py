@@ -295,13 +295,13 @@ def contact_force_fn(
   # Model:
   opt_cone: int,
   # Data in:
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  njmax_in: int,
+  nacon_in: wp.array(dtype=int),
   # In:
   worldid: int,
   contact_id: int,
@@ -340,14 +340,14 @@ def contact_force_kernel(
   # Model:
   opt_cone: int,
   # Data in:
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  njmax_in: int,
+  nacon_in: wp.array(dtype=int),
   # In:
   contact_ids: wp.array(dtype=int),
   to_world_frame: bool,
@@ -365,13 +365,13 @@ def contact_force_kernel(
 
   out[tid] = contact_force_fn(
     opt_cone,
-    njmax_in,
-    nacon_in,
     contact_frame_in,
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
     efc_force_in,
+    njmax_in,
+    nacon_in,
     worldid,
     contactid,
     to_world_frame,
@@ -400,14 +400,14 @@ def contact_force(
     dim=(contact_ids.size,),
     inputs=[
       m.opt.cone,
-      d.njmax,
-      d.nacon,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,
       d.contact.worldid,
       d.efc.force,
+      d.njmax,
+      d.nacon,
       contact_ids,
       to_world_frame,
     ],
