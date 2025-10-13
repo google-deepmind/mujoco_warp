@@ -32,6 +32,7 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
@@ -65,6 +66,7 @@ class BlockDim:
   update_gradient_JTDAJ_dense: int = 96
   # support
   mul_m_dense: int = 32
+
 
 class BroadphaseType(enum.IntEnum):
   """Type of broadphase algorithm.

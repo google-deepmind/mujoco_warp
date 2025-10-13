@@ -934,6 +934,7 @@ def get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_siz
 
   return efc_J_padded_size, efc_h_padded_size, efc_d_padded_size, efc_state_padded_size
 
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
