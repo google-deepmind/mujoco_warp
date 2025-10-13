@@ -912,7 +912,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_size: int):
+def _get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_size: int):
   # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
   #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.
   # if sparse - we pad to the next multiple of tile_size for njmax, and nv.
@@ -1000,9 +1000,7 @@ def make_data(
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
-  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(
-    mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size
-  )
+  njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
 
   return types.Data(
     nworld=nworld,
@@ -1099,10 +1097,10 @@ def make_data(
     efc=types.Constraint(
       type=wp.zeros((nworld, njmax), dtype=int),
       id=wp.zeros((nworld, njmax), dtype=int),
-      J=wp.zeros(J_padded_size, dtype=float),
+      J=wp.zeros((nworld, njmax_padded, nv_padded), dtype=float),
       pos=wp.zeros((nworld, njmax), dtype=float),
       margin=wp.zeros((nworld, njmax), dtype=float),
-      D=wp.zeros(d_padded_size, dtype=float),
+      D=wp.zeros((nworld, njmax_padded), dtype=float),
       vel=wp.zeros((nworld, njmax), dtype=float),
       aref=wp.zeros((nworld, njmax), dtype=float),
       frictionloss=wp.zeros((nworld, njmax), dtype=float),
@@ -1119,12 +1117,12 @@ def make_data(
       gauss=wp.zeros((nworld,), dtype=float),
       cost=wp.zeros((nworld,), dtype=float),
       prev_cost=wp.zeros((nworld,), dtype=float),
-      state=wp.zeros(state_padded_size, dtype=int),
+      state=wp.zeros((nworld, njmax_padded), dtype=int),
       mv=wp.zeros((nworld, mjm.nv), dtype=float),
       jv=wp.zeros((nworld, njmax), dtype=float),
       quad=wp.zeros((nworld, njmax), dtype=wp.vec3f),
       quad_gauss=wp.zeros((nworld,), dtype=wp.vec3f),
-      h=wp.zeros(h_padded_size, dtype=float),
+      h=wp.zeros((nworld, nv_padded, nv_padded), dtype=float),
       alpha=wp.zeros((nworld,), dtype=float),
       prev_grad=wp.zeros((nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1218,7 +1216,6 @@ def make_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
-    tile_sizes=tile_sizes,
   )
 
 
@@ -1343,14 +1340,12 @@ def put_data(
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
-  J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(
-    mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size
-  )
+  njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
 
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
-  efc_J_fill = np.zeros(J_padded_size)
-  efc_D_fill = np.zeros(d_padded_size)
+  efc_J_fill = np.zeros((nworld, njmax_padded, nv_padded))
+  efc_D_fill = np.zeros((nworld, njmax_padded))
   efc_vel_fill = np.zeros((nworld, njmax))
   efc_pos_fill = np.zeros((nworld, njmax))
   efc_aref_fill = np.zeros((nworld, njmax))
