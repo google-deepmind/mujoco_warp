@@ -1503,12 +1503,12 @@ def put_data(
       gauss=wp.empty(shape=(nworld,), dtype=float),
       cost=wp.empty(shape=(nworld,), dtype=float),
       prev_cost=wp.empty(shape=(nworld,), dtype=float),
-      state=wp.zeros(shape=state_padded_size, dtype=int),
+      state=wp.zeros(shape=(nworld, njmax_padded), dtype=int),
       mv=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       jv=wp.empty(shape=(nworld, njmax), dtype=float),
       quad=wp.empty(shape=(nworld, njmax), dtype=wp.vec3f),
       quad_gauss=wp.empty(shape=(nworld,), dtype=wp.vec3f),
-      h=wp.zeros(shape=h_padded_size, dtype=float),
+      h=wp.zeros(shape=(nworld, nv_padded, nv_padded), dtype=float),
       alpha=wp.empty(shape=(nworld,), dtype=float),
       prev_grad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
@@ -1599,7 +1599,6 @@ def put_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
-    tile_sizes=tile_sizes,
   )
 
 
