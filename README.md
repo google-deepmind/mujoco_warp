@@ -2,6 +2,9 @@
   <a href="https://github.com/google-deepmind/mujoco_warp/actions/workflows/ci.yml?query=branch%3Amain" alt="GitHub Actions">
     <img src="https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_warp/ci.yml?branch=main">
   </a>
+  <a href="https://mujoco.readthedocs.io/en/latest/mjwarp/index.html" alt="Documentation">
+    <img src="https://readthedocs.org/projects/mujoco/badge/?version=latest">
+  </a>
   <a href="https://github.com/google-deepmind/mujoco_warp/blob/main/LICENSE" alt="License">
     <img src="https://img.shields.io/github/license/google-deepmind/mujoco_warp">
   </a>
@@ -21,6 +24,9 @@ MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deep
 MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). MJWarp is integrated into both [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) and [Newton](https://github.com/newton-physics/newton).
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
+
+# Documentation
+MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](mujoco.readthedocs.io/en/stable/mjwarp/index.html).
 
 # Installing for development
 
