@@ -29,6 +29,8 @@ MJ_MAX_EPAHORIZON = 12
 # maximum average number of trianglarfaces EPA can insert at each iteration
 MJ_MAX_EPAFACES = 5
 
+TILE_SIZE_JTDAJ_SPARSE = 16
+TILE_SIZE_JTDAJ_DENSE = 16
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -63,13 +65,6 @@ class BlockDim:
   update_gradient_JTDAJ_dense: int = 96
   # support
   mul_m_dense: int = 32
-
-
-@dataclasses.dataclass
-class TileSizes:
-  jtdaj_sparse: int = 16
-  jtdaj_dense: int = 16
-
 
 class BroadphaseType(enum.IntEnum):
   """Type of broadphase algorithm.
@@ -1740,6 +1735,3 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)  # warp only
-
-  # tile sizes for JTDAJ
-  tile_sizes: TileSizes

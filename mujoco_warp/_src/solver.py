@@ -1721,10 +1721,10 @@ def _update_gradient(m: types.Model, d: types.Data):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      num_blocks_ceil = ceil(m.nv / d.tile_sizes.jtdaj_sparse)
+      num_blocks_ceil = ceil(m.nv / types.TILE_SIZE_JTDAJ_SPARSE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch_tiled(
-        update_gradient_JTDAJ_sparse_tiled(d.tile_sizes.jtdaj_sparse, d.njmax),
+        update_gradient_JTDAJ_sparse_tiled(types.TILE_SIZE_JTDAJ_SPARSE, d.njmax),
         dim=(d.nworld, lower_triangle_dim),
         inputs=[
           d.nefc,
@@ -1745,7 +1745,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch_tiled(
-        update_gradient_JTDAJ_dense_tiled(m.nv, d.tile_sizes.jtdaj_dense, d.njmax),
+        update_gradient_JTDAJ_dense_tiled(m.nv, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
         dim=d.nworld,
         inputs=[
           d.nefc,

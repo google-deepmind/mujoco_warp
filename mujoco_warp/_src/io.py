@@ -994,12 +994,10 @@ def make_data(
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
-  tile_sizes = types.TileSizes()
-
   if mujoco.mj_isSparse(mjm):
-    tile_size = tile_sizes.jtdaj_sparse
+    tile_size = types.TILE_SIZE_JTDAJ_SPARSE
   else:
-    tile_size = tile_sizes.jtdaj_dense
+    tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
   J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(
     mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size
@@ -1339,12 +1337,10 @@ def put_data(
   ne_jnt = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active))
   ne_ten = int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active))
 
-  tile_sizes = types.TileSizes()
-
   if mujoco.mj_isSparse(mjm):
-    tile_size = tile_sizes.jtdaj_sparse
+    tile_size = types.TILE_SIZE_JTDAJ_SPARSE
   else:
-    tile_size = tile_sizes.jtdaj_dense
+    tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
   J_padded_size, h_padded_size, d_padded_size, state_padded_size = get_padded_sizes(
     mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size
