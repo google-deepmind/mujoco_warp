@@ -26,7 +26,7 @@ MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
 # Documentation
-MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](mujoco.readthedocs.io/en/stable/mjwarp/index.html).
+MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
 
 # Installing for development
 
