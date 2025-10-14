@@ -62,14 +62,17 @@ def _qderiv_actuator_passive(
 
   qderiv = float(0.0)
   if not opt_disableflags & DisableBit.ACTUATION:
+    actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
+    actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
+
     for actid in range(nu):
       if actuator_gaintype[actid] == GainType.AFFINE:
-        gain = actuator_gainprm[worldid, actid][2]
+        gain = actuator_gainprm[actuator_gainprm_id, actid][2]
       else:
         gain = 0.0
 
       if actuator_biastype[actid] == BiasType.AFFINE:
-        bias = actuator_biasprm[worldid, actid][2]
+        bias = actuator_biasprm[actuator_biasprm_id, actid][2]
       else:
         bias = 0.0
 
@@ -85,9 +88,9 @@ def _qderiv_actuator_passive(
   # TODO(team): fluid model derivative
 
   if not opt_disableflags & DisableBit.DAMPER and dofiid == dofjid:
-    qderiv -= dof_damping[worldid, dofiid]
+    qderiv -= dof_damping[worldid % dof_damping.shape[0], dofiid]
 
-  qderiv *= opt_timestep[worldid]
+  qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
   if opt_is_sparse:
     qM_integration_out[worldid, 0, elemid] = qM_in[worldid, 0, elemid] - qderiv
@@ -119,9 +122,11 @@ def _qderiv_tendon_damping(
   dofjid = qMj[elemid]
 
   qderiv = float(0.0)
+  tendon_damping_id = worldid % tendon_damping.shape[0]
   for tenid in range(ntendon):
-    qderiv -= ten_J_in[worldid, tenid, dofiid] * ten_J_in[worldid, tenid, dofjid] * tendon_damping[worldid, tenid]
-  qderiv *= opt_timestep[worldid]
+    qderiv -= ten_J_in[worldid, tenid, dofiid] * ten_J_in[worldid, tenid, dofjid] * tendon_damping[tendon_damping_id, tenid]
+
+  qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
   if opt_is_sparse:
     qM_integration_out[worldid, 0, elemid] -= qderiv

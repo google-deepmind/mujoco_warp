@@ -321,7 +321,7 @@ def linesearch_iterative(
   if efc_done_in[worldid]:
     return
 
-  impratio = opt_impratio[worldid]
+  impratio = opt_impratio[worldid % opt_impratio.shape[0]]
   efc_type = efc_type_in[worldid]
   efc_id = efc_id_in[worldid]
   efc_D = efc_D_in[worldid]
@@ -330,8 +330,8 @@ def linesearch_iterative(
   efc_jv = efc_jv_in[worldid]
   efc_quad = efc_quad_in[worldid]
   efc_quad_gauss = efc_quad_gauss_in[worldid]
-  tolerance = opt_tolerance[worldid]
-  ls_tolerance = opt_ls_tolerance[worldid]
+  tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+  ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
   ne_clip = min(njmax_in, ne_in[worldid])
   nef_clip = min(njmax_in, ne_clip + nf_in[worldid])
   nefc_clip = min(njmax_in, nefc_in[worldid])
@@ -569,7 +569,7 @@ def linesearch_parallel_fused(
         continue
 
       friction = contact_friction_in[conid]
-      mu = friction[0] / wp.sqrt(opt_impratio[worldid])
+      mu = friction[0] / wp.sqrt(opt_impratio[worldid % opt_impratio.shape[0]])
 
       # unpack quad
       efcid1 = contact_efc_address_in[conid, 1]
@@ -1897,7 +1897,7 @@ def solve_done(
     return
 
   solver_niter_out[worldid] += 1
-  tolerance = opt_tolerance[worldid]
+  tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
   gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))

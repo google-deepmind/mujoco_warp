@@ -23,9 +23,6 @@ from . import math
 from . import types
 from . import warp_util
 
-# max number of worlds supported
-MAX_WORLDS = 2**24
-
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
@@ -372,11 +369,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array._is_batched = True
     if not expand_dim:
       array.strides = (0,) + array.strides[1:]
-      array.shape = (MAX_WORLDS,) + array.shape[1:]
+      array.shape = (1,) + array.shape[1:]
       return array
     array.strides = (0,) + array.strides
     array.ndim += 1
-    array.shape = (MAX_WORLDS,) + array.shape
+    array.shape = (1,) + array.shape
     return array
 
   # rangefinder
@@ -937,8 +934,8 @@ def make_data(
   nconmax = nconmax or 20
   njmax = njmax or nconmax * 6
 
-  if nworld < 1 or nworld > MAX_WORLDS:
-    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
+  if nworld < 1:
+    raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
     if nconmax < 0:
@@ -1217,8 +1214,8 @@ def put_data(
   nconmax = nconmax or max(5, 4 * mjd.ncon)
   njmax = njmax or max(5, 4 * mjd.nefc)
 
-  if nworld < 1 or nworld > MAX_WORLDS:
-    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
+  if nworld < 1:
+    raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
     if nconmax < 0:

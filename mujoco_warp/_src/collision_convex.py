@@ -180,7 +180,7 @@ def ccd_kernel_builder(
       geom2.margin = margin
       dist, ncontact, witness1, witness2 = ccd(
         False,  # ignored for box-box, multiccd always on
-        opt_ccd_tolerance[worldid],
+        opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
         0.0,
         ccd_iterations,
         geom1,
@@ -384,11 +384,15 @@ def ccd_kernel_builder(
       worldid,
     )
 
+    geom_size_id = worldid % geom_size.shape[0]
+    geom_xpos_id = worldid % geom_xpos_in.shape[0]
+    geom_xmat_id = worldid % geom_xmat_in.shape[0]
+
     geom1_dataid = geom_dataid[g1]
     geom1 = geom(
       geomtype1,
       geom1_dataid,
-      geom_size[worldid, g1],
+      geom_size[geom_size_id, g1],
       mesh_vertadr,
       mesh_vertnum,
       mesh_graphadr,
@@ -403,15 +407,15 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[worldid, g1],
-      geom_xmat_in[worldid, g1],
+      geom_xpos_in[geom_xpos_id, g1],
+      geom_xmat_in[geom_xmat_id, g1],
     )
 
     geom2_dataid = geom_dataid[g2]
     geom2 = geom(
       geomtype2,
       geom2_dataid,
-      geom_size[worldid, g2],
+      geom_size[geom_size_id, g2],
       mesh_vertadr,
       mesh_vertnum,
       mesh_graphadr,
@@ -426,8 +430,8 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[worldid, g2],
-      geom_xmat_in[worldid, g2],
+      geom_xpos_in[geom_xpos_id, g2],
+      geom_xmat_in[geom_xmat_id, g2],
     )
 
     # see MuJoCo mjc_ConvexHField

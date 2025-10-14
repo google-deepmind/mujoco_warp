@@ -258,14 +258,18 @@ def _broadphase_filter(opt_broadphase_filter: int):
     center2 = geom_aabb[geom2, 0]
     size1 = geom_aabb[geom1, 1]
     size2 = geom_aabb[geom2, 1]
-    rbound1 = geom_rbound[worldid, geom1]
-    rbound2 = geom_rbound[worldid, geom2]
-    margin1 = geom_margin[worldid, geom1]
-    margin2 = geom_margin[worldid, geom2]
-    xpos1 = geom_xpos_in[worldid, geom1]
-    xpos2 = geom_xpos_in[worldid, geom2]
-    xmat1 = geom_xmat_in[worldid, geom1]
-    xmat2 = geom_xmat_in[worldid, geom2]
+    rbound_id = worldid % geom_rbound.shape[0]
+    rbound1 = geom_rbound[rbound_id, geom1]
+    rbound2 = geom_rbound[rbound_id, geom2]
+    margin_id = worldid % geom_margin.shape[0]
+    margin1 = geom_margin[margin_id, geom1]
+    margin2 = geom_margin[margin_id, geom2]
+    xpos_id = worldid % geom_xpos_in.shape[0]
+    xpos1 = geom_xpos_in[xpos_id, geom1]
+    xpos2 = geom_xpos_in[xpos_id, geom2]
+    xmat_id = worldid % geom_xmat_in.shape[0]
+    xmat1 = geom_xmat_in[xmat_id, geom1]
+    xmat2 = geom_xmat_in[xmat_id, geom2]
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
@@ -350,14 +354,14 @@ def _sap_project(
 ):
   worldid, geomid = wp.tid()
 
-  xpos = geom_xpos_in[worldid, geomid]
-  rbound = geom_rbound[worldid, geomid]
+  xpos = geom_xpos_in[worldid % geom_xpos_in.shape[0], geomid]
+  rbound = geom_rbound[worldid % geom_rbound.shape[0], geomid]
 
   if rbound == 0.0:
     # geom is a plane
     rbound = MJ_MAXVAL
 
-  radius = rbound + geom_margin[worldid, geomid]
+  radius = rbound + geom_margin[worldid % geom_margin.shape[0], geomid]
   center = wp.dot(direction_in, xpos)
 
   sap_sort_index_out[worldid, geomid] = geomid

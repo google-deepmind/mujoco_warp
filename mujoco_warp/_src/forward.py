@@ -71,7 +71,7 @@ def _next_position(
   qpos_out: wp.array2d(dtype=float),
 ):
   worldid, jntid = wp.tid()
-  timestep = opt_timestep[worldid]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   jnttype = jnt_type[jntid]
   qpos_adr = jnt_qposadr[jntid]
@@ -137,7 +137,7 @@ def _next_velocity(
   qvel_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  timestep = opt_timestep[worldid]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
 
 
@@ -188,11 +188,14 @@ def _next_activation(
   act_out: wp.array2d(dtype=float),
 ):
   worldid, actid = wp.tid()
+  opt_timestep_id = worldid % opt_timestep.shape[0]
+  actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
+  actuator_actrange_id = worldid % actuator_actrange.shape[0]
   act = _next_act(
-    opt_timestep[worldid],
+    opt_timestep[opt_timestep_id],
     actuator_dyntype[actid],
-    actuator_dynprm[worldid, actid],
-    actuator_actrange[worldid, actid],
+    actuator_dynprm[actuator_dynprm_id, actid],
+    actuator_actrange[actuator_actrange_id, actid],
     act_in[worldid, actid],
     act_dot_in[worldid, actid],
     act_dot_scale,
@@ -217,7 +220,7 @@ def _next_time(
   time_out: wp.array(dtype=float),
 ):
   worldid = wp.tid()
-  time_out[worldid] = time_in[worldid] + opt_timestep[worldid]
+  time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
   nefc = nefc_in[worldid]
 
   if nefc > njmax_in:
@@ -328,7 +331,7 @@ def _euler_damp_qfrc_sparse(
   qM_integration_out: wp.array3d(dtype=float),
 ):
   worldid, tid = wp.tid()
-  timestep = opt_timestep[worldid]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   adr = dof_Madr[tid]
   qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
@@ -375,12 +378,12 @@ def _tile_euler_dense(tile: TileSet):
     qacc_integration_out: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
-    timestep = opt_timestep[worldid]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
     TILE_SIZE = wp.static(tile.size)
 
     dofid = adr_in[nodeid]
     M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    damping_tile = wp.tile_load(dof_damping[worldid], shape=(TILE_SIZE,), offset=(dofid,))
+    damping_tile = wp.tile_load(dof_damping[worldid % dof_damping.shape[0]], shape=(TILE_SIZE,), offset=(dofid,))
     damping_scaled = damping_tile * timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
@@ -673,10 +676,12 @@ def _actuator_force(
 ):
   worldid, uid = wp.tid()
 
+  actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
+
   ctrl = ctrl_in[worldid, uid]
 
   if actuator_ctrllimited[uid] and not dsbl_clampctrl:
-    ctrlrange = actuator_ctrlrange[worldid, uid]
+    ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uid]
     ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
   ctrl_act = ctrl
 
@@ -684,11 +689,11 @@ def _actuator_force(
   if na and act_first >= 0:
     act_last = act_first + actuator_actnum[uid] - 1
     dyntype = actuator_dyntype[uid]
+    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
     if dyntype == DynType.INTEGRATOR:
       act_dot = ctrl
     elif dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT:
-      dynprm = actuator_dynprm[worldid, uid]
       act = act_in[worldid, act_last]
       act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
     elif dyntype == DynType.MUSCLE:
@@ -701,12 +706,13 @@ def _actuator_force(
     act_dot_out[worldid, act_last] = act_dot
 
     if actuator_actearly[uid]:
+      opt_timestep_id = worldid % opt_timestep.shape[0]
+      actuator_actrange_id = worldid % actuator_actrange.shape[0]
       if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE:
-        dynprm = actuator_dynprm[worldid, uid]
         act = act_in[worldid, act_last]
 
       ctrl_act = _next_act(
-        opt_timestep[worldid],
+        opt_timestep[opt_timestep_id],
         dyntype,
         dynprm,
         actuator_actrange[worldid, uid],
@@ -723,7 +729,7 @@ def _actuator_force(
 
   # gain
   gaintype = actuator_gaintype[uid]
-  gainprm = actuator_gainprm[worldid, uid]
+  gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
 
   gain = 0.0
   if gaintype == GainType.FIXED:
@@ -737,7 +743,7 @@ def _actuator_force(
 
   # bias
   biastype = actuator_biastype[uid]
-  biasprm = actuator_biasprm[worldid, uid]
+  biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
 
   bias = 0.0  # BiasType.NONE
   if biastype == BiasType.AFFINE:
@@ -752,7 +758,7 @@ def _actuator_force(
   # TODO(team): tendon total force clamping
 
   if actuator_forcelimited[uid]:
-    forcerange = actuator_forcerange[worldid, uid]
+    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], uid]
     force = wp.clamp(force, forcerange[0], forcerange[1])
 
   actuator_force_out[worldid, uid] = force
@@ -794,7 +800,7 @@ def _tendon_actuator_force_clamp(
     tenid = actuator_trnid[actid][0]
     if tendon_actfrclimited[tenid]:
       ten_actfrc = ten_actfrc_in[worldid, tenid]
-      actfrcrange = tendon_actfrcrange[worldid, tenid]
+      actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
 
       if ten_actfrc < actfrcrange[0]:
         actuator_force_out[worldid, actid] *= actfrcrange[0] / ten_actfrc
@@ -831,7 +837,7 @@ def _qfrc_actuator(
     qfrc += qfrc_gravcomp_in[worldid, dofid]
 
   if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[worldid, jntid]
+    frcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
     qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
 
   qfrc_actuator_out[worldid, dofid] = qfrc
