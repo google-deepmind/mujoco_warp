@@ -220,14 +220,6 @@ def cache_kernel(func):
   return wrapper
 
 
-def conditional_graph_supported():
-  try:
-    assert_conditional_graph_support()
-  except Exception:
-    return False
-  return True
-
-
 def check_toolkit_driver():
   if wp.context.runtime is None:
     wp.context.init()

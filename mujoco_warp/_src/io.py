@@ -530,7 +530,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       ccd_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),
       broadphase_filter=int(types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB),
-      graph_conditional=True and warp_util.conditional_graph_supported(),
+      graph_conditional=True,
       sdf_initpoints=mjm.opt.sdf_initpoints,
       sdf_iterations=mjm.opt.sdf_iterations,
       run_collision_detection=True,
