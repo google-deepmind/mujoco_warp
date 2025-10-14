@@ -966,12 +966,12 @@ def make_data(
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   return types.Data(
+    solver_niter=wp.zeros(nworld, dtype=int),
     ne=wp.zeros(nworld, dtype=int),
     nf=wp.zeros(nworld, dtype=int),
     nl=wp.zeros(nworld, dtype=int),
     nefc=wp.zeros(nworld, dtype=int),
     time=wp.zeros(nworld, dtype=float),
-    solver_niter=wp.zeros(nworld, dtype=int),
     energy=wp.zeros(nworld, dtype=wp.vec2),
     qpos=wp.zeros((nworld, mjm.nq), dtype=float),
     qvel=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1350,12 +1350,12 @@ def put_data(
     return arr(np.pad(x, width), dtype)
 
   return types.Data(
+    solver_niter=tile(mjd.solver_niter[0]),
     ne=wp.full(shape=(nworld), value=mjd.ne),
     nf=wp.full(shape=(nworld), value=mjd.nf),
     nl=wp.full(shape=(nworld), value=mjd.nl),
     nefc=wp.full(shape=(nworld), value=mjd.nefc),
     time=arr(mjd.time * np.ones(nworld)),
-    solver_niter=tile(mjd.solver_niter[0]),
     energy=tile(mjd.energy, dtype=wp.vec2),
     qpos=tile(mjd.qpos),
     qvel=tile(mjd.qvel),
@@ -1791,12 +1791,12 @@ def _reset_nworld_all(
   # Data in:
   nworld_in: int,
   # Data out:
+  solver_niter_out: wp.array(dtype=int),
   ne_out: wp.array(dtype=int),
   nf_out: wp.array(dtype=int),
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   time_out: wp.array(dtype=float),
-  solver_niter_out: wp.array(dtype=int),
   energy_out: wp.array(dtype=wp.vec2),
   qpos_out: wp.array2d(dtype=float),
   qvel_out: wp.array2d(dtype=float),
@@ -1866,12 +1866,12 @@ def _reset_nworld(
   # In:
   reset_in: wp.array(dtype=bool),
   # Data out:
+  solver_niter_out: wp.array(dtype=int),
   ne_out: wp.array(dtype=int),
   nf_out: wp.array(dtype=int),
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   time_out: wp.array(dtype=float),
-  solver_niter_out: wp.array(dtype=int),
   energy_out: wp.array(dtype=wp.vec2),
   qpos_out: wp.array2d(dtype=float),
   qvel_out: wp.array2d(dtype=float),
@@ -2102,12 +2102,12 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       dim=d.nworld,
       inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, reset],
       outputs=[
+        d.solver_niter,
         d.ne,
         d.nf,
         d.nl,
         d.nefc,
         d.time,
-        d.solver_niter,
         d.energy,
         d.qpos,
         d.qvel,
@@ -2160,12 +2160,12 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       dim=d.nworld,
       inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld],
       outputs=[
+        d.solver_niter,
         d.ne,
         d.nf,
         d.nl,
         d.nefc,
         d.time,
-        d.solver_niter,
         d.energy,
         d.qpos,
         d.qvel,

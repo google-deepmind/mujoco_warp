@@ -1423,12 +1423,12 @@ class Data:
   """Dynamic state that updates each step.
 
   Attributes:
+    solver_niter: number of solver iterations                   (nworld,)
     ne: number of equality constraints                          (nworld,)
     nf: number of friction constraints                          (nworld,)
     nl: number of limit constraints                             (nworld,)
     nefc: number of constraints                                 (nworld,)
     time: simulation time                                       (nworld,)
-    solver_niter: number of solver iterations                   (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
     qvel: velocity                                              (nworld, nv)
@@ -1580,12 +1580,12 @@ class Data:
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
+  solver_niter: wp.array(dtype=int)
   ne: wp.array(dtype=int)
   nf: wp.array(dtype=int)
   nl: wp.array(dtype=int)
   nefc: wp.array(dtype=int)
   time: wp.array(dtype=float)
-  solver_niter: wp.array(dtype=int)
   energy: wp.array(dtype=wp.vec2)
   qpos: wp.array2d(dtype=float)
   qvel: wp.array2d(dtype=float)

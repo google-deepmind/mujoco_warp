@@ -41,6 +41,10 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 1, "opt")
       mj_fields.insert(mj_fields.index("nbuffer") + 2, "vis")
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
+    elif mjw_class is Data:
+      # TODO(team): remove this reordering after MjData._all_fields order is fixed
+      # there's a bug in _all_fields where solver_niter is in the wrong place
+      mj_fields.insert(0, mj_fields.pop(mj_fields.index("solver_niter")))
 
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
