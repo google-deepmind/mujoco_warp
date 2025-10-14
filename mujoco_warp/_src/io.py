@@ -30,6 +30,14 @@ MAX_WORLDS = 2**24
 _TOLERANCE_F32 = 1.0e-6
 
 
+def _numeric(mjm: mujoco.MjModel, name: str, default: int = -1) -> int:
+  num = mjm.nnumeric
+  adr = mjm.name_numericadr
+  names_map = {mjm.names[adr[i] :].decode("utf-8").split("\x00", 1)[0]: i for i in range(num)}
+  id_ = names_map.get(name, -1)
+  return int(mjm.numeric_data[id_]) if id_ >= 0 else default
+
+
 def _max_meshdegree(mjm: mujoco.MjModel) -> int:
   if mjm.mesh_polyvertnum.size == 0:
     return 4
@@ -133,9 +141,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
   is_sparse = mujoco.mj_isSparse(mjm)
-
-  # calculate some fields that cannot be easily computed inline
-  nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
 
   # dof lower triangle row and column indices (used in solver)
   dof_tri_row, dof_tri_col = np.tril_indices(mjm.nv)
@@ -492,7 +497,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nmeshpoly=mjm.nmeshpoly,
     nmeshpolyvert=mjm.nmeshpolyvert,
     nmeshpolymap=mjm.nmeshpolymap,
-    nlsp=nlsp,
     npair=mjm.npair,
     opt=types.Option(
       timestep=create_nmodel_batched_array(np.array(mjm.opt.timestep), dtype=float, expand_dim=False),
@@ -517,6 +521,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
       ls_parallel=False,
+      ls_nparallel=_numeric(mjm, "ls_nparallel", 0),
       ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
       ccd_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),
@@ -1091,8 +1096,7 @@ def make_data(
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
       beta=wp.zeros((nworld,), dtype=float),
       done=wp.zeros((nworld,), dtype=bool),
-      # linesearch
-      cost_candidate=wp.zeros((nworld, mjm.opt.ls_iterations), dtype=float),
+      ls_parallel_cost=wp.zeros((nworld, _numeric(mjm, "ls_nparallel", 0)), dtype=float),
     ),
     # RK4
     qpos_t0=wp.zeros((nworld, mjm.nq), dtype=float),
@@ -1475,7 +1479,7 @@ def put_data(
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       beta=wp.empty(shape=(nworld,), dtype=float),
       done=wp.empty(shape=(nworld,), dtype=bool),
-      cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
+      ls_parallel_cost=wp.empty(shape=(nworld, _numeric(mjm, "ls_nparallel", 0)), dtype=float),
     ),
     # TODO(team): skip allocation if integrator != RK4
     qpos_t0=wp.empty((nworld, mjm.nq), dtype=float),

@@ -575,6 +575,7 @@ class Option:
     is_sparse: whether to use sparse representations
     ccd_iterations: number of iterations in convex collision detection
     ls_parallel: evaluate engine solver step sizes in parallel
+    ls_nparallel: number of step sizes for parallel linsearch
     ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
@@ -610,6 +611,7 @@ class Option:
   is_sparse: bool  # warp only
   ccd_iterations: int
   ls_parallel: bool  # warp only
+  ls_nparallel: int  # warp only
   ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
   has_fluid: bool
@@ -672,7 +674,7 @@ class Constraint:
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    cost_candidate: costs associated with step sizes  (nworld, nlsp)
+    ls_parallel_cost: cost for parallel ls step size  (nworld, ls_nparallel)
   """
 
   type: wp.array2d(dtype=int)
@@ -708,8 +710,7 @@ class Constraint:
   prev_Mgrad: wp.array2d(dtype=float)
   beta: wp.array(dtype=float)
   done: wp.array(dtype=bool)
-  # linesearch
-  cost_candidate: wp.array2d(dtype=float)
+  ls_parallel_cost: wp.array2d(dtype=float)
 
 
 @dataclasses.dataclass
@@ -763,7 +764,6 @@ class Model:
     nmeshpoly: number of polygons in all meshes
     nmeshpolyvert: number of vertices in all polygons
     nmeshpolymap: number of polygons in vertex map
-    nlsp: number of step sizes for parallel linsearch
     npair: number of predefined geom pairs
     nhfield: number of heightfields
     nhfielddata: size of elevation data
@@ -1072,7 +1072,6 @@ class Model:
   nmeshpoly: int
   nmeshpolyvert: int
   nmeshpolymap: int
-  nlsp: int  # warp only
   npair: int
   nhfield: int
   nhfielddata: int
