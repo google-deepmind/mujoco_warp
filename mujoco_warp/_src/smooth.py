@@ -553,7 +553,9 @@ def _cam_local_to_global(
     cam_xpos_out[worldid, camid] = body_xpos + cam_pos0[worldid % cam_pos0.shape[0], camid]
   elif cam_mode[camid] == CamLightType.TRACKCOM:
     cam_xmat_out[worldid, camid] = cam_mat0[worldid % cam_mat0.shape[0], camid]
-    cam_xpos_out[worldid, camid] = subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[worldid % cam_poscom0.shape[0], camid]
+    cam_xpos_out[worldid, camid] = (
+      subtree_com_in[worldid, cam_bodyid[camid]] + cam_poscom0[worldid % cam_poscom0.shape[0], camid]
+    )
   elif cam_mode[camid] == CamLightType.TARGETBODY or cam_mode[camid] == CamLightType.TARGETBODYCOM:
     bodyid = cam_bodyid[camid]
     xpos = xpos_in[worldid, bodyid]
@@ -619,7 +621,9 @@ def _light_local_to_global(
     light_xpos_out[worldid, lightid] = body_xpos + light_pos0[worldid % light_pos0.shape[0], lightid]
   elif light_mode[lightid] == CamLightType.TRACKCOM:
     light_xdir_out[worldid, lightid] = light_dir0[worldid % light_dir0.shape[0], lightid]
-    light_xpos_out[worldid, lightid] = subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[worldid % light_poscom0.shape[0], lightid]
+    light_xpos_out[worldid, lightid] = (
+      subtree_com_in[worldid, light_bodyid[lightid]] + light_poscom0[worldid % light_poscom0.shape[0], lightid]
+    )
   elif light_mode[lightid] == CamLightType.TARGETBODY or light_mode[lightid] == CamLightType.TARGETBODYCOM:
     bodyid = light_bodyid[lightid]
     xpos = xpos_in[worldid, bodyid]
