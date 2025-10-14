@@ -79,7 +79,7 @@ The following features are implemented:
 | Actuator Bias      | All except `USER`                                                                                       |
 | Geom               | All                                                                                                     |
 | Constraint         | All                                                                                                     |
-| Equality           | All except `FLEX`.                                                                                      |
+| Equality           | All except `FLEX`                                                                                       |
 | Integrator         | All except `IMPLICIT`                                                                                   |
 | Cone               | All                                                                                                     |
 | Condim             | All                                                                                                     |
