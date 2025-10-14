@@ -28,7 +28,7 @@ MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (t
 
 **CUDA**
 
-The recommended CUDA version is `>=12.4` and the minimum version is `12.0`.
+The minimum supported CUDA version is `12.4`.
 
 **Linux**
 ```bash
