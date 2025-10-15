@@ -150,7 +150,7 @@ def _main(argv: Sequence[str]) -> None:
         f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
       )
       d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-      print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
+      print(f"Data\n  nworld: {d.nworld} nconmax: {d.naconmax / d.nworld} njmax: {d.njmax}\n")
       graph = _compile_step(m, d)
       print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 

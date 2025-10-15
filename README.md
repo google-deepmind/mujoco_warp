@@ -2,6 +2,9 @@
   <a href="https://github.com/google-deepmind/mujoco_warp/actions/workflows/ci.yml?query=branch%3Amain" alt="GitHub Actions">
     <img src="https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_warp/ci.yml?branch=main">
   </a>
+  <a href="https://mujoco.readthedocs.io/en/latest/mjwarp/index.html" alt="Documentation">
+    <img src="https://readthedocs.org/projects/mujoco/badge/?version=latest">
+  </a>
   <a href="https://github.com/google-deepmind/mujoco_warp/blob/main/LICENSE" alt="License">
     <img src="https://img.shields.io/github/license/google-deepmind/mujoco_warp">
   </a>
@@ -22,9 +25,16 @@ MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of 
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
+# Documentation
+MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
+
 # Installing for development
 
 MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon).
+
+**CUDA**
+
+The minimum supported CUDA version is `12.4`.
 
 **Linux**
 ```bash
@@ -79,12 +89,12 @@ The following features are implemented:
 | Actuator Bias      | All except `USER`                                                                                       |
 | Geom               | All                                                                                                     |
 | Constraint         | All                                                                                                     |
-| Equality           | All except `FLEX`, `DISTANCE`                                                                           |
+| Equality           | All except `FLEX`                                                                                       |
 | Integrator         | All except `IMPLICIT`                                                                                   |
 | Cone               | All                                                                                                     |
 | Condim             | All                                                                                                     |
 | Solver             | All except `PGS`, `noslip`                                                                              |
-| Fluid Model        | All                                                                                             |
+| Fluid Model        | All                                                                                                     |
 | Tendon Wrap        | All                                                                                                     |
 | Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, `GEOMFROMTO`, `PLUGIN`, `USER`                                     |
 | Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
