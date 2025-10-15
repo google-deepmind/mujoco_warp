@@ -721,7 +721,4 @@ def collision(m: Model, d: Data):
   else:
     sap_broadphase(m, d)
 
-  if m.opt.graph_conditional:
-    wp.capture_if(condition=d.ncollision, on_true=_narrowphase, m=m, d=d)
-  else:
-    _narrowphase(m, d)
+  _narrowphase(m, d)

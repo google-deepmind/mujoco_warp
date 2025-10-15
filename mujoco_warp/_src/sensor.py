@@ -25,13 +25,14 @@ from .collision_gjk import ccd
 from .collision_primitive import geom
 from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
+from .types import MJ_MAX_EPAFACES
+from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
 from .types import Data
 from .types import DataType
 from .types import DisableBit
-from .types import GeomType
 from .types import JointType
 from .types import Model
 from .types import ObjType
@@ -518,6 +519,8 @@ def _sensor_pos(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   ten_length_in: wp.array2d(dtype=float),
   actuator_length_in: wp.array2d(dtype=float),
+  sensor_rangefinder_dist_in: wp.array2d(dtype=float),
+  # In:
   epa_vert_in: wp.array2d(dtype=wp.vec3),
   epa_vert1_in: wp.array2d(dtype=wp.vec3),
   epa_vert2_in: wp.array2d(dtype=wp.vec3),
@@ -540,8 +543,6 @@ def _sensor_pos(
   multiccd_endvert_in: wp.array2d(dtype=wp.vec3),
   multiccd_face1_in: wp.array2d(dtype=wp.vec3),
   multiccd_face2_in: wp.array2d(dtype=wp.vec3),
-  sensor_rangefinder_dist_in: wp.array2d(dtype=float),
-  # In:
   nsensor_collision: int,
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
@@ -848,101 +849,126 @@ def sensor_pos(m: Model, d: Data):
   if m.sensor_e_kinetic:
     energy_vel(m, d)
 
-  wp.launch(
-    _sensor_pos,
-    dim=(d.nworld, m.sensor_pos_adr.size),
-    inputs=[
-      m.opt.ccd_tolerance,
-      m.opt.magnetic,
-      m.opt.ccd_iterations,
-      m.body_geomnum,
-      m.body_geomadr,
-      m.body_iquat,
-      m.jnt_qposadr,
-      m.geom_type,
-      m.geom_bodyid,
-      m.geom_dataid,
-      m.geom_size,
-      m.geom_quat,
-      m.site_type,
-      m.site_bodyid,
-      m.site_size,
-      m.site_quat,
-      m.cam_bodyid,
-      m.cam_quat,
-      m.cam_fovy,
-      m.cam_resolution,
-      m.cam_sensorsize,
-      m.cam_intrinsic,
-      m.mesh_vertadr,
-      m.mesh_vertnum,
-      m.mesh_graphadr,
-      m.mesh_vert,
-      m.mesh_graph,
-      m.mesh_polynum,
-      m.mesh_polyadr,
-      m.mesh_polynormal,
-      m.mesh_polyvertadr,
-      m.mesh_polyvertnum,
-      m.mesh_polyvert,
-      m.mesh_polymapadr,
-      m.mesh_polymapnum,
-      m.mesh_polymap,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_reftype,
-      m.sensor_refid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_pos_adr,
-      m.rangefinder_sensor_adr,
-      m.collision_sensor_adr,
-      d.time,
-      d.energy,
-      d.qpos,
-      d.xpos,
-      d.xquat,
-      d.xmat,
-      d.xipos,
-      d.ximat,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.site_xpos,
-      d.site_xmat,
-      d.cam_xpos,
-      d.cam_xmat,
-      d.subtree_com,
-      d.ten_length,
-      d.actuator_length,
-      d.epa_vert,
-      d.epa_vert1,
-      d.epa_vert2,
-      d.epa_vert_index1,
-      d.epa_vert_index2,
-      d.epa_face,
-      d.epa_pr,
-      d.epa_norm2,
-      d.epa_index,
-      d.epa_map,
-      d.epa_horizon,
-      d.multiccd_polygon,
-      d.multiccd_clipped,
-      d.multiccd_pnormal,
-      d.multiccd_pdist,
-      d.multiccd_idx1,
-      d.multiccd_idx2,
-      d.multiccd_n1,
-      d.multiccd_n2,
-      d.multiccd_endvert,
-      d.multiccd_face1,
-      d.multiccd_face2,
-      d.sensor_rangefinder_dist,
-      m.collision_sensor_adr.size,
-    ],
-    outputs=[d.sensordata],
-  )
+  if m.sensor_pos_adr.size > 0:
+    # TODO(erikfrey): remove this after #755 is merged
+    epa_vert = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
+    epa_vert1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
+    epa_vert2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
+    epa_vert_index1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=int)
+    epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=int)
+    epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=wp.vec3i)
+    epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=wp.vec3)
+    epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=float)
+    epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
+    epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
+    epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+    multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * m.npolygon), dtype=wp.vec3)
+    multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * m.npolygon), dtype=wp.vec3)
+    multiccd_pnormal = wp.empty(shape=(d.naconmax, m.npolygon), dtype=wp.vec3)
+    multiccd_pdist = wp.empty(shape=(d.naconmax, m.npolygon), dtype=float)
+    multiccd_idx1 = wp.empty(shape=(d.naconmax, m.npolymap), dtype=int)
+    multiccd_idx2 = wp.empty(shape=(d.naconmax, m.npolymap), dtype=int)
+    multiccd_n1 = wp.empty(shape=(d.naconmax, m.npolymap), dtype=wp.vec3)
+    multiccd_n2 = wp.empty(shape=(d.naconmax, m.npolymap), dtype=wp.vec3)
+    multiccd_endvert = wp.empty(shape=(d.naconmax, m.npolymap), dtype=wp.vec3)
+    multiccd_face1 = wp.empty(shape=(d.naconmax, m.npolygon), dtype=wp.vec3)
+    multiccd_face2 = wp.empty(shape=(d.naconmax, m.npolygon), dtype=wp.vec3)
+
+    wp.launch(
+      _sensor_pos,
+      dim=(d.nworld, m.sensor_pos_adr.size),
+      inputs=[
+        m.opt.ccd_tolerance,
+        m.opt.magnetic,
+        m.opt.ccd_iterations,
+        m.body_geomnum,
+        m.body_geomadr,
+        m.body_iquat,
+        m.jnt_qposadr,
+        m.geom_type,
+        m.geom_bodyid,
+        m.geom_dataid,
+        m.geom_size,
+        m.geom_quat,
+        m.site_type,
+        m.site_bodyid,
+        m.site_size,
+        m.site_quat,
+        m.cam_bodyid,
+        m.cam_quat,
+        m.cam_fovy,
+        m.cam_resolution,
+        m.cam_sensorsize,
+        m.cam_intrinsic,
+        m.mesh_vertadr,
+        m.mesh_vertnum,
+        m.mesh_graphadr,
+        m.mesh_vert,
+        m.mesh_graph,
+        m.mesh_polynum,
+        m.mesh_polyadr,
+        m.mesh_polynormal,
+        m.mesh_polyvertadr,
+        m.mesh_polyvertnum,
+        m.mesh_polyvert,
+        m.mesh_polymapadr,
+        m.mesh_polymapnum,
+        m.mesh_polymap,
+        m.sensor_type,
+        m.sensor_datatype,
+        m.sensor_objtype,
+        m.sensor_objid,
+        m.sensor_reftype,
+        m.sensor_refid,
+        m.sensor_adr,
+        m.sensor_cutoff,
+        m.sensor_pos_adr,
+        m.rangefinder_sensor_adr,
+        m.collision_sensor_adr,
+        d.time,
+        d.energy,
+        d.qpos,
+        d.xpos,
+        d.xquat,
+        d.xmat,
+        d.xipos,
+        d.ximat,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.site_xpos,
+        d.site_xmat,
+        d.cam_xpos,
+        d.cam_xmat,
+        d.subtree_com,
+        d.ten_length,
+        d.actuator_length,
+        d.sensor_rangefinder_dist,
+        epa_vert,
+        epa_vert1,
+        epa_vert2,
+        epa_vert_index1,
+        epa_vert_index2,
+        epa_face,
+        epa_pr,
+        epa_norm2,
+        epa_index,
+        epa_map,
+        epa_horizon,
+        multiccd_polygon,
+        multiccd_clipped,
+        multiccd_pnormal,
+        multiccd_pdist,
+        multiccd_idx1,
+        multiccd_idx2,
+        multiccd_n1,
+        multiccd_n2,
+        multiccd_endvert,
+        multiccd_face1,
+        multiccd_face2,
+        m.collision_sensor_adr.size,
+      ],
+      outputs=[d.sensordata],
+    )
 
   # jointlimitpos and tendonlimitpos
   wp.launch(

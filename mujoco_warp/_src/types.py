@@ -1000,6 +1000,8 @@ class Model:
     nlsp: number of step sizes for parallel linsearch
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
+    npolygon: maximum number of verts per polygon
+    npolymap: maximum number of polygons per vert
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1328,6 +1330,8 @@ class Model:
   nlsp: int
   nsensortaxel: int
   condim_max: int
+  npolygon: int
+  npolymap: int
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
@@ -1543,28 +1547,6 @@ class Data:
     collision_pairid: collision pairid from broadphase          (naconmax,)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
-    epa_vert: vertices in EPA polytope in Minkowski space       (naconmax, 5 + CCDiter)
-    epa_vert1: vertices in EPA polytope in geom 1 space         (naconmax, 5 + CCDiter)
-    epa_vert2: vertices in EPA polytope in geom 2 space         (naconmax, 5 + CCDiter)
-    epa_vert_index1: vertex indices in EPA polytope for geom 1  (naconmax, 5 + CCDiter)
-    epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
-    epa_face: faces of polytope represented by three indices    (naconmax, 6 + 5 * CCDiter)
-    epa_pr: projection of origin on polytope faces              (naconmax, 6 + 5 * CCDiter)
-    epa_norm2: epa_pr * epa_pr                                  (naconmax, 6 + 5 * CCDiter)
-    epa_index: index of face in polytope map                    (naconmax, 6 + 5 * CCDiter)
-    epa_map: status of faces in polytope                        (naconmax, 6 + 5 * CCDiter)
-    epa_horizon: index pair (i j) of edges on horizon           (naconmax, 2 * 12)
-    multiccd_polygon: clipped contact surface                   (naconmax, 2 * max_npolygon)
-    multiccd_clipped: clipped contact surface (intermediate)    (naconmax, 2 * max_npolygon)
-    multiccd_pnormal: plane normal of clipping polygon          (naconmax, max_npolygon)
-    multiccd_pdist: plane distance of clipping polygon          (naconmax, max_npolygon)
-    multiccd_idx1: list of normal index candidates for Geom 1   (naconmax, max_meshdegree)
-    multiccd_idx2: list of normal index candidates for Geom 2   (naconmax, max_meshdegree)
-    multiccd_n1: list of normal candidates for Geom 1           (naconmax, max_meshdegree)
-    multiccd_n2: list of normal candidates for Geom 1           (naconmax, max_meshdegree)
-    multiccd_endvert: list of edge vertices candidates          (naconmax, max_meshdegree)
-    multiccd_face1: contact face                                (naconmax, max_npolygon)
-    multiccd_face2: contact face                                (naconmax, max_npolygon)
     ten_Jdot: time derivative of tendon Jacobian                (nworld, ntendon, nv)
     ten_bias_coef: tendon bias force coefficient                (nworld, ntendon)
     ten_actfrc: total actuator force at tendon                  (nworld, ntendon)
@@ -1706,32 +1688,6 @@ class Data:
   collision_pairid: wp.array(dtype=int)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
-
-  # warp only: narrowphase collision (EPA polytope)
-  epa_vert: wp.array2d(dtype=wp.vec3)
-  epa_vert1: wp.array2d(dtype=wp.vec3)
-  epa_vert2: wp.array2d(dtype=wp.vec3)
-  epa_vert_index1: wp.array2d(dtype=int)
-  epa_vert_index2: wp.array2d(dtype=int)
-  epa_face: wp.array2d(dtype=wp.vec3i)
-  epa_pr: wp.array2d(dtype=wp.vec3)
-  epa_norm2: wp.array2d(dtype=float)
-  epa_index: wp.array2d(dtype=int)
-  epa_map: wp.array2d(dtype=int)
-  epa_horizon: wp.array2d(dtype=int)
-
-  # warp only: narrowphase collision (multicontact)
-  multiccd_polygon: wp.array2d(dtype=wp.vec3)
-  multiccd_clipped: wp.array2d(dtype=wp.vec3)
-  multiccd_pnormal: wp.array2d(dtype=wp.vec3)
-  multiccd_pdist: wp.array2d(dtype=float)
-  multiccd_idx1: wp.array2d(dtype=int)
-  multiccd_idx2: wp.array2d(dtype=int)
-  multiccd_n1: wp.array2d(dtype=wp.vec3)
-  multiccd_n2: wp.array2d(dtype=wp.vec3)
-  multiccd_endvert: wp.array2d(dtype=wp.vec3)
-  multiccd_face1: wp.array2d(dtype=wp.vec3)
-  multiccd_face2: wp.array2d(dtype=wp.vec3)
 
   # warp only: tendon
   ten_Jdot: wp.array3d(dtype=float)
