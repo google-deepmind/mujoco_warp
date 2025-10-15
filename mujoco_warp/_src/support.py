@@ -737,7 +737,7 @@ def _get_state_active(
   )
 
 
-def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional = None):
+def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
   """
   Copy concatenated state components specified by sig from Data into state. The bits of the integer
   sig correspond to element fields of State.
@@ -1014,7 +1014,7 @@ def _set_state_active(
   )
 
 
-def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional = None):
+def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
   """
   Copy concatenated state components specified by sig from state into Data. The bits of the integer
   sig correspond to element fields of State.
