@@ -135,7 +135,6 @@ def ccd_kernel_builder(
     x2: wp.vec3,
     count: int,
     # Data out:
-    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -147,6 +146,7 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
   ) -> int:
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
     if wp.static(legacy_gjk):
@@ -235,7 +235,6 @@ def ccd_kernel_builder(
         solimp,
         geoms,
         worldid,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -247,6 +246,7 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
       if count + (i + 1) >= MJ_MAXCONPAIR:
         return i + 1
@@ -391,8 +391,8 @@ def ccd_kernel_builder(
       geom_size[worldid, g1],
       mesh_vertadr,
       mesh_vertnum,
-      mesh_vert,
       mesh_graphadr,
+      mesh_vert,
       mesh_graph,
       mesh_polynum,
       mesh_polyadr,
@@ -414,8 +414,8 @@ def ccd_kernel_builder(
       geom_size[worldid, g2],
       mesh_vertadr,
       mesh_vertnum,
-      mesh_vert,
       mesh_graphadr,
+      mesh_vert,
       mesh_graph,
       mesh_polynum,
       mesh_polyadr,
@@ -541,7 +541,6 @@ def ccd_kernel_builder(
               x1,
               geom2.pos,
               count,
-              nacon_out,
               contact_dist_out,
               contact_pos_out,
               contact_frame_out,
@@ -553,6 +552,7 @@ def ccd_kernel_builder(
               contact_dim_out,
               contact_geom_out,
               contact_worldid_out,
+              nacon_out,
             )
             count += ncontact
             if count >= MJ_MAXCONPAIR:
@@ -599,7 +599,6 @@ def ccd_kernel_builder(
         geom1.pos,
         geom2.pos,
         0,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -611,6 +610,7 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
 
   return ccd_kernel

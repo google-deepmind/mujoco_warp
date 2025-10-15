@@ -162,9 +162,9 @@ def _geom_local_to_global(
   xquat_in: wp.array2d(dtype=wp.quat),
   geom_skip_in: wp.array(dtype=bool),
   # Data out:
-  geom_skip_out: wp.array(dtype=bool),
   geom_xpos_out: wp.array2d(dtype=wp.vec3),
   geom_xmat_out: wp.array2d(dtype=wp.mat33),
+  geom_skip_out: wp.array(dtype=bool),
 ):
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
@@ -321,7 +321,7 @@ def kinematics(m: Model, d: Data):
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
     inputs=[m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat, d.geom_skip],
-    outputs=[d.geom_skip, d.geom_xpos, d.geom_xmat],
+    outputs=[d.geom_xpos, d.geom_xmat, d.geom_skip],
   )
 
   wp.launch(
@@ -367,13 +367,14 @@ def _subtree_com_acc(
   worldid, nodeid = wp.tid()
   bodyid = body_tree_[nodeid]
   pid = body_parentid[bodyid]
-  wp.atomic_add(subtree_com_out, worldid, pid, subtree_com_in[worldid, bodyid])
+  if bodyid != 0:
+    wp.atomic_add(subtree_com_out, worldid, pid, subtree_com_in[worldid, bodyid])
 
 
 @wp.kernel
 def _subtree_div(
   # Model:
-  subtree_mass: wp.array2d(dtype=float),
+  body_subtreemass: wp.array2d(dtype=float),
   # Data in:
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
@@ -381,7 +382,7 @@ def _subtree_div(
 ):
   worldid, bodyid = wp.tid()
   com = subtree_com_in[worldid, bodyid]
-  mass = subtree_mass[worldid, bodyid]
+  mass = body_subtreemass[worldid, bodyid]
   if mass != 0.0:
     subtree_com_out[worldid, bodyid] = com / mass
 
@@ -497,7 +498,7 @@ def com_pos(m: Model, d: Data):
       outputs=[d.subtree_com],
     )
 
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.subtree_mass, d.subtree_com], outputs=[d.subtree_com])
+  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -1137,13 +1138,13 @@ def _cfrc_ext_equality(
   eq_objtype: wp.array(dtype=int),
   eq_data: wp.array2d(dtype=vec11),
   # Data in:
-  ne_connect_in: wp.array(dtype=int),
-  ne_weld_in: wp.array(dtype=int),
   xpos_in: wp.array2d(dtype=wp.vec3),
   xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   efc_id_in: wp.array2d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  ne_connect_in: wp.array(dtype=int),
+  ne_weld_in: wp.array(dtype=int),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
@@ -1242,8 +1243,6 @@ def _cfrc_ext_contact(
   body_rootid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   # Data in:
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   contact_pos_in: wp.array(dtype=wp.vec3),
   contact_frame_in: wp.array(dtype=wp.mat33),
@@ -1253,6 +1252,8 @@ def _cfrc_ext_contact(
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  njmax_in: int,
+  nacon_in: wp.array(dtype=int),
   # Data out:
   cfrc_ext_out: wp.array2d(dtype=wp.spatial_vector),
 ):
@@ -1273,13 +1274,13 @@ def _cfrc_ext_contact(
   # contact force in world frame
   force = support.contact_force_fn(
     opt_cone,
-    njmax_in,
-    nacon_in,
     contact_frame_in,
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
     efc_force_in,
+    njmax_in,
+    nacon_in,
     worldid,
     contactid,
     to_world_frame=True,
@@ -1324,13 +1325,13 @@ def rne_postconstraint(m: Model, d: Data):
       m.eq_obj2id,
       m.eq_objtype,
       m.eq_data,
-      d.ne_connect,
-      d.ne_weld,
       d.xpos,
       d.xmat,
       d.subtree_com,
       d.efc.id,
       d.efc.force,
+      d.ne_connect,
+      d.ne_weld,
     ],
     outputs=[d.cfrc_ext],
   )
@@ -1343,8 +1344,6 @@ def rne_postconstraint(m: Model, d: Data):
       m.opt.cone,
       m.body_rootid,
       m.geom_bodyid,
-      d.njmax,
-      d.nacon,
       d.subtree_com,
       d.contact.pos,
       d.contact.frame,
@@ -1354,6 +1353,8 @@ def rne_postconstraint(m: Model, d: Data):
       d.contact.efc_address,
       d.contact.worldid,
       d.efc.force,
+      d.njmax,
+      d.nacon,
     ],
     outputs=[d.cfrc_ext],
   )
@@ -1383,9 +1384,9 @@ def _tendon_dot(
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
   tendon_armature: wp.array2d(dtype=float),
+  wrap_type: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
   wrap_prm: wp.array(dtype=float),
-  wrap_type: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -1607,9 +1608,9 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
       m.tendon_adr,
       m.tendon_num,
       m.tendon_armature,
+      m.wrap_type,
       m.wrap_objid,
       m.wrap_prm,
-      m.wrap_type,
       d.site_xpos,
       d.subtree_com,
       d.cdof,
@@ -1759,14 +1760,14 @@ def _transmission(
   dof_parentid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   site_quat: wp.array2d(dtype=wp.quat),
+  tendon_adr: wp.array(dtype=int),
+  tendon_num: wp.array(dtype=int),
+  wrap_type: wp.array(dtype=int),
+  wrap_objid: wp.array(dtype=int),
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
   actuator_gear: wp.array2d(dtype=wp.spatial_vector),
   actuator_cranklength: wp.array(dtype=float),
-  tendon_adr: wp.array(dtype=int),
-  tendon_num: wp.array(dtype=int),
-  wrap_objid: wp.array(dtype=int),
-  wrap_type: wp.array(dtype=int),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -1774,8 +1775,8 @@ def _transmission(
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  ten_length_in: wp.array2d(dtype=float),
   ten_J_in: wp.array3d(dtype=float),
+  ten_length_in: wp.array2d(dtype=float),
   # Data out:
   actuator_length_out: wp.array2d(dtype=float),
   actuator_moment_out: wp.array3d(dtype=float),
@@ -2077,7 +2078,6 @@ def _transmission_body_moment(
   actuator_trnid: wp.array(dtype=wp.vec2i),
   actuator_trntype_body_adr: wp.array(dtype=int),
   # Data in:
-  nacon_in: wp.array(dtype=int),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   contact_dist_in: wp.array(dtype=float),
@@ -2089,6 +2089,7 @@ def _transmission_body_moment(
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
+  nacon_in: wp.array(dtype=int),
   # Data out:
   actuator_moment_out: wp.array3d(dtype=float),
   actuator_trntype_body_ncon_out: wp.array2d(dtype=int),
@@ -2220,22 +2221,22 @@ def transmission(m: Model, d: Data):
       m.dof_parentid,
       m.site_bodyid,
       m.site_quat,
+      m.tendon_adr,
+      m.tendon_num,
+      m.wrap_type,
+      m.wrap_objid,
       m.actuator_trntype,
       m.actuator_trnid,
       m.actuator_gear,
       m.actuator_cranklength,
-      m.tendon_adr,
-      m.tendon_num,
-      m.wrap_objid,
-      m.wrap_type,
       d.qpos,
       d.xquat,
       d.site_xpos,
       d.site_xmat,
       d.subtree_com,
       d.cdof,
-      d.ten_length,
       d.ten_J,
+      d.ten_length,
     ],
     outputs=[d.actuator_length, d.actuator_moment],
   )
@@ -2256,7 +2257,6 @@ def transmission(m: Model, d: Data):
         m.geom_bodyid,
         m.actuator_trnid,
         m.actuator_trntype_body_adr,
-        d.nacon,
         d.subtree_com,
         d.cdof,
         d.contact.dist,
@@ -2268,6 +2268,7 @@ def transmission(m: Model, d: Data):
         d.contact.efc_address,
         d.contact.worldid,
         d.efc.J,
+        d.nacon,
       ],
       outputs=[
         d.actuator_moment,
@@ -2661,8 +2662,8 @@ def _joint_tendon(
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   # Data out:
-  ten_length_out: wp.array2d(dtype=float),
   ten_J_out: wp.array3d(dtype=float),
+  ten_length_out: wp.array2d(dtype=float),
 ):
   worldid, wrapid = wp.tid()
 
@@ -2698,8 +2699,8 @@ def _spatial_site_tendon(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   # Data out:
-  ten_length_out: wp.array2d(dtype=float),
   ten_J_out: wp.array3d(dtype=float),
+  ten_length_out: wp.array2d(dtype=float),
 ):
   worldid, elementid = wp.tid()
 
@@ -2745,9 +2746,9 @@ def _spatial_geom_tendon(
   geom_bodyid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   site_bodyid: wp.array(dtype=int),
+  wrap_type: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
   wrap_prm: wp.array(dtype=float),
-  wrap_type: wp.array(dtype=int),
   tendon_geom_adr: wp.array(dtype=int),
   wrap_geom_adr: wp.array(dtype=int),
   wrap_pulley_scale: wp.array(dtype=float),
@@ -2758,8 +2759,8 @@ def _spatial_geom_tendon(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   # Data out:
-  ten_length_out: wp.array2d(dtype=float),
   ten_J_out: wp.array3d(dtype=float),
+  ten_length_out: wp.array2d(dtype=float),
   wrap_geom_xpos_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid, elementid = wp.tid()
@@ -2887,8 +2888,8 @@ def _spatial_tendon_wrap(
   ntendon: int,
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
-  wrap_objid: wp.array(dtype=int),
   wrap_type: wp.array(dtype=int),
+  wrap_objid: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   wrap_geom_xpos_in: wp.array2d(dtype=wp.spatial_vector),
@@ -3057,7 +3058,7 @@ def tendon(m: Model, d: Data):
     _joint_tendon,
     dim=(d.nworld, m.wrap_jnt_adr.size),
     inputs=[m.jnt_qposadr, m.jnt_dofadr, m.wrap_objid, m.wrap_prm, m.tendon_jnt_adr, m.wrap_jnt_adr, d.qpos],
-    outputs=[d.ten_length, d.ten_J],
+    outputs=[d.ten_J, d.ten_length],
   )
 
   spatial_site = m.wrap_site_pair_adr.size > 0
@@ -3085,7 +3086,7 @@ def tendon(m: Model, d: Data):
       d.subtree_com,
       d.cdof,
     ],
-    outputs=[d.ten_length, d.ten_J],
+    outputs=[d.ten_J, d.ten_length],
   )
 
   # process spatial geom tendons
@@ -3100,9 +3101,9 @@ def tendon(m: Model, d: Data):
       m.geom_bodyid,
       m.geom_size,
       m.site_bodyid,
+      m.wrap_type,
       m.wrap_objid,
       m.wrap_prm,
-      m.wrap_type,
       m.tendon_geom_adr,
       m.wrap_geom_adr,
       m.wrap_pulley_scale,
@@ -3112,13 +3113,13 @@ def tendon(m: Model, d: Data):
       d.subtree_com,
       d.cdof,
     ],
-    outputs=[d.ten_length, d.ten_J, d.wrap_geom_xpos],
+    outputs=[d.ten_J, d.ten_length, d.wrap_geom_xpos],
   )
 
   if spatial_site or spatial_geom:
     wp.launch(
       _spatial_tendon_wrap,
       dim=(d.nworld,),
-      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_objid, m.wrap_type, d.site_xpos, d.wrap_geom_xpos],
+      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, d.wrap_geom_xpos],
       outputs=[d.ten_wrapadr, d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
     )

@@ -78,8 +78,8 @@ class MeshData:
 @wp.func
 def get_sdf_params(
   # Model:
-  oct_aabb: wp.array2d(dtype=wp.vec3),
   oct_child: wp.array(dtype=vec8i),
+  oct_aabb: wp.array2d(dtype=wp.vec3),
   oct_coeff: wp.array(dtype=vec8f),
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
@@ -225,7 +225,7 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 
 @wp.func
 def find_oct(
-  oct_aabb: wp.array2d(dtype=wp.vec3), oct_child: wp.array(dtype=vec8i), p: wp.vec3, grad: bool
+  oct_child: wp.array(dtype=vec8i), oct_aabb: wp.array2d(dtype=wp.vec3), p: wp.vec3, grad: bool
 ) -> Tuple[int, Tuple[vec8f, vec8f, vec8f]]:
   stack = int(0)
   niter = int(100)
@@ -331,7 +331,7 @@ def box_project(center: wp.vec3, half_size: wp.vec3, xyz: wp.vec3) -> Tuple[floa
 @wp.func
 def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
   dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
-  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=False)
+  node, weights = find_oct(volume_data.oct_child, volume_data.oct_aabb, point, grad=False)
   return dist0 + wp.dot(weights[0], volume_data.oct_coeff[node])
 
 
@@ -348,7 +348,7 @@ def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
     grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
     grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
     return wp.vec3(grad_x, grad_y, grad_z)
-  node, weights = find_oct(volume_data.oct_aabb, volume_data.oct_child, point, grad=True)
+  node, weights = find_oct(volume_data.oct_child, volume_data.oct_aabb, point, grad=True)
   grad_x = wp.dot(weights[0], volume_data.oct_coeff[node])
   grad_y = wp.dot(weights[1], volume_data.oct_coeff[node])
   grad_z = wp.dot(weights[2], volume_data.oct_coeff[node])
@@ -371,8 +371,8 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
     dist = ray_mesh(
       mesh_data.nmeshface,
       mesh_data.mesh_vertadr,
-      mesh_data.mesh_vert,
       mesh_data.mesh_faceadr,
+      mesh_data.mesh_vert,
       mesh_data.mesh_face,
       mesh_data.data_id,
       mesh_data.pos,
@@ -384,8 +384,8 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
       return -ray_mesh(
         mesh_data.nmeshface,
         mesh_data.mesh_vertadr,
-        mesh_data.mesh_vert,
         mesh_data.mesh_faceadr,
+        mesh_data.mesh_vert,
         mesh_data.mesh_face,
         mesh_data.data_id,
         mesh_data.pos,
@@ -420,8 +420,8 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
     dist = ray_mesh(
       mesh_data.nmeshface,
       mesh_data.mesh_vertadr,
-      mesh_data.mesh_vert,
       mesh_data.mesh_faceadr,
+      mesh_data.mesh_vert,
       mesh_data.mesh_face,
       mesh_data.data_id,
       mesh_data.pos,
@@ -620,6 +620,9 @@ def gradient_descent(
 def _sdf_narrowphase(
   # Model:
   nmeshface: int,
+  oct_child: wp.array(dtype=vec8i),
+  oct_aabb: wp.array2d(dtype=wp.vec3),
+  oct_coeff: wp.array(dtype=vec8f),
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
@@ -632,17 +635,12 @@ def _sdf_narrowphase(
   geom_friction: wp.array2d(dtype=wp.vec3),
   geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array2d(dtype=float),
-  hfield_adr: wp.array(dtype=int),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
-  hfield_data: wp.array(dtype=float),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
   mesh_faceadr: wp.array(dtype=int),
-  mesh_face: wp.array(dtype=wp.vec3i),
   mesh_graphadr: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
+  mesh_face: wp.array(dtype=wp.vec3i),
   mesh_graph: wp.array(dtype=int),
   mesh_polynum: wp.array(dtype=int),
   mesh_polyadr: wp.array(dtype=int),
@@ -653,9 +651,11 @@ def _sdf_narrowphase(
   mesh_polymapadr: wp.array(dtype=int),
   mesh_polymapnum: wp.array(dtype=int),
   mesh_polymap: wp.array(dtype=int),
-  oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_child: wp.array(dtype=vec8i),
-  oct_coeff: wp.array(dtype=vec8f),
+  hfield_size: wp.array(dtype=wp.vec4),
+  hfield_nrow: wp.array(dtype=int),
+  hfield_ncol: wp.array(dtype=int),
+  hfield_adr: wp.array(dtype=int),
+  hfield_data: wp.array(dtype=float),
   pair_dim: wp.array(dtype=int),
   pair_solref: wp.array2d(dtype=wp.vec2),
   pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -663,14 +663,13 @@ def _sdf_narrowphase(
   pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array2d(dtype=float),
   pair_friction: wp.array2d(dtype=vec5),
-  # In:
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
   geom_plugin_index: wp.array(dtype=int),
   # Data in:
-  naconmax_in: int,
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  naconmax_in: int,
   collision_pair_in: wp.array(dtype=wp.vec2i),
   collision_pairid_in: wp.array(dtype=int),
   collision_worldid_in: wp.array(dtype=int),
@@ -679,7 +678,6 @@ def _sdf_narrowphase(
   sdf_initpoints: int,
   sdf_iterations: int,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -691,6 +689,7 @@ def _sdf_narrowphase(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   i, contact_tid = wp.tid()
   if i >= sdf_initpoints:
@@ -734,8 +733,8 @@ def _sdf_narrowphase(
     geom_size[worldid, g1],
     mesh_vertadr,
     mesh_vertnum,
-    mesh_vert,
     mesh_graphadr,
+    mesh_vert,
     mesh_graph,
     mesh_polynum,
     mesh_polyadr,
@@ -757,8 +756,8 @@ def _sdf_narrowphase(
     geom_size[worldid, g2],
     mesh_vertadr,
     mesh_vertnum,
-    mesh_vert,
     mesh_graphadr,
+    mesh_vert,
     mesh_graph,
     mesh_polynum,
     mesh_polyadr,
@@ -794,11 +793,11 @@ def _sdf_narrowphase(
   rot1 = geom1.rot
 
   attr1, g1_plugin_id, volume_data1, mesh_data1 = get_sdf_params(
-    oct_aabb, oct_child, oct_coeff, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
+    oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
   )
 
   attr2, g2_plugin_id, volume_data2, mesh_data2 = get_sdf_params(
-    oct_aabb, oct_child, oct_coeff, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
+    oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
   )
 
   mesh_data1.nmeshface = nmeshface
@@ -863,7 +862,6 @@ def _sdf_narrowphase(
     solimp,
     geoms,
     worldid,
-    nacon_out,
     contact_dist_out,
     contact_pos_out,
     contact_frame_out,
@@ -875,6 +873,7 @@ def _sdf_narrowphase(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    nacon_out,
   )
 
 
@@ -885,6 +884,9 @@ def sdf_narrowphase(m: Model, d: Data):
     dim=(m.opt.sdf_initpoints, d.naconmax),
     inputs=[
       m.nmeshface,
+      m.oct_child,
+      m.oct_aabb,
+      m.oct_coeff,
       m.geom_type,
       m.geom_condim,
       m.geom_dataid,
@@ -897,17 +899,12 @@ def sdf_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
-      m.hfield_adr,
-      m.hfield_nrow,
-      m.hfield_ncol,
-      m.hfield_size,
-      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vertnum,
-      m.mesh_vert,
       m.mesh_faceadr,
-      m.mesh_face,
       m.mesh_graphadr,
+      m.mesh_vert,
+      m.mesh_face,
       m.mesh_graph,
       m.mesh_polynum,
       m.mesh_polyadr,
@@ -918,9 +915,11 @@ def sdf_narrowphase(m: Model, d: Data):
       m.mesh_polymapadr,
       m.mesh_polymapnum,
       m.mesh_polymap,
-      m.oct_aabb,
-      m.oct_child,
-      m.oct_coeff,
+      m.hfield_size,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_adr,
+      m.hfield_data,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,
@@ -931,9 +930,9 @@ def sdf_narrowphase(m: Model, d: Data):
       m.plugin,
       m.plugin_attr,
       m.geom_plugin_index,
-      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
+      d.naconmax,
       d.collision_pair,
       d.collision_pairid,
       d.collision_worldid,
@@ -942,7 +941,6 @@ def sdf_narrowphase(m: Model, d: Data):
       m.opt.sdf_iterations,
     ],
     outputs=[
-      d.nacon,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
@@ -954,5 +952,6 @@ def sdf_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
+      d.nacon,
     ],
   )
