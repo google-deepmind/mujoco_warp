@@ -738,6 +738,17 @@ def _get_state_active(
 
 
 def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional = None):
+  """
+  Copy concatenated state components specified by sig from Data into state. The bits of the integer
+  sig correspond to element fields of State.
+
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output information (device).
+    state (array2d): Concatenation of state components.
+    sig (int): Bitflag specifying state components.
+    active (array): Per-world bitmask for getting state.
+  """
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
@@ -1004,6 +1015,17 @@ def _set_state_active(
 
 
 def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional = None):
+  """
+  Copy concatenated state components specified by sig from state into Data. The bits of the integer
+  sig correspond to element fields of State.
+
+  Args:
+    m (Model): The model containing kinematic and dynamic information (device).
+    d (Data): The data object containing the current state and output information (device).
+    state (array2d): Concatenation of state components.
+    sig (int): Bitflag specifying state components.
+    active (array): Per-world bitmask for setting state.
+  """
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
