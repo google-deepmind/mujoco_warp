@@ -471,7 +471,6 @@ def ccd_kernel_builder(
         solreffriction,
         solimp,
         geoms,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -483,6 +482,7 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
       return
 
