@@ -95,7 +95,6 @@ def _kinematics_level(
   body_pos_id = worldid % body_pos.shape[0]
   body_quat_id = worldid % body_quat.shape[0]
   jnt_axis_id = worldid % jnt_axis.shape[0]
-  jnt_pos_id = worldid % jnt_pos.shape[0]
 
   if jntnum == 0:
     # no joints - apply fixed translation and rotation relative to parent
@@ -113,6 +112,8 @@ def _kinematics_level(
   else:
     # regular or no joints
     # apply fixed translation and rotation relative to parent
+    qpos0_id = worldid % qpos0.shape[0]
+    jnt_pos_id = worldid % jnt_pos.shape[0]
     pid = body_parentid[bodyid]
     xpos = (xmat_in[worldid, pid] * body_pos[body_pos_id, bodyid]) + xpos_in[worldid, pid]
     xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[body_quat_id, bodyid])
@@ -136,9 +137,9 @@ def _kinematics_level(
         # correct for off-center rotation
         xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
       elif jnt_type_ == JointType.SLIDE:
-        xpos += xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
+        xpos += xaxis * (qpos[qadr] - qpos0[qpos0_id, qadr])
       elif jnt_type_ == JointType.HINGE:
-        qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
+        qpos0_ = qpos0[qpos0_id, qadr]
         qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
         xquat = math.mul_quat(xquat, qloc_)
         # correct for off-center rotation
@@ -262,7 +263,7 @@ def _mocap(
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
   xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),  # this is a typo in the original, should be mocap_quat_out
+  xipos_out: wp.array2d(dtype=wp.vec3),
   ximat_out: wp.array2d(dtype=wp.mat33),
 ):
   worldid, mocapid = wp.tid()
@@ -752,8 +753,8 @@ def _qM_dense(
 ):
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
-  # init M(i,i) with armature inertia. dof_armature is batched
-  M = dof_armature[worldid, dofid]
+  # init M(i,i) with armature inertia.
+  M = dof_armature[worldid % dof_armature.shape[0], dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
