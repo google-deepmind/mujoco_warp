@@ -26,6 +26,7 @@ from .collision_gjk import ccd
 from .collision_primitive import Geom
 from .warp_util import kernel as nested_kernel
 
+
 def _geom_dist(
   m: Model,
   d: Data,
@@ -260,6 +261,7 @@ def _geom_dist(
 
 class GJKTest(absltest.TestCase):
   """Tests for GJK/EPA."""
+
   def test_spheres_distance(self):
     """Test distance between two spheres."""
 
@@ -519,7 +521,7 @@ class GJKTest(absltest.TestCase):
          </worldbody>
        </mujoco>
        """,
-       overrides=["opt.ccd_iterations=50"]
+      overrides=["opt.ccd_iterations=50"],
     )
 
     pos = wp.vec3(0.00015228791744448245, -0.00074981129728257656, 0.29839199781417846680)
@@ -536,7 +538,7 @@ class GJKTest(absltest.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, pos2=pos, mat2=rot)
-    self.assertAlmostEqual(dist,  -0.0016624178339902445)
+    self.assertAlmostEqual(dist, -0.0016624178339902445)
 
 
 if __name__ == "__main__":
