@@ -427,9 +427,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         if not_implemented(objtype, objid, geoms[0]) and not_implemented(reftype, refid, geoms[1]):
           raise NotImplementedError(f"Collision sensors with {geoms[0]} and {geoms[1]} are not implemented.")
 
-  nxn_pairid_collision = -1 * np.ones((len(geom1), 2), dtype=int)
-  collisionid = 0
+  nxn_pairid_collision = -1 * np.ones(len(geom1), dtype=int)
   pairids = []
+  collision_geom_adr = [0]
+  sensor_collision_start_adr = []
   for i in range(sensor_collision_adr.size):
     sensorid = sensor_collision_adr[i]
     objtype = mjm.sensor_objtype[sensorid]
@@ -452,7 +453,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       id2 = refid
 
     # collide all pairs
-    geomgeomid = 0
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
         if geom2id < geom1id:
@@ -461,19 +461,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           pairid = np.int32(math.upper_tri_index(mjm.ngeom, int(geom1id), int(geom2id)))
 
         if pairid in pairids:
-          continue
+          sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
         else:
           pairids.append(pairid)
+          adr = collision_geom_adr[-1] + geom1id * n2 + geom2id
+          nxn_pairid_collision[pairid] = adr
+          sensor_collision_start_adr.append(adr)
 
-        nxn_pairid_collision[pairid, 0] = collisionid
-        nxn_pairid_collision[pairid, 1] = geomgeomid
-        geomgeomid += 1
+    if i < sensor_collision_adr.size - 1:
+      collision_geom_adr.append(collision_geom_adr[-1] + n1 * n2)
 
-    if geomgeomid == n1 * n2:
-      collisionid += 1
-
-  include = (nxn_pairid_contact > -2) | (nxn_pairid_collision[:, 0] >= 0)
-  nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision])
+  include = (nxn_pairid_contact > -2) | (nxn_pairid_collision >= 0)
+  nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])
   nxn_pairid_filtered = nxn_pairid[include]
   nxn_geom_pair_filtered = nxn_geom_pair[include]
 
@@ -776,8 +775,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     exclude_signature=wp.array(mjm.exclude_signature, dtype=int),
     nxn_geom_pair=wp.array(nxn_geom_pair, dtype=wp.vec2i),
     nxn_geom_pair_filtered=wp.array(nxn_geom_pair_filtered, dtype=wp.vec2i),
-    nxn_pairid=wp.array(nxn_pairid, dtype=wp.vec3i),
-    nxn_pairid_filtered=wp.array(nxn_pairid_filtered, dtype=wp.vec3i),
+    nxn_pairid=wp.array(nxn_pairid, dtype=wp.vec2i),
+    nxn_pairid_filtered=wp.array(nxn_pairid_filtered, dtype=wp.vec2i),
     pair_dim=wp.array(mjm.pair_dim, dtype=int),
     pair_geom1=wp.array(mjm.pair_geom1, dtype=int),
     pair_geom2=wp.array(mjm.pair_geom2, dtype=int),
@@ -910,6 +909,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_rangefinder_bodyid=wp.array(
       mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
     ),
+    sensor_collision_start_adr=wp.array(sensor_collision_start_adr, dtype=int),
     plugin=wp.array(plugin_id, dtype=int),
     plugin_attr=wp.array(plugin_attr, dtype=wp.vec3f),
     geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
@@ -943,7 +943,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def _max_collision_sensor_ngeom(mjm: mujoco.MjModel):
+def _num_collision(mjm: mujoco.MjModel):
   is_collision_sensor = np.isin(
     mjm.sensor_type, [mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO]
   )
@@ -953,7 +953,7 @@ def _max_collision_sensor_ngeom(mjm: mujoco.MjModel):
 
   sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
 
-  max_ngeom = 0
+  ncollision = 0
   for i in range(sensor_collision_adr.size):
     sensorid = sensor_collision_adr[i]
     objtype = mjm.sensor_objtype[sensorid]
@@ -971,11 +971,9 @@ def _max_collision_sensor_ngeom(mjm: mujoco.MjModel):
     else:
       n2 = 1
 
-    ngeom = n1 * n2
-    if ngeom > max_ngeom:
-      max_ngeom = ngeom
+    ncollision += n1 * n2
 
-  return max_ngeom
+  return ncollision
 
 
 def make_data(
@@ -1037,12 +1035,6 @@ def make_data(
   max_meshdegree = _max_meshdegree(mjm)
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
-  nsensorcollision = sum(
-    np.isin(
-      mjm.sensor_type,
-      [mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO],
-    )
-  )
 
   return types.Data(
     nworld=nworld,
@@ -1198,7 +1190,7 @@ def make_data(
     ),
     # collision driver
     collision_pair=wp.zeros((naconmax,), dtype=wp.vec2i),
-    collision_pairid=wp.zeros((naconmax,), dtype=wp.vec3i),
+    collision_pairid=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_worldid=wp.zeros((naconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
     # narrowphase (EPA polytope)
@@ -1249,7 +1241,6 @@ def make_data(
     sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
     sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
     sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    sensor_collision=wp.zeros((nworld, nsensorcollision, _max_collision_sensor_ngeom(mjm)), dtype=types.vec7),
     # ray
     ray_bodyexclude=wp.zeros(1, dtype=int),
     ray_dist=wp.zeros((nworld, 1), dtype=float),
@@ -1259,6 +1250,8 @@ def make_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    # distance and fromto for collision sensors
+    collision=wp.zeros((nworld, _num_collision(mjm)), dtype=types.vec7),
   )
 
 
@@ -1403,12 +1396,6 @@ def put_data(
 
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
-  nsensorcollision = sum(
-    np.isin(
-      mjm.sensor_type,
-      [mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO],
-    )
-  )
 
   # some helper functions to simplify the data field definitions below
 
@@ -1586,7 +1573,7 @@ def put_data(
     sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_pairid=wp.empty(naconmax, dtype=wp.vec3i),
+    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
     collision_worldid=wp.empty(naconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
     # narrowphase (EPA polytope)
@@ -1637,7 +1624,6 @@ def put_data(
     sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
     sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
     sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    sensor_collision=wp.zeros((nworld, nsensorcollision, _max_collision_sensor_ngeom(mjm)), dtype=types.vec7),
     # ray
     ray_bodyexclude=wp.zeros(1, dtype=int),
     ray_dist=wp.zeros((nworld, 1), dtype=float),
@@ -1647,6 +1633,8 @@ def put_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
+    # distance and fromto for collision sensors
+    collision=wp.zeros((nworld, _num_collision(mjm)), dtype=types.vec7),
   )
 
 

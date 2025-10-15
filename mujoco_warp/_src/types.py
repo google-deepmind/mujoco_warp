@@ -956,12 +956,10 @@ class Model:
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
     nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
                             [-1, ngeom - 1]
-    nxn_pairid: predefined pair id                           (<= ngeom * (ngeom - 1) // 2, 3)
-                0: -1 if not predefined, -2 if skipped
+    nxn_pairid: 0: contact pair id                           (<= ngeom * (ngeom - 1) // 2, 2)
+                   -1 if not predefined, -2 if skipped
                 1: collision id, else -1
-                2: geom distance id, else -1
-    nxn_pairid_filtered: predefined pair id                  (<= ngeom * (ngeom - 1) // 2, 3)
-                         same format as nxn_pairid
+    nxn_pairid_filtered: active subset of nxn_pairid         (<= ngeom * (ngeom - 1) // 2, 2)
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
     pair_geom2: id of geom2                                  (npair,)
@@ -1022,6 +1020,8 @@ class Model:
     sensor_limitvel_adr: address for limit velocity sensors  (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
+    sensor_collision_start_adr: address for sensor's first   (<=nsensor,)
+                                item in collision
     rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
                     (excluding limit force sensors)
@@ -1283,8 +1283,8 @@ class Model:
   actuator_lengthrange: wp.array(dtype=wp.vec2)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
   nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)  # warp only
-  nxn_pairid: wp.array(dtype=wp.vec3i)  # warp only
-  nxn_pairid_filtered: wp.array(dtype=wp.vec3i)  # warp only
+  nxn_pairid: wp.array(dtype=wp.vec2i)  # warp only
+  nxn_pairid_filtered: wp.array(dtype=wp.vec2i)  # warp only
   pair_dim: wp.array(dtype=int)
   pair_geom1: wp.array(dtype=int)
   pair_geom2: wp.array(dtype=int)
@@ -1344,6 +1344,7 @@ class Model:
   sensor_limitvel_adr: wp.array(dtype=int)  # warp only
   sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_rangefinder_adr: wp.array(dtype=int)  # warp only
+  sensor_collision_start_adr: wp.array(dtype=int)  # warp only
   rangefinder_sensor_adr: wp.array(dtype=int)  # warp only
   collision_sensor_adr: wp.array(dtype=int)  # warp only
   sensor_touch_adr: wp.array(dtype=int)  # warp only
@@ -1510,7 +1511,7 @@ class Data:
     sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
     collision_pair: collision pairs from broadphase             (naconmax,)
-    collision_pairid: collision pair ids from broadphase        (naconmax, 3)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
     epa_vert: vertices in EPA polytope in Minkowski space       (naconmax, 5 + CCDiter)
@@ -1558,12 +1559,12 @@ class Data:
     sensor_contact_matchid: id for matching contact             (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_criteria: critera for reduction              (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_direction: direction of contact              (nworld, <=nsensor, MJ_MAXCONPAIR)
-    sensor_collision: distance, position, normal                (nworld, <=nsensor, nbodygeom, 7)
     ray_bodyexclude: id of body to exclude from ray computation
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
+    collision: distance and fromto for collision sensors        (nworld, ncollision, 7)
   """
 
   nworld: int  # warp only
@@ -1672,7 +1673,7 @@ class Data:
 
   # collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
-  collision_pairid: wp.array(dtype=wp.vec3i)
+  collision_pairid: wp.array(dtype=wp.vec2i)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
 
@@ -1729,7 +1730,6 @@ class Data:
   sensor_contact_matchid: wp.array3d(dtype=int)  # warp only
   sensor_contact_criteria: wp.array3d(dtype=float)  # warp only
   sensor_contact_direction: wp.array3d(dtype=float)  # warp only
-  sensor_collision: wp.array3d(dtype=vec7)  # warp only
 
   # ray
   ray_bodyexclude: wp.array(dtype=int)  # warp only
@@ -1742,3 +1742,6 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
+
+  # distance and fromto for collision sensors
+  collision: wp.array2d(dtype=vec7)  # warp only

@@ -451,7 +451,6 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
-  ngeom: int,
   opt_magnetic: wp.array(dtype=wp.vec3),
   body_geomnum: wp.array(dtype=int),
   body_geomadr: wp.array(dtype=int),
@@ -470,7 +469,6 @@ def _sensor_pos(
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
   cam_intrinsic: wp.array(dtype=wp.vec4),
-  nxn_pairid: wp.array(dtype=wp.vec3i),
   sensor_type: wp.array(dtype=int),
   sensor_datatype: wp.array(dtype=int),
   sensor_objtype: wp.array(dtype=int),
@@ -480,7 +478,9 @@ def _sensor_pos(
   sensor_adr: wp.array(dtype=int),
   sensor_cutoff: wp.array(dtype=float),
   sensor_pos_adr: wp.array(dtype=int),
+  sensor_collision_start_adr: wp.array(dtype=int),
   rangefinder_sensor_adr: wp.array(dtype=int),
+  collision_sensor_adr: wp.array(dtype=int),
   # Data in:
   time_in: wp.array(dtype=float),
   energy_in: wp.array(dtype=wp.vec2),
@@ -500,7 +500,7 @@ def _sensor_pos(
   actuator_length_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   sensor_rangefinder_dist_in: wp.array2d(dtype=float),
-  sensor_collision_in: wp.array3d(dtype=vec7),
+  collision_in: wp.array2d(dtype=vec7),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
@@ -622,17 +622,13 @@ def _sensor_pos(
       n2 = 1
       id2 = refid
 
-    if id2 < id1:
-      pairid = math.upper_tri_index(ngeom, int(id2), int(id1))
-    else:
-      pairid = math.upper_tri_index(ngeom, int(id1), int(id2))
-
-    collisionid = nxn_pairid[pairid][1]
+    collision_sensorid = collision_sensor_adr[sensorid]
+    collision_start_adr = sensor_collision_start_adr[collision_sensorid]
 
     # check all pairs
     for geom1 in range(n1):
       for geom2 in range(n2):
-        collision_new = sensor_collision_in[worldid, collisionid, geom1 * n2 + geom2]
+        collision_new = collision_in[worldid, collision_start_adr + geom1 * n2 + geom2]
         dist_new = collision_new[0]
 
         if dist_new < dist:
@@ -749,7 +745,6 @@ def sensor_pos(m: Model, d: Data):
     _sensor_pos,
     dim=(d.nworld, m.sensor_pos_adr.size),
     inputs=[
-      m.ngeom,
       m.opt.magnetic,
       m.body_geomnum,
       m.body_geomadr,
@@ -768,7 +763,6 @@ def sensor_pos(m: Model, d: Data):
       m.cam_resolution,
       m.cam_sensorsize,
       m.cam_intrinsic,
-      m.nxn_pairid,
       m.sensor_type,
       m.sensor_datatype,
       m.sensor_objtype,
@@ -778,7 +772,9 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_adr,
       m.sensor_cutoff,
       m.sensor_pos_adr,
+      m.sensor_collision_start_adr,
       m.rangefinder_sensor_adr,
+      m.collision_sensor_adr,
       d.time,
       d.energy,
       d.qpos,
@@ -797,7 +793,7 @@ def sensor_pos(m: Model, d: Data):
       d.actuator_length,
       d.ten_length,
       d.sensor_rangefinder_dist,
-      d.sensor_collision,
+      d.collision,
     ],
     outputs=[d.sensordata],
   )
