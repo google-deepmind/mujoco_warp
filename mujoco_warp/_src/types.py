@@ -526,6 +526,48 @@ class WrapType(enum.IntEnum):
   CYLINDER = mujoco.mjtWrap.mjWRAP_CYLINDER
 
 
+class State(enum.IntEnum):
+  """
+  State component elements as integer bitflags and several convenient combinations of these flags.
+
+  Attributes:
+    TIME: time
+    QPOS: position
+    QVEL: velocity
+    ACT: actuator activation
+    WARMSTART: acceleration used for warmstart
+    CTRL: control
+    QFRC_APPLIED: applied generalized force
+    XFRC_APPLIED: applied Cartesian force/torque
+    EQ_ACTIVE: enable/disable constraints
+    MOCAP_POS: positions of mocap bodies
+    MOCAP_QUAT: orientations of mocap bodies
+    NSTATE: number of state elements
+    PHYSICS: QPOS | QVEL | ACT
+    FULLPHYSICS: TIME | PHYSICS | PLUGIN
+    USER: CTRL | QFRC_APPLIED | XFRC_APPLIED | EQ_ACTIVE | MOCAP_POS | MOCAP_QUAT | USERDATA
+    INTEGRATION: FULLPHYSICS | USER | WARMSTART
+  """
+
+  TIME = mujoco.mjtState.mjSTATE_TIME
+  QPOS = mujoco.mjtState.mjSTATE_QPOS
+  QVEL = mujoco.mjtState.mjSTATE_QVEL
+  ACT = mujoco.mjtState.mjSTATE_ACT
+  WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
+  CTRL = mujoco.mjtState.mjSTATE_CTRL
+  QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED
+  XFRC_APPLIED = mujoco.mjtState.mjSTATE_XFRC_APPLIED
+  EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
+  MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
+  MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
+  NSTATE = mujoco.mjtState.mjNSTATE
+  PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS
+  FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
+  USER = mujoco.mjtState.mjSTATE_USER
+  INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
+  # unsupported: USERDATA, PLUGIN
+
+
 class vec5f(wp.types.vector(length=5, dtype=float)):
   pass
 
@@ -1732,45 +1774,3 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)  # warp only
-
-
-class State(enum.IntEnum):
-  """
-  State component elements as integer bitflags and several convenient combinations of these flags.
-
-  Attributes:
-    TIME: time
-    QPOS: position
-    QVEL: velocity
-    ACT: actuator activation
-    WARMSTART: acceleration used for warmstart
-    CTRL: control
-    QFRC_APPLIED: applied generalized force
-    XFRC_APPLIED: applied Cartesian force/torque
-    EQ_ACTIVE: enable/disable constraints
-    MOCAP_POS: positions of mocap bodies
-    MOCAP_QUAT: orientations of mocap bodies
-    NSTATE: number of state elements
-    PHYSICS: QPOS | QVEL | ACT
-    FULLPHYSICS: TIME | PHYSICS | PLUGIN
-    USER: CTRL | QFRC_APPLIED | XFRC_APPLIED | EQ_ACTIVE | MOCAP_POS | MOCAP_QUAT | USERDATA
-    INTEGRATION: FULLPHYSICS | USER | WARMSTART
-  """
-
-  TIME = mujoco.mjtState.mjSTATE_TIME
-  QPOS = mujoco.mjtState.mjSTATE_QPOS
-  QVEL = mujoco.mjtState.mjSTATE_QVEL
-  ACT = mujoco.mjtState.mjSTATE_ACT
-  WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
-  CTRL = mujoco.mjtState.mjSTATE_CTRL
-  QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED
-  XFRC_APPLIED = mujoco.mjtState.mjSTATE_XFRC_APPLIED
-  EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
-  MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
-  MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
-  NSTATE = mujoco.mjtState.mjNSTATE
-  PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS
-  FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
-  USER = mujoco.mjtState.mjSTATE_USER
-  INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  # unsupported: USERDATA, PLUGIN
