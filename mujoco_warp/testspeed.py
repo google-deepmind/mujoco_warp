@@ -157,9 +157,6 @@ def _main(argv: Sequence[str]):
       f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-    if m.opt.ls_parallel and m.opt.ls_nparallel:
-      d.efc.ls_parallel_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
-
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")

@@ -154,8 +154,6 @@ def _main(argv: Sequence[str]) -> None:
         f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
       )
       d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-      if m.opt.ls_parallel and m.opt.ls_nparallel:
-        d.efc.ls_parallel_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
       print(f"Data\n  nworld: {d.nworld} nconmax: {d.naconmax / d.nworld} njmax: {d.njmax}\n")
       graph = _compile_step(m, d)
       print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")

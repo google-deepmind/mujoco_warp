@@ -516,8 +516,8 @@ def linesearch_parallel_fused(
   efc_quad_in: wp.array2d(dtype=wp.vec3),
   efc_quad_gauss_in: wp.array(dtype=wp.vec3),
   efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_ls_parallel_cost_out: wp.array2d(dtype=float),
+  # Out:
+  cost_out: wp.array2d(dtype=float),
 ):
   worldid, alphaid = wp.tid()
 
@@ -613,7 +613,7 @@ def linesearch_parallel_fused(
       if x < 0.0:
         out += _eval_cost(efc_quad_in[worldid, efcid], alpha)
 
-  efc_ls_parallel_cost_out[worldid, alphaid] = out
+  cost_out[worldid, alphaid] = out
 
 
 @wp.kernel
@@ -623,7 +623,8 @@ def linesearch_parallel_best_alpha(
   opt_ls_parallel_min_step: float,
   # Data in:
   efc_done_in: wp.array(dtype=bool),
-  efc_ls_parallel_cost_in: wp.array2d(dtype=float),
+  # In:
+  cost_in: wp.array2d(dtype=float),
   # Data out:
   efc_alpha_out: wp.array(dtype=float),
 ):
@@ -637,7 +638,7 @@ def linesearch_parallel_best_alpha(
   bestid = int(0)
   best_cost = float(wp.inf)
   for i in range(opt_ls_nparallel):
-    cost = efc_ls_parallel_cost_in[worldid, i]
+    cost = cost_in[worldid, i]
     if cost < best_cost:
       best_cost = cost
       bestid = i
@@ -645,10 +646,7 @@ def linesearch_parallel_best_alpha(
   efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_nparallel, bestid)
 
 
-def _linesearch_parallel(m: types.Model, d: types.Data):
-  if m.opt.ls_nparallel > d.efc.ls_parallel_cost.shape[1]:
-    RuntimeError(f"m.opt.ls_nparallel={m.opt.ls_nparallel} > d.efc.ls_parallel_cost.shape[1]={d.efc.ls_parallel_cost.shape[1]}")
-
+def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   wp.launch(
     linesearch_parallel_fused,
     dim=(d.nworld, m.opt.ls_nparallel),
@@ -673,13 +671,13 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
       d.efc.quad_gauss,
       d.efc.done,
     ],
-    outputs=[d.efc.ls_parallel_cost],
+    outputs=[cost],
   )
 
   wp.launch(
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
-    inputs=[m.opt.ls_nparallel, m.opt.ls_parallel_min_step, d.efc.done, d.efc.ls_parallel_cost],
+    inputs=[m.opt.ls_nparallel, m.opt.ls_parallel_min_step, d.efc.done, cost],
     outputs=[d.efc.alpha],
   )
 
@@ -907,7 +905,7 @@ def linesearch_jaref(
 
 
 @event_scope
-def _linesearch(m: types.Model, d: types.Data):
+def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   # mv = qM @ search
   support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
 
@@ -970,7 +968,7 @@ def _linesearch(m: types.Model, d: types.Data):
   )
 
   if m.opt.ls_parallel:
-    _linesearch_parallel(m, d)
+    _linesearch_parallel(m, d, cost)
   else:
     _linesearch_iterative(m, d)
 
@@ -1916,8 +1914,9 @@ def solve_done(
 def _solver_iteration(
   m: types.Model,
   d: types.Data,
+  step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d)
+  _linesearch(m, d, step_size_cost)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
@@ -2017,6 +2016,8 @@ def _solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
+  step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel if m.opt.ls_parallel else 0), dtype=float)
+
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
@@ -2031,10 +2032,11 @@ def _solve(m: types.Model, d: types.Data):
       while_body=_solver_iteration,
       m=m,
       d=d,
+      step_size_cost=step_size_cost,
     )
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d)
+      _solver_iteration(m, d, step_size_cost)

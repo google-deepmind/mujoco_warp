@@ -1096,7 +1096,6 @@ def make_data(
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
       beta=wp.zeros((nworld,), dtype=float),
       done=wp.zeros((nworld,), dtype=bool),
-      ls_parallel_cost=wp.zeros((nworld, _numeric(mjm, "ls_nparallel", 0)), dtype=float),
     ),
     # RK4
     qpos_t0=wp.zeros((nworld, mjm.nq), dtype=float),
@@ -1479,7 +1478,6 @@ def put_data(
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       beta=wp.empty(shape=(nworld,), dtype=float),
       done=wp.empty(shape=(nworld,), dtype=bool),
-      ls_parallel_cost=wp.empty(shape=(nworld, _numeric(mjm, "ls_nparallel", 0)), dtype=float),
     ),
     # TODO(team): skip allocation if integrator != RK4
     qpos_t0=wp.empty((nworld, mjm.nq), dtype=float),

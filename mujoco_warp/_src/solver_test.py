@@ -136,7 +136,8 @@ class SolverTest(parameterized.TestCase):
       # launch linesearch with 0 iteration just doing the initialization step
       d.efc.jv.zero_()
       d.efc.quad.zero_()
-      solver._linesearch(m, d)
+      step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
+      solver._linesearch(m, d, step_size_cost)
 
       efc_mv = d.efc.mv.numpy()[0]
       efc_jv = d.efc.jv.numpy()[0]
@@ -194,26 +195,27 @@ class SolverTest(parameterized.TestCase):
 
     # Launching iterative linesearch
     m.opt.ls_parallel = False
-    solver._linesearch(m, d)
+    step_size_cost = wp.empty((d.nworld, 0), dtype=float)
+    solver._linesearch(m, d, step_size_cost)
     alpha_iterative = d.efc.alpha.numpy().copy()
 
     # Launching parallel linesearch with 10 testing points
     m.opt.ls_nparallel = 10
-    d.efc.ls_parallel_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
     d.efc.Ma = wp.array2d(d_efc_Ma)
     d.efc.Jaref = wp.array(d_efc_Jaref)
     d.qacc = wp.array2d(d_qacc)
     m.opt.ls_parallel = True
-    solver._linesearch(m, d)
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
+    solver._linesearch(m, d, step_size_cost)
     alpha_parallel_10 = d.efc.alpha.numpy().copy()
 
     # Launching parallel linesearch with 50 testing points
     m.opt.ls_nparallel = 50
-    d.efc.ls_parallel_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
     d.efc.Ma = wp.array2d(d_efc_Ma)
     d.efc.Jaref = wp.array(d_efc_Jaref)
     d.qacc = wp.array2d(d_qacc)
-    solver._linesearch(m, d)
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
+    solver._linesearch(m, d, step_size_cost)
     alpha_parallel_50 = d.efc.alpha.numpy().copy()
 
     # Checking that iterative and parallel linesearch lead to similar results
@@ -247,7 +249,6 @@ class SolverTest(parameterized.TestCase):
 
       if ls_parallel:
         m.opt.ls_nparallel = ls_iterations
-        d.efc.ls_parallel_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
 
       mujoco.mj_forward(mjm, mjd)
 

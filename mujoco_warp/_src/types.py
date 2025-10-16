@@ -674,7 +674,6 @@ class Constraint:
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    ls_parallel_cost: cost for parallel ls step size  (nworld, ls_nparallel)
   """
 
   type: wp.array2d(dtype=int)
@@ -710,7 +709,6 @@ class Constraint:
   prev_Mgrad: wp.array2d(dtype=float)
   beta: wp.array(dtype=float)
   done: wp.array(dtype=bool)
-  ls_parallel_cost: wp.array2d(dtype=float)
 
 
 @dataclasses.dataclass
