@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import warp as wp
 
@@ -535,208 +535,6 @@ def jac_dot(
   return jacp, jacr
 
 
-@wp.func
-def _get_state_fn(
-  # Model:
-  nq: int,
-  nv: int,
-  nu: int,
-  na: int,
-  nbody: int,
-  neq: int,
-  nmocap: int,
-  # Data in:
-  time_in: wp.array(dtype=float),
-  qpos_in: wp.array2d(dtype=float),
-  qvel_in: wp.array2d(dtype=float),
-  act_in: wp.array2d(dtype=float),
-  qacc_warmstart_in: wp.array2d(dtype=float),
-  ctrl_in: wp.array2d(dtype=float),
-  qfrc_applied_in: wp.array2d(dtype=float),
-  xfrc_applied_in: wp.array2d(dtype=wp.spatial_vector),
-  eq_active_in: wp.array2d(dtype=bool),
-  mocap_pos_in: wp.array2d(dtype=wp.vec3),
-  mocap_quat_in: wp.array2d(dtype=wp.quat),
-  # In:
-  worldid_in: int,
-  sig_in: int,
-  # Out:
-  state_out: wp.array2d(dtype=float),
-):
-  adr = int(0)
-  for i in range(State.NSTATE.value):
-    element = 1 << i
-    if element & sig_in:
-      if element == State.TIME:
-        state_out[worldid_in, adr] = time_in[worldid_in]
-        adr += 1
-      elif element == State.QPOS:
-        for j in range(nq):
-          state_out[worldid_in, adr + j] = qpos_in[worldid_in, j]
-        adr += nq
-      elif element == State.QVEL:
-        for j in range(nv):
-          state_out[worldid_in, adr + j] = qvel_in[worldid_in, j]
-        adr += nv
-      elif element == State.ACT:
-        for j in range(na):
-          state_out[worldid_in, adr + j] = act_in[worldid_in, j]
-        adr += na
-      elif element == State.WARMSTART:
-        for j in range(nv):
-          state_out[worldid_in, adr + j] = qacc_warmstart_in[worldid_in, j]
-        adr += nv
-      elif element == State.CTRL:
-        for j in range(nu):
-          state_out[worldid_in, adr + j] = ctrl_in[worldid_in, j]
-        adr += nu
-      elif element == State.QFRC_APPLIED:
-        for j in range(nv):
-          state_out[worldid_in, adr + j] = qfrc_applied_in[worldid_in, j]
-        adr += nv
-      elif element == State.XFRC_APPLIED:
-        for j in range(nbody):
-          xfrc = xfrc_applied_in[worldid_in, j]
-          state_out[worldid_in, adr + 0] = xfrc[0]
-          state_out[worldid_in, adr + 1] = xfrc[1]
-          state_out[worldid_in, adr + 2] = xfrc[2]
-          state_out[worldid_in, adr + 3] = xfrc[3]
-          state_out[worldid_in, adr + 4] = xfrc[4]
-          state_out[worldid_in, adr + 5] = xfrc[5]
-          adr += 6
-      elif element == State.EQ_ACTIVE:
-        for j in range(neq):
-          state_out[worldid_in, adr + j] = float(eq_active_in[worldid_in, j])
-        adr += j
-      elif element == State.MOCAP_POS:
-        for j in range(nmocap):
-          pos = mocap_pos_in[worldid_in, j]
-          state_out[worldid_in, adr + 0] = pos[0]
-          state_out[worldid_in, adr + 1] = pos[1]
-          state_out[worldid_in, adr + 2] = pos[2]
-          adr += 3
-      elif element == State.MOCAP_QUAT:
-        for j in range(nmocap):
-          quat = mocap_quat_in[worldid_in, j]
-          state_out[worldid_in, adr + 0] = quat[0]
-          state_out[worldid_in, adr + 1] = quat[1]
-          state_out[worldid_in, adr + 2] = quat[2]
-          state_out[worldid_in, adr + 3] = quat[3]
-          adr += 4
-
-
-@wp.kernel
-def _get_state_all(
-  # Model:
-  nq: int,
-  nv: int,
-  nu: int,
-  na: int,
-  nbody: int,
-  neq: int,
-  nmocap: int,
-  # Data in:
-  time_in: wp.array(dtype=float),
-  qpos_in: wp.array2d(dtype=float),
-  qvel_in: wp.array2d(dtype=float),
-  act_in: wp.array2d(dtype=float),
-  qacc_warmstart_in: wp.array2d(dtype=float),
-  ctrl_in: wp.array2d(dtype=float),
-  qfrc_applied_in: wp.array2d(dtype=float),
-  xfrc_applied_in: wp.array2d(dtype=wp.spatial_vector),
-  eq_active_in: wp.array2d(dtype=bool),
-  mocap_pos_in: wp.array2d(dtype=wp.vec3),
-  mocap_quat_in: wp.array2d(dtype=wp.quat),
-  # In:
-  sig_in: int,
-  # Out:
-  state_out: wp.array2d(dtype=float),
-):
-  worldid = wp.tid()
-
-  _get_state_fn(
-    nq,
-    nv,
-    nu,
-    na,
-    nbody,
-    neq,
-    nmocap,
-    time_in,
-    qpos_in,
-    qvel_in,
-    act_in,
-    qacc_warmstart_in,
-    ctrl_in,
-    qfrc_applied_in,
-    xfrc_applied_in,
-    eq_active_in,
-    mocap_pos_in,
-    mocap_quat_in,
-    worldid,
-    sig_in,
-    state_out,
-  )
-
-
-@wp.kernel
-def _get_state_active(
-  # Model:
-  nq: int,
-  nv: int,
-  nu: int,
-  na: int,
-  nbody: int,
-  neq: int,
-  nmocap: int,
-  # Data in:
-  time_in: wp.array(dtype=float),
-  qpos_in: wp.array2d(dtype=float),
-  qvel_in: wp.array2d(dtype=float),
-  act_in: wp.array2d(dtype=float),
-  qacc_warmstart_in: wp.array2d(dtype=float),
-  ctrl_in: wp.array2d(dtype=float),
-  qfrc_applied_in: wp.array2d(dtype=float),
-  xfrc_applied_in: wp.array2d(dtype=wp.spatial_vector),
-  eq_active_in: wp.array2d(dtype=bool),
-  mocap_pos_in: wp.array2d(dtype=wp.vec3),
-  mocap_quat_in: wp.array2d(dtype=wp.quat),
-  # In:
-  sig_in: int,
-  active_in: wp.array(dtype=bool),
-  # Out:
-  state_out: wp.array2d(dtype=float),
-):
-  worldid = wp.tid()
-
-  if not active_in[worldid]:
-    return
-
-  _get_state_fn(
-    nq,
-    nv,
-    nu,
-    na,
-    nbody,
-    neq,
-    nmocap,
-    time_in,
-    qpos_in,
-    qvel_in,
-    act_in,
-    qacc_warmstart_in,
-    ctrl_in,
-    qfrc_applied_in,
-    xfrc_applied_in,
-    eq_active_in,
-    mocap_pos_in,
-    mocap_quat_in,
-    worldid,
-    sig_in,
-    state_out,
-  )
-
-
 def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
   """
   Copy concatenated state components specified by sig from Data into state. The bits of the integer
@@ -752,61 +550,128 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  if active is not None:
-    wp.launch(
-      _get_state_active,
-      dim=d.nworld,
-      inputs=[
-        m.nq,
-        m.nv,
-        m.nu,
-        m.na,
-        m.nbody,
-        m.neq,
-        m.nmocap,
-        d.time,
-        d.qpos,
-        d.qvel,
-        d.act,
-        d.qacc_warmstart,
-        d.ctrl,
-        d.qfrc_applied,
-        d.xfrc_applied,
-        d.eq_active,
-        d.mocap_pos,
-        d.mocap_quat,
-        sig,
-        active,
-      ],
-      outputs=[state],
-    )
-  else:
-    wp.launch(
-      _get_state_all,
-      dim=d.nworld,
-      inputs=[
-        m.nq,
-        m.nv,
-        m.nu,
-        m.na,
-        m.nbody,
-        m.neq,
-        m.nmocap,
-        d.time,
-        d.qpos,
-        d.qvel,
-        d.act,
-        d.qacc_warmstart,
-        d.ctrl,
-        d.qfrc_applied,
-        d.xfrc_applied,
-        d.eq_active,
-        d.mocap_pos,
-        d.mocap_quat,
-        sig,
-      ],
-      outputs=[state],
-    )
+  @wp.kernel
+  def _get_state(
+    # Model:
+    nq: int,
+    nv: int,
+    nu: int,
+    na: int,
+    nbody: int,
+    neq: int,
+    nmocap: int,
+    # Data in:
+    time_in: wp.array(dtype=float),
+    qpos_in: wp.array2d(dtype=float),
+    qvel_in: wp.array2d(dtype=float),
+    act_in: wp.array2d(dtype=float),
+    qacc_warmstart_in: wp.array2d(dtype=float),
+    ctrl_in: wp.array2d(dtype=float),
+    qfrc_applied_in: wp.array2d(dtype=float),
+    xfrc_applied_in: wp.array2d(dtype=wp.spatial_vector),
+    eq_active_in: wp.array2d(dtype=bool),
+    mocap_pos_in: wp.array2d(dtype=wp.vec3),
+    mocap_quat_in: wp.array2d(dtype=wp.quat),
+    # In:
+    sig_in: int,
+    active_in: Any,
+    # Out:
+    state_out: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+
+    if wp.static(active is not None):
+      if not active_in[worldid]:
+        return
+
+    adr = int(0)
+    for i in range(State.NSTATE.value):
+      element = 1 << i
+      if element & sig_in:
+        if element == State.TIME:
+          state_out[worldid, adr] = time_in[worldid]
+          adr += 1
+        elif element == State.QPOS:
+          for j in range(nq):
+            state_out[worldid, adr + j] = qpos_in[worldid, j]
+          adr += nq
+        elif element == State.QVEL:
+          for j in range(nv):
+            state_out[worldid, adr + j] = qvel_in[worldid, j]
+          adr += nv
+        elif element == State.ACT:
+          for j in range(na):
+            state_out[worldid, adr + j] = act_in[worldid, j]
+          adr += na
+        elif element == State.WARMSTART:
+          for j in range(nv):
+            state_out[worldid, adr + j] = qacc_warmstart_in[worldid, j]
+          adr += nv
+        elif element == State.CTRL:
+          for j in range(nu):
+            state_out[worldid, adr + j] = ctrl_in[worldid, j]
+          adr += nu
+        elif element == State.QFRC_APPLIED:
+          for j in range(nv):
+            state_out[worldid, adr + j] = qfrc_applied_in[worldid, j]
+          adr += nv
+        elif element == State.XFRC_APPLIED:
+          for j in range(nbody):
+            xfrc = xfrc_applied_in[worldid, j]
+            state_out[worldid, adr + 0] = xfrc[0]
+            state_out[worldid, adr + 1] = xfrc[1]
+            state_out[worldid, adr + 2] = xfrc[2]
+            state_out[worldid, adr + 3] = xfrc[3]
+            state_out[worldid, adr + 4] = xfrc[4]
+            state_out[worldid, adr + 5] = xfrc[5]
+            adr += 6
+        elif element == State.EQ_ACTIVE:
+          for j in range(neq):
+            state_out[worldid, adr + j] = float(eq_active_in[worldid, j])
+          adr += j
+        elif element == State.MOCAP_POS:
+          for j in range(nmocap):
+            pos = mocap_pos_in[worldid, j]
+            state_out[worldid, adr + 0] = pos[0]
+            state_out[worldid, adr + 1] = pos[1]
+            state_out[worldid, adr + 2] = pos[2]
+            adr += 3
+        elif element == State.MOCAP_QUAT:
+          for j in range(nmocap):
+            quat = mocap_quat_in[worldid, j]
+            state_out[worldid, adr + 0] = quat[0]
+            state_out[worldid, adr + 1] = quat[1]
+            state_out[worldid, adr + 2] = quat[2]
+            state_out[worldid, adr + 3] = quat[3]
+            adr += 4
+
+  wp.launch(
+    _get_state,
+    dim=d.nworld,
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.neq,
+      m.nmocap,
+      d.time,
+      d.qpos,
+      d.qvel,
+      d.act,
+      d.qacc_warmstart,
+      d.ctrl,
+      d.qfrc_applied,
+      d.xfrc_applied,
+      d.eq_active,
+      d.mocap_pos,
+      d.mocap_quat,
+      sig.value,
+      active if active is not None else 0,
+    ],
+    outputs=[state],
+  )
 
 
 @wp.func
@@ -822,6 +687,7 @@ def _set_state_fn(
   # In:
   worldid_in: int,
   sig_in: int,
+  active_in: wp.array(dtype=bool),
   state_in: wp.array2d(dtype=float),
   # Data out:
   time_out: wp.array(dtype=float),
@@ -836,6 +702,11 @@ def _set_state_fn(
   mocap_pos_out: wp.array2d(dtype=wp.vec3),
   mocap_quat_out: wp.array2d(dtype=wp.quat),
 ):
+  worldid = wp.tid()
+
+  if not active_in[worldid]:
+    return
+
   adr = int(0)
   for i in range(State.NSTATE.value):
     element = 1 << i
