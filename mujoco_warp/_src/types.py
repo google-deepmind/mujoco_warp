@@ -1591,7 +1591,7 @@ class Data:
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
     inverse_mul_m_skip: skip mul_m computation                  (nworld,)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
-    collision: distance and fromto for collision sensors        (nworld, ncollision, 7)
+    collision: distance and fromto for collision sensors        (nworld, ncollisionsensor, 7)
   """
 
   solver_niter: wp.array(dtype=int)
