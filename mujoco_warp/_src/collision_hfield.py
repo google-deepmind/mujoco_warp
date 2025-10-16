@@ -24,7 +24,7 @@ from .types import MJ_MAXVAL
 def hfield_filter(
   # Model:
   geom_dataid: wp.array(dtype=int),
-  geom_aabb: wp.array2d(dtype=wp.vec3),
+  geom_aabb: wp.array3d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   hfield_size: wp.array(dtype=wp.vec4),
@@ -78,8 +78,8 @@ def hfield_filter(
   ymin = MJ_MAXVAL
   zmin = MJ_MAXVAL
 
-  center2 = geom_aabb[g2, 0]
-  size2 = geom_aabb[g2, 1]
+  center2 = geom_aabb[worldid, g2, 0]
+  size2 = geom_aabb[worldid, g2, 1]
 
   pos += mat1T @ center2
 

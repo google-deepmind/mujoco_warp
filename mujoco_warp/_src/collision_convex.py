@@ -266,7 +266,7 @@ def ccd_kernel_builder(
     geom_solref: wp.array2d(dtype=wp.vec2),
     geom_solimp: wp.array2d(dtype=vec5),
     geom_size: wp.array2d(dtype=wp.vec3),
-    geom_aabb: wp.array2d(dtype=wp.vec3),
+    geom_aabb: wp.array3d(dtype=wp.vec3),
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),

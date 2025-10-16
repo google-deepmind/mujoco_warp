@@ -631,7 +631,7 @@ def _sdf_narrowphase(
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),
   geom_size: wp.array2d(dtype=wp.vec3),
-  geom_aabb: wp.array2d(dtype=wp.vec3),
+  geom_aabb: wp.array3d(dtype=wp.vec3),
   geom_friction: wp.array2d(dtype=wp.vec3),
   geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array2d(dtype=float),
@@ -776,12 +776,12 @@ def _sdf_narrowphase(
 
   g1_to_g2_rot = wp.transpose(geom1.rot) * geom2.rot
   g1_to_g2_pos = wp.transpose(geom1.rot) * (geom2.pos - geom1.pos)
-  aabb_pos = geom_aabb[g1, 0]
-  aabb_size = geom_aabb[g1, 1]
+  aabb_pos = geom_aabb[worldid, g1, 0]
+  aabb_size = geom_aabb[worldid, g1, 1]
   identity = wp.identity(3, dtype=float)
   aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), identity)
-  aabb_pos = geom_aabb[g2, 0]
-  aabb_size = geom_aabb[g2, 1]
+  aabb_pos = geom_aabb[worldid, g2, 0]
+  aabb_size = geom_aabb[worldid, g2, 1]
   aabb2 = transform_aabb(aabb_pos, aabb_size, g1_to_g2_pos, g1_to_g2_rot)
   aabb_intersection = AABB()
   aabb_intersection.min = wp.max(aabb1.min, aabb2.min)
