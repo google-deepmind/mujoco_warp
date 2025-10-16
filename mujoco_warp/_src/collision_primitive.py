@@ -88,8 +88,8 @@ def geom(
   geom_size: wp.vec3,
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
   mesh_graphadr: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
   mesh_graph: wp.array(dtype=int),
   mesh_polynum: wp.array(dtype=int),
   mesh_polyadr: wp.array(dtype=int),
@@ -388,7 +388,6 @@ def write_contact(
   geoms_in: wp.vec2i,
   worldid_in: int,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -400,6 +399,7 @@ def write_contact(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   if dist_in - margin_in < 0.0:
     cid = wp.atomic_add(nacon_out, 0, 1)
@@ -525,7 +525,6 @@ def plane_sphere_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -537,6 +536,7 @@ def plane_sphere_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contact between a sphere and a plane."""
   dist, pos = plane_sphere(plane.normal, plane.pos, sphere.pos, sphere.size[0])
@@ -556,7 +556,6 @@ def plane_sphere_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -568,6 +567,7 @@ def plane_sphere_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -588,7 +588,6 @@ def sphere_sphere_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -600,6 +599,7 @@ def sphere_sphere_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contact between two spheres."""
   dist, pos, normal = sphere_sphere(sphere1.pos, sphere1.size[0], sphere2.pos, sphere2.size[0])
@@ -619,7 +619,6 @@ def sphere_sphere_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -631,6 +630,7 @@ def sphere_sphere_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -651,7 +651,6 @@ def sphere_capsule_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -663,6 +662,7 @@ def sphere_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates one contact between a sphere and a capsule."""
   # capsule axis
@@ -685,7 +685,6 @@ def sphere_capsule_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -697,6 +696,7 @@ def sphere_capsule_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -717,7 +717,6 @@ def capsule_capsule_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -729,6 +728,7 @@ def capsule_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between two capsules."""
   # capsule axes
@@ -761,7 +761,6 @@ def capsule_capsule_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -773,6 +772,7 @@ def capsule_capsule_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -793,7 +793,6 @@ def plane_capsule_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -805,6 +804,7 @@ def plane_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a capsule and a plane."""
   # capsule axis
@@ -836,7 +836,6 @@ def plane_capsule_wrapper(
         solimp,
         geoms,
         worldid,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -848,6 +847,7 @@ def plane_capsule_wrapper(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
 
 
@@ -868,7 +868,6 @@ def plane_ellipsoid_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -880,6 +879,7 @@ def plane_ellipsoid_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between an ellipsoid and a plane."""
   dist, pos, normal = plane_ellipsoid(plane.normal, plane.pos, ellipsoid.pos, ellipsoid.rot, ellipsoid.size)
@@ -899,7 +899,6 @@ def plane_ellipsoid_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -911,6 +910,7 @@ def plane_ellipsoid_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -931,7 +931,6 @@ def plane_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -943,6 +942,7 @@ def plane_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a box and a plane."""
   dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, box.rot, box.size)
@@ -965,7 +965,6 @@ def plane_box_wrapper(
         solimp,
         geoms,
         worldid,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -977,6 +976,7 @@ def plane_box_wrapper(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
 
 
@@ -1000,7 +1000,6 @@ def plane_convex_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1012,6 +1011,7 @@ def plane_convex_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a plane and a convex object."""
   dist, pos, normal = plane_convex(plane.normal, plane.pos, convex)
@@ -1034,7 +1034,6 @@ def plane_convex_wrapper(
         solimp,
         geoms,
         worldid,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1046,6 +1045,7 @@ def plane_convex_wrapper(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
 
 
@@ -1066,7 +1066,6 @@ def sphere_cylinder_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1078,6 +1077,7 @@ def sphere_cylinder_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a sphere and a cylinder."""
   # cylinder axis
@@ -1107,7 +1107,6 @@ def sphere_cylinder_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -1119,6 +1118,7 @@ def sphere_cylinder_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -1139,7 +1139,6 @@ def plane_cylinder_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1151,6 +1150,7 @@ def plane_cylinder_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a cylinder and a plane."""
   # cylinder axis
@@ -1183,7 +1183,6 @@ def plane_cylinder_wrapper(
         solimp,
         geoms,
         worldid,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1195,6 +1194,7 @@ def plane_cylinder_wrapper(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
 
 
@@ -1215,7 +1215,6 @@ def sphere_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1227,6 +1226,7 @@ def sphere_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   dist, pos, normal = sphere_box(sphere.pos, sphere.size[0], box.pos, box.rot, box.size)
 
@@ -1245,7 +1245,6 @@ def sphere_box_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -1257,6 +1256,7 @@ def sphere_box_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -1277,7 +1277,6 @@ def capsule_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1289,6 +1288,7 @@ def capsule_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a capsule and a box."""
   # Extract capsule axis
@@ -1323,7 +1323,6 @@ def capsule_box_wrapper(
         solimp,
         geoms,
         worldid,
-        nacon_out,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1335,6 +1334,7 @@ def capsule_box_wrapper(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        nacon_out,
       )
 
 
@@ -1355,7 +1355,6 @@ def box_box_wrapper(
   solimp: vec5,
   geoms: wp.vec2i,
   # Data out:
-  nacon_out: wp.array(dtype=int),
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1367,6 +1366,7 @@ def box_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between two boxes."""
   # Call the core function to get contact geometry
@@ -1398,7 +1398,6 @@ def box_box_wrapper(
       solimp,
       geoms,
       worldid,
-      nacon_out,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -1410,6 +1409,7 @@ def box_box_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      nacon_out,
     )
 
 
@@ -1467,15 +1467,10 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
-    hfield_adr: wp.array(dtype=int),
-    hfield_nrow: wp.array(dtype=int),
-    hfield_ncol: wp.array(dtype=int),
-    hfield_size: wp.array(dtype=wp.vec4),
-    hfield_data: wp.array(dtype=float),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graphadr: wp.array(dtype=int),
+    mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graph: wp.array(dtype=int),
     mesh_polynum: wp.array(dtype=int),
     mesh_polyadr: wp.array(dtype=int),
@@ -1486,6 +1481,11 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     mesh_polymapadr: wp.array(dtype=int),
     mesh_polymapnum: wp.array(dtype=int),
     mesh_polymap: wp.array(dtype=int),
+    hfield_size: wp.array(dtype=wp.vec4),
+    hfield_nrow: wp.array(dtype=int),
+    hfield_ncol: wp.array(dtype=int),
+    hfield_adr: wp.array(dtype=int),
+    hfield_data: wp.array(dtype=float),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array2d(dtype=wp.vec2),
     pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -1494,15 +1494,14 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # Data out:
-    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -1514,6 +1513,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
 
@@ -1558,8 +1558,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       geom_size[worldid, g1],
       mesh_vertadr,
       mesh_vertnum,
-      mesh_vert,
       mesh_graphadr,
+      mesh_vert,
       mesh_graph,
       mesh_polynum,
       mesh_polyadr,
@@ -1581,8 +1581,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       geom_size[worldid, g2],
       mesh_vertadr,
       mesh_vertnum,
-      mesh_vert,
       mesh_graphadr,
+      mesh_vert,
       mesh_graph,
       mesh_polynum,
       mesh_polyadr,
@@ -1615,7 +1615,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           solreffriction,
           solimp,
           geoms,
-          nacon_out,
           contact_dist_out,
           contact_pos_out,
           contact_frame_out,
@@ -1627,6 +1626,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           contact_dim_out,
           contact_geom_out,
           contact_worldid_out,
+          nacon_out,
         )
 
   return _primitive_narrowphase
@@ -1678,15 +1678,10 @@ def primitive_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
-      m.hfield_adr,
-      m.hfield_nrow,
-      m.hfield_ncol,
-      m.hfield_size,
-      m.hfield_data,
       m.mesh_vertadr,
       m.mesh_vertnum,
-      m.mesh_vert,
       m.mesh_graphadr,
+      m.mesh_vert,
       m.mesh_graph,
       m.mesh_polynum,
       m.mesh_polyadr,
@@ -1697,6 +1692,11 @@ def primitive_narrowphase(m: Model, d: Data):
       m.mesh_polymapadr,
       m.mesh_polymapnum,
       m.mesh_polymap,
+      m.hfield_size,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_adr,
+      m.hfield_data,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,
@@ -1704,16 +1704,15 @@ def primitive_narrowphase(m: Model, d: Data):
       m.pair_margin,
       m.pair_gap,
       m.pair_friction,
-      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
+      d.naconmax,
       d.collision_pair,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
     ],
     outputs=[
-      d.nacon,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
@@ -1725,5 +1724,6 @@ def primitive_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
+      d.nacon,
     ],
   )

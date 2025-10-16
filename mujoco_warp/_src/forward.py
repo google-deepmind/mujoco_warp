@@ -206,12 +206,12 @@ def _next_time(
   # Model:
   opt_timestep: wp.array(dtype=float),
   # Data in:
+  nefc_in: wp.array(dtype=int),
+  time_in: wp.array(dtype=float),
   nworld_in: int,
   naconmax_in: int,
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
-  nefc_in: wp.array(dtype=int),
-  time_in: wp.array(dtype=float),
   ncollision_in: wp.array(dtype=int),
   # Data out:
   time_out: wp.array(dtype=float),
@@ -302,12 +302,12 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=(d.nworld,),
     inputs=[
       m.opt.timestep,
+      d.nefc,
+      d.time,
       d.nworld,
       d.naconmax,
       d.njmax,
       d.nacon,
-      d.nefc,
-      d.time,
       d.ncollision,
     ],
     outputs=[
@@ -779,10 +779,10 @@ def _tendon_actuator_force(
 @wp.kernel
 def _tendon_actuator_force_clamp(
   # Model:
-  actuator_trntype: wp.array(dtype=int),
-  actuator_trnid: wp.array(dtype=wp.vec2i),
   tendon_actfrclimited: wp.array(dtype=bool),
   tendon_actfrcrange: wp.array2d(dtype=wp.vec2),
+  actuator_trntype: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
   # Data in:
   ten_actfrc_in: wp.array2d(dtype=float),
   # Data out:
@@ -808,8 +808,8 @@ def _qfrc_actuator(
   nu: int,
   ngravcomp: int,
   jnt_actfrclimited: wp.array(dtype=bool),
-  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
   jnt_actgravcomp: wp.array(dtype=int),
+  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
   dof_jntid: wp.array(dtype=int),
   # Data in:
   actuator_moment_in: wp.array3d(dtype=float),
@@ -895,10 +895,10 @@ def fwd_actuation(m: Model, d: Data):
       _tendon_actuator_force_clamp,
       dim=(d.nworld, m.nu),
       inputs=[
-        m.actuator_trntype,
-        m.actuator_trnid,
         m.tendon_actfrclimited,
         m.tendon_actfrcrange,
+        m.actuator_trntype,
+        m.actuator_trnid,
         d.ten_actfrc,
       ],
       outputs=[d.actuator_force],
@@ -911,8 +911,8 @@ def fwd_actuation(m: Model, d: Data):
       m.nu,
       m.ngravcomp,
       m.jnt_actfrclimited,
-      m.jnt_actfrcrange,
       m.jnt_actgravcomp,
+      m.jnt_actfrcrange,
       m.dof_jntid,
       d.actuator_moment,
       d.qfrc_gravcomp,
