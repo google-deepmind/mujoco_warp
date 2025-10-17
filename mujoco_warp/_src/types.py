@@ -587,6 +587,7 @@ class Option:
   warp only fields:
     is_sparse: whether to use sparse representations
     ls_parallel: evaluate engine solver step sizes in parallel
+    ls_nparallel: number of step sizes for parallel linsearch
     ls_parallel_min_step: minimum step size for solver linesearch
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     broadphase: broadphase type (BroadphaseType)
@@ -623,6 +624,7 @@ class Option:
   # warp only fields:
   is_sparse: bool
   ls_parallel: bool
+  ls_nparallel: int  # warp only
   ls_parallel_min_step: float
   has_fluid: bool
   broadphase: int
@@ -680,7 +682,6 @@ class Constraint:
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    cost_candidate: costs associated with step sizes  (nworld, nlsp)
   """
 
   type: wp.array2d(dtype=int)
@@ -716,8 +717,6 @@ class Constraint:
   prev_Mgrad: wp.array2d(dtype=float)
   beta: wp.array(dtype=float)
   done: wp.array(dtype=bool)
-  # linesearch
-  cost_candidate: wp.array2d(dtype=float)
 
 
 @dataclasses.dataclass
@@ -997,7 +996,6 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
-    nlsp: number of step sizes for parallel linsearch
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
     has_sdf_geom: whether the model contains SDF geoms
@@ -1325,7 +1323,6 @@ class Model:
   M_colind: wp.array(dtype=int)
   mapM2M: wp.array(dtype=int)
   # warp only fields:
-  nlsp: int
   nsensortaxel: int
   condim_max: int
   has_sdf_geom: bool

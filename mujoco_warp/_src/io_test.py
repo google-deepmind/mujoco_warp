@@ -492,6 +492,28 @@ class IOTest(parameterized.TestCase):
       """
       )
 
+  def test_ls_nparallel(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.ls_nparallel, 0)
+
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <custom>
+        <numeric data="1" name="ls_nparallel"/>
+      </custom>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.ls_nparallel, 1)
+
 
 if __name__ == "__main__":
   wp.init()
