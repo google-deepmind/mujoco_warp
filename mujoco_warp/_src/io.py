@@ -1614,8 +1614,9 @@ def get_data_into(
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 
-  nacon = d.nacon.numpy()[0]
-  nefc = d.nefc.numpy()[0]
+  # nacon and nefc can overflow.  in that case, only pull up to the max contacts and constraints
+  nacon = min(d.nacon.numpy()[0], d.naconmax)
+  nefc = min(d.nefc.numpy()[0], d.njmax)
 
   if nacon != result.ncon or nefc != result.nefc:
     # TODO(team): if sparse, set nJ based on sparse efc_J
@@ -1650,6 +1651,8 @@ def get_data_into(
   else:
     efc_idx = np.array(np.arange(nefc))
     contact_efc_address_ordered = np.empty(0)
+
+  efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
 
   result.solver_niter[0] = d.solver_niter.numpy()[0]
   result.ncon = nacon
