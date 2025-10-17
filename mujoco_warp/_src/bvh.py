@@ -5,7 +5,7 @@ import warp as wp
 from .types import GeomType
 from .types import Model
 from .types import Data
-from .render import RenderContext
+from .render_context import RenderContext
 
 @wp.func
 def compute_box_bounds(
