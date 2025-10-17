@@ -28,14 +28,10 @@ requires-python = ">=3.9"
 dependencies = [
     "absl-py",
     "etils[epath]",
-    "mujoco==3.3.7",
+    "mujoco>=3.3.7",
     "numpy",
-    "warp-lang==1.9.1",
+    "warp-lang>=1.9.1",
 ]
-
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
 
 [[tool.uv.index]]
 name = "nvidia"
@@ -48,8 +44,8 @@ url = "https://py.mujoco.org/"
 explicit = true
 
 [tool.uv.sources]
-warp-lang = {index = "pypi"}
-mujoco = {index = "pypi"}
+warp-lang = {index = "nvidia"}
+mujoco = {index = "mujoco"}
 
 [project.optional-dependencies]
 dev = [
