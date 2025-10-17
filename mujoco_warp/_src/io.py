@@ -30,18 +30,6 @@ MAX_WORLDS = 2**24
 _TOLERANCE_F32 = 1.0e-6
 
 
-def _max_meshdegree(mjm: mujoco.MjModel) -> int:
-  if mjm.mesh_polyvertnum.size == 0:
-    return 4
-  return max(3, mjm.mesh_polymapnum.max())
-
-
-def _max_npolygon(mjm: mujoco.MjModel) -> int:
-  if mjm.mesh_polyvertnum.size == 0:
-    return 4
-  return max(4, mjm.mesh_polyvertnum.max())
-
-
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """
   Creates a model on device.
@@ -756,8 +744,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nlsp=nlsp,
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     condim_max=condim_max,  # TODO(team): get max after filtering,
-    npolygon=_max_npolygon(mjm),
-    npolymap=_max_meshdegree(mjm),
+    nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
+    nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
     block_dim=types.BlockDim(),
     body_tree=body_tree,

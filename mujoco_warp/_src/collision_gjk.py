@@ -1314,41 +1314,41 @@ def _next(n: int, i: int) -> int:
 
 
 @wp.func
-def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npoly: int) -> wp.vec4i:
+def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int) -> wp.vec4i:
   """Returns the indices of a quadrilateral of maximum area in a convex polygon."""
-  b = _next(npoly, 0)
-  c = _next(npoly, b)
-  d = _next(npoly, c)
+  b = _next(npolygon, 0)
+  c = _next(npolygon, b)
+  d = _next(npolygon, c)
   res = wp.vec4i(0, b, c, d)
   m = _area4(polygon[0], polygon[b], polygon[c], polygon[d])
-  for a in range(npoly):
+  for a in range(npolygon):
     while True:
-      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[_next(npoly, d)])
+      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[_next(npolygon, d)])
       if m_next <= m:
         break
       m = m_next
-      d = _next(npoly, d)
+      d = _next(npolygon, d)
       res = wp.vec4i(a, b, c, d)
       while True:
-        m_next = _area4(polygon[a], polygon[b], polygon[_next(npoly, c)], polygon[d])
+        m_next = _area4(polygon[a], polygon[b], polygon[_next(npolygon, c)], polygon[d])
         if m_next <= m:
           break
         m = m_next
-        c = _next(npoly, c)
+        c = _next(npolygon, c)
         res = wp.vec4i(a, b, c, d)
       while True:
-        m_next = _area4(polygon[a], polygon[_next(npoly, b)], polygon[c], polygon[d])
+        m_next = _area4(polygon[a], polygon[_next(npolygon, b)], polygon[c], polygon[d])
         if m_next <= m:
           break
         m = m_next
-        b = _next(npoly, b)
+        b = _next(npolygon, b)
         res = wp.vec4i(a, b, c, d)
     if b == a:
-      b = _next(npoly, b)
+      b = _next(npolygon, b)
       if c == b:
-        c = _next(npoly, c)
+        c = _next(npolygon, c)
         if d == c:
-          d == _next(npoly, d)
+          d == _next(npolygon, d)
   return res
 
 

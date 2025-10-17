@@ -1000,8 +1000,8 @@ class Model:
     nlsp: number of step sizes for parallel linsearch
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
-    npolygon: maximum number of verts per polygon
-    npolymap: maximum number of polygons per vert
+    nmaxpolygon: maximum number of verts per polygon
+    nmaxmeshdeg: maximum number of polygons per vert
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1330,8 +1330,8 @@ class Model:
   nlsp: int
   nsensortaxel: int
   condim_max: int
-  npolygon: int
-  npolymap: int
+  nmaxpolygon: int
+  nmaxmeshdeg: int
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
