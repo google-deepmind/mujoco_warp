@@ -1170,7 +1170,7 @@ class Model:
   geom_solref: wp.array2d(dtype=wp.vec2)
   geom_solimp: wp.array2d(dtype=vec5)
   geom_size: wp.array2d(dtype=wp.vec3)
-  geom_aabb: wp.array2d(dtype=wp.vec3)
+  geom_aabb: wp.array3d(dtype=wp.vec3)
   geom_rbound: wp.array2d(dtype=float)
   geom_pos: wp.array2d(dtype=wp.vec3)
   geom_quat: wp.array2d(dtype=wp.quat)
