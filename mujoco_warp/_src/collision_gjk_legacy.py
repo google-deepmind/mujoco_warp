@@ -448,7 +448,7 @@ def multicontact_legacy(
   depth: float,
   normal: wp.vec3,
   ncontact: int,
-  npoly: int,
+  npolygon: int,
   perturbation_angle: float,
 ):
   # Calculates multiple contact points given the normal from EPA.
@@ -466,7 +466,7 @@ def multicontact_legacy(
   #    they do not intersect, the closest points of both polygons are found.
 
   assert ncontact <= MULTI_CONTACT_COUNT
-  assert npoly <= MULTI_POLYGON_COUNT
+  assert npolygon <= MULTI_POLYGON_COUNT
 
   if depth < -depth_extension:
     return 0, mat3c()
@@ -488,9 +488,9 @@ def multicontact_legacy(
   # in the basis of the contact frame.
   v1count = int(0)
   v2count = int(0)
-  angle_ratio = wp.static(2.0 * wp.pi) / float(npoly)
+  angle_ratio = wp.static(2.0 * wp.pi) / float(npolygon)
 
-  for i in range(npoly):
+  for i in range(npolygon):
     angle = angle_ratio * float(i)
     axis = wp.cos(angle) * dir + wp.sin(angle) * dir2
 
