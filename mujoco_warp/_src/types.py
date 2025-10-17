@@ -536,6 +536,10 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec7f(wp.types.vector(length=7, dtype=float)):
+  pass
+
+
 class vec8f(wp.types.vector(length=8, dtype=float)):
   pass
 
@@ -554,6 +558,7 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
 
 vec5 = vec5f
 vec6 = vec6f
+vec7 = vec7f
 vec10 = vec10f
 vec11 = vec11f
 
@@ -1014,10 +1019,10 @@ class Model:
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
     nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
                             [-1, ngeom - 1]
-    nxn_pairid: predefined pair id, -1 if not predefined,    (<= ngeom * (ngeom - 1) // 2,)
-                -2 if skipped
-    nxn_pairid_filtered: predefined pair id, -1 if not       (<= ngeom * (ngeom - 1) // 2,)
-                         predefined
+    nxn_pairid: contact pair id, -1 if not predefined,       (<= ngeom * (ngeom - 1) // 2, 2)
+                  -2 if skipped
+                collision id, else -1
+    nxn_pairid_filtered: active subset of nxn_pairid         (<= ngeom * (ngeom - 1) // 2, 2)
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
@@ -1044,6 +1049,8 @@ class Model:
     sensor_limitvel_adr: address for limit velocity sensors  (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
+    sensor_collision_start_adr: address for sensor's first   (<=nsensor,)
+                                item in collision
     rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
                     (excluding limit force sensors)
@@ -1341,8 +1348,8 @@ class Model:
   geom_plugin_index: wp.array(dtype=int)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)
   nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)
-  nxn_pairid: wp.array(dtype=int)
-  nxn_pairid_filtered: wp.array(dtype=int)
+  nxn_pairid: wp.array(dtype=wp.vec2i)
+  nxn_pairid_filtered: wp.array(dtype=wp.vec2i)
   eq_connect_adr: wp.array(dtype=int)
   eq_wld_adr: wp.array(dtype=int)
   eq_jnt_adr: wp.array(dtype=int)
@@ -1367,6 +1374,7 @@ class Model:
   sensor_limitvel_adr: wp.array(dtype=int)
   sensor_acc_adr: wp.array(dtype=int)
   sensor_rangefinder_adr: wp.array(dtype=int)
+  sensor_collision_start_adr: wp.array(dtype=int)
   rangefinder_sensor_adr: wp.array(dtype=int)
   collision_sensor_adr: wp.array(dtype=int)
   sensor_touch_adr: wp.array(dtype=int)
@@ -1540,7 +1548,7 @@ class Data:
     sap_cumulative_sum: broadphase context                      (nworld, ngeom)
     sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     collision_pair: collision pairs from broadphase             (naconmax,)
-    collision_pairid: collision pairid from broadphase          (naconmax,)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
     epa_vert: vertices in EPA polytope in Minkowski space       (naconmax, 5 + CCDiter)
@@ -1583,6 +1591,7 @@ class Data:
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
     inverse_mul_m_skip: skip mul_m computation                  (nworld,)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
+    collision: distance and fromto for collision sensors        (nworld, ncollision, 7)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1703,7 +1712,7 @@ class Data:
 
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
-  collision_pairid: wp.array(dtype=int)
+  collision_pairid: wp.array(dtype=wp.vec2i)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
 
@@ -1760,3 +1769,6 @@ class Data:
 
   # warp only: actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
+
+  # distance and fromto for collision sensors
+  collision: wp.array2d(dtype=vec7)
