@@ -457,9 +457,15 @@ def contact_params(
   else:
     g1 = geoms[0]
     g2 = geoms[1]
+    solmix_id = worldid % geom_solmix.shape[0]
+    friction_id = worldid % geom_friction.shape[0]
+    solref_id = worldid % geom_solref.shape[0]
+    solimp_id = worldid % geom_solimp.shape[0]
+    margin_id = worldid % geom_margin.shape[0]
+    gap_id = worldid % geom_gap.shape[0]
 
-    solmix1 = geom_solmix[worldid, g1]
-    solmix2 = geom_solmix[worldid, g2]
+    solmix1 = geom_solmix[solmix_id, g1]
+    solmix2 = geom_solmix[solmix_id, g2]
 
     condim1 = geom_condim[g1]
     condim2 = geom_condim[g2]
@@ -471,18 +477,18 @@ def contact_params(
     if p1 > p2:
       mix = 1.0
       condim = condim1
-      max_geom_friction = geom_friction[worldid, g1]
+      max_geom_friction = geom_friction[friction_id, g1]
     elif p2 > p1:
       mix = 0.0
       condim = condim2
-      max_geom_friction = geom_friction[worldid, g2]
+      max_geom_friction = geom_friction[friction_id, g2]
     else:
       mix = safe_div(solmix1, solmix1 + solmix2)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
       mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
       condim = wp.max(condim1, condim2)
-      max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+      max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
 
     friction = vec5(
       wp.max(MJ_MINMU, max_geom_friction[0]),
@@ -492,18 +498,16 @@ def contact_params(
       wp.max(MJ_MINMU, max_geom_friction[2]),
     )
 
-    if geom_solref[worldid, g1][0] > 0.0 and geom_solref[worldid, g2][0] > 0.0:
-      solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
+    if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
+      solref = mix * geom_solref[solref_id, g1] + (1.0 - mix) * geom_solref[solref_id, g2]
     else:
-      solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
+      solref = wp.min(geom_solref[solref_id, g1], geom_solref[solref_id, g2])
 
     solreffriction = wp.vec2(0.0, 0.0)
-
-    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
-
+    solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
     # geom priority is ignored
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
-    gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
+    margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
+    gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -1552,10 +1556,13 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     )
 
     geom1_dataid = geom_dataid[g1]
+    geom_xpos_id = worldid % geom_xpos_in.shape[0]
+    geom_xmat_id = worldid % geom_xmat_in.shape[0]
+
     geom1 = geom(
       type1,
       geom1_dataid,
-      geom_size[worldid, g1],
+      geom_size[worldid % geom_size.shape[0], g1],
       mesh_vertadr,
       mesh_vertnum,
       mesh_graphadr,
@@ -1570,15 +1577,15 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[worldid, g1],
-      geom_xmat_in[worldid, g1],
+      geom_xpos_in[geom_xpos_id, g1],
+      geom_xmat_in[geom_xmat_id, g1],
     )
 
     geom2_dataid = geom_dataid[g2]
     geom2 = geom(
       type2,
       geom2_dataid,
-      geom_size[worldid, g2],
+      geom_size[worldid % geom_size.shape[0], g2],
       mesh_vertadr,
       mesh_vertnum,
       mesh_graphadr,
@@ -1593,8 +1600,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[worldid, g2],
-      geom_xmat_in[worldid, g2],
+      geom_xpos_in[geom_xpos_id, g2],
+      geom_xmat_in[geom_xmat_id, g2],
     )
 
     for i in range(wp.static(len(primitive_collisions_func))):

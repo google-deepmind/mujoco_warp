@@ -723,14 +723,18 @@ def _sdf_narrowphase(
     contact_tid,
     worldid,
   )
+
+  geom_size_id = worldid % geom_size.shape[0]
+  geom_xpos_id = worldid % geom_xpos_in.shape[0]
+  geom_xmat_id = worldid % geom_xmat_in.shape[0]
+
   g1 = geoms[0]
   type1 = geom_type[g1]
-
   geom1_dataid = geom_dataid[g1]
   geom1 = geom(
     type1,
     geom1_dataid,
-    geom_size[worldid, g1],
+    geom_size[geom_size_id, g1],
     mesh_vertadr,
     mesh_vertnum,
     mesh_graphadr,
@@ -745,15 +749,15 @@ def _sdf_narrowphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
-    geom_xpos_in[worldid, g1],
-    geom_xmat_in[worldid, g1],
+    geom_xpos_in[geom_xpos_id, g1],
+    geom_xmat_in[geom_xmat_id, g1],
   )
 
   geom2_dataid = geom_dataid[g2]
   geom2 = geom(
     type2,
     geom2_dataid,
-    geom_size[worldid, g2],
+    geom_size[geom_size_id, g2],
     mesh_vertadr,
     mesh_vertnum,
     mesh_graphadr,
@@ -768,8 +772,8 @@ def _sdf_narrowphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
-    geom_xpos_in[worldid, g2],
-    geom_xmat_in[worldid, g2],
+    geom_xpos_in[geom_xpos_id, g2],
+    geom_xmat_in[geom_xmat_id, g2],
   )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
