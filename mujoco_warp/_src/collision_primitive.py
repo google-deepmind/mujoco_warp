@@ -457,9 +457,15 @@ def contact_params(
   else:
     g1 = geoms[0]
     g2 = geoms[1]
+    solmix_id = worldid % geom_solmix.shape[0]
+    friction_id = worldid % geom_friction.shape[0]
+    solref_id = worldid % geom_solref.shape[0]
+    solimp_id = worldid % geom_solimp.shape[0]
+    margin_id = worldid % geom_margin.shape[0]
+    gap_id = worldid % geom_gap.shape[0]
 
-    solmix1 = geom_solmix[worldid, g1]
-    solmix2 = geom_solmix[worldid, g2]
+    solmix1 = geom_solmix[solmix_id, g1]
+    solmix2 = geom_solmix[solmix_id, g2]
 
     condim1 = geom_condim[g1]
     condim2 = geom_condim[g2]
@@ -471,18 +477,18 @@ def contact_params(
     if p1 > p2:
       mix = 1.0
       condim = condim1
-      max_geom_friction = geom_friction[worldid, g1]
+      max_geom_friction = geom_friction[friction_id, g1]
     elif p2 > p1:
       mix = 0.0
       condim = condim2
-      max_geom_friction = geom_friction[worldid, g2]
+      max_geom_friction = geom_friction[friction_id, g2]
     else:
       mix = safe_div(solmix1, solmix1 + solmix2)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
       mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
       condim = wp.max(condim1, condim2)
-      max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+      max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
 
     friction = vec5(
       wp.max(MJ_MINMU, max_geom_friction[0]),
@@ -492,18 +498,16 @@ def contact_params(
       wp.max(MJ_MINMU, max_geom_friction[2]),
     )
 
-    if geom_solref[worldid, g1][0] > 0.0 and geom_solref[worldid, g2][0] > 0.0:
-      solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
+    if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
+      solref = mix * geom_solref[solref_id, g1] + (1.0 - mix) * geom_solref[solref_id, g2]
     else:
-      solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
+      solref = wp.min(geom_solref[solref_id, g1], geom_solref[solref_id, g2])
 
     solreffriction = wp.vec2(0.0, 0.0)
-
-    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
-
+    solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
     # geom priority is ignored
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
-    gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
+    margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
+    gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -1411,3 +1415,319 @@ def box_box_wrapper(
       contact_worldid_out,
       nacon_out,
     )
+
+
+_PRIMITIVE_COLLISIONS = {
+  (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
+  (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
+  (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid_wrapper,
+  (GeomType.PLANE, GeomType.CYLINDER): plane_cylinder_wrapper,
+  (GeomType.PLANE, GeomType.BOX): plane_box_wrapper,
+  (GeomType.PLANE, GeomType.MESH): plane_convex_wrapper,
+  (GeomType.SPHERE, GeomType.SPHERE): sphere_sphere_wrapper,
+  (GeomType.SPHERE, GeomType.CAPSULE): sphere_capsule_wrapper,
+  (GeomType.SPHERE, GeomType.CYLINDER): sphere_cylinder_wrapper,
+  (GeomType.SPHERE, GeomType.BOX): sphere_box_wrapper,
+  (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule_wrapper,
+  (GeomType.CAPSULE, GeomType.BOX): capsule_box_wrapper,
+  (GeomType.BOX, GeomType.BOX): box_box_wrapper,
+}
+
+
+# TODO(team): _check_collisions shared utility
+def _check_primitive_collisions():
+  prev_idx = -1
+  for types in _PRIMITIVE_COLLISIONS.keys():
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
+    if types[1] < types[0] or idx <= prev_idx:
+      return False
+    prev_idx = idx
+  return True
+
+
+assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order"
+
+
+@cache_kernel
+def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_func):
+  # AD: no unique here:
+  # * we expect this generator to be called only once per model, so no repeated compilation
+  # * module="unique" is generating problems because it uses the function name as the key
+  #   that in turn will cause multiple kernels to be generated with the same name
+  #   this is mostly problematic in cases like the UTs where we don't clear the kernel cache
+  #   between different tests.
+
+  @nested_kernel(enable_backward=False)
+  def _primitive_narrowphase(
+    # Model:
+    geom_type: wp.array(dtype=int),
+    geom_condim: wp.array(dtype=int),
+    geom_dataid: wp.array(dtype=int),
+    geom_priority: wp.array(dtype=int),
+    geom_solmix: wp.array2d(dtype=float),
+    geom_solref: wp.array2d(dtype=wp.vec2),
+    geom_solimp: wp.array2d(dtype=vec5),
+    geom_size: wp.array2d(dtype=wp.vec3),
+    geom_friction: wp.array2d(dtype=wp.vec3),
+    geom_margin: wp.array2d(dtype=float),
+    geom_gap: wp.array2d(dtype=float),
+    mesh_vertadr: wp.array(dtype=int),
+    mesh_vertnum: wp.array(dtype=int),
+    mesh_graphadr: wp.array(dtype=int),
+    mesh_vert: wp.array(dtype=wp.vec3),
+    mesh_graph: wp.array(dtype=int),
+    mesh_polynum: wp.array(dtype=int),
+    mesh_polyadr: wp.array(dtype=int),
+    mesh_polynormal: wp.array(dtype=wp.vec3),
+    mesh_polyvertadr: wp.array(dtype=int),
+    mesh_polyvertnum: wp.array(dtype=int),
+    mesh_polyvert: wp.array(dtype=int),
+    mesh_polymapadr: wp.array(dtype=int),
+    mesh_polymapnum: wp.array(dtype=int),
+    mesh_polymap: wp.array(dtype=int),
+    hfield_size: wp.array(dtype=wp.vec4),
+    hfield_nrow: wp.array(dtype=int),
+    hfield_ncol: wp.array(dtype=int),
+    hfield_adr: wp.array(dtype=int),
+    hfield_data: wp.array(dtype=float),
+    pair_dim: wp.array(dtype=int),
+    pair_solref: wp.array2d(dtype=wp.vec2),
+    pair_solreffriction: wp.array2d(dtype=wp.vec2),
+    pair_solimp: wp.array2d(dtype=vec5),
+    pair_margin: wp.array2d(dtype=float),
+    pair_gap: wp.array2d(dtype=float),
+    pair_friction: wp.array2d(dtype=vec5),
+    # Data in:
+    geom_xpos_in: wp.array2d(dtype=wp.vec3),
+    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
+    collision_pair_in: wp.array(dtype=wp.vec2i),
+    collision_pairid_in: wp.array(dtype=int),
+    collision_worldid_in: wp.array(dtype=int),
+    ncollision_in: wp.array(dtype=int),
+    # Data out:
+    contact_dist_out: wp.array(dtype=float),
+    contact_pos_out: wp.array(dtype=wp.vec3),
+    contact_frame_out: wp.array(dtype=wp.mat33),
+    contact_includemargin_out: wp.array(dtype=float),
+    contact_friction_out: wp.array(dtype=vec5),
+    contact_solref_out: wp.array(dtype=wp.vec2),
+    contact_solreffriction_out: wp.array(dtype=wp.vec2),
+    contact_solimp_out: wp.array(dtype=vec5),
+    contact_dim_out: wp.array(dtype=int),
+    contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_worldid_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
+  ):
+    tid = wp.tid()
+
+    if tid >= ncollision_in[0]:
+      return
+
+    geoms = collision_pair_in[tid]
+    g1 = geoms[0]
+    g2 = geoms[1]
+
+    type1 = geom_type[g1]
+    type2 = geom_type[g2]
+
+    worldid = collision_worldid_in[tid]
+
+    _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+      geom_condim,
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_margin,
+      geom_gap,
+      pair_dim,
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_margin,
+      pair_gap,
+      pair_friction,
+      collision_pair_in,
+      collision_pairid_in,
+      tid,
+      worldid,
+    )
+
+    geom1_dataid = geom_dataid[g1]
+    geom1 = geom(
+      type1,
+      geom1_dataid,
+      geom_size[worldid, g1],
+      mesh_vertadr,
+      mesh_vertnum,
+      mesh_graphadr,
+      mesh_vert,
+      mesh_graph,
+      mesh_polynum,
+      mesh_polyadr,
+      mesh_polynormal,
+      mesh_polyvertadr,
+      mesh_polyvertnum,
+      mesh_polyvert,
+      mesh_polymapadr,
+      mesh_polymapnum,
+      mesh_polymap,
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
+    )
+
+    geom2_dataid = geom_dataid[g2]
+    geom2 = geom(
+      type2,
+      geom2_dataid,
+      geom_size[worldid, g2],
+      mesh_vertadr,
+      mesh_vertnum,
+      mesh_graphadr,
+      mesh_vert,
+      mesh_graph,
+      mesh_polynum,
+      mesh_polyadr,
+      mesh_polynormal,
+      mesh_polyvertadr,
+      mesh_polyvertnum,
+      mesh_polyvert,
+      mesh_polymapadr,
+      mesh_polymapnum,
+      mesh_polymap,
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
+    )
+
+    for i in range(wp.static(len(primitive_collisions_func))):
+      collision_type1 = wp.static(primitive_collisions_types[i][0])
+      collision_type2 = wp.static(primitive_collisions_types[i][1])
+
+      if collision_type1 == type1 and collision_type2 == type2:
+        wp.static(primitive_collisions_func[i])(
+          naconmax_in,
+          geom1,
+          geom2,
+          worldid,
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          geoms,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_worldid_out,
+          nacon_out,
+        )
+
+  return _primitive_narrowphase
+
+
+def _primitive_narrowphase_builder(m: Model):
+  _primitive_collisions_types = []
+  _primitive_collisions_func = []
+
+  for types, func in _PRIMITIVE_COLLISIONS.items():
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
+    if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
+      _primitive_collisions_types.append(types)
+      _primitive_collisions_func.append(func)
+
+  return _create_narrowphase_kernel(_primitive_collisions_types, _primitive_collisions_func)
+
+
+@event_scope
+def primitive_narrowphase(m: Model, d: Data):
+  """Runs collision detection on primitive geom pairs discovered during broadphase.
+
+  This function processes collision pairs involving primitive shapes that were
+  identified during the broadphase stage. It computes detailed contact information
+  such as distance, position, and frame, and populates the `d.contact` array.
+
+  The primitive geom types handled are PLANE, SPHERE, CAPSULE, CYLINDER, BOX.
+
+  It also handles collisions between planes and convex hulls.
+
+  To improve performance, it dynamically builds and launches a kernel tailored to
+  the specific primitive collision types present in the model, avoiding
+  unnecessary checks for non-existent collision pairs.
+  """
+  # we need to figure out how to keep the overhead of this small - not launching anything
+  # for pair types without collisions, as well as updating the launch dimensions.
+  wp.launch(
+    _primitive_narrowphase_builder(m),
+    dim=d.naconmax,
+    inputs=[
+      m.geom_type,
+      m.geom_condim,
+      m.geom_dataid,
+      m.geom_priority,
+      m.geom_solmix,
+      m.geom_solref,
+      m.geom_solimp,
+      m.geom_size,
+      m.geom_friction,
+      m.geom_margin,
+      m.geom_gap,
+      m.mesh_vertadr,
+      m.mesh_vertnum,
+      m.mesh_graphadr,
+      m.mesh_vert,
+      m.mesh_graph,
+      m.mesh_polynum,
+      m.mesh_polyadr,
+      m.mesh_polynormal,
+      m.mesh_polyvertadr,
+      m.mesh_polyvertnum,
+      m.mesh_polyvert,
+      m.mesh_polymapadr,
+      m.mesh_polymapnum,
+      m.mesh_polymap,
+      m.hfield_size,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_adr,
+      m.hfield_data,
+      m.pair_dim,
+      m.pair_solref,
+      m.pair_solreffriction,
+      m.pair_solimp,
+      m.pair_margin,
+      m.pair_gap,
+      m.pair_friction,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.naconmax,
+      d.collision_pair,
+      d.collision_pairid,
+      d.collision_worldid,
+      d.ncollision,
+    ],
+    outputs=[
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.includemargin,
+      d.contact.friction,
+      d.contact.solref,
+      d.contact.solreffriction,
+      d.contact.solimp,
+      d.contact.dim,
+      d.contact.geom,
+      d.contact.worldid,
+      d.nacon,
+    ],
+  )
