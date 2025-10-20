@@ -26,6 +26,7 @@ from .collision_sdf import sdf
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
+from .types import ContactType
 from .types import Data
 from .types import DataType
 from .types import DisableBit
@@ -36,7 +37,6 @@ from .types import SensorType
 from .types import TrnType
 from .types import vec5
 from .types import vec6
-from .types import vec7
 from .types import vec8f
 from .types import vec8i
 from .util_misc import inside_geom
@@ -451,6 +451,7 @@ def _clock(time_in: wp.array(dtype=float), worldid: int) -> float:
 @wp.kernel
 def _sensor_pos(
   # Model:
+  ngeom: int,
   opt_magnetic: wp.array(dtype=wp.vec3),
   body_geomnum: wp.array(dtype=int),
   body_geomadr: wp.array(dtype=int),
@@ -499,8 +500,15 @@ def _sensor_pos(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   ten_length_in: wp.array2d(dtype=float),
   actuator_length_in: wp.array2d(dtype=float),
+  contact_dist_in: wp.array(dtype=float),
+  contact_pos_in: wp.array(dtype=wp.vec3),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_worldid_in: wp.array(dtype=int),
+  contact_type_in: wp.array(dtype=int),
+  nacon_in: wp.array(dtype=int),
+  collision_pairid_in: wp.array(dtype=wp.vec2i),
   sensor_rangefinder_dist_in: wp.array2d(dtype=float),
-  collision_in: wp.array2d(dtype=vec7),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
@@ -593,11 +601,7 @@ def _sensor_pos(
   elif sensortype == SensorType.SUBTREECOM:
     vec3 = _subtree_com(subtree_com_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
-  elif (
-    sensortype == int(SensorType.GEOMDIST.value)
-    or sensortype == int(SensorType.GEOMNORMAL.value)
-    or sensortype == int(SensorType.GEOMFROMTO.value)
-  ):
+  elif sensortype == SensorType.GEOMDIST or sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
     objtype = sensor_objtype[sensorid]
     objid = sensor_objid[sensorid]
     reftype = sensor_reftype[sensorid]
@@ -605,10 +609,43 @@ def _sensor_pos(
 
     # initialize
     dist = float(1.0e32)
-    collision = vec7(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    pnts = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     flip = bool(False)
+    best_geom = wp.vec2i(-1, -1)
 
-    # get lists of geoms to collide
+    collision_sensorid = collision_sensor_adr[sensorid]
+    collision_start_adr = sensor_collision_start_adr[collision_sensorid]
+
+    # TODO(team): improve performance by iterating over all contacts once for all collision sensors?
+    for conid in range(nacon_in[0]):
+      if contact_worldid_in[conid] != worldid:
+        continue
+      if not contact_type_in[conid] & ContactType.SENSOR:
+        continue
+
+      geom = contact_geom_in[conid]
+      pairid = math.upper_tri_index(ngeom, geom[0], geom[1])
+      collisionid = collision_pairid_in[pairid][1]
+
+      if collisionid != collision_start_adr:
+        continue
+
+      dist_new = contact_dist_in[conid]
+
+      if dist_new < dist:
+        dist = dist_new
+        if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+          best_geom = geom
+          pos = contact_pos_in[conid]
+          frame = contact_frame_in[conid]
+          normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
+          if sensortype == SensorType.GEOMFROMTO:
+            witness1 = pos - 0.5 * dist * normal
+            witness2 = pos + 0.5 * dist * normal
+            pnts = vec6(witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2])
+
+    # if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+    # check for flip direction
     if objtype == int(ObjType.BODY.value):
       n1 = body_geomnum[objid]
       id1 = body_geomadr[objid]
@@ -622,50 +659,34 @@ def _sensor_pos(
       n2 = 1
       id2 = refid
 
-    collision_sensorid = collision_sensor_adr[sensorid]
-    collision_start_adr = sensor_collision_start_adr[collision_sensorid]
-
-    # check all pairs
     for geom1 in range(n1):
       for geom2 in range(n2):
-        collision_new = collision_in[worldid, collision_start_adr + geom1 * n2 + geom2]
-        dist_new = collision_new[0]
+        geomid1 = id1 + geom1
+        geomid2 = id2 + geom2
 
-        if dist_new < dist:
-          dist = dist_new
-          collision = collision_new
-          geomid1 = id1 + geom1
-          geomid2 = id2 + geom2
-
-          if geom_type[geomid1] < geom_type[geomid2]:
-            flip = False
+        if ((geomid1 == best_geom[0]) and (geomid2 == best_geom[1])) or (
+          (geomid1 == best_geom[1]) and (geomid2 == best_geom[0])
+        ):
+          if geom_type[geomid2] < geom_type[geomid1]:
+            flip = True
           elif geom_type[geomid1] == geom_type[geomid2]:
             if geomid2 < geomid1:
               flip = True
-            else:
-              flip = False
-          else:
-            flip = True
-
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
     elif sensortype == int(SensorType.GEOMNORMAL.value):
       if dist <= sensor_cutoff[sensorid]:
-        pnt1 = wp.vec3(collision[1], collision[2], collision[3])
-        pnt2 = wp.vec3(collision[4], collision[5], collision[6])
         if flip:
-          normal = wp.normalize(pnt1 - pnt2)
-        else:
-          normal = wp.normalize(pnt2 - pnt1)
+          normal *= -1.0
       else:
         normal = wp.vec3(0.0, 0.0, 0.0)
       _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, normal, out)
     elif sensortype == int(SensorType.GEOMFROMTO.value):
       if dist <= sensor_cutoff[sensorid]:
         if flip:
-          fromto = vec6(collision[4], collision[5], collision[6], collision[1], collision[2], collision[3])
+          fromto = vec6(pnts[3], pnts[4], pnts[5], pnts[0], pnts[1], pnts[2])
         else:
-          fromto = vec6(collision[1], collision[2], collision[3], collision[4], collision[5], collision[6])
+          fromto = pnts
       else:
         fromto = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
       _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 6, fromto, out)
@@ -745,6 +766,7 @@ def sensor_pos(m: Model, d: Data):
     _sensor_pos,
     dim=(d.nworld, m.sensor_pos_adr.size),
     inputs=[
+      m.ngeom,
       m.opt.magnetic,
       m.body_geomnum,
       m.body_geomadr,
@@ -792,8 +814,15 @@ def sensor_pos(m: Model, d: Data):
       d.subtree_com,
       d.ten_length,
       d.actuator_length,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.geom,
+      d.contact.worldid,
+      d.contact.type,
+      d.nacon,
+      d.collision_pairid,
       d.sensor_rangefinder_dist,
-      d.collision,
     ],
     outputs=[d.sensordata],
   )

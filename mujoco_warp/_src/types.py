@@ -1398,6 +1398,18 @@ class Model:
   qM_madr_ij: wp.array(dtype=int)
 
 
+class ContactType(enum.IntFlag):
+  """
+  Type of contact.
+
+  CONSTRAINT: contact for constraint solver.
+  SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO).
+  """
+
+  CONSTRAINT = 1
+  SENSOR = 2
+
+
 @dataclasses.dataclass
 class Contact:
   """Contact data.
@@ -1415,6 +1427,7 @@ class Contact:
     geom: geom ids; -1 for flex                                      (naconmax, 2)
     efc_address: address in efc; -1: not included                    (naconmax, ncondim)
     worldid: world id                                                (naconmax,)
+    type: ContactType                                                (naconmax,)
   """
 
   dist: wp.array(dtype=float)
@@ -1429,6 +1442,7 @@ class Contact:
   geom: wp.array(dtype=wp.vec2i)
   efc_address: wp.array2d(dtype=int)
   worldid: wp.array(dtype=int)
+  type: wp.array(dtype=int)
 
 
 @dataclasses.dataclass
@@ -1591,7 +1605,6 @@ class Data:
     energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
     inverse_mul_m_skip: skip mul_m computation                  (nworld,)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
-    collision: distance and fromto for collision sensors        (nworld, ncollisionsensor, 7)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1769,6 +1782,3 @@ class Data:
 
   # warp only: actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
-
-  # distance and fromto for collision sensors
-  collision: wp.array2d(dtype=vec7)

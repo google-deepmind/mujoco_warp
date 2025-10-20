@@ -450,6 +450,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       id2 = refid
 
     # collide all pairs
+    geomid = 0
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
         if geom2id < geom1id:
@@ -461,10 +462,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
         else:
           pairids.append(pairid)
-          adr = collision_geom_adr[-1] + geom1id * n2 + geom2id
+          adr = collision_geom_adr[-1] + geomid
           nxn_pairid_collision[pairid] = adr
           sensor_collision_start_adr.append(adr)
 
+        geomid += 1
     if i < sensor_collision_adr.size - 1:
       collision_geom_adr.append(collision_geom_adr[-1] + n1 * n2)
 
@@ -1145,6 +1147,7 @@ def make_data(
       geom=wp.zeros((naconmax,), dtype=wp.vec2i),
       efc_address=wp.zeros((naconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int),
       worldid=wp.zeros((naconmax,), dtype=int),
+      type=wp.zeros((naconmax,), dtype=int),
     ),
     efc=types.Constraint(
       type=wp.zeros((nworld, njmax), dtype=int),
@@ -1271,8 +1274,6 @@ def make_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
-    # distance and fromto for collision sensors
-    collision=wp.zeros((nworld, _num_collision(mjm)), dtype=types.vec7),
   )
 
 
@@ -1538,6 +1539,7 @@ def put_data(
       geom=padtile(mjd.contact.geom, naconmax, dtype=wp.vec2i),
       efc_address=arr(contact_efc_address),
       worldid=arr(contact_worldid),
+      type=wp.ones((naconmax,), dtype=int),  # TODO(team): set values
     ),
     efc=types.Constraint(
       type=wp.array2d(efc_type_fill, dtype=int),
@@ -1661,8 +1663,6 @@ def put_data(
     inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
-    # distance and fromto for collision sensors
-    collision=wp.zeros((nworld, _num_collision(mjm)), dtype=types.vec7),
   )
 
 
@@ -2093,6 +2093,7 @@ def _reset_contact_all(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
 ):
   conid = wp.tid()
 
@@ -2112,6 +2113,7 @@ def _reset_contact_all(
   for i in range(nefcaddress):
     contact_efc_address_out[conid, i] = 0
   contact_worldid_out[conid] = 0
+  contact_type_out[conid] = 0
 
 
 @wp.kernel
@@ -2134,6 +2136,7 @@ def _reset_contact(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
 ):
   conid = wp.tid()
 
@@ -2158,6 +2161,7 @@ def _reset_contact(
   for i in range(nefcaddress):
     contact_efc_address_out[conid, i] = 0
   contact_worldid_out[conid] = 0
+  contact_type_out[conid] = 0
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
@@ -2197,6 +2201,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
       ],
     )
 
@@ -2256,6 +2261,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
       ],
     )
     wp.launch(

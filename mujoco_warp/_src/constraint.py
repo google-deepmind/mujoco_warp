@@ -19,6 +19,7 @@ from . import math
 from . import support
 from . import types
 from .types import ConstraintType
+from .types import ContactType
 from .types import vec5
 from .types import vec11
 from .warp_util import event_scope
@@ -1126,6 +1127,7 @@ def _efc_contact_pyramidal(
   friction_in: wp.array(dtype=vec5),
   solref_in: wp.array(dtype=wp.vec2),
   solimp_in: wp.array(dtype=vec5),
+  type_in: wp.array(dtype=int),
   # Data out:
   nefc_out: wp.array(dtype=int),
   contact_efc_address_out: wp.array2d(dtype=int),
@@ -1142,6 +1144,9 @@ def _efc_contact_pyramidal(
   conid, dimid = wp.tid()
 
   if conid >= nacon_in[0]:
+    return
+
+  if not type_in[conid] & ContactType.CONSTRAINT:
     return
 
   condim = condim_in[conid]
@@ -1292,6 +1297,7 @@ def _efc_contact_elliptic(
   solref_in: wp.array(dtype=wp.vec2),
   solreffriction_in: wp.array(dtype=wp.vec2),
   solimp_in: wp.array(dtype=vec5),
+  type_in: wp.array(dtype=int),
   # Data out:
   nefc_out: wp.array(dtype=int),
   contact_efc_address_out: wp.array2d(dtype=int),
@@ -1308,6 +1314,9 @@ def _efc_contact_elliptic(
   conid, dimid = wp.tid()
 
   if conid >= nacon_in[0]:
+    return
+
+  if not type_in[conid] & ContactType.CONSTRAINT:
     return
 
   condim = condim_in[conid]
@@ -1825,6 +1834,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.friction,
             d.contact.solref,
             d.contact.solimp,
+            d.contact.type,
           ],
           outputs=[
             d.nefc,
@@ -1870,6 +1880,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.solref,
             d.contact.solreffriction,
             d.contact.solimp,
+            d.contact.type,
           ],
           outputs=[
             d.nefc,

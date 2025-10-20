@@ -688,6 +688,7 @@ def _sdf_narrowphase(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   i, contact_tid = wp.tid()
@@ -873,6 +874,7 @@ def _sdf_narrowphase(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
 
@@ -952,6 +954,7 @@ def sdf_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
+      d.contact.type,
       d.nacon,
     ],
   )

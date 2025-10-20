@@ -34,11 +34,11 @@ from .math import safe_div
 from .math import upper_trid_index
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
+from .types import ContactType
 from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
-from .types import vec7
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
@@ -400,23 +400,38 @@ def write_contact(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
-  if dist_in - margin_in < 0.0 and pairid_in[0] > -2:
-    cid = wp.atomic_add(nacon_out, 0, 1)
-    if cid < naconmax_in:
-      contact_dist_out[cid] = dist_in
-      contact_pos_out[cid] = pos_in
-      contact_frame_out[cid] = frame_in
-      contact_geom_out[cid] = geoms_in
-      contact_worldid_out[cid] = worldid_in
-      includemargin = margin_in - gap_in
-      contact_includemargin_out[cid] = includemargin
-      contact_dim_out[cid] = condim_in
-      contact_friction_out[cid] = friction_in
-      contact_solref_out[cid] = solref_in
-      contact_solreffriction_out[cid] = solreffriction_in
-      contact_solimp_out[cid] = solimp_in
+  active = dist_in < margin_in
+
+  # skip contact and no collision sensor
+  if (pairid_in[0] == -2 or not active) and pairid_in[1] == -1:
+    return
+
+  contact_type = 0
+
+  if pairid_in[0] >= -1 and active:
+    contact_type |= ContactType.CONSTRAINT
+
+  if pairid_in[1] >= 0:
+    contact_type |= ContactType.SENSOR
+
+  cid = wp.atomic_add(nacon_out, 0, 1)
+  if cid < naconmax_in:
+    contact_dist_out[cid] = dist_in
+    contact_pos_out[cid] = pos_in
+    contact_frame_out[cid] = frame_in
+    contact_geom_out[cid] = geoms_in
+    contact_worldid_out[cid] = worldid_in
+    includemargin = margin_in - gap_in
+    contact_includemargin_out[cid] = includemargin
+    contact_dim_out[cid] = condim_in
+    contact_friction_out[cid] = friction_in
+    contact_solref_out[cid] = solref_in
+    contact_solreffriction_out[cid] = solreffriction_in
+    contact_solimp_out[cid] = solimp_in
+    contact_type_out[cid] = contact_type
 
 
 @wp.func
@@ -541,8 +556,8 @@ def plane_sphere_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contact between a sphere and a plane."""
   normal = plane.normal
@@ -574,17 +589,9 @@ def plane_sphere_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -616,8 +623,8 @@ def sphere_sphere_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contact between two spheres."""
   dist, pos, normal = sphere_sphere(sphere1.pos, sphere1.size[0], sphere2.pos, sphere2.size[0])
@@ -648,17 +655,9 @@ def sphere_sphere_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -690,8 +689,8 @@ def sphere_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates one contact between a sphere and a capsule."""
   # capsule axis
@@ -725,17 +724,9 @@ def sphere_capsule_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -767,8 +758,8 @@ def capsule_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between two capsules."""
   # capsule axes
@@ -812,17 +803,9 @@ def capsule_capsule_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -854,8 +837,8 @@ def plane_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between a capsule and a plane."""
   # capsule axis
@@ -897,23 +880,8 @@ def plane_capsule_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
       nacon_out,
-    )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    if dist[0] < dist[1]:
-      min_dist = dist[0]
-      min_pos = pos[0]
-    else:
-      min_dist = dist[1]
-      min_pos = pos[1]
-    normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-    witness2 = min_pos + 0.5 * min_dist * normal
-    witness1 = min_pos - 0.5 * min_dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      min_dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
     )
 
 
@@ -946,8 +914,8 @@ def plane_ellipsoid_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between an ellipsoid and a plane."""
   dist, pos, normal = plane_ellipsoid(plane.normal, plane.pos, ellipsoid.pos, ellipsoid.rot, ellipsoid.size)
@@ -978,17 +946,9 @@ def plane_ellipsoid_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -1020,8 +980,8 @@ def plane_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between a box and a plane."""
   dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, box.rot, box.size)
@@ -1054,23 +1014,8 @@ def plane_box_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
       nacon_out,
-    )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    min_dist = dist[0]
-    min_pos = pos[0]
-    for i in range(1, 4):
-      if dist[i] < min_dist:
-        min_dist = dist[i]
-        min_pos = pos[i]
-    normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-    witness1 = min_pos - 0.5 * min_dist * normal
-    witness2 = min_pos + 0.5 * min_dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      min_dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
     )
 
 
@@ -1103,8 +1048,8 @@ def plane_convex_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between a plane and a convex object."""
   dist, pos, normal = plane_convex(plane.normal, plane.pos, convex)
@@ -1137,23 +1082,8 @@ def plane_convex_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
       nacon_out,
-    )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    min_dist = dist[0]
-    min_pos = pos[0]
-    for i in range(1, 4):
-      if dist[i] < min_dist:
-        min_dist = dist[i]
-        min_pos = pos[i]
-    normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-    witness1 = min_pos - 0.5 * min_dist * normal
-    witness2 = min_pos + 0.5 * min_dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      min_dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
     )
 
 
@@ -1186,8 +1116,8 @@ def sphere_cylinder_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between a sphere and a cylinder."""
   # cylinder axis
@@ -1228,17 +1158,9 @@ def sphere_cylinder_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -1270,8 +1192,8 @@ def plane_cylinder_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between a cylinder and a plane."""
   # cylinder axis
@@ -1314,23 +1236,8 @@ def plane_cylinder_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
       nacon_out,
-    )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    min_dist = dist[0]
-    min_pos = pos[0]
-    for i in range(1, 4):
-      if dist[i] < min_dist:
-        min_dist = dist[i]
-        min_pos = pos[i]
-    normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-    witness1 = min_pos - 0.5 * min_dist * normal
-    witness2 = min_pos + 0.5 * min_dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      min_dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
     )
 
 
@@ -1363,8 +1270,8 @@ def sphere_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   dist, pos, normal = sphere_box(sphere.pos, sphere.size[0], box.pos, box.rot, box.size)
 
@@ -1394,17 +1301,9 @@ def sphere_box_wrapper(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
     nacon_out,
   )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    witness1 = pos - 0.5 * dist * normal
-    witness2 = pos + 0.5 * dist * normal
-    collision_out[worldid, collisionid] = vec7(
-      dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
-    )
 
 
 @wp.func
@@ -1436,8 +1335,8 @@ def capsule_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between a capsule and a box."""
   # Extract capsule axis
@@ -1482,25 +1381,8 @@ def capsule_box_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
       nacon_out,
-    )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    if dist[0] < dist[1]:
-      min_dist = dist[0]
-      min_pos = pos[0]
-      min_normal = normal[0]
-    else:
-      min_dist = dist[1]
-      min_pos = pos[1]
-      min_normal = normal[1]
-
-    witness1 = min_pos - 0.5 * min_dist * min_normal
-    witness2 = min_pos + 0.5 * min_dist * min_normal
-    collision_out[worldid, collisionid] = vec7(
-      min_dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
     )
 
 
@@ -1533,8 +1415,8 @@ def box_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-  collision_out: wp.array2d(dtype=vec7),
 ):
   """Calculates contacts between two boxes."""
   # Call the core function to get contact geometry
@@ -1575,25 +1457,8 @@ def box_box_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
       nacon_out,
-    )
-
-  # write collision for sensor
-  collisionid = pairid[1]
-  if collisionid >= 0:
-    min_dist = dist[0]
-    min_pos = pos[0]
-    min_normal = normal[0]
-    for i in range(1, 8):
-      if dist[i] < min_dist:
-        min_dist = dist[i]
-        min_pos = pos[i]
-        min_normal = normal[i]
-
-    witness1 = min_pos - 0.5 * min_dist * min_normal
-    witness2 = min_pos + 0.5 * min_dist * min_normal
-    collision_out[worldid, collisionid] = vec7(
-      min_dist, witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2]
     )
 
 
@@ -1697,8 +1562,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    contact_type_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
-    collision_out: wp.array2d(dtype=vec7),
   ):
     tid = wp.tid()
 
@@ -1812,8 +1677,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           contact_dim_out,
           contact_geom_out,
           contact_worldid_out,
+          contact_type_out,
           nacon_out,
-          collision_out,
         )
 
   return _primitive_narrowphase
@@ -1911,7 +1776,7 @@ def primitive_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
+      d.contact.type,
       d.nacon,
-      d.collision,
     ],
   )

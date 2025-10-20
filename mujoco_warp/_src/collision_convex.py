@@ -148,8 +148,8 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    contact_type_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
-    collision_out: wp.array2d(dtype=vec7),
   ) -> int:
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
     if wp.static(legacy_gjk):
@@ -221,20 +221,18 @@ def ccd_kernel_builder(
         multiccd_face2_in[tid],
       )
 
-      # write collision for sensor
-      collisionid = pairid[1]
-      if collisionid >= 0:
-        collision_out[worldid, collisionid] = vec7(
-          dist, witness1[0][0], witness1[0][1], witness1[0][2], witness2[0][0], witness2[0][1], witness2[0][2]
-        )
-
-      if dist >= 0.0:
+      if dist >= 0.0 and pairid[1] == -1:
         return 0
 
       for i in range(ncontact):
         points[i] = 0.5 * (witness1[i] + witness2[i])
       normal = witness1[0] - witness2[0]
       frame = make_frame(normal)
+
+    # flip if collision sensor
+    if pairid[1] >= 0:
+      frame *= -1.0
+      geoms = wp.vec2i(geoms[1], geoms[0])
 
     for i in range(ncontact):
       write_contact(
@@ -263,6 +261,7 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        contact_type_out,
         nacon_out,
       )
       if count + (i + 1) >= MJ_MAXCONPAIR:
@@ -357,7 +356,7 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
-    collision_out: wp.array2d(dtype=vec7),
+    contact_type_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -571,8 +570,8 @@ def ccd_kernel_builder(
               contact_dim_out,
               contact_geom_out,
               contact_worldid_out,
+              contact_type_out,
               nacon_out,
-              collision_out,
             )
             count += ncontact
             if count >= MJ_MAXCONPAIR:
@@ -631,8 +630,8 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        contact_type_out,
         nacon_out,
-        collision_out,
       )
 
   return ccd_kernel
@@ -745,6 +744,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.contact.dim,
           d.contact.geom,
           d.contact.worldid,
-          d.collision,
+          d.contact.type,
         ],
       )
