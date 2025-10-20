@@ -253,7 +253,7 @@ def _broadphase_filter(m: Model):
     # 4: aabb
     # 8: obb
 
-    aabb_id = worldid % geom_aabb.shape[0] if wp.static(geom_aabb.shape[0] > 1) else 0
+    aabb_id = worldid % geom_aabb.shape[0] if wp.static(m.geom_aabb.shape[0] > 1) else 0
     center1, center2 = geom_aabb[aabb_id, geom1, 0], geom_aabb[aabb_id, geom2, 0]
     size1, size2 = geom_aabb[aabb_id, geom1, 1], geom_aabb[aabb_id, geom2, 1]
 
