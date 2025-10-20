@@ -83,8 +83,9 @@ def hfield_filter(
   ymin = MJ_MAXVAL
   zmin = MJ_MAXVAL
 
-  center2 = geom_aabb[worldid, g2, 0]
-  size2 = geom_aabb[worldid, g2, 1]
+  aabb_id = worldid % geom_aabb.shape[0] if wp.static(geom_aabb.shape[0] > 1) else 0
+  center2 = geom_aabb[aabb_id, g2, 0]
+  size2 = geom_aabb[aabb_id, g2, 1]
 
   pos += mat1T @ center2
 
