@@ -634,8 +634,6 @@ def linesearch_parallel_best_alpha(
   if efc_done_in[worldid]:
     return
 
-  # TODO(team): investigate alternatives to wp.argmin
-  # TODO(thowell): how did this use to work?
   bestid = int(0)
   best_cost = float(wp.inf)
   for i in range(nstep):
