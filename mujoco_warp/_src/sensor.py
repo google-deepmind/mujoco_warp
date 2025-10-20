@@ -23,6 +23,8 @@ from . import smooth
 from . import support
 from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
+from .types import MJ_MAX_EPAFACES
+from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
@@ -117,7 +119,7 @@ def _magnetometer(
   worldid: int,
   objid: int,
 ) -> wp.vec3:
-  magnetic = opt_magnetic[worldid]
+  magnetic = opt_magnetic[worldid % opt_magnetic.shape[0]]
   return wp.transpose(site_xmat_in[worldid, objid]) @ magnetic
 
 
@@ -406,16 +408,20 @@ def _frame_quat(
   refid: int,
   reftype: int,
 ) -> wp.quat:
+  body_iquat_id = worldid % body_iquat.shape[0]
+  geom_quat_id = worldid % geom_quat.shape[0]
+  site_quat_id = worldid % site_quat.shape[0]
+  cam_quat_id = worldid % cam_quat.shape[0]
   if objtype == ObjType.BODY:
-    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[worldid, objid])
+    quat = math.mul_quat(xquat_in[worldid, objid], body_iquat[body_iquat_id, objid])
   elif objtype == ObjType.XBODY:
     quat = xquat_in[worldid, objid]
   elif objtype == ObjType.GEOM:
-    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[worldid, objid])
+    quat = math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[geom_quat_id, objid])
   elif objtype == ObjType.SITE:
-    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[worldid, objid])
+    quat = math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[site_quat_id, objid])
   elif objtype == ObjType.CAMERA:
-    quat = math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[worldid, objid])
+    quat = math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[cam_quat_id, objid])
   else:  # UNKNOWN
     quat = wp.quat(1.0, 0.0, 0.0, 0.0)
 
@@ -423,15 +429,15 @@ def _frame_quat(
     return quat
 
   if reftype == ObjType.BODY:
-    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[worldid, refid])
+    refquat = math.mul_quat(xquat_in[worldid, refid], body_iquat[body_iquat_id, refid])
   elif reftype == ObjType.XBODY:
     refquat = xquat_in[worldid, refid]
   elif reftype == ObjType.GEOM:
-    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[worldid, refid])
+    refquat = math.mul_quat(xquat_in[worldid, geom_bodyid[refid]], geom_quat[geom_quat_id, refid])
   elif reftype == ObjType.SITE:
-    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[worldid, refid])
+    refquat = math.mul_quat(xquat_in[worldid, site_bodyid[refid]], site_quat[site_quat_id, refid])
   elif reftype == ObjType.CAMERA:
-    refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[worldid, refid])
+    refquat = math.mul_quat(xquat_in[worldid, cam_bodyid[refid]], cam_quat[cam_quat_id, refid])
   else:  # UNKNOWN
     refquat = wp.quat(1.0, 0.0, 0.0, 0.0)
 
@@ -2600,11 +2606,11 @@ def _energy_pos_gravity(
   energy_out: wp.array(dtype=wp.vec2),
 ):
   worldid, bodyid = wp.tid()
-  gravity = opt_gravity[worldid]
+  gravity = opt_gravity[worldid % opt_gravity.shape[0]]
   bodyid += 1  # skip world body
 
   energy = wp.vec2(
-    body_mass[worldid, bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
+    body_mass[worldid % body_mass.shape[0], bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
     0.0,
   )
 
@@ -2624,19 +2630,21 @@ def _energy_pos_passive_joint(
   energy_out: wp.array(dtype=wp.vec2),
 ):
   worldid, jntid = wp.tid()
-  stiffness = jnt_stiffness[worldid, jntid]
+  jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
+  stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
 
   if stiffness == 0.0:
     return
 
   padr = jnt_qposadr[jntid]
   jnttype = jnt_type[jntid]
+  qpos_spring_id = worldid % qpos_spring.shape[0]
 
   if jnttype == JointType.FREE:
     dif0 = wp.vec3(
-      qpos_in[worldid, padr + 0] - qpos_spring[worldid, padr + 0],
-      qpos_in[worldid, padr + 1] - qpos_spring[worldid, padr + 1],
-      qpos_in[worldid, padr + 2] - qpos_spring[worldid, padr + 2],
+      qpos_in[worldid, padr + 0] - qpos_spring[qpos_spring_id, padr + 0],
+      qpos_in[worldid, padr + 1] - qpos_spring[qpos_spring_id, padr + 1],
+      qpos_in[worldid, padr + 2] - qpos_spring[qpos_spring_id, padr + 2],
     )
 
     # convert quaternion difference into angular "velocity"
@@ -2649,10 +2657,10 @@ def _energy_pos_passive_joint(
     quat1 = wp.normalize(quat1)
 
     quat_spring = wp.quat(
-      qpos_spring[worldid, padr + 3],
-      qpos_spring[worldid, padr + 4],
-      qpos_spring[worldid, padr + 5],
-      qpos_spring[worldid, padr + 6],
+      qpos_spring[qpos_spring_id, padr + 3],
+      qpos_spring[qpos_spring_id, padr + 4],
+      qpos_spring[qpos_spring_id, padr + 5],
+      qpos_spring[qpos_spring_id, padr + 6],
     )
 
     dif1 = math.quat_sub(quat1, quat_spring)
@@ -2674,10 +2682,10 @@ def _energy_pos_passive_joint(
     quat = wp.normalize(quat)
 
     quat_spring = wp.quat(
-      qpos_spring[worldid, padr + 0],
-      qpos_spring[worldid, padr + 1],
-      qpos_spring[worldid, padr + 2],
-      qpos_spring[worldid, padr + 3],
+      qpos_spring[qpos_spring_id, padr + 0],
+      qpos_spring[qpos_spring_id, padr + 1],
+      qpos_spring[qpos_spring_id, padr + 2],
+      qpos_spring[qpos_spring_id, padr + 3],
     )
 
     dif = math.quat_sub(quat, quat_spring)
@@ -2687,7 +2695,7 @@ def _energy_pos_passive_joint(
     )
     wp.atomic_add(energy_out, worldid, energy)
   elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
-    dif_ = qpos_in[worldid, padr] - qpos_spring[worldid, padr]
+    dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
     energy = wp.vec2(
       0.5 * stiffness * dif_ * dif_,
       0.0,
@@ -2707,7 +2715,8 @@ def _energy_pos_passive_tendon(
 ):
   worldid, tenid = wp.tid()
 
-  stiffness = tendon_stiffness[worldid, tenid]
+  tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
+  stiffness = tendon_stiffness[tendon_stiffness_id, tenid]
 
   if stiffness == 0.0:
     return
@@ -2715,7 +2724,8 @@ def _energy_pos_passive_tendon(
   length = ten_length_in[worldid, tenid]
 
   # compute spring displacement
-  lengthspring = tendon_lengthspring[worldid, tenid]
+  tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
+  lengthspring = tendon_lengthspring[tendon_lengthspring_id, tenid]
   lower = lengthspring[0]
   upper = lengthspring[1]
 

@@ -662,10 +662,10 @@ def _ray_geom_mesh(
   if not _ray_eliminate(
     body_weldid,
     geom_bodyid,
-    geom_matid[worldid],
+    geom_matid[worldid % geom_matid.shape[0]],
     geom_group,
-    geom_rgba[worldid],
-    mat_rgba[worldid],
+    geom_rgba[worldid % geom_rgba.shape[0]],
+    mat_rgba[worldid % mat_rgba.shape[0]],
     geomid,
     geomgroup,
     flg_static,
@@ -704,7 +704,7 @@ def _ray_geom_mesh(
         geomid,
       )
     else:
-      return ray_geom(pos, mat, geom_size[worldid, geomid], pnt, vec, type)
+      return ray_geom(pos, mat, geom_size[worldid % geom_size.shape[0], geomid], pnt, vec, type)
   else:
     return wp.inf
 

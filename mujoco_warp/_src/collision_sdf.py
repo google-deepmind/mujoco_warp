@@ -630,7 +630,7 @@ def _sdf_narrowphase(
   geom_solref: wp.array2d(dtype=wp.vec2),
   geom_solimp: wp.array2d(dtype=vec5),
   geom_size: wp.array2d(dtype=wp.vec3),
-  geom_aabb: wp.array2d(dtype=wp.vec3),
+  geom_aabb: wp.array3d(dtype=wp.vec3),
   geom_friction: wp.array2d(dtype=wp.vec3),
   geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array2d(dtype=float),
@@ -723,14 +723,19 @@ def _sdf_narrowphase(
     contact_tid,
     worldid,
   )
+
+  geom_size_id = worldid % geom_size.shape[0]
+  geom_xpos_id = worldid % geom_xpos_in.shape[0]
+  geom_xmat_id = worldid % geom_xmat_in.shape[0]
+  aabb_id = worldid % geom_aabb.shape[0]
+
   g1 = geoms[0]
   type1 = geom_type[g1]
-
   geom1_dataid = geom_dataid[g1]
   geom1 = geom(
     type1,
     geom1_dataid,
-    geom_size[worldid, g1],
+    geom_size[geom_size_id, g1],
     mesh_vertadr,
     mesh_vertnum,
     mesh_graphadr,
@@ -745,15 +750,15 @@ def _sdf_narrowphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
-    geom_xpos_in[worldid, g1],
-    geom_xmat_in[worldid, g1],
+    geom_xpos_in[geom_xpos_id, g1],
+    geom_xmat_in[geom_xmat_id, g1],
   )
 
   geom2_dataid = geom_dataid[g2]
   geom2 = geom(
     type2,
     geom2_dataid,
-    geom_size[worldid, g2],
+    geom_size[geom_size_id, g2],
     mesh_vertadr,
     mesh_vertnum,
     mesh_graphadr,
@@ -768,20 +773,20 @@ def _sdf_narrowphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
-    geom_xpos_in[worldid, g2],
-    geom_xmat_in[worldid, g2],
+    geom_xpos_in[geom_xpos_id, g2],
+    geom_xmat_in[geom_xmat_id, g2],
   )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
   g1_to_g2_rot = wp.transpose(geom1.rot) * geom2.rot
   g1_to_g2_pos = wp.transpose(geom1.rot) * (geom2.pos - geom1.pos)
-  aabb_pos = geom_aabb[g1, 0]
-  aabb_size = geom_aabb[g1, 1]
+  aabb_pos = geom_aabb[aabb_id, g1, 0]
+  aabb_size = geom_aabb[aabb_id, g1, 1]
   identity = wp.identity(3, dtype=float)
   aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), identity)
-  aabb_pos = geom_aabb[g2, 0]
-  aabb_size = geom_aabb[g2, 1]
+  aabb_pos = geom_aabb[aabb_id, g2, 0]
+  aabb_size = geom_aabb[aabb_id, g2, 1]
   aabb2 = transform_aabb(aabb_pos, aabb_size, g1_to_g2_pos, g1_to_g2_rot)
   aabb_intersection = AABB()
   aabb_intersection.min = wp.max(aabb1.min, aabb2.min)
