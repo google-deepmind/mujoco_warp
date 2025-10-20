@@ -492,7 +492,7 @@ class IOTest(parameterized.TestCase):
       """
       )
 
-  def test_ls_nparallel(self):
+  def test_ls_parallel(self):
     _, _, m, _ = test_data.fixture(
       xml="""
     <mujoco>
