@@ -524,8 +524,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       enableflags=mjm.opt.enableflags,
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
-      ls_parallel=False,
-      ls_nparallel=_numeric(mjm, "ls_nparallel", 0),
+      ls_parallel=bool(_numeric(mjm, "ls_parallel", 0)),
       ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
       ccd_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),

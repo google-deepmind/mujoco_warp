@@ -136,7 +136,7 @@ class SolverTest(parameterized.TestCase):
       # launch linesearch with 0 iteration just doing the initialization step
       d.efc.jv.zero_()
       d.efc.quad.zero_()
-      step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
+      step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
       solver._linesearch(m, d, step_size_cost)
 
       efc_mv = d.efc.mv.numpy()[0]
@@ -200,21 +200,22 @@ class SolverTest(parameterized.TestCase):
     alpha_iterative = d.efc.alpha.numpy().copy()
 
     # Launching parallel linesearch with 10 testing points
-    m.opt.ls_nparallel = 10
+    m.opt.ls_parallel = True
+    m.opt.ls_iterations = 10
     d.efc.Ma = wp.array2d(d_efc_Ma)
     d.efc.Jaref = wp.array(d_efc_Jaref)
     d.qacc = wp.array2d(d_qacc)
-    m.opt.ls_parallel = True
-    step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
     solver._linesearch(m, d, step_size_cost)
     alpha_parallel_10 = d.efc.alpha.numpy().copy()
 
     # Launching parallel linesearch with 50 testing points
-    m.opt.ls_nparallel = 50
+    m.opt.ls_parallel = True
+    m.opt.ls_iterations = 50
     d.efc.Ma = wp.array2d(d_efc_Ma)
     d.efc.Jaref = wp.array(d_efc_Jaref)
     d.qacc = wp.array2d(d_qacc)
-    step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel), dtype=float)
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
     solver._linesearch(m, d, step_size_cost)
     alpha_parallel_50 = d.efc.alpha.numpy().copy()
 
@@ -246,9 +247,6 @@ class SolverTest(parameterized.TestCase):
           "opt.ls_parallel": ls_parallel,
         },
       )
-
-      if ls_parallel:
-        m.opt.ls_nparallel = ls_iterations
 
       mujoco.mj_forward(mjm, mjd)
 

@@ -587,7 +587,6 @@ class Option:
   warp only fields:
     is_sparse: whether to use sparse representations
     ls_parallel: evaluate engine solver step sizes in parallel
-    ls_nparallel: number of step sizes for parallel linsearch
     ls_parallel_min_step: minimum step size for solver linesearch
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     broadphase: broadphase type (BroadphaseType)
@@ -624,7 +623,6 @@ class Option:
   # warp only fields:
   is_sparse: bool
   ls_parallel: bool
-  ls_nparallel: int  # warp only
   ls_parallel_min_step: float
   has_fluid: bool
   broadphase: int

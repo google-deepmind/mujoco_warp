@@ -147,7 +147,7 @@ def _main(argv: Sequence[str]):
     integrator = mjw.IntegratorType(m.opt.integrator).name
     iterations, ls_iterations, ls_parallel = m.opt.iterations, m.opt.ls_iterations, m.opt.ls_parallel
     if ls_parallel:
-      ls_str = f"parallel ls_nparallel: {m.opt.ls_nparallel}"
+      ls_str = f"parallel steps: {ls_iterations}"
     else:
       ls_str = f"iterative ls_iterations: {ls_iterations}"
     print(

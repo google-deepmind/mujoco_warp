@@ -497,7 +497,6 @@ def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> f
 def linesearch_parallel_fused(
   # Model:
   opt_impratio: wp.array(dtype=float),
-  opt_ls_nparallel: int,
   opt_ls_parallel_min_step: float,
   # Data in:
   ne_in: wp.array(dtype=int),
@@ -516,6 +515,8 @@ def linesearch_parallel_fused(
   efc_done_in: wp.array(dtype=bool),
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
+  # In:
+  nstep: int,
   # Out:
   cost_out: wp.array2d(dtype=float),
 ):
@@ -524,7 +525,7 @@ def linesearch_parallel_fused(
   if efc_done_in[worldid]:
     return
 
-  alpha = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_nparallel, alphaid)
+  alpha = _log_scale(opt_ls_parallel_min_step, 1.0, nstep, alphaid)
 
   out = _eval_cost(efc_quad_gauss_in[worldid], alpha)
 
@@ -619,12 +620,12 @@ def linesearch_parallel_fused(
 @wp.kernel
 def linesearch_parallel_best_alpha(
   # Model:
-  opt_ls_nparallel: int,
   opt_ls_parallel_min_step: float,
   # Data in:
   efc_done_in: wp.array(dtype=bool),
   # In:
   cost_in: wp.array2d(dtype=float),
+  nstep: int,
   # Data out:
   efc_alpha_out: wp.array(dtype=float),
 ):
@@ -637,22 +638,21 @@ def linesearch_parallel_best_alpha(
   # TODO(thowell): how did this use to work?
   bestid = int(0)
   best_cost = float(wp.inf)
-  for i in range(opt_ls_nparallel):
+  for i in range(nstep):
     cost = cost_in[worldid, i]
     if cost < best_cost:
       best_cost = cost
       bestid = i
 
-  efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_nparallel, bestid)
+  efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, nstep, bestid)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   wp.launch(
     linesearch_parallel_fused,
-    dim=(d.nworld, m.opt.ls_nparallel),
+    dim=(d.nworld, m.opt.ls_iterations),
     inputs=[
       m.opt.impratio,
-      m.opt.ls_nparallel,
       m.opt.ls_parallel_min_step,
       d.ne,
       d.nf,
@@ -670,6 +670,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
       d.efc.done,
       d.njmax,
       d.nacon,
+      m.opt.ls_iterations,
     ],
     outputs=[cost],
   )
@@ -677,7 +678,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
   wp.launch(
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
-    inputs=[m.opt.ls_nparallel, m.opt.ls_parallel_min_step, d.efc.done, cost],
+    inputs=[m.opt.ls_parallel_min_step, d.efc.done, cost, m.opt.ls_iterations],
     outputs=[d.efc.alpha],
   )
 
@@ -2068,7 +2069,7 @@ def _solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
-  step_size_cost = wp.empty((d.nworld, m.opt.ls_nparallel if m.opt.ls_parallel else 0), dtype=float)
+  step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
 
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
