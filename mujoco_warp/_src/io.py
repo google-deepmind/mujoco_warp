@@ -348,20 +348,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
     nxn_pairid_contact[pairid] = i
 
-  # count contact pair types
-  geom_type_pair_count = np.bincount(
-    [
-      math.upper_trid_index(len(types.GeomType), int(mjm.geom_type[geom1[i]]), int(mjm.geom_type[geom2[i]]))
-      for i in np.arange(len(geom1))
-      if nxn_pairid_contact[i] > -2
-    ],
-    minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
-  )
-
-  # Disable collisions if there are no potentially colliding pairs
-  if np.sum(geom_type_pair_count) == 0:
-    mjm.opt.disableflags |= types.DisableBit.CONTACT
-
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
     # add private attribute for JAX to determine which fields are batched
@@ -474,6 +460,20 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])
   nxn_pairid_filtered = nxn_pairid[include]
   nxn_geom_pair_filtered = nxn_geom_pair[include]
+
+  # count contact pair types
+  geom_type_pair_count = np.bincount(
+    [
+      math.upper_trid_index(len(types.GeomType), int(mjm.geom_type[geom1[i]]), int(mjm.geom_type[geom2[i]]))
+      for i in np.arange(len(geom1))
+      if nxn_pairid_contact[i] > -2 or nxn_pairid_collision[i] > -1
+    ],
+    minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
+  )
+
+  # Disable collisions if there are no potentially colliding pairs
+  if np.sum(geom_type_pair_count) == 0:
+    mjm.opt.disableflags |= types.DisableBit.CONTACT
 
   if mjm.geom_fluid.size:
     geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)
