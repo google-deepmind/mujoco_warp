@@ -41,8 +41,8 @@ def _qfrc_eulerdamp(
   qfrc_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  timestep = opt_timestep[worldid]
-  qfrc_out[worldid, dofid] += timestep * dof_damping[worldid, dofid] * qacc_in[worldid, dofid]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  qfrc_out[worldid, dofid] += timestep * dof_damping[worldid % dof_damping.shape[0], dofid] * qacc_in[worldid, dofid]
 
 
 @wp.kernel

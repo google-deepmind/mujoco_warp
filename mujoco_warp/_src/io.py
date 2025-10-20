@@ -23,9 +23,6 @@ from . import math
 from . import types
 from . import warp_util
 
-# max number of worlds supported
-MAX_WORLDS = 2**24
-
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
 
@@ -36,18 +33,6 @@ def _numeric(mjm: mujoco.MjModel, name: str, default: int = -1) -> int:
   names_map = {mjm.names[adr[i] :].decode("utf-8").split("\x00", 1)[0]: i for i in range(num)}
   id_ = names_map.get(name, -1)
   return int(mjm.numeric_data[id_]) if id_ >= 0 else default
-
-
-def _max_meshdegree(mjm: mujoco.MjModel) -> int:
-  if mjm.mesh_polyvertnum.size == 0:
-    return 4
-  return max(3, mjm.mesh_polymapnum.max())
-
-
-def _max_npolygon(mjm: mujoco.MjModel) -> int:
-  if mjm.mesh_polyvertnum.size == 0:
-    return 4
-  return max(4, mjm.mesh_polyvertnum.max())
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
@@ -377,11 +362,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     array._is_batched = True
     if not expand_dim:
       array.strides = (0,) + array.strides[1:]
-      array.shape = (MAX_WORLDS,) + array.shape[1:]
+      array.shape = (1,) + array.shape[1:]
       return array
     array.strides = (0,) + array.strides
     array.ndim += 1
-    array.shape = (MAX_WORLDS,) + array.shape
+    array.shape = (1,) + array.shape
     return array
 
   # rangefinder
@@ -603,7 +588,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_solref=create_nmodel_batched_array(mjm.geom_solref, dtype=wp.vec2),
     geom_solimp=create_nmodel_batched_array(mjm.geom_solimp, dtype=types.vec5),
     geom_size=create_nmodel_batched_array(mjm.geom_size, dtype=wp.vec3),
-    geom_aabb=wp.array2d(mjm.geom_aabb, dtype=wp.vec3),
+    geom_aabb=create_nmodel_batched_array(mjm.geom_aabb, dtype=wp.vec3),
     geom_rbound=create_nmodel_batched_array(mjm.geom_rbound, dtype=float),
     geom_pos=create_nmodel_batched_array(mjm.geom_pos, dtype=wp.vec3),
     geom_quat=create_nmodel_batched_array(mjm.geom_quat, dtype=wp.quat),
@@ -760,6 +745,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     # warp only fields:
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     condim_max=condim_max,  # TODO(team): get max after filtering,
+    nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
+    nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
     block_dim=types.BlockDim(),
     body_tree=body_tree,
@@ -959,8 +946,8 @@ def make_data(
   nconmax = nconmax or 20
   njmax = njmax or nconmax * 6
 
-  if nworld < 1 or nworld > MAX_WORLDS:
-    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
+  if nworld < 1:
+    raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
     if nconmax < 0:
@@ -985,8 +972,6 @@ def make_data(
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  max_npolygon = _max_npolygon(mjm)
-  max_meshdegree = _max_meshdegree(mjm)
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
@@ -1163,29 +1148,6 @@ def make_data(
     collision_pairid=wp.zeros((naconmax,), dtype=int),
     collision_worldid=wp.zeros((naconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
-    # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_face=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=float),
-    epa_index=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_map=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_horizon=wp.zeros(shape=(naconmax, 2 * types.MJ_MAX_EPAHORIZON), dtype=int),
-    multiccd_polygon=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_clipped=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_pnormal=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_pdist=wp.zeros(shape=(naconmax, max_npolygon), dtype=float),
-    multiccd_idx1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_idx2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_n1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_n2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_endvert=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_face1=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_face2=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
     # tendon
     ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
     ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
@@ -1244,8 +1206,8 @@ def put_data(
   nconmax = nconmax or max(5, 4 * mjd.ncon)
   njmax = njmax or max(5, 4 * mjd.nefc)
 
-  if nworld < 1 or nworld > MAX_WORLDS:
-    raise ValueError(f"nworld must be >= 1 and <= {MAX_WORLDS}")
+  if nworld < 1:
+    raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
     if nconmax < 0:
@@ -1263,9 +1225,6 @@ def put_data(
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
-
-  max_npolygon = _max_npolygon(mjm)
-  max_meshdegree = _max_meshdegree(mjm)
 
   # calculate some fields that cannot be easily computed inline:
   if mujoco.mj_isSparse(mjm):
@@ -1550,29 +1509,6 @@ def put_data(
     collision_pairid=wp.empty(naconmax, dtype=int),
     collision_worldid=wp.empty(naconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
-    # narrowphase (EPA polytope)
-    epa_vert=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_vert_index1=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_vert_index2=wp.zeros(shape=(naconmax, 5 + mjm.opt.ccd_iterations), dtype=int),
-    epa_face=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3i),
-    epa_pr=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=wp.vec3),
-    epa_norm2=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=float),
-    epa_index=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_map=wp.zeros(shape=(naconmax, 6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations), dtype=int),
-    epa_horizon=wp.zeros(shape=(naconmax, 2 * types.MJ_MAX_EPAHORIZON), dtype=int),
-    multiccd_polygon=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_clipped=wp.zeros(shape=(naconmax, 2 * max_npolygon), dtype=wp.vec3),
-    multiccd_pnormal=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_pdist=wp.zeros(shape=(naconmax, max_npolygon), dtype=float),
-    multiccd_idx1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_idx2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=int),
-    multiccd_n1=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_n2=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_endvert=wp.zeros(shape=(naconmax, max_meshdegree), dtype=wp.vec3),
-    multiccd_face1=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
-    multiccd_face2=wp.zeros(shape=(naconmax, max_npolygon), dtype=wp.vec3),
     # tendon
     ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
     ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),

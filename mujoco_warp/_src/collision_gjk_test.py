@@ -24,6 +24,8 @@ from mujoco_warp import test_data
 
 from .collision_gjk import ccd
 from .collision_primitive import Geom
+from .types import MJ_MAX_EPAFACES
+from .types import MJ_MAX_EPAHORIZON
 from .warp_util import kernel as nested_kernel
 
 
@@ -39,6 +41,29 @@ def _geom_dist(
   mat1: wp.mat33 | None = None,
   mat2: wp.mat33 | None = None,
 ):
+  epa_vert = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
+  epa_vert1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
+  epa_vert2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
+  epa_vert_index1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=int)
+  epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=int)
+  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=wp.vec3i)
+  epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=wp.vec3)
+  epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=float)
+  epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
+  epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
+  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_pnormal = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_pdist = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=float)
+  multiccd_idx1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
+  multiccd_idx2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
+  multiccd_n1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_n2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_endvert = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_face1 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_face2 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+
   @nested_kernel(module="unique", enable_backward=False)
   def _gjk_kernel(
     # Model:
@@ -227,28 +252,28 @@ def _geom_dist(
       gid2,
       m.opt.ccd_iterations,
       m.opt.ccd_tolerance,
-      d.epa_vert[0],
-      d.epa_vert1[0],
-      d.epa_vert2[0],
-      d.epa_vert_index1[0],
-      d.epa_vert_index2[0],
-      d.epa_face[0],
-      d.epa_pr[0],
-      d.epa_norm2[0],
-      d.epa_index[0],
-      d.epa_map[0],
-      d.epa_horizon[0],
-      d.multiccd_polygon[0],
-      d.multiccd_clipped[0],
-      d.multiccd_pnormal[0],
-      d.multiccd_pdist[0],
-      d.multiccd_idx1[0],
-      d.multiccd_idx2[0],
-      d.multiccd_n1[0],
-      d.multiccd_n2[0],
-      d.multiccd_endvert[0],
-      d.multiccd_face1[0],
-      d.multiccd_face2[0],
+      epa_vert[0],
+      epa_vert1[0],
+      epa_vert2[0],
+      epa_vert_index1[0],
+      epa_vert_index2[0],
+      epa_face[0],
+      epa_pr[0],
+      epa_norm2[0],
+      epa_index[0],
+      epa_map[0],
+      epa_horizon[0],
+      multiccd_polygon[0],
+      multiccd_clipped[0],
+      multiccd_pnormal[0],
+      multiccd_pdist[0],
+      multiccd_idx1[0],
+      multiccd_idx2[0],
+      multiccd_n1[0],
+      multiccd_n2[0],
+      multiccd_endvert[0],
+      multiccd_face1[0],
+      multiccd_face2[0],
     ],
     outputs=[
       dist_out,
