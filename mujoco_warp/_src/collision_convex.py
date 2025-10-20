@@ -460,8 +460,8 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[worldid, g2],
-      geom_xmat_in[worldid, g2],
+      geom_xpos_in[geom_xpos_id, g2],
+      geom_xmat_in[geom_xmat_id, g2],
     )
 
     if wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)] != None):
