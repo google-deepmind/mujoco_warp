@@ -30,9 +30,6 @@ from .collision_primitive_core import sphere_capsule
 from .collision_primitive_core import sphere_cylinder
 from .collision_primitive_core import sphere_sphere
 from .math import make_frame
-from .math import safe_div
-from .types import MJ_MINMU
-from .types import MJ_MINVAL
 from .types import GeomType
 from .types import vec5
 
@@ -410,100 +407,6 @@ def write_contact(
       contact_solref_out[cid] = solref_in
       contact_solreffriction_out[cid] = solreffriction_in
       contact_solimp_out[cid] = solimp_in
-
-
-@wp.func
-def contact_params(
-  # Model:
-  geom_condim: wp.array(dtype=int),
-  geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array2d(dtype=float),
-  geom_solref: wp.array2d(dtype=wp.vec2),
-  geom_solimp: wp.array2d(dtype=vec5),
-  geom_friction: wp.array2d(dtype=wp.vec3),
-  geom_margin: wp.array2d(dtype=float),
-  geom_gap: wp.array2d(dtype=float),
-  pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array2d(dtype=wp.vec2),
-  pair_solreffriction: wp.array2d(dtype=wp.vec2),
-  pair_solimp: wp.array2d(dtype=vec5),
-  pair_margin: wp.array2d(dtype=float),
-  pair_gap: wp.array2d(dtype=float),
-  pair_friction: wp.array2d(dtype=vec5),
-  # Data in:
-  collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=int),
-  # In:
-  cid: int,
-  worldid: int,
-):
-  geoms = collision_pair_in[cid]
-  pairid = collision_pairid_in[cid]
-
-  if pairid > -1:
-    margin = pair_margin[worldid, pairid]
-    gap = pair_gap[worldid, pairid]
-    condim = pair_dim[pairid]
-    friction = pair_friction[worldid, pairid]
-    solref = pair_solref[worldid, pairid]
-    solreffriction = pair_solreffriction[worldid, pairid]
-    solimp = pair_solimp[worldid, pairid]
-  else:
-    g1 = geoms[0]
-    g2 = geoms[1]
-    solmix_id = worldid % geom_solmix.shape[0]
-    friction_id = worldid % geom_friction.shape[0]
-    solref_id = worldid % geom_solref.shape[0]
-    solimp_id = worldid % geom_solimp.shape[0]
-    margin_id = worldid % geom_margin.shape[0]
-    gap_id = worldid % geom_gap.shape[0]
-
-    solmix1 = geom_solmix[solmix_id, g1]
-    solmix2 = geom_solmix[solmix_id, g2]
-
-    condim1 = geom_condim[g1]
-    condim2 = geom_condim[g2]
-
-    # priority
-    p1 = geom_priority[g1]
-    p2 = geom_priority[g2]
-
-    if p1 > p2:
-      mix = 1.0
-      condim = condim1
-      max_geom_friction = geom_friction[friction_id, g1]
-    elif p2 > p1:
-      mix = 0.0
-      condim = condim2
-      max_geom_friction = geom_friction[friction_id, g2]
-    else:
-      mix = safe_div(solmix1, solmix1 + solmix2)
-      mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-      mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-      mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
-      condim = wp.max(condim1, condim2)
-      max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
-
-    friction = vec5(
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[1]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
-    )
-
-    if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
-      solref = mix * geom_solref[solref_id, g1] + (1.0 - mix) * geom_solref[solref_id, g2]
-    else:
-      solref = wp.min(geom_solref[solref_id, g1], geom_solref[solref_id, g2])
-
-    solreffriction = wp.vec2(0.0, 0.0)
-    solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
-    # geom priority is ignored
-    margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
-    gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
-
-  return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
 
 @wp.func
