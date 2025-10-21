@@ -661,8 +661,8 @@ def convex_narrowphase(m: Model, d: Data):
   computations for non-existent pair types.
   """
   # TODO(team): fix early return?
-  # if not any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in _CONVEX_COLLISION_PAIRS):
-  #   return
+  if not any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in _CONVEX_COLLISION_PAIRS):
+    return
 
   # epa_vert: vertices in EPA polytope in Minkowski space
   epa_vert = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
