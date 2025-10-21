@@ -120,8 +120,8 @@ def mul_m(
   d: Data,
   res: wp.array2d(dtype=float),
   vec: wp.array2d(dtype=float),
-  skip: Optional[wp.array(dtype=bool)] = None,
-  M: Optional[wp.array3d(dtype=float)] = None,
+  skip: Optional[wp.array] = None,
+  M: Optional[wp.array] = None,
 ):
   """Multiply vectors by inertia matrix.
 
