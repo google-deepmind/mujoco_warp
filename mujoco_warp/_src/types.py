@@ -1525,12 +1525,6 @@ class Data:
                during step, reuse previous value
     qacc_discrete: discrete-time acceleration                   (nworld, nv)
     fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
-    qpos_t0: temporary array for rk4                            (nworld, nq)
-    qvel_t0: temporary array for rk4                            (nworld, nv)
-    act_t0: temporary array for rk4                             (nworld, na)
-    qvel_rk: temporary array for rk4                            (nworld, nv)
-    qacc_rk: temporary array for rk4                            (nworld, nv)
-    act_dot_rk: temporary array for rk4                         (nworld, na)
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
@@ -1658,14 +1652,6 @@ class Data:
   geom_skip: wp.array(dtype=bool)
   qacc_discrete: wp.array2d(dtype=float)
   fluid_applied: wp.array2d(dtype=wp.spatial_vector)
-
-  # warp only: RK4
-  qpos_t0: wp.array2d(dtype=float)
-  qvel_t0: wp.array2d(dtype=float)
-  act_t0: wp.array2d(dtype=float)
-  qvel_rk: wp.array2d(dtype=float)
-  qacc_rk: wp.array2d(dtype=float)
-  act_dot_rk: wp.array2d(dtype=float)
 
   # warp only: euler + implicit integration
   qfrc_integration: wp.array2d(dtype=float)
