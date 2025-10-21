@@ -1132,15 +1132,6 @@ def make_data(
     qM_integration=qM_integration,
     qLD_integration=qLD_integration,
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    # sweep-and-prune broadphase
-    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
-    sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
-    sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_segment_index=wp.array(
-      np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2)), dtype=int
-    ),
     # collision driver
     collision_pair=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_pairid=wp.zeros((naconmax,), dtype=int),
@@ -1496,13 +1487,6 @@ def put_data(
     qM_integration=tile(qM_integration),
     qLD_integration=tile(qLD_integration),
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    # TODO(team): skip allocation if broadphase != sap
-    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
-    sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
-    sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
     collision_pairid=wp.empty(naconmax, dtype=int),

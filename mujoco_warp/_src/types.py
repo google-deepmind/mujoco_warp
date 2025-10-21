@@ -1537,12 +1537,6 @@ class Data:
     qM_integration: temporary array for integration             (nworld, nv, nv) if dense
     qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
     qLDiagInv_integration: temporary array for integration      (nworld, nv)
-    sap_projection_lower: broadphase context                    (nworld, ngeom, 2)
-    sap_projection_upper: broadphase context                    (nworld, ngeom)
-    sap_sort_index: broadphase context                          (nworld, ngeom, 2)
-    sap_range: broadphase context                               (nworld, ngeom)
-    sap_cumulative_sum: broadphase context                      (nworld, ngeom)
-    sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     collision_pair: collision pairs from broadphase             (naconmax,)
     collision_pairid: collision pairid from broadphase          (naconmax,)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1674,14 +1668,6 @@ class Data:
   qM_integration: wp.array3d(dtype=float)
   qLD_integration: wp.array3d(dtype=float)
   qLDiagInv_integration: wp.array2d(dtype=float)
-
-  # warp only: sweep-and-prune broadphase
-  sap_projection_lower: wp.array3d(dtype=float)
-  sap_projection_upper: wp.array2d(dtype=float)
-  sap_sort_index: wp.array3d(dtype=int)
-  sap_range: wp.array2d(dtype=int)
-  sap_cumulative_sum: wp.array2d(dtype=int)
-  sap_segment_index: wp.array2d(dtype=int)
 
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
