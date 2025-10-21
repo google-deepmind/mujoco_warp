@@ -1117,7 +1117,6 @@ def make_data(
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),
     qacc_discrete=wp.zeros((nworld, mjm.nv), dtype=float),
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     # RK4
     qpos_t0=wp.zeros((nworld, mjm.nq), dtype=float),
     qvel_t0=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1481,7 +1480,6 @@ def put_data(
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),  # warp only
     qacc_discrete=wp.zeros((nworld, mjm.nv), dtype=float),
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     # TODO(team): skip allocation if integrator != RK4
     qpos_t0=wp.empty((nworld, mjm.nq), dtype=float),
     qvel_t0=wp.empty((nworld, mjm.nv), dtype=float),

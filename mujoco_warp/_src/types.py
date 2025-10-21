@@ -1524,7 +1524,6 @@ class Data:
     geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
                during step, reuse previous value
     qacc_discrete: discrete-time acceleration                   (nworld, nv)
-    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     qpos_t0: temporary array for rk4                            (nworld, nq)
     qvel_t0: temporary array for rk4                            (nworld, nv)
     act_t0: temporary array for rk4                             (nworld, na)
@@ -1657,7 +1656,6 @@ class Data:
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
   geom_skip: wp.array(dtype=bool)
   qacc_discrete: wp.array2d(dtype=float)
-  fluid_applied: wp.array2d(dtype=wp.spatial_vector)
 
   # warp only: RK4
   qpos_t0: wp.array2d(dtype=float)
