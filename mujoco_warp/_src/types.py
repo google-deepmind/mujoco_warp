@@ -1562,8 +1562,6 @@ class Data:
     ray_bodyexclude: id of body to exclude from ray computation
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
-    energy_vel_mul_m_skip: skip mul_m computation               (nworld,)
-    inverse_mul_m_skip: skip mul_m computation                  (nworld,)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
@@ -1709,10 +1707,6 @@ class Data:
   ray_bodyexclude: wp.array(dtype=int)
   ray_dist: wp.array2d(dtype=float)
   ray_geomid: wp.array2d(dtype=int)
-
-  # warp only: mul_m
-  energy_vel_mul_m_skip: wp.array(dtype=bool)
-  inverse_mul_m_skip: wp.array(dtype=bool)
 
   # warp only: actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)

@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import warp as wp
 
@@ -120,8 +120,8 @@ def mul_m(
   d: Data,
   res: wp.array2d(dtype=float),
   vec: wp.array2d(dtype=float),
-  skip: wp.array(dtype=bool),
-  M: wp.array3d(dtype=float) = None,
+  skip: Optional[wp.array(dtype=bool)] = None,
+  M: Optional[wp.array3d(dtype=float)] = None,
 ):
   """Multiply vectors by inertia matrix.
 
@@ -130,9 +130,12 @@ def mul_m(
     d (Data): The data object containing the current state and output arrays (device).
     res (wp.array2d(dtype=float)): Result: qM @ vec.
     vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
-    skip (wp.array(dtype=flooat)): Skip output.
+    skip (wp.array(dtype=float)): Skip output.
     M (wp.array3d(dtype=float), optional): Input matrix: M @ vec.
   """
+
+  if skip is None:
+    skip = wp.zeros(d.nworld, dtype=bool)
 
   if M is None:
     M = d.qM

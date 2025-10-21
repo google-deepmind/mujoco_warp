@@ -48,8 +48,7 @@ class SupportTest(parameterized.TestCase):
 
     res = wp.zeros((1, mjm.nv), dtype=wp.float32)
     vec = wp.from_numpy(np.expand_dims(mj_vec, axis=0), dtype=wp.float32)
-    skip = wp.zeros((d.nworld), dtype=bool)
-    mjwarp.mul_m(m, d, res, vec, skip)
+    mjwarp.mul_m(m, d, res, vec)
 
     _assert_eq(res.numpy()[0], mj_res, f"mul_m ({jacobian})")
 

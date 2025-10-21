@@ -906,7 +906,7 @@ def linesearch_jaref(
 @event_scope
 def _linesearch(m: types.Model, d: types.Data):
   # mv = qM @ search
-  support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
+  support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
@@ -2031,7 +2031,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   )
 
   # Ma = qM @ qacc
-  support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
+  support.mul_m(m, d, d.efc.Ma, d.qacc, skip=d.efc.done)
 
   _update_constraint(m, d)
 

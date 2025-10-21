@@ -1164,9 +1164,6 @@ def make_data(
     ray_bodyexclude=wp.zeros(1, dtype=int),
     ray_dist=wp.zeros((nworld, 1), dtype=float),
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
-    # mul_m
-    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
@@ -1526,9 +1523,6 @@ def put_data(
     ray_bodyexclude=wp.zeros(1, dtype=int),
     ray_dist=wp.zeros((nworld, 1), dtype=float),
     ray_geomid=wp.zeros((nworld, 1), dtype=int),
-    # mul_m
-    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
