@@ -341,6 +341,7 @@ def _sap_project(opt_broadphase: int):
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
     # Data in:
+    nworld_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     # In:
     direction_in: wp.vec3,
@@ -348,8 +349,7 @@ def _sap_project(opt_broadphase: int):
     projection_lower_out: wp.array2d(dtype=float),
     projection_upper_out: wp.array2d(dtype=float),
     sort_index_out: wp.array2d(dtype=int),
-    segmented_lower_out: Any,
-    segmented_upper_out: Any,
+    segmented_index_out: Any,
   ):
     worldid, geomid = wp.tid()
 
@@ -373,8 +373,9 @@ def _sap_project(opt_broadphase: int):
 
     if wp.static(opt_broadphase == BroadphaseType.SAP_SEGMENTED):
       if geomid == 0:
-        segmented_lower_out[worldid] = worldid * ngeom
-        segmented_upper_out[worldid] = (worldid + 1) * ngeom
+        segmented_index_out[worldid] = worldid * ngeom
+        if worldid == nworld_in - 1:
+          segmented_index_out[nworld_in] = nworld_in * ngeom
 
   return sap_project
 
@@ -538,22 +539,19 @@ def sap_broadphase(m: Model, d: Data):
   cumulative_sum = wp.zeros((d.nworld, m.ngeom), dtype=int)
 
   if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED:
-    segmented_lower = wp.empty(d.nworld, dtype=int)
-    segmented_upper = wp.empty(d.nworld, dtype=int)
+    segmented_index = wp.empty(d.nworld + 1, dtype=int)
   else:
-    segmented_lower = 0
-    segmented_upper = 0
+    segmented_index = 0
 
   wp.launch(
     kernel=_sap_project(m.opt.broadphase),
     dim=(d.nworld, m.ngeom),
-    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.geom_xpos, direction],
+    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.nworld, d.geom_xpos, direction],
     outputs=[
       projection_lower.reshape((-1, m.ngeom)),
       projection_upper,
       sort_index.reshape((-1, m.ngeom)),
-      segmented_lower,
-      segmented_upper,
+      segmented_index,
     ],
   )
 
@@ -567,7 +565,7 @@ def sap_broadphase(m: Model, d: Data):
     )
   else:
     wp.utils.segmented_sort_pairs(
-      projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom)), nworldgeom, segmented_lower, segmented_upper
+      projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom)), nworldgeom, segmented_index
     )
 
   wp.launch(
