@@ -13,10 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
+from collections.abc import Callable
 from typing import Tuple
 
 import warp as wp
-from collections.abc import Callable
 
 from .collision_gjk import ccd
 from .collision_gjk_legacy import epa_legacy
@@ -28,10 +28,10 @@ from .collision_primitive import write_contact
 from .math import make_frame
 from .math import safe_div
 from .types import MJ_MAXCONPAIR
-from .types import GeomType
 from .types import MJ_MAXVAL
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
+from .types import GeomType
 from .types import vec5
 from .warp_util import cache_kernel
 from .warp_util import kernel as nested_kernel

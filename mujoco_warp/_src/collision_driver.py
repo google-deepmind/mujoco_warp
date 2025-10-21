@@ -34,9 +34,9 @@ from .collision_primitive import sphere_sphere_wrapper
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
 from .math import upper_trid_index
-from .types import MJ_MAXVAL
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
+from .types import MJ_MAXVAL
 from .types import BroadphaseFilter
 from .types import BroadphaseType
 from .types import Data
