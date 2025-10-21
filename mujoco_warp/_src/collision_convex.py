@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import warp as wp
+from collections.abc import Callable
 
 from .collision_gjk import ccd
 from .collision_gjk_legacy import epa_legacy
@@ -21,35 +22,16 @@ from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
 from .collision_hfield import hfield_filter
 from .collision_primitive import Geom
-from .collision_primitive import box_box_wrapper
-from .collision_primitive import capsule_box_wrapper
-from .collision_primitive import capsule_capsule_wrapper
 from .collision_primitive import geom
-from .collision_primitive import plane_box_wrapper
-from .collision_primitive import plane_capsule_wrapper
-from .collision_primitive import plane_convex_wrapper
-from .collision_primitive import plane_cylinder_wrapper
-from .collision_primitive import plane_ellipsoid_wrapper
-from .collision_primitive import plane_sphere_wrapper
-from .collision_primitive import sphere_box_wrapper
-from .collision_primitive import sphere_capsule_wrapper
-from .collision_primitive import sphere_cylinder_wrapper
-from .collision_primitive import sphere_sphere_wrapper
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import safe_div
-from .math import upper_trid_index
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR
-from .types import Data
 from .types import GeomType
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
-from .types import Model
 from .types import vec5
 from .warp_util import cache_kernel
-from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
@@ -58,56 +40,6 @@ wp.set_module_options({"enable_backward": False})
 MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
-
-
-_CONVEX_COLLISION_PAIRS = {
-  (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
-  (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
-  (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid_wrapper,
-  (GeomType.PLANE, GeomType.CYLINDER): plane_cylinder_wrapper,
-  (GeomType.PLANE, GeomType.BOX): plane_box_wrapper,
-  (GeomType.PLANE, GeomType.MESH): plane_convex_wrapper,
-  (GeomType.HFIELD, GeomType.SPHERE): None,
-  (GeomType.HFIELD, GeomType.CAPSULE): None,
-  (GeomType.HFIELD, GeomType.ELLIPSOID): None,
-  (GeomType.HFIELD, GeomType.CYLINDER): None,
-  (GeomType.HFIELD, GeomType.BOX): None,
-  (GeomType.HFIELD, GeomType.MESH): None,
-  (GeomType.SPHERE, GeomType.SPHERE): sphere_sphere_wrapper,
-  (GeomType.SPHERE, GeomType.CAPSULE): sphere_capsule_wrapper,
-  (GeomType.SPHERE, GeomType.ELLIPSOID): None,
-  (GeomType.SPHERE, GeomType.CYLINDER): sphere_cylinder_wrapper,
-  (GeomType.SPHERE, GeomType.BOX): sphere_box_wrapper,
-  (GeomType.SPHERE, GeomType.MESH): None,
-  (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule_wrapper,
-  (GeomType.CAPSULE, GeomType.ELLIPSOID): None,
-  (GeomType.CAPSULE, GeomType.CYLINDER): None,
-  (GeomType.CAPSULE, GeomType.BOX): capsule_box_wrapper,
-  (GeomType.CAPSULE, GeomType.MESH): None,
-  (GeomType.ELLIPSOID, GeomType.ELLIPSOID): None,
-  (GeomType.ELLIPSOID, GeomType.CYLINDER): None,
-  (GeomType.ELLIPSOID, GeomType.BOX): None,
-  (GeomType.ELLIPSOID, GeomType.MESH): None,
-  (GeomType.CYLINDER, GeomType.CYLINDER): None,
-  (GeomType.CYLINDER, GeomType.BOX): None,
-  (GeomType.CYLINDER, GeomType.MESH): None,
-  (GeomType.BOX, GeomType.BOX): box_box_wrapper,
-  (GeomType.BOX, GeomType.MESH): None,
-  (GeomType.MESH, GeomType.MESH): None,
-}
-
-
-def _check_convex_collision_pairs():
-  prev_idx = -1
-  for pair in _CONVEX_COLLISION_PAIRS.keys():
-    idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
-    if pair[1] < pair[0] or idx <= prev_idx:
-      return False
-    prev_idx = idx
-  return True
-
-
-assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid order."
 
 
 @wp.func
@@ -207,9 +139,10 @@ def ccd_kernel_builder(
   epa_exact_neg_distance: bool,
   depth_extension: float,
   is_hfield: bool,
+  primitive_func: Callable | None,
 ):
   @wp.func
-  def eval_ccd_write_contact(
+  def ccd_wrapper(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
@@ -476,7 +409,7 @@ def ccd_kernel_builder(
 
     # height field filter
     if wp.static(is_hfield):
-      no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = hfield_filter(
+      no_hf_collision, xmin, xmax, ymin, ymax, zmin, _ = hfield_filter(
         geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
       )
       if no_hf_collision:
@@ -554,8 +487,8 @@ def ccd_kernel_builder(
       geom_xmat_in[geom_xmat_id, g2],
     )
 
-    if wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)] != None):
-      wp.static(_CONVEX_COLLISION_PAIRS[(geomtype1, geomtype2)])(
+    if wp.static(primitive_func != None):
+      wp.static(primitive_func)(
         naconmax_in,
         geom1,
         geom2,
@@ -653,7 +586,7 @@ def ccd_kernel_builder(
                 x1_ += prism[i]
               x1 += geom1.rot @ (x1_ / 6.0)
 
-            ncontact = eval_ccd_write_contact(
+            ncontact = ccd_wrapper(
               opt_ccd_tolerance,
               geom_type,
               naconmax_in,
@@ -711,7 +644,7 @@ def ccd_kernel_builder(
             if count >= MJ_MAXCONPAIR:
               return
     else:
-      eval_ccd_write_contact(
+      ccd_wrapper(
         opt_ccd_tolerance,
         geom_type,
         naconmax_in,
@@ -767,169 +700,3 @@ def ccd_kernel_builder(
       )
 
   return ccd_kernel
-
-
-@event_scope
-def convex_narrowphase(m: Model, d: Data):
-  """Runs narrowphase collision detection for convex geom pairs.
-
-  This function handles collision detection for pairs of convex geometries that were
-  identified during the broadphase. It uses the Gilbert-Johnson-Keerthi (GJK) algorithm to
-  determine the distance between shapes and the Expanding Polytope Algorithm (EPA) to find
-  the penetration depth and contact normal for colliding pairs.
-
-  The convex geom types handled by this function are SPHERE, CAPSULE, ELLIPSOID, CYLINDER,
-  BOX, MESH, HFIELD.
-
-  To optimize performance, this function dynamically builds and launches a specialized
-  kernel for each type of convex collision pair present in the model, avoiding unnecessary
-  computations for non-existent pair types.
-  """
-
-  nonprimitives = {key: value for key, value in _CONVEX_COLLISION_PAIRS.items() if value == None}
-  need_mem = any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in nonprimitives.keys())
-
-  epa_vert_mem = 5 + m.opt.ccd_iterations if need_mem else 0
-  epa_face_mem = 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations if need_mem else 0
-  epa_edge_mem = 2 * MJ_MAX_EPAHORIZON if need_mem else 0
-  nmaxpolygon = m.nmaxpolygon if need_mem else 0
-  nmaxmeshdeg = m.nmaxmeshdeg if need_mem else 0
-
-  # epa_vert: vertices in EPA polytope in Minkowski space
-  epa_vert = wp.empty(shape=(d.naconmax, epa_vert_mem), dtype=wp.vec3)
-  # epa_vert1: vertices in EPA polytope in geom 1 space
-  epa_vert1 = wp.empty(shape=(d.naconmax, epa_vert_mem), dtype=wp.vec3)
-  # epa_vert2: vertices in EPA polytope in geom 2 space
-  epa_vert2 = wp.empty(shape=(d.naconmax, epa_vert_mem), dtype=wp.vec3)
-  # epa_vert_index1: vertex indices in EPA polytope for geom 1
-  epa_vert_index1 = wp.empty(shape=(d.naconmax, epa_vert_mem), dtype=int)
-  # epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
-  epa_vert_index2 = wp.empty(shape=(d.naconmax, epa_vert_mem), dtype=int)
-  # epa_face: faces of polytope represented by three indices
-  epa_face = wp.empty(shape=(d.naconmax, epa_face_mem), dtype=wp.vec3i)
-  # epa_pr: projection of origin on polytope faces
-  epa_pr = wp.empty(shape=(d.naconmax, epa_face_mem), dtype=wp.vec3)
-  # epa_norm2: epa_pr * epa_pr
-  epa_norm2 = wp.empty(shape=(d.naconmax, epa_face_mem), dtype=float)
-  # epa_index: index of face in polytope map
-  epa_index = wp.empty(shape=(d.naconmax, epa_face_mem), dtype=int)
-  # epa_map: status of faces in polytope
-  epa_map = wp.empty(shape=(d.naconmax, epa_face_mem), dtype=int)
-  # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naconmax, epa_edge_mem), dtype=int)
-  # multiccd_polygon: clipped contact surface
-  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
-  # multiccd_clipped: clipped contact surface (intermediate)
-  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
-  # multiccd_pnormal: plane normal of clipping polygon
-  multiccd_pnormal = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-  # multiccd_pdist: plane distance of clipping polygon
-  multiccd_pdist = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=float)
-  # multiccd_idx1: list of normal index candidates for Geom 1
-  multiccd_idx1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
-  # multiccd_idx2: list of normal index candidates for Geom 2
-  multiccd_idx2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
-  # multiccd_n1: list of normal candidates for Geom 1
-  multiccd_n1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_n2: list of normal candidates for Geom 1
-  multiccd_n2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_endvert: list of edge vertices candidates
-  multiccd_endvert = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_face1: contact face
-  multiccd_face1 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-  # multiccd_face2: contact face
-  multiccd_face2 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-
-  for geom_pair in _CONVEX_COLLISION_PAIRS.keys():
-    g1 = geom_pair[0].value
-    g2 = geom_pair[1].value
-    if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
-      wp.launch(
-        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD),
-        dim=d.naconmax,
-        inputs=[
-          m.opt.ccd_tolerance,
-          m.geom_type,
-          m.geom_condim,
-          m.geom_dataid,
-          m.geom_priority,
-          m.geom_solmix,
-          m.geom_solref,
-          m.geom_solimp,
-          m.geom_size,
-          m.geom_aabb,
-          m.geom_rbound,
-          m.geom_friction,
-          m.geom_margin,
-          m.geom_gap,
-          m.hfield_adr,
-          m.hfield_nrow,
-          m.hfield_ncol,
-          m.hfield_size,
-          m.hfield_data,
-          m.mesh_vertadr,
-          m.mesh_vertnum,
-          m.mesh_vert,
-          m.mesh_graphadr,
-          m.mesh_graph,
-          m.mesh_polynum,
-          m.mesh_polyadr,
-          m.mesh_polynormal,
-          m.mesh_polyvertadr,
-          m.mesh_polyvertnum,
-          m.mesh_polyvert,
-          m.mesh_polymapadr,
-          m.mesh_polymapnum,
-          m.mesh_polymap,
-          m.pair_dim,
-          m.pair_solref,
-          m.pair_solreffriction,
-          m.pair_solimp,
-          m.pair_margin,
-          m.pair_gap,
-          m.pair_friction,
-          d.naconmax,
-          d.geom_xpos,
-          d.geom_xmat,
-          d.collision_pair,
-          d.collision_pairid,
-          d.collision_worldid,
-          d.ncollision,
-          epa_vert,
-          epa_vert1,
-          epa_vert2,
-          epa_vert_index1,
-          epa_vert_index2,
-          epa_face,
-          epa_pr,
-          epa_norm2,
-          epa_index,
-          epa_map,
-          epa_horizon,
-          multiccd_polygon,
-          multiccd_clipped,
-          multiccd_pnormal,
-          multiccd_pdist,
-          multiccd_idx1,
-          multiccd_idx2,
-          multiccd_n1,
-          multiccd_n2,
-          multiccd_endvert,
-          multiccd_face1,
-          multiccd_face2,
-        ],
-        outputs=[
-          d.nacon,
-          d.contact.dist,
-          d.contact.pos,
-          d.contact.frame,
-          d.contact.includemargin,
-          d.contact.friction,
-          d.contact.solref,
-          d.contact.solreffriction,
-          d.contact.solimp,
-          d.contact.dim,
-          d.contact.geom,
-          d.contact.worldid,
-        ],
-      )
