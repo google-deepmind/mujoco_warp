@@ -349,7 +349,7 @@ def _sap_project(opt_broadphase: int):
     projection_lower_out: wp.array2d(dtype=float),
     projection_upper_out: wp.array2d(dtype=float),
     sort_index_out: wp.array2d(dtype=int),
-    segmented_index_out: Any,
+    segmented_index_out: wp.array(dtype=int),
   ):
     worldid, geomid = wp.tid()
 
@@ -537,11 +537,7 @@ def sap_broadphase(m: Model, d: Data):
   sort_index = wp.zeros((d.nworld, m.ngeom, 2), dtype=int)
   range_ = wp.zeros((d.nworld, m.ngeom), dtype=int)
   cumulative_sum = wp.zeros((d.nworld, m.ngeom), dtype=int)
-
-  if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED:
-    segmented_index = wp.empty(d.nworld + 1, dtype=int)
-  else:
-    segmented_index = 0
+  segmented_index = wp.empty(d.nworld + 1 if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED else 0, dtype=int)
 
   wp.launch(
     kernel=_sap_project(m.opt.broadphase),
