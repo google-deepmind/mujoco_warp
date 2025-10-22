@@ -27,14 +27,6 @@ from . import warp_util
 _TOLERANCE_F32 = 1.0e-6
 
 
-def _numeric(mjm: mujoco.MjModel, name: str, default: int = -1) -> int:
-  num = mjm.nnumeric
-  adr = mjm.name_numericadr
-  names_map = {mjm.names[adr[i] :].decode("utf-8").split("\x00", 1)[0]: i for i in range(num)}
-  id_ = names_map.get(name, -1)
-  return int(mjm.numeric_data[id_]) if id_ >= 0 else default
-
-
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """
   Creates a model on device.
@@ -451,6 +443,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if np.any(active_geom):
       body_fluid_ellipsoid[mjm.geom_bodyid[active_geom]] = True
 
+  ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
+  if (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1):
+    ls_parallel = True
+  else:
+    ls_parallel = False
+
   m = types.Model(
     nq=mjm.nq,
     nv=mjm.nv,
@@ -509,7 +507,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       enableflags=mjm.opt.enableflags,
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
-      ls_parallel=bool(_numeric(mjm, "ls_parallel", 0)),
+      ls_parallel=ls_parallel,
       ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
       ccd_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),
