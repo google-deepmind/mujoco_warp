@@ -574,7 +574,7 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
     mocap_quat_in: wp.array2d(dtype=wp.quat),
     # In:
     sig_in: int,
-    active_in: Any,
+    active_in: wp.array(dtype=bool),
     # Out:
     state_out: wp.array2d(dtype=float),
   ):
@@ -668,7 +668,7 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
       d.mocap_pos,
       d.mocap_quat,
       int(sig),
-      active if active is not None else 0,
+      active if active is not None else wp.ones(d.nworld, dtype=bool),
     ],
     outputs=[state],
   )
@@ -701,7 +701,7 @@ def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
     nmocap: int,
     # In:
     sig_in: int,
-    active_in: Any,
+    active_in: wp.array(dtype=bool),
     state_in: wp.array2d(dtype=float),
     # Data out:
     time_out: wp.array(dtype=float),
@@ -792,7 +792,18 @@ def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
   wp.launch(
     _set_state,
     dim=d.nworld,
-    inputs=[m.nq, m.nv, m.nu, m.na, m.nbody, m.neq, m.nmocap, int(sig), active if active is not None else 0, state],
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.neq,
+      m.nmocap,
+      int(sig),
+      active if active is not None else wp.ones(d.nworld, dtype=bool),
+      state,
+    ],
     outputs=[
       d.time,
       d.qpos,
