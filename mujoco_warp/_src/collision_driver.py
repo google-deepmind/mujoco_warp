@@ -532,11 +532,11 @@ def sap_broadphase(m: Model, d: Data):
   direction = wp.vec3(0.5935, 0.7790, 0.1235)
   direction = wp.normalize(direction)
 
-  projection_lower = wp.zeros((d.nworld, m.ngeom, 2), dtype=float)
-  projection_upper = wp.zeros((d.nworld, m.ngeom), dtype=float)
-  sort_index = wp.zeros((d.nworld, m.ngeom, 2), dtype=int)
-  range_ = wp.zeros((d.nworld, m.ngeom), dtype=int)
-  cumulative_sum = wp.zeros((d.nworld, m.ngeom), dtype=int)
+  projection_lower = wp.empty((d.nworld, m.ngeom, 2), dtype=float)
+  projection_upper = wp.empty((d.nworld, m.ngeom), dtype=float)
+  sort_index = wp.empty((d.nworld, m.ngeom, 2), dtype=int)
+  range_ = wp.empty((d.nworld, m.ngeom), dtype=int)
+  cumulative_sum = wp.empty((d.nworld, m.ngeom), dtype=int)
   segmented_index = wp.empty(d.nworld + 1 if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED else 0, dtype=int)
 
   wp.launch(
