@@ -33,7 +33,6 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
-from .types import vec7
 from .warp_util import cache_kernel
 from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel

@@ -536,10 +536,6 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
-class vec7f(wp.types.vector(length=7, dtype=float)):
-  pass
-
-
 class vec8f(wp.types.vector(length=8, dtype=float)):
   pass
 
@@ -558,7 +554,6 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
 
 vec5 = vec5f
 vec6 = vec6f
-vec7 = vec7f
 vec10 = vec10f
 vec11 = vec11f
 
