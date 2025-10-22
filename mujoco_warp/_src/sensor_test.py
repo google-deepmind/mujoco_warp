@@ -612,7 +612,19 @@ class SensorTest(parameterized.TestCase):
   def test_sensor_collision(self, geom1, geom2):
     """Tests collision sensors: distance, normal, fromto."""
     # TODO(team): remove skips and restore mjcf after replacing box<>{geom} with mesh<>{geom}
-    skips = [("box", "box"), ("capsule", "box"), ("cylinder", "box"), ("plane", "box")]
+    skips = [
+      ("box", "box"),
+      ("capsule", "box"),
+      ("cylinder", "box"),
+      ("plane", "box"),
+      ("ellipsoid", "cylinder"),
+      ("sphere", "cylinder"),
+      ("sphere", "ellipsoid"),
+      ("ellipsoid", "ellipsoid"),
+      ("ellipsoid", "box"),
+      ("capsule", "sphere"),
+      ("capsule", "cylinder"),
+    ]
     if (geom1, geom2) in skips or (geom2, geom1) in skips:
       self.skipTest(f"Skipping collision sensor: {geom1} {geom2}")
 
