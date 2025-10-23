@@ -122,8 +122,7 @@ def inverse(m: Model, d: Data):
   invdiscrete = m.opt.enableflags & EnableBit.INVDISCRETE
   if invdiscrete:
     # save discrete-time qacc and compute continuous-time qacc
-    qacc_discrete = wp.empty((d.nworld, m.nv), dtype=float)
-    wp.copy(qacc_discrete, d.qacc)
+    qacc_discrete = wp.clone(d.qacc)
     discrete_acc(m, d, d.qacc, d.qfrc_integration)
 
   inv_constraint(m, d)
