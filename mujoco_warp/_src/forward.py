@@ -424,7 +424,7 @@ def _rk_perturb_state(
   scale: float,
   qpos_t0: wp.array2d(dtype=float),
   qvel_t0: wp.array2d(dtype=float),
-  act_dot: Optional[wp.array] = None,
+  act_t0: Optional[wp.array] = None,
 ):
   # position
   wp.launch(
@@ -443,7 +443,7 @@ def _rk_perturb_state(
   )
 
   # activation
-  if m.na and act_dot is not None:
+  if m.na and act_t0 is not None:
     wp.launch(
       _next_activation,
       dim=(d.nworld, m.na),
