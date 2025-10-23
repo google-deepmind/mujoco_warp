@@ -511,18 +511,13 @@ def _rk_accumulate(
 def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
 
-  qpos_t0 = wp.empty((d.nworld, m.nq), dtype=float)
-  qvel_t0 = wp.empty((d.nworld, m.nv), dtype=float)
-  wp.copy(qpos_t0, d.qpos)
-  wp.copy(qvel_t0, d.qvel)
-
+  qpos_t0 = wp.clone(d.qpos)
+  qvel_t0 = wp.clone(d.qvel)
   qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
   qacc_rk = wp.zeros((d.nworld, m.nv), dtype=float)
 
   if m.na:
-    act_t0 = wp.empty((d.nworld, m.na), dtype=float)
-    wp.copy(act_t0, d.act)
-
+    act_t0 = wp.clone(d.act)
     act_dot_rk = wp.zeros((d.nworld, m.na), dtype=float)
   else:
     act_dot_rk = None
