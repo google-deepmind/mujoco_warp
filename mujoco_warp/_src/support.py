@@ -668,7 +668,7 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
       d.mocap_pos,
       d.mocap_quat,
       int(sig),
-      active if active is not None else wp.ones(d.nworld, dtype=bool),
+      active or wp.ones(d.nworld, dtype=bool),
     ],
     outputs=[state],
   )
@@ -801,7 +801,7 @@ def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
       m.neq,
       m.nmocap,
       int(sig),
-      active if active is not None else wp.ones(d.nworld, dtype=bool),
+      active or wp.ones(d.nworld, dtype=bool),
       state,
     ],
     outputs=[
