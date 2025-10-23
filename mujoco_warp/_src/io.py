@@ -929,39 +929,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def _num_collision(mjm: mujoco.MjModel):
-  is_collision_sensor = np.isin(
-    mjm.sensor_type, [mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO]
-  )
-
-  if is_collision_sensor.sum() == 0:
-    return 0
-
-  sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
-
-  ncollision = 0
-  for i in range(sensor_collision_adr.size):
-    sensorid = sensor_collision_adr[i]
-    objtype = mjm.sensor_objtype[sensorid]
-    objid = mjm.sensor_objid[sensorid]
-    reftype = mjm.sensor_reftype[sensorid]
-    refid = mjm.sensor_refid[sensorid]
-
-    # get lists of geoms to collide
-    if objtype == mujoco.mjtObj.mjOBJ_BODY:
-      n1 = mjm.body_geomnum[objid]
-    else:
-      n1 = 1
-    if reftype == mujoco.mjtObj.mjOBJ_BODY:
-      n2 = mjm.body_geomnum[refid]
-    else:
-      n2 = 1
-
-    ncollision += n1 * n2
-
-  return ncollision
-
-
 def _get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_size: int):
   # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
   #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.
