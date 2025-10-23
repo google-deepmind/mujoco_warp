@@ -617,14 +617,20 @@ class SensorTest(parameterized.TestCase):
       ("capsule", "box"),
       ("cylinder", "box"),
       ("plane", "box"),
-      ("ellipsoid", "cylinder"),
-      ("sphere", "cylinder"),
-      ("sphere", "ellipsoid"),
-      ("ellipsoid", "ellipsoid"),
-      ("ellipsoid", "box"),
-      ("capsule", "sphere"),
-      ("capsule", "cylinder"),
     ]
+
+    # TODO(team): tests with these colliders pass on GPU but fail on CPU?
+    if not wp.get_device().is_cuda:
+      skips += [
+        ("ellipsoid", "cylinder"),
+        ("sphere", "cylinder"),
+        ("sphere", "ellipsoid"),
+        ("ellipsoid", "ellipsoid"),
+        ("ellipsoid", "box"),
+        ("capsule", "sphere"),
+        ("capsule", "cylinder"),
+      ]
+
     if (geom1, geom2) in skips or (geom2, geom1) in skips:
       self.skipTest(f"Skipping collision sensor: {geom1} {geom2}")
 
