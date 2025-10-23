@@ -528,6 +528,48 @@ class WrapType(enum.IntEnum):
   CYLINDER = mujoco.mjtWrap.mjWRAP_CYLINDER
 
 
+class State(enum.IntEnum):
+  """
+  State component elements as integer bitflags and several convenient combinations of these flags.
+
+  Attributes:
+    TIME: time
+    QPOS: position
+    QVEL: velocity
+    ACT: actuator activation
+    WARMSTART: acceleration used for warmstart
+    CTRL: control
+    QFRC_APPLIED: applied generalized force
+    XFRC_APPLIED: applied Cartesian force/torque
+    EQ_ACTIVE: enable/disable constraints
+    MOCAP_POS: positions of mocap bodies
+    MOCAP_QUAT: orientations of mocap bodies
+    NSTATE: number of state elements
+    PHYSICS: QPOS | QVEL | ACT
+    FULLPHYSICS: TIME | PHYSICS | PLUGIN
+    USER: CTRL | QFRC_APPLIED | XFRC_APPLIED | EQ_ACTIVE | MOCAP_POS | MOCAP_QUAT | USERDATA
+    INTEGRATION: FULLPHYSICS | USER | WARMSTART
+  """
+
+  TIME = mujoco.mjtState.mjSTATE_TIME
+  QPOS = mujoco.mjtState.mjSTATE_QPOS
+  QVEL = mujoco.mjtState.mjSTATE_QVEL
+  ACT = mujoco.mjtState.mjSTATE_ACT
+  WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
+  CTRL = mujoco.mjtState.mjSTATE_CTRL
+  QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED
+  XFRC_APPLIED = mujoco.mjtState.mjSTATE_XFRC_APPLIED
+  EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
+  MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
+  MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
+  NSTATE = mujoco.mjtState.mjNSTATE
+  PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS
+  FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
+  USER = mujoco.mjtState.mjSTATE_USER
+  INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
+  # unsupported: USERDATA, PLUGIN
+
+
 class vec5f(wp.types.vector(length=5, dtype=float)):
   pass
 
@@ -680,7 +722,6 @@ class Constraint:
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: polak-ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    cost_candidate: costs associated with step sizes  (nworld, nlsp)
   """
 
   type: wp.array2d(dtype=int)
@@ -716,8 +757,6 @@ class Constraint:
   prev_Mgrad: wp.array2d(dtype=float)
   beta: wp.array(dtype=float)
   done: wp.array(dtype=bool)
-  # linesearch
-  cost_candidate: wp.array2d(dtype=float)
 
 
 @dataclasses.dataclass
@@ -997,7 +1036,6 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
-    nlsp: number of step sizes for parallel linsearch
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
@@ -1327,7 +1365,6 @@ class Model:
   M_colind: wp.array(dtype=int)
   mapM2M: wp.array(dtype=int)
   # warp only fields:
-  nlsp: int
   nsensortaxel: int
   condim_max: int
   nmaxpolygon: int
@@ -1523,14 +1560,7 @@ class Data:
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
                during step, reuse previous value
-    qacc_discrete: discrete-time acceleration                   (nworld, nv)
     fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
-    qpos_t0: temporary array for rk4                            (nworld, nq)
-    qvel_t0: temporary array for rk4                            (nworld, nv)
-    act_t0: temporary array for rk4                             (nworld, na)
-    qvel_rk: temporary array for rk4                            (nworld, nv)
-    qacc_rk: temporary array for rk4                            (nworld, nv)
-    act_dot_rk: temporary array for rk4                         (nworld, na)
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
@@ -1654,16 +1684,7 @@ class Data:
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
   geom_skip: wp.array(dtype=bool)
-  qacc_discrete: wp.array2d(dtype=float)
   fluid_applied: wp.array2d(dtype=wp.spatial_vector)
-
-  # warp only: RK4
-  qpos_t0: wp.array2d(dtype=float)
-  qvel_t0: wp.array2d(dtype=float)
-  act_t0: wp.array2d(dtype=float)
-  qvel_rk: wp.array2d(dtype=float)
-  qacc_rk: wp.array2d(dtype=float)
-  act_dot_rk: wp.array2d(dtype=float)
 
   # warp only: euler + implicit integration
   qfrc_integration: wp.array2d(dtype=float)
