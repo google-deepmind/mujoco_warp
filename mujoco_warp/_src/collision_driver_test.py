@@ -499,16 +499,15 @@ class CollisionTest(parameterized.TestCase):
     register_sdf_plugins(mjw)
 
   def test_collision_func_table(self):
-   """Tests that the collision table is in order."""
-   in_order = True
-   prev_idx = -1
-   for pair in MJ_CONVEX_COLLISION_FUNC.keys():
-    idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
-    if pair[1] < pair[0] or idx <= prev_idx:
-      in_order = False
-    prev_idx = idx
-   self.assertTrue(in_order)
-
+    """Tests that the collision table is in order."""
+    in_order = True
+    prev_idx = -1
+    for pair in MJ_CONVEX_COLLISION_FUNC.keys():
+      idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
+      if pair[1] < pair[0] or idx <= prev_idx:
+        in_order = False
+      prev_idx = idx
+    self.assertTrue(in_order)
 
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):

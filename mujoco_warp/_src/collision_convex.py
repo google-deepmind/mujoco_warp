@@ -244,7 +244,7 @@ def _hfield_filter(
 
 
 @cache_kernel
-def ccd_kernel_builder(
+def convex_kernel_builder(
   legacy_gjk: bool,
   geomtype1: int,
   geomtype2: int,

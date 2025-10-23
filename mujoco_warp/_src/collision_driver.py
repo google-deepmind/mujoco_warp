@@ -17,7 +17,7 @@ from typing import Any
 
 import warp as wp
 
-from .collision_convex import ccd_kernel_builder
+from .collision_convex import convex_kernel_builder
 from .collision_primitive import box_box_wrapper
 from .collision_primitive import capsule_box_wrapper
 from .collision_primitive import capsule_capsule_wrapper
@@ -85,6 +85,7 @@ MJ_CONVEX_COLLISION_FUNC = {
   (GeomType.BOX, GeomType.MESH): None,
   (GeomType.MESH, GeomType.MESH): None,
 }
+
 
 @wp.kernel
 def _zero_nacon_ncollision(
@@ -736,12 +737,11 @@ def convex_narrowphase(m: Model, d: Data):
   """Runs narrowphase collision detection for convex geom pairs.
 
   This function handles collision detection for pairs of convex geometries that were
-  identified during the broadphase. It uses the Gilbert-Johnson-Keerthi (GJK) algorithm to
-  determine the distance between shapes and the Expanding Polytope Algorithm (EPA) to find
-  the penetration depth and contact normal for colliding pairs.
+  identified during the broadphase.
 
-  The convex geom types handled by this function are SPHERE, CAPSULE, ELLIPSOID, CYLINDER,
-  BOX, MESH, HFIELD.
+  The convex geom types handled by this function are PLANES (halfspaces), SPHERE,
+  CAPSULE, ELLIPSOID, CYLINDER, BOX, MESH, and HFIELDs. Height fields can be non-convex,
+  but they're decomposed into convex geoms called prisms.
 
   To optimize performance, this function dynamically builds and launches a specialized
   kernel for each type of convex collision pair present in the model, avoiding unnecessary
@@ -807,7 +807,7 @@ def convex_narrowphase(m: Model, d: Data):
     g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
-        ccd_kernel_builder(
+        convex_kernel_builder(
           m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD, MJ_CONVEX_COLLISION_FUNC[(g1, g2)]
         ),
         dim=d.naconmax,
