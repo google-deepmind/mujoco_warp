@@ -33,63 +33,73 @@ from .warp_util import kernel as nested_kernel
 wp.set_module_options({"enable_backward": False})
 
 
-@wp.kernel
-def mul_m_sparse_diag(
-  # Model:
-  dof_Madr: wp.array(dtype=int),
-  # Data in:
-  qM_in: wp.array3d(dtype=float),
-  # In:
-  vec: wp.array2d(dtype=float),
-  skip: wp.array(dtype=bool),
-  # Out:
-  res: wp.array2d(dtype=float),
-):
-  """Diagonal update for sparse matmul."""
-  worldid, dofid = wp.tid()
+@cache_kernel
+def mul_m_sparse_diag(check_skip: bool):
+  @nested_kernel(module="unique", enable_backward=False)
+  def _mul_m_sparse_diag(
+    # Model:
+    dof_Madr: wp.array(dtype=int),
+    # Data in:
+    qM_in: wp.array3d(dtype=float),
+    # In:
+    vec: wp.array2d(dtype=float),
+    skip: wp.array(dtype=bool),
+    # Out:
+    res: wp.array2d(dtype=float),
+  ):
+    """Diagonal update for sparse matmul."""
+    worldid, dofid = wp.tid()
 
-  if skip[worldid]:
-    return
+    if wp.static(check_skip):
+      if skip[worldid]:
+        return
 
-  res[worldid, dofid] = qM_in[worldid, 0, dof_Madr[dofid]] * vec[worldid, dofid]
+    res[worldid, dofid] = qM_in[worldid, 0, dof_Madr[dofid]] * vec[worldid, dofid]
 
-
-@wp.kernel
-def mul_m_sparse_ij(
-  # Model:
-  qM_mulm_i: wp.array(dtype=int),
-  qM_mulm_j: wp.array(dtype=int),
-  qM_madr_ij: wp.array(dtype=int),
-  # Data in:
-  qM_in: wp.array3d(dtype=float),
-  # In:
-  vec: wp.array2d(dtype=float),
-  skip: wp.array(dtype=bool),
-  # Out:
-  res: wp.array2d(dtype=float),
-):
-  """Off-diagonal update for sparse matmul."""
-  worldid, elementid = wp.tid()
-
-  if skip[worldid]:
-    return
-
-  i = qM_mulm_i[elementid]
-  j = qM_mulm_j[elementid]
-  madr_ij = qM_madr_ij[elementid]
-
-  qM_ij = qM_in[worldid, 0, madr_ij]
-
-  wp.atomic_add(res[worldid], i, qM_ij * vec[worldid, j])
-  wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
+  return _mul_m_sparse_diag
 
 
 @cache_kernel
-def mul_m_dense(tile: TileSet):
+def mul_m_sparse_ij(check_skip: bool):
+  @nested_kernel(module="unique", enable_backward=False)
+  def _mul_m_sparse_ij(
+    # Model:
+    qM_mulm_i: wp.array(dtype=int),
+    qM_mulm_j: wp.array(dtype=int),
+    qM_madr_ij: wp.array(dtype=int),
+    # Data in:
+    qM_in: wp.array3d(dtype=float),
+    # In:
+    vec: wp.array2d(dtype=float),
+    skip: wp.array(dtype=bool),
+    # Out:
+    res: wp.array2d(dtype=float),
+  ):
+    """Off-diagonal update for sparse matmul."""
+    worldid, elementid = wp.tid()
+
+    if wp.static(check_skip):
+      if skip[worldid]:
+        return
+
+    i = qM_mulm_i[elementid]
+    j = qM_mulm_j[elementid]
+    madr_ij = qM_madr_ij[elementid]
+
+    qM_ij = qM_in[worldid, 0, madr_ij]
+
+    wp.atomic_add(res[worldid], i, qM_ij * vec[worldid, j])
+    wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
+
+  return _mul_m_sparse_ij
+
+
+@cache_kernel
+def mul_m_dense(tile: TileSet, check_skip: bool):
   """Returns a matmul kernel for some tile size"""
 
   @nested_kernel(module="unique", enable_backward=False)
-  def kernel(
+  def _mul_m_dense(
     # Data In:
     qM_in: wp.array3d(dtype=float),
     # In:
@@ -102,8 +112,9 @@ def mul_m_dense(tile: TileSet):
     worldid, nodeid = wp.tid()
     TILE_SIZE = wp.static(tile.size)
 
-    if skip[worldid]:
-      return
+    if wp.static(check_skip):
+      if skip[worldid]:
+        return
 
     dofid = adr[nodeid]
     qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
@@ -111,7 +122,7 @@ def mul_m_dense(tile: TileSet):
     res_tile = wp.tile_matmul(qM_tile, vec_tile)
     wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
 
-  return kernel
+  return _mul_m_dense
 
 
 @event_scope
@@ -134,22 +145,22 @@ def mul_m(
     M (wp.array3d(dtype=float), optional): Input matrix: M @ vec.
   """
 
-  if skip is None:
-    skip = wp.zeros(d.nworld, dtype=bool)
+  check_skip = skip is not None
+  skip = skip or wp.empty(0, dtype=bool)
 
   if M is None:
     M = d.qM
 
   if m.opt.is_sparse:
     wp.launch(
-      mul_m_sparse_diag,
+      mul_m_sparse_diag(check_skip),
       dim=(d.nworld, m.nv),
       inputs=[m.dof_Madr, M, vec, skip],
       outputs=[res],
     )
 
     wp.launch(
-      mul_m_sparse_ij,
+      mul_m_sparse_ij(check_skip),
       dim=(d.nworld, m.qM_madr_ij.size),
       inputs=[m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij, M, vec, skip],
       outputs=[res],
@@ -158,7 +169,7 @@ def mul_m(
   else:
     for tile in m.qM_tiles:
       wp.launch_tiled(
-        mul_m_dense(tile),
+        mul_m_dense(tile, check_skip),
         dim=(d.nworld, tile.adr.size),
         inputs=[
           M,
