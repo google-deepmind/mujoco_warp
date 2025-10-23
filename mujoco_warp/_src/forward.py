@@ -520,8 +520,8 @@ def rungekutta4(m: Model, d: Data):
     act_t0 = wp.clone(d.act)
     act_dot_rk = wp.zeros((d.nworld, m.na), dtype=float)
   else:
-    act_dot_rk = None
     act_t0 = None
+    act_dot_rk = None
 
   A, B = _RK4_A, _RK4_B
 
