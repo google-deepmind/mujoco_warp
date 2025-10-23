@@ -23,9 +23,12 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
+from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_driver import MJ_CONVEX_COLLISION_FUNC
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
+from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 from . import types
@@ -494,6 +497,18 @@ class CollisionTest(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     register_sdf_plugins(mjw)
+
+  def test_collision_func_table(self):
+   """Tests that the collision table is in order."""
+   in_order = True
+   prev_idx = -1
+   for pair in MJ_CONVEX_COLLISION_FUNC.keys():
+    idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
+    if pair[1] < pair[0] or idx <= prev_idx:
+      in_order = False
+    prev_idx = idx
+   self.assertTrue(in_order)
+
 
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):

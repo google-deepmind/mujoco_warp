@@ -50,7 +50,7 @@ from .warp_util import kernel as nested_kernel
 wp.set_module_options({"enable_backward": False})
 
 
-_CONVEX_COLLISION_PAIRS = {
+MJ_CONVEX_COLLISION_FUNC = {
   (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
   (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
   (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid_wrapper,
@@ -85,20 +85,6 @@ _CONVEX_COLLISION_PAIRS = {
   (GeomType.BOX, GeomType.MESH): None,
   (GeomType.MESH, GeomType.MESH): None,
 }
-
-
-def _check_convex_collision_pairs():
-  prev_idx = -1
-  for pair in _CONVEX_COLLISION_PAIRS.keys():
-    idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
-    if pair[1] < pair[0] or idx <= prev_idx:
-      return False
-    prev_idx = idx
-  return True
-
-
-assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid order."
-
 
 @wp.kernel
 def _zero_nacon_ncollision(
@@ -762,7 +748,7 @@ def convex_narrowphase(m: Model, d: Data):
   computations for non-existent pair types.
   """
 
-  nonprimitives = {key: value for key, value in _CONVEX_COLLISION_PAIRS.items() if value == None}
+  nonprimitives = {key: value for key, value in MJ_CONVEX_COLLISION_FUNC.items() if value == None}
   need_mem = any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in nonprimitives.keys())
 
   epa_vert_mem = 5 + m.opt.ccd_iterations if need_mem else 0
@@ -816,13 +802,13 @@ def convex_narrowphase(m: Model, d: Data):
   # multiccd_face2: contact face
   multiccd_face2 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
 
-  for geom_pair in _CONVEX_COLLISION_PAIRS.keys():
+  for geom_pair in MJ_CONVEX_COLLISION_FUNC.keys():
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
         ccd_kernel_builder(
-          m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD, _CONVEX_COLLISION_PAIRS[(g1, g2)]
+          m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD, MJ_CONVEX_COLLISION_FUNC[(g1, g2)]
         ),
         dim=d.naconmax,
         inputs=[
