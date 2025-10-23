@@ -456,9 +456,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
   )
 
-  # Disable collisions if there are no potentially colliding pairs
+  # disable collisions if there are no potentially colliding pairs
+  disableflags = mjm.opt.disableflags
   if np.sum(geom_type_pair_count) == 0:
-    mjm.opt.disableflags |= types.DisableBit.CONTACT
+    disableflags |= types.DisableBit.CONTACT
 
   if mjm.geom_fluid.size:
     geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)
@@ -532,7 +533,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       iterations=mjm.opt.iterations,
       ls_iterations=mjm.opt.ls_iterations,
       integrator=mjm.opt.integrator,
-      disableflags=mjm.opt.disableflags,
+      disableflags=disableflags,
       enableflags=mjm.opt.enableflags,
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
