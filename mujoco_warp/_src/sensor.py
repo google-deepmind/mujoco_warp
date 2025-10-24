@@ -630,7 +630,10 @@ def _sensor_pos(
         continue
 
       geom = contact_geom_in[conid]
-      pairid = math.upper_tri_index(ngeom, geom[0], geom[1])
+      if geom[0] <= geom[1]:
+        pairid = math.upper_tri_index(ngeom, geom[0], geom[1])
+      else:
+        pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
       collisionid = collision_pairid_in[pairid][1]
 
       if collisionid != collision_start_adr:
@@ -650,34 +653,34 @@ def _sensor_pos(
             witness2 = pos + 0.5 * dist * normal
             pnts = vec6(witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2])
 
-    # if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-    # check for flip direction
-    if objtype == int(ObjType.BODY.value):
-      n1 = body_geomnum[objid]
-      id1 = body_geomadr[objid]
-    else:
-      n1 = 1
-      id1 = objid
-    if reftype == int(ObjType.BODY.value):
-      n2 = body_geomnum[refid]
-      id2 = body_geomadr[refid]
-    else:
-      n2 = 1
-      id2 = refid
+    if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+      # check for flip direction
+      if objtype == int(ObjType.BODY.value):
+        n1 = body_geomnum[objid]
+        id1 = body_geomadr[objid]
+      else:
+        n1 = 1
+        id1 = objid
+      if reftype == int(ObjType.BODY.value):
+        n2 = body_geomnum[refid]
+        id2 = body_geomadr[refid]
+      else:
+        n2 = 1
+        id2 = refid
 
-    for geom1 in range(n1):
-      for geom2 in range(n2):
-        geomid1 = id1 + geom1
-        geomid2 = id2 + geom2
+      for geom1 in range(n1):
+        for geom2 in range(n2):
+          geomid1 = id1 + geom1
+          geomid2 = id2 + geom2
 
-        if ((geomid1 == best_geom[0]) and (geomid2 == best_geom[1])) or (
-          (geomid1 == best_geom[1]) and (geomid2 == best_geom[0])
-        ):
-          if geom_type[geomid2] < geom_type[geomid1]:
-            flip = True
-          elif geom_type[geomid1] == geom_type[geomid2]:
-            if geomid2 < geomid1:
+          if ((geomid1 == best_geom[0]) and (geomid2 == best_geom[1])) or (
+            (geomid1 == best_geom[1]) and (geomid2 == best_geom[0])
+          ):
+            if geom_type[geomid2] < geom_type[geomid1]:
               flip = True
+            elif geom_type[geomid1] == geom_type[geomid2]:
+              if geomid2 < geomid1:
+                flip = True
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
     elif sensortype == int(SensorType.GEOMNORMAL.value):
