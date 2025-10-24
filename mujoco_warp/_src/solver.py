@@ -2041,7 +2041,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
-  if d.njmax == 0:
+  if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
