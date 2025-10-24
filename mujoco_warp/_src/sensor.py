@@ -23,8 +23,6 @@ from . import smooth
 from . import support
 from .collision_sdf import get_sdf_params
 from .collision_sdf import sdf
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MINVAL
 from .types import ConeType
 from .types import ConstraintType
