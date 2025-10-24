@@ -1589,9 +1589,6 @@ class Data:
     sensor_contact_matchid: id for matching contact             (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_criteria: critera for reduction              (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_direction: direction of contact              (nworld, <=nsensor, MJ_MAXCONPAIR)
-    ray_bodyexclude: id of body to exclude from ray computation
-    ray_dist: ray distance to nearest geom                      (nworld, 1)
-    ray_geomid: id of geom that intersects with ray             (nworld, 1)
     actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
@@ -1723,11 +1720,6 @@ class Data:
   sensor_contact_matchid: wp.array3d(dtype=int)
   sensor_contact_criteria: wp.array3d(dtype=float)
   sensor_contact_direction: wp.array3d(dtype=float)
-
-  # warp only: ray
-  ray_bodyexclude: wp.array(dtype=int)
-  ray_dist: wp.array2d(dtype=float)
-  ray_geomid: wp.array2d(dtype=int)
 
   # warp only: actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)

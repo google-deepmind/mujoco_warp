@@ -833,18 +833,20 @@ def ray(
       wp.array2d(dtype=int): IDs of intersected geoms (-1 if none).
   """
 
+  assert pnt.shape[0] == 1
   assert pnt.shape[0] == vec.shape[0]
-  assert d.ray_dist.shape[1] == d.ray_geomid.shape[1]
-  assert pnt.shape[0] == d.ray_dist.shape[1]
 
   if geomgroup is None:
     geomgroup = vec6(-1, -1, -1, -1, -1, -1)
 
-  d.ray_bodyexclude.fill_(bodyexclude)
+  ray_bodyexclude = wp.empty(1, dtype=int)
+  ray_bodyexclude.fill_(bodyexclude)
+  ray_dist = wp.empty((d.nworld, 1), dtype=float)
+  ray_geomid = wp.empty((d.nworld, 1), dtype=int)
 
-  rays(m, d, pnt, vec, geomgroup, flg_static, d.ray_bodyexclude, d.ray_dist, d.ray_geomid)
+  rays(m, d, pnt, vec, geomgroup, flg_static, ray_bodyexclude, ray_dist, ray_geomid)
 
-  return d.ray_dist, d.ray_geomid
+  return ray_dist, ray_geomid
 
 
 def rays(
