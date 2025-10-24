@@ -1037,6 +1037,7 @@ class Model:
 
   warp only fields:
     nsensortaxel: number of taxels in all tactile sensors
+    nsensorcontact: number of contact sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
@@ -1366,6 +1367,7 @@ class Model:
   mapM2M: wp.array(dtype=int)
   # warp only fields:
   nsensortaxel: int
+  nsensorcontact: int
   condim_max: int
   nmaxpolygon: int
   nmaxmeshdeg: int
@@ -1585,10 +1587,6 @@ class Data:
     sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
     sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
     sensor_rangefinder_geomid: geomids for rangefinder          (nworld, nrangefinder)
-    sensor_contact_nmatch: match count for each world-sensor    (nworld, <=nsensor)
-    sensor_contact_matchid: id for matching contact             (nworld, <=nsensor, MJ_MAXCONPAIR)
-    sensor_contact_criteria: critera for reduction              (nworld, <=nsensor, MJ_MAXCONPAIR)
-    sensor_contact_direction: direction of contact              (nworld, <=nsensor, MJ_MAXCONPAIR)
     ray_bodyexclude: id of body to exclude from ray computation
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
@@ -1719,10 +1717,6 @@ class Data:
   sensor_rangefinder_vec: wp.array2d(dtype=wp.vec3)
   sensor_rangefinder_dist: wp.array2d(dtype=float)
   sensor_rangefinder_geomid: wp.array2d(dtype=int)
-  sensor_contact_nmatch: wp.array2d(dtype=int)
-  sensor_contact_matchid: wp.array3d(dtype=int)
-  sensor_contact_criteria: wp.array3d(dtype=float)
-  sensor_contact_direction: wp.array3d(dtype=float)
 
   # warp only: ray
   ray_bodyexclude: wp.array(dtype=int)
