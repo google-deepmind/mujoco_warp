@@ -1116,7 +1116,6 @@ def make_data(
     nsolving=wp.zeros(1, dtype=int),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     # euler + implicit integration
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1468,7 +1467,6 @@ def put_data(
     nsolving=arr([nworld]),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),  # warp only
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     # TODO(team): skip allocation if integrator != euler | implicit
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),

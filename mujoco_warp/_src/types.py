@@ -1560,7 +1560,6 @@ class Data:
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
                during step, reuse previous value
-    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
@@ -1684,7 +1683,6 @@ class Data:
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
   geom_skip: wp.array(dtype=bool)
-  fluid_applied: wp.array2d(dtype=wp.spatial_vector)
 
   # warp only: euler + implicit integration
   qfrc_integration: wp.array2d(dtype=float)
