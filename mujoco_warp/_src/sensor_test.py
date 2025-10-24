@@ -664,7 +664,7 @@ class SensorTest(parameterized.TestCase):
         <sensor>
           <distance geom1="geom0" geom2="geom1" cutoff=".001"/>
           <distance geom1="geom0" geom2="geom1" cutoff=".9"/>
-          <distance geom1="geom0" geom2="geom1" cutoff="10"/>
+          <distance geom1="geom0" geom2="geom1" cutoff=".91"/>
           <distance geom1="geom0" geom2="geom1" cutoff="1"/>
           <normal geom1="geom0" geom2="geom1" cutoff=".001"/>
           <normal geom1="geom0" geom2="geom1" cutoff="1"/>
