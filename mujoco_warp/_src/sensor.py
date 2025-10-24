@@ -1827,6 +1827,7 @@ def _sensor_acc(
   efc_force_in: wp.array2d(dtype=float),
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
+  # In:
   sensor_contact_nmatch_in: wp.array2d(dtype=int),
   sensor_contact_matchid_in: wp.array3d(dtype=int),
   sensor_contact_direction_in: wp.array3d(dtype=float),
@@ -2351,7 +2352,7 @@ def _contact_match(
   efc_force_in: wp.array2d(dtype=float),
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
-  # Data out:
+  # Out:
   sensor_contact_nmatch_out: wp.array2d(dtype=int),
   sensor_contact_matchid_out: wp.array3d(dtype=int),
   sensor_contact_criteria_out: wp.array3d(dtype=float),
@@ -2563,11 +2564,15 @@ def sensor_acc(m: Model, d: Data):
     ],
   )
 
-  if m.sensor_contact_adr.size:
-    # match criteria
-    d.sensor_contact_nmatch.zero_()
-    d.sensor_contact_matchid.fill_(-1)
-    d.sensor_contact_criteria.fill_(1.0e32)
+  sensor_contact_nmatch = wp.empty((d.nworld, m.nsensorcontact), dtype=int)
+  sensor_contact_matchid = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=int)
+  sensor_contact_direction = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=float)
+  if m.nsensorcontact:
+    sensor_contact_criteria = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=float)
+    # TODO(team): fill_ operations in one kernel?
+    sensor_contact_nmatch.fill_(0)
+    sensor_contact_matchid.fill_(-1)
+    sensor_contact_criteria.fill_(1.0e32)
 
     wp.launch(
       _contact_match,
@@ -2599,28 +2604,15 @@ def sensor_acc(m: Model, d: Data):
         d.njmax,
         d.nacon,
       ],
-      outputs=[
-        d.sensor_contact_nmatch,
-        d.sensor_contact_matchid,
-        d.sensor_contact_criteria,
-        d.sensor_contact_direction,
-      ],
+      outputs=[sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
     )
 
     # sorting
     wp.launch_tiled(
       _contact_sort(m.opt.contact_sensor_maxmatch),
       dim=(d.nworld, m.sensor_contact_adr.size),
-      inputs=[
-        m.sensor_intprm,
-        m.sensor_contact_adr,
-        d.sensor_contact_nmatch,
-        d.sensor_contact_matchid,
-        d.sensor_contact_criteria,
-      ],
-      outputs=[
-        d.sensor_contact_matchid,
-      ],
+      inputs=[m.sensor_intprm, m.sensor_contact_adr, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
+      outputs=[sensor_contact_matchid],
       block_dim=m.block_dim.contact_sort,
     )
 
@@ -2668,9 +2660,9 @@ def sensor_acc(m: Model, d: Data):
       d.efc.force,
       d.njmax,
       d.nacon,
-      d.sensor_contact_nmatch,
-      d.sensor_contact_matchid,
-      d.sensor_contact_direction,
+      sensor_contact_nmatch,
+      sensor_contact_matchid,
+      sensor_contact_direction,
     ],
     outputs=[d.sensordata],
   )
