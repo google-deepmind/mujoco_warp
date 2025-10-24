@@ -536,7 +536,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       iterations=mjm.opt.iterations,
       ls_iterations=mjm.opt.ls_iterations,
       integrator=mjm.opt.integrator,
-      disableflags=disableflags,
+      disableflags=type(mjm.opt.disableflags)(disableflags),
       enableflags=mjm.opt.enableflags,
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
