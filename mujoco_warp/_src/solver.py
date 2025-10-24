@@ -497,8 +497,8 @@ def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> f
 def linesearch_parallel_fused(
   # Model:
   opt_impratio: wp.array(dtype=float),
+  opt_ls_iterations: int,
   opt_ls_parallel_min_step: float,
-  nlsp: int,
   # Data in:
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
@@ -516,15 +516,15 @@ def linesearch_parallel_fused(
   efc_done_in: wp.array(dtype=bool),
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
-  # Data out:
-  efc_cost_candidate_out: wp.array2d(dtype=float),
+  # Out:
+  cost_out: wp.array2d(dtype=float),
 ):
   worldid, alphaid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
-  alpha = _log_scale(opt_ls_parallel_min_step, 1.0, nlsp, alphaid)
+  alpha = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, alphaid)
 
   out = _eval_cost(efc_quad_gauss_in[worldid], alpha)
 
@@ -613,17 +613,18 @@ def linesearch_parallel_fused(
       if x < 0.0:
         out += _eval_cost(efc_quad_in[worldid, efcid], alpha)
 
-  efc_cost_candidate_out[worldid, alphaid] = out
+  cost_out[worldid, alphaid] = out
 
 
 @wp.kernel
 def linesearch_parallel_best_alpha(
   # Model:
+  opt_ls_iterations: int,
   opt_ls_parallel_min_step: float,
-  nlsp: int,
   # Data in:
   efc_done_in: wp.array(dtype=bool),
-  efc_cost_candidate_in: wp.array2d(dtype=float),
+  # In:
+  cost_in: wp.array2d(dtype=float),
   # Data out:
   efc_alpha_out: wp.array(dtype=float),
 ):
@@ -632,27 +633,25 @@ def linesearch_parallel_best_alpha(
   if efc_done_in[worldid]:
     return
 
-  # TODO(team): investigate alternatives to wp.argmin
-  # TODO(thowell): how did this use to work?
   bestid = int(0)
   best_cost = float(wp.inf)
-  for i in range(nlsp):
-    cost = efc_cost_candidate_in[worldid, i]
+  for i in range(opt_ls_iterations):
+    cost = cost_in[worldid, i]
     if cost < best_cost:
       best_cost = cost
       bestid = i
 
-  efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, nlsp, bestid)
+  efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, bestid)
 
 
-def _linesearch_parallel(m: types.Model, d: types.Data):
+def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   wp.launch(
     linesearch_parallel_fused,
-    dim=(d.nworld, m.nlsp),
+    dim=(d.nworld, m.opt.ls_iterations),
     inputs=[
       m.opt.impratio,
+      m.opt.ls_iterations,
       m.opt.ls_parallel_min_step,
-      m.nlsp,
       d.ne,
       d.nf,
       d.nefc,
@@ -670,13 +669,13 @@ def _linesearch_parallel(m: types.Model, d: types.Data):
       d.njmax,
       d.nacon,
     ],
-    outputs=[d.efc.cost_candidate],
+    outputs=[cost],
   )
 
   wp.launch(
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
-    inputs=[m.opt.ls_parallel_min_step, m.nlsp, d.efc.done, d.efc.cost_candidate],
+    inputs=[m.opt.ls_iterations, m.opt.ls_parallel_min_step, d.efc.done, cost],
     outputs=[d.efc.alpha],
   )
 
@@ -904,9 +903,9 @@ def linesearch_jaref(
 
 
 @event_scope
-def _linesearch(m: types.Model, d: types.Data):
+def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   # mv = qM @ search
-  support.mul_m(m, d, d.efc.mv, d.efc.search, d.efc.done)
+  support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
@@ -967,7 +966,7 @@ def _linesearch(m: types.Model, d: types.Data):
   )
 
   if m.opt.ls_parallel:
-    _linesearch_parallel(m, d)
+    _linesearch_parallel(m, d, cost)
   else:
     _linesearch_iterative(m, d)
 
@@ -1965,8 +1964,9 @@ def solve_done(
 def _solver_iteration(
   m: types.Model,
   d: types.Data,
+  step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d)
+  _linesearch(m, d, step_size_cost)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
@@ -2031,7 +2031,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   )
 
   # Ma = qM @ qacc
-  support.mul_m(m, d, d.efc.Ma, d.qacc, d.efc.done)
+  support.mul_m(m, d, d.efc.Ma, d.qacc, skip=d.efc.done)
 
   _update_constraint(m, d)
 
@@ -2066,6 +2066,8 @@ def _solve(m: types.Model, d: types.Data):
     outputs=[d.efc.search, d.efc.search_dot],
   )
 
+  step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
+
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
@@ -2080,10 +2082,11 @@ def _solve(m: types.Model, d: types.Data):
       while_body=_solver_iteration,
       m=m,
       d=d,
+      step_size_cost=step_size_cost,
     )
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d)
+      _solver_iteration(m, d, step_size_cost)

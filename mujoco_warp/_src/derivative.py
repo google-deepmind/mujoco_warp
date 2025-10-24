@@ -191,6 +191,6 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
     wp.copy(d.qfrc_integration, d.efc.Ma)
   else:
     # qfrc = qM @ qacc
-    mul_m(m, d, d.qfrc_integration, d.qacc, d.inverse_mul_m_skip, d.qM_integration)
+    mul_m(m, d, d.qfrc_integration, d.qacc, M=d.qM_integration)
 
   # TODO(team): rne derivative

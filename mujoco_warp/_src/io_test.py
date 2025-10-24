@@ -492,6 +492,28 @@ class IOTest(parameterized.TestCase):
       """
       )
 
+  def test_ls_parallel(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.ls_parallel, False)
+
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <custom>
+        <numeric data="1" name="ls_parallel"/>
+      </custom>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.ls_parallel, True)
+
 
 if __name__ == "__main__":
   wp.init()

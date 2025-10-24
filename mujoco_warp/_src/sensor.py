@@ -2956,8 +2956,7 @@ def energy_vel(m: Model, d: Data):
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel
-  skip = wp.zeros(d.nworld, dtype=bool)
-  support.mul_m(m, d, d.efc.mv, d.qvel, skip)
+  support.mul_m(m, d, d.efc.mv, d.qvel)
 
   wp.launch_tiled(
     _energy_vel_kinetic(m.nv),
