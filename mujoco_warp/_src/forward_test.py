@@ -490,6 +490,20 @@ class ForwardTest(parameterized.TestCase):
         d_arr = d_arr[: d.nefc.numpy()[0]]
       _assert_eq(d_arr, getattr(mjd, arr), arr)
 
+  def test_step_no_dofs(self):
+    """Tests step with no degrees of freedom."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <body>
+        <geom type="sphere" size="1"/>
+      </body>
+    </mujoco>
+    """
+    )
+    mjw.step(m, d)
+    self.assertGreater(d.time.numpy()[0], 0.0)
+
 
 if __name__ == "__main__":
   wp.init()
