@@ -1152,10 +1152,6 @@ def make_data(
     sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
     sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
     sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    # ray
-    ray_bodyexclude=wp.zeros(1, dtype=int),
-    ray_dist=wp.zeros((nworld, 1), dtype=float),
-    ray_geomid=wp.zeros((nworld, 1), dtype=int),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
@@ -1502,10 +1498,6 @@ def put_data(
     sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
     sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
     sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    # ray
-    ray_bodyexclude=wp.zeros(1, dtype=int),
-    ray_dist=wp.zeros((nworld, 1), dtype=float),
-    ray_geomid=wp.zeros((nworld, 1), dtype=int),
     # actuator
     actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
