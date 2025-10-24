@@ -1036,6 +1036,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nacttrnbody: number of actuators with body transmission
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
@@ -1365,6 +1366,7 @@ class Model:
   M_colind: wp.array(dtype=int)
   mapM2M: wp.array(dtype=int)
   # warp only fields:
+  nacttrnbody: int
   nsensortaxel: int
   condim_max: int
   nmaxpolygon: int
@@ -1592,7 +1594,6 @@ class Data:
     ray_bodyexclude: id of body to exclude from ray computation
     ray_dist: ray distance to nearest geom                      (nworld, 1)
     ray_geomid: id of geom that intersects with ray             (nworld, 1)
-    actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1728,6 +1729,3 @@ class Data:
   ray_bodyexclude: wp.array(dtype=int)
   ray_dist: wp.array2d(dtype=float)
   ray_geomid: wp.array2d(dtype=int)
-
-  # warp only: actuator
-  actuator_trntype_body_ncon: wp.array2d(dtype=int)
