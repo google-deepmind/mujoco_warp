@@ -507,15 +507,10 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
     # Model and Options
     nworld: int,
     ncam: int,
-    nlight: int,
-    ngeom: int,
     bvh_ngeom: int,
     img_width: int,
     img_height: int,
-    use_textures: bool,
     use_shadows: bool,
-    render_rgb: bool,
-    render_depth: bool,
 
     # Camera
     fov_rad: float,
@@ -622,6 +617,12 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
       # Early Out
       if geom_id == -1:
         continue
+      
+      if wp.static(rc.render_depth):
+        out_depth[world_idx, cam_idx, mapped_idx] = dist
+      
+      if not wp.static(rc.render_rgb):
+        continue
 
       # Shade the pixel
       hit_point = ray_origin_world + ray_dir_world * dist
@@ -634,7 +635,7 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
       base_color = wp.vec3(color[0], color[1], color[2])
       hit_color = base_color
 
-      if use_textures:
+      if wp.static(rc.use_textures):
         mat_id = geom_matid[world_idx, geom_id]
         tex_id = mat_texid[world_idx, mat_id, 1]
 
@@ -710,15 +711,13 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
       hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
       hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 
-      if render_rgb:
+      if wp.static(rc.render_rgb):
         out_pixels[world_idx, cam_idx, mapped_idx] = pack_rgba_to_uint32(
           hit_color[0] * 255.0,
           hit_color[1] * 255.0,
           hit_color[2] * 255.0,
           1.0,
         )
-      if render_depth:
-        out_depth[world_idx, cam_idx, mapped_idx] = dist
 
   wp.launch(
     kernel=_raytrace_megakernel,
@@ -727,15 +726,10 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
       # Model and Options
       rc.nworld,
       m.ncam,
-      m.nlight,
-      m.ngeom,
       rc.bvh_ngeom,
       rc.width,
       rc.height,
-      rc.use_textures,
       rc.use_shadows,
-      rc.render_rgb,
-      rc.render_depth,
 
       # Camera
       rc.fov_rad,

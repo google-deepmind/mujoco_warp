@@ -221,7 +221,7 @@ class RenderContext:
       mesh = wp.Mesh(
         points=wp.array(points, dtype=wp.vec3),
         indices=wp.array(indices, dtype=wp.int32),
-        bvh_constructor="sah"
+        bvh_constructor="sah",
       )
       self.mesh_registry[mesh.id] = mesh
       mesh_bvh_ids[i] = mesh.id
