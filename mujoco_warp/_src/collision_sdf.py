@@ -689,6 +689,7 @@ def _sdf_narrowphase(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
   contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   i, contact_tid = wp.tid()
@@ -855,6 +856,7 @@ def _sdf_narrowphase(
   )
   write_contact(
     naconmax_in,
+    0,
     dist,
     pos,
     make_frame(n),
@@ -880,6 +882,7 @@ def _sdf_narrowphase(
     contact_geom_out,
     contact_worldid_out,
     contact_type_out,
+    contact_geomcollisionid_out,
     nacon_out,
   )
 
@@ -960,6 +963,7 @@ def sdf_narrowphase(m: Model, d: Data):
       d.contact.geom,
       d.contact.worldid,
       d.contact.type,
+      d.contact.geomcollisionid,
       d.nacon,
     ],
   )

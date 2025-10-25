@@ -150,6 +150,7 @@ def ccd_kernel_builder(
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
     contact_type_out: wp.array(dtype=int),
+    contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
   ) -> int:
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
@@ -238,6 +239,7 @@ def ccd_kernel_builder(
     for i in range(ncontact):
       write_contact(
         naconmax_in,
+        i,
         dist,
         points[i],
         frame,
@@ -263,6 +265,7 @@ def ccd_kernel_builder(
         contact_geom_out,
         contact_worldid_out,
         contact_type_out,
+        contact_geomcollisionid_out,
         nacon_out,
       )
       if count + (i + 1) >= MJ_MAXCONPAIR:
@@ -359,6 +362,7 @@ def ccd_kernel_builder(
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
     contact_type_out: wp.array(dtype=int),
+    contact_geomcollisionid_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -577,6 +581,7 @@ def ccd_kernel_builder(
               contact_geom_out,
               contact_worldid_out,
               contact_type_out,
+              contact_geomcollisionid_out,
               nacon_out,
             )
             count += ncontact
@@ -637,6 +642,7 @@ def ccd_kernel_builder(
         contact_geom_out,
         contact_worldid_out,
         contact_type_out,
+        contact_geomcollisionid_out,
         nacon_out,
       )
 
@@ -800,5 +806,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.contact.geom,
           d.contact.worldid,
           d.contact.type,
+          d.contact.geomcollisionid,
         ],
       )

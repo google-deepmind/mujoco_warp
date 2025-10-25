@@ -1036,6 +1036,8 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nsensorcollision: number of unique collisions for
+                      geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
@@ -1367,6 +1369,7 @@ class Model:
   M_colind: wp.array(dtype=int)
   mapM2M: wp.array(dtype=int)
   # warp only fields:
+  nsensorcollision: int
   nsensortaxel: int
   condim_max: int
   nmaxpolygon: int
@@ -1464,6 +1467,7 @@ class Contact:
     efc_address: address in efc; -1: not included                    (naconmax, ncondim)
     worldid: world id                                                (naconmax,)
     type: ContactType                                                (naconmax,)
+    geomcollisionid: id for collision                                (naconmax,)
   """
 
   dist: wp.array(dtype=float)
@@ -1479,6 +1483,7 @@ class Contact:
   efc_address: wp.array2d(dtype=int)
   worldid: wp.array(dtype=int)
   type: wp.array(dtype=int)
+  geomcollisionid: wp.array(dtype=int)
 
 
 @dataclasses.dataclass

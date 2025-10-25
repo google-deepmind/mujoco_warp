@@ -774,6 +774,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     M_colind=wp.array(mjm.M_colind, dtype=int),
     mapM2M=wp.array(mjm.mapM2M, dtype=int),
     # warp only fields:
+    nsensorcollision=sum(nxn_pairid_collision >= 0),
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     condim_max=condim_max,  # TODO(team): get max after filtering,
     nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
@@ -1103,6 +1104,7 @@ def make_data(
       efc_address=wp.zeros((naconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int),
       worldid=wp.zeros((naconmax,), dtype=int),
       type=wp.zeros((naconmax,), dtype=int),
+      geomcollisionid=wp.empty((naconmax,), dtype=int),
     ),
     efc=types.Constraint(
       type=wp.zeros((nworld, njmax), dtype=int),
@@ -1456,6 +1458,7 @@ def put_data(
       efc_address=arr(contact_efc_address),
       worldid=arr(contact_worldid),
       type=wp.ones((naconmax,), dtype=int),  # TODO(team): set values
+      geomcollisionid=wp.empty((naconmax,), dtype=int),  # TODO(team): set values
     ),
     efc=types.Constraint(
       type=wp.array2d(efc_type_fill, dtype=int),
@@ -1978,6 +1981,7 @@ def _reset_contact_all(
   contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
   contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
 ):
   conid = wp.tid()
 
@@ -1998,6 +2002,7 @@ def _reset_contact_all(
     contact_efc_address_out[conid, i] = 0
   contact_worldid_out[conid] = 0
   contact_type_out[conid] = 0
+  contact_geomcollisionid_out[conid] = 0
 
 
 @wp.kernel
@@ -2021,6 +2026,7 @@ def _reset_contact(
   contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
   contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
 ):
   conid = wp.tid()
 
@@ -2046,6 +2052,7 @@ def _reset_contact(
     contact_efc_address_out[conid, i] = 0
   contact_worldid_out[conid] = 0
   contact_type_out[conid] = 0
+  contact_geomcollisionid_out[conid] = 0
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
@@ -2086,6 +2093,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         d.contact.efc_address,
         d.contact.worldid,
         d.contact.type,
+        d.contact.geomcollisionid,
       ],
     )
 
@@ -2146,6 +2154,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         d.contact.efc_address,
         d.contact.worldid,
         d.contact.type,
+        d.contact.geomcollisionid,
       ],
     )
     wp.launch(

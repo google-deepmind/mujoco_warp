@@ -617,6 +617,7 @@ class SensorTest(parameterized.TestCase):
       ("capsule", "box"),
       ("cylinder", "box"),
       ("plane", "box"),
+      ("plane", "cylinder"),
     ]
 
     if (geom1, geom2) in skips or (geom2, geom1) in skips:

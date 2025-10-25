@@ -513,6 +513,8 @@ def _sensor_pos(
   nacon_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=wp.vec2i),
   sensor_rangefinder_dist_in: wp.array2d(dtype=float),
+  # In:
+  sensor_collision_in: wp.array4d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
@@ -615,74 +617,56 @@ def _sensor_pos(
     dist = float(1.0e32)
     pnts = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     flip = bool(False)
-    best_geom = wp.vec2i(-1, -1)
 
     collision_sensorid = collision_sensor_adr[sensorid]
     collision_start_adr = sensor_collision_start_adr[collision_sensorid]
 
-    # TODO(team): improve performance by iterating over all contacts once for all collision sensors?
-    for conid in range(nacon_in[0]):
-      if contact_worldid_in[conid] != worldid:
-        continue
-      if not contact_type_in[conid] & ContactType.SENSOR:
-        continue
+    # check for flip direction
+    if objtype == int(ObjType.BODY.value):
+      n1 = body_geomnum[objid]
+      id1 = body_geomadr[objid]
+    else:
+      n1 = 1
+      id1 = objid
+    if reftype == int(ObjType.BODY.value):
+      n2 = body_geomnum[refid]
+      id2 = body_geomadr[refid]
+    else:
+      n2 = 1
+      id2 = refid
 
-      geom = contact_geom_in[conid]
-      if geom[0] <= geom[1]:
-        pairid = math.upper_tri_index(ngeom, geom[0], geom[1])
-      else:
-        pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
-      collisionid = collision_pairid_in[pairid][1]
+    for geom1 in range(n1):
+      for geom2 in range(n2):
+        collisionid = collision_start_adr + geom1 * n2 + geom2
+        for i in range(8):
+          dist_new = sensor_collision_in[worldid, collisionid, i, 0]
 
-      if collisionid != collision_start_adr:
-        continue
+          if dist_new <= dist:
+            dist = dist_new
 
-      dist_new = contact_dist_in[conid]
+            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+              pnts = vec6(
+                sensor_collision_in[worldid, collisionid, i, 1],
+                sensor_collision_in[worldid, collisionid, i, 2],
+                sensor_collision_in[worldid, collisionid, i, 3],
+                sensor_collision_in[worldid, collisionid, i, 4],
+                sensor_collision_in[worldid, collisionid, i, 5],
+                sensor_collision_in[worldid, collisionid, i, 6],
+              )
 
-      if dist_new < dist:
-        dist = dist_new
-        if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-          best_geom = geom
-          pos = contact_pos_in[conid]
-          frame = contact_frame_in[conid]
-          normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-          if sensortype == SensorType.GEOMFROMTO:
-            witness1 = pos - 0.5 * dist * normal
-            witness2 = pos + 0.5 * dist * normal
-            pnts = vec6(witness1[0], witness1[1], witness1[2], witness2[0], witness2[1], witness2[2])
+              geomid1 = id1 + geom1
+              geomid2 = id2 + geom2
 
-    if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-      # check for flip direction
-      if objtype == int(ObjType.BODY.value):
-        n1 = body_geomnum[objid]
-        id1 = body_geomadr[objid]
-      else:
-        n1 = 1
-        id1 = objid
-      if reftype == int(ObjType.BODY.value):
-        n2 = body_geomnum[refid]
-        id2 = body_geomadr[refid]
-      else:
-        n2 = 1
-        id2 = refid
-
-      for geom1 in range(n1):
-        for geom2 in range(n2):
-          geomid1 = id1 + geom1
-          geomid2 = id2 + geom2
-
-          if ((geomid1 == best_geom[0]) and (geomid2 == best_geom[1])) or (
-            (geomid1 == best_geom[1]) and (geomid2 == best_geom[0])
-          ):
-            if geom_type[geomid2] < geom_type[geomid1]:
-              flip = True
-            elif geom_type[geomid1] == geom_type[geomid2]:
-              if geomid2 < geomid1:
+              if geom_type[geomid2] < geom_type[geomid1]:
                 flip = True
+              elif geom_type[geomid1] == geom_type[geomid2]:
+                if geomid2 < geomid1:
+                  flip = True
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
     elif sensortype == int(SensorType.GEOMNORMAL.value):
       if dist <= sensor_cutoff[sensorid]:
+        normal = wp.normalize(wp.vec3(pnts[3] - pnts[0], pnts[4] - pnts[1], pnts[5] - pnts[2]))
         if flip:
           normal *= -1.0
       else:
@@ -723,6 +707,57 @@ def _sensor_pos(
   elif sensortype == SensorType.CLOCK:
     val = _clock(time_in, worldid)
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
+
+
+@wp.kernel
+def _sensor_collision(
+  # Model:
+  ngeom: int,
+  # Data in:
+  contact_dist_in: wp.array(dtype=float),
+  contact_pos_in: wp.array(dtype=wp.vec3),
+  contact_frame_in: wp.array(dtype=wp.mat33),
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_worldid_in: wp.array(dtype=int),
+  contact_type_in: wp.array(dtype=int),
+  contact_geomcollisionid_in: wp.array(dtype=int),
+  nacon_in: wp.array(dtype=int),
+  collision_pairid_in: wp.array(dtype=wp.vec2i),
+  # Out:
+  sensor_collision_out: wp.array4d(dtype=float),
+):
+  conid = wp.tid()
+
+  if conid >= nacon_in[0]:
+    return
+
+  if not contact_type_in[conid] & ContactType.SENSOR:
+    return
+
+  geom = contact_geom_in[conid]
+  if geom[0] <= geom[1]:
+    pairid = math.upper_tri_index(ngeom, geom[0], geom[1])
+  else:
+    pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
+
+  worldid = contact_worldid_in[conid]
+  collisionid = collision_pairid_in[pairid][1]
+  geomcollisionid = contact_geomcollisionid_in[conid]
+
+  dist = contact_dist_in[conid]
+  pos = contact_pos_in[conid]
+  frame = contact_frame_in[conid]
+  normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
+  pnt1 = pos - 0.5 * dist * normal
+  pnt2 = pos + 0.5 * dist * normal
+
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 0] = dist
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pnt1[0]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pnt1[1]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pnt1[2]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = pnt2[0]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = pnt2[1]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = pnt2[2]
 
 
 @event_scope
@@ -768,6 +803,28 @@ def sensor_pos(m: Model, d: Data):
 
   if m.sensor_e_kinetic:
     energy_vel(m, d)
+
+  # collision sensors (distance, normal, fromto)
+  sensor_collision = wp.empty((d.nworld, m.nsensorcollision, 8, 7), dtype=float)
+  sensor_collision.fill_(1.0e32)
+  if m.nsensorcollision:
+    wp.launch(
+      _sensor_collision,
+      dim=d.naconmax,
+      inputs=[
+        m.ngeom,
+        d.contact.dist,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.geom,
+        d.contact.worldid,
+        d.contact.type,
+        d.contact.geomcollisionid,
+        d.nacon,
+        d.collision_pairid,
+      ],
+      outputs=[sensor_collision],
+    )
 
   wp.launch(
     _sensor_pos,
@@ -830,6 +887,7 @@ def sensor_pos(m: Model, d: Data):
       d.nacon,
       d.collision_pairid,
       d.sensor_rangefinder_dist,
+      sensor_collision,
     ],
     outputs=[d.sensordata],
   )
