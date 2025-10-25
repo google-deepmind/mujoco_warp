@@ -667,8 +667,20 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
           base_color[2] * tex_color[2],
         )
 
-      ambient = 0.15
-      result = base_color * ambient
+      up = wp.vec3(0.0, 0.0, 1.0)
+      len_n = wp.length(normal)
+      n = normal if len_n > 0.0 else up
+      n = wp.normalize(n)
+      hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
+      sky = wp.vec3(0.4, 0.4, 0.45)
+      ground = wp.vec3(0.1, 0.1, 0.12)
+      ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
+      ambient_intensity = 0.5
+      result = wp.vec3(
+        base_color[0] * (ambient_color[0] * ambient_intensity),
+        base_color[1] * (ambient_color[1] * ambient_intensity),
+        base_color[2] * (ambient_color[2] * ambient_intensity),
+      )
 
       # Apply lighting and shadows
       for l in range(wp.static(static_nlight)):

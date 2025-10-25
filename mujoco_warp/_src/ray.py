@@ -471,11 +471,22 @@ def ray_box_with_normal(
   x, all = _ray_box(pos, mat, size, pnt, vec)
   if x == wp.inf:
     return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
-  normal = wp.vec3(0.0, 0.0, 0.0)
+
+  # Select the face by matching the closest intersection time among the 6 faces
+  normal_local = wp.vec3(0.0, 0.0, 0.0)
+  eps = float(1.0e-6)
+  found = bool(False)
   for i in range(3):
-    if all[2 * i] != -1.0:
-      normal[i] = -wp.sign(all[2 * i])
-  normal_world = mat @ normal
+    for k in range(2):  # k=0 => -side, k=1 => +side
+      t = all[2 * i + k]
+      if t >= 0.0 and wp.abs(t - x) < eps:
+        normal_local[i] = -1.0 if k == 0 else 1.0
+        found = True
+        break
+    if found:
+      break
+
+  normal_world = mat @ normal_local
   normal_world = wp.normalize(normal_world)
   return True, x, normal_world
 
