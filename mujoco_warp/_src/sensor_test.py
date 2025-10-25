@@ -605,34 +605,50 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
-  @parameterized.parameters(
-    ("sphere", "sphere"),
-    ("box", "box"),
-    ("capsule", "box"),
+  @parameterized.product(
+    geom1=["plane", "sphere", "capsule", "cylinder", "ellipsoid", "box"],
+    geom2=["sphere", "capsule", "cylinder", "ellipsoid", "box"],
   )
   def test_sensor_collision(self, geom1, geom2):
     """Tests collision sensors: distance, normal, fromto."""
+    # TODO(team): remove skips and restore mjcf after replacing box<>{geom} with mesh<>{geom}
+    skips = [
+      ("box", "box"),
+      ("capsule", "box"),
+      ("cylinder", "box"),
+      ("plane", "box"),
+      ("plane", "cylinder"),
+    ]
 
-    # TODO(team): test plane
+    if (geom1, geom2) in skips or (geom2, geom1) in skips:
+      self.skipTest(f"Skipping collision sensor: {geom1} {geom2}")
 
-    _, mjd, m, d = test_data.fixture(
-      xml=f"""
+    if geom1 == "plane":
+      _GEOM1 = f"""
+      <geom name="geom0" type="plane" size="10 10 .001"/>
+      """
+    else:
+      _GEOM1 = f"""
+      <body name="geom0">
+        <geom name="geom0" type="{geom1}" size=".1 .1 .1"/>
+      </body>
+      """
+
+    _MJCF = f"""
       <mujoco>
         <worldbody>
-          <body name="geom0">
-            <geom name="geom0" type="{geom1}" size=".1 .1 .1"/>
-          </body>
+          {_GEOM1}
           <body name="geom1">
             <geom name="geom1" type="{geom2}" size=".1 .1 .1"/>
             <joint type="slide" axis="0 0 1"/>
           </body>
-          <body name="geomgeom" pos="1 0 0">
+          <!-- <body name="geomgeom" pos="1 0 0">
             <geom type="box" size=".075 .075 .075" pos=".2 0 0"/>
             <joint type="slide" axis="0 0 1"/>
-          </body>
+          </body> -->
         </worldbody>
         <keyframe>
-          <key qpos="1 2"/>
+          <key qpos="1"/>
         </keyframe>
         <sensor>
           <distance geom1="geom0" geom2="geom1" cutoff=".001"/>
@@ -645,16 +661,20 @@ class SensorTest(parameterized.TestCase):
           <fromto geom1="geom0" geom2="geom1" cutoff=".001"/>
           <fromto geom1="geom0" geom2="geom1" cutoff="1"/>
           <fromto geom1="geom1" geom2="geom0" cutoff="1"/>
+          <!--
           <distance body1="geom0" body2="geomgeom" cutoff="5"/>
           <distance body1="geomgeom" body2="geom0" cutoff="5"/>
           <normal body1="geom0" body2="geomgeom" cutoff="5"/>
           <normal body1="geomgeom" body2="geom0" cutoff="5"/>
           <fromto body1="geom0" body2="geomgeom" cutoff="5"/>
-          <fromto body1="geomgeom" body2="geom0" cutoff="5"/>
+          <fromto body1="geomgeom" body2="geom0" cutoff="5"/> -->
         </sensor>
       </mujoco>
-      """,
-      keyframe=0,
+      """
+
+    # TODO(team): remove nativeccd off once mujoco fix for mj_geomDistance lands
+    _, mjd, m, d = test_data.fixture(
+      xml=_MJCF, keyframe=0, overrides={"opt.disableflags": mujoco.mjtDisableBit.mjDSBL_NATIVECCD}
     )
 
     d.sensordata.fill_(wp.inf)

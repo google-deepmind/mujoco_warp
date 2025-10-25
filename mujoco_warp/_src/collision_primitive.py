@@ -34,6 +34,7 @@ from .math import safe_div
 from .math import upper_trid_index
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
+from .types import ContactType
 from .types import Data
 from .types import GeomType
 from .types import Model
@@ -43,8 +44,6 @@ from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
-
-_HUGE_VAL = 1e6
 
 
 class mat43f(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
@@ -156,6 +155,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
       contact_pos: Matrix of contact positions (one per row)
       contact_normal: Matrix of contact normal vectors (one per row)
   """
+  _HUGE_VAL = 1e6
 
   contact_dist = wp.vec4(wp.inf)
   contact_pos = mat43f()
@@ -375,6 +375,7 @@ def write_contact(
   # Data in:
   naconmax_in: int,
   # In:
+  id_: int,
   dist_in: float,
   pos_in: wp.vec3,
   frame_in: wp.mat33,
@@ -386,6 +387,7 @@ def write_contact(
   solreffriction_in: wp.vec2,
   solimp_in: vec5,
   geoms_in: wp.vec2i,
+  pairid_in: wp.vec2i,
   worldid_in: int,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
@@ -399,23 +401,40 @@ def write_contact(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
-  if dist_in - margin_in < 0.0:
-    cid = wp.atomic_add(nacon_out, 0, 1)
-    if cid < naconmax_in:
-      contact_dist_out[cid] = dist_in
-      contact_pos_out[cid] = pos_in
-      contact_frame_out[cid] = frame_in
-      contact_geom_out[cid] = geoms_in
-      contact_worldid_out[cid] = worldid_in
-      includemargin = margin_in - gap_in
-      contact_includemargin_out[cid] = includemargin
-      contact_dim_out[cid] = condim_in
-      contact_friction_out[cid] = friction_in
-      contact_solref_out[cid] = solref_in
-      contact_solreffriction_out[cid] = solreffriction_in
-      contact_solimp_out[cid] = solimp_in
+  active = dist_in < margin_in
+
+  # skip contact and no collision sensor
+  if (pairid_in[0] == -2 or not active) and pairid_in[1] == -1:
+    return
+
+  contact_type = 0
+
+  if pairid_in[0] >= -1 and active:
+    contact_type |= ContactType.CONSTRAINT
+
+  if pairid_in[1] >= 0:
+    contact_type |= ContactType.SENSOR
+
+  cid = wp.atomic_add(nacon_out, 0, 1)
+  if cid < naconmax_in:
+    contact_dist_out[cid] = dist_in
+    contact_pos_out[cid] = pos_in
+    contact_frame_out[cid] = frame_in
+    contact_geom_out[cid] = geoms_in
+    contact_worldid_out[cid] = worldid_in
+    includemargin = margin_in - gap_in
+    contact_includemargin_out[cid] = includemargin
+    contact_dim_out[cid] = condim_in
+    contact_friction_out[cid] = friction_in
+    contact_solref_out[cid] = solref_in
+    contact_solreffriction_out[cid] = solreffriction_in
+    contact_solimp_out[cid] = solimp_in
+    contact_type_out[cid] = contact_type
+    contact_geomcollisionid_out[cid] = id_
 
 
 @wp.func
@@ -438,13 +457,16 @@ def contact_params(
   pair_friction: wp.array2d(dtype=vec5),
   # Data in:
   collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=int),
+  collision_pairid_in: wp.array(dtype=wp.vec2i),
   # In:
   cid: int,
   worldid: int,
 ):
   geoms = collision_pair_in[cid]
-  pairid = collision_pairid_in[cid]
+  pairid = collision_pairid_in[cid][0]
+
+  # TODO(team): early return if collision sensor but no contact
+  # (ie, pairid[0] < -1 and pairid[1] < 0)
 
   if pairid > -1:
     margin = pair_margin[worldid, pairid]
@@ -528,6 +550,7 @@ def plane_sphere_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -540,39 +563,45 @@ def plane_sphere_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contact between a sphere and a plane."""
-  dist, pos = plane_sphere(plane.normal, plane.pos, sphere.pos, sphere.size[0])
+  normal = plane.normal
+  dist, pos = plane_sphere(normal, plane.pos, sphere.pos, sphere.size[0])
 
-  if dist - margin < 0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(plane.normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -591,6 +620,7 @@ def sphere_sphere_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -603,39 +633,44 @@ def sphere_sphere_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contact between two spheres."""
   dist, pos, normal = sphere_sphere(sphere1.pos, sphere1.size[0], sphere2.pos, sphere2.size[0])
 
-  if dist - margin < 0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -654,6 +689,7 @@ def sphere_capsule_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -666,6 +702,8 @@ def sphere_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates one contact between a sphere and a capsule."""
@@ -674,34 +712,37 @@ def sphere_capsule_wrapper(
 
   dist, pos, normal = sphere_capsule(sphere.pos, sphere.size[0], cap.pos, axis, cap.size[0], cap.size[1])
 
-  if dist - margin < 0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -720,6 +761,7 @@ def capsule_capsule_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -732,6 +774,8 @@ def capsule_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between two capsules."""
@@ -750,34 +794,37 @@ def capsule_capsule_wrapper(
     cap2.size[1],  # half_length2
   )
 
-  if dist - margin < 0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -796,6 +843,7 @@ def plane_capsule_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -808,6 +856,8 @@ def plane_capsule_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a capsule and a plane."""
@@ -824,35 +874,37 @@ def plane_capsule_wrapper(
   )
 
   for i in range(2):
-    disti = dist[i]
-    if disti - margin < 0.0:
-      write_contact(
-        naconmax_in,
-        disti,
-        pos[i],
-        frame,
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-        nacon_out,
-      )
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      pos[i],
+      frame,
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func
@@ -871,6 +923,7 @@ def plane_ellipsoid_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -883,39 +936,44 @@ def plane_ellipsoid_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between an ellipsoid and a plane."""
   dist, pos, normal = plane_ellipsoid(plane.normal, plane.pos, ellipsoid.pos, ellipsoid.rot, ellipsoid.size)
 
-  if dist - margin < 0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -934,6 +992,7 @@ def plane_box_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -946,6 +1005,8 @@ def plane_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a box and a plane."""
@@ -953,38 +1014,37 @@ def plane_box_wrapper(
   frame = make_frame(normal)
 
   for i in range(4):
-    disti = dist[i]
-    if disti - margin < 0.0:
-      write_contact(
-        naconmax_in,
-        disti,
-        pos[i],
-        frame,
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-        nacon_out,
-      )
-
-
-_HUGE_VAL = 1e6
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      pos[i],
+      frame,
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func
@@ -1003,6 +1063,7 @@ def plane_convex_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1015,6 +1076,8 @@ def plane_convex_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a plane and a convex object."""
@@ -1022,35 +1085,37 @@ def plane_convex_wrapper(
 
   frame = make_frame(normal)
   for i in range(4):
-    disti = dist[i]
-    if disti - margin < 0.0:
-      write_contact(
-        naconmax_in,
-        disti,
-        pos[i],
-        frame,
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-        nacon_out,
-      )
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      pos[i],
+      frame,
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func
@@ -1069,6 +1134,7 @@ def sphere_cylinder_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1081,6 +1147,8 @@ def sphere_cylinder_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a sphere and a cylinder."""
@@ -1096,34 +1164,37 @@ def sphere_cylinder_wrapper(
     cylinder.size[1],  # cylinder half_height
   )
 
-  if dist - margin < 0.0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -1142,6 +1213,7 @@ def plane_cylinder_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1154,6 +1226,8 @@ def plane_cylinder_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a cylinder and a plane."""
@@ -1171,35 +1245,37 @@ def plane_cylinder_wrapper(
 
   frame = make_frame(normal)
   for i in range(4):
-    disti = dist[i]
-    if disti - margin < 0.0:
-      write_contact(
-        naconmax_in,
-        disti,
-        pos[i],
-        frame,
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-        nacon_out,
-      )
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      pos[i],
+      frame,
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func
@@ -1218,6 +1294,7 @@ def sphere_box_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1230,38 +1307,43 @@ def sphere_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   dist, pos, normal = sphere_box(sphere.pos, sphere.size[0], box.pos, box.rot, box.size)
 
-  if dist - margin < 0.0:
-    write_contact(
-      naconmax_in,
-      dist,
-      pos,
-      make_frame(normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      geoms,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_worldid_out,
-      nacon_out,
-    )
+  write_contact(
+    naconmax_in,
+    0,
+    dist,
+    pos,
+    make_frame(normal),
+    margin,
+    gap,
+    condim,
+    friction,
+    solref,
+    solreffriction,
+    solimp,
+    geoms,
+    pairid,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.func
@@ -1280,6 +1362,7 @@ def capsule_box_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1292,6 +1375,8 @@ def capsule_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a capsule and a box."""
@@ -1311,35 +1396,37 @@ def capsule_box_wrapper(
 
   # Loop over the contacts and write them
   for i in range(2):
-    disti = dist[i]
-    if disti - margin < 0.0:
-      write_contact(
-        naconmax_in,
-        disti,
-        pos[i],
-        make_frame(normal[i]),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        geoms,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_worldid_out,
-        nacon_out,
-      )
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      pos[i],
+      make_frame(normal[i]),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func
@@ -1358,6 +1445,7 @@ def box_box_wrapper(
   solreffriction: wp.vec2,
   solimp: vec5,
   geoms: wp.vec2i,
+  pairid: wp.vec2i,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1370,6 +1458,8 @@ def box_box_wrapper(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between two boxes."""
@@ -1385,11 +1475,9 @@ def box_box_wrapper(
   )
 
   for i in range(8):
-    if dist[i] - margin >= 0.0:
-      continue
-
     write_contact(
       naconmax_in,
+      i,
       dist[i],
       pos[i],
       make_frame(normal[i]),
@@ -1401,6 +1489,7 @@ def box_box_wrapper(
       solreffriction,
       solimp,
       geoms,
+      pairid,
       worldid,
       contact_dist_out,
       contact_pos_out,
@@ -1413,6 +1502,8 @@ def box_box_wrapper(
       contact_dim_out,
       contact_geom_out,
       contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
       nacon_out,
     )
 
@@ -1502,7 +1593,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     naconmax_in: int,
     collision_pair_in: wp.array(dtype=wp.vec2i),
-    collision_pairid_in: wp.array(dtype=int),
+    collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # Data out:
@@ -1517,6 +1608,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    contact_type_out: wp.array(dtype=int),
+    contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
@@ -1622,6 +1715,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           solreffriction,
           solimp,
           geoms,
+          collision_pairid_in[tid],
           contact_dist_out,
           contact_pos_out,
           contact_frame_out,
@@ -1633,6 +1727,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           contact_dim_out,
           contact_geom_out,
           contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
           nacon_out,
         )
 
@@ -1731,6 +1827,8 @@ def primitive_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
+      d.contact.type,
+      d.contact.geomcollisionid,
       d.nacon,
     ],
   )

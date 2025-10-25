@@ -289,7 +289,7 @@ def _broadphase_filter(m: Model):
 def _add_geom_pair(
   # Model:
   geom_type: wp.array(dtype=int),
-  nxn_pairid: wp.array(dtype=int),
+  nxn_pairid: wp.array(dtype=wp.vec2i),
   # Data in:
   naconmax_in: int,
   # In:
@@ -299,7 +299,7 @@ def _add_geom_pair(
   nxnid: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
-  collision_pairid_out: wp.array(dtype=int),
+  collision_pairid_out: wp.array(dtype=wp.vec2i),
   collision_worldid_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
@@ -403,7 +403,7 @@ def _sap_broadphase(broadphase_filter):
     geom_aabb: wp.array3d(dtype=wp.vec3),
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
-    nxn_pairid: wp.array(dtype=int),
+    nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
     nworld_in: int,
     naconmax_in: int,
@@ -415,7 +415,7 @@ def _sap_broadphase(broadphase_filter):
     nsweep_in: int,
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
-    collision_pairid_out: wp.array(dtype=int),
+    collision_pairid_out: wp.array(dtype=wp.vec2i),
     collision_worldid_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
   ):
@@ -447,10 +447,14 @@ def _sap_broadphase(broadphase_filter):
         idx = upper_tri_index(ngeom, geom1, geom2)
 
       worldgeomid += nsweep_in
-      if nxn_pairid[idx] < -1:
+      pairid = nxn_pairid[idx]
+      if pairid[0] < -1 and pairid[1] < 0:
         continue
 
-      if broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid):
+      if (
+        broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+        or pairid[1] >= 0
+      ):
         _add_geom_pair(
           geom_type,
           nxn_pairid,
@@ -606,14 +610,14 @@ def _nxn_broadphase(broadphase_filter):
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
     nxn_geom_pair: wp.array(dtype=wp.vec2i),
-    nxn_pairid: wp.array(dtype=int),
+    nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
-    collision_pairid_out: wp.array(dtype=int),
+    collision_pairid_out: wp.array(dtype=wp.vec2i),
     collision_worldid_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
   ):
@@ -623,7 +627,10 @@ def _nxn_broadphase(broadphase_filter):
     geom1 = geom[0]
     geom2 = geom[1]
 
-    if broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid):
+    if (
+      broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+      or nxn_pairid[elementid][1] >= 0
+    ):
       _add_geom_pair(
         geom_type,
         nxn_pairid,
