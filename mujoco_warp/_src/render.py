@@ -56,7 +56,7 @@ def tile_coords(tid: int, W: int, H: int):
 @event_scope
 def render(m: Model, d: Data, rc: RenderContext):
   bvh.refit_warp_bvh(m, d, rc)
-  render_raytrace_megakernel(m, d, rc)
+  render_megakernel(m, d, rc)
 
 
 @wp.func
@@ -487,7 +487,7 @@ def compute_lighting(
 
 
 @event_scope
-def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
+def render_megakernel(m: Model, d: Data, rc: RenderContext):
   total_views = rc.nworld * m.ncam
   total_pixels = rc.width * rc.height
   num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
@@ -500,10 +500,8 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
   if rc.render_depth:
     rc.depth.fill_(wp.float32(0.0))
 
-  static_nlight = wp.static(m.nlight)
-
   @wp.kernel
-  def _raytrace_megakernel(
+  def _render_megakernel(
     # Model and Options
     nworld: int,
     ncam: int,
@@ -684,7 +682,7 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
       )
 
       # Apply lighting and shadows
-      for l in range(wp.static(static_nlight)):
+      for l in range(wp.static(m.nlight)):
         light_contribution = compute_lighting(
           use_shadows,
           bvh_id,
@@ -720,7 +718,7 @@ def render_raytrace_megakernel(m: Model, d: Data, rc: RenderContext):
         )
 
   wp.launch(
-    kernel=_raytrace_megakernel,
+    kernel=_render_megakernel,
     dim=(num_view_groups * total_pixels),
     inputs=[
       # Model and Options
