@@ -1467,7 +1467,9 @@ class Contact:
     efc_address: address in efc; -1: not included                    (naconmax, ncondim)
     worldid: world id                                                (naconmax,)
     type: ContactType                                                (naconmax,)
-    geomcollisionid: id for collision                                (naconmax,)
+    geomcollisionid: i-th contact generated for geom                 (naconmax,)
+                     helps uniquely identity contact when multiple
+                     contacts are generated for geom pair
   """
 
   dist: wp.array(dtype=float)
