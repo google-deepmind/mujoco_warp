@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from . import math
 from .collision_primitive import contact_params
 from .collision_primitive import geom
 from .collision_primitive import write_contact
@@ -671,7 +670,7 @@ def _sdf_narrowphase(
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   naconmax_in: int,
   collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=int),
+  collision_pairid_in: wp.array(dtype=wp.vec2i),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
   # In:
@@ -689,6 +688,8 @@ def _sdf_narrowphase(
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
   i, contact_tid = wp.tid()
@@ -855,6 +856,7 @@ def _sdf_narrowphase(
   )
   write_contact(
     naconmax_in,
+    0,
     dist,
     pos,
     make_frame(n),
@@ -866,6 +868,7 @@ def _sdf_narrowphase(
     solreffriction,
     solimp,
     geoms,
+    collision_pairid_in[contact_tid],
     worldid,
     contact_dist_out,
     contact_pos_out,
@@ -878,6 +881,8 @@ def _sdf_narrowphase(
     contact_dim_out,
     contact_geom_out,
     contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
     nacon_out,
   )
 
@@ -957,6 +962,8 @@ def sdf_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
+      d.contact.type,
+      d.contact.geomcollisionid,
       d.nacon,
     ],
   )

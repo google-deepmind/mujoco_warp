@@ -289,7 +289,7 @@ def _broadphase_filter(m: Model):
 def _add_geom_pair(
   # Model:
   geom_type: wp.array(dtype=int),
-  nxn_pairid: wp.array(dtype=int),
+  nxn_pairid: wp.array(dtype=wp.vec2i),
   # Data in:
   naconmax_in: int,
   # In:
@@ -299,7 +299,7 @@ def _add_geom_pair(
   nxnid: int,
   # Data out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
-  collision_pairid_out: wp.array(dtype=int),
+  collision_pairid_out: wp.array(dtype=wp.vec2i),
   collision_worldid_out: wp.array(dtype=int),
   ncollision_out: wp.array(dtype=int),
 ):
@@ -333,64 +333,76 @@ def _binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: i
   return upper
 
 
-@wp.kernel
-def _sap_project(
-  # Model:
-  geom_rbound: wp.array2d(dtype=float),
-  geom_margin: wp.array2d(dtype=float),
-  # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  # In:
-  direction_in: wp.vec3,
-  # Data out:
-  sap_projection_lower_out: wp.array2d(dtype=float),  # kernel_analyzer: ignore
-  sap_projection_upper_out: wp.array2d(dtype=float),
-  sap_sort_index_out: wp.array2d(dtype=int),  # kernel_analyzer: ignore
-):
-  worldid, geomid = wp.tid()
+def _sap_project(opt_broadphase: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def sap_project(
+    # Model:
+    ngeom: int,
+    geom_rbound: wp.array2d(dtype=float),
+    geom_margin: wp.array2d(dtype=float),
+    # Data in:
+    nworld_in: int,
+    geom_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
+    direction_in: wp.vec3,
+    # Out:
+    projection_lower_out: wp.array2d(dtype=float),
+    projection_upper_out: wp.array2d(dtype=float),
+    sort_index_out: wp.array2d(dtype=int),
+    segmented_index_out: wp.array(dtype=int),
+  ):
+    worldid, geomid = wp.tid()
 
-  xpos = geom_xpos_in[worldid % geom_xpos_in.shape[0], geomid]
-  rbound = geom_rbound[worldid % geom_rbound.shape[0], geomid]
+    xpos = geom_xpos_in[worldid % geom_xpos_in.shape[0], geomid]
+    rbound = geom_rbound[worldid % geom_rbound.shape[0], geomid]
 
-  if rbound == 0.0:
-    # geom is a plane
-    rbound = MJ_MAXVAL
+    if rbound == 0.0:
+      # geom is a plane
+      rbound = MJ_MAXVAL
 
-  radius = rbound + geom_margin[worldid % geom_margin.shape[0], geomid]
-  center = wp.dot(direction_in, xpos)
+    radius = rbound + geom_margin[worldid % geom_margin.shape[0], geomid]
+    center = wp.dot(direction_in, xpos)
 
-  sap_sort_index_out[worldid, geomid] = geomid
-  if not wp.isnan(center):
-    sap_projection_lower_out[worldid, geomid] = center - radius
-    sap_projection_upper_out[worldid, geomid] = center + radius
-  else:
-    sap_projection_lower_out[worldid, geomid] = MJ_MAXVAL
-    sap_projection_upper_out[worldid, geomid] = MJ_MAXVAL
+    sort_index_out[worldid, geomid] = geomid
+    if not wp.isnan(center):
+      projection_lower_out[worldid, geomid] = center - radius
+      projection_upper_out[worldid, geomid] = center + radius
+    else:
+      projection_lower_out[worldid, geomid] = MJ_MAXVAL
+      projection_upper_out[worldid, geomid] = MJ_MAXVAL
+
+    if wp.static(opt_broadphase == BroadphaseType.SAP_SEGMENTED):
+      if geomid == 0:
+        segmented_index_out[worldid] = worldid * ngeom
+        if worldid == nworld_in - 1:
+          segmented_index_out[nworld_in] = nworld_in * ngeom
+
+  return sap_project
 
 
 @wp.kernel
 def _sap_range(
   # Model:
   ngeom: int,
-  # Data in:
-  sap_projection_lower_in: wp.array2d(dtype=float),  # kernel_analyzer: ignore
-  sap_projection_upper_in: wp.array2d(dtype=float),
-  sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
-  # Data out:
-  sap_range_out: wp.array2d(dtype=int),
+  # In:
+  projection_lower_in: wp.array2d(dtype=float),
+  projection_upper_in: wp.array2d(dtype=float),
+  sort_index_in: wp.array2d(dtype=int),
+  # Out:
+  range_out: wp.array2d(dtype=int),
 ):
   worldid, geomid = wp.tid()
 
   # current bounding geom
-  idx = sap_sort_index_in[worldid, geomid]
+  idx = sort_index_in[worldid, geomid]
 
-  upper = sap_projection_upper_in[worldid, idx]
+  upper = projection_upper_in[worldid, idx]
 
-  limit = _binary_search(sap_projection_lower_in[worldid], upper, geomid + 1, ngeom)
+  limit = _binary_search(projection_lower_in[worldid], upper, geomid + 1, ngeom)
   limit = wp.min(ngeom - 1, limit)
 
   # range of geoms for the sweep and prune process
-  sap_range_out[worldid, geomid] = limit - geomid
+  range_out[worldid, geomid] = limit - geomid
 
 
 @cache_kernel
@@ -403,42 +415,42 @@ def _sap_broadphase(broadphase_filter):
     geom_aabb: wp.array3d(dtype=wp.vec3),
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
-    nxn_pairid: wp.array(dtype=int),
+    nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
     nworld_in: int,
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
-    sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
-    sap_cumulative_sum_in: wp.array(dtype=int),  # kernel_analyzer: ignore
     # In:
+    sort_index_in: wp.array2d(dtype=int),
+    cumulative_sum_in: wp.array(dtype=int),
     nsweep_in: int,
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
-    collision_pairid_out: wp.array(dtype=int),
+    collision_pairid_out: wp.array(dtype=wp.vec2i),
     collision_worldid_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
   ):
     worldgeomid = wp.tid()
 
     nworldgeom = nworld_in * ngeom
-    nworkpackages = sap_cumulative_sum_in[nworldgeom - 1]
+    nworkpackages = cumulative_sum_in[nworldgeom - 1]
 
     while worldgeomid < nworkpackages:
       # binary search to find current and next geom pair indices
-      i = _binary_search(sap_cumulative_sum_in, worldgeomid, 0, nworldgeom)
+      i = _binary_search(cumulative_sum_in, worldgeomid, 0, nworldgeom)
       j = i + worldgeomid + 1
 
       if i > 0:
-        j -= sap_cumulative_sum_in[i - 1]
+        j -= cumulative_sum_in[i - 1]
 
       worldid = i // ngeom
       i = i % ngeom
       j = j % ngeom
 
       # get geom indices and swap if necessary
-      geom1 = sap_sort_index_in[worldid, i]
-      geom2 = sap_sort_index_in[worldid, j]
+      geom1 = sort_index_in[worldid, i]
+      geom2 = sort_index_in[worldid, j]
 
       # find linear index of (geom1, geom2) in upper triangular nxn_pairid
       if geom2 < geom1:
@@ -447,10 +459,14 @@ def _sap_broadphase(broadphase_filter):
         idx = upper_tri_index(ngeom, geom1, geom2)
 
       worldgeomid += nsweep_in
-      if nxn_pairid[idx] < -1:
+      pairid = nxn_pairid[idx]
+      if pairid[0] < -1 and pairid[1] < 0:
         continue
 
-      if broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid):
+      if (
+        broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+        or pairid[1] >= 0
+      ):
         _add_geom_pair(
           geom_type,
           nxn_pairid,
@@ -471,22 +487,25 @@ def _sap_broadphase(broadphase_filter):
 def _segmented_sort(tile_size: int):
   @wp.kernel
   def segmented_sort(
-    # Data in:
-    sap_projection_lower_in: wp.array2d(dtype=float),  # kernel_analyzer: ignore
-    sap_sort_index_in: wp.array2d(dtype=int),  # kernel_analyzer: ignore
+    # In:
+    projection_lower_in: wp.array2d(dtype=float),
+    sort_index_in: wp.array2d(dtype=int),
+    # Out:
+    projection_lower_out: wp.array2d(dtype=float),
+    sort_index_out: wp.array2d(dtype=int),
   ):
     worldid = wp.tid()
 
     # Load input into shared memory
-    keys = wp.tile_load(sap_projection_lower_in[worldid], shape=tile_size, storage="shared")
-    values = wp.tile_load(sap_sort_index_in[worldid], shape=tile_size, storage="shared")
+    keys = wp.tile_load(projection_lower_in[worldid], shape=tile_size, storage="shared")
+    values = wp.tile_load(sort_index_in[worldid], shape=tile_size, storage="shared")
 
     # Perform in-place sorting
     wp.tile_sort(keys, values)
 
     # Store sorted shared memory into output arrays
-    wp.tile_store(sap_projection_lower_in[worldid], keys)
-    wp.tile_store(sap_sort_index_in[worldid], values)
+    wp.tile_store(projection_lower_out[worldid], keys)
+    wp.tile_store(sort_index_out[worldid], values)
 
   return segmented_sort
 
@@ -517,53 +536,47 @@ def sap_broadphase(m: Model, d: Data):
   direction = wp.vec3(0.5935, 0.7790, 0.1235)
   direction = wp.normalize(direction)
 
+  projection_lower = wp.empty((d.nworld, m.ngeom, 2), dtype=float)
+  projection_upper = wp.empty((d.nworld, m.ngeom), dtype=float)
+  sort_index = wp.empty((d.nworld, m.ngeom, 2), dtype=int)
+  range_ = wp.empty((d.nworld, m.ngeom), dtype=int)
+  cumulative_sum = wp.empty((d.nworld, m.ngeom), dtype=int)
+  segmented_index = wp.empty(d.nworld + 1 if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED else 0, dtype=int)
+
   wp.launch(
-    kernel=_sap_project,
+    kernel=_sap_project(m.opt.broadphase),
     dim=(d.nworld, m.ngeom),
-    inputs=[
-      m.geom_rbound,
-      m.geom_margin,
-      d.geom_xpos,
-      direction,
-    ],
+    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.nworld, d.geom_xpos, direction],
     outputs=[
-      d.sap_projection_lower.reshape((-1, m.ngeom)),
-      d.sap_projection_upper,
-      d.sap_sort_index.reshape((-1, m.ngeom)),
+      projection_lower.reshape((-1, m.ngeom)),
+      projection_upper,
+      sort_index.reshape((-1, m.ngeom)),
+      segmented_index,
     ],
   )
 
   if m.opt.broadphase == BroadphaseType.SAP_TILE:
     wp.launch_tiled(
       kernel=_segmented_sort(m.ngeom),
-      dim=(d.nworld),
-      inputs=[d.sap_projection_lower.reshape((-1, m.ngeom)), d.sap_sort_index.reshape((-1, m.ngeom))],
+      dim=d.nworld,
+      inputs=[projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom))],
+      outputs=[projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom))],
       block_dim=m.block_dim.segmented_sort,
     )
   else:
     wp.utils.segmented_sort_pairs(
-      d.sap_projection_lower.reshape((-1, m.ngeom)),
-      d.sap_sort_index.reshape((-1, m.ngeom)),
-      nworldgeom,
-      d.sap_segment_index.reshape(-1),
+      projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom)), nworldgeom, segmented_index
     )
 
   wp.launch(
     kernel=_sap_range,
     dim=(d.nworld, m.ngeom),
-    inputs=[
-      m.ngeom,
-      d.sap_projection_lower.reshape((-1, m.ngeom)),
-      d.sap_projection_upper,
-      d.sap_sort_index.reshape((-1, m.ngeom)),
-    ],
-    outputs=[
-      d.sap_range,
-    ],
+    inputs=[m.ngeom, projection_lower.reshape((-1, m.ngeom)), projection_upper, sort_index.reshape((-1, m.ngeom))],
+    outputs=[range_],
   )
 
   # scan is used for load balancing among the threads
-  wp.utils.array_scan(d.sap_range.reshape(-1), d.sap_cumulative_sum.reshape(-1), True)
+  wp.utils.array_scan(range_.reshape(-1), cumulative_sum.reshape(-1), True)
 
   # estimate number of overlap checks
   # assumes each geom has 5 other geoms (batched over all worlds)
@@ -583,16 +596,11 @@ def sap_broadphase(m: Model, d: Data):
       d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
-      d.sap_sort_index.reshape((-1, m.ngeom)),
-      d.sap_cumulative_sum.reshape(-1),
+      sort_index.reshape((-1, m.ngeom)),
+      cumulative_sum.reshape(-1),
       nsweep,
     ],
-    outputs=[
-      d.collision_pair,
-      d.collision_pairid,
-      d.collision_worldid,
-      d.ncollision,
-    ],
+    outputs=[d.collision_pair, d.collision_pairid, d.collision_worldid, d.ncollision],
   )
 
 
@@ -606,14 +614,14 @@ def _nxn_broadphase(broadphase_filter):
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
     nxn_geom_pair: wp.array(dtype=wp.vec2i),
-    nxn_pairid: wp.array(dtype=int),
+    nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
-    collision_pairid_out: wp.array(dtype=int),
+    collision_pairid_out: wp.array(dtype=wp.vec2i),
     collision_worldid_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
   ):
@@ -623,7 +631,10 @@ def _nxn_broadphase(broadphase_filter):
     geom1 = geom[0]
     geom2 = geom[1]
 
-    if broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid):
+    if (
+      broadphase_filter(geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid)
+      or nxn_pairid[elementid][1] >= 0
+    ):
       _add_geom_pair(
         geom_type,
         nxn_pairid,

@@ -1037,6 +1037,8 @@ class Model:
 
   warp only fields:
     nacttrnbody: number of actuators with body transmission
+    nsensorcollision: number of unique collisions for
+                      geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
@@ -1055,10 +1057,10 @@ class Model:
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
     nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
                             [-1, ngeom - 1]
-    nxn_pairid: predefined pair id, -1 if not predefined,    (<= ngeom * (ngeom - 1) // 2,)
-                -2 if skipped
-    nxn_pairid_filtered: predefined pair id, -1 if not       (<= ngeom * (ngeom - 1) // 2,)
-                         predefined
+    nxn_pairid: contact pair id, -1 if not predefined,       (<= ngeom * (ngeom - 1) // 2, 2)
+                  -2 if skipped
+                collision id, else -1
+    nxn_pairid_filtered: active subset of nxn_pairid         (<= ngeom * (ngeom - 1) // 2, 2)
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
@@ -1085,6 +1087,8 @@ class Model:
     sensor_limitvel_adr: address for limit velocity sensors  (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
     sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
+    sensor_collision_start_adr: address for sensor's first   (<=nsensor,)
+                                item in collision
     rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
                     (excluding limit force sensors)
@@ -1367,6 +1371,7 @@ class Model:
   mapM2M: wp.array(dtype=int)
   # warp only fields:
   nacttrnbody: int
+  nsensorcollision: int
   nsensortaxel: int
   condim_max: int
   nmaxpolygon: int
@@ -1384,8 +1389,8 @@ class Model:
   geom_plugin_index: wp.array(dtype=int)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)
   nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)
-  nxn_pairid: wp.array(dtype=int)
-  nxn_pairid_filtered: wp.array(dtype=int)
+  nxn_pairid: wp.array(dtype=wp.vec2i)
+  nxn_pairid_filtered: wp.array(dtype=wp.vec2i)
   eq_connect_adr: wp.array(dtype=int)
   eq_wld_adr: wp.array(dtype=int)
   eq_jnt_adr: wp.array(dtype=int)
@@ -1410,6 +1415,7 @@ class Model:
   sensor_limitvel_adr: wp.array(dtype=int)
   sensor_acc_adr: wp.array(dtype=int)
   sensor_rangefinder_adr: wp.array(dtype=int)
+  sensor_collision_start_adr: wp.array(dtype=int)
   rangefinder_sensor_adr: wp.array(dtype=int)
   collision_sensor_adr: wp.array(dtype=int)
   sensor_touch_adr: wp.array(dtype=int)
@@ -1433,6 +1439,18 @@ class Model:
   qM_madr_ij: wp.array(dtype=int)
 
 
+class ContactType(enum.IntFlag):
+  """
+  Type of contact.
+
+  CONSTRAINT: contact for constraint solver.
+  SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO).
+  """
+
+  CONSTRAINT = 1
+  SENSOR = 2
+
+
 @dataclasses.dataclass
 class Contact:
   """Contact data.
@@ -1450,6 +1468,10 @@ class Contact:
     geom: geom ids; -1 for flex                                      (naconmax, 2)
     efc_address: address in efc; -1: not included                    (naconmax, ncondim)
     worldid: world id                                                (naconmax,)
+    type: ContactType                                                (naconmax,)
+    geomcollisionid: i-th contact generated for geom                 (naconmax,)
+                     helps uniquely identity contact when multiple
+                     contacts are generated for geom pair
   """
 
   dist: wp.array(dtype=float)
@@ -1464,6 +1486,8 @@ class Contact:
   geom: wp.array(dtype=wp.vec2i)
   efc_address: wp.array2d(dtype=int)
   worldid: wp.array(dtype=int)
+  type: wp.array(dtype=int)
+  geomcollisionid: wp.array(dtype=int)
 
 
 @dataclasses.dataclass
@@ -1562,21 +1586,14 @@ class Data:
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
                during step, reuse previous value
-    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
     qM_integration: temporary array for integration             (nworld, nv, nv) if dense
     qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
     qLDiagInv_integration: temporary array for integration      (nworld, nv)
-    sap_projection_lower: broadphase context                    (nworld, ngeom, 2)
-    sap_projection_upper: broadphase context                    (nworld, ngeom)
-    sap_sort_index: broadphase context                          (nworld, ngeom, 2)
-    sap_range: broadphase context                               (nworld, ngeom)
-    sap_cumulative_sum: broadphase context                      (nworld, ngeom)
-    sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     collision_pair: collision pairs from broadphase             (naconmax,)
-    collision_pairid: collision pairid from broadphase          (naconmax,)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
     ten_Jdot: time derivative of tendon Jacobian                (nworld, ntendon, nv)
@@ -1591,9 +1608,6 @@ class Data:
     sensor_contact_matchid: id for matching contact             (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_criteria: critera for reduction              (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_direction: direction of contact              (nworld, <=nsensor, MJ_MAXCONPAIR)
-    ray_bodyexclude: id of body to exclude from ray computation
-    ray_dist: ray distance to nearest geom                      (nworld, 1)
-    ray_geomid: id of geom that intersects with ray             (nworld, 1)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1685,7 +1699,6 @@ class Data:
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
   geom_skip: wp.array(dtype=bool)
-  fluid_applied: wp.array2d(dtype=wp.spatial_vector)
 
   # warp only: euler + implicit integration
   qfrc_integration: wp.array2d(dtype=float)
@@ -1695,17 +1708,9 @@ class Data:
   qLD_integration: wp.array3d(dtype=float)
   qLDiagInv_integration: wp.array2d(dtype=float)
 
-  # warp only: sweep-and-prune broadphase
-  sap_projection_lower: wp.array3d(dtype=float)
-  sap_projection_upper: wp.array2d(dtype=float)
-  sap_sort_index: wp.array3d(dtype=int)
-  sap_range: wp.array2d(dtype=int)
-  sap_cumulative_sum: wp.array2d(dtype=int)
-  sap_segment_index: wp.array2d(dtype=int)
-
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
-  collision_pairid: wp.array(dtype=int)
+  collision_pairid: wp.array(dtype=wp.vec2i)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
 
@@ -1724,8 +1729,3 @@ class Data:
   sensor_contact_matchid: wp.array3d(dtype=int)
   sensor_contact_criteria: wp.array3d(dtype=float)
   sensor_contact_direction: wp.array3d(dtype=float)
-
-  # warp only: ray
-  ray_bodyexclude: wp.array(dtype=int)
-  ray_dist: wp.array2d(dtype=float)
-  ray_geomid: wp.array2d(dtype=int)
