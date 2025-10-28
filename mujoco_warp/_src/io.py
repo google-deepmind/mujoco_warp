@@ -774,6 +774,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     M_colind=wp.array(mjm.M_colind, dtype=int),
     mapM2M=wp.array(mjm.mapM2M, dtype=int),
     # warp only fields:
+    nacttrnbody=np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY),
     nsensorcollision=sum(nxn_pairid_collision >= 0),
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     condim_max=condim_max,  # TODO(team): get max after filtering,
@@ -1153,7 +1154,6 @@ def make_data(
     nsolving=wp.zeros(1, dtype=int),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     # euler + implicit integration
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1161,15 +1161,6 @@ def make_data(
     qM_integration=qM_integration,
     qLD_integration=qLD_integration,
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    # sweep-and-prune broadphase
-    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
-    sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
-    sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_segment_index=wp.array(
-      np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2)), dtype=int
-    ),
     # collision driver
     collision_pair=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_pairid=wp.zeros((naconmax,), dtype=wp.vec2i),
@@ -1189,12 +1180,6 @@ def make_data(
     sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
     sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
     sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    # ray
-    ray_bodyexclude=wp.zeros(1, dtype=int),
-    ray_dist=wp.zeros((nworld, 1), dtype=float),
-    ray_geomid=wp.zeros((nworld, 1), dtype=int),
-    # actuator
-    actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
 
 
@@ -1507,7 +1492,6 @@ def put_data(
     nsolving=arr([nworld]),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),  # warp only
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     # TODO(team): skip allocation if integrator != euler | implicit
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1515,13 +1499,6 @@ def put_data(
     qM_integration=tile(qM_integration),
     qLD_integration=tile(qLD_integration),
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    # TODO(team): skip allocation if broadphase != sap
-    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
-    sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
-    sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
     collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
@@ -1541,12 +1518,6 @@ def put_data(
     sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
     sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
     sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    # ray
-    ray_bodyexclude=wp.zeros(1, dtype=int),
-    ray_dist=wp.zeros((nworld, 1), dtype=float),
-    ray_geomid=wp.zeros((nworld, 1), dtype=int),
-    # actuator
-    actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
 
 
@@ -1822,8 +1793,9 @@ def _reset_nworld_all(
     nsolving_out[0] = nworld_in
   time_out[worldid] = 0.0
   energy_out[worldid] = wp.vec2(0.0, 0.0)
+  qpos0_id = worldid % qpos0.shape[0]
   for i in range(nq):
-    qpos_out[worldid, i] = qpos0[worldid, i]
+    qpos_out[worldid, i] = qpos0[qpos0_id, i]
     if i < nv:
       qvel_out[worldid, i] = 0.0
       qacc_warmstart_out[worldid, i] = 0.0

@@ -1036,6 +1036,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
@@ -1369,6 +1370,7 @@ class Model:
   M_colind: wp.array(dtype=int)
   mapM2M: wp.array(dtype=int)
   # warp only fields:
+  nacttrnbody: int
   nsensorcollision: int
   nsensortaxel: int
   condim_max: int
@@ -1584,19 +1586,12 @@ class Data:
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
                during step, reuse previous value
-    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
     qM_integration: temporary array for integration             (nworld, nv, nv) if dense
     qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
     qLDiagInv_integration: temporary array for integration      (nworld, nv)
-    sap_projection_lower: broadphase context                    (nworld, ngeom, 2)
-    sap_projection_upper: broadphase context                    (nworld, ngeom)
-    sap_sort_index: broadphase context                          (nworld, ngeom, 2)
-    sap_range: broadphase context                               (nworld, ngeom)
-    sap_cumulative_sum: broadphase context                      (nworld, ngeom)
-    sap_segment_index: broadphase context (requires nworld + 1) (nworld, 2)
     collision_pair: collision pairs from broadphase             (naconmax,)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1613,10 +1608,6 @@ class Data:
     sensor_contact_matchid: id for matching contact             (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_criteria: critera for reduction              (nworld, <=nsensor, MJ_MAXCONPAIR)
     sensor_contact_direction: direction of contact              (nworld, <=nsensor, MJ_MAXCONPAIR)
-    ray_bodyexclude: id of body to exclude from ray computation
-    ray_dist: ray distance to nearest geom                      (nworld, 1)
-    ray_geomid: id of geom that intersects with ray             (nworld, 1)
-    actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1708,7 +1699,6 @@ class Data:
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
   geom_skip: wp.array(dtype=bool)
-  fluid_applied: wp.array2d(dtype=wp.spatial_vector)
 
   # warp only: euler + implicit integration
   qfrc_integration: wp.array2d(dtype=float)
@@ -1717,14 +1707,6 @@ class Data:
   qM_integration: wp.array3d(dtype=float)
   qLD_integration: wp.array3d(dtype=float)
   qLDiagInv_integration: wp.array2d(dtype=float)
-
-  # warp only: sweep-and-prune broadphase
-  sap_projection_lower: wp.array3d(dtype=float)
-  sap_projection_upper: wp.array2d(dtype=float)
-  sap_sort_index: wp.array3d(dtype=int)
-  sap_range: wp.array2d(dtype=int)
-  sap_cumulative_sum: wp.array2d(dtype=int)
-  sap_segment_index: wp.array2d(dtype=int)
 
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
@@ -1747,11 +1729,3 @@ class Data:
   sensor_contact_matchid: wp.array3d(dtype=int)
   sensor_contact_criteria: wp.array3d(dtype=float)
   sensor_contact_direction: wp.array3d(dtype=float)
-
-  # warp only: ray
-  ray_bodyexclude: wp.array(dtype=int)
-  ray_dist: wp.array2d(dtype=float)
-  ray_geomid: wp.array2d(dtype=int)
-
-  # warp only: actuator
-  actuator_trntype_body_ncon: wp.array2d(dtype=int)
