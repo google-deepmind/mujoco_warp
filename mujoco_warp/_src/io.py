@@ -777,6 +777,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nacttrnbody=np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY),
     nsensorcollision=sum(nxn_pairid_collision >= 0),
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
+    nsensorcontact=np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT),
     condim_max=condim_max,  # TODO(team): get max after filtering,
     nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
     nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
@@ -1006,7 +1007,6 @@ def make_data(
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   if mujoco.mj_isSparse(mjm):
@@ -1176,10 +1176,6 @@ def make_data(
     sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
     sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
     sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
-    sensor_contact_nmatch=wp.zeros((nworld, nsensorcontact), dtype=int),
-    sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
-    sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
   )
 
 
@@ -1514,10 +1510,6 @@ def put_data(
     sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
     sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
     sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
-    sensor_contact_nmatch=wp.zeros((nworld, nsensorcontact), dtype=int),
-    sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
-    sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
   )
 
 
