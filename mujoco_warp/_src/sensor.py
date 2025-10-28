@@ -196,9 +196,9 @@ def _sensor_rangefinder_init(
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
-  # Data out:
-  sensor_rangefinder_pnt_out: wp.array2d(dtype=wp.vec3),
-  sensor_rangefinder_vec_out: wp.array2d(dtype=wp.vec3),
+  # Out:
+  pnt_out: wp.array2d(dtype=wp.vec3),
+  vec_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, rfid = wp.tid()
   sensorid = sensor_rangefinder_adr[rfid]
@@ -206,8 +206,8 @@ def _sensor_rangefinder_init(
   site_xpos = site_xpos_in[worldid, objid]
   site_xmat = site_xmat_in[worldid, objid]
 
-  sensor_rangefinder_pnt_out[worldid, rfid] = site_xpos
-  sensor_rangefinder_vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+  pnt_out[worldid, rfid] = site_xpos
+  vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
 
 
 @wp.func
@@ -512,8 +512,8 @@ def _sensor_pos(
   contact_type_in: wp.array(dtype=int),
   nacon_in: wp.array(dtype=int),
   collision_pairid_in: wp.array(dtype=wp.vec2i),
-  sensor_rangefinder_dist_in: wp.array2d(dtype=float),
   # In:
+  rangefinder_dist_in: wp.array2d(dtype=float),
   sensor_collision_in: wp.array4d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
@@ -534,7 +534,7 @@ def _sensor_pos(
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 2, vec2, out)
   elif sensortype == SensorType.RANGEFINDER:
-    val = sensor_rangefinder_dist_in[worldid, rangefinder_sensor_adr[sensorid]]
+    val = rangefinder_dist_in[worldid, rangefinder_sensor_adr[sensorid]]
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == SensorType.JOINTPOS:
     val = _joint_pos(jnt_qposadr, qpos_in, worldid, objid)
