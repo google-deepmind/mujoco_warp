@@ -790,7 +790,7 @@ def _tendon_actuator_force(
   actuator_trnid: wp.array(dtype=wp.vec2i),
   # Data in:
   actuator_force_in: wp.array2d(dtype=float),
-  # Data out:
+  # Out:
   ten_actfrc_out: wp.array2d(dtype=float),
 ):
   worldid, actid = wp.tid()
@@ -808,7 +808,7 @@ def _tendon_actuator_force_clamp(
   tendon_actfrcrange: wp.array2d(dtype=wp.vec2),
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
-  # Data in:
+  # In:
   ten_actfrc_in: wp.array2d(dtype=float),
   # Data out:
   actuator_force_out: wp.array2d(dtype=float),
@@ -903,29 +903,18 @@ def fwd_actuation(m: Model, d: Data):
   )
 
   if m.ntendon:
-    d.ten_actfrc.zero_()
-
+    ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
     wp.launch(
       _tendon_actuator_force,
       dim=(d.nworld, m.nu),
-      inputs=[
-        m.actuator_trntype,
-        m.actuator_trnid,
-        d.actuator_force,
-      ],
-      outputs=[d.ten_actfrc],
+      inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
+      outputs=[ten_actfrc],
     )
 
     wp.launch(
       _tendon_actuator_force_clamp,
       dim=(d.nworld, m.nu),
-      inputs=[
-        m.tendon_actfrclimited,
-        m.tendon_actfrcrange,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        d.ten_actfrc,
-      ],
+      inputs=[m.tendon_actfrclimited, m.tendon_actfrcrange, m.actuator_trntype, m.actuator_trnid, ten_actfrc],
       outputs=[d.actuator_force],
     )
 
