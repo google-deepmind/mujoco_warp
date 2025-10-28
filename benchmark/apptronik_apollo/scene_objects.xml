@@ -1,0 +1,105 @@
+<mujoco model="apptronik_apollo scene flat">
+  <include file="apptronik_apollo.xml" />
+
+  <visual>
+    <map znear="0.01" zfar="200" />
+    <quality shadowsize="8192" />
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
+    <global azimuth="140" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
+	<light pos="0 0 3" dir="0 0 -1" directional="true" />
+
+	<geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+	<geom name="box front wall" pos="0.5 0.0 0.7" type="box" size="0.01 0.21 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+	<geom name="box back wall" pos="0.9 0.0 0.7" type="box" size="0.01 0.21 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+    <geom name="box right wall" pos="0.7 0.2 0.7" type="box" size="0.21 0.01 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+	<geom name="box left wall" pos="0.7 -0.2 0.7" type="box" size="0.21 0.01 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+
+    <body name="minicube_0">
+      <joint name="joint_minicube_0" type="free"/>
+      <geom name="minicube_0" size="0.03 0.03 0.03" pos="0.65 -0.07 0.8" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="minicube_1">
+      <joint name="joint_minicube_1" type="free"/>
+      <geom name="minicube_1" size="0.03 0.03 0.03" pos="0.65 0.07 0.8" type="box" contype="1" conaffinity="1"/>
+    </body>
+
+	<body name="cube_0">
+      <joint name="joint_cube_0" type="free"/>
+      <geom name="cube_0" size="0.05 0.05 0.05" pos="0.6 -0.07 0.9" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_1">
+      <joint name="joint_cube_1" type="free"/>
+      <geom name="cube_1" size="0.05 0.05 0.05" pos="0.6 0.07 0.9" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_2">
+      <joint name="joint_cube_2" type="free"/>
+      <geom name="cube_2" size="0.05 0.05 0.05" pos="0.7 -0.07 0.9" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_3">
+      <joint name="joint_cube_3" type="free"/>
+      <geom name="cube_3" size="0.05 0.05 0.05" pos="0.7 0.07 0.9" type="box" contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="minicube_2">
+      <joint name="joint_minicube_2" type="free"/>
+      <geom name="minicube_2" size="0.03 0.03 0.03" pos="0.6 0.0 1.0" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="minicube_3">
+      <joint name="joint_minicube_3" type="free"/>
+      <geom name="minicube_3" size="0.03 0.03 0.03" pos="0.7 0.0 1.0" type="box" contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="cube_4">
+      <joint name="joint_cube_4" type="free"/>
+      <geom name="cube_4" size="0.05 0.05 0.05" pos="0.6 -0.07 1.1" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_5">
+      <joint name="joint_cube_5" type="free"/>
+      <geom name="cube_5" size="0.05 0.05 0.05" pos="0.6 0.07 1.1" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_6">
+      <joint name="joint_cube_6" type="free"/>
+      <geom name="cube_6" size="0.05 0.05 0.05" pos="0.7 -0.07 1.1" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_7">
+      <joint name="joint_cube_7" type="free"/>
+      <geom name="cube_7" size="0.05 0.05 0.05" pos="0.7 0.07 1.1" type="box" contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="minicube_4">
+      <joint name="joint_minicube_4" type="free"/>
+      <geom name="minicube_4" size="0.03 0.03 0.03" pos="0.65 -0.07 1.2" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="minicube_5">
+      <joint name="joint_minicube_5" type="free"/>
+      <geom name="minicube_5" size="0.03 0.03 0.03" pos="0.65 0.07 1.2" type="box" contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="cube_8">
+      <joint name="joint_cube_8" type="free"/>
+      <geom name="cube_8" size="0.05 0.05 0.05" pos="0.6 -0.07 1.3" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_9">
+      <joint name="joint_cube_9" type="free"/>
+      <geom name="cube_9" size="0.05 0.05 0.05" pos="0.6 0.07 1.3" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_10">
+      <joint name="joint_cube_10" type="free"/>
+      <geom name="cube_10" size="0.05 0.05 0.05" pos="0.7 -0.07 1.3" type="box" contype="1" conaffinity="1"/>
+    </body>
+    <body name="cube_11">
+      <joint name="joint_cube_11" type="free"/>
+      <geom name="cube_11" size="0.05 0.05 0.05" pos="0.7 0.07 1.3" type="box" contype="1" conaffinity="1"/>
+    </body>
+  </worldbody>
+</mujoco>
