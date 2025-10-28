@@ -2107,6 +2107,7 @@ def _transmission_body_moment(
   nacon_in: wp.array(dtype=int),
   # Data out:
   actuator_moment_out: wp.array3d(dtype=float),
+  # Out:
   actuator_trntype_body_ncon_out: wp.array2d(dtype=int),
 ):
   trnbodyid, conid, dofid = wp.tid()
@@ -2197,7 +2198,7 @@ def _transmission_body_moment(
 def _transmission_body_moment_scale(
   # Model:
   actuator_trntype_body_adr: wp.array(dtype=int),
-  # Data in:
+  # In:
   actuator_trntype_body_ncon_in: wp.array2d(dtype=int),
   # Data out:
   actuator_moment_out: wp.array3d(dtype=float),
@@ -2256,14 +2257,12 @@ def transmission(m: Model, d: Data):
     outputs=[d.actuator_length, d.actuator_moment],
   )
 
-  if m.actuator_trntype_body_adr.size > 0:
-    # reset number of active contacts
-    d.actuator_trntype_body_ncon.zero_()
-
+  if m.nacttrnbody:
     # compute moments
+    ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
     wp.launch(
       _transmission_body_moment,
-      dim=(m.actuator_trntype_body_adr.size, d.naconmax, m.nv),
+      dim=(m.nacttrnbody, d.naconmax, m.nv),
       inputs=[
         m.opt.cone,
         m.body_parentid,
@@ -2285,20 +2284,14 @@ def transmission(m: Model, d: Data):
         d.efc.J,
         d.nacon,
       ],
-      outputs=[
-        d.actuator_moment,
-        d.actuator_trntype_body_ncon,
-      ],
+      outputs=[d.actuator_moment, ncon],
     )
 
     # scale moments
     wp.launch(
       _transmission_body_moment_scale,
-      dim=(d.nworld, m.actuator_trntype_body_adr.size, m.nv),
-      inputs=[
-        m.actuator_trntype_body_adr,
-        d.actuator_trntype_body_ncon,
-      ],
+      dim=(d.nworld, m.nacttrnbody, m.nv),
+      inputs=[m.actuator_trntype_body_adr, ncon],
       outputs=[d.actuator_moment],
     )
 

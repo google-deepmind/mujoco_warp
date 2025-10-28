@@ -1036,6 +1036,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
@@ -1370,6 +1371,7 @@ class Model:
   M_colind: wp.array(dtype=int)
   mapM2M: wp.array(dtype=int)
   # warp only fields:
+  nacttrnbody: int
   nsensorcollision: int
   nsensortaxel: int
   nsensorcontact: int
@@ -1604,7 +1606,6 @@ class Data:
     sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
     sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
     sensor_rangefinder_geomid: geomids for rangefinder          (nworld, nrangefinder)
-    actuator_trntype_body_ncon: number of active contacts       (nworld, <=nu)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1722,6 +1723,3 @@ class Data:
   sensor_rangefinder_vec: wp.array2d(dtype=wp.vec3)
   sensor_rangefinder_dist: wp.array2d(dtype=float)
   sensor_rangefinder_geomid: wp.array2d(dtype=int)
-
-  # warp only: actuator
-  actuator_trntype_body_ncon: wp.array2d(dtype=int)
