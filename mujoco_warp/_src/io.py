@@ -1796,8 +1796,9 @@ def _reset_nworld_all(
     nsolving_out[0] = nworld_in
   time_out[worldid] = 0.0
   energy_out[worldid] = wp.vec2(0.0, 0.0)
+  qpos0_id = worldid % qpos0.shape[0]
   for i in range(nq):
-    qpos_out[worldid, i] = qpos0[worldid, i]
+    qpos_out[worldid, i] = qpos0[qpos0_id, i]
     if i < nv:
       qvel_out[worldid, i] = 0.0
       qacc_warmstart_out[worldid, i] = 0.0
