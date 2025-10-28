@@ -135,15 +135,15 @@ def mul_m(
   skip: Optional[wp.array] = None,
   M: Optional[wp.array] = None,
 ):
-  """Multiply vectors by inertia matrix.
+  """Multiply vectors by inertia matrix; optionally skip per world.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    res (wp.array2d(dtype=float)): Result: qM @ vec.
-    vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
-    skip (wp.array(dtype=float)): Skip output.
-    M (wp.array3d(dtype=float), optional): Input matrix: M @ vec.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    res: Result: qM @ vec.
+    vec: Input vector to multiply by qM.
+    skip: Per-world bitmask to skip computing output.
+    M: Input matrix: M @ vec.
   """
 
   check_skip = skip is not None
@@ -244,9 +244,9 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
   Map applied forces at each body via Jacobians to dof space and accumulate.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    qfrc (wp.array2d(dtype=float)): Total applied force mapped to dof space.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    qfrc: Total applied force mapped to dof space.
   """
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
 
@@ -394,25 +394,21 @@ def contact_force_kernel(
 
 
 def contact_force(
-  m: Model,
-  d: Data,
-  contact_ids: wp.array(dtype=int),
-  to_world_frame: bool,
-  force: wp.array(dtype=wp.spatial_vector),
+  m: Model, d: Data, contact_ids: wp.array(dtype=int), to_world_frame: bool, force: wp.array(dtype=wp.spatial_vector)
 ):
   """
   Compute forces for contacts in Data.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    contact_ids (wp.array(dtype=int)): IDs for each contact.
-    to_world_frame (bool): If True, map force from contact to world frame.
-    force (wp.array(dtype=wp.spatial_vector)): Contact forces.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    contact_ids: IDs for each contact.
+    to_world_frame: If True, map force from contact to world frame.
+    force: Contact forces.
   """
   wp.launch(
     contact_force_kernel,
-    dim=(contact_ids.size,),
+    dim=contact_ids.size,
     inputs=[
       m.opt.cone,
       d.contact.frame,

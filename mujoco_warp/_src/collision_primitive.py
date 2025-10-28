@@ -1756,9 +1756,9 @@ def primitive_narrowphase(m: Model, d: Data):
   identified during the broadphase stage. It computes detailed contact information
   such as distance, position, and frame, and populates the `d.contact` array.
 
-  The primitive geom types handled are PLANE, SPHERE, CAPSULE, CYLINDER, BOX.
+  The primitive geom types: `PLANE`, `SPHERE`, `CAPSULE`, `CYLINDER`, and `BOX`.
 
-  It also handles collisions between planes and convex hulls.
+  Additionally, collisions between planes and convex hulls.
 
   To improve performance, it dynamically builds and launches a kernel tailored to
   the specific primitive collision types present in the model, avoiding

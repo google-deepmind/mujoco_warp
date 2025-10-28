@@ -523,7 +523,8 @@ def sap_broadphase(m: Model, d: Data):
   bounding sphere check is performed. If this check passes, the pair is added
   to the collision arrays in `d` for the narrowphase stage.
 
-  Two sorting strategies are supported, controlled by `m.opt.broadphase`:
+  Two sorting strategies are supported, controlled by `m.opt.broadphase`
+
   - `SAP_TILE`: Uses a tile-based sort.
   - `SAP_SEGMENTED`: Uses a segmented sort.
   """

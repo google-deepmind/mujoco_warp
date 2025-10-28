@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Optional
+
 import warp as wp
 
 from .support import mul_m
@@ -137,14 +139,13 @@ def _qderiv_tendon_damping(
 
 
 @event_scope
-def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
+def deriv_smooth_vel(m: Model, d: Data, flg_forward: Optional[bool] = True):
   """Analytical derivative of smooth forces w.r.t. velocities.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    flg_forward (bool, optional): If True forward dynamics else inverse dynamics routine.
-                                  Default is True.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    flg_forward: If True forward dynamics else inverse dynamics routine.
   """
   qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row
   qMj = m.qM_fullm_j if m.opt.is_sparse else m.dof_tri_col

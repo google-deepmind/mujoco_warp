@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Optional
+
 import warp as wp
 
 from . import math
@@ -1099,18 +1101,17 @@ def _qfrc_bias(
 
 
 @event_scope
-def rne(m: Model, d: Data, flg_acc: bool = False):
+def rne(m: Model, d: Data, flg_acc: Optional[bool] = False):
   """
   Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
-  Computes the bias forces (qfrc_bias) and internal forces (cfrc_int) for the current state,
+  Computes the bias forces (`qfrc_bias`) and internal forces (`cfrc_int`) for the current state,
   including the effects of gravity and optionally joint accelerations.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information.
-    d (Data): The data object containing the current state and output arrays.
-    flg_acc (bool, optional): If True, includes joint accelerations in the computation.
-                              Defaults to False.
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    flg_acc: If True, includes joint accelerations in the computation.
   """
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
@@ -2426,10 +2427,10 @@ def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=f
   Computes backsubstitution: x = qLD * y.
 
   Args:
-    m (Model): The model containing inertia and factorization information.
-    d (Data): The data object containing factorization results.
-    x (array2d): Output array for the solution.
-    y (array2d): Input right-hand side array.
+    m: The model containing inertia and factorization information.
+    d: The data object containing factorization results.
+    x: Output array for the solution.
+    y: Input right-hand side array.
   """
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
 

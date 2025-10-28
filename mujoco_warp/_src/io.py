@@ -32,10 +32,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   Creates a model on device.
 
   Args:
-    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
+    mjm: The model containing kinematic and dynamic information (host).
 
   Returns:
-    Model: The model containing kinematic and dynamic information (device).
+    The model containing kinematic and dynamic information (device).
   """
   # check for compatible cuda toolkit and driver versions
   warp_util.check_toolkit_driver()
@@ -954,7 +954,7 @@ def _get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_si
 
 def make_data(
   mjm: mujoco.MjModel,
-  nworld: int = 1,
+  nworld: Optional[int] = 1,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
@@ -963,17 +963,16 @@ def make_data(
   Creates a data object on device.
 
   Args:
-    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
-    nworld (int, optional): Number of worlds. Defaults to 1.
-    nworld (int, optional): The number of worlds. Defaults to 1.
-    nconmax (int, optional): Number of contacts to allocate per world.  Contacts exist in large
-                             heterogenous arrays: one world may have more than nconmax contacts.
-    njmax (int, optional): Number of constraints to allocate per world.  Constraint arrays are
-                           batched by world: no world may have more than njmax constraints.
-    naconmax (int, optional): Number of contacts to allocate for all worlds.  Overrides nconmax.
+    mjm: The model containing kinematic and dynamic information (host).
+    nworld: Number of worlds.
+    nconmax: Number of contacts to allocate per world. Contacts exist in large
+             heterogenous arrays: one world may have more than nconmax contacts.
+    njmax: Number of constraints to allocate per world. Constraint arrays are
+           batched by world: no world may have more than njmax constraints.
+    naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
 
   Returns:
-    Data: The data object containing the current state and output arrays (device).
+    The data object containing the current state and output arrays (device).
   """
 
   # TODO(team): move nconmax, njmax to Model?
@@ -1182,7 +1181,7 @@ def make_data(
 def put_data(
   mjm: mujoco.MjModel,
   mjd: mujoco.MjData,
-  nworld: int = 1,
+  nworld: Optional[int] = 1,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
@@ -1191,17 +1190,17 @@ def put_data(
   Moves data from host to a device.
 
   Args:
-    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
-    mjd (mujoco.MjData): The data object containing current state and output arrays (host).
-    nworld (int, optional): The number of worlds. Defaults to 1.
-    nconmax (int, optional): Number of contacts to allocate per world.  Contacts exist in large
-                             heterogenous arrays: one world may have more than nconmax contacts.
-    njmax (int, optional): Number of constraints to allocate per world.  Constraint arrays are
-                           batched by world: no world may have more than njmax constraints.
-    naconmax (int, optional): Number of contacts to allocate for all worlds.  Overrides nconmax.
+    mjm: The model containing kinematic and dynamic information (host).
+    mjd: The data object containing current state and output arrays (host).
+    nworld: The number of worlds.
+    nconmax: Number of contacts to allocate per world.  Contacts exist in large
+             heterogenous arrays: one world may have more than nconmax contacts.
+    njmax: Number of constraints to allocate per world.  Constraint arrays are
+           batched by world: no world may have more than njmax constraints.
+    naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
 
   Returns:
-    Data: The data object containing the current state and output arrays (device).
+    The data object containing the current state and output arrays (device).
   """
   # TODO(team): move nconmax and njmax to Model?
   # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
@@ -1521,10 +1520,9 @@ def get_data_into(
   """Gets data from a device into an existing mujoco.MjData.
 
   Args:
-    result (mujoco.MjData): The data object containing the current state and output arrays
-                            (host).
-    mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
-    d (Data): The data object containing the current state and output arrays (device).
+    result: The data object containing the current state and output arrays (host).
+    mjm: The model containing kinematic and dynamic information (host).
+    d: The data object containing the current state and output arrays (device).
   """
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
@@ -2020,7 +2018,13 @@ def _reset_contact(
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
-  """Clear data, set defaults."""
+  """Clear data, set defaults; optionally by world.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    reset: Per-world bitmask. Reset if True.
+  """
   if m.opt.is_sparse:
     qM_dim = (1, m.nM)
   else:
