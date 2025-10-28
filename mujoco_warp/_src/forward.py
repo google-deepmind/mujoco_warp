@@ -230,11 +230,11 @@ def _next_time(
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
       nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-      wp.printf("ncollision overflow - please increase nconmax to %u\n", nconmax)
+      wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
 
     if nacon_in[0] > naconmax_in:
-      nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-      wp.printf("nacon overflow - please increase nconmax to %u\n", nconmax)
+      nconmax = int(wp.ceil(float(nacon_in[0]) / float(nworld_in)))
+      wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon_in[0])
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):

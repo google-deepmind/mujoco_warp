@@ -285,7 +285,7 @@ def _fluid_force(
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  # Data out:
+  # Out:
   fluid_applied_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   """Computes body-space fluid forces for both inertia-box and ellipsoid models."""
@@ -487,6 +487,8 @@ def _fluid_force(
 
 
 def _fluid(m: Model, d: Data):
+  fluid_applied = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+
   wp.launch(
     _fluid_force,
     dim=(d.nworld, m.nbody),
@@ -510,12 +512,10 @@ def _fluid(m: Model, d: Data):
       d.subtree_com,
       d.cvel,
     ],
-    outputs=[
-      d.fluid_applied,
-    ],
+    outputs=[fluid_applied],
   )
 
-  support.apply_ft(m, d, d.fluid_applied, d.qfrc_fluid, False)
+  support.apply_ft(m, d, fluid_applied, d.qfrc_fluid, False)
 
 
 @wp.kernel

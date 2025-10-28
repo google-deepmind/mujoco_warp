@@ -136,6 +136,7 @@ def ccd_kernel_builder(
     x1: wp.vec3,
     x2: wp.vec3,
     count: int,
+    pairid: wp.vec2i,
     # Data out:
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
@@ -148,6 +149,8 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    contact_type_out: wp.array(dtype=int),
+    contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
   ) -> int:
     # TODO(kbayes): remove legacy GJK once multicontact can be enabled
@@ -180,10 +183,15 @@ def ccd_kernel_builder(
       points = mat3c()
       geom1.margin = margin
       geom2.margin = margin
+      if pairid[1] >= 0:
+        # if collision sensor, set large cutoff to work with various sensor cutoff values
+        cutoff = 1.0e32
+      else:
+        cutoff = 0.0
       dist, ncontact, witness1, witness2 = ccd(
         False,  # ignored for box-box, multiccd always on
         opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
-        0.0,
+        cutoff,
         ccd_iterations,
         geom1,
         geom2,
@@ -214,7 +222,8 @@ def ccd_kernel_builder(
         multiccd_face1_in[tid],
         multiccd_face2_in[tid],
       )
-      if dist >= 0.0:
+
+      if dist >= 0.0 and pairid[1] == -1:
         return 0
 
       for i in range(ncontact):
@@ -222,9 +231,15 @@ def ccd_kernel_builder(
       normal = witness1[0] - witness2[0]
       frame = make_frame(normal)
 
+    # flip if collision sensor
+    if pairid[1] >= 0:
+      frame *= -1.0
+      geoms = wp.vec2i(geoms[1], geoms[0])
+
     for i in range(ncontact):
       write_contact(
         naconmax_in,
+        i,
         dist,
         points[i],
         frame,
@@ -236,6 +251,7 @@ def ccd_kernel_builder(
         solreffriction,
         solimp,
         geoms,
+        pairid,
         worldid,
         contact_dist_out,
         contact_pos_out,
@@ -248,6 +264,8 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
         nacon_out,
       )
       if count + (i + 1) >= MJ_MAXCONPAIR:
@@ -304,7 +322,7 @@ def ccd_kernel_builder(
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     collision_pair_in: wp.array(dtype=wp.vec2i),
-    collision_pairid_in: wp.array(dtype=int),
+    collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
@@ -343,6 +361,8 @@ def ccd_kernel_builder(
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
+    contact_type_out: wp.array(dtype=int),
+    contact_geomcollisionid_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -548,6 +568,7 @@ def ccd_kernel_builder(
               x1,
               geom2.pos,
               count,
+              collision_pairid_in[tid],
               contact_dist_out,
               contact_pos_out,
               contact_frame_out,
@@ -559,6 +580,8 @@ def ccd_kernel_builder(
               contact_dim_out,
               contact_geom_out,
               contact_worldid_out,
+              contact_type_out,
+              contact_geomcollisionid_out,
               nacon_out,
             )
             count += ncontact
@@ -606,6 +629,7 @@ def ccd_kernel_builder(
         geom1.pos,
         geom2.pos,
         0,
+        collision_pairid_in[tid],
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -617,6 +641,8 @@ def ccd_kernel_builder(
         contact_dim_out,
         contact_geom_out,
         contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
         nacon_out,
       )
 
@@ -639,6 +665,7 @@ def convex_narrowphase(m: Model, d: Data):
   kernel for each type of convex collision pair present in the model, avoiding unnecessary
   computations for non-existent pair types.
   """
+  # TODO(team): fix early return?
   if not any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in _CONVEX_COLLISION_PAIRS):
     return
 
@@ -778,5 +805,7 @@ def convex_narrowphase(m: Model, d: Data):
           d.contact.dim,
           d.contact.geom,
           d.contact.worldid,
+          d.contact.type,
+          d.contact.geomcollisionid,
         ],
       )
