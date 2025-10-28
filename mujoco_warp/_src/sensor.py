@@ -768,34 +768,31 @@ def sensor_pos(m: Model, d: Data):
     return
 
   # rangefinder
+  rangefinder_dist = wp.empty((d.nworld, m.nrangefinder), dtype=float)
   if m.sensor_rangefinder_adr.size > 0:
+    rangefinder_pnt = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
+    rangefinder_vec = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
+    rangefinder_geomid = wp.empty((d.nworld, m.nrangefinder), dtype=int)
+
     # get position and direction
     wp.launch(
       _sensor_rangefinder_init,
       dim=(d.nworld, m.sensor_rangefinder_adr.size),
-      inputs=[
-        m.sensor_objid,
-        m.sensor_rangefinder_adr,
-        d.site_xpos,
-        d.site_xmat,
-      ],
-      outputs=[
-        d.sensor_rangefinder_pnt,
-        d.sensor_rangefinder_vec,
-      ],
+      inputs=[m.sensor_objid, m.sensor_rangefinder_adr, d.site_xpos, d.site_xmat],
+      outputs=[rangefinder_pnt, rangefinder_vec],
     )
 
     # get distances
     ray.rays(
       m,
       d,
-      d.sensor_rangefinder_pnt,
-      d.sensor_rangefinder_vec,
+      rangefinder_pnt,
+      rangefinder_vec,
       vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
       True,
       m.sensor_rangefinder_bodyid,
-      d.sensor_rangefinder_dist,
-      d.sensor_rangefinder_geomid,
+      rangefinder_dist,
+      rangefinder_geomid,
     )
 
   if m.sensor_e_potential:
@@ -886,7 +883,7 @@ def sensor_pos(m: Model, d: Data):
       d.contact.type,
       d.nacon,
       d.collision_pairid,
-      d.sensor_rangefinder_dist,
+      rangefinder_dist,
       sensor_collision,
     ],
     outputs=[d.sensordata],
