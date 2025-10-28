@@ -18,6 +18,7 @@ from typing import Tuple
 import warp as wp
 
 from .collision_primitive import Geom
+from .types import MJ_MAXVAL
 from .types import MJ_MINVAL
 from .types import GeomType
 
@@ -591,6 +592,7 @@ def gjk(
   n = int(0)
   coordinates = wp.vec4()  # barycentric coordinates
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  backup_gjk = cutoff == 0.0
 
   # set initial guess
   x_k = x1_0 - x2_0
@@ -636,6 +638,19 @@ def gjk(
     #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
     if wp.dot(x_k, x_k - simplex[n]) < epsilon:
       break
+
+    if n == 3 and backup_gjk:
+      result = GJKResult()
+      result.simplex = simplex
+      result.simplex1 = simplex1
+      result.simplex2 = simplex2
+      result.simplex_index1 = simplex_index1
+      result.simplex_index2 = simplex_index2
+      result, ret = _gjk_intersect(result, gjk_iterations, geom1, geom2, geomtype1, geomtype2)
+      if ret != -1:
+        return result
+      else:
+        backup_gjk = False
 
     # run the distance subalgorithm to compute the barycentric coordinates
     # of the closest point to the origin in the simplex
@@ -689,6 +704,117 @@ def gjk(
   result.simplex_index2 = simplex_index2
   result.simplex = simplex
   return result
+
+
+@wp.func
+def signed_distance(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3):
+  normal = wp.cross(v3 - v1, v2 - v1)
+  norm2 = wp.dot(normal, normal)
+  if norm2 > MJ_MINVAL and norm2 < MJ_MAXVAL:
+    normal = normal * (1.0 / wp.sqrt(norm2))
+    return normal, wp.dot(normal, v1)
+  return normal, MJ_MAXVAL
+
+@wp.func
+def _gjk_intersect(result: GJKResult, iterations: int, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int):
+  s = wp.vec4i(0, 1, 2, 3)
+  dist = wp.vec4f()
+  normals = mat43()
+
+  simplex = result.simplex
+  simplex1 = result.simplex1
+  simplex2 = result.simplex2
+  simplex_index1 = result.simplex_index1
+  simplex_index2 = result.simplex_index2
+
+  for k in range(iterations):
+    # compute the signed distance to each face in the simplex along with normals
+    normal, d = signed_distance(simplex[s[2]], simplex[s[1]], simplex[s[3]])
+    normals[0] = normal
+    dist[0] = d
+    normal, d = signed_distance(simplex[s[0]], simplex[s[2]], simplex[s[3]])
+    normals[1] = normal
+    dist[1] = d
+    normal, d = signed_distance(simplex[s[1]], simplex[s[0]], simplex[s[3]])
+    normals[2] = normal
+    dist[2] = d
+    normal, d = signed_distance(simplex[s[0]], simplex[s[1]], simplex[s[2]])
+    normals[3] = normal
+    dist[3] = d
+
+    # if origin is on any affine hull, convergence will fail
+    if dist[3] == 0.0 or dist[2] == 0.0 or dist[1] == 0.0 or dist[0] == 0.0:
+      return result, -1
+    
+    # find the face with the smallest distance to the origin
+    i = wp.where(dist[0] < dist[1], 0, 1)
+    j = wp.where(dist[2] < dist[3], 2, 3)
+    index = wp.where(dist[i] < dist[j], i, j)
+
+    # origin inside of simplex (run EPA for contact information)
+    if dist[index] > 0:
+      result.dim = 4
+      result.dist = 0.0
+
+      final_simplex = mat43()
+      final_simplex[0] = simplex[s[0]]
+      final_simplex[1] = simplex[s[1]]
+      final_simplex[2] = simplex[s[2]]
+      final_simplex[3] = simplex[s[3]]
+      result.simplex = final_simplex
+
+      final_simplex1 = mat43()
+      final_simplex1[0] = simplex1[s[0]]
+      final_simplex1[1] = simplex1[s[1]]
+      final_simplex1[2] = simplex1[s[2]]
+      final_simplex1[3] = simplex1[s[3]]
+      result.simplex1 = final_simplex1
+
+      final_simplex2 = mat43()
+      final_simplex2[0] = simplex2[s[0]]
+      final_simplex2[1] = simplex2[s[1]]
+      final_simplex2[2] = simplex2[s[2]]
+      final_simplex2[3] = simplex2[s[3]]
+      result.simplex2 = final_simplex2
+
+      final_simplex_index1 = wp.vec4i()
+      final_simplex_index1[0] = simplex_index1[s[0]]
+      final_simplex_index1[1] = simplex_index1[s[1]]
+      final_simplex_index1[2] = simplex_index1[s[2]]
+      final_simplex_index1[3] = simplex_index1[s[3]]
+      result.simplex_index1 = final_simplex_index1
+
+      final_simplex_index2 = wp.vec4i()
+      final_simplex_index2[0] = simplex_index2[s[0]]
+      final_simplex_index2[1] = simplex_index2[s[1]]
+      final_simplex_index2[2] = simplex_index2[s[2]]
+      final_simplex_index2[3] = simplex_index2[s[3]]
+      result.simplex_index2 = final_simplex_index2
+
+      return result, 1
+    
+    # replace worst vertex (farthest from origin) with new candidate
+    sp = _support(geom1, geomtype1, normals[index])
+    simplex1[s[index]] = sp.point
+    simplex_index1[s[index]] = sp.vertex_index
+    geom1.index = sp.cached_index
+    sp = _support(geom2, geomtype2, -normals[index])
+    simplex2[s[index]] = sp.point
+    simplex_index2[s[index]] = sp.vertex_index
+    geom2.index = sp.cached_index
+    simplex[s[index]] = simplex1[s[index]] - simplex2[s[index]]
+    
+    # found origin outside the Minkowski difference (return no collision)
+    if wp.dot(normals[index], simplex[s[index]]) < 0.0:
+      result.dist = MJ_MAXVAL
+      return result, 0
+    
+    i = (index + 1) & 3
+    k = (index + 2) & 3
+    swap = s[i]
+    s[i] = s[j]
+    s[j] = swap
+  return result, -1
 
 
 @wp.func

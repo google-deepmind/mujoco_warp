@@ -62,7 +62,8 @@ _CONVEX_COLLISION_PAIRS = [
   (GeomType.ELLIPSOID, GeomType.MESH),
   (GeomType.CYLINDER, GeomType.CYLINDER),
   (GeomType.CYLINDER, GeomType.BOX),
-  (GeomType.CYLINDER, GeomType.MESH),
+  (GeomType.CYLINDER, GeomType.MESH)
+  (GeomType.BOX, GeomType.BOX),
   (GeomType.BOX, GeomType.MESH),
   (GeomType.MESH, GeomType.MESH),
 ]
@@ -189,7 +190,7 @@ def ccd_kernel_builder(
       else:
         cutoff = 0.0
       dist, ncontact, witness1, witness2 = ccd(
-        False,  # ignored for box-box, multiccd always on
+        True,  # ignored for box-box, multiccd always on
         opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
         cutoff,
         ccd_iterations,
