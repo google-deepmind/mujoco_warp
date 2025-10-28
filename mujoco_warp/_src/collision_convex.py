@@ -62,7 +62,7 @@ _CONVEX_COLLISION_PAIRS = [
   (GeomType.ELLIPSOID, GeomType.MESH),
   (GeomType.CYLINDER, GeomType.CYLINDER),
   (GeomType.CYLINDER, GeomType.BOX),
-  (GeomType.CYLINDER, GeomType.MESH)
+  (GeomType.CYLINDER, GeomType.MESH),
   (GeomType.BOX, GeomType.BOX),
   (GeomType.BOX, GeomType.MESH),
   (GeomType.MESH, GeomType.MESH),
