@@ -183,7 +183,6 @@ def _geom_local_to_global(
   geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
 
 
-
 @wp.kernel
 def _site_local_to_global(
   # Model:
