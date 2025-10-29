@@ -1016,6 +1016,14 @@ def make_data(
 
   njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
 
+  # static geoms (attached to the world) have their poses calculated once during make_data instead
+  # of during each physics step.  this speeds up scenes with many static geoms (e.g. terrains)
+  # TODO(team): remove this when we introduce dof islands + sleeping
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_kinematics(mjm, mjd)
+  geom_xpos = wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3)
+  geom_xmat = wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33)
+
   return types.Data(
     solver_niter=wp.zeros(nworld, dtype=int),
     ne=wp.zeros(nworld, dtype=int),
@@ -1044,8 +1052,8 @@ def make_data(
     ximat=wp.zeros((nworld, mjm.nbody), dtype=wp.mat33),
     xanchor=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
     xaxis=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
-    geom_xpos=wp.zeros((nworld, mjm.ngeom), dtype=wp.vec3),
-    geom_xmat=wp.zeros((nworld, mjm.ngeom), dtype=wp.mat33),
+    geom_xpos=geom_xpos,
+    geom_xmat=geom_xmat,
     site_xpos=wp.zeros((nworld, mjm.nsite), dtype=wp.vec3),
     site_xmat=wp.zeros((nworld, mjm.nsite), dtype=wp.mat33),
     cam_xpos=wp.zeros((nworld, mjm.ncam), dtype=wp.vec3),
@@ -1153,7 +1161,6 @@ def make_data(
     ne_ten=wp.zeros(nworld, dtype=int),
     nsolving=wp.zeros(1, dtype=int),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    geom_skip=wp.zeros(mjm.ngeom, dtype=bool),
     # euler + implicit integration
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1322,7 +1329,6 @@ def put_data(
   efc_force_fill[:, :nefc] = np.tile(mjd.efc_force, (nworld, 1))
   efc_margin_fill[:, :nefc] = np.tile(mjd.efc_margin, (nworld, 1))
 
-  nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
   nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   # some helper functions to simplify the data field definitions below
@@ -1487,7 +1493,6 @@ def put_data(
     ne_ten=wp.full(shape=(nworld), value=ne_ten),
     nsolving=arr([nworld]),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    geom_skip=wp.zeros(mjm.ngeom, dtype=bool),  # warp only
     # TODO(team): skip allocation if integrator != euler | implicit
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
