@@ -93,33 +93,30 @@ def benchmark(
   d: Data,
   nstep: int,
   ctrls: Optional[np.ndarray] = None,
-  event_trace: bool = False,
-  measure_alloc: bool = False,
-  measure_solver_niter: bool = False,
+  event_trace: Optional[bool] = False,
+  measure_alloc: Optional[bool] = False,
+  measure_solver_niter: Optional[bool] = False,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 
   Args:
-    fn (Callable[[Model, Data], None]): Function to benchmark.
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output information (device).
-    nstep (int): Number of timesteps.
-    ctrls (list, optional): control sequence to apply during benchmarking.
-                            Default is None.
-    event_trace (bool, optional): If True, time routines decorated with @event_scope.
-                                  Default is False.
-    measure_alloc (bool, optional): If True, record number of contacts and constraints.
-                                    Default is False.
-    measure_solver_niter (bool, False): If True, record the number of solver iterations.
-                                        Default is False.
+    fn: Function to benchmark.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output information (device).
+    nstep: Number of timesteps.
+    ctrls: Control sequence to apply during benchmarking.
+    event_trace: If True, time routines decorated with @event_scope.
+    measure_alloc: If True, record number of contacts and constraints.
+    measure_solver_niter: If True, record the number of solver iterations.
+
   Returns:
-    float: Time to JIT fn.
-    float: Total time to run the benchmark.
-    dict: Trace.
-    list: Number of contacts.
-    list: Number of constraints.
-    list: Number of solver iterations.
-    int: Number of converged worlds.
+    - Time to JIT fn.
+    - Total time to run the benchmark.
+    - Trace.
+    - Number of contacts.
+    - Number of constraints.
+    - Number of solver iterations.
+    - Number of converged worlds.
   """
 
   trace = {}

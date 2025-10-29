@@ -488,7 +488,7 @@ def _cdof(
 @event_scope
 def com_pos(m: Model, d: Data):
   """
-  Computes subtree center of mass positions.  Transforms inertia and motion to global frame
+  Computes subtree center of mass positions. Transforms inertia and motion to global frame
   centered at subtree CoM.
 
   Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
@@ -1317,7 +1317,7 @@ def rne_postconstraint(m: Model, d: Data):
   """
   Computes the recursive Newton-Euler algorithm after constraints are applied.
 
-  Computes cacc, cfrc_ext, and cfrc_int, including the effects of applied forces, equality
+  Computes `cacc`, `cfrc_ext`, and `cfrc_int`, including the effects of applied forces, equality
   constraints, and contacts.
   """
   # cfrc_ext = perturb
@@ -1605,7 +1605,13 @@ def _tendon_bias_qfrc(
 
 @event_scope
 def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  """Add bias force due to tendon armature."""
+  """Add bias force due to tendon armature.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    qfrc: Force.
+  """
   d.ten_Jdot.zero_()
   wp.launch(
     _tendon_dot,
@@ -1742,7 +1748,7 @@ def _comvel_level(
 @event_scope
 def com_vel(m: Model, d: Data):
   """
-  Computes the spatial velocities (cvel) and the derivative cdof_dot for all bodies.
+  Computes the spatial velocities (cvel) and the derivative `cdof_dot` for all bodies.
 
   Propagates velocities down the kinematic tree, updating the spatial velocity and
   derivative for each body.
@@ -2408,12 +2414,12 @@ def solve_LD(
   This function dispatches to either a sparse or dense solver depending on Model options.
 
   Args:
-    m (Model): The model containing factorization and sparsity information.
-    d (Data): The data object containing workspace and factorization results.
-    L (array3d): Lower-triangular factor from the factorization (sparse or dense).
-    D (array2d): Diagonal factor from the factorization (only used for sparse).
-    x (array2d): Output array for the solution.
-    y (array2d): Input right-hand side array.
+    m: The model containing factorization and sparsity information.
+    d: The data object containing workspace and factorization results.
+    L: Lower-triangular factor from the factorization (sparse or dense).
+    D: Diagonal factor from the factorization (only used for sparse).
+    x: Output array for the solution.
+    y: Input right-hand side array.
   """
   if m.opt.is_sparse:
     _solve_LD_sparse(m, d, L, D, x, y)
@@ -2491,13 +2497,13 @@ def factor_solve_i(m, d, M, L, D, x, y):
   then solves the system for x given right-hand side y.
 
   Args:
-    m (Model): The model containing factorization and sparsity information.
-    d (Data): The data object containing workspace and factorization results.
-    M (array3d): The inertia-like matrix to factorize.
-    L (array3d): Output lower-triangular factor from the factorization (sparse or dense).
-    D (array2d): Output diagonal factor from the factorization (only used for sparse).
-    x (array2d): Output array for the solution.
-    y (array2d): Input right-hand side array.
+    m: The model containing factorization and sparsity information.
+    d: The data object containing workspace and factorization results.
+    M: The inertia-like matrix to factorize.
+    L: Output lower-triangular factor from the factorization (sparse or dense).
+    D: Output diagonal factor from the factorization (only used for sparse).
+    x: Output array for the solution.
+    y: Input right-hand side array.
   """
   if m.opt.is_sparse:
     _factor_i_sparse(m, d, M, L, D)

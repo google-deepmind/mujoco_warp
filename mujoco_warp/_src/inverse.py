@@ -67,7 +67,14 @@ def _qfrc_inverse(
 
 
 def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.array2d(dtype=float)):
-  """Convert discrete-time qacc to continuous-time qacc."""
+  """Convert discrete-time qacc to continuous-time qacc.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    qacc: Acceleration.
+    qfrc: Force.
+  """
 
   if m.opt.integrator == IntegratorType.RK4:
     raise NotImplementedError("discrete inverse dynamics is not supported by RK4 integrator")

@@ -658,8 +658,8 @@ def convex_narrowphase(m: Model, d: Data):
   determine the distance between shapes and the Expanding Polytope Algorithm (EPA) to find
   the penetration depth and contact normal for colliding pairs.
 
-  The convex geom types handled by this function are SPHERE, CAPSULE, ELLIPSOID, CYLINDER,
-  BOX, MESH, HFIELD.
+  The convex geom types handled by this function are `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`,
+  `BOX`, `MESH`, `HFIELD`.
 
   To optimize performance, this function dynamically builds and launches a specialized
   kernel for each type of convex collision pair present in the model, avoiding unnecessary
