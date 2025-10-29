@@ -1797,7 +1797,7 @@ def _transmission(
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
   actuator_gear_id = worldid % actuator_gear.shape[0]
-  gear = actuator_gear[worldid, actid]
+  gear = actuator_gear[actuator_gear_id, actid]
   if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
     qpos = qpos_in[worldid]
     jntid = actuator_trnid[actid][0]
