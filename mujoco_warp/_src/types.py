@@ -1586,8 +1586,6 @@ class Data:
     ne_ten: number of equality tendon constraints               (nworld,)
     nsolving: number of unconverged worlds                      (1,)
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
-    geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
-               during step, reuse previous value
     qfrc_integration: temporary array for integration           (nworld, nv)
     qacc_integration: temporary array for integration           (nworld, nv)
     act_vel_integration: temporary array for integration        (nworld, nu)
@@ -1696,7 +1694,6 @@ class Data:
   ne_ten: wp.array(dtype=int)
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
-  geom_skip: wp.array(dtype=bool)
 
   # warp only: euler + implicit integration
   qfrc_integration: wp.array2d(dtype=float)
