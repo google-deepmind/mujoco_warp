@@ -1608,8 +1608,8 @@ def _tendon_bias_qfrc(
 def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
   """Add bias force due to tendon armature."""
 
+  # time derivative of tendon Jacobian
   ten_Jdot = wp.zeros((d.nworld, m.ntendon, m.nv), dtype=float)
-
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -1637,6 +1637,7 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
     outputs=[ten_Jdot],
   )
 
+  # tendon bias force coefficients
   ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
   wp.launch(
     _tendon_bias_coef,
@@ -3054,6 +3055,8 @@ def tendon(m: Model, d: Data):
 
   d.ten_length.zero_()
   d.ten_J.zero_()
+
+  # Cartesian 3D points fro geom wrap points
   wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
 
   # process joint tendons

@@ -903,6 +903,7 @@ def fwd_actuation(m: Model, d: Data):
   )
 
   if m.ntendon:
+    # total actuator force at tendon
     ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
     wp.launch(
       _tendon_actuator_force,
