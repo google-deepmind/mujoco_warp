@@ -1041,6 +1041,7 @@ class Model:
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     nsensorcontact: number of contact sensors
+    nrangefinder: number of rangefinder sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
@@ -1375,6 +1376,7 @@ class Model:
   nsensorcollision: int
   nsensortaxel: int
   nsensorcontact: int
+  nrangefinder: int
   condim_max: int
   nmaxpolygon: int
   nmaxmeshdeg: int
@@ -1598,10 +1600,6 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
-    sensor_rangefinder_pnt: points for rangefinder              (nworld, nrangefinder, 3)
-    sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
-    sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
-    sensor_rangefinder_geomid: geomids for rangefinder          (nworld, nrangefinder)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1707,9 +1705,3 @@ class Data:
   collision_pairid: wp.array(dtype=wp.vec2i)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
-
-  # warp only: sensors
-  sensor_rangefinder_pnt: wp.array2d(dtype=wp.vec3)
-  sensor_rangefinder_vec: wp.array2d(dtype=wp.vec3)
-  sensor_rangefinder_dist: wp.array2d(dtype=float)
-  sensor_rangefinder_geomid: wp.array2d(dtype=int)

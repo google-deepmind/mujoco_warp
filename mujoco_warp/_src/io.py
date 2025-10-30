@@ -778,6 +778,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nsensorcollision=sum(nxn_pairid_collision >= 0),
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     nsensorcontact=np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT),
+    nrangefinder=sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER),
     condim_max=condim_max,  # TODO(team): get max after filtering,
     nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
     nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
@@ -1007,7 +1008,6 @@ def make_data(
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   if mujoco.mj_isSparse(mjm):
     tile_size = types.TILE_SIZE_JTDAJ_SPARSE
@@ -1166,11 +1166,6 @@ def make_data(
     collision_pairid=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_worldid=wp.zeros((naconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
-    # sensors
-    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
-    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
   )
 
 
@@ -1318,7 +1313,6 @@ def put_data(
   efc_margin_fill[:, :nefc] = np.tile(mjd.efc_margin, (nworld, 1))
 
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
-  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   # some helper functions to simplify the data field definitions below
 
@@ -1495,11 +1489,6 @@ def put_data(
     collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
     collision_worldid=wp.empty(naconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
-    # sensors
-    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
-    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
   )
 
 
