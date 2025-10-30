@@ -665,7 +665,6 @@ def convex_narrowphase(m: Model, d: Data):
   kernel for each type of convex collision pair present in the model, avoiding unnecessary
   computations for non-existent pair types.
   """
-  # TODO(team): fix early return?
   if not any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in _CONVEX_COLLISION_PAIRS):
     return
 
