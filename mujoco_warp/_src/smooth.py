@@ -176,7 +176,7 @@ def _geom_local_to_global(
   bodyid = geom_bodyid[geomid]
 
   if body_weldid[bodyid] == 0 and body_mocapid[body_rootid[bodyid]] == -1:
-    # geoms attached to the world are static (unless they are attached to mcocap bodies)
+    # geoms attached to the world are static (unless they are descended from mcocap bodies)
     # for such static geoms, geom_xpos and geom_xquat are computed only once during make_data
     return
 
