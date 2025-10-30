@@ -2790,7 +2790,7 @@ def _energy_pos_passive_tendon(
 
 def energy_pos(m: Model, d: Data):
   """Position-dependent energy (potential)."""
-  wp.launch(_energy_pos_zero, dim=(d.nworld,), outputs=[d.energy])
+  wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
   if not m.opt.disableflags & DisableBit.GRAVITY:
@@ -2866,7 +2866,7 @@ def energy_vel(m: Model, d: Data):
 
   wp.launch_tiled(
     _energy_vel_kinetic(m.nv),
-    dim=(d.nworld,),
+    dim=d.nworld,
     inputs=[d.qvel, d.efc.mv],
     outputs=[d.energy],
     block_dim=m.block_dim.energy_vel_kinetic,
