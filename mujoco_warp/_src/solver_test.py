@@ -280,7 +280,6 @@ class SolverTest(parameterized.TestCase):
   )
   def test_solve_batch(self, cone, solver_, iterations, ls_iterations):
     """Tests solve (batch)."""
-
     mjm0, mjd0, _, _ = test_data.fixture(
       "humanoid/humanoid.xml",
       keyframe=0,

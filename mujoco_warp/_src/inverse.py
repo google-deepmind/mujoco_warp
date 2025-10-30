@@ -75,7 +75,6 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
     qacc: Acceleration.
     qfrc: Force.
   """
-
   if m.opt.integrator == IntegratorType.RK4:
     raise NotImplementedError("discrete inverse dynamics is not supported by RK4 integrator")
   elif m.opt.integrator == IntegratorType.EULER:
@@ -109,7 +108,6 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
 
 def inv_constraint(m: Model, d: Data):
   """Inverse constraint solver."""
-
   # no constraints
   if d.njmax == 0:
     d.qfrc_constraint.zero_()

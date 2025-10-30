@@ -55,7 +55,6 @@ def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> Tuple
 @wp.func
 def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Returns closest points between two line segments."""
-
   dir_a, len_a = normalize_with_norm(a1 - a0)
   dir_b, len_b = normalize_with_norm(b1 - b0)
 
@@ -168,7 +167,6 @@ def sphere_capsule(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-
   # Calculate capsule segment
   segment = capsule_axis * capsule_half_length
 
@@ -208,7 +206,6 @@ def capsule_capsule(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-
   # TODO(team): parallel axes case
 
   # Calculate capsule segments
@@ -252,7 +249,6 @@ def plane_capsule(
     - Matrix of contact positions (one per row).
     - Contact frame for both contacts.
   """
-
   n = plane_normal
   axis = capsule_axis
 
@@ -335,7 +331,6 @@ def plane_box(
     - Matrix of contact positions (one per row).
     - Contact normal vector.
   """
-
   corner = wp.vec3()
   center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
@@ -467,7 +462,6 @@ def plane_cylinder(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-
   # Initialize output matrices
   contact_dist = wp.vec4(wp.inf)
   contact_pos = mat43f()
@@ -600,7 +594,6 @@ def box_box(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-
   # Initialize output matrices
   contact_dist = vec8f()
   for i in range(8):
@@ -1052,7 +1045,6 @@ def sphere_box(
     - Contact positions.
     - Contact normal vectors.
   """
-
   center = wp.transpose(box_rot) @ (sphere_pos - box_pos)
 
   clamped = wp.max(-box_size, wp.min(box_size, center))
@@ -1112,7 +1104,6 @@ def capsule_box(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-
   # Based on the mjc implementation
   boxmatT = wp.transpose(box_rot)
   pos = boxmatT @ (capsule_pos - box_pos)

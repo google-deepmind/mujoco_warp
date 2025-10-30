@@ -97,7 +97,7 @@ def mul_m_sparse_ij(check_skip: bool):
 
 @cache_kernel
 def mul_m_dense(tile: TileSet, check_skip: bool):
-  """Returns a matmul kernel for some tile size"""
+  """Returns a matmul kernel for some tile size."""
 
   @nested_kernel(module="unique", enable_backward=False)
   def _mul_m_dense(
@@ -145,7 +145,6 @@ def mul_m(
     skip: Per-world bitmask to skip computing output.
     M: Input matrix: M @ vec.
   """
-
   check_skip = skip is not None
   skip = skip or wp.empty(0, dtype=bool)
 
@@ -240,8 +239,7 @@ def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: w
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  """
-  Map applied forces at each body via Jacobians to dof space and accumulate.
+  """Map applied forces at each body via Jacobians to dof space and accumulate.
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -396,8 +394,7 @@ def contact_force_kernel(
 def contact_force(
   m: Model, d: Data, contact_ids: wp.array(dtype=int), to_world_frame: bool, force: wp.array(dtype=wp.spatial_vector)
 ):
-  """
-  Compute forces for contacts in Data.
+  """Compute forces for contacts in Data.
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -546,9 +543,9 @@ def jac_dot(
 
 
 def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
-  """
-  Copy concatenated state components specified by sig from Data into state. The bits of the integer
-  sig correspond to element fields of State.
+  """Copy concatenated state components specified by sig from Data into state.
+
+  The bits of the integer sig correspond to element fields of State.
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -685,9 +682,9 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
 
 
 def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
-  """
-  Copy concatenated state components specified by sig from state into Data. The bits of the integer
-  sig correspond to element fields of State.
+  """Copy concatenated state components specified by sig from state into Data.
+
+  The bits of the integer sig correspond to element fields of State.
 
   Args:
     m: The model containing kinematic and dynamic information (device).

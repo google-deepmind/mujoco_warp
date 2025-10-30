@@ -40,7 +40,6 @@ def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
   Returns:
       3D point and 3D direction in local geom frame
   """
-
   matT = wp.transpose(mat)
   lpnt = matT @ (pnt - pos)
   lvec = matT @ vec
@@ -184,7 +183,6 @@ def _ray_triangle(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, pnt: wp.vec3, vec: wp.v
 @wp.func
 def _ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a plane."""
-
   # map to local frame
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
@@ -222,7 +220,6 @@ def _ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> fl
 @wp.func
 def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a capsule."""
-
   # bounding sphere test
   ssz = size[0] + size[1]
   if _ray_sphere(pos, ssz * ssz, pnt, vec) < 0.0:
@@ -279,7 +276,6 @@ def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
 @wp.func
 def _ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with an ellipsoid."""
-
   # map to local frame
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
@@ -606,7 +602,6 @@ def ray_mesh(
 @wp.func
 def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> float:
   """Returns distance along ray to intersection with geom, or infinity if none."""
-
   # TODO(team): static loop unrolling to remove unnecessary branching
   if geomtype == GeomType.PLANE:
     return _ray_plane(pos, mat, size, pnt, vec)
@@ -828,7 +823,6 @@ def ray(
   Returns:
     Distances from ray origins to geom surfaces and IDs of intersected geoms (-1 if none).
   """
-
   assert pnt.shape[0] == 1
   assert pnt.shape[0] == vec.shape[0]
 

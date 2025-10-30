@@ -763,7 +763,6 @@ def _sensor_collision(
 @event_scope
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
-
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
@@ -1388,7 +1387,6 @@ def _sensor_vel(
 @event_scope
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
-
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
@@ -2861,7 +2859,6 @@ def _energy_vel_kinetic(nv: int):
 
 def energy_vel(m: Model, d: Data):
   """Velocity-dependent energy (kinetic)."""
-
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel

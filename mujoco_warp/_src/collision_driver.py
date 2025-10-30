@@ -528,7 +528,6 @@ def sap_broadphase(m: Model, d: Data):
   - `SAP_TILE`: Uses a tile-based sort.
   - `SAP_SEGMENTED`: Uses a segmented sort.
   """
-
   nworldgeom = d.nworld * m.ngeom
 
   # TODO(team): direction
@@ -667,7 +666,6 @@ def nxn_broadphase(m: Model, d: Data):
   The initial list of pairs is filtered at model creation time to exclude pairs based on
   `contype`/`conaffinity`, parent-child relationships, and explicit `<exclude>` tags.
   """
-
   broadphase_filter = _broadphase_filter(m)
   wp.launch(
     _nxn_broadphase(broadphase_filter),
@@ -720,7 +718,6 @@ def collision(m: Model, d: Data):
   This function will do nothing except zero out arrays if collision detection is disabled
   via `m.opt.disableflags` or if `d.nacon` is 0.
   """
-
   # zero contact and collision counters
   wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
 

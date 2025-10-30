@@ -281,8 +281,7 @@ def _mocap(
 
 @event_scope
 def kinematics(m: Model, d: Data):
-  """
-  Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
+  """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
 
   This function updates the global positions and orientations of all bodies, as well as the
   derived positions and orientations of geoms, sites, and flexible elements, based on the
@@ -487,12 +486,11 @@ def _cdof(
 
 @event_scope
 def com_pos(m: Model, d: Data):
-  """
-  Computes subtree center of mass positions. Transforms inertia and motion to global frame
-  centered at subtree CoM.
+  """Computes subtree center of mass positions.
 
-  Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
-  computes composite inertias and motion degrees of freedom in the subtree CoM frame.
+  Transforms inertia and motion to global frame centered at subtree CoM. Accumulates the
+  mass-weighted positions up the kinematic tree, divides by total mass, and computes composite
+  inertias and motion degrees of freedom in the subtree CoM frame.
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
@@ -648,8 +646,7 @@ def _light_local_to_global(
 
 @event_scope
 def camlight(m: Model, d: Data):
-  """
-  Computes camera and light positions and orientations.
+  """Computes camera and light positions and orientations.
 
   Updates the global positions and orientations for all cameras and lights in the model,
   including special handling for tracking and target modes.
@@ -776,8 +773,7 @@ def _qM_dense(
 
 @event_scope
 def crb(m: Model, d: Data):
-  """
-  Computes composite rigid body inertias for each body and the joint-space inertia matrix.
+  """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
   Accumulates composite rigid body inertias up the kinematic tree and computes the
   joint-space inertia matrix in either sparse or dense format, depending on model options.
@@ -1102,8 +1098,7 @@ def _qfrc_bias(
 
 @event_scope
 def rne(m: Model, d: Data, flg_acc: Optional[bool] = False):
-  """
-  Computes inverse dynamics using the recursive Newton-Euler algorithm.
+  """Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
   Computes the bias forces (`qfrc_bias`) and internal forces (`cfrc_int`) for the current state,
   including the effects of gravity and optionally joint accelerations.
@@ -1314,8 +1309,7 @@ def _cfrc_ext_contact(
 
 @event_scope
 def rne_postconstraint(m: Model, d: Data):
-  """
-  Computes the recursive Newton-Euler algorithm after constraints are applied.
+  """Computes the recursive Newton-Euler algorithm after constraints are applied.
 
   Computes `cacc`, `cfrc_ext`, and `cfrc_int`, including the effects of applied forces, equality
   constraints, and contacts.
@@ -1747,8 +1741,7 @@ def _comvel_level(
 
 @event_scope
 def com_vel(m: Model, d: Data):
-  """
-  Computes the spatial velocities (cvel) and the derivative `cdof_dot` for all bodies.
+  """Computes the spatial velocities (cvel) and the derivative `cdof_dot` for all bodies.
 
   Propagates velocities down the kinematic tree, updating the spatial velocity and
   derivative for each body.
@@ -2221,8 +2214,7 @@ def _transmission_body_moment_scale(
 
 @event_scope
 def transmission(m: Model, d: Data):
-  """
-  Computes actuator/transmission lengths and moments.
+  """Computes actuator/transmission lengths and moments.
 
   Updates the actuator length and moments for all actuators in the model, including joint
   and tendon transmissions.
@@ -2350,8 +2342,7 @@ def _solve_LD_sparse(
   x: wp.array2d(dtype=float),
   y: wp.array2d(dtype=float),
 ):
-  """Computes sparse backsubstitution: x = inv(L'*D*L)*y"""
-
+  """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
   wp.copy(x, y)
   for qLD_updates in reversed(m.qLD_updates):
     wp.launch(_solve_LD_sparse_x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
@@ -2388,7 +2379,7 @@ def _tile_cholesky_solve(tile: TileSet):
 
 
 def _solve_LD_dense(m: Model, d: Data, L: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
-  """Computes dense backsubstitution: x = inv(L'*L)*y"""
+  """Computes dense backsubstitution: x = inv(L'*L)*y."""
   for tile in m.qM_tiles:
     wp.launch_tiled(
       _tile_cholesky_solve(tile),
@@ -2407,9 +2398,9 @@ def solve_LD(
   x: wp.array2d(dtype=float),
   y: wp.array2d(dtype=float),
 ):
-  """
-  Computes backsubstitution to solve a linear system of the form x = inv(L'*D*L) * y,
-  where L and D are the factors from the Cholesky factorization of the inertia matrix.
+  """Computes backsubstitution to solve a linear system of the form x = inv(L'*D*L) * y.
+
+  L and D are the factors from the Cholesky factorization of the inertia matrix.
 
   This function dispatches to either a sparse or dense solver depending on Model options.
 
@@ -2429,8 +2420,7 @@ def solve_LD(
 
 @event_scope
 def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
-  """
-  Computes backsubstitution: x = qLD * y.
+  """Computes backsubstitution: x = qLD * y.
 
   Args:
     m: The model containing inertia and factorization information.
@@ -2489,9 +2479,9 @@ def _factor_solve_i_dense(
 
 
 def factor_solve_i(m, d, M, L, D, x, y):
-  """
-  Factorizes and solves the linear system: x = inv(L'*D*L) * y or x = inv(L'*L) * y,
-  where M is an inertia-like matrix and L, D are its Cholesky-like factors.
+  """Factorizes and solves the linear system: x = inv(L'*D*L) * y or x = inv(L'*L) * y.
+
+  M is an inertia-like matrix and L, D are its Cholesky-like factors.
 
   This function first factorizes the matrix M (sparse or dense depending on model options),
   then solves the system for x given right-hand side y.
@@ -2625,13 +2615,11 @@ def _angular_momentum(
 
 
 def subtree_vel(m: Model, d: Data):
-  """
-  Computes subtree linear velocity and angular momentum.
+  """Computes subtree linear velocity and angular momentum.
 
   Computes the linear momentum and angular momentum for each subtree, accumulating
   contributions up the kinematic tree.
   """
-
   # bodywise quantities
   wp.launch(
     _subtree_vel_forward,
@@ -3058,8 +3046,7 @@ def _spatial_tendon_wrap(
 
 
 def tendon(m: Model, d: Data):
-  """
-  Computes tendon lengths and moments.
+  """Computes tendon lengths and moments.
 
   Updates the tendon length and moment arrays for all tendons in the model, including joint,
   site, and geom tendons.

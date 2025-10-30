@@ -36,8 +36,7 @@ TILE_SIZE_JTDAJ_DENSE = 16
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """
-  Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension 'block_dim' settings for wp.launch_tiled.
 
   TODO(team): experimental and may be removed
   """
@@ -529,8 +528,9 @@ class WrapType(enum.IntEnum):
 
 
 class State(enum.IntEnum):
-  """
-  State component elements as integer bitflags and several convenient combinations of these flags.
+  """State component elements as integer bitflags.
+
+  Includes several convenient combinations of these flags.
 
   Attributes:
     TIME: time
@@ -1442,8 +1442,7 @@ class Model:
 
 
 class ContactType(enum.IntFlag):
-  """
-  Type of contact.
+  """Type of contact.
 
   CONSTRAINT: contact for constraint solver.
   SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO).

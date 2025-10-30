@@ -498,7 +498,6 @@ class CollisionTest(parameterized.TestCase):
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):
     """Tests collisions with different geometries."""
-
     mjm, mjd, m, d = test_data.fixture(xml=self._SDF_SDF[fixture])
 
     mujoco.mj_collision(mjm, mjd)

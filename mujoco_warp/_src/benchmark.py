@@ -118,7 +118,6 @@ def benchmark(
     - Number of solver iterations.
     - Number of converged worlds.
   """
-
   trace = {}
   nacon, nefc, solver_niter = [], [], []
   center = wp.array([], dtype=wp.float32)

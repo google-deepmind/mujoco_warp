@@ -239,7 +239,6 @@ def _next_time(
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
-
   # TODO(team): can we assume static timesteps?
 
   # advance activations
@@ -398,7 +397,6 @@ def _tile_euler_dense(tile: TileSet):
 @event_scope
 def euler(m: Model, d: Data):
   """Euler integrator, semi-implicit in velocity."""
-
   # integrate damping implicitly
   if not m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
     if m.opt.is_sparse:
@@ -490,7 +488,6 @@ def _rk_accumulate(
   act_dot_rk: Optional[wp.array] = None,
 ):
   """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4."""
-
   wp.launch(
     _rk_accumulate_velocity_acceleration,
     dim=(d.nworld, m.nv),
@@ -510,7 +507,6 @@ def _rk_accumulate(
 @event_scope
 def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
-
   qpos_t0 = wp.clone(d.qpos)
   qvel_t0 = wp.clone(d.qvel)
   qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
@@ -565,7 +561,6 @@ def fwd_position(m: Model, d: Data, factorize: Optional[bool] = True):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize interia matrix.
   """
-
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
   smooth.camlight(m, d)
@@ -653,7 +648,6 @@ def _tendon_velocity(m: Model, d: Data):
 @event_scope
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
-
   _actuator_velocity(m, d)
 
   if m.ntendon > 0:
@@ -981,7 +975,6 @@ def fwd_acceleration(m: Model, d: Data, factorize: Optional[bool] = False):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize inertia matrix.
   """
-
   wp.launch(
     _qfrc_smooth,
     dim=(d.nworld, m.nv),

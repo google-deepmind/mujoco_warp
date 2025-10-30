@@ -28,8 +28,7 @@ _TOLERANCE_F32 = 1.0e-6
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
-  """
-  Creates a model on device.
+  """Creates a model on device.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
@@ -959,8 +958,7 @@ def make_data(
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
 ) -> types.Data:
-  """
-  Creates a data object on device.
+  """Creates a data object on device.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
@@ -974,7 +972,6 @@ def make_data(
   Returns:
     The data object containing the current state and output arrays (device).
   """
-
   # TODO(team): move nconmax, njmax to Model?
   # TODO(team): improve heuristic for nconmax and njmax
   nconmax = nconmax or 20
@@ -1186,8 +1183,7 @@ def put_data(
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
 ) -> types.Data:
-  """
-  Moves data from host to a device.
+  """Moves data from host to a device.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
@@ -2166,7 +2162,6 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
     opt.cone = pyramidal
     opt.disableflags = contact | spring
   """
-
   enum_fields = {
     "opt.broadphase": types.BroadphaseType,
     "opt.broadphase_filter": types.BroadphaseFilter,
