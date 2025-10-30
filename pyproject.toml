@@ -84,6 +84,7 @@ extend-exclude = ["*.ipynb"]
 select = [
     "I",  # isort
     "W",  # pycodestyle
+    "F401",  # unused imports
 ]
 
 [tool.ruff.lint.isort]

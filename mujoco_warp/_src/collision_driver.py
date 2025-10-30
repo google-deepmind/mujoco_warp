@@ -26,7 +26,6 @@ from .types import BroadphaseFilter
 from .types import BroadphaseType
 from .types import Data
 from .types import DisableBit
-from .types import GeomType
 from .types import Model
 from .warp_util import cache_kernel
 from .warp_util import event_scope
