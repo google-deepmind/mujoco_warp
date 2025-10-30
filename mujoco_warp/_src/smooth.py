@@ -159,6 +159,9 @@ def _kinematics_level(
 @wp.kernel
 def _geom_local_to_global(
   # Model:
+  body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
+  body_mocapid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_pos: wp.array2d(dtype=wp.vec3),
   geom_quat: wp.array2d(dtype=wp.quat),
@@ -172,8 +175,8 @@ def _geom_local_to_global(
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
 
-  if bodyid == 0:
-    # geoms attached to the world are static - they will never move
+  if body_weldid[bodyid] == 0 and body_mocapid[body_rootid[bodyid]] == -1:
+    # geoms attached to the world are static (unless they are attached to mcocap bodies)
     # for such static geoms, geom_xpos and geom_xquat are computed only once during make_data
     return
 
@@ -323,7 +326,7 @@ def kinematics(m: Model, d: Data):
   wp.launch(
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
-    inputs=[m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
+    inputs=[m.body_rootid, m.body_weldid, m.body_mocapid, m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
     outputs=[d.geom_xpos, d.geom_xmat],
   )
 
