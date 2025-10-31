@@ -734,7 +734,7 @@ def _actuator_force(
         opt_timestep[opt_timestep_id],
         dyntype,
         dynprm,
-        actuator_actrange[worldid, uid],
+        actuator_actrange[actuator_actrange_id, uid],
         act,
         act_dot,
         1.0,
