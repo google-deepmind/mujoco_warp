@@ -230,11 +230,11 @@ def _next_time(
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
       nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-      wp.printf("ncollision overflow - please increase nconmax to %u\n", nconmax)
+      wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
 
     if nacon_in[0] > naconmax_in:
-      nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-      wp.printf("nacon overflow - please increase nconmax to %u\n", nconmax)
+      nconmax = int(wp.ceil(float(nacon_in[0]) / float(nworld_in)))
+      wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon_in[0])
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -418,12 +418,19 @@ def euler(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
-def _rk_perturb_state(m: Model, d: Data, scale: float):
+def _rk_perturb_state(
+  m: Model,
+  d: Data,
+  scale: float,
+  qpos_t0: wp.array2d(dtype=float),
+  qvel_t0: wp.array2d(dtype=float),
+  act_t0: Optional[wp.array] = None,
+):
   # position
   wp.launch(
     _next_position,
     dim=(d.nworld, m.njnt),
-    inputs=[m.opt.timestep, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos_t0, d.qvel, scale],
+    inputs=[m.opt.timestep, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, qpos_t0, d.qvel, scale],
     outputs=[d.qpos],
   )
 
@@ -431,16 +438,16 @@ def _rk_perturb_state(m: Model, d: Data, scale: float):
   wp.launch(
     _next_velocity,
     dim=(d.nworld, m.nv),
-    inputs=[m.opt.timestep, d.qvel_t0, d.qacc, scale],
+    inputs=[m.opt.timestep, qvel_t0, d.qacc, scale],
     outputs=[d.qvel],
   )
 
   # activation
-  if m.na:
+  if m.na and act_t0 is not None:
     wp.launch(
       _next_activation,
       dim=(d.nworld, m.na),
-      inputs=[m.opt.timestep, d.act_t0, d.act_dot, scale, False],
+      inputs=[m.opt.timestep, act_t0, d.act_dot, scale, False],
       outputs=[d.act],
     )
 
@@ -474,22 +481,29 @@ def _rk_accumulate_activation_velocity(
   act_dot_out[worldid, actid] += scale * act_dot_in[worldid, actid]
 
 
-def _rk_accumulate(m: Model, d: Data, scale: float):
+def _rk_accumulate(
+  m: Model,
+  d: Data,
+  scale: float,
+  qvel_rk: wp.array2d(dtype=float),
+  qacc_rk: wp.array2d(dtype=float),
+  act_dot_rk: Optional[wp.array] = None,
+):
   """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4"""
 
   wp.launch(
     _rk_accumulate_velocity_acceleration,
     dim=(d.nworld, m.nv),
     inputs=[d.qvel, d.qacc, scale],
-    outputs=[d.qvel_rk, d.qacc_rk],
+    outputs=[qvel_rk, qacc_rk],
   )
 
-  if m.na:
+  if m.na and act_dot_rk is not None:
     wp.launch(
       _rk_accumulate_activation_velocity,
       dim=(d.nworld, m.na),
       inputs=[d.act_dot, scale],
-      outputs=[d.act_dot_rk],
+      outputs=[act_dot_rk],
     )
 
 
@@ -497,31 +511,36 @@ def _rk_accumulate(m: Model, d: Data, scale: float):
 def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
 
-  wp.copy(d.qpos_t0, d.qpos)
-  wp.copy(d.qvel_t0, d.qvel)
-
-  d.qvel_rk.zero_()
-  d.qacc_rk.zero_()
-  d.act_dot_rk.zero_()
+  qpos_t0 = wp.clone(d.qpos)
+  qvel_t0 = wp.clone(d.qvel)
+  qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
+  qacc_rk = wp.zeros((d.nworld, m.nv), dtype=float)
 
   if m.na:
-    wp.copy(d.act_t0, d.act)
+    act_t0 = wp.clone(d.act)
+    act_dot_rk = wp.zeros((d.nworld, m.na), dtype=float)
+  else:
+    act_t0 = None
+    act_dot_rk = None
 
   A, B = _RK4_A, _RK4_B
 
-  _rk_accumulate(m, d, B[0])
+  _rk_accumulate(m, d, B[0], qvel_rk, qacc_rk, act_dot_rk)
+
   for i in range(3):
     a, b = float(A[i][i]), B[i + 1]
-    _rk_perturb_state(m, d, a)
+    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, act_t0)
     forward(m, d)
-    _rk_accumulate(m, d, b)
+    _rk_accumulate(m, d, b, qvel_rk, qacc_rk, act_dot_rk)
 
-  wp.copy(d.qpos, d.qpos_t0)
-  wp.copy(d.qvel, d.qvel_t0)
+  wp.copy(d.qpos, qpos_t0)
+  wp.copy(d.qvel, qvel_t0)
+
   if m.na:
-    wp.copy(d.act, d.act_t0)
-    wp.copy(d.act_dot, d.act_dot_rk)
-  _advance(m, d, d.qacc_rk, d.qvel_rk)
+    wp.copy(d.act, act_t0)
+    wp.copy(d.act_dot, act_dot_rk)
+
+  _advance(m, d, qacc_rk, qvel_rk)
 
 
 @event_scope
@@ -771,7 +790,7 @@ def _tendon_actuator_force(
   actuator_trnid: wp.array(dtype=wp.vec2i),
   # Data in:
   actuator_force_in: wp.array2d(dtype=float),
-  # Data out:
+  # Out:
   ten_actfrc_out: wp.array2d(dtype=float),
 ):
   worldid, actid = wp.tid()
@@ -789,7 +808,7 @@ def _tendon_actuator_force_clamp(
   tendon_actfrcrange: wp.array2d(dtype=wp.vec2),
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
-  # Data in:
+  # In:
   ten_actfrc_in: wp.array2d(dtype=float),
   # Data out:
   actuator_force_out: wp.array2d(dtype=float),
@@ -884,29 +903,19 @@ def fwd_actuation(m: Model, d: Data):
   )
 
   if m.ntendon:
-    d.ten_actfrc.zero_()
-
+    # total actuator force at tendon
+    ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
     wp.launch(
       _tendon_actuator_force,
       dim=(d.nworld, m.nu),
-      inputs=[
-        m.actuator_trntype,
-        m.actuator_trnid,
-        d.actuator_force,
-      ],
-      outputs=[d.ten_actfrc],
+      inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
+      outputs=[ten_actfrc],
     )
 
     wp.launch(
       _tendon_actuator_force_clamp,
       dim=(d.nworld, m.nu),
-      inputs=[
-        m.tendon_actfrclimited,
-        m.tendon_actfrcrange,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        d.ten_actfrc,
-      ],
+      inputs=[m.tendon_actfrclimited, m.tendon_actfrcrange, m.actuator_trntype, m.actuator_trnid, ten_actfrc],
       outputs=[d.actuator_force],
     )
 

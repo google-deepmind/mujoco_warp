@@ -122,9 +122,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   is_sparse = mujoco.mj_isSparse(mjm)
 
-  # calculate some fields that cannot be easily computed inline
-  nlsp = mjm.opt.ls_iterations  # TODO(team): how to set nlsp?
-
   # dof lower triangle row and column indices (used in solver)
   dof_tri_row, dof_tri_col = np.tril_indices(mjm.nv)
 
@@ -318,8 +315,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   mask = np.array((contype1 & conaffinity2) | (contype2 & conaffinity1), dtype=bool)
   exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
 
-  nxn_pairid = -1 * np.ones(len(geom1), dtype=int)
-  nxn_pairid[~(mask & ~self_collision & ~parent_child_collision & ~exclude)] = -2
+  nxn_pairid_contact = -1 * np.ones(len(geom1), dtype=int)
+  nxn_pairid_contact[~(mask & ~self_collision & ~parent_child_collision & ~exclude)] = -2
 
   # contact pairs
   for i in range(mjm.npair):
@@ -331,25 +328,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     else:
       pairid = np.int32(math.upper_tri_index(mjm.ngeom, int(pair_geom1), int(pair_geom2)))
 
-    nxn_pairid[pairid] = i
-
-  include = nxn_pairid > -2
-  nxn_pairid_filtered = nxn_pairid[include]
-  nxn_geom_pair_filtered = nxn_geom_pair[include]
-
-  # count contact pair types
-  geom_type_pair_count = np.bincount(
-    [
-      math.upper_trid_index(len(types.GeomType), int(mjm.geom_type[geom1[i]]), int(mjm.geom_type[geom2[i]]))
-      for i in np.arange(len(geom1))
-      if nxn_pairid[i] > -2
-    ],
-    minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
-  )
-
-  # Disable collisions if there are no potentially colliding pairs
-  if np.sum(geom_type_pair_count) == 0:
-    mjm.opt.disableflags |= types.DisableBit.CONTACT
+    nxn_pairid_contact[pairid] = i
 
   def create_nmodel_batched_array(mjm_array, dtype, expand_dim=True):
     array = wp.array(mjm_array, dtype=dtype)
@@ -373,13 +352,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # contact sensor
   sensor_adr_to_contact_adr = np.clip(np.cumsum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT) - 1, a_min=0, a_max=None)
 
-  if nxn_geom_pair_filtered.shape[0] < 250_000:
-    broadphase = types.BroadphaseType.NXN
-  elif mjm.ngeom < 1000:
-    broadphase = types.BroadphaseType.SAP_TILE
-  else:
-    broadphase = types.BroadphaseType.SAP_SEGMENTED
-
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
 
@@ -393,47 +365,98 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   if is_collision_sensor.any():
 
-    def _collision_sensor_check(sensor_type, sensor_id, geom_type, err_msg):
-      for type_, id_ in zip(sensor_type, sensor_id):
-        if type_ == mujoco.mjtObj.mjOBJ_BODY:
-          geomnum = mjm.body_geomnum[id_]
-          geomadr = mjm.body_geomadr[id_]
-          for geomid in range(geomadr, geomadr + geomnum):
-            if mjm.geom_type[geomid] == geom_type:
-              raise NotImplementedError(err_msg)
-        elif type_ == mujoco.mjtObj.mjOBJ_GEOM:
-          if mjm.geom_type[id_] == geom_type:
-            raise NotImplementedError(err_msg)
+    def not_implemented(objtype, objid, geomtype):
+      if objtype == mujoco.mjtObj.mjOBJ_BODY:
+        geomnum = mjm.body_geomnum[objid]
+        geomadr = mjm.body_geomadr[objid]
+        for geomid in range(geomadr, geomadr + geomnum):
+          if mjm.geom_type[geomid] == geomtype:
+            return True
+      elif objtype == mujoco.mjtObj.mjOBJ_GEOM:
+        if mjm.geom_type[objid] == geomtype:
+          return True
+      return False
 
-    sensor_collision_objtype = mjm.sensor_objtype[is_collision_sensor]
-    sensor_collision_objid = mjm.sensor_objid[is_collision_sensor]
-    sensor_collision_reftype = mjm.sensor_reftype[is_collision_sensor]
-    sensor_collision_refid = mjm.sensor_refid[is_collision_sensor]
+    for geoms in [
+      (types.GeomType.BOX, types.GeomType.BOX),
+      (types.GeomType.CAPSULE, types.GeomType.BOX),
+      (types.GeomType.CYLINDER, types.GeomType.BOX),
+      (types.GeomType.PLANE, types.GeomType.BOX),
+    ]:
+      for objtype, objid, reftype, refid in zip(
+        mjm.sensor_objtype[is_collision_sensor],
+        mjm.sensor_objid[is_collision_sensor],
+        mjm.sensor_reftype[is_collision_sensor],
+        mjm.sensor_refid[is_collision_sensor],
+      ):
+        if not_implemented(objtype, objid, geoms[0]) and not_implemented(reftype, refid, geoms[1]):
+          raise NotImplementedError(f"Collision sensors with {geoms[0]} and {geoms[1]} are not implemented.")
 
-    _collision_sensor_check(
-      sensor_collision_objtype,
-      sensor_collision_objid,
-      mujoco.mjtGeom.mjGEOM_PLANE,
-      "Collision sensors with planes are not implemented.",
-    )
-    _collision_sensor_check(
-      sensor_collision_reftype,
-      sensor_collision_refid,
-      mujoco.mjtGeom.mjGEOM_PLANE,
-      "Collision sensors with planes are not implemented.",
-    )
-    _collision_sensor_check(
-      sensor_collision_objtype,
-      sensor_collision_objid,
-      mujoco.mjtGeom.mjGEOM_HFIELD,
-      "Collision sensors with height fields are not implemented.",
-    )
-    _collision_sensor_check(
-      sensor_collision_reftype,
-      sensor_collision_refid,
-      mujoco.mjtGeom.mjGEOM_HFIELD,
-      "Collision sensors with height fields are not implemented.",
-    )
+  nxn_pairid_collision = -1 * np.ones(len(geom1), dtype=int)
+  pairids = []
+  collision_geom_adr = [0]
+  sensor_collision_start_adr = []
+  for i in range(sensor_collision_adr.size):
+    sensorid = sensor_collision_adr[i]
+    objtype = mjm.sensor_objtype[sensorid]
+    objid = mjm.sensor_objid[sensorid]
+    reftype = mjm.sensor_reftype[sensorid]
+    refid = mjm.sensor_refid[sensorid]
+
+    # get lists of geoms to collide
+    if objtype == types.ObjType.BODY:
+      n1 = mjm.body_geomnum[objid]
+      id1 = mjm.body_geomadr[objid]
+    else:
+      n1 = 1
+      id1 = objid
+    if reftype == types.ObjType.BODY:
+      n2 = mjm.body_geomnum[refid]
+      id2 = mjm.body_geomadr[refid]
+    else:
+      n2 = 1
+      id2 = refid
+
+    # collide all pairs
+    geomid = 0
+    for geom1id in range(id1, id1 + n1):
+      for geom2id in range(id2, id2 + n2):
+        if geom2id < geom1id:
+          pairid = np.int32(math.upper_tri_index(mjm.ngeom, int(geom2id), int(geom1id)))
+        else:
+          pairid = np.int32(math.upper_tri_index(mjm.ngeom, int(geom1id), int(geom2id)))
+
+        if pairid in pairids:
+          sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
+        else:
+          pairids.append(pairid)
+          adr = collision_geom_adr[-1] + geomid
+          nxn_pairid_collision[pairid] = adr
+          sensor_collision_start_adr.append(adr)
+
+        geomid += 1
+    if i < sensor_collision_adr.size - 1:
+      collision_geom_adr.append(collision_geom_adr[-1] + n1 * n2)
+
+  include = (nxn_pairid_contact > -2) | (nxn_pairid_collision >= 0)
+  nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])
+  nxn_pairid_filtered = nxn_pairid[include]
+  nxn_geom_pair_filtered = nxn_geom_pair[include]
+
+  # count contact pair types
+  geom_type_pair_count = np.bincount(
+    [
+      math.upper_trid_index(len(types.GeomType), int(mjm.geom_type[geom1[i]]), int(mjm.geom_type[geom2[i]]))
+      for i in np.arange(len(geom1))
+      if nxn_pairid_contact[i] > -2 or nxn_pairid_collision[i] > -1
+    ],
+    minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
+  )
+
+  # disable collisions if there are no potentially colliding pairs
+  disableflags = mjm.opt.disableflags
+  if np.sum(geom_type_pair_count) == 0:
+    disableflags |= types.DisableBit.CONTACT
 
   if mjm.geom_fluid.size:
     geom_fluid_params = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)
@@ -445,6 +468,19 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     active_geom = geom_fluid_params[:, 0] > 0
     if np.any(active_geom):
       body_fluid_ellipsoid[mjm.geom_bodyid[active_geom]] = True
+
+  if nxn_geom_pair_filtered.shape[0] < 250_000:
+    broadphase = types.BroadphaseType.NXN
+  elif mjm.ngeom < 1000:
+    broadphase = types.BroadphaseType.SAP_TILE
+  else:
+    broadphase = types.BroadphaseType.SAP_SEGMENTED
+
+  ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
+  if (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1):
+    ls_parallel = True
+  else:
+    ls_parallel = False
 
   m = types.Model(
     nq=mjm.nq,
@@ -500,11 +536,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       iterations=mjm.opt.iterations,
       ls_iterations=mjm.opt.ls_iterations,
       integrator=mjm.opt.integrator,
-      disableflags=mjm.opt.disableflags,
+      disableflags=type(mjm.opt.disableflags)(disableflags),
       enableflags=mjm.opt.enableflags,
       impratio=create_nmodel_batched_array(np.array(mjm.opt.impratio), dtype=float, expand_dim=False),
       is_sparse=bool(is_sparse),
-      ls_parallel=False,
+      ls_parallel=ls_parallel,
       ls_parallel_min_step=1.0e-6,  # TODO(team): determine good default setting
       ccd_iterations=mjm.opt.ccd_iterations,
       broadphase=int(broadphase),
@@ -738,8 +774,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     M_colind=wp.array(mjm.M_colind, dtype=int),
     mapM2M=wp.array(mjm.mapM2M, dtype=int),
     # warp only fields:
-    nlsp=nlsp,
+    nacttrnbody=np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY),
+    nsensorcollision=sum(nxn_pairid_collision >= 0),
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
+    nsensorcontact=np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT),
+    nrangefinder=sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER),
     condim_max=condim_max,  # TODO(team): get max after filtering,
     nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
     nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
@@ -765,8 +804,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     geom_plugin_index=wp.array(geom_plugin_index, dtype=int),
     nxn_geom_pair=wp.array(nxn_geom_pair, dtype=wp.vec2i),
     nxn_geom_pair_filtered=wp.array(nxn_geom_pair_filtered, dtype=wp.vec2i),
-    nxn_pairid=wp.array(nxn_pairid, dtype=int),
-    nxn_pairid_filtered=wp.array(nxn_pairid_filtered, dtype=int),
+    nxn_pairid=wp.array(nxn_pairid, dtype=wp.vec2i),
+    nxn_pairid_filtered=wp.array(nxn_pairid_filtered, dtype=wp.vec2i),
     eq_connect_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.CONNECT)[0], dtype=int),
     eq_wld_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.WELD)[0], dtype=int),
     eq_jnt_adr=wp.array(np.nonzero(mjm.eq_type == types.EqType.JOINT)[0], dtype=int),
@@ -865,6 +904,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     sensor_rangefinder_bodyid=wp.array(
       mjm.site_bodyid[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER]], dtype=int
     ),
+    sensor_collision_start_adr=wp.array(sensor_collision_start_adr, dtype=int),
     taxel_vertadr=wp.array(
       [
         j + mjm.mesh_vertadr[mjm.sensor_objid[i]]
@@ -968,8 +1008,6 @@ def make_data(
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
-  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   if mujoco.mj_isSparse(mjm):
     tile_size = types.TILE_SIZE_JTDAJ_SPARSE
@@ -1066,6 +1104,8 @@ def make_data(
       geom=wp.zeros((naconmax,), dtype=wp.vec2i),
       efc_address=wp.zeros((naconmax, np.maximum(1, 2 * (condim_max - 1))), dtype=int),
       worldid=wp.zeros((naconmax,), dtype=int),
+      type=wp.zeros((naconmax,), dtype=int),
+      geomcollisionid=wp.empty((naconmax,), dtype=int),
     ),
     efc=types.Constraint(
       type=wp.zeros((nworld, njmax), dtype=int),
@@ -1101,8 +1141,6 @@ def make_data(
       prev_Mgrad=wp.zeros((nworld, mjm.nv), dtype=float),
       beta=wp.zeros((nworld,), dtype=float),
       done=wp.zeros((nworld,), dtype=bool),
-      # linesearch
-      cost_candidate=wp.zeros((nworld, mjm.opt.ls_iterations), dtype=float),
     ),
     # warp only fields:
     nworld=nworld,
@@ -1116,15 +1154,6 @@ def make_data(
     nsolving=wp.zeros(1, dtype=int),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),
-    qacc_discrete=wp.zeros((nworld, mjm.nv), dtype=float),
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    # RK4
-    qpos_t0=wp.zeros((nworld, mjm.nq), dtype=float),
-    qvel_t0=wp.zeros((nworld, mjm.nv), dtype=float),
-    act_t0=wp.zeros((nworld, mjm.na), dtype=float),
-    qvel_rk=wp.zeros((nworld, mjm.nv), dtype=float),
-    qacc_rk=wp.zeros((nworld, mjm.nv), dtype=float),
-    act_dot_rk=wp.zeros((nworld, mjm.na), dtype=float),
     # euler + implicit integration
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1132,43 +1161,11 @@ def make_data(
     qM_integration=qM_integration,
     qLD_integration=qLD_integration,
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    # sweep-and-prune broadphase
-    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
-    sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
-    sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_segment_index=wp.array(
-      np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2)), dtype=int
-    ),
     # collision driver
     collision_pair=wp.zeros((naconmax,), dtype=wp.vec2i),
-    collision_pairid=wp.zeros((naconmax,), dtype=int),
+    collision_pairid=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_worldid=wp.zeros((naconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
-    # tendon
-    ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
-    ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    ten_actfrc=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
-    # sensors
-    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
-    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
-    sensor_contact_nmatch=wp.zeros((nworld, nsensorcontact), dtype=int),
-    sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
-    sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    # ray
-    ray_bodyexclude=wp.zeros(1, dtype=int),
-    ray_dist=wp.zeros((nworld, 1), dtype=float),
-    ray_geomid=wp.zeros((nworld, 1), dtype=int),
-    # mul_m
-    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    # actuator
-    actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
 
 
@@ -1316,7 +1313,6 @@ def put_data(
   efc_margin_fill[:, :nefc] = np.tile(mjd.efc_margin, (nworld, 1))
 
   nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
-  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   # some helper functions to simplify the data field definitions below
 
@@ -1431,6 +1427,8 @@ def put_data(
       geom=padtile(mjd.contact.geom, naconmax, dtype=wp.vec2i),
       efc_address=arr(contact_efc_address),
       worldid=arr(contact_worldid),
+      type=wp.ones((naconmax,), dtype=int),  # TODO(team): set values
+      geomcollisionid=wp.empty((naconmax,), dtype=int),  # TODO(team): set values
     ),
     efc=types.Constraint(
       type=wp.array2d(efc_type_fill, dtype=int),
@@ -1466,7 +1464,6 @@ def put_data(
       prev_Mgrad=wp.empty(shape=(nworld, mjm.nv), dtype=float),
       beta=wp.empty(shape=(nworld,), dtype=float),
       done=wp.empty(shape=(nworld,), dtype=bool),
-      cost_candidate=wp.empty(shape=(nworld, mjm.opt.ls_iterations), dtype=float),
     ),
     # warp only fields:
     nworld=nworld,
@@ -1480,15 +1477,6 @@ def put_data(
     nsolving=arr([nworld]),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
     geom_skip=wp.zeros(mjm.ngeom, dtype=bool),  # warp only
-    qacc_discrete=wp.zeros((nworld, mjm.nv), dtype=float),
-    fluid_applied=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    # TODO(team): skip allocation if integrator != RK4
-    qpos_t0=wp.empty((nworld, mjm.nq), dtype=float),
-    qvel_t0=wp.empty((nworld, mjm.nv), dtype=float),
-    act_t0=wp.empty((nworld, mjm.na), dtype=float),
-    qvel_rk=wp.empty((nworld, mjm.nv), dtype=float),
-    qacc_rk=wp.empty((nworld, mjm.nv), dtype=float),
-    act_dot_rk=wp.empty((nworld, mjm.na), dtype=float),
     # TODO(team): skip allocation if integrator != euler | implicit
     qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
@@ -1496,41 +1484,11 @@ def put_data(
     qM_integration=tile(qM_integration),
     qLD_integration=tile(qLD_integration),
     qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    # TODO(team): skip allocation if broadphase != sap
-    sap_projection_lower=wp.zeros((nworld, mjm.ngeom, 2), dtype=float),
-    sap_projection_upper=wp.zeros((nworld, mjm.ngeom), dtype=float),
-    sap_sort_index=wp.zeros((nworld, mjm.ngeom, 2), dtype=int),
-    sap_range=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_cumulative_sum=wp.zeros((nworld, mjm.ngeom), dtype=int),
-    sap_segment_index=arr(np.array([i * mjm.ngeom if i < nworld + 1 else 0 for i in range(2 * nworld)]).reshape((nworld, 2))),
     # collision driver
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_pairid=wp.empty(naconmax, dtype=int),
+    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
     collision_worldid=wp.empty(naconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
-    # tendon
-    ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
-    ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    ten_actfrc=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
-    # sensors
-    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
-    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
-    sensor_contact_nmatch=wp.zeros((nworld, nsensorcontact), dtype=int),
-    sensor_contact_matchid=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=int),
-    sensor_contact_criteria=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    sensor_contact_direction=wp.zeros((nworld, nsensorcontact, types.MJ_MAXCONPAIR), dtype=float),
-    # ray
-    ray_bodyexclude=wp.zeros(1, dtype=int),
-    ray_dist=wp.zeros((nworld, 1), dtype=float),
-    ray_geomid=wp.zeros((nworld, 1), dtype=int),
-    # mul_m
-    energy_vel_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    inverse_mul_m_skip=wp.zeros((nworld,), dtype=bool),
-    # actuator
-    actuator_trntype_body_ncon=wp.zeros((nworld, np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)), dtype=int),
   )
 
 
@@ -1550,8 +1508,9 @@ def get_data_into(
   if d.nworld > 1:
     raise NotImplementedError("only nworld == 1 supported for now")
 
-  nacon = d.nacon.numpy()[0]
-  nefc = d.nefc.numpy()[0]
+  # nacon and nefc can overflow.  in that case, only pull up to the max contacts and constraints
+  nacon = min(d.nacon.numpy()[0], d.naconmax)
+  nefc = min(d.nefc.numpy()[0], d.njmax)
 
   if nacon != result.ncon or nefc != result.nefc:
     # TODO(team): if sparse, set nJ based on sparse efc_J
@@ -1586,6 +1545,8 @@ def get_data_into(
   else:
     efc_idx = np.array(np.arange(nefc))
     contact_efc_address_ordered = np.empty(0)
+
+  efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
 
   result.solver_niter[0] = d.solver_niter.numpy()[0]
   result.ncon = nacon
@@ -1803,8 +1764,9 @@ def _reset_nworld_all(
     nsolving_out[0] = nworld_in
   time_out[worldid] = 0.0
   energy_out[worldid] = wp.vec2(0.0, 0.0)
+  qpos0_id = worldid % qpos0.shape[0]
   for i in range(nq):
-    qpos_out[worldid, i] = qpos0[worldid, i]
+    qpos_out[worldid, i] = qpos0[qpos0_id, i]
     if i < nv:
       qvel_out[worldid, i] = 0.0
       qacc_warmstart_out[worldid, i] = 0.0
@@ -1961,6 +1923,8 @@ def _reset_contact_all(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
 ):
   conid = wp.tid()
 
@@ -1980,6 +1944,8 @@ def _reset_contact_all(
   for i in range(nefcaddress):
     contact_efc_address_out[conid, i] = 0
   contact_worldid_out[conid] = 0
+  contact_type_out[conid] = 0
+  contact_geomcollisionid_out[conid] = 0
 
 
 @wp.kernel
@@ -2002,6 +1968,8 @@ def _reset_contact(
   contact_geom_out: wp.array(dtype=wp.vec2i),
   contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
+  contact_type_out: wp.array(dtype=int),
+  contact_geomcollisionid_out: wp.array(dtype=int),
 ):
   conid = wp.tid()
 
@@ -2026,6 +1994,8 @@ def _reset_contact(
   for i in range(nefcaddress):
     contact_efc_address_out[conid, i] = 0
   contact_worldid_out[conid] = 0
+  contact_type_out[conid] = 0
+  contact_geomcollisionid_out[conid] = 0
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
@@ -2065,6 +2035,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
+        d.contact.geomcollisionid,
       ],
     )
 
@@ -2124,6 +2096,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
+        d.contact.geomcollisionid,
       ],
     )
     wp.launch(

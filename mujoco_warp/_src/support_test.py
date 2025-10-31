@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
+from mujoco_warp import State
 from mujoco_warp import test_data
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
@@ -48,8 +49,7 @@ class SupportTest(parameterized.TestCase):
 
     res = wp.zeros((1, mjm.nv), dtype=wp.float32)
     vec = wp.from_numpy(np.expand_dims(mj_vec, axis=0), dtype=wp.float32)
-    skip = wp.zeros((d.nworld), dtype=bool)
-    mjwarp.mul_m(m, d, res, vec, skip)
+    mjwarp.mul_m(m, d, res, vec)
 
     _assert_eq(res.numpy()[0], mj_res, f"mul_m ({jacobian})")
 
@@ -115,6 +115,67 @@ class SupportTest(parameterized.TestCase):
       mj_force = np.concatenate([frame.T @ mj_force[:3], frame.T @ mj_force[3:]])
 
     _assert_eq(force.numpy()[0], mj_force, "contact force")
+
+  def test_get_state(self):
+    mjm, mjd, m, d = test_data.fixture(
+      "constraints.xml", keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0
+    )
+
+    size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
+
+    mj_state = np.zeros(size)
+    mujoco.mj_getState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_INTEGRATION)
+
+    mjw_state = wp.zeros((d.nworld, size), dtype=float)
+    mjwarp.get_state(m, d, mjw_state, State.INTEGRATION)
+
+    _assert_eq(mjw_state.numpy()[0], mj_state, "state")
+
+    d2 = mjwarp.put_data(mjm, mjd, nworld=2)
+    mjw_state2 = wp.zeros((d2.nworld, size), dtype=float)
+    active = wp.array([False, True], dtype=bool)
+    mjwarp.get_state(m, d2, mjw_state2, State.INTEGRATION, active=active)
+
+    _assert_eq(mjw_state2.numpy()[0], 0, "state0")
+    _assert_eq(mjw_state2.numpy()[1], mj_state, "state1")
+
+  def test_set_state(self):
+    mjm, mjd, m, d = test_data.fixture(
+      "constraints.xml", keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0
+    )
+
+    size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
+
+    mj_state = np.zeros(size)
+    mujoco.mj_getState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_INTEGRATION)
+
+    mjw_state = wp.array(np.expand_dims(mj_state, axis=0), dtype=float)
+    mjwarp.set_state(m, d, mjw_state, State.INTEGRATION)
+
+    state_integration = [
+      "time",
+      "qpos",
+      "qvel",
+      "act",
+      "qacc_warmstart",
+      "ctrl",
+      "qfrc_applied",
+      "xfrc_applied",
+      "eq_active",
+      "mocap_pos",
+      "mocap_quat",
+    ]
+
+    for field in state_integration:
+      _assert_eq(getattr(d, field).numpy()[0], getattr(mjd, field), field)
+
+    d2 = mjwarp.make_data(mjm, nworld=2)
+    mjw_state2 = wp.array(np.tile(mj_state, (2, 1)), dtype=float)
+    active = wp.array([False, True], dtype=bool)
+    mjwarp.set_state(m, d2, mjw_state2, State.INTEGRATION, active=active)
+
+    for field in state_integration:
+      _assert_eq(getattr(d2, field).numpy()[1], getattr(mjd, field), field)
 
 
 if __name__ == "__main__":

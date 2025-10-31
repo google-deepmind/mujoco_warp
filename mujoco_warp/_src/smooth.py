@@ -1406,7 +1406,7 @@ def _tendon_dot(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
-  # Data out:
+  # Out:
   ten_Jdot_out: wp.array3d(dtype=float),
 ):
   worldid, tenid = wp.tid()
@@ -1562,8 +1562,9 @@ def _tendon_bias_coef(
   tendon_armature: wp.array2d(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
+  # In:
   ten_Jdot_in: wp.array3d(dtype=float),
-  # Data out:
+  # Out:
   ten_bias_coef_out: wp.array2d(dtype=float),
 ):
   worldid, tenid, dofid = wp.tid()
@@ -1585,6 +1586,7 @@ def _tendon_bias_qfrc(
   tendon_armature: wp.array2d(dtype=float),
   # Data in:
   ten_J_in: wp.array3d(dtype=float),
+  # In:
   ten_bias_coef_in: wp.array2d(dtype=float),
   # Out:
   qfrc_out: wp.array2d(dtype=float),
@@ -1605,7 +1607,9 @@ def _tendon_bias_qfrc(
 @event_scope
 def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
   """Add bias force due to tendon armature."""
-  d.ten_Jdot.zero_()
+
+  # time derivative of tendon Jacobian
+  ten_Jdot = wp.zeros((d.nworld, m.ntendon, m.nv), dtype=float)
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -1630,36 +1634,23 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
       d.cvel,
       d.cdof_dot,
     ],
-    outputs=[
-      d.ten_Jdot,
-    ],
+    outputs=[ten_Jdot],
   )
 
-  d.ten_bias_coef.zero_()
+  # tendon bias force coefficients
+  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
   wp.launch(
     _tendon_bias_coef,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[
-      m.tendon_armature,
-      d.qvel,
-      d.ten_Jdot,
-    ],
-    outputs=[
-      d.ten_bias_coef,
-    ],
+    inputs=[m.tendon_armature, d.qvel, ten_Jdot],
+    outputs=[ten_bias_coef],
   )
 
   wp.launch(
     _tendon_bias_qfrc,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[
-      m.tendon_armature,
-      d.ten_J,
-      d.ten_bias_coef,
-    ],
-    outputs=[
-      qfrc,
-    ],
+    inputs=[m.tendon_armature, d.ten_J, ten_bias_coef],
+    outputs=[qfrc],
   )
 
 
@@ -1797,7 +1788,7 @@ def _transmission(
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
   actuator_gear_id = worldid % actuator_gear.shape[0]
-  gear = actuator_gear[worldid, actid]
+  gear = actuator_gear[actuator_gear_id, actid]
   if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
     qpos = qpos_in[worldid]
     jntid = actuator_trnid[actid][0]
@@ -2107,6 +2098,7 @@ def _transmission_body_moment(
   nacon_in: wp.array(dtype=int),
   # Data out:
   actuator_moment_out: wp.array3d(dtype=float),
+  # Out:
   actuator_trntype_body_ncon_out: wp.array2d(dtype=int),
 ):
   trnbodyid, conid, dofid = wp.tid()
@@ -2197,7 +2189,7 @@ def _transmission_body_moment(
 def _transmission_body_moment_scale(
   # Model:
   actuator_trntype_body_adr: wp.array(dtype=int),
-  # Data in:
+  # In:
   actuator_trntype_body_ncon_in: wp.array2d(dtype=int),
   # Data out:
   actuator_moment_out: wp.array3d(dtype=float),
@@ -2256,14 +2248,12 @@ def transmission(m: Model, d: Data):
     outputs=[d.actuator_length, d.actuator_moment],
   )
 
-  if m.actuator_trntype_body_adr.size > 0:
-    # reset number of active contacts
-    d.actuator_trntype_body_ncon.zero_()
-
+  if m.nacttrnbody:
     # compute moments
+    ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
     wp.launch(
       _transmission_body_moment,
-      dim=(m.actuator_trntype_body_adr.size, d.naconmax, m.nv),
+      dim=(m.nacttrnbody, d.naconmax, m.nv),
       inputs=[
         m.opt.cone,
         m.body_parentid,
@@ -2285,20 +2275,14 @@ def transmission(m: Model, d: Data):
         d.efc.J,
         d.nacon,
       ],
-      outputs=[
-        d.actuator_moment,
-        d.actuator_trntype_body_ncon,
-      ],
+      outputs=[d.actuator_moment, ncon],
     )
 
     # scale moments
     wp.launch(
       _transmission_body_moment_scale,
-      dim=(d.nworld, m.actuator_trntype_body_adr.size, m.nv),
-      inputs=[
-        m.actuator_trntype_body_adr,
-        d.actuator_trntype_body_ncon,
-      ],
+      dim=(d.nworld, m.nacttrnbody, m.nv),
+      inputs=[m.actuator_trntype_body_adr, ncon],
       outputs=[d.actuator_moment],
     )
 
@@ -2778,6 +2762,7 @@ def _spatial_geom_tendon(
   # Data out:
   ten_J_out: wp.array3d(dtype=float),
   ten_length_out: wp.array2d(dtype=float),
+  # Out:
   wrap_geom_xpos_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid, elementid = wp.tid()
@@ -2909,6 +2894,7 @@ def _spatial_tendon_wrap(
   wrap_objid: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
+  # In:
   wrap_geom_xpos_in: wp.array2d(dtype=wp.spatial_vector),
   # Data out:
   ten_wrapadr_out: wp.array2d(dtype=int),
@@ -3070,6 +3056,9 @@ def tendon(m: Model, d: Data):
   d.ten_length.zero_()
   d.ten_J.zero_()
 
+  # Cartesian 3D points fro geom wrap points
+  wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
+
   # process joint tendons
   wp.launch(
     _joint_tendon,
@@ -3130,13 +3119,13 @@ def tendon(m: Model, d: Data):
       d.subtree_com,
       d.cdof,
     ],
-    outputs=[d.ten_J, d.ten_length, d.wrap_geom_xpos],
+    outputs=[d.ten_J, d.ten_length, wrap_geom_xpos],
   )
 
   if spatial_site or spatial_geom:
     wp.launch(
       _spatial_tendon_wrap,
       dim=(d.nworld,),
-      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, d.wrap_geom_xpos],
+      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, wrap_geom_xpos],
       outputs=[d.ten_wrapadr, d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
     )

@@ -621,7 +621,7 @@ class CollisionTest(parameterized.TestCase):
     """
     )
     self.assertEqual(m.nxn_geom_pair.numpy().shape[0], 3)
-    np.testing.assert_equal(m.nxn_pairid.numpy(), np.array([-2, -1, -1]))
+    np.testing.assert_equal(m.nxn_pairid.numpy()[:][:, 0], np.array([-2, -1, -1]))
 
   def test_plane_meshtet(self):
     # tetrahedron, separated in z by 0.1
@@ -662,7 +662,7 @@ class CollisionTest(parameterized.TestCase):
     """,
       overrides={"opt.broadphase": broadphase},
     )
-    self.assertTrue((m.nxn_pairid.numpy() == -1).all())
+    self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == -1).all())
 
     # 1 pair
     _, _, m, d = test_data.fixture(
@@ -684,7 +684,7 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
     """
     )
-    self.assertTrue((m.nxn_pairid.numpy() == 0).all())
+    self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == 0).all())
 
     for arr in (
       d.nacon,
@@ -727,7 +727,7 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
     """
     )
-    self.assertTrue((m.nxn_pairid.numpy() == 0).all())
+    self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == 0).all())
 
     for arr in (
       d.nacon,
@@ -771,7 +771,7 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
     """
     )
-    self.assertTrue((m.nxn_pairid.numpy() == 0).all())
+    self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == 0).all())
 
     for arr in (
       d.nacon,
@@ -819,7 +819,7 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
     """
     )
-    np.testing.assert_equal(m.nxn_pairid.numpy(), np.array([-2, -1, 0]))
+    np.testing.assert_equal(m.nxn_pairid.numpy()[:][:, 0], np.array([-2, -1, 0]))
 
     for arr in (
       d.nacon,

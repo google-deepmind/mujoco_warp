@@ -64,7 +64,9 @@ from ._src.smooth import tendon as tendon
 from ._src.smooth import transmission as transmission
 from ._src.solver import solve as solve
 from ._src.support import contact_force as contact_force
+from ._src.support import get_state as get_state
 from ._src.support import mul_m as mul_m
+from ._src.support import set_state as set_state
 from ._src.support import xfrc_accumulate as xfrc_accumulate
 from ._src.types import BiasType as BiasType
 from ._src.types import BroadphaseFilter as BroadphaseFilter
@@ -81,5 +83,6 @@ from ._src.types import IntegratorType as IntegratorType
 from ._src.types import JointType as JointType
 from ._src.types import Option as Option
 from ._src.types import SolverType as SolverType
+from ._src.types import State as State
 from ._src.types import Statistic as Statistic
 from ._src.types import TrnType as TrnType

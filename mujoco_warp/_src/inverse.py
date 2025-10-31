@@ -81,7 +81,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
     # set qfrc = (d.qM + m.opt.timestep * diag(m.dof_damping)) * d.qacc
 
     # d.qM @ d.qacc
-    support.mul_m(m, d, qfrc, d.qacc, d.inverse_mul_m_skip)
+    support.mul_m(m, d, qfrc, d.qacc)
 
     # qfrc += m.opt.timestep * m.dof_damping * d.qacc
     wp.launch(
@@ -122,7 +122,7 @@ def inverse(m: Model, d: Data):
   invdiscrete = m.opt.enableflags & EnableBit.INVDISCRETE
   if invdiscrete:
     # save discrete-time qacc and compute continuous-time qacc
-    wp.copy(d.qacc_discrete, d.qacc)
+    qacc_discrete = wp.clone(d.qacc)
     discrete_acc(m, d, d.qacc, d.qfrc_integration)
 
   inv_constraint(m, d)
@@ -130,7 +130,7 @@ def inverse(m: Model, d: Data):
   smooth.tendon_bias(m, d, d.qfrc_bias)
   sensor.sensor_acc(m, d)
 
-  support.mul_m(m, d, d.qfrc_inverse, d.qacc, d.inverse_mul_m_skip)
+  support.mul_m(m, d, d.qfrc_inverse, d.qacc)
 
   wp.launch(
     _qfrc_inverse,
@@ -146,4 +146,4 @@ def inverse(m: Model, d: Data):
 
   if invdiscrete:
     # restore discrete-time qacc
-    wp.copy(d.qacc, d.qacc_discrete)
+    wp.copy(d.qacc, qacc_discrete)

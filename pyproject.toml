@@ -49,6 +49,7 @@ mujoco = {index = "mujoco"}
 
 [project.optional-dependencies]
 dev = [
+    "asv",
     "pre-commit",
     "pytest",
     "pytest-xdist",
@@ -83,6 +84,7 @@ extend-exclude = ["*.ipynb"]
 select = [
     "I",  # isort
     "W",  # pycodestyle
+    "F401",  # unused imports
 ]
 
 [tool.ruff.lint.isort]
