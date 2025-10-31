@@ -181,13 +181,11 @@ def _main(argv: Sequence[str]):
         _RENDER_RGB.value,
         _RENDER_DEPTH.value)
 
-    print(f"Data\n  nworld: {d.nworld} nconmax: {d.nconmax} njmax: {d.njmax}\n")
-
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
     res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
-    jit_time, run_time, trace, ncon, nefc, solver_niter, nsuccess = res
+    jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
     print(f"""
