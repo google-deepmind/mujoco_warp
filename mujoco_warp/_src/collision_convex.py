@@ -458,9 +458,9 @@ def ccd_kernel_builder(
     # see MuJoCo mjc_ConvexHField
     if wp.static(is_hfield):
       # height field subgrid
-      nrow = hfield_nrow[g1]
-      ncol = hfield_ncol[g1]
-      size = hfield_size[g1]
+      nrow = hfield_nrow[geom1_dataid]
+      ncol = hfield_ncol[geom1_dataid]
+      size = hfield_size[geom1_dataid]
 
       # subgrid
       x_scale = 0.5 * float(ncol - 1) / size[0]
