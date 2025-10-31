@@ -935,7 +935,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
-def _get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_size: int):
+def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
   #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.
   # if sparse - we pad to the next multiple of tile_size for njmax, and nv.
@@ -1014,7 +1014,7 @@ def make_data(
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
-  njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
+  njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
 
   return types.Data(
     solver_niter=wp.zeros(nworld, dtype=int),
@@ -1287,7 +1287,7 @@ def put_data(
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
-  njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
+  njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
 
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
