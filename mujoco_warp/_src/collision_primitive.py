@@ -37,11 +37,7 @@ from .types import MJ_MINVAL
 from .types import ContactType
 from .types import Data
 from .types import GeomType
-from .types import Model
 from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -457,16 +453,13 @@ def contact_params(
   pair_friction: wp.array2d(dtype=vec5),
   # Data in:
   collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=wp.vec2i),
+  collision_pairid_in: wp.array(dtype=int),
   # In:
   cid: int,
   worldid: int,
 ):
   geoms = collision_pair_in[cid]
-  pairid = collision_pairid_in[cid][0]
-
-  # TODO(team): early return if collision sensor but no contact
-  # (ie, pairid[0] < -1 and pairid[1] < 0)
+  pairid = collision_pairid_in[cid]
 
   if pairid > -1:
     margin = pair_margin[worldid, pairid]
@@ -1593,7 +1586,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     naconmax_in: int,
     collision_pair_in: wp.array(dtype=wp.vec2i),
-    collision_pairid_in: wp.array(dtype=wp.vec2i),
+    collision_pairid_in: wp.array(dtype=int),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # Data out:
@@ -1608,8 +1601,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
-    contact_type_out: wp.array(dtype=int),
-    contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
@@ -1715,7 +1706,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           solreffriction,
           solimp,
           geoms,
-          collision_pairid_in[tid],
           contact_dist_out,
           contact_pos_out,
           contact_frame_out,
@@ -1727,8 +1717,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
           contact_dim_out,
           contact_geom_out,
           contact_worldid_out,
-          contact_type_out,
-          contact_geomcollisionid_out,
           nacon_out,
         )
 
@@ -1827,8 +1815,6 @@ def primitive_narrowphase(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
       d.nacon,
     ],
   )

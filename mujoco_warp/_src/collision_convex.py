@@ -13,28 +13,27 @@
 # limitations under the License.
 # ==============================================================================
 
+from collections.abc import Callable
+from typing import Tuple
+
 import warp as wp
 
 from .collision_gjk import ccd
 from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
-from .collision_hfield import hfield_filter
 from .collision_primitive import Geom
-from .collision_primitive import contact_params
 from .collision_primitive import geom
 from .collision_primitive import write_contact
 from .math import make_frame
-from .math import upper_trid_index
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
+from .math import safe_div
 from .types import MJ_MAXCONPAIR
-from .types import Data
+from .types import MJ_MAXVAL
+from .types import MJ_MINMU
+from .types import MJ_MINVAL
 from .types import GeomType
-from .types import Model
 from .types import vec5
 from .warp_util import cache_kernel
-from .warp_util import event_scope
 from .warp_util import kernel as nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
@@ -44,45 +43,208 @@ MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
 
-_CONVEX_COLLISION_PAIRS = [
-  (GeomType.HFIELD, GeomType.SPHERE),
-  (GeomType.HFIELD, GeomType.CAPSULE),
-  (GeomType.HFIELD, GeomType.ELLIPSOID),
-  (GeomType.HFIELD, GeomType.CYLINDER),
-  (GeomType.HFIELD, GeomType.BOX),
-  (GeomType.HFIELD, GeomType.MESH),
-  (GeomType.SPHERE, GeomType.ELLIPSOID),
-  (GeomType.SPHERE, GeomType.MESH),
-  (GeomType.CAPSULE, GeomType.ELLIPSOID),
-  (GeomType.CAPSULE, GeomType.CYLINDER),
-  (GeomType.CAPSULE, GeomType.MESH),
-  (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
-  (GeomType.ELLIPSOID, GeomType.CYLINDER),
-  (GeomType.ELLIPSOID, GeomType.BOX),
-  (GeomType.ELLIPSOID, GeomType.MESH),
-  (GeomType.CYLINDER, GeomType.CYLINDER),
-  (GeomType.CYLINDER, GeomType.BOX),
-  (GeomType.CYLINDER, GeomType.MESH),
-  (GeomType.BOX, GeomType.MESH),
-  (GeomType.MESH, GeomType.MESH),
-]
+
+@wp.func
+def contact_params(
+  # Model:
+  geom_condim: wp.array(dtype=int),
+  geom_priority: wp.array(dtype=int),
+  geom_solmix: wp.array2d(dtype=float),
+  geom_solref: wp.array2d(dtype=wp.vec2),
+  geom_solimp: wp.array2d(dtype=vec5),
+  geom_friction: wp.array2d(dtype=wp.vec3),
+  geom_margin: wp.array2d(dtype=float),
+  geom_gap: wp.array2d(dtype=float),
+  pair_dim: wp.array(dtype=int),
+  pair_solref: wp.array2d(dtype=wp.vec2),
+  pair_solreffriction: wp.array2d(dtype=wp.vec2),
+  pair_solimp: wp.array2d(dtype=vec5),
+  pair_margin: wp.array2d(dtype=float),
+  pair_gap: wp.array2d(dtype=float),
+  pair_friction: wp.array2d(dtype=vec5),
+  # In:
+  g1: int,
+  g2: int,
+  pairid: int,
+  worldid: int,
+):
+  if pairid > -1:
+    margin = pair_margin[worldid, pairid]
+    gap = pair_gap[worldid, pairid]
+    condim = pair_dim[pairid]
+    friction = pair_friction[worldid, pairid]
+    solref = pair_solref[worldid, pairid]
+    solreffriction = pair_solreffriction[worldid, pairid]
+    solimp = pair_solimp[worldid, pairid]
+  else:
+    solmix_id = worldid % geom_solmix.shape[0]
+    friction_id = worldid % geom_friction.shape[0]
+    solref_id = worldid % geom_solref.shape[0]
+    solimp_id = worldid % geom_solimp.shape[0]
+    margin_id = worldid % geom_margin.shape[0]
+    gap_id = worldid % geom_gap.shape[0]
+
+    solmix1 = geom_solmix[solmix_id, g1]
+    solmix2 = geom_solmix[solmix_id, g2]
+
+    condim1 = geom_condim[g1]
+    condim2 = geom_condim[g2]
+
+    # priority
+    p1 = geom_priority[g1]
+    p2 = geom_priority[g2]
+
+    if p1 > p2:
+      mix = 1.0
+      condim = condim1
+      max_geom_friction = geom_friction[friction_id, g1]
+    elif p2 > p1:
+      mix = 0.0
+      condim = condim2
+      max_geom_friction = geom_friction[friction_id, g2]
+    else:
+      mix = safe_div(solmix1, solmix1 + solmix2)
+      mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
+      mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
+      mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+      condim = wp.max(condim1, condim2)
+      max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
+
+    friction = vec5(
+      wp.max(MJ_MINMU, max_geom_friction[0]),
+      wp.max(MJ_MINMU, max_geom_friction[0]),
+      wp.max(MJ_MINMU, max_geom_friction[1]),
+      wp.max(MJ_MINMU, max_geom_friction[2]),
+      wp.max(MJ_MINMU, max_geom_friction[2]),
+    )
+
+    if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
+      solref = mix * geom_solref[solref_id, g1] + (1.0 - mix) * geom_solref[solref_id, g2]
+    else:
+      solref = wp.min(geom_solref[solref_id, g1], geom_solref[solref_id, g2])
+
+    solreffriction = wp.vec2(0.0, 0.0)
+    solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
+    # geom priority is ignored
+    margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
+    gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
+
+  return margin, gap, condim, friction, solref, solreffriction, solimp
 
 
-def _check_convex_collision_pairs():
-  prev_idx = -1
-  for pair in _CONVEX_COLLISION_PAIRS:
-    idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
-    if pair[1] < pair[0] or idx <= prev_idx:
-      return False
-    prev_idx = idx
-  return True
+@wp.func
+def _hfield_filter(
+  # Model:
+  geom_dataid: wp.array(dtype=int),
+  geom_aabb: wp.array3d(dtype=wp.vec3),
+  geom_rbound: wp.array2d(dtype=float),
+  geom_margin: wp.array2d(dtype=float),
+  hfield_size: wp.array(dtype=wp.vec4),
+  # Data in:
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  # In:
+  worldid: int,
+  g1: int,
+  g2: int,
+) -> Tuple[bool, float, float, float, float, float, float]:
+  """Filter for height field collisions.
 
+  See MuJoCo mjc_ConvexHField.
+  """
+  # height field info
+  hfdataid = geom_dataid[g1]
+  size1 = hfield_size[hfdataid]
 
-assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid order."
+  # geom info
+  xpos_id = worldid % geom_xpos_in.shape[0]
+  xmat_id = worldid % geom_xmat_in.shape[0]
+  rbound_id = worldid % geom_rbound.shape[0]
+  margin_id = worldid % geom_margin.shape[0]
+
+  pos1 = geom_xpos_in[xpos_id, g1]
+  mat1 = geom_xmat_in[xmat_id, g1]
+  mat1T = wp.transpose(mat1)
+  pos2 = geom_xpos_in[xpos_id, g2]
+  pos = mat1T @ (pos2 - pos1)
+  r2 = geom_rbound[rbound_id, g2]
+
+  # TODO(team): margin?
+  margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
+
+  # box-sphere test: horizontal plane
+  for i in range(2):
+    if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
+      return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+
+  # box-sphere test: vertical direction
+  if size1[2] < pos[2] - r2 - margin:  # up
+    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+
+  if -size1[3] > pos[2] + r2 + margin:  # down
+    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+
+  mat2 = geom_xmat_in[worldid, g2]
+  mat = mat1T @ mat2
+
+  # aabb for geom in height field frame
+  xmax = -MJ_MAXVAL
+  ymax = -MJ_MAXVAL
+  zmax = -MJ_MAXVAL
+  xmin = MJ_MAXVAL
+  ymin = MJ_MAXVAL
+  zmin = MJ_MAXVAL
+
+  aabb_id = worldid % geom_aabb.shape[0]
+  center2 = geom_aabb[aabb_id, g2, 0]
+  size2 = geom_aabb[aabb_id, g2, 1]
+
+  pos += mat1T @ center2
+
+  sign = wp.vec2(-1.0, 1.0)
+
+  for i in range(2):
+    for j in range(2):
+      for k in range(2):
+        corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
+        corner_hf = mat @ corner_local
+
+        if corner_hf[0] > xmax:
+          xmax = corner_hf[0]
+        if corner_hf[1] > ymax:
+          ymax = corner_hf[1]
+        if corner_hf[2] > zmax:
+          zmax = corner_hf[2]
+        if corner_hf[0] < xmin:
+          xmin = corner_hf[0]
+        if corner_hf[1] < ymin:
+          ymin = corner_hf[1]
+        if corner_hf[2] < zmin:
+          zmin = corner_hf[2]
+
+  xmax += pos[0]
+  xmin += pos[0]
+  ymax += pos[1]
+  ymin += pos[1]
+  zmax += pos[2]
+  zmin += pos[2]
+
+  # box-box test
+  if (
+    (xmin - margin > size1[0])
+    or (xmax + margin < -size1[0])
+    or (ymin - margin > size1[1])
+    or (ymax + margin < -size1[1])
+    or (zmin - margin > size1[2])
+    or (zmax + margin < -size1[3])
+  ):
+    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+  else:
+    return False, xmin, xmax, ymin, ymax, zmin, zmax
 
 
 @cache_kernel
-def ccd_kernel_builder(
+def convex_kernel_builder(
   legacy_gjk: bool,
   geomtype1: int,
   geomtype2: int,
@@ -90,9 +252,10 @@ def ccd_kernel_builder(
   epa_exact_neg_distance: bool,
   depth_extension: float,
   is_hfield: bool,
+  primitive_func: Callable | None,
 ):
   @wp.func
-  def eval_ccd_write_contact(
+  def ccd_wrapper(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
@@ -379,13 +542,13 @@ def ccd_kernel_builder(
 
     # height field filter
     if wp.static(is_hfield):
-      no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = hfield_filter(
+      no_hf_collision, xmin, xmax, ymin, ymax, zmin, _ = _hfield_filter(
         geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
       )
       if no_hf_collision:
         return
 
-    _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+    margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -401,9 +564,9 @@ def ccd_kernel_builder(
       pair_margin,
       pair_gap,
       pair_friction,
-      collision_pair_in,
-      collision_pairid_in,
-      tid,
+      g1,
+      g2,
+      collision_pairid_in[tid],
       worldid,
     )
 
@@ -456,6 +619,35 @@ def ccd_kernel_builder(
       geom_xpos_in[geom_xpos_id, g2],
       geom_xmat_in[geom_xmat_id, g2],
     )
+
+    if wp.static(primitive_func != None):
+      wp.static(primitive_func)(
+        naconmax_in,
+        geom1,
+        geom2,
+        worldid,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+        nacon_out,
+      )
+      return
 
     # see MuJoCo mjc_ConvexHField
     if wp.static(is_hfield):
@@ -527,7 +719,7 @@ def ccd_kernel_builder(
                 x1_ += prism[i]
               x1 += geom1.rot @ (x1_ / 6.0)
 
-            ncontact = eval_ccd_write_contact(
+            ncontact = ccd_wrapper(
               opt_ccd_tolerance,
               geom_type,
               naconmax_in,
@@ -588,7 +780,7 @@ def ccd_kernel_builder(
             if count >= MJ_MAXCONPAIR:
               return
     else:
-      eval_ccd_write_contact(
+      ccd_wrapper(
         opt_ccd_tolerance,
         geom_type,
         naconmax_in,
@@ -665,7 +857,6 @@ def convex_narrowphase(m: Model, d: Data):
   kernel for each type of convex collision pair present in the model, avoiding unnecessary
   computations for non-existent pair types.
   """
-  # TODO(team): fix early return?
   if not any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in _CONVEX_COLLISION_PAIRS):
     return
 
@@ -805,7 +996,5 @@ def convex_narrowphase(m: Model, d: Data):
           d.contact.dim,
           d.contact.geom,
           d.contact.worldid,
-          d.contact.type,
-          d.contact.geomcollisionid,
         ],
       )

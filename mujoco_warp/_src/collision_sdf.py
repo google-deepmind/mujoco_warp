@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from . import math
 from .collision_primitive import contact_params
 from .collision_primitive import geom
 from .collision_primitive import write_contact
@@ -703,7 +704,7 @@ def _sdf_narrowphase(
   if type2 != GeomType.SDF:
     return
   worldid = collision_worldid_in[contact_tid]
-  _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+  margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
     geom_condim,
     geom_priority,
     geom_solmix,
@@ -719,9 +720,9 @@ def _sdf_narrowphase(
     pair_margin,
     pair_gap,
     pair_friction,
-    collision_pair_in,
-    collision_pairid_in,
-    contact_tid,
+    geoms[0],
+    geoms[1],
+    collision_pairid_in[contact_tid],
     worldid,
   )
 
