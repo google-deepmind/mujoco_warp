@@ -260,10 +260,8 @@ def _broadphase_filter(m: Model):
     rbound1, rbound2 = geom_rbound[rbound_id, geom1], geom_rbound[rbound_id, geom2]
     margin_id = worldid % geom_margin.shape[0] if wp.static(m.geom_margin.shape[0] > 1) else 0
     margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]
-    xpos_id = worldid % geom_xpos_in.shape[0]
-    xpos1, xpos2 = geom_xpos_in[xpos_id, geom1], geom_xpos_in[xpos_id, geom2]
-    xmat_id = worldid % geom_xmat_in.shape[0]
-    xmat1, xmat2 = geom_xmat_in[xmat_id, geom1], geom_xmat_in[xmat_id, geom2]
+    xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
+    xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(m.opt.broadphase_filter & BroadphaseFilter.PLANE):
@@ -352,7 +350,7 @@ def _sap_project(opt_broadphase: int):
   ):
     worldid, geomid = wp.tid()
 
-    xpos = geom_xpos_in[worldid % geom_xpos_in.shape[0], geomid]
+    xpos = geom_xpos_in[worldid, geomid]
     rbound = geom_rbound[worldid % geom_rbound.shape[0], geomid]
 
     if rbound == 0.0:

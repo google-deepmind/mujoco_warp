@@ -408,8 +408,6 @@ def ccd_kernel_builder(
     )
 
     geom_size_id = worldid % geom_size.shape[0]
-    geom_xpos_id = worldid % geom_xpos_in.shape[0]
-    geom_xmat_id = worldid % geom_xmat_in.shape[0]
 
     geom1_dataid = geom_dataid[g1]
     geom1 = geom(
@@ -430,8 +428,8 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[geom_xpos_id, g1],
-      geom_xmat_in[geom_xmat_id, g1],
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
     )
 
     geom2_dataid = geom_dataid[g2]
@@ -453,8 +451,8 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[geom_xpos_id, g2],
-      geom_xmat_in[geom_xmat_id, g2],
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
     )
 
     # see MuJoCo mjc_ConvexHField
