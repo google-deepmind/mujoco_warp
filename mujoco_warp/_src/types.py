@@ -880,7 +880,7 @@ class Model:
     geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
-    geom_aabb: bounding box, (center, size)                  (ngeom, 6)
+    geom_aabb: bounding box, (center, size)                  (nworld, ngeom, 2, 3)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
     geom_pos: local position offset rel. to body             (nworld, ngeom, 3)
     geom_quat: local orientation offset rel. to body         (nworld, ngeom, 4)
