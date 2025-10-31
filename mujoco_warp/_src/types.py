@@ -1588,12 +1588,6 @@ class Data:
     ne_ten: number of equality tendon constraints               (nworld,)
     nsolving: number of unconverged worlds                      (1,)
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
-    qfrc_integration: temporary array for integration           (nworld, nv)
-    qacc_integration: temporary array for integration           (nworld, nv)
-    act_vel_integration: temporary array for integration        (nworld, nu)
-    qM_integration: temporary array for integration             (nworld, nv, nv) if dense
-    qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
-    qLDiagInv_integration: temporary array for integration      (nworld, nv)
     collision_pair: collision pairs from broadphase             (naconmax,)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1688,14 +1682,6 @@ class Data:
   ne_ten: wp.array(dtype=int)
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
-
-  # warp only: euler + implicit integration
-  qfrc_integration: wp.array2d(dtype=float)
-  qacc_integration: wp.array2d(dtype=float)
-  act_vel_integration: wp.array2d(dtype=float)
-  qM_integration: wp.array3d(dtype=float)
-  qLD_integration: wp.array3d(dtype=float)
-  qLDiagInv_integration: wp.array2d(dtype=float)
 
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)

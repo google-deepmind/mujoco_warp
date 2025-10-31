@@ -998,13 +998,9 @@ def make_data(
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
-    qM_integration = wp.zeros((nworld, 1, mjm.nM), dtype=float)
-    qLD_integration = wp.zeros((nworld, 1, mjm.nM), dtype=float)
   else:
     qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-    qM_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-    qLD_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
@@ -1161,13 +1157,6 @@ def make_data(
     ne_ten=wp.zeros(nworld, dtype=int),
     nsolving=wp.zeros(1, dtype=int),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    # euler + implicit integration
-    qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    act_vel_integration=wp.zeros((nworld, mjm.nu), dtype=float),
-    qM_integration=qM_integration,
-    qLD_integration=qLD_integration,
-    qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # collision driver
     collision_pair=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_pairid=wp.zeros((naconmax,), dtype=wp.vec2i),
@@ -1232,8 +1221,6 @@ def put_data(
   if mujoco.mj_isSparse(mjm):
     qM = np.expand_dims(mjd.qM, axis=0)
     qLD = np.expand_dims(mjd.qLD, axis=0)
-    qM_integration = np.zeros((1, mjm.nM), dtype=float)
-    qLD_integration = np.zeros((1, mjm.nM), dtype=float)
     efc_J = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -1251,8 +1238,6 @@ def put_data(
       qLD = np.zeros((mjm.nv, mjm.nv))
     else:
       qLD = np.linalg.cholesky(qM)
-    qM_integration = np.zeros((mjm.nv, mjm.nv), dtype=float)
-    qLD_integration = np.zeros((mjm.nv, mjm.nv), dtype=float)
     efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
 
@@ -1481,13 +1466,6 @@ def put_data(
     ne_ten=wp.full(shape=(nworld), value=ne_ten),
     nsolving=arr([nworld]),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    # TODO(team): skip allocation if integrator != euler | implicit
-    qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    act_vel_integration=wp.zeros((nworld, mjm.nu), dtype=float),
-    qM_integration=tile(qM_integration),
-    qLD_integration=tile(qLD_integration),
-    qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # collision driver
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
     collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
