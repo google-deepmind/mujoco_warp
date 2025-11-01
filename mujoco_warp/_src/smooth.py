@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Optional
 
 import warp as wp
 
@@ -161,30 +160,31 @@ def _kinematics_level(
 @wp.kernel
 def _geom_local_to_global(
   # Model:
+  body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
+  body_mocapid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_pos: wp.array2d(dtype=wp.vec3),
   geom_quat: wp.array2d(dtype=wp.quat),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
-  geom_skip_in: wp.array(dtype=bool),
   # Data out:
   geom_xpos_out: wp.array2d(dtype=wp.vec3),
   geom_xmat_out: wp.array2d(dtype=wp.mat33),
-  geom_skip_out: wp.array(dtype=bool),
 ):
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
-  if not geom_skip_in[geomid]:
-    # Calculate only if necessary
-    xpos = xpos_in[worldid, bodyid]
-    xquat = xquat_in[worldid, bodyid]
-    geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], xquat)
-    geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
 
-    if bodyid == 0:
-      # static geom pose are calculated only once
-      geom_skip_out[geomid] = True
+  if body_weldid[bodyid] == 0 and body_mocapid[body_rootid[bodyid]] == -1:
+    # geoms attached to the world are static (unless they are descended from mcocap bodies)
+    # for such static geoms, geom_xpos and geom_xquat are computed only once during make_data
+    return
+
+  xpos = xpos_in[worldid, bodyid]
+  xquat = xquat_in[worldid, bodyid]
+  geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], xquat)
+  geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
 
 
 @wp.kernel
@@ -326,8 +326,8 @@ def kinematics(m: Model, d: Data):
   wp.launch(
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
-    inputs=[m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat, d.geom_skip],
-    outputs=[d.geom_xpos, d.geom_xmat, d.geom_skip],
+    inputs=[m.body_rootid, m.body_weldid, m.body_mocapid, m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
+    outputs=[d.geom_xpos, d.geom_xmat],
   )
 
   wp.launch(
@@ -974,7 +974,7 @@ def _cacc_world(
   cacc_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid = wp.tid()
-  cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity[worldid])
+  cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity[worldid % gravity.shape[0]])
 
 
 def _rne_cacc_world(m: Model, d: Data):
@@ -1401,7 +1401,7 @@ def _tendon_dot(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
-  # Data out:
+  # Out:
   ten_Jdot_out: wp.array3d(dtype=float),
 ):
   worldid, tenid = wp.tid()
@@ -1557,8 +1557,9 @@ def _tendon_bias_coef(
   tendon_armature: wp.array2d(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
+  # In:
   ten_Jdot_in: wp.array3d(dtype=float),
-  # Data out:
+  # Out:
   ten_bias_coef_out: wp.array2d(dtype=float),
 ):
   worldid, tenid, dofid = wp.tid()
@@ -1580,6 +1581,7 @@ def _tendon_bias_qfrc(
   tendon_armature: wp.array2d(dtype=float),
   # Data in:
   ten_J_in: wp.array3d(dtype=float),
+  # In:
   ten_bias_coef_in: wp.array2d(dtype=float),
   # Out:
   qfrc_out: wp.array2d(dtype=float),
@@ -1606,7 +1608,8 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
     d: The data object containing the current state and output arrays.
     qfrc: Force.
   """
-  d.ten_Jdot.zero_()
+  # time derivative of tendon Jacobian
+  ten_Jdot = wp.zeros((d.nworld, m.ntendon, m.nv), dtype=float)
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -1631,36 +1634,23 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
       d.cvel,
       d.cdof_dot,
     ],
-    outputs=[
-      d.ten_Jdot,
-    ],
+    outputs=[ten_Jdot],
   )
 
-  d.ten_bias_coef.zero_()
+  # tendon bias force coefficients
+  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
   wp.launch(
     _tendon_bias_coef,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[
-      m.tendon_armature,
-      d.qvel,
-      d.ten_Jdot,
-    ],
-    outputs=[
-      d.ten_bias_coef,
-    ],
+    inputs=[m.tendon_armature, d.qvel, ten_Jdot],
+    outputs=[ten_bias_coef],
   )
 
   wp.launch(
     _tendon_bias_qfrc,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[
-      m.tendon_armature,
-      d.ten_J,
-      d.ten_bias_coef,
-    ],
-    outputs=[
-      qfrc,
-    ],
+    inputs=[m.tendon_armature, d.ten_J, ten_bias_coef],
+    outputs=[qfrc],
   )
 
 
@@ -1797,7 +1787,7 @@ def _transmission(
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
   actuator_gear_id = worldid % actuator_gear.shape[0]
-  gear = actuator_gear[worldid, actid]
+  gear = actuator_gear[actuator_gear_id, actid]
   if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
     qpos = qpos_in[worldid]
     jntid = actuator_trnid[actid][0]
@@ -2766,6 +2756,7 @@ def _spatial_geom_tendon(
   # Data out:
   ten_J_out: wp.array3d(dtype=float),
   ten_length_out: wp.array2d(dtype=float),
+  # Out:
   wrap_geom_xpos_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid, elementid = wp.tid()
@@ -2897,6 +2888,7 @@ def _spatial_tendon_wrap(
   wrap_objid: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
+  # In:
   wrap_geom_xpos_in: wp.array2d(dtype=wp.spatial_vector),
   # Data out:
   ten_wrapadr_out: wp.array2d(dtype=int),
@@ -3057,6 +3049,9 @@ def tendon(m: Model, d: Data):
   d.ten_length.zero_()
   d.ten_J.zero_()
 
+  # Cartesian 3D points fro geom wrap points
+  wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
+
   # process joint tendons
   wp.launch(
     _joint_tendon,
@@ -3117,13 +3112,13 @@ def tendon(m: Model, d: Data):
       d.subtree_com,
       d.cdof,
     ],
-    outputs=[d.ten_J, d.ten_length, d.wrap_geom_xpos],
+    outputs=[d.ten_J, d.ten_length, wrap_geom_xpos],
   )
 
   if spatial_site or spatial_geom:
     wp.launch(
       _spatial_tendon_wrap,
       dim=(d.nworld,),
-      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, d.wrap_geom_xpos],
+      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, wrap_geom_xpos],
       outputs=[d.ten_wrapadr, d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
     )

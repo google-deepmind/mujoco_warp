@@ -777,6 +777,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nsensorcollision=sum(nxn_pairid_collision >= 0),
     nsensortaxel=sum(mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]]),
     nsensorcontact=np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT),
+    nrangefinder=sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER),
     condim_max=condim_max,  # TODO(team): get max after filtering,
     nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
     nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
@@ -993,17 +994,12 @@ def make_data(
   if mujoco.mj_isSparse(mjm):
     qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
-    qM_integration = wp.zeros((nworld, 1, mjm.nM), dtype=float)
-    qLD_integration = wp.zeros((nworld, 1, mjm.nM), dtype=float)
   else:
     qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-    qM_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-    qLD_integration = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
   condim_max = np.max(condim) if len(condim) > 0 else 0
-  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   if mujoco.mj_isSparse(mjm):
     tile_size = types.TILE_SIZE_JTDAJ_SPARSE
@@ -1011,6 +1007,14 @@ def make_data(
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
   njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, nworld, mujoco.mj_isSparse(mjm), tile_size)
+
+  # static geoms (attached to the world) have their poses calculated once during make_data instead
+  # of during each physics step.  this speeds up scenes with many static geoms (e.g. terrains)
+  # TODO(team): remove this when we introduce dof islands + sleeping
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_kinematics(mjm, mjd)
+  geom_xpos = wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3)
+  geom_xmat = wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33)
 
   return types.Data(
     solver_niter=wp.zeros(nworld, dtype=int),
@@ -1040,8 +1044,8 @@ def make_data(
     ximat=wp.zeros((nworld, mjm.nbody), dtype=wp.mat33),
     xanchor=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
     xaxis=wp.zeros((nworld, mjm.njnt), dtype=wp.vec3),
-    geom_xpos=wp.zeros((nworld, mjm.ngeom), dtype=wp.vec3),
-    geom_xmat=wp.zeros((nworld, mjm.ngeom), dtype=wp.mat33),
+    geom_xpos=geom_xpos,
+    geom_xmat=geom_xmat,
     site_xpos=wp.zeros((nworld, mjm.nsite), dtype=wp.vec3),
     site_xmat=wp.zeros((nworld, mjm.nsite), dtype=wp.mat33),
     cam_xpos=wp.zeros((nworld, mjm.ncam), dtype=wp.vec3),
@@ -1149,29 +1153,11 @@ def make_data(
     ne_ten=wp.zeros(nworld, dtype=int),
     nsolving=wp.zeros(1, dtype=int),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    geom_skip=wp.zeros(mjm.ngeom, dtype=bool),
-    # euler + implicit integration
-    qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    act_vel_integration=wp.zeros((nworld, mjm.nu), dtype=float),
-    qM_integration=qM_integration,
-    qLD_integration=qLD_integration,
-    qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # collision driver
     collision_pair=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_pairid=wp.zeros((naconmax,), dtype=wp.vec2i),
     collision_worldid=wp.zeros((naconmax,), dtype=int),
     ncollision=wp.zeros((1,), dtype=int),
-    # tendon
-    ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
-    ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    ten_actfrc=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
-    # sensors
-    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
-    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
   )
 
 
@@ -1230,8 +1216,6 @@ def put_data(
   if mujoco.mj_isSparse(mjm):
     qM = np.expand_dims(mjd.qM, axis=0)
     qLD = np.expand_dims(mjd.qLD, axis=0)
-    qM_integration = np.zeros((1, mjm.nM), dtype=float)
-    qLD_integration = np.zeros((1, mjm.nM), dtype=float)
     efc_J = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -1249,8 +1233,6 @@ def put_data(
       qLD = np.zeros((mjm.nv, mjm.nv))
     else:
       qLD = np.linalg.cholesky(qM)
-    qM_integration = np.zeros((mjm.nv, mjm.nv), dtype=float)
-    qLD_integration = np.zeros((mjm.nv, mjm.nv), dtype=float)
     efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
 
@@ -1316,9 +1298,6 @@ def put_data(
   efc_frictionloss_fill[:, :nefc] = np.tile(mjd.efc_frictionloss, (nworld, 1))
   efc_force_fill[:, :nefc] = np.tile(mjd.efc_force, (nworld, 1))
   efc_margin_fill[:, :nefc] = np.tile(mjd.efc_margin, (nworld, 1))
-
-  nsensorcontact = np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)
-  nrangefinder = sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)
 
   # some helper functions to simplify the data field definitions below
 
@@ -1482,29 +1461,11 @@ def put_data(
     ne_ten=wp.full(shape=(nworld), value=ne_ten),
     nsolving=arr([nworld]),
     subtree_bodyvel=wp.zeros((nworld, mjm.nbody), dtype=wp.spatial_vector),
-    geom_skip=wp.zeros(mjm.ngeom, dtype=bool),  # warp only
-    # TODO(team): skip allocation if integrator != euler | implicit
-    qfrc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    qacc_integration=wp.zeros((nworld, mjm.nv), dtype=float),
-    act_vel_integration=wp.zeros((nworld, mjm.nu), dtype=float),
-    qM_integration=tile(qM_integration),
-    qLD_integration=tile(qLD_integration),
-    qLDiagInv_integration=wp.zeros((nworld, mjm.nv), dtype=float),
     # collision driver
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
     collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
     collision_worldid=wp.empty(naconmax, dtype=int),
     ncollision=wp.zeros(1, dtype=int),
-    # tendon
-    ten_Jdot=wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float),
-    ten_bias_coef=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    ten_actfrc=wp.zeros((nworld, mjm.ntendon), dtype=float),
-    wrap_geom_xpos=wp.zeros((nworld, mjm.nwrap), dtype=wp.spatial_vector),
-    # sensors
-    sensor_rangefinder_pnt=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_vec=wp.zeros((nworld, nrangefinder), dtype=wp.vec3),
-    sensor_rangefinder_dist=wp.zeros((nworld, nrangefinder), dtype=float),
-    sensor_rangefinder_geomid=wp.zeros((nworld, nrangefinder), dtype=int),
   )
 
 

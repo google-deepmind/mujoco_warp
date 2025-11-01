@@ -21,7 +21,6 @@ Example:
   mjwarp-testspeed benchmark/humanoid/humanoid.xml --nworld 4096 -o "opt.solver=cg"
 """
 
-import ast
 import inspect
 import sys
 from typing import Sequence

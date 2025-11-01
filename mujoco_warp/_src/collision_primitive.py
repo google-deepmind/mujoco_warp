@@ -1648,8 +1648,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     )
 
     geom1_dataid = geom_dataid[g1]
-    geom_xpos_id = worldid % geom_xpos_in.shape[0]
-    geom_xmat_id = worldid % geom_xmat_in.shape[0]
 
     geom1 = geom(
       type1,
@@ -1669,8 +1667,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[geom_xpos_id, g1],
-      geom_xmat_in[geom_xmat_id, g1],
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
     )
 
     geom2_dataid = geom_dataid[g2]
@@ -1692,8 +1690,8 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[geom_xpos_id, g2],
-      geom_xmat_in[geom_xmat_id, g2],
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
     )
 
     for i in range(wp.static(len(primitive_collisions_func))):

@@ -45,15 +45,13 @@ def hfield_filter(
   size1 = hfield_size[hfdataid]
 
   # geom info
-  xpos_id = worldid % geom_xpos_in.shape[0]
-  xmat_id = worldid % geom_xmat_in.shape[0]
   rbound_id = worldid % geom_rbound.shape[0]
   margin_id = worldid % geom_margin.shape[0]
 
-  pos1 = geom_xpos_in[xpos_id, g1]
-  mat1 = geom_xmat_in[xmat_id, g1]
+  pos1 = geom_xpos_in[worldid, g1]
+  mat1 = geom_xmat_in[worldid, g1]
   mat1T = wp.transpose(mat1)
-  pos2 = geom_xpos_in[xpos_id, g2]
+  pos2 = geom_xpos_in[worldid, g2]
   pos = mat1T @ (pos2 - pos1)
   r2 = geom_rbound[rbound_id, g2]
 

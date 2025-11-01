@@ -880,7 +880,7 @@ class Model:
     geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
-    geom_aabb: bounding box, (center, size)                  (ngeom, 6)
+    geom_aabb: bounding box, (center, size)                  (nworld, ngeom, 2, 3)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
     geom_pos: local position offset rel. to body             (nworld, ngeom, 3)
     geom_quat: local orientation offset rel. to body         (nworld, ngeom, 4)
@@ -1041,6 +1041,7 @@ class Model:
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     nsensorcontact: number of contact sensors
+    nrangefinder: number of rangefinder sensors
     condim_max: maximum condim for geoms
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
@@ -1375,6 +1376,7 @@ class Model:
   nsensorcollision: int
   nsensortaxel: int
   nsensorcontact: int
+  nrangefinder: int
   condim_max: int
   nmaxpolygon: int
   nmaxmeshdeg: int
@@ -1586,26 +1588,10 @@ class Data:
     ne_ten: number of equality tendon constraints               (nworld,)
     nsolving: number of unconverged worlds                      (1,)
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
-    geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
-               during step, reuse previous value
-    qfrc_integration: temporary array for integration           (nworld, nv)
-    qacc_integration: temporary array for integration           (nworld, nv)
-    act_vel_integration: temporary array for integration        (nworld, nu)
-    qM_integration: temporary array for integration             (nworld, nv, nv) if dense
-    qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
-    qLDiagInv_integration: temporary array for integration      (nworld, nv)
     collision_pair: collision pairs from broadphase             (naconmax,)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase
-    ten_Jdot: time derivative of tendon Jacobian                (nworld, ntendon, nv)
-    ten_bias_coef: tendon bias force coefficient                (nworld, ntendon)
-    ten_actfrc: total actuator force at tendon                  (nworld, ntendon)
-    wrap_geom_xpos: Cartesian 3D points for geom wrap points    (nworld, <=nwrap, 6)
-    sensor_rangefinder_pnt: points for rangefinder              (nworld, nrangefinder, 3)
-    sensor_rangefinder_vec: directions for rangefinder          (nworld, nrangefinder, 3)
-    sensor_rangefinder_dist: distances for rangefinder          (nworld, nrangefinder)
-    sensor_rangefinder_geomid: geomids for rangefinder          (nworld, nrangefinder)
   """
 
   solver_niter: wp.array(dtype=int)
@@ -1696,30 +1682,9 @@ class Data:
   ne_ten: wp.array(dtype=int)
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
-  geom_skip: wp.array(dtype=bool)
-
-  # warp only: euler + implicit integration
-  qfrc_integration: wp.array2d(dtype=float)
-  qacc_integration: wp.array2d(dtype=float)
-  act_vel_integration: wp.array2d(dtype=float)
-  qM_integration: wp.array3d(dtype=float)
-  qLD_integration: wp.array3d(dtype=float)
-  qLDiagInv_integration: wp.array2d(dtype=float)
 
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)
   collision_pairid: wp.array(dtype=wp.vec2i)
   collision_worldid: wp.array(dtype=int)
   ncollision: wp.array(dtype=int)
-
-  # warp only: tendon
-  ten_Jdot: wp.array3d(dtype=float)
-  ten_bias_coef: wp.array2d(dtype=float)
-  ten_actfrc: wp.array2d(dtype=float)
-  wrap_geom_xpos: wp.array2d(dtype=wp.spatial_vector)
-
-  # warp only: sensors
-  sensor_rangefinder_pnt: wp.array2d(dtype=wp.vec3)
-  sensor_rangefinder_vec: wp.array2d(dtype=wp.vec3)
-  sensor_rangefinder_dist: wp.array2d(dtype=float)
-  sensor_rangefinder_geomid: wp.array2d(dtype=int)

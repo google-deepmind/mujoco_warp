@@ -85,6 +85,7 @@ select = [
     "D",  # pydocstyle conventions and style
     "I",  # isort
     "W",  # pycodestyle
+    "F401",  # unused imports
 ]
 
 ignore = [

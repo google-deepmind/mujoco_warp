@@ -408,8 +408,6 @@ def ccd_kernel_builder(
     )
 
     geom_size_id = worldid % geom_size.shape[0]
-    geom_xpos_id = worldid % geom_xpos_in.shape[0]
-    geom_xmat_id = worldid % geom_xmat_in.shape[0]
 
     geom1_dataid = geom_dataid[g1]
     geom1 = geom(
@@ -430,8 +428,8 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[geom_xpos_id, g1],
-      geom_xmat_in[geom_xmat_id, g1],
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
     )
 
     geom2_dataid = geom_dataid[g2]
@@ -453,16 +451,16 @@ def ccd_kernel_builder(
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
-      geom_xpos_in[geom_xpos_id, g2],
-      geom_xmat_in[geom_xmat_id, g2],
+      geom_xpos_in[worldid, g2],
+      geom_xmat_in[worldid, g2],
     )
 
     # see MuJoCo mjc_ConvexHField
     if wp.static(is_hfield):
       # height field subgrid
-      nrow = hfield_nrow[g1]
-      ncol = hfield_ncol[g1]
-      size = hfield_size[g1]
+      nrow = hfield_nrow[geom1_dataid]
+      ncol = hfield_ncol[geom1_dataid]
+      size = hfield_size[geom1_dataid]
 
       # subgrid
       x_scale = 0.5 * float(ncol - 1) / size[0]
