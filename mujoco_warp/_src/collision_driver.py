@@ -26,7 +26,6 @@ from .types import BroadphaseFilter
 from .types import BroadphaseType
 from .types import Data
 from .types import DisableBit
-from .types import GeomType
 from .types import Model
 from .warp_util import cache_kernel
 from .warp_util import event_scope
@@ -261,10 +260,8 @@ def _broadphase_filter(m: Model):
     rbound1, rbound2 = geom_rbound[rbound_id, geom1], geom_rbound[rbound_id, geom2]
     margin_id = worldid % geom_margin.shape[0] if wp.static(m.geom_margin.shape[0] > 1) else 0
     margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]
-    xpos_id = worldid % geom_xpos_in.shape[0]
-    xpos1, xpos2 = geom_xpos_in[xpos_id, geom1], geom_xpos_in[xpos_id, geom2]
-    xmat_id = worldid % geom_xmat_in.shape[0]
-    xmat1, xmat2 = geom_xmat_in[xmat_id, geom1], geom_xmat_in[xmat_id, geom2]
+    xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
+    xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(m.opt.broadphase_filter & BroadphaseFilter.PLANE):
@@ -353,7 +350,7 @@ def _sap_project(opt_broadphase: int):
   ):
     worldid, geomid = wp.tid()
 
-    xpos = geom_xpos_in[worldid % geom_xpos_in.shape[0], geomid]
+    xpos = geom_xpos_in[worldid, geomid]
     rbound = geom_rbound[worldid % geom_rbound.shape[0], geomid]
 
     if rbound == 0.0:
@@ -523,11 +520,11 @@ def sap_broadphase(m: Model, d: Data):
   bounding sphere check is performed. If this check passes, the pair is added
   to the collision arrays in `d` for the narrowphase stage.
 
-  Two sorting strategies are supported, controlled by `m.opt.broadphase`:
+  Two sorting strategies are supported, controlled by `m.opt.broadphase`
+
   - `SAP_TILE`: Uses a tile-based sort.
   - `SAP_SEGMENTED`: Uses a segmented sort.
   """
-
   nworldgeom = d.nworld * m.ngeom
 
   # TODO(team): direction
@@ -666,7 +663,6 @@ def nxn_broadphase(m: Model, d: Data):
   The initial list of pairs is filtered at model creation time to exclude pairs based on
   `contype`/`conaffinity`, parent-child relationships, and explicit `<exclude>` tags.
   """
-
   broadphase_filter = _broadphase_filter(m)
   wp.launch(
     _nxn_broadphase(broadphase_filter),
@@ -719,7 +715,6 @@ def collision(m: Model, d: Data):
   This function will do nothing except zero out arrays if collision detection is disabled
   via `m.opt.disableflags` or if `d.nacon` is 0.
   """
-
   # zero contact and collision counters
   wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
 

@@ -21,7 +21,6 @@ Example:
   mjwarp-testspeed benchmark/humanoid/humanoid.xml --nworld 4096 -o "opt.solver=cg"
 """
 
-import ast
 import inspect
 import sys
 from typing import Sequence
@@ -110,7 +109,6 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
 
 def _main(argv: Sequence[str]):
   """Runs testpeed app."""
-
   if len(argv) < 2:
     raise app.UsageError("Missing required input: mjcf path.")
   elif len(argv) > 2:

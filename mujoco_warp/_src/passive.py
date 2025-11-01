@@ -289,7 +289,6 @@ def _fluid_force(
   fluid_applied_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   """Computes body-space fluid forces for both inertia-box and ellipsoid models."""
-
   worldid, bodyid = wp.tid()
   zero_force = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
 

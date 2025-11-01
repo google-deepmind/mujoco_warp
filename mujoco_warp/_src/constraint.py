@@ -166,7 +166,6 @@ def _efc_equality_connect(
   ne_connect_out: wp.array(dtype=int),
 ):
   """Calculates constraint rows for connect equality constraints."""
-
   worldid, eqconnectid = wp.tid()
   eqid = eq_connect_adr[eqconnectid]
 
@@ -1494,7 +1493,6 @@ def _num_equality(
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
-
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,

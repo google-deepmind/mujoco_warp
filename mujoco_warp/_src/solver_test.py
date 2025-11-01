@@ -27,7 +27,6 @@ from mujoco_warp import SolverType
 from mujoco_warp import test_data
 
 from . import solver
-from .math import safe_div
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -280,7 +279,6 @@ class SolverTest(parameterized.TestCase):
   )
   def test_solve_batch(self, cone, solver_, iterations, ls_iterations):
     """Tests solve (batch)."""
-
     mjm0, mjd0, _, _ = test_data.fixture(
       "humanoid/humanoid.xml",
       keyframe=0,

@@ -763,7 +763,6 @@ def _sensor_collision(
 @event_scope
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
-
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
@@ -1385,7 +1384,6 @@ def _sensor_vel(
 @event_scope
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
-
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
@@ -2263,6 +2261,7 @@ def _contact_match(
   contact_geom_in: wp.array(dtype=wp.vec2i),
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
+  contact_type_in: wp.array(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
@@ -2276,6 +2275,9 @@ def _contact_match(
   sensorid = sensor_contact_adr[contactsensorid]
 
   if contactid >= nacon_in[0]:
+    return
+
+  if not contact_type_in[contactid] & ContactType.CONSTRAINT:
     return
 
   # sensor information
@@ -2514,6 +2516,7 @@ def sensor_acc(m: Model, d: Data):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
         d.efc.force,
         d.njmax,
         d.nacon,
@@ -2858,7 +2861,6 @@ def _energy_vel_kinetic(nv: int):
 
 def energy_vel(m: Model, d: Data):
   """Velocity-dependent energy (kinetic)."""
-
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel

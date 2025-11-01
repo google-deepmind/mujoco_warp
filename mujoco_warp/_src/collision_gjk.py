@@ -924,7 +924,7 @@ def _polytope2(
   geomtype1: int,
   geomtype2: int,
 ) -> Tuple[Polytope, GJKResult]:
-  """Create polytope for EPA given a 1-simplex from GJK"""
+  """Create polytope for EPA given a 1-simplex from GJK."""
   diff = simplex[1] - simplex[0]
 
   # find component with smallest magnitude (so cross product is largest)
@@ -1023,7 +1023,7 @@ def _polytope3(
   geomtype1: int,
   geomtype2: int,
 ) -> Polytope:
-  """Create polytope for EPA given a 2-simplex from GJK"""
+  """Create polytope for EPA given a 2-simplex from GJK."""
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
   if wp.norm_l2(n) < MJ_MINVAL:
@@ -1123,7 +1123,7 @@ def _polytope4(
   geomtype1: int,
   geomtype2: int,
 ) -> Tuple[Polytope, GJKResult]:
-  """Create polytope for EPA given a 3-simplex from GJK"""
+  """Create polytope for EPA given a 3-simplex from GJK."""
   pt.vert[0] = simplex[0]
   pt.vert[1] = simplex[1]
   pt.vert[2] = simplex[2]

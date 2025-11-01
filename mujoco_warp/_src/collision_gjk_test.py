@@ -289,7 +289,6 @@ class GJKTest(absltest.TestCase):
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -307,8 +306,7 @@ class GJKTest(absltest.TestCase):
     self.assertEqual(0.5, x2[0])
 
   def test_spheres_touching(self):
-    """Test two touching spheres have zero distance"""
-
+    """Test two touching spheres have zero distance."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -324,8 +322,7 @@ class GJKTest(absltest.TestCase):
     self.assertEqual(0.0, dist)
 
   def test_box_mesh_distance(self):
-    """Test distance between a mesh and box"""
-
+    """Test distance between a mesh and box."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco model="MuJoCo Model">
@@ -353,7 +350,6 @@ class GJKTest(absltest.TestCase):
 
   def test_sphere_sphere_contact(self):
     """Test penetration depth between two spheres."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -370,7 +366,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_box_contact(self):
     """Test penetration between two boxes."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -392,7 +387,6 @@ class GJKTest(absltest.TestCase):
 
   def test_mesh_mesh_contact(self):
     """Test penetration between two meshes."""
-
     _, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -429,7 +423,6 @@ class GJKTest(absltest.TestCase):
 
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -446,7 +439,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_edge(self):
     """Test box edge."""
-
     _, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -461,7 +453,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_box_ccd(self):
     """Test box box."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -477,7 +468,6 @@ class GJKTest(absltest.TestCase):
 
   def test_mesh_mesh_ccd(self):
     """Test mesh-mesh multiccd."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -498,7 +488,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_box_ccd2(self):
     """Test box-box multiccd 2."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -515,7 +504,6 @@ class GJKTest(absltest.TestCase):
 
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -536,7 +524,6 @@ class GJKTest(absltest.TestCase):
 
   def test_cylinder_box(self):
     """Test cylinder box collision."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>

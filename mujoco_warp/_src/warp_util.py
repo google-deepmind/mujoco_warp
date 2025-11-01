@@ -19,7 +19,6 @@ from typing import Callable, Optional
 
 import warp as wp
 from warp.context import Module
-from warp.context import assert_conditional_graph_support
 from warp.context import get_module
 
 _STACK = None
@@ -130,8 +129,8 @@ def kernel(
   enable_backward: Optional[bool] = None,
   module: Optional[Module] = None,
 ):
-  """
-  Decorator to register a Warp kernel from a Python function.
+  """Decorator to register a Warp kernel from a Python function.
+
   The function must be defined with type annotations for all arguments.
   The function must not return anything.
 

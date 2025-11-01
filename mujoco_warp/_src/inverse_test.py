@@ -126,17 +126,15 @@ class InverseTest(parameterized.TestCase):
       overrides={"opt.integrator": IntegratorType.EULER, "opt.disableflags": DisableBit.EULERDAMP},
     )
     qacc = wp.zeros((1, m.nv), dtype=float)
-    qfrc = wp.zeros((1, m.nv), dtype=float)
-    inverse.discrete_acc(m, d, qacc, qfrc)
+    inverse.discrete_acc(m, d, qacc)
     _assert_eq(qacc.numpy()[0], d.qacc.numpy()[0], "qacc")
 
   def test_discrete_acc_rk4(self):
     _, _, m, d = test_data.fixture(xml=_XML, overrides={"opt.integrator": IntegratorType.RK4})
     qacc = wp.zeros((1, m.nv), dtype=float)
-    qfrc = wp.zeros((1, m.nv), dtype=float)
 
     with self.assertRaises(NotImplementedError):
-      inverse.discrete_acc(m, d, qacc, qfrc)
+      inverse.discrete_acc(m, d, qacc)
 
   def test_inverse_tendon_armature(self):
     """Tests inverse dynamics with tendon armature."""

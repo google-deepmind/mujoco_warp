@@ -196,7 +196,6 @@ class ConstraintTest(parameterized.TestCase):
 
   def test_equality_tendon(self):
     """Test equality tendon constraints."""
-
     _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>

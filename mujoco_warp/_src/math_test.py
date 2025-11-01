@@ -90,7 +90,7 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
     self.assertSequenceAlmostEqual(best_b, [0.0, 0.0, 0.0], 5)
 
   def test_upper_tri_index2(self):
-    """Tests upper_tri_index with size 2"""
+    """Tests upper_tri_index with size 2."""
     arr = []
     for i in range(2):
       for j in range(i + 1, 2):
@@ -98,7 +98,7 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
     self.assertEqual(arr, list(range(0, 1)))
 
   def test_upper_tri_index10(self):
-    """Tests upper_tri_index with size 10"""
+    """Tests upper_tri_index with size 10."""
     arr = []
     for i in range(10):
       for j in range(i + 1, 10):
@@ -106,7 +106,7 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
     self.assertEqual(arr, list(range(0, 45)))
 
   def test_upper_trid_index1(self):
-    """Tests upper_trid_index with size 1"""
+    """Tests upper_trid_index with size 1."""
     arr = []
     for i in range(1):
       for j in range(i, 1):
@@ -114,7 +114,7 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
     self.assertEqual(arr, list(range(0, 1)))
 
   def test_upper_trid_index10(self):
-    """Tests upper_trid_index with size 10"""
+    """Tests upper_trid_index with size 10."""
     arr = []
     for i in range(10):
       for j in range(i, 10):
@@ -122,7 +122,7 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
     self.assertEqual(arr, list(range(0, 55)))
 
   def test_upper_trid_index10(self):
-    """Tests upper_trid_index works with symmetric matrix"""
+    """Tests upper_trid_index works with symmetric matrix."""
     self.assertEqual(upper_trid_index(10, 1, 5), upper_trid_index(10, 5, 1))
 
 

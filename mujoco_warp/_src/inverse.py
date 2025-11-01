@@ -21,6 +21,7 @@ from . import sensor
 from . import smooth
 from . import solver
 from . import support
+from .support import mul_m
 from .types import Data
 from .types import DisableBit
 from .types import EnableBit
@@ -66,8 +67,15 @@ def _qfrc_inverse(
   qfrc_inverse_out[worldid, dofid] = qfrc_inverse
 
 
-def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.array2d(dtype=float)):
-  """Convert discrete-time qacc to continuous-time qacc."""
+def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float)):
+  """Convert discrete-time qacc to continuous-time qacc.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    qacc: Acceleration.
+  """
+  qfrc = wp.empty((d.nworld, m.nv), dtype=float)
 
   if m.opt.integrator == IntegratorType.RK4:
     raise NotImplementedError("discrete inverse dynamics is not supported by RK4 integrator")
@@ -91,7 +99,12 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
       outputs=[qfrc],
     )
   elif m.opt.integrator == IntegratorType.IMPLICITFAST:
-    derivative.deriv_smooth_vel(m, d, flg_forward=False)
+    if m.opt.is_sparse:
+      qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
+    else:
+      qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+    derivative.deriv_smooth_vel(m, d, qDeriv)
+    mul_m(m, d, qfrc, d.qacc, M=qDeriv)
     smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, qacc, qfrc)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
@@ -102,7 +115,6 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float), qfrc: wp.arra
 
 def inv_constraint(m: Model, d: Data):
   """Inverse constraint solver."""
-
   # no constraints
   if d.njmax == 0:
     d.qfrc_constraint.zero_()
@@ -123,7 +135,7 @@ def inverse(m: Model, d: Data):
   if invdiscrete:
     # save discrete-time qacc and compute continuous-time qacc
     qacc_discrete = wp.clone(d.qacc)
-    discrete_acc(m, d, d.qacc, d.qfrc_integration)
+    discrete_acc(m, d, d.qacc)
 
   inv_constraint(m, d)
   smooth.rne(m, d)
