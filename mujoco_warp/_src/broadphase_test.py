@@ -18,99 +18,40 @@
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
-import mujoco_warp as mjwarp
+import mujoco_warp as mjw
+from mujoco_warp import BroadphaseFilter
+from mujoco_warp import BroadphaseType
+from mujoco_warp import DisableBit
+from mujoco_warp import test_data
 
 from . import collision_driver
-from . import io
-from . import test_util
 
 
-class BroadphaseTest(absltest.TestCase):
-  def test_sap_broadphase(self):
-    """Tests sap_broadphase."""
+def broadphase_caller(m, d):
+  if m.opt.broadphase == BroadphaseType.NXN:
+    collision_driver.nxn_broadphase(m, d)
+  else:
+    collision_driver.sap_broadphase(m, d)
 
-    _SAP_MODEL = """
-      <mujoco>
-        <worldbody>
-          <geom size="40 40 40" type="plane"/>   <!- (0) intersects with nothing -->
-          <body pos="0 0 0.7">
-            <freejoint/>
-            <geom size="0.5 0.5 0.5" type="box"/> <!- (1) intersects with 2, 6, 7 -->
-          </body>
-          <body pos="0.1 0 0.7">
-            <freejoint/>
-            <geom size="0.5 0.5 0.5" type="box"/> <!- (2) intersects with 1, 6, 7 -->
-          </body>
-          <body pos="1.8 0 0.7">
-            <freejoint/>
-            <geom size="0.5 0.5 0.5" type="box"/> <!- (3) intersects with 4  -->
-          </body>
-          <body pos="1.6 0 0.7">
-            <freejoint/>
-            <geom size="0.5 0.5 0.5" type="box"/> <!- (4) intersects with 3 -->
-          </body>
-          <body pos="0 0 1.8">
-            <freejoint/>
-            <geom size="0.5 0.5 0.5" type="box"/> <!- (5) intersects with 7 -->
-            <geom size="0.5 0.5 0.5" type="box" pos="0 0 -1"/> <!- (6) intersects with 2, 1, 7 -->
-          </body>
-          <body pos="0 0.5 1.2">
-            <freejoint/>
-            <geom size="0.5 0.5 0.5" type="box"/> <!- (7) intersects with 5, 6 -->
-          </body>
-        </worldbody>
-      </mujoco>
-    """
 
-    collision_pair = [
-      (0, 1),
-      (0, 2),
-      (0, 3),
-      (0, 4),
-      (0, 6),
-      (1, 2),
-      (1, 4),
-      (1, 5),
-      (1, 6),
-      (1, 7),
-      (2, 3),
-      (2, 4),
-      (2, 5),
-      (2, 6),
-      (2, 7),
-      (3, 4),
-      (4, 6),
-      (5, 7),
-      (6, 7),
-    ]
+class BroadphaseTest(parameterized.TestCase):
+  # filter combinations
+  plane_sphere = BroadphaseFilter.PLANE | BroadphaseFilter.SPHERE
+  plane_aabb = BroadphaseFilter.PLANE | BroadphaseFilter.AABB
+  plane_obb = BroadphaseFilter.PLANE | BroadphaseFilter.OBB
+  plane_sphere_aabb = plane_sphere | BroadphaseFilter.AABB
+  plane_sphere_obb = plane_sphere | BroadphaseFilter.OBB
+  plane_sphere_aabb_obb = plane_sphere_aabb | BroadphaseFilter.OBB
 
-    _, _, m, d = test_util.fixture(xml=_SAP_MODEL, qpos0=True)
-
-    mjwarp.sap_broadphase(m, d)
-
-    ncollision = d.ncollision.numpy()[0]
-    np.testing.assert_equal(ncollision, len(collision_pair), "ncollision")
-
-    for i in range(ncollision):
-      pair = d.collision_pair.numpy()[i]
-      if pair[0] > pair[1]:
-        pair_tuple = (int(pair[1]), int(pair[0]))
-      else:
-        pair_tuple = (int(pair[0]), int(pair[1]))
-
-      np.testing.assert_equal(
-        pair_tuple in collision_pair,
-        True,
-        f"geom pair {pair_tuple} not found in brute force results",
-      )
-
-    # TODO(team): test DisableBit.FILTERPARENT
-
-  def test_nxn_broadphase(self):
-    """Tests nxn_broadphase."""
-
-    _NXN_MODEL = """
+  @parameterized.product(
+    broadphase=list(BroadphaseType),
+    filter=[plane_sphere, plane_aabb, plane_obb, plane_sphere_aabb, plane_sphere_obb, plane_sphere_aabb_obb],
+  )
+  def test_broadphase(self, broadphase, filter):
+    """Tests collision broadphase algorithms."""
+    _XML = """
       <mujoco>
         <worldbody>
           <body>
@@ -169,65 +110,221 @@ class BroadphaseTest(absltest.TestCase):
         </keyframe>
       </mujoco>
     """
+
     # one world and zero collisions
-    mjm, _, m, d0 = test_util.fixture(xml=_NXN_MODEL, keyframe=0)
-    collision_driver.nxn_broadphase(m, d0)
+    mjm, _, m, d0 = test_data.fixture(xml=_XML, keyframe=0)
+
+    m.opt.broadphase = broadphase
+    m.opt.broadphase_filter = filter
+
+    broadphase_caller(m, d0)
     np.testing.assert_allclose(d0.ncollision.numpy()[0], 0)
 
     # one world and one collision
-    _, mjd1, _, d1 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
-    collision_driver.nxn_broadphase(m, d1)
+    _, mjd1, _, d1 = test_data.fixture(xml=_XML, keyframe=1)
+    broadphase_caller(m, d1)
 
     np.testing.assert_allclose(d1.ncollision.numpy()[0], 1)
     np.testing.assert_allclose(d1.collision_pair.numpy()[0][0], 0)
     np.testing.assert_allclose(d1.collision_pair.numpy()[0][1], 1)
 
     # one world and three collisions
-    _, mjd2, _, d2 = test_util.fixture(xml=_NXN_MODEL, keyframe=2)
-    collision_driver.nxn_broadphase(m, d2)
-    np.testing.assert_allclose(d2.ncollision.numpy()[0], 3)
-    np.testing.assert_allclose(d2.collision_pair.numpy()[0][0], 0)
-    np.testing.assert_allclose(d2.collision_pair.numpy()[0][1], 1)
-    np.testing.assert_allclose(d2.collision_pair.numpy()[1][0], 0)
-    np.testing.assert_allclose(d2.collision_pair.numpy()[1][1], 2)
-    np.testing.assert_allclose(d2.collision_pair.numpy()[2][0], 1)
-    np.testing.assert_allclose(d2.collision_pair.numpy()[2][1], 2)
+    _, mjd2, _, d2 = test_data.fixture(xml=_XML, keyframe=2)
+    broadphase_caller(m, d2)
+
+    ncollision = d2.ncollision.numpy()[0]
+    np.testing.assert_allclose(ncollision, 3)
+
+    collision_pairs = [[0, 1], [0, 2], [1, 2]]
+    for i in range(ncollision):
+      self.assertTrue([d2.collision_pair.numpy()[i][0], d2.collision_pair.numpy()[i][1]] in collision_pairs)
 
     # two worlds and four collisions
-    d3 = mjwarp.make_data(mjm, nworld=2, nconmax=512, njmax=512)
+    d3 = mjw.make_data(mjm, nworld=2, nconmax=512, njmax=512)
     d3.geom_xpos = wp.array(
       np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
       dtype=wp.vec3,
     )
+    d3.geom_xmat = wp.array(
+      np.vstack([np.expand_dims(mjd1.geom_xmat, axis=0), np.expand_dims(mjd2.geom_xmat, axis=0)]),
+      dtype=wp.mat33,
+    )
+    broadphase_caller(m, d3)
 
-    collision_driver.nxn_broadphase(m, d3)
-    np.testing.assert_allclose(d3.ncollision.numpy()[0], 4)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[0][0], 0)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[0][1], 1)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[1][0], 0)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[1][1], 1)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[2][0], 0)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[2][1], 2)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[3][0], 1)
-    np.testing.assert_allclose(d3.collision_pair.numpy()[3][1], 2)
+    ncollision = d3.ncollision.numpy()[0]
+    np.testing.assert_allclose(ncollision, 4)
+
+    collision_pairs = [[[0, 1]], [[0, 1], [0, 2], [1, 2]]]
+    worldids = [0, 1, 1, 1]
+    for i in range(ncollision):
+      worldid = d3.collision_worldid.numpy()[i]
+      self.assertTrue(worldid == worldids[i])
+      self.assertTrue([d3.collision_pair.numpy()[i][0], d3.collision_pair.numpy()[i][1]] in collision_pairs[worldid])
 
     # one world and zero collisions: contype and conaffinity incompatibility
-    mjm4, _, _, d4 = test_util.fixture(xml=_NXN_MODEL, keyframe=1)
+    mjm4, _, m4, d4 = test_data.fixture(xml=_XML, keyframe=1)
     mjm4.geom_contype[:3] = 0
-    m4 = mjwarp.put_model(mjm4)
+    m4 = mjw.put_model(mjm4)
 
-    collision_driver.nxn_broadphase(m4, d4)
+    broadphase_caller(m4, d4)
     np.testing.assert_allclose(d4.ncollision.numpy()[0], 0)
 
     # one world and one collision: geomtype ordering
-    _, _, _, d5 = test_util.fixture(xml=_NXN_MODEL, keyframe=3)
-    collision_driver.nxn_broadphase(m, d5)
+    _, _, _, d5 = test_data.fixture(xml=_XML, keyframe=3)
+    broadphase_caller(m, d5)
     np.testing.assert_allclose(d5.ncollision.numpy()[0], 1)
     np.testing.assert_allclose(d5.collision_pair.numpy()[0][0], 3)
     np.testing.assert_allclose(d5.collision_pair.numpy()[0][1], 2)
 
-    # TODO(team): test margin
-    # TODO(team): test DisableBit.FILTERPARENT
+  @parameterized.parameters((0, 0, 0), (0, 0.011, 1), (0.011, 0, 1), (0.00999, 0, 0), (0, 0.00999, 0), (0.00999, 0.00999, 0))
+  def test_broadphase_margin(self, margin1, margin2, ncollision):
+    _MJCF = f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1" margin="{margin1}"/>
+            <joint type="slide" axis="1 0 0"/>
+          </body>
+          <body>
+            <geom type="sphere" size=".1" margin="{margin2}"/>
+            <joint type="slide" axis="1 0 0"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 .21"/>
+        </keyframe>
+      </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], ncollision)
+
+  @parameterized.parameters((0, 0), (DisableBit.FILTERPARENT, 1))
+  def test_broadphase_filterparent(self, disablebit, expected_collisions):
+    _MJCF = """
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1"/>
+            <joint type="slide"/>
+            <body>
+              <geom type="sphere" size=".1"/>
+              <joint type="slide"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0"/>
+        </keyframe>
+      </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0, overrides={"opt.disableflags": disablebit})
+
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], expected_collisions)
+
+  def test_broadphase_filter(self):
+    plane = BroadphaseFilter.PLANE
+    sphere = BroadphaseFilter.SPHERE
+    aabb = BroadphaseFilter.AABB
+    obb = BroadphaseFilter.OBB
+    plane_sphere = plane | sphere
+    plane_aabb = plane | aabb
+    plane_obb = plane | obb
+
+    _PLANE_CAPSULE_CAPSULE = """
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <light type="directional" pos="0 0 1"/>
+          <geom name="floor" size="10 10 .001" type="plane"/>
+          <body>
+            <geom type="capsule" size=".05 .1" rgba="0 1 0 1"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 0 1"/>
+            <joint type="hinge" axis="0 1 0"/>
+          </body>
+          <body>
+            <geom type="capsule" size=".05 .1" rgba="1 0 0 1"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 0 1"/>
+            <joint type="hinge" axis="0 1 0"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="-.5 .25 0 .5 .25 0"/>
+          <key qpos="-.5 .075 1.57 .5 .25 0"/>
+          <key qpos="-.075 .25 0 .075 .25 0"/>
+          <key qpos="0 .25 .7853 0 .45 .7853"/>
+        </keyframe>
+      </mujoco>
+    """
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=0)
+    m.opt.broadphase_filter = plane_sphere
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=0)
+    m.opt.broadphase_filter = plane_aabb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=0)
+    m.opt.broadphase_filter = plane_obb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=1)
+    m.opt.broadphase_filter = plane_sphere
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+
+    # note: collision_driver._plane_filter checks bounding sphere
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=1)
+    m.opt.broadphase_filter = plane
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 2)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=1)
+    m.opt.broadphase_filter = plane_sphere
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=1)
+    m.opt.broadphase_filter = plane_obb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=2)
+    m.opt.broadphase_filter = plane_sphere
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=2)
+    m.opt.broadphase_filter = plane_aabb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=2)
+    m.opt.broadphase_filter = plane_obb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=3)
+    m.opt.broadphase_filter = plane_sphere
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=3)
+    m.opt.broadphase_filter = plane_aabb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+
+    _, _, m, d = test_data.fixture(xml=_PLANE_CAPSULE_CAPSULE, keyframe=3)
+    m.opt.broadphase_filter = plane_obb
+    broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 0)
 
 
 if __name__ == "__main__":

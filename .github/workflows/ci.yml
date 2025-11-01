@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.10", "3.12"]
 
     steps:
       - uses: actions/checkout@v3
@@ -64,9 +64,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mujoco --pre -f https://py.mujoco.org/
-          pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
-          pip install -e .[dev,cpu]
+          pip install uv
+          uv pip install --system -e .[dev,cpu]
       - name: Test with pytest
         run: |
           pytest
@@ -83,9 +82,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mujoco --pre -f https://py.mujoco.org/
-          pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
-          pip install -e .[dev,cpu]
+          pip install absl-py
       - name: Run kernel analyzer
         run: |
           python contrib/kernel_analyzer/kernel_analyzer/cli.py mujoco_warp/_src/*.py --output=github

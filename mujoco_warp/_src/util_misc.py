@@ -21,6 +21,7 @@ import warp as wp
 
 from . import math
 from .types import MJ_MINVAL
+from .types import GeomType
 from .types import WrapType
 from .types import vec10
 
@@ -36,7 +37,7 @@ def is_intersect(p1: wp.vec2, p2: wp.vec2, p3: wp.vec2, p4: wp.vec2) -> bool:
     p4: 2D point from segment 2
 
   Returns:
-    intersection status of line segments
+    Intersection status of line segments.
   """
   # compute determinant, check
   det = (p4[1] - p3[1]) * (p2[0] - p1[0]) - (p4[0] - p3[0]) * (p2[1] - p1[1])
@@ -55,17 +56,34 @@ def is_intersect(p1: wp.vec2, p2: wp.vec2, p3: wp.vec2, p4: wp.vec2) -> bool:
 
 
 @wp.func
+def halton(index: int, base: int) -> float:
+  n0 = index
+  b = float(base)
+  f = float(1.0) / b
+  hn = float(0.0)
+
+  while n0 > 0:
+    n1 = n0 // base
+    r = n0 - n1 * base
+    hn += f * float(r)
+    f /= b
+    n0 = n1
+
+  return hn
+
+
+@wp.func
 def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
   """Curve length along circle.
 
   Args:
-    p0: 2D point
-    p1: 2D point
-    ind: input for flip
-    radius: circle radius
+    p0: 2D point.
+    p1: 2D point.
+    ind: input for flip.
+    radius: circle radius.
 
   Returns:
-    curve length
+    Curve length.
   """
   # compute angle between 0 and pi
   p0n, _ = math.normalize_with_norm(p0)
@@ -82,18 +100,17 @@ def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
 
 
 @wp.func
-def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float):
+def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float) -> Tuple[float, wp.vec2, wp.vec2]:
   """2D circle wrap.
 
   Args:
-    end: two 2D points
-    side: optional 2D side point, no side point: wp.vec2(wp.inf)
-    radius: circle radius
+    end: Two 2D points.
+    side: Optional 2D side point, no side point: wp.vec2(wp.inf).
+    radius: Circle radius.
 
   Returns:
-    length of circular wrap or -1.0 if no wrap, pair of 2D wrap points
+    Length of circular wrap or -1.0 if no wrap, pair of 2D wrap points.
   """
-  # TODO(team): return type
   valid_side = wp.norm_l2(side) < wp.inf
 
   end0 = wp.vec2(end[0], end[1])
@@ -127,21 +144,21 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float):
 
   # construct the two solutions, compute goodness
   sol00 = wp.vec2(
-    (end[0] * sqrad + radius * end[1] * sqrt0) / sqlen0,
-    (end[1] * sqrad - radius * end[0] * sqrt0) / sqlen0,
+    math.safe_div(end[0] * sqrad + radius * end[1] * sqrt0, sqlen0),
+    math.safe_div(end[1] * sqrad - radius * end[0] * sqrt0, sqlen0),
   )
   sol01 = wp.vec2(
-    (end[2] * sqrad - radius * end[3] * sqrt1) / sqlen1,
-    (end[3] * sqrad + radius * end[2] * sqrt1) / sqlen1,
+    math.safe_div(end[2] * sqrad - radius * end[3] * sqrt1, sqlen1),
+    math.safe_div(end[3] * sqrad + radius * end[2] * sqrt1, sqlen1),
   )
 
   sol10 = wp.vec2(
-    (end[0] * sqrad - radius * end[1] * sqrt0) / sqlen0,
-    (end[1] * sqrad + radius * end[0] * sqrt0) / sqlen0,
+    math.safe_div(end[0] * sqrad - radius * end[1] * sqrt0, sqlen0),
+    math.safe_div(end[1] * sqrad + radius * end[0] * sqrt0, sqlen0),
   )
   sol11 = wp.vec2(
-    (end[2] * sqrad + radius * end[3] * sqrt1) / sqlen1,
-    (end[3] * sqrad - radius * end[2] * sqrt1) / sqlen1,
+    math.safe_div(end[2] * sqrad + radius * end[3] * sqrt1, sqlen1),
+    math.safe_div(end[3] * sqrad - radius * end[2] * sqrt1, sqlen1),
   )
 
   # goodness: close to sd, or shorter path
@@ -181,26 +198,27 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float):
 
 
 @wp.func
-def wrap_inside(end: wp.vec4, radius: float):
+def wrap_inside(
+  # In:
+  end: wp.vec4,
+  radius: float,
+  # TODO(team): update kernel analyzer to allow defaults
+  maxiter: int = 20,  # kernel_analyzer: ignore
+  zinit: float = 1.0 - 1.0e-7,  # kernel_analyzer: ignore
+  tolerance: float = 1.0e-6,  # kernel_analyzer: ignore
+) -> Tuple[float, wp.vec2, wp.vec2]:
   """2D inside wrap.
 
   Args:
-    end: two 2D points
-    radius: circle radius
-    maxiter: maximum number of solver iterations
-    zinit: initialization for solver
-    tolerance: solver convergence tolerance
+    end: Two 2D points.
+    radius: Circle radius.
+    maxiter: Maximum number of solver iterations.
+    zinit: Initialization for solver.
+    tolerance: Solver convergence tolerance.
 
   Returns:
-    0.0 if wrap else -1.0, pair of 2D wrap points
+    0.0 if wrap else -1.0, pair of 2D wrap points.
   """
-  # defaults
-  # TODO(team): update kernel analyzer to allow defaults
-  maxiter = 20
-  zinit = 1.0 - 1.0e-7
-  tolerance = 1.0e-6
-
-  # TODO(team): return type
   end0 = wp.vec2(end[0], end[1])
   end1 = wp.vec2(end[2], end[3])
 
@@ -231,11 +249,11 @@ def wrap_inside(end: wp.vec4, radius: float):
   pnt *= radius
 
   # compute function parameters: asin(A * z) + asin(B * z) - 2 * asin(z) + G = 0
-  A = radius / len0
-  B = radius / len1
+  A = math.safe_div(radius, len0)
+  B = math.safe_div(radius, len1)
   sq_A = A * A
   sq_B = B * B
-  cosG = (len0 * len0 + len1 * len1 - dd) / (2.0 * len0 * len1)
+  cosG = math.safe_div(len0 * len0 + len1 * len1 - dd, 2.0 * len0 * len1)
   if cosG < -1.0 + MJ_MINVAL:
     return -1.0, pnt, pnt
   elif cosG > 1.0 - MJ_MINVAL:
@@ -267,7 +285,7 @@ def wrap_inside(end: wp.vec4, radius: float):
       return 0.0, pnt, pnt
 
     # new point
-    z1 = z - f / df
+    z1 = z - math.safe_div(f, df)
 
     # make sure we are moving to the left; SHOULD NOT OCCUR
     if z1 > z:
@@ -311,18 +329,20 @@ def wrap(
   """Wrap tendons around spheres and cylinders.
 
   Args:
-    x0: 3D endpoint
-    x1: 3D endpoint
-    pos: position of geom
-    mat: orientation of geom
-    radius: geom radius
-    type: wrap type (mjtWrap)
-    side: 3D position for sidesite, no side point: wp.vec3(wp.inf)
+    x0: 3D endpoint.
+    x1: 3D endpoint.
+    pos: Position of geom.
+    mat: Orientation of geom.
+    radius: Geom radius.
+    geomtype: Wrap type (mjtWrap).
+    side: 3D position for sidesite, no side point: wp.vec3(wp.inf).
 
   Returns:
-    length of circuler wrap else -1.0 if no wrap, pair of 3D wrap points
+    Length of circular wrap else -1.0 if no wrap, pair of 3D wrap points.
   """
-  # TODO(team): check object type; SHOULD NOT OCCUR
+  # check object type
+  if geomtype != WrapType.SPHERE and geomtype != WrapType.CYLINDER:
+    return wp.inf, wp.vec3(wp.inf), wp.vec3(wp.inf)
 
   # map sites to wrap object's local frame
   matT = wp.transpose(mat)
@@ -334,7 +354,7 @@ def wrap(
     return -1.0, wp.vec3(wp.inf), wp.vec3(wp.inf)
 
   # construct 2D frame for circle wrap
-  if geomtype == int(WrapType.SPHERE.value):
+  if geomtype == WrapType.SPHERE:
     # 1st axis = p0
     axis0, _ = math.normalize_with_norm(p0)
 
@@ -411,12 +431,12 @@ def wrap(
   res1 = axis0 * pnt1[0] + axis1 * pnt1[1]
 
   # cylinder: correct along z
-  if geomtype == int(WrapType.CYLINDER.value):
+  if geomtype == WrapType.CYLINDER:
     # set vertical coordinates
     L0 = wp.sqrt((p0[0] - res0[0]) * (p0[0] - res0[0]) + (p0[1] - res0[1]) * (p0[1] - res0[1]))
     L1 = wp.sqrt((p1[0] - res1[0]) * (p1[0] - res1[0]) + (p1[1] - res1[1]) * (p1[1] - res1[1]))
-    res0[2] = p0[2] + (p1[2] - p0[2]) * L0 / (L0 + wlen + L1)
-    res1[2] = p0[2] + (p1[2] - p0[2]) * (L0 + wlen) / (L0 + wlen + L1)
+    res0[2] = p0[2] + (p1[2] - p0[2]) * math.safe_div(L0, L0 + wlen + L1)
+    res1[2] = p0[2] + (p1[2] - p0[2]) * math.safe_div(L0 + wlen, L0 + wlen + L1)
 
     # correct wlen for height
     height = wp.abs(res1[2] - res0[2])
@@ -432,7 +452,6 @@ def wrap(
 @wp.func
 def muscle_gain_length(length: float, lmin: float, lmax: float) -> float:
   """Normalized muscle length-gain curve."""
-
   if (lmin > length) or (length > lmax):
     return 0.0
 
@@ -457,7 +476,6 @@ def muscle_gain_length(length: float, lmin: float, lmax: float) -> float:
 @wp.func
 def muscle_gain(len: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10) -> float:
   """Muscle active force, prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax)."""
-
   # unpack parameters
   range_ = wp.vec2(prm[0], prm[1])
   force = prm[2]
@@ -498,8 +516,10 @@ def muscle_gain(len: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: 
 
 @wp.func
 def muscle_bias(len: float, lengthrange: wp.vec2, acc0: float, prm: vec10) -> float:
-  """Muscle passive force, prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax)."""
+  """Calculates muscle passive force.
 
+  prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax).
+  """
   # unpack parameters
   range_ = wp.vec2(prm[0], prm[1])
   force = prm[2]
@@ -532,7 +552,6 @@ def muscle_bias(len: float, lengthrange: wp.vec2, acc0: float, prm: vec10) -> fl
 @wp.func
 def _sigmoid(x: float) -> float:
   """Sigmoid function over 0 <= x <= 1 using quintic polynomial."""
-
   if x <= 0.0:
     return 0.0
 
@@ -547,7 +566,6 @@ def _sigmoid(x: float) -> float:
 @wp.func
 def muscle_dynamics_timescale(dctrl: float, tau_act: float, tau_deact: float, smooth_width: float) -> float:
   """Muscle time constant with optional smoothing."""
-
   # hard switching
   if smooth_width < MJ_MINVAL:
     if dctrl > 0.0:
@@ -562,7 +580,6 @@ def muscle_dynamics_timescale(dctrl: float, tau_act: float, tau_deact: float, sm
 @wp.func
 def muscle_dynamics(control: float, activation: float, prm: vec10) -> float:
   """Muscle activation dynamics, prm = (tau_act, tau_deact, smooth_width)."""
-
   # clamp control
   ctrlclamp = wp.clamp(control, 0.0, 1.0)
 
@@ -579,3 +596,36 @@ def muscle_dynamics(control: float, activation: float, prm: vec10) -> float:
 
   # filter output
   return dctrl / wp.max(MJ_MINVAL, tau)
+
+
+@wp.func
+def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point: wp.vec3) -> bool:
+  """Return True if point is inside primitive geom, False otherwise."""
+  # vector from geom to point
+  vec = point - pos
+
+  # quick return for spheres, frame rotation not required
+  if geomtype == GeomType.SPHERE:
+    return wp.dot(vec, vec) < size[0] * size[0]
+
+  # rotate into local frame
+  plocal = wp.transpose(mat) @ vec
+
+  # handle other geom types
+  if geomtype == GeomType.CAPSULE:
+    z = plocal[2]
+    z_clamped = wp.clamp(z, -size[1], size[1])
+    z_dif = z - z_clamped
+    z_dist_sq = z_dif * z_dif
+    return plocal[0] * plocal[0] + plocal[1] * plocal[1] + z_dist_sq < size[0] * size[0]
+  elif geomtype == GeomType.ELLIPSOID:
+    plocalsize = wp.cw_div(plocal, size)
+    return wp.dot(plocalsize, plocalsize) < 1.0
+  elif geomtype == GeomType.CYLINDER:
+    return (wp.abs(plocal[2]) < size[1]) and (plocal[0] * plocal[0] + plocal[1] * plocal[1] < size[0] * size[0])
+  elif geomtype == GeomType.BOX:
+    return wp.abs(plocal[0]) < size[0] and wp.abs(plocal[1]) < size[1] and wp.abs(plocal[2]) < size[2]
+  elif geomtype == GeomType.PLANE:
+    return plocal[2] < 0.0
+
+  return False

@@ -228,7 +228,6 @@ def _wrap(
 
 def _muscle_dynamics_millard(ctrl, act, prm):
   """Compute time constant as in Millard et al. (2013) https://doi.org/10.1115/1.4023390."""
-
   # clamp control
   ctrlclamp = np.clip(ctrl, 0.0, 1.0)
 

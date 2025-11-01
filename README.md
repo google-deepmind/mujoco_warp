@@ -1,34 +1,67 @@
+<p>
+  <a href="https://github.com/google-deepmind/mujoco_warp/actions/workflows/ci.yml?query=branch%3Amain" alt="GitHub Actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_warp/ci.yml?branch=main">
+  </a>
+  <a href="https://mujoco.readthedocs.io/en/latest/mjwarp/index.html" alt="Documentation">
+    <img src="https://readthedocs.org/projects/mujoco/badge/?version=latest">
+  </a>
+  <a href="https://github.com/google-deepmind/mujoco_warp/blob/main/LICENSE" alt="License">
+    <img src="https://img.shields.io/github/license/google-deepmind/mujoco_warp">
+  </a>
+</p>
+
 # MuJoCo Warp (MJWarp)
 
 MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deepmind/mujoco) physics simulator, designed for NVIDIA hardware.
 
-> [!WARNING]
-> MJWarp is in its Alpha stage, with many features still missing and limited testing so far.
+> [!NOTE]
+> MJWarp is in Beta and under active development:
+> * MJWarp developers will triage and respond to [bug report and feature requests](https://github.com/google-deepmind/mujoco_warp/issues).
+> * MJWarp is mostly feature complete but requires performance optimization, documentation, and testing.
+> * The intended audience during Beta are physics engine enthusiasts and learning framework integrators.
+> * Machine learning / robotics researchers who just want to train policies should wait for the [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) or [Isaac](https://isaac-sim.github.io/IsaacLab/main/index.html)/[Newton](https://github.com/newton-physics/newton) integrations, which are coming soon.
 
-MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). Once MJWarp exits Alpha, it will be integrated into both MJX and [Newton](https://developer.nvidia.com/blog/announcing-newton-an-open-source-physics-engine-for-robotics-simulation).
+MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). MJWarp is integrated into both [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) and [Newton](https://github.com/newton-physics/newton).
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
+# Documentation
+MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
+
 # Installing for development
 
+MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon).
+
+**CUDA**
+
+The minimum supported CUDA version is `12.4`.
+
+**Linux**
 ```bash
 git clone https://github.com/google-deepmind/mujoco_warp.git
 cd mujoco_warp
 python3 -m venv env
 source env/bin/activate
 pip install --upgrade pip
+pip install uv
+```
+**Windows**
+(native Python only, not MSYS2 or WSL)
+
+```powershell
+git clone https://github.com/google-deepmind/mujoco_warp.git
+cd mujoco_warp
+python -m venv env
+.\env\Scripts\Activate.ps1  # For MSYS2 Python: env\bin\activate
+pip install --upgrade pip
+pip install uv
 ```
 
-During early development, MJWarp is on the bleeding edge - you should install Warp nightly:
-
-```bash
-pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
-```
 
 Then install MJWarp in editable mode for local development:
 
 ```
-pip install -e .[dev,cuda]
+uv pip install -e .[dev,cuda]
 ```
 
 Now make sure everything is working:
@@ -47,39 +80,52 @@ you open, so it's important to fix any issues it reports.
 
 The following features are implemented:
 
-| Category          | Feature                                                                                                  |
-| ----------------- | ---------------------------------------------------------------------------------------------------------|
-| Dynamics          | Forward only                                                                                             |
-| Transmission      | `JOINT`, `JOINTINPARENT`, `TENDON`                                                                       |
-| Actuator Dynamics | `NONE`, `INTEGRATOR`, `FILTER`, `FILTEREXACT`                                                            |
-| Actuator Gain     | `FIXED`, `AFFINE`                                                                                        |
-| Actuator Bias     | `NONE`, `AFFINE`                                                                                         |
-| Geom              | `PLANE`, `SPHERE`, `CAPSULE`, `ELLIPSOID`, `CYLINDER`, `BOX`, `MESH`                                     |
-| Constraint        | `FRICTION JOINT`, `FRICTION TENDON`, `LIMIT_BALL`, `LIMIT_JOINT`, `LIMIT_TENDON`,                        |
-|                   | `CONTACT_PYRAMIDAL`, `CONTACT_ELLIPTIC`                                                                  |
-| Equality          | `CONNECT`, `WELD`, `JOINT`, `TENDON`                                                                     |
-| Integrator        | `EULER`, `IMPLICITFAST`, `RK4`                                                                           |
-| Cone              | `PYRAMIDAL`, `ELLIPTIC`                                                                                  |
-| Condim            | 1, 3, 4, 6                                                                                               |
-| Solver            | `CG`, `NEWTON`                                                                                           |
-| Fluid Model       | `BOX`                                                                                                    |
-| Tendons           | `FIXED`, `SITE`                                                                                          |
-| Sensors           | `CAMPROJECTION`, `JOINTPOS`, `TENDONPOS`, `ACTUATORPOS`, `BALLQUAT`, `FRAMEPOS`, `FRAMEXAXIS`,           |
-|                   | `FRAMEYAXIS`, `FRAMEZAXIS`, `FRAMEQUAT`, `SUBTREECOM`, `CLOCK`, `VELOCIMETER`, `GYRO`, `JOINTVEL`,       |
-|                   | `TENDONVEL`, `ACTUATORVEL`, `BALLANGVEL`, `FRAMELINVEL`, `FRAMEANGVEL`, `SUBTREELINVEL`, `SUBTREEANGMOM`,|
-|                   | `TOUCH`, `ACCELEROMETER`, `FORCE`, `TORQUE`, `ACTUATORFRC`, `JOINTACTFRC`,`FRAMELINACC`, `FRAMEANGACC`   |
+| Category           | Feature                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------|
+| Dynamics           | Forward, Inverse                                                                                        |
+| Transmission       | All                                                                                                     |
+| Actuator Dynamics  | All except `USER`                                                                                       |
+| Actuator Gain      | All except `USER`                                                                                       |
+| Actuator Bias      | All except `USER`                                                                                       |
+| Geom               | All                                                                                                     |
+| Constraint         | All                                                                                                     |
+| Equality           | All except `FLEX`                                                                                       |
+| Integrator         | All except `IMPLICIT`                                                                                   |
+| Cone               | All                                                                                                     |
+| Condim             | All                                                                                                     |
+| Solver             | All except `PGS`, `noslip`                                                                              |
+| Fluid Model        | All                                                                                                     |
+| Tendon Wrap        | All                                                                                                     |
+| Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, `GEOMFROMTO`, `PLUGIN`, `USER`                                     |
+| Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
+| Mass matrix format | Sparse and Dense                                                                                        |
+| Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
+
+[Differentiability via Warp](https://nvidia.github.io/warp/modules/differentiability.html#differentiability) is not currently
+available.
+
+# Viewing simulations
+
+Explore MuJoCo Warp simulations using an interactive viewer:
+
+```bash
+mjwarp-viewer benchmark/humanoid/humanoid.xml
+```
+
+This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
 
 # Benchmarking
 
 Benchmark as follows:
 
 ```bash
-mjwarp-testspeed --function=step --mjcf=test_data/humanoid/humanoid.xml --batch_size=8192
+mjwarp-testspeed benchmark/humanoid/humanoid.xml
 ```
 
 To get a full trace of the physics steps (e.g. timings of the subcomponents) run the following:
 
 ```bash
-mjwarp-testspeed --function=step --mjcf=test_data/humanoid/humanoid.xml --batch_size=8192 --event_trace=True
+mjwarp-testspeed benchmark/humanoid/humanoid.xml --event_trace=True
 ```
 
+`mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.

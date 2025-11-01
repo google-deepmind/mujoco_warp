@@ -17,13 +17,13 @@
 
 import mujoco
 import numpy as np
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
-import mujoco_warp as mjwarp
-
-from . import test_util
-from .types import ConeType
+import mujoco_warp as mjw
+from mujoco_warp import ConeType
+from mujoco_warp import test_data
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -34,6 +34,66 @@ def _assert_eq(a, b, name):
   tol = _TOLERANCE * 10  # avoid test noise
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
+def _assert_efc_eq(d, mjd, nefc, name, nv):
+  """Assert equality of efc fields after sorting both sides."""
+  # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref, efc_d for MJWarp
+  efc_type = d.efc.type.numpy()[0, :nefc]
+  efc_pos = d.efc.pos.numpy()[0, :nefc]
+  efc_vel = d.efc.vel.numpy()[0, :nefc]
+  efc_aref = d.efc.aref.numpy()[0, :nefc]
+  efc_d = d.efc.D.numpy()[0, :nefc]
+  # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref, efc_d for MuJoCo
+  mjd_efc_type = mjd.efc_type[:nefc]
+  mjd_efc_pos = mjd.efc_pos[:nefc]
+  mjd_efc_vel = mjd.efc_vel[:nefc]
+  mjd_efc_aref = mjd.efc_aref[:nefc]
+  mjd_efc_d = mjd.efc_D[:nefc]
+
+  # Create sorting keys using lexsort (more efficient for multiple keys)
+  d_sort_indices = np.lexsort((efc_pos, efc_type, efc_vel, efc_aref, efc_d))
+  mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
+
+  # Sort MJWarp efc fields
+  d_sorted = d.efc.J.numpy()[0, d_sort_indices, :nv].reshape(-1)
+
+  # Sort MuJoCo efc fields
+  # For J matrix, need to reshape to 2D, sort rows, then flatten
+  nefc = len(mjd_sort_indices)
+  if nv > 0:
+    mjd_J_2d = mjd.efc_J.reshape(nefc, nv)
+    mjd_sorted_J = mjd_J_2d[mjd_sort_indices].reshape(-1)
+  else:
+    mjd_sorted_J = mjd.efc_J
+
+  mjd_sorted_D = mjd.efc_D[mjd_sort_indices]
+  mjd_sorted_vel = mjd.efc_vel[mjd_sort_indices]
+  mjd_sorted_aref = mjd.efc_aref[mjd_sort_indices]
+  mjd_sorted_pos = mjd.efc_pos[mjd_sort_indices]
+  mjd_sorted_margin = mjd.efc_margin[mjd_sort_indices]
+  mjd_sorted_type = mjd.efc_type[mjd_sort_indices]
+
+  # Compare sorted data
+  _assert_eq(d_sorted, mjd_sorted_J, f"{name}_J")
+
+  d_sorted = d.efc.D.numpy()[0, d_sort_indices]
+  _assert_eq(d_sorted, mjd_sorted_D, f"{name}_D")
+
+  d_sorted = d.efc.vel.numpy()[0, d_sort_indices]
+  _assert_eq(d_sorted, mjd_sorted_vel, f"{name}_vel")
+
+  d_sorted = d.efc.aref.numpy()[0, d_sort_indices]
+  _assert_eq(d_sorted, mjd_sorted_aref, f"{name}_aref")
+
+  d_sorted = d.efc.pos.numpy()[0, d_sort_indices]
+  _assert_eq(d_sorted, mjd_sorted_pos, f"{name}_pos")
+
+  d_sorted = d.efc.margin.numpy()[0, d_sort_indices]
+  _assert_eq(d_sorted, mjd_sorted_margin, f"{name}_margin")
+
+  d_sorted = d.efc.type.numpy()[0, d_sort_indices]
+  _assert_eq(d_sorted, mjd_sorted_type, f"{name}_type")
 
 
 class ConstraintTest(parameterized.TestCase):
@@ -64,36 +124,37 @@ class ConstraintTest(parameterized.TestCase):
     xml = f"""
       <mujoco>
         <worldbody>
-          <body pos="0.0 0 0">
-            <freejoint/>
+          <body>
             <geom type="sphere" size=".1" condim="{condim1}"/>
-          </body>
-          <body pos="0.05 0 0">
             <freejoint/>
+          </body>
+          <body>
             <geom type="sphere" size=".1" condim="{condim2}"/>
           </body>
+          <body>
+            <geom type="ellipsoid" size=".1 .1 .1" condim="{condim2}"/>
+          </body>
         </worldbody>
+        <keyframe>
+          <key qpos=".10 .11 .12 .7071 .7071 0 0" />
+        </keyframe>
       </mujoco>
     """
 
-    _, mjd, m, d = test_util.fixture(xml=xml, cone=cone)
+    _, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.cone": cone})
 
-    for arr in (
-      d.efc.J,
-      d.efc.D,
-      d.efc.aref,
-      d.efc.pos,
-      d.efc.margin,
-    ):
-      arr.zero_()
+    # fill with nan to check whether we are not reading uninitialized values
+    for arr in (d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.nan)
 
-    mjwarp.make_constraint(m, d)
+    mjw.make_constraint(m, d)
 
-    _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-    _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-    _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-    _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-    _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_eq(d.nacon.numpy()[0], mjd.ncon, "nacon")
+    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, : m.nv].reshape(-1), mjd.efc_J, "efc_J")
+    _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
+    _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
+    _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
+    _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
 
   @parameterized.parameters(
     mujoco.mjtCone.mjCONE_PYRAMIDAL,
@@ -102,55 +163,40 @@ class ConstraintTest(parameterized.TestCase):
   def test_constraints(self, cone):
     """Test constraints."""
     for key in range(3):
-      mjm, mjd, m, d = test_util.fixture("constraints.xml", sparse=False, cone=cone, keyframe=key)
+      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=key, overrides={"opt.cone": cone})
 
-      for arr in (
-        d.efc.J,
-        d.efc.D,
-        d.efc.aref,
-        d.efc.pos,
-        d.efc.margin,
-        d.ne,
-        d.nefc,
-        d.nf,
-        d.nl,
-      ):
-        arr.zero_()
+      for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
+        arr.fill_(-1)
+      for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+        arr.fill_(wp.nan)
 
-      mjwarp.make_constraint(m, d)
+      mjw.make_constraint(m, d)
 
       _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-      _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-      _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-      _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-      _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_efc_eq(d, mjd, mjd.nefc, "efc", m.nv)
 
   def test_limit_tendon(self):
     """Test limit tendon constraints."""
     for keyframe in range(-1, 1):
-      _, mjd, m, d = test_util.fixture("tendon/tendon_limit.xml", sparse=False, keyframe=keyframe)
+      _, mjd, m, d = test_data.fixture("tendon/tendon_limit.xml", keyframe=keyframe)
 
-      for arr in (d.nefc, d.nl, d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
-        arr.zero_()
+      for arr in (d.nefc, d.nl, d.efc.type):
+        arr.fill_(-1)
+      for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+        arr.fill_(wp.nan)
 
-      mjwarp.make_constraint(m, d)
+      mjw.make_constraint(m, d)
 
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-      _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-      _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-      _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-      _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+      _assert_efc_eq(d, mjd, mjd.nefc, "efc", m.nv)
 
   def test_equality_tendon(self):
     """Test equality tendon constraints."""
-
-    _, mjd, m, d = test_util.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option>
@@ -189,18 +235,20 @@ class ConstraintTest(parameterized.TestCase):
           <key qpos=".1 .2 .3"/>
         </keyframe>
       </mujoco>
-    """
+    """,
+      keyframe=0,
     )
 
-    mjwarp.make_constraint(m, d)
+    for arr in (d.nefc, d.ne, d.efc.type):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.nan)
+
+    mjw.make_constraint(m, d)
 
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
-    _assert_eq(d.efc.J.numpy()[: mjd.nefc, :].reshape(-1), mjd.efc_J, "efc_J")
-    _assert_eq(d.efc.D.numpy()[: mjd.nefc], mjd.efc_D, "efc_D")
-    _assert_eq(d.efc.aref.numpy()[: mjd.nefc], mjd.efc_aref, "efc_aref")
-    _assert_eq(d.efc.pos.numpy()[: mjd.nefc], mjd.efc_pos, "efc_pos")
-    _assert_eq(d.efc.margin.numpy()[: mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_efc_eq(d, mjd, mjd.nefc, "efc", m.nv)
 
 
 if __name__ == "__main__":

@@ -17,15 +17,17 @@ import os
 
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
-import mujoco_warp as mjwarp
-from mujoco_warp._src.test_util import fixture
+import mujoco_warp as mjw
+from mujoco_warp import test_data
 
 # TODO(team): JAX test is temporary, remove after we land MJX:Warp
 
 
-class JAXTest(absltest.TestCase):
-  def test_jax(self):
+class JAXTest(parameterized.TestCase):
+  @parameterized.product(xml=("pendula.xml", "humanoid/humanoid.xml"), graph_conditional=(True, False))
+  def test_jax(self, xml, graph_conditional):
     os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
     # Force JAX to allocate memory on demand and deallocate when not needed (slow)
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -36,58 +38,59 @@ class JAXTest(absltest.TestCase):
       self.skipTest("JAX not installed")
 
     from jax import numpy as jp
-    from warp.jax_experimental.ffi import jax_callable
+    from warp.jax_experimental import ffi
 
-    if jax.default_backend() == "gpu":
-      NWORLDS = 1
-      NCONTACTS = 16
-      UNROLL_LENGTH = 1
-
-      def warp_step(
-        qpos_in: wp.array(dtype=wp.float32, ndim=2),
-        qvel_in: wp.array(dtype=wp.float32, ndim=2),
-        qpos_out: wp.array(dtype=wp.float32, ndim=2),
-        qvel_out: wp.array(dtype=wp.float32, ndim=2),
-      ):
-        wp.copy(d.qpos, qpos_in)
-        wp.copy(d.qvel, qvel_in)
-        mjwarp.step(m, d)
-        wp.copy(qpos_out, d.qpos)
-        wp.copy(qvel_out, d.qvel)
-
-      def unroll(qpos, qvel):
-        def step(carry, _):
-          qpos, qvel = carry
-          qpos, qvel = warp_step_fn(qpos, qvel)
-          return (qpos, qvel), None
-
-        (qpos, qvel), _ = jax.lax.scan(step, (qpos, qvel), length=UNROLL_LENGTH)
-
-        return qpos, qvel
-
-      mjm, mjd, m, d = fixture(
-        "humanoid/humanoid.xml",
-        nworld=NWORLDS,
-        nconmax=NWORLDS * NCONTACTS,
-        njmax=NWORLDS * NCONTACTS * 4,
-        iterations=1,
-        ls_iterations=4,
-        kick=True,
-      )
-
-      warp_step_fn = jax_callable(
-        warp_step,
-        num_outputs=2,
-        output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
-      )
-
-      jax_qpos = jp.tile(jp.array(m.qpos0.numpy()), (NWORLDS, 1))
-      jax_qvel = jp.zeros((NWORLDS, m.nv))
-
-      jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
-      jax_unroll_fn(jax_qpos, jax_qvel)
-    else:
+    if jax.default_backend() != "gpu":
       self.skipTest("JAX default backend is not GPU")
+
+    NWORLDS = 2
+    NCONTACTS = 16
+    UNROLL_LENGTH = 1
+
+    mjm, mjd, _, _ = test_data.fixture(
+      xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.iterations": 1, "opt.ls_iterations": 4}
+    )
+
+    m = mjw.put_model(mjm)
+    m.opt.graph_conditional = graph_conditional
+    d = mjw.put_data(mjm, mjd, nworld=2, nconmax=NCONTACTS, njmax=4 * NCONTACTS)
+
+    def warp_step(
+      qpos_in: wp.array(dtype=wp.float32, ndim=2),
+      qvel_in: wp.array(dtype=wp.float32, ndim=2),
+      qpos_out: wp.array(dtype=wp.float32, ndim=2),
+      qvel_out: wp.array(dtype=wp.float32, ndim=2),
+    ):
+      wp.copy(d.qpos, qpos_in)
+      wp.copy(d.qvel, qvel_in)
+      mjw.step(m, d)
+      wp.copy(qpos_out, d.qpos)
+      wp.copy(qvel_out, d.qvel)
+
+    def unroll(qpos, qvel):
+      def step(carry, _):
+        qpos, qvel = carry
+        qpos, qvel = warp_step_fn(qpos, qvel)
+        return (qpos, qvel), None
+
+      (qpos, qvel), _ = jax.lax.scan(step, (qpos, qvel), length=UNROLL_LENGTH)
+
+      return qpos, qvel
+
+    warp_step_fn = ffi.jax_callable(
+      warp_step,
+      num_outputs=2,
+      output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
+      graph_mode=ffi.GraphMode.WARP,
+    )
+
+    # temp qpos0 array to get the right numpy shape
+    qpos0_temp = wp.array(ptr=m.qpos0.ptr, shape=(1,) + m.qpos0.shape[1:], dtype=wp.float32)
+    jax_qpos = jp.tile(jp.array(qpos0_temp), (NWORLDS, 1))
+    jax_qvel = jp.zeros((NWORLDS, m.nv))
+
+    jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
+    jax_unroll_fn(jax_qpos, jax_qvel)
 
 
 if __name__ == "__main__":

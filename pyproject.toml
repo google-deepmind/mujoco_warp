@@ -11,12 +11,11 @@ authors = [
 ]
 description = "MuJoCo Warp (MJWarp)"
 readme = {file = "README.md", content-type = "text/markdown"}
-license = {text = "Apache License 2.0"}
+license = "Apache-2.0"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -29,13 +28,28 @@ requires-python = ">=3.9"
 dependencies = [
     "absl-py",
     "etils[epath]",
-    "mujoco",
+    "mujoco>=3.3.7",
     "numpy",
-    "warp-lang",
+    "warp-lang>=1.9.1",
 ]
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+explicit = true
+
+[[tool.uv.index]]
+name = "mujoco"
+url = "https://py.mujoco.org/"
+explicit = true
+
+[tool.uv.sources]
+warp-lang = {index = "nvidia"}
+mujoco = {index = "mujoco"}
 
 [project.optional-dependencies]
 dev = [
+    "asv",
     "pre-commit",
     "pytest",
     "pytest-xdist",
@@ -64,11 +78,19 @@ Changelog = "https://mujoco.readthedocs.io/en/stable/changelog.html"
 [tool.ruff]
 line-length = 128
 indent-width = 2
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = [
-    # isort
-    "I",
+    "D",  # pydocstyle conventions and style
+    "I",  # isort
+    "W",  # pycodestyle
+    "F401",  # unused imports
+]
+
+ignore = [
+    "D100",  # missing docstring public module
+    "D103",  # missing docstring public function
 ]
 
 [tool.ruff.lint.isort]
@@ -76,12 +98,19 @@ force-single-line = true
 single-line-exclusions = ["typing"]
 
 [tool.ruff.lint.pycodestyle]
-max-doc-length = 92
+max-doc-length = 100
 max-line-length = 128
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["D"]
+"contrib/*" = ["D"]
 
 [tool.ruff.format]
 docstring-code-format = true
-docstring-code-line-length = 88
+docstring-code-line-length = 100
 
 [tool.setuptools]
 package-data = { "mujoco_warp" = ["test_data/**"] }

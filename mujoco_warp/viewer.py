@@ -13,9 +13,18 @@
 # limitations under the License.
 # ==============================================================================
 
-"""An example integration of MJWarp with the MuJoCo viewer."""
+"""mjwarp-viewer: load and simulate an MJCF with MuJoCo Warp.
 
+Usage: mjwarp-viewer <mjcf XML path> [flags]
+
+Example:
+  mjwarp-viewer benchmark/humanoid/humanoid.xml -o "opt.solver=cg"
+"""
+
+import copy
+import enum
 import logging
+import sys
 import time
 from typing import Sequence
 
@@ -25,18 +34,33 @@ import numpy as np
 import warp as wp
 from absl import app
 from absl import flags
+from etils import epath
 
-import mujoco_warp as mjwarp
+import mujoco_warp as mjw
 
-_MODEL_PATH = flags.DEFINE_string("mjcf", None, "Path to a MuJoCo MJCF file.", required=True)
+# mjwarp-viewer has priviledged access to a few internal methods
+from mujoco_warp._src.io import find_keys
+from mujoco_warp._src.io import make_trajectory
+from mujoco_warp._src.io import override_model
+
+
+class EngineOptions(enum.IntEnum):
+  """Engine option."""
+
+  WARP = 0
+  C = 1
+
+
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
-_ENGINE = flags.DEFINE_enum("engine", "mjwarp", ["mjwarp", "mjc"], "Simulation engine")
-_CONE = flags.DEFINE_enum("cone", "pyramidal", ["pyramidal", "elliptic"], "Friction cone type")
-_LS_PARALLEL = flags.DEFINE_bool("ls_parallel", False, "Engine solver with parallel linesearch")
-_VIEWER_GLOBAL_STATE = {
-  "running": True,
-  "step_once": False,
-}
+_ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.WARP, EngineOptions, "Simulation engine")
+_NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
+_NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per world.")
+_OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
+_KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
+_DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
+_REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
+
+_VIEWER_GLOBAL_STATE = {"running": True, "step_once": False}
 
 
 def key_callback(key: int) -> None:
@@ -47,70 +71,118 @@ def key_callback(key: int) -> None:
     _VIEWER_GLOBAL_STATE["step_once"] = True
 
 
-def _load_model():
-  spec = mujoco.MjSpec.from_file(_MODEL_PATH.value)
-  # TODO: this will be done not necessary from MuJoCo 3.3.3
-  for flex in spec.flexes:
-    for v in flex.vertbody:
-      spec.body(v).add_geom(size=[flex.radius, 0, 0], group=4)
+def _load_model(path: epath.Path) -> mujoco.MjModel:
+  if not path.exists():
+    resource_path = epath.resource_path("mujoco_warp") / path
+    if not resource_path.exists():
+      raise FileNotFoundError(f"file not found: {path}\nalso tried: {resource_path}")
+    path = resource_path
+
+  print(f"Loading model from: {path}...")
+  if path.suffix == ".mjb":
+    return mujoco.MjModel.from_binary_path(path.as_posix())
+
+  spec = mujoco.MjSpec.from_file(path.as_posix())
+  # check if the file has any mujoco.sdf test plugins
+  if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+    from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+
+    register_sdf_plugins(mjw)
   return spec.compile()
 
 
+def _compile_step(m, d):
+  print("Compiling physics step...", end="", flush=True)
+  start = time.time()
+  # capture the whole step function as a CUDA graph
+  with wp.ScopedCapture() as capture:
+    mjw.step(m, d)
+  elapsed = time.time() - start
+  print(f"done ({elapsed:0.2g}s).")
+  return capture.graph
+
+
 def _main(argv: Sequence[str]) -> None:
-  """Launches MuJoCo passive viewer fed by MJWarp."""
-  if len(argv) > 1:
+  """Runs viewer app."""
+  if len(argv) < 2:
+    raise app.UsageError("Missing required input: mjcf path.")
+  elif len(argv) > 2:
     raise app.UsageError("Too many command-line arguments.")
 
-  print(f"Loading model from: {_MODEL_PATH.value}.")
-  if _MODEL_PATH.value.endswith(".mjb"):
-    mjm = mujoco.MjModel.from_binary_path(_MODEL_PATH.value)
-  else:
-    mjm = _load_model()
-  if _CONE.value == "pyramidal":
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
-  elif _CONE.value == "elliptic":
-    mjm.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+  mjm = _load_model(epath.Path(argv[1]))
   mjd = mujoco.MjData(mjm)
+  ctrls = None
+  ctrlid = 0
+  if _REPLAY.value:
+    keys = find_keys(mjm, _REPLAY.value)
+    if not keys:
+      raise app.UsageError(f"Key prefix not find: {_REPLAY.value}")
+    ctrls = make_trajectory(mjm, keys)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
+  elif mjm.nkey > 0 and _KEYFRAME.value > -1:
+    mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
   mujoco.mj_forward(mjm, mjd)
 
-  if _ENGINE.value == "mjc":
-    print("Engine: MuJoCo C")
-  else:  # mjwarp
-    print("Engine: MuJoCo Warp")
-    m = mjwarp.put_model(mjm)
-    m.opt.ls_parallel = _LS_PARALLEL.value
-    d = mjwarp.put_data(mjm, mjd)
-
+  if _ENGINE.value == EngineOptions.C:
+    override_model(mjm, _OVERRIDE.value)
+    print(
+      f"  nbody: {mjm.nbody} nv: {mjm.nv} ngeom: {mjm.ngeom} nu: {mjm.nu}\n"
+      f"  solver: {mujoco.mjtSolver(mjm.opt.solver).name} cone: {mujoco.mjtCone(mjm.opt.cone).name}"
+      f" iterations: {mjm.opt.iterations} ls_iterations: {mjm.opt.ls_iterations}\n"
+      f"  integrator: {mujoco.mjtIntegrator(mjm.opt.integrator).name}\n"
+    )
+    print(f"MuJoCo C simulating with dt = {mjm.opt.timestep:.3f}...")
+  else:
+    wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+    wp.init()
     if _CLEAR_KERNEL_CACHE.value:
       wp.clear_kernel_cache()
 
-    start = time.time()
-    print("Compiling the model physics step...")
-    mjwarp.step(m, d)
-    # double warmup to work around issues with compilation during graph capture:
-    mjwarp.step(m, d)
-    # capture the whole step function as a CUDA graph
-    with wp.ScopedCapture() as capture:
-      mjwarp.step(m, d)
-    graph = capture.graph
-    elapsed = time.time() - start
-    print(f"Compilation took {elapsed}s.")
+    with wp.ScopedDevice(_DEVICE.value):
+      m = mjw.put_model(mjm)
+      override_model(m, _OVERRIDE.value)
+      broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
+      solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
+      integrator = mjw.IntegratorType(m.opt.integrator).name
+      iterations, ls_iterations = m.opt.iterations, m.opt.ls_iterations
+      ls_str = f"{'parallel' if m.opt.ls_parallel else 'iterative'} linesearch iterations: {ls_iterations}"
+      print(
+        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
+        f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
+        f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
+        f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
+      )
+      d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+      print(f"Data\n  nworld: {d.nworld} nconmax: {d.naconmax / d.nworld} njmax: {d.njmax}\n")
+      graph = _compile_step(m, d)
+      print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
-  viewer = mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback)
-  with viewer:
+  with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
+    opt = copy.copy(mjm.opt)
+
     while True:
       start = time.time()
 
-      if _ENGINE.value == "mjc":
+      if ctrls is not None and ctrlid < len(ctrls):
+        mjd.ctrl[:] = ctrls[ctrlid]
+        ctrlid += 1
+
+      if _ENGINE.value == EngineOptions.C:
         mujoco.mj_step(mjm, mjd)
       else:  # mjwarp
-        # TODO(robotics-simulation): recompile when changing disable flags, etc.
         wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
         wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
         wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
         wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
         wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
         wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
+
+        # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
+        # TODO: update memory tied to option max iterations
+        if mjm.opt != opt:
+          opt = copy.copy(mjm.opt)
+          m = mjw.put_model(mjm)
+          graph = _compile_step(m, d)
 
         if _VIEWER_GLOBAL_STATE["running"]:
           wp.capture_launch(graph)
@@ -120,7 +192,7 @@ def _main(argv: Sequence[str]) -> None:
           wp.capture_launch(graph)
           wp.synchronize()
 
-        mjwarp.get_data_into(mjd, mjm, d)
+        mjw.get_data_into(mjd, mjm, d)
 
       viewer.sync()
 
@@ -130,6 +202,10 @@ def _main(argv: Sequence[str]) -> None:
 
 
 def main():
+  # absl flags assumes __main__ is the main running module for printing usage documentation
+  # pyproject bin scripts break this assumption, so manually set argv and docstring
+  sys.argv[0] = "mujoco_warp.viewer"
+  sys.modules["__main__"].__doc__ = __doc__
   app.run(_main)
 
 

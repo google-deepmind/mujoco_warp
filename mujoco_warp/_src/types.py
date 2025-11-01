@@ -22,14 +22,82 @@ MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
-MJ_NREF = mujoco.mjNREF
-MJ_NIMP = mujoco.mjNIMP
+MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
+MJ_MINMU = mujoco.mjMINMU  # minimum friction
+# maximum size (by number of edges) of an horizon in EPA algorithm
+MJ_MAX_EPAHORIZON = 12
+# maximum average number of trianglarfaces EPA can insert at each iteration
+MJ_MAX_EPAFACES = 5
+
+TILE_SIZE_JTDAJ_SPARSE = 16
+TILE_SIZE_JTDAJ_DENSE = 16
+
+
+# TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
+@dataclasses.dataclass
+class BlockDim:
+  """Block dimension 'block_dim' settings for wp.launch_tiled.
+
+  TODO(team): experimental and may be removed
+  """
+
+  # collision_driver
+  segmented_sort: int = 128
+  # forward
+  euler_dense: int = 32
+  actuator_velocity: int = 32
+  tendon_velocity: int = 32
+  # ray
+  ray: int = 64
+  # sensor
+  contact_sort: int = 64
+  energy_vel_kinetic: int = 32
+  # smooth
+  cholesky_factorize: int = 32
+  cholesky_solve: int = 32
+  cholesky_factorize_solve: int = 32
+  # solver
+  update_gradient_cholesky: int = 64
+  update_gradient_JTDAJ_sparse: int = 64
+  update_gradient_JTDAJ_dense: int = 96
+  # support
+  mul_m_dense: int = 32
+
+
+class BroadphaseType(enum.IntEnum):
+  """Type of broadphase algorithm.
+
+  Attributes:
+     NXN: Broad phase checking all pairs
+     SAP_TILE: Sweep and prune broad phase using tile sort
+     SAP_SEGMENTED: Sweep and prune broad phase using segment sort
+  """
+
+  NXN = 0
+  SAP_TILE = 1
+  SAP_SEGMENTED = 2
+
+
+class BroadphaseFilter(enum.IntFlag):
+  """Bitmask specifying which collision functions to run during broadphase.
+
+  Attributes:
+    PLANE: collision between bounding sphere and plane
+    SPHERE: collision between bounding spheres
+    AABB: collision between axis-aligned bounding boxes
+    OBB: collision between oriented bounding boxes
+  """
+
+  PLANE = 1
+  SPHERE = 2
+  AABB = 4
+  OBB = 8
 
 
 class CamLightType(enum.IntEnum):
   """Type of camera light.
 
-  Members:
+  Attributes:
     FIXED: pos and rot fixed in body
     TRACK: pos tracks body, rot fixed in global
     TRACKCOM: pos tracks subtree com, rot fixed in body
@@ -47,7 +115,7 @@ class CamLightType(enum.IntEnum):
 class DataType(enum.IntFlag):
   """Sensor data types.
 
-  Members:
+  Attributes:
     REAL: real values, no constraints
     POSITIVE: positive values, 0 or negative: inactive
   """
@@ -60,13 +128,14 @@ class DataType(enum.IntFlag):
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
-  Members:
+  Attributes:
     CONSTRAINT:   entire constraint solver
     EQUALITY:     equality constraints
     FRICTIONLOSS: joint and tendon frictionloss constraints
     LIMIT:        joint and tendon limit constraints
     CONTACT:      contact constraints
-    PASSIVE:      passive forces
+    SPRING:       passive spring forces
+    DAMPER:       passive damper forces
     GRAVITY:      gravitational forces
     CLAMPCTRL:    clamp control to specified range
     ACTUATION:    apply actuation forces
@@ -81,79 +150,105 @@ class DisableBit(enum.IntFlag):
   FRICTIONLOSS = mujoco.mjtDisableBit.mjDSBL_FRICTIONLOSS
   LIMIT = mujoco.mjtDisableBit.mjDSBL_LIMIT
   CONTACT = mujoco.mjtDisableBit.mjDSBL_CONTACT
-  PASSIVE = mujoco.mjtDisableBit.mjDSBL_PASSIVE
+  SPRING = mujoco.mjtDisableBit.mjDSBL_SPRING
+  DAMPER = mujoco.mjtDisableBit.mjDSBL_DAMPER
   GRAVITY = mujoco.mjtDisableBit.mjDSBL_GRAVITY
   CLAMPCTRL = mujoco.mjtDisableBit.mjDSBL_CLAMPCTRL
+  WARMSTART = mujoco.mjtDisableBit.mjDSBL_WARMSTART
   ACTUATION = mujoco.mjtDisableBit.mjDSBL_ACTUATION
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   FILTERPARENT = mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
-  # unsupported: MIDPHASE, WARMSTART
+  # unsupported: MIDPHASE
+
+
+class EnableBit(enum.IntFlag):
+  """Enable optional feature bitflags.
+
+  Attributes:
+    ENERGY: energy computation
+    INVDISCRETE: discrete-time inverse dynamics
+  """
+
+  ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
+  INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+  # unsupported: OVERRIDE, FWDINV, MULTICCD, ISLAND
 
 
 class TrnType(enum.IntEnum):
   """Type of actuator transmission.
 
-  Members:
+  Attributes:
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
+    SLIDERCRANK: force via slider-crank linkage
     TENDON: force on tendon
+    BODY: adhesion force on body's geoms
+    SITE: force on site
   """
 
   JOINT = mujoco.mjtTrn.mjTRN_JOINT
   JOINTINPARENT = mujoco.mjtTrn.mjTRN_JOINTINPARENT
+  SLIDERCRANK = mujoco.mjtTrn.mjTRN_SLIDERCRANK
   TENDON = mujoco.mjtTrn.mjTRN_TENDON
-  # unsupported: SITE, SLIDERCRANK, BODY
+  BODY = mujoco.mjtTrn.mjTRN_BODY
+  SITE = mujoco.mjtTrn.mjTRN_SITE
 
 
 class DynType(enum.IntEnum):
   """Type of actuator dynamics.
 
-  Members:
+  Attributes:
     NONE: no internal dynamics; ctrl specifies force
     INTEGRATOR: integrator: da/dt = u
     FILTER: linear filter: da/dt = (u-a) / tau
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
+    MUSCLE: piece-wise linear filter with two time constants
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
   INTEGRATOR = mujoco.mjtDyn.mjDYN_INTEGRATOR
   FILTER = mujoco.mjtDyn.mjDYN_FILTER
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
-  # unsupported: MUSCLE, USER
+  MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
+  # unsupported: USER
 
 
 class GainType(enum.IntEnum):
   """Type of actuator gain.
 
-  Members:
+  Attributes:
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
+    MUSCLE: muscle FLV curve computed by muscle_gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
-  # unsupported: MUSCLE, USER
+  MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
+  # unsupported: USER
 
 
 class BiasType(enum.IntEnum):
   """Type of actuator bias.
 
-  Members:
+  Attributes:
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
+    MUSCLE: muscle passive force computed by muscle_bias
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
-  # unsupported: MUSCLE, USER
+  MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
+  # unsupported: USER
 
 
 class JointType(enum.IntEnum):
   """Type of degree of freedom.
 
-  Members:
+  Attributes:
     FREE:  global position and orientation (quat)       (7,)
     BALL:  orientation (quat) relative to parent        (4,)
     SLIDE: sliding distance along body-fixed axis       (1,)
@@ -165,17 +260,11 @@ class JointType(enum.IntEnum):
   SLIDE = mujoco.mjtJoint.mjJNT_SLIDE
   HINGE = mujoco.mjtJoint.mjJNT_HINGE
 
-  def dof_width(self) -> int:
-    return {0: 6, 1: 3, 2: 1, 3: 1}[self.value]
-
-  def qpos_width(self) -> int:
-    return {0: 7, 1: 4, 2: 1, 3: 1}[self.value]
-
 
 class ConeType(enum.IntEnum):
   """Type of friction cone.
 
-  Members:
+  Attributes:
     PYRAMIDAL: pyramidal
     ELLIPTIC: elliptic
   """
@@ -187,7 +276,7 @@ class ConeType(enum.IntEnum):
 class IntegratorType(enum.IntEnum):
   """Integrator mode.
 
-  Members:
+  Attributes:
     EULER: semi-implicit Euler
     RK4: 4th-order Runge Kutta
     IMPLICITFAST: implicit in velocity, no rne derivative
@@ -202,31 +291,34 @@ class IntegratorType(enum.IntEnum):
 class GeomType(enum.IntEnum):
   """Type of geometry.
 
-  Members:
+  Attributes:
     PLANE: plane
+    HFIELD: heightfield
     SPHERE: sphere
     CAPSULE: capsule
     ELLIPSOID: ellipsoid
     CYLINDER: cylinder
     BOX: box
     MESH: mesh
+    SDF: sdf
   """
 
   PLANE = mujoco.mjtGeom.mjGEOM_PLANE
+  HFIELD = mujoco.mjtGeom.mjGEOM_HFIELD
   SPHERE = mujoco.mjtGeom.mjGEOM_SPHERE
   CAPSULE = mujoco.mjtGeom.mjGEOM_CAPSULE
   ELLIPSOID = mujoco.mjtGeom.mjGEOM_ELLIPSOID
   CYLINDER = mujoco.mjtGeom.mjGEOM_CYLINDER
   BOX = mujoco.mjtGeom.mjGEOM_BOX
   MESH = mujoco.mjtGeom.mjGEOM_MESH
-  # unsupported: HFIELD,
-  # NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
+  SDF = mujoco.mjtGeom.mjGEOM_SDF
+  # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
 
-  Members:
+  Attributes:
     CG: Conjugate gradient (primal)
     NEWTON: Newton (primal)
   """
@@ -236,21 +328,73 @@ class SolverType(enum.IntEnum):
   # unsupported: PGS
 
 
+class ConstraintState(enum.IntEnum):
+  """State of constraint.
+
+  Attributes:
+    SATISFIED: constraint satisfied, zero cost (limit, contact)
+    QUADRATIC: quadratic cost (equality, friction, limit, contact)
+    LINEARNEG: linear cost, negative side (friction)
+    LINEARPOS: linear cost, positive side (friction)
+    CONE: square distance to cone cost (elliptic contact)
+  """
+
+  SATISFIED = mujoco.mjtConstraintState.mjCNSTRSTATE_SATISFIED
+  QUADRATIC = mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC
+  LINEARNEG = mujoco.mjtConstraintState.mjCNSTRSTATE_LINEARNEG
+  LINEARPOS = mujoco.mjtConstraintState.mjCNSTRSTATE_LINEARPOS
+  CONE = mujoco.mjtConstraintState.mjCNSTRSTATE_CONE
+
+
+class ConstraintType(enum.IntEnum):
+  """Type of constraint.
+
+  Attributes:
+    EQUALITY: equality constraint
+    FRICTION_DOF: dof friction
+    FRICTION_TENDON: tendon friction
+    LIMIT_JOINT: joint limit
+    LIMIT_TENDON: tendon limit
+    CONTACT_FRICTIONLESS: frictionless contact
+    CONTACT_PYRAMIDAL: frictional contact, pyramidal friction cone
+    CONTACT_ELLIPTIC: frictional contact, elliptic friction cone
+  """
+
+  EQUALITY = mujoco.mjtConstraint.mjCNSTR_EQUALITY
+  FRICTION_DOF = mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+  FRICTION_TENDON = mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON
+  LIMIT_JOINT = mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT
+  LIMIT_TENDON = mujoco.mjtConstraint.mjCNSTR_LIMIT_TENDON
+  CONTACT_FRICTIONLESS = mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS
+  CONTACT_PYRAMIDAL = mujoco.mjtConstraint.mjCNSTR_CONTACT_PYRAMIDAL
+  CONTACT_ELLIPTIC = mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC
+
+
 class SensorType(enum.IntEnum):
   """Type of sensor.
 
-  Members:
+  Attributes:
+    MAGNETOMETER: magnetometer
     CAMPROJECTION: camera projection
+    RANGEFINDER: scalar distance to nearest geom or site along z-axis
     JOINTPOS: joint position
     TENDONPOS: scalar tendon position
     ACTUATORPOS: actuator position
     BALLQUAT: ball joint orientation
+    JOINTLIMITPOS: joint limit distance-margin
+    TENDONLIMITPOS: tendon limit distance-margin
     FRAMEPOS: frame position
     FRAMEXAXIS: frame x-axis
     FRAMEYAXIS: frame y-axis
     FRAMEZAXIS: frame z-axis
     FRAMEQUAT: frame orientation, represented as quaternion
     SUBTREECOM: subtree center of mass
+    GEOMDIST: signed distance between two geoms
+    GEOMNORMAL: normal direction between two geoms
+    GEOMFROMTO: segment between two geoms
+    INSIDESITE: 1 if object is inside site, 0 otherwise
+    E_POTENTIAL: potential energy
+    E_KINETIC: kinetic energy
     CLOCK: simulation time
     VELOCIMETER: 3D linear velocity, in local frame
     GYRO: 3D angular velocity, in local frame
@@ -258,31 +402,48 @@ class SensorType(enum.IntEnum):
     TENDONVEL: scalar tendon velocity
     ACTUATORVEL: actuator velocity
     BALLANGVEL: ball joint angular velocity
+    JOINTLIMITVEL: joint limit velocity
+    TENDONLIMITVEL: tendon limit velocity
     FRAMELINVEL: 3D linear velocity
     FRAMEANGVEL: 3D angular velocity
     SUBTREELINVEL: subtree linear velocity
     SUBTREEANGMOM: subtree angular momentum
     TOUCH: scalar contact normal forces summed over sensor zone
+    CONTACT: contacts which occurred during the simulation
     ACCELEROMETER: accelerometer
     FORCE: force
     TORQUE: torque
-    ACTUATORFRC: scalar actuator force
+    ACTUATORFRC: scalar actuator force, measured at the joint
+    TENDONACTFRC: scalar actuator force, measured at the tendon
     JOINTACTFRC: scalar actuator force, measured at the joint
+    JOINTLIMITFRC: joint limit force
+    TENDONLIMITFRC: tendon limit force
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
+    TACTILE: tactile sensor
   """
 
+  MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
   CAMPROJECTION = mujoco.mjtSensor.mjSENS_CAMPROJECTION
+  RANGEFINDER = mujoco.mjtSensor.mjSENS_RANGEFINDER
   JOINTPOS = mujoco.mjtSensor.mjSENS_JOINTPOS
   TENDONPOS = mujoco.mjtSensor.mjSENS_TENDONPOS
   ACTUATORPOS = mujoco.mjtSensor.mjSENS_ACTUATORPOS
   BALLQUAT = mujoco.mjtSensor.mjSENS_BALLQUAT
+  JOINTLIMITPOS = mujoco.mjtSensor.mjSENS_JOINTLIMITPOS
+  TENDONLIMITPOS = mujoco.mjtSensor.mjSENS_TENDONLIMITPOS
   FRAMEPOS = mujoco.mjtSensor.mjSENS_FRAMEPOS
   FRAMEXAXIS = mujoco.mjtSensor.mjSENS_FRAMEXAXIS
   FRAMEYAXIS = mujoco.mjtSensor.mjSENS_FRAMEYAXIS
   FRAMEZAXIS = mujoco.mjtSensor.mjSENS_FRAMEZAXIS
   FRAMEQUAT = mujoco.mjtSensor.mjSENS_FRAMEQUAT
   SUBTREECOM = mujoco.mjtSensor.mjSENS_SUBTREECOM
+  GEOMDIST = mujoco.mjtSensor.mjSENS_GEOMDIST
+  GEOMNORMAL = mujoco.mjtSensor.mjSENS_GEOMNORMAL
+  GEOMFROMTO = mujoco.mjtSensor.mjSENS_GEOMFROMTO
+  INSIDESITE = mujoco.mjtSensor.mjSENS_INSIDESITE
+  E_POTENTIAL = mujoco.mjtSensor.mjSENS_E_POTENTIAL
+  E_KINETIC = mujoco.mjtSensor.mjSENS_E_KINETIC
   CLOCK = mujoco.mjtSensor.mjSENS_CLOCK
   VELOCIMETER = mujoco.mjtSensor.mjSENS_VELOCIMETER
   GYRO = mujoco.mjtSensor.mjSENS_GYRO
@@ -290,24 +451,31 @@ class SensorType(enum.IntEnum):
   TENDONVEL = mujoco.mjtSensor.mjSENS_TENDONVEL
   ACTUATORVEL = mujoco.mjtSensor.mjSENS_ACTUATORVEL
   BALLANGVEL = mujoco.mjtSensor.mjSENS_BALLANGVEL
+  JOINTLIMITVEL = mujoco.mjtSensor.mjSENS_JOINTLIMITVEL
+  TENDONLIMITVEL = mujoco.mjtSensor.mjSENS_TENDONLIMITVEL
   FRAMELINVEL = mujoco.mjtSensor.mjSENS_FRAMELINVEL
   FRAMEANGVEL = mujoco.mjtSensor.mjSENS_FRAMEANGVEL
   SUBTREELINVEL = mujoco.mjtSensor.mjSENS_SUBTREELINVEL
   SUBTREEANGMOM = mujoco.mjtSensor.mjSENS_SUBTREEANGMOM
   TOUCH = mujoco.mjtSensor.mjSENS_TOUCH
+  CONTACT = mujoco.mjtSensor.mjSENS_CONTACT
   ACCELEROMETER = mujoco.mjtSensor.mjSENS_ACCELEROMETER
   FORCE = mujoco.mjtSensor.mjSENS_FORCE
   TORQUE = mujoco.mjtSensor.mjSENS_TORQUE
   ACTUATORFRC = mujoco.mjtSensor.mjSENS_ACTUATORFRC
+  TENDONACTFRC = mujoco.mjtSensor.mjSENS_TENDONACTFRC
   JOINTACTFRC = mujoco.mjtSensor.mjSENS_JOINTACTFRC
+  JOINTLIMITFRC = mujoco.mjtSensor.mjSENS_JOINTLIMITFRC
+  TENDONLIMITFRC = mujoco.mjtSensor.mjSENS_TENDONLIMITFRC
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
+  TACTILE = mujoco.mjtSensor.mjSENS_TACTILE
 
 
 class ObjType(enum.IntEnum):
   """Type of object.
 
-  Members:
+  Attributes:
     UNKNOWN: unknown object type
     BODY: body
     XBODY: body, used to access regular frame instead of i-frame
@@ -327,10 +495,11 @@ class ObjType(enum.IntEnum):
 class EqType(enum.IntEnum):
   """Type of equality constraint.
 
-  Members:
+  Attributes:
     CONNECT: connect two bodies at a point (ball joint)
     JOINT: couple the values of two scalar joints with cubic
     WELD: fix relative position and orientation of two bodies
+    TENDON: couple the lengths of two tendons with cubic
   """
 
   CONNECT = mujoco.mjtEq.mjEQ_CONNECT
@@ -343,18 +512,62 @@ class EqType(enum.IntEnum):
 class WrapType(enum.IntEnum):
   """Type of tendon wrapping object.
 
-  Members:
+  Attributes:
     JOINT: constant moment arm
+    PULLEY: pulley used to split tendon
     SITE: pass through site
     SPHERE: wrap around sphere
     CYLINDER: wrap around (infinite) cylinder
   """
 
   JOINT = mujoco.mjtWrap.mjWRAP_JOINT
+  PULLEY = mujoco.mjtWrap.mjWRAP_PULLEY
   SITE = mujoco.mjtWrap.mjWRAP_SITE
   SPHERE = mujoco.mjtWrap.mjWRAP_SPHERE
   CYLINDER = mujoco.mjtWrap.mjWRAP_CYLINDER
-  # unsupported: PULLEY
+
+
+class State(enum.IntEnum):
+  """State component elements as integer bitflags.
+
+  Includes several convenient combinations of these flags.
+
+  Attributes:
+    TIME: time
+    QPOS: position
+    QVEL: velocity
+    ACT: actuator activation
+    WARMSTART: acceleration used for warmstart
+    CTRL: control
+    QFRC_APPLIED: applied generalized force
+    XFRC_APPLIED: applied Cartesian force/torque
+    EQ_ACTIVE: enable/disable constraints
+    MOCAP_POS: positions of mocap bodies
+    MOCAP_QUAT: orientations of mocap bodies
+    NSTATE: number of state elements
+    PHYSICS: QPOS | QVEL | ACT
+    FULLPHYSICS: TIME | PHYSICS | PLUGIN
+    USER: CTRL | QFRC_APPLIED | XFRC_APPLIED | EQ_ACTIVE | MOCAP_POS | MOCAP_QUAT | USERDATA
+    INTEGRATION: FULLPHYSICS | USER | WARMSTART
+  """
+
+  TIME = mujoco.mjtState.mjSTATE_TIME
+  QPOS = mujoco.mjtState.mjSTATE_QPOS
+  QVEL = mujoco.mjtState.mjSTATE_QVEL
+  ACT = mujoco.mjtState.mjSTATE_ACT
+  WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
+  CTRL = mujoco.mjtState.mjSTATE_CTRL
+  QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED
+  XFRC_APPLIED = mujoco.mjtState.mjSTATE_XFRC_APPLIED
+  EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
+  MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
+  MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
+  NSTATE = mujoco.mjtState.mjNSTATE
+  PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS
+  FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
+  USER = mujoco.mjtState.mjSTATE_USER
+  INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
+  # unsupported: USERDATA, PLUGIN
 
 
 class vec5f(wp.types.vector(length=5, dtype=float)):
@@ -362,6 +575,14 @@ class vec5f(wp.types.vector(length=5, dtype=float)):
 
 
 class vec6f(wp.types.vector(length=6, dtype=float)):
+  pass
+
+
+class vec8f(wp.types.vector(length=8, dtype=float)):
+  pass
+
+
+class vec8i(wp.types.vector(length=8, dtype=int)):
   pass
 
 
@@ -377,8 +598,6 @@ vec5 = vec5f
 vec6 = vec6f
 vec10 = vec10f
 vec11 = vec11f
-array2df = wp.array2d(dtype=float)
-array3df = wp.array3d(dtype=float)
 
 
 @dataclasses.dataclass
@@ -390,44 +609,70 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
-    gravity: gravitational acceleration
-    integrator: integration mode (mjtIntegrator)
-    cone: type of friction cone (mjtCone)
-    solver: solver algorithm (mjtSolver)
-    iterations: number of main solver iterations
-    ls_iterations: maximum number of CG/Newton linesearch iterations
-    disableflags: bit flags for disabling standard features
-    is_sparse: whether to use sparse representations
-    gjk_iterations: number of Gjk iterations in the convex narrowphase
-    epa_iterations: number of Epa iterations in the convex narrowphase
-    epa_exact_neg_distance: flag for enabling the distance calculation for non-intersecting case in the convex narrowphase
-    depth_extension: distance for which the closest point is not calculated for non-intersecting case in the convex narrowphase
-    ls_parallel: evaluate engine solver step sizes in parallel
-    wind: wind (for lift, drag, and viscosity)
+    ccd_tolerance: convex collision detection tolerance
     density: density of medium
     viscosity: viscosity of medium
+    gravity: gravitational acceleration
+    wind: wind (for lift, drag, and viscosity)
+    magnetic: global magnetic flux
+    integrator: integration mode (IntegratorType)
+    cone: type of friction cone (ConeType)
+    solver: solver algorithm (SolverType)
+    iterations: number of main solver iterations
+    ls_iterations: maximum number of CG/Newton linesearch iterations
+    ccd_iterations: number of iterations in convex collision detection
+    disableflags: bit flags for disabling standard features
+    enableflags: bit flags for enabling optional features
+    sdf_initpoints: number of starting points for gradient descent
+    sdf_iterations: max number of iterations for gradient descent
+
+  warp only fields:
+    is_sparse: whether to use sparse representations
+    ls_parallel: evaluate engine solver step sizes in parallel
+    ls_parallel_min_step: minimum step size for solver linesearch
+    has_fluid: True if wind, density, or viscosity are non-zero at put_model time
+    broadphase: broadphase type (BroadphaseType)
+    broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
+    graph_conditional: flag to use cuda graph conditional
+    run_collision_detection: if False, skips collision detection and allows user-populated
+      contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
+      zeros out the contacts at each step)
+    legacy_gjk: run legacy gjk algorithm
+    contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
+                             contacts matched after this value is exceded will be ignored
   """
 
-  timestep: float
-  impratio: float
-  tolerance: float
-  ls_tolerance: float
-  gravity: wp.vec3
+  timestep: wp.array(dtype=float)
+  impratio: wp.array(dtype=float)
+  tolerance: wp.array(dtype=float)
+  ls_tolerance: wp.array(dtype=float)
+  ccd_tolerance: wp.array(dtype=float)
+  density: wp.array(dtype=float)
+  viscosity: wp.array(dtype=float)
+  gravity: wp.array(dtype=wp.vec3)
+  wind: wp.array(dtype=wp.vec3)
+  magnetic: wp.array(dtype=wp.vec3)
   integrator: int
   cone: int
   solver: int
   iterations: int
   ls_iterations: int
+  ccd_iterations: int
   disableflags: int
+  enableflags: int
+  sdf_initpoints: int
+  sdf_iterations: int
+  # warp only fields:
   is_sparse: bool
-  gjk_iterations: int  # warp only
-  epa_iterations: int  # warp only
-  epa_exact_neg_distance: bool  # warp only
-  depth_extension: float  # warp only
   ls_parallel: bool
-  wind: wp.vec3
-  density: float
-  viscosity: float
+  ls_parallel_min_step: float
+  has_fluid: bool
+  broadphase: int
+  broadphase_filter: int
+  graph_conditional: bool
+  run_collision_detection: bool
+  legacy_gjk: bool
+  contact_sensor_maxmatch: int
 
 
 @dataclasses.dataclass
@@ -446,73 +691,54 @@ class Constraint:
   """Constraint data.
 
   Attributes:
-    worldid: world id                                 (njmax,)
-    id: id of object of specific type                 (njmax,)
-    J: constraint Jacobian                            (njmax, nv)
-    pos: constraint position (equality, contact)      (njmax,)
-    margin: inclusion margin (contact)                (njmax,)
-    D: constraint mass                                (njmax,)
-    aref: reference pseudo-acceleration               (njmax,)
-    frictionloss: frictionloss (friction)             (njmax,)
-    force: constraint force in constraint space       (njmax,)
-    Jaref: Jac*qacc - aref                            (njmax,)
+    type: constraint type (ConstraintType)            (nworld, njmax)
+    id: id of object of specific type                 (nworld, njmax)
+    J: constraint Jacobian                            (nworld, njmax, nv)
+    pos: constraint position (equality, contact)      (nworld, njmax)
+    margin: inclusion margin (contact)                (nworld, njmax)
+    D: constraint mass                                (nworld, njmax)
+    vel: velocity in constraint space: J*qvel         (nworld, njmax)
+    aref: reference pseudo-acceleration               (nworld, njmax)
+    frictionloss: frictionloss (friction)             (nworld, njmax)
+    force: constraint force in constraint space       (nworld, njmax)
+    Jaref: Jac*qacc - aref                            (nworld, njmax)
     Ma: M*qacc                                        (nworld, nv)
     grad: gradient of master cost                     (nworld, nv)
     grad_dot: dot(grad, grad)                         (nworld,)
     Mgrad: M / grad                                   (nworld, nv)
     search: linesearch vector                         (nworld, nv)
     search_dot: dot(search, search)                   (nworld,)
-    gauss: gauss Cost                                 (nworld,)
+    gauss: Gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
-    solver_niter: number of solver iterations         (nworld,)
-    active: active (quadratic) constraints            (njmax,)
-    gtol: linesearch termination tolerance            (nworld,)
+    state: constraint state                           (nworld, njmax)
     mv: qM @ search                                   (nworld, nv)
-    jv: efc_J @ search                                (njmax,)
-    quad: quadratic cost coefficients                 (njmax, 3)
-    quad_gauss: quadratic cost gauss coefficients     (nworld, 3)
-    h: cone hessian                                   (nworld, nv, nv)
+    jv: efc_J @ search                                (nworld, njmax)
+    quad: quadratic cost coefficients                 (nworld, njmax, 3)
+    quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)
+    h: Hessian                                        (nworld, nv, nv)
     alpha: line search step size                      (nworld,)
     prev_grad: previous grad                          (nworld, nv)
     prev_Mgrad: previous Mgrad                        (nworld, nv)
-    beta: polak-ribiere beta                          (nworld,)
-    beta_num: numerator of beta                       (nworld,)
-    beta_den: denominator of beta                     (nworld,)
+    beta: Polak-Ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
-    ls_done: linesearch done                          (nworld,)
-    p0: initial point                                 (nworld, 3)
-    lo: low point bounding the line search interval   (nworld, 3)
-    lo_alpha: alpha for low point                     (nworld,)
-    hi: high point bounding the line search interval  (nworld, 3)
-    hi_alpha: alpha for high point                    (nworld,)
-    lo_next: next low point                           (nworld, 3)
-    lo_next_alpha: alpha for next low point           (nworld,)
-    hi_next: next high point                          (nworld, 3)
-    hi_next_alpha: alpha for next high point          (nworld,)
-    mid: loss at mid_alpha                            (nworld, 3)
-    mid_alpha: midpoint between lo_alpha and hi_alpha (nworld,)
-    cost_candidate: costs associated with step sizes  (nworld, nlsp)
-    quad_total_candidate: quad_total for step sizes   (nworld, nlsp, 3)
-    u: friction cone (normal and tangents)            (nconmax, 6)
-    uu: elliptic cone variables                       (nconmax,)
-    uv: elliptic cone variables                       (nconmax,)
-    vv: elliptic cone variables                       (nconmax,)
-    condim: if contact: condim, else: -1              (njmax,)
   """
 
-  worldid: wp.array(dtype=int)
-  id: wp.array(dtype=int)
-  J: wp.array2d(dtype=float)
-  pos: wp.array(dtype=float)
-  margin: wp.array(dtype=float)
-  D: wp.array(dtype=float)
-  aref: wp.array(dtype=float)
-  frictionloss: wp.array(dtype=float)
-  force: wp.array(dtype=float)
-  Jaref: wp.array(dtype=float)
+  type: wp.array2d(dtype=int)
+  id: wp.array2d(dtype=int)
+  J: wp.array3d(dtype=float)
+  pos: wp.array2d(dtype=float)
+  margin: wp.array2d(dtype=float)
+  D: wp.array2d(dtype=float)
+  vel: wp.array2d(dtype=float)
+  aref: wp.array2d(dtype=float)
+  frictionloss: wp.array2d(dtype=float)
+  force: wp.array2d(dtype=float)
+  Jaref: wp.array2d(dtype=float)
   Ma: wp.array2d(dtype=float)
   grad: wp.array2d(dtype=float)
+  cholesky_L_tmp: wp.array3d(dtype=float)
+  cholesky_y_tmp: wp.array2d(dtype=float)
   grad_dot: wp.array(dtype=float)
   Mgrad: wp.array2d(dtype=float)
   search: wp.array2d(dtype=float)
@@ -520,47 +746,22 @@ class Constraint:
   gauss: wp.array(dtype=float)
   cost: wp.array(dtype=float)
   prev_cost: wp.array(dtype=float)
-  solver_niter: wp.array(dtype=int)
-  active: wp.array(dtype=bool)
-  gtol: wp.array(dtype=float)
+  state: wp.array2d(dtype=int)
   mv: wp.array2d(dtype=float)
-  jv: wp.array(dtype=float)
-  quad: wp.array(dtype=wp.vec3)
+  jv: wp.array2d(dtype=float)
+  quad: wp.array2d(dtype=wp.vec3)
   quad_gauss: wp.array(dtype=wp.vec3)
   h: wp.array3d(dtype=float)
   alpha: wp.array(dtype=float)
   prev_grad: wp.array2d(dtype=float)
   prev_Mgrad: wp.array2d(dtype=float)
   beta: wp.array(dtype=float)
-  beta_num: wp.array(dtype=float)
-  beta_den: wp.array(dtype=float)
   done: wp.array(dtype=bool)
-  # linesearch
-  ls_done: wp.array(dtype=bool)
-  p0: wp.array(dtype=wp.vec3)
-  lo: wp.array(dtype=wp.vec3)
-  lo_alpha: wp.array(dtype=float)
-  hi: wp.array(dtype=wp.vec3)
-  hi_alpha: wp.array(dtype=float)
-  lo_next: wp.array(dtype=wp.vec3)
-  lo_next_alpha: wp.array(dtype=float)
-  hi_next: wp.array(dtype=wp.vec3)
-  hi_next_alpha: wp.array(dtype=float)
-  mid: wp.array(dtype=wp.vec3)
-  mid_alpha: wp.array(dtype=float)
-  cost_candidate: wp.array2d(dtype=float)
-  quad_total_candidate: wp.array2d(dtype=wp.vec3)
-  # elliptic cone
-  u: wp.array(dtype=vec6)
-  uu: wp.array(dtype=float)
-  uv: wp.array(dtype=float)
-  vv: wp.array(dtype=float)
-  condim: wp.array(dtype=int)
 
 
 @dataclasses.dataclass
 class TileSet:
-  """Tiling configuration for decomposible block diagonal matrix.
+  """Tiling configuration for decomposable block diagonal matrix.
 
   For non-square, non-block-diagonal tiles, use two tilesets.
 
@@ -573,54 +774,50 @@ class TileSet:
   size: int
 
 
-# TODO(team): make Model/Data fields sort order match mujoco
-
-
 @dataclasses.dataclass
 class Model:
   """Model definition and parameters.
 
   Attributes:
-    nq: number of generalized coordinates = dim              ()
-    nv: number of degrees of freedom = dim                   ()
-    nu: number of actuators/controls = dim                   ()
-    na: number of activation states = dim                    ()
-    nbody: number of bodies                                  ()
-    njnt: number of joints                                   ()
-    ngeom: number of geoms                                   ()
-    nsite: number of sites                                   ()
-    ncam: number of cameras                                  ()
-    nlight: number of lights                                 ()
-    nexclude: number of excluded geom pairs                  ()
-    neq: number of equality constraints                      ()
-    nmocap: number of mocap bodies                           ()
-    ngravcomp: number of bodies with nonzero gravcomp        ()
-    nM: number of non-zeros in sparse inertia matrix         ()
-    ntendon: number of tendons                               ()
-    nwrap: number of wrap objects in all tendon paths        ()
-    nsensor: number of sensors                               ()
-    nsensordata: number of elements in sensor data vector    ()
-    nmeshvert: number of vertices for all meshes             ()
-    nmeshface: number of faces for all meshes                ()
-    nlsp: number of step sizes for parallel linsearch        ()
-    npair: number of predefined geom pairs                   ()
+    nq: number of generalized coordinates
+    nv: number of degrees of freedom
+    nu: number of actuators/controls
+    na: number of activation states
+    nbody: number of bodies
+    njnt: number of joints
+    nM: number of non-zeros in sparse inertia matrix
+    nC: number of non-zeros in sparse body-dof matrix
+    ngeom: number of geoms
+    nsite: number of sites
+    ncam: number of cameras
+    nlight: number of lights
+    nflex: number of flexes
+    nflexvert: number of vertices in all flexes
+    nflexedge: number of edges in all flexes
+    nflexelem: number of elements in all flexes
+    nflexelemdata: number of element vertex ids in all flexes
+    nmeshvert: number of vertices for all meshes
+    nmeshface: number of faces for all meshes
+    nmeshgraph: number of ints in mesh auxiliary data
+    nmeshpoly: number of polygons in all meshes
+    nmeshpolyvert: number of vertices in all polygons
+    nmeshpolymap: number of polygons in vertex map
+    nhfield: number of heightfields
+    nhfielddata: size of elevation data
+    nmat: number of materials
+    npair: number of predefined geom pairs
+    nexclude: number of excluded geom pairs
+    neq: number of equality constraints
+    ntendon: number of tendons
+    nwrap: number of wrap objects in all tendon paths
+    nsensor: number of sensors
+    nmocap: number of mocap bodies
+    ngravcomp: number of bodies with nonzero gravcomp
+    nsensordata: number of elements in sensor data vector
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (nworld, nq)
     qpos_spring: reference pose for springs                  (nworld, nq)
-    qM_fullm_i: sparse mass matrix addressing
-    qM_fullm_j: sparse mass matrix addressing
-    qM_mulm_i: sparse mass matrix addressing
-    qM_mulm_j: sparse mass matrix addressing
-    qM_madr_ij: sparse mass matrix addressing
-    qLD_update_tree: dof tree ordering for qLD updates
-    qLD_update_treeadr: index of each dof tree level
-    M_rownnz: number of non-zeros in each row of qM             (nv,)
-    M_rowadr: index of each row in qM                           (nv,)
-    M_colind: column indices of non-zeros in qM                 (nM,)
-    mapM2M: index mapping from M (legacy) to M (CSR)            (nM)
-    qM_tiles: tiling configuration
-    body_tree: list of body ids by tree level
     body_parentid: id of body's parent                       (nbody,)
     body_rootid: id of root above body                       (nbody,)
     body_weldid: id of body that this body is welded to      (nbody,)
@@ -637,18 +834,21 @@ class Model:
     body_iquat: local orientation of inertia ellipsoid       (nworld, nbody, 4)
     body_mass: mass                                          (nworld, nbody,)
     body_subtreemass: mass of subtree starting at this body  (nworld, nbody,)
-    subtree_mass: mass of subtree                            (nworld, nbody,)
     body_inertia: diagonal inertia in ipos/iquat frame       (nworld, nbody, 3)
     body_invweight0: mean inv inert in qpos0 (trn, rot)      (nworld, nbody, 2)
+    body_gravcomp: antigravity force, units of body weight   (nworld, nbody)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
-    body_gravcomp: antigravity force, units of body weight   (nworld, nbody)
-    jnt_type: type of joint (mjtJoint)                       (njnt,)
+    oct_child: octree children                               (noct, 8)
+    oct_aabb: octree axis-aligned bounding boxes             (noct, 6)
+    oct_coeff: octree interpolation coefficients             (noct, 8)
+    jnt_type: type of joint (JointType)                      (njnt,)
     jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
     jnt_bodyid: id of joint's body                           (njnt,)
     jnt_limited: does joint have limits                      (njnt,)
     jnt_actfrclimited: does joint have actuator force limits (njnt,)
+    jnt_actgravcomp: is gravcomp force applied via actuators (njnt,)
     jnt_solref: constraint solver reference: limit           (nworld, njnt, mjNREF)
     jnt_solimp: constraint solver impedance: limit           (nworld, njnt, mjNIMP)
     jnt_pos: local anchor position                           (nworld, njnt, 3)
@@ -657,47 +857,44 @@ class Model:
     jnt_range: joint limits                                  (nworld, njnt, 2)
     jnt_actfrcrange: range of total actuator force           (nworld, njnt, 2)
     jnt_margin: min distance for limit detection             (nworld, njnt)
-    jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
-    jnt_limited_ball_adr: limited/ball jntadr
-    jnt_actgravcomp: is gravcomp force applied via actuators (njnt,)
     dof_bodyid: id of dof's body                             (nv,)
     dof_jntid: id of dof's joint                             (nv,)
     dof_parentid: id of dof's parent; -1: none               (nv,)
     dof_Madr: dof address in M-diagonal                      (nv,)
+    dof_solref: constraint solver reference: frictionloss    (nworld, nv, NREF)
+    dof_solimp: constraint solver impedance: frictionloss    (nworld, nv, NIMP)
+    dof_frictionloss: dof friction loss                      (nworld, nv)
     dof_armature: dof armature inertia/mass                  (nworld, nv)
     dof_damping: damping coefficient                         (nworld, nv)
     dof_invweight0: diag. inverse inertia in qpos0           (nworld, nv)
-    dof_frictionloss: dof friction loss                      (nworld, nv)
-    dof_solimp: constraint solver impedance: frictionloss    (nworld, nv, NIMP)
-    dof_solref: constraint solver reference: frictionloss    (nworld, nv, NREF)
-    dof_tri_row: np.tril_indices                             (mjm.nv)[0]
-    dof_tri_col: np.tril_indices                             (mjm.nv)[1]
-    geom_type: geometric type (mjtGeom)                      (ngeom,)
+    geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
     geom_conaffinity: geom contact affinity                  (ngeom,)
     geom_condim: contact dimensionality (1, 3, 4, 6)         (ngeom,)
     geom_bodyid: id of geom's body                           (ngeom,)
     geom_dataid: id of geom's mesh/hfield; -1: none          (ngeom,)
-    geom_group: geom group inclusion/exclusion mask          (ngeom,)
     geom_matid: material id for rendering                    (nworld, ngeom,)
+    geom_group: geom group inclusion/exclusion mask          (ngeom,)
     geom_priority: geom contact priority                     (ngeom,)
     geom_solmix: mixing coef for solref/imp in geom pair     (nworld, ngeom,)
     geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
-    geom_aabb: bounding box, (center, size)                  (ngeom, 6)
+    geom_aabb: bounding box, (center, size)                  (nworld, ngeom, 2, 3)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
     geom_pos: local position offset rel. to body             (nworld, ngeom, 3)
     geom_quat: local orientation offset rel. to body         (nworld, ngeom, 4)
     geom_friction: friction for (slide, spin, roll)          (nworld, ngeom, 3)
     geom_margin: detect contact if dist<margin               (nworld, ngeom,)
     geom_gap: include in solver if dist<margin-gap           (nworld, ngeom,)
+    geom_fluid: fluid interaction parameters                 (ngeom, mjNFLUID)
     geom_rgba: rgba when material is omitted                 (nworld, ngeom, 4)
-    site_type: geom type for rendering (mjtGeom)             (nsite,)
+    site_type: geom type for rendering (GeomType)            (nsite,)
     site_bodyid: id of site's body                           (nsite,)
+    site_size: geom size for rendering                       (nsite, 3)
     site_pos: local position offset rel. to body             (nworld, nsite, 3)
     site_quat: local orientation offset rel. to body         (nworld, nsite, 4)
-    cam_mode: camera tracking mode (mjtCamLight)             (ncam,)
+    cam_mode: camera tracking mode (CamLightType)            (ncam,)
     cam_bodyid: id of camera's body                          (ncam,)
     cam_targetbodyid: id of targeted body; -1: none          (ncam,)
     cam_pos: position rel. to body frame                     (nworld, ncam, 3)
@@ -709,53 +906,58 @@ class Model:
     cam_resolution: resolution: pixels [width, height]       (ncam, 2)
     cam_sensorsize: sensor size: length [width, height]      (ncam, 2)
     cam_intrinsic: [focal length; principal point]           (ncam, 4)
-    light_mode: light tracking mode (mjtCamLight)            (nlight,)
+    light_mode: light tracking mode (CamLightType)           (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
+    light_type: spot, directional, etc. (mjtLightType)       (nworld, nlight)
+    light_castshadow: does light cast shadows                (nworld, nlight)
+    light_active: is light active                            (nworld, nlight)
     light_pos: position rel. to body frame                   (nworld, nlight, 3)
     light_dir: direction rel. to body frame                  (nworld, nlight, 3)
     light_poscom0: global position rel. to sub-com in qpos0  (nworld, nlight, 3)
     light_pos0: global position rel. to body in qpos0        (nworld, nlight, 3)
     light_dir0: global direction in qpos0                    (nlight, 3)
+    flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
+    flex_vertadr: first vertex address                       (nflex,)
+    flex_vertnum: number of vertices                         (nflex,)
+    flex_edgeadr: first edge address                         (nflex,)
+    flex_elemedgeadr: first element address                  (nflex,)
+    flex_vertbodyid: vertex body ids                         (nflexvert,)
+    flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
+    flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
+    flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
+    flex_elemedge: element edge ids                          (nflexelemedge,)
+    flexedge_length0: edge lengths in qpos0                  (nflexedge,)
+    flex_stiffness: finite element stiffness matrix          (nflexelem, 21)
+    flex_bending: bending stiffness                          (nflexedge, 17)
+    flex_damping: Rayleigh's damping coefficient             (nflex,)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
-    mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
     mesh_faceadr: first face address                         (nmesh,)
+    mesh_normaladr: first normal address                     (nmesh,)
+    mesh_graphadr: graph data address; -1: no graph          (nmesh,)
+    mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
+    mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_face: face indices for all meshes                   (nface, 3)
-    eq_type: constraint type (mjtEq)                         (neq,)
-    eq_obj1id: id of object 1                                (neq,)
-    eq_obj2id: id of object 2                                (neq,)
-    eq_objtype: type of both objects (mjtObj)                (neq,)
-    eq_active0: initial enable/disable constraint state      (neq,)
-    eq_solref: constraint solver reference                   (nworld, neq, mjNREF)
-    eq_solimp: constraint solver impedance                   (nworld, neq, mjNIMP)
-    eq_data: numeric data for constraint                     (nworld, neq, mjNEQDATA)
-    eq_connect_adr: eq_* addresses of type `CONNECT`
-    eq_wld_adr: eq_* addresses of type `WELD`
-    eq_jnt_adr: eq_* addresses of type `JOINT`
-    eq_ten_adr: eq_* addresses of type `TENDON`              (<=neq,)
-    actuator_moment_tiles_nv: tiling configuration
-    actuator_moment_tiles_nu: tiling configuration
-    actuator_affine_bias_gain: affine bias/gain present
-    actuator_trntype: transmission type (mjtTrn)             (nu,)
-    actuator_dyntype: dynamics type (mjtDyn)                 (nu,)
-    actuator_gaintype: gain type (mjtGain)                   (nu,)
-    actuator_biastype: bias type (mjtBias)                   (nu,)
-    actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
-    actuator_actadr: first activation address; -1: stateless (nu,)
-    actuator_actnum: number of activation variables          (nu,)
-    actuator_ctrllimited: is control limited                 (nu,)
-    actuator_forcelimited: is force limited                  (nu,)
-    actuator_actlimited: is activation limited               (nu,)
-    actuator_dynprm: dynamics parameters                     (nworld, nu, mjNDYN)
-    actuator_gainprm: gain parameters                        (nworld, nu, mjNGAIN)
-    actuator_biasprm: bias parameters                        (nworld, nu, mjNBIAS)
-    actuator_ctrlrange: range of controls                    (nworld, nu, 2)
-    actuator_forcerange: range of forces                     (nworld, nu, 2)
-    actuator_actrange: range of activations                  (nworld, nu, 2)
-    actuator_gear: scale length and transmitted force        (nworld, nu, 6)
-    nxn_geom_pair: valid collision pair geom ids             (<= ngeom * (ngeom - 1) // 2,)
-    nxn_pairid: predefined pair id, -1 if not predefined     (<= ngeom * (ngeom - 1) // 2,)
+    mesh_graph: convex graph data                            (nmeshgraph,)
+    mesh_quat: rotation applied to asset vertices            (nmesh, 4)
+    mesh_polynum: number of polygons per mesh                (nmesh,)
+    mesh_polyadr: first polygon address per mesh             (nmesh,)
+    mesh_polynormal: all polygon normals                     (nmeshpoly, 3)
+    mesh_polyvertadr: polygon vertex start address           (nmeshpoly,)
+    mesh_polyvertnum: number of vertices per polygon         (nmeshpoly,)
+    mesh_polyvert: all polygon vertices                      (nmeshpolyvert,)
+    mesh_polymapadr: first polygon address per vertex        (nmeshvert,)
+    mesh_polymapnum: number of polygons per vertex           (nmeshvert,)
+    mesh_polymap: vertex to polygon map                      (nmeshpolymap,)
+    hfield_size: (x, y, z_top, z_bottom)                     (nhfield, 4)
+    hfield_nrow: number of rows in grid                      (nhfield,)
+    hfield_ncol: number of columns in grid                   (nhfield,)
+    hfield_adr: start address in hfield_data                 (nhfield,)
+    hfield_data: elevation data                              (nhfielddata,)
+    mat_texid: texture id for rendering                      (nworld, nmat, mjNTEXROLE)
+    mat_texrepeat: texture repeat for rendering              (nworld, nmat, 2)
+    mat_rgba: rgba                                           (nworld, nmat, 4)
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
     pair_geom2: id of geom2                                  (npair,)
@@ -766,52 +968,152 @@ class Model:
     pair_gap: include in solver if dist<margin-gap           (nworld, npair,)
     pair_friction: tangent1, 2, spin, roll1, 2               (nworld, npair, 5)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
-    condim_max: maximum condim for geoms
+    eq_type: constraint type (EqType)                        (neq,)
+    eq_obj1id: id of object 1                                (neq,)
+    eq_obj2id: id of object 2                                (neq,)
+    eq_objtype: type of both objects (ObjType)               (neq,)
+    eq_active0: initial enable/disable constraint state      (neq,)
+    eq_solref: constraint solver reference                   (nworld, neq, mjNREF)
+    eq_solimp: constraint solver impedance                   (nworld, neq, mjNIMP)
+    eq_data: numeric data for constraint                     (nworld, neq, mjNEQDATA)
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
     tendon_limited: does tendon have length limits           (ntendon,)
-    tendon_limited_adr: addresses for limited tendons        (<=ntendon,)
+    tendon_actfrclimited: does ten have actuator force limit (ntendon,)
     tendon_solref_lim: constraint solver reference: limit    (nworld, ntendon, mjNREF)
     tendon_solimp_lim: constraint solver impedance: limit    (nworld, ntendon, mjNIMP)
     tendon_solref_fri: constraint solver reference: friction (nworld, ntendon, mjNREF)
     tendon_solimp_fri: constraint solver impedance: friction (nworld, ntendon, mjNIMP)
     tendon_range: tendon length limits                       (nworld, ntendon, 2)
-    tendon_margin: min distance for limit detection          (nworld, ntendon,)
-    tendon_stiffness: stiffness coefficient                  (nworld, ntendon,)
-    tendon_damping: damping coefficient                      (nworld, ntendon,)
-    tendon_frictionloss: loss due to friction                (nworld, ntendon,)
+    tendon_actfrcrange: range of total actuator force        (nworld, ntendon, 2)
+    tendon_margin: min distance for limit detection          (nworld, ntendon)
+    tendon_stiffness: stiffness coefficient                  (nworld, ntendon)
+    tendon_damping: damping coefficient                      (nworld, ntendon)
+    tendon_armature: inertia associated with tendon velocity (nworld, ntendon)
+    tendon_frictionloss: loss due to friction                (nworld, ntendon)
     tendon_lengthspring: spring resting length range         (nworld, ntendon, 2)
-    tendon_length0: tendon length in qpos0                   (nworld, ntendon,)
-    tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon,)
+    tendon_length0: tendon length in qpos0                   (nworld, ntendon)
+    tendon_invweight0: inv. weight in qpos0                  (nworld, ntendon)
+    wrap_type: wrap object type (WrapType)                   (nwrap,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
-    wrap_type: wrap object type (mjtWrap)                    (nwrap,)
+    actuator_trntype: transmission type (TrnType)            (nu,)
+    actuator_dyntype: dynamics type (DynType)                (nu,)
+    actuator_gaintype: gain type (GainType)                  (nu,)
+    actuator_biastype: bias type (BiasType)                  (nu,)
+    actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
+    actuator_actadr: first activation address; -1: stateless (nu,)
+    actuator_actnum: number of activation variables          (nu,)
+    actuator_ctrllimited: is control limited                 (nu,)
+    actuator_forcelimited: is force limited                  (nu,)
+    actuator_actlimited: is activation limited               (nu,)
+    actuator_dynprm: dynamics parameters                     (nworld, nu, mjNDYN)
+    actuator_gainprm: gain parameters                        (nworld, nu, mjNGAIN)
+    actuator_biasprm: bias parameters                        (nworld, nu, mjNBIAS)
+    actuator_actearly: step activation before force          (nu,)
+    actuator_ctrlrange: range of controls                    (nworld, nu, 2)
+    actuator_forcerange: range of forces                     (nworld, nu, 2)
+    actuator_actrange: range of activations                  (nworld, nu, 2)
+    actuator_gear: scale length and transmitted force        (nworld, nu, 6)
+    actuator_cranklength: crank length for slider-crank      (nu,)
+    actuator_acc0: acceleration from unit force in qpos0     (nu,)
+    actuator_lengthrange: feasible actuator length range     (nu, 2)
+    sensor_type: sensor type (SensorType)                    (nsensor,)
+    sensor_datatype: numeric data type (DataType)            (nsensor,)
+    sensor_objtype: type of sensorized object (ObjType)      (nsensor,)
+    sensor_objid: id of sensorized object                    (nsensor,)
+    sensor_reftype: type of reference frame (ObjType)        (nsensor,)
+    sensor_refid: id of reference frame; -1: global frame    (nsensor,)
+    sensor_intprm: sensor parameters                         (nsensor, mjNSENS)
+    sensor_dim: number of scalar outputs                     (nsensor,)
+    sensor_adr: address in sensor array                      (nsensor,)
+    sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
+    plugin: globally registered plugin slot number           (nplugin,)
+    plugin_attr: config attributes of geom plugin            (nplugin, 3)
+    M_rownnz: number of non-zeros in each row of qM          (nv,)
+    M_rowadr: index of each row in qM                        (nv,)
+    M_colind: column indices of non-zeros in qM              (nM,)
+    mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
+
+  warp only fields:
+    nacttrnbody: number of actuators with body transmission
+    nsensorcollision: number of unique collisions for
+                      geom distance sensors
+    nsensortaxel: number of taxels in all tactile sensors
+    nsensorcontact: number of contact sensors
+    nrangefinder: number of rangefinder sensors
+    condim_max: maximum condim for geoms
+    nmaxpolygon: maximum number of verts per polygon
+    nmaxmeshdeg: maximum number of polygons per vert
+    has_sdf_geom: whether the model contains SDF geoms
+    block_dim: block dim options
+    body_tree: list of body ids by tree level
+    mocap_bodyid: id of body for mocap                       (nmocap,)
+    body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
+    jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
+    jnt_limited_ball_adr: limited/ball jntadr
+    dof_tri_row: np.tril_indices                             (mjm.nv)[0]
+    dof_tri_col: np.tril_indices                             (mjm.nv)[1]
+    geom_pair_type_count: count of max number of each potential collision
+    geom_plugin_index: geom index in plugin array            (ngeom,)
+    nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<=ngeom*(ngeom-1)/2,)
+    nxn_geom_pair_filtered: valid collision pair geom ids    (<=ngeom*(ngeom-1)/2,)
+                            [-1, ngeom - 1]
+    nxn_pairid: contact pair id, -1 if not predefined,       (<=ngeom*(ngeom-1)/2, 2)
+                  -2 if skipped
+                collision id, else -1
+    nxn_pairid_filtered: active subset of nxn_pairid         (<=ngeom*(ngeom-1)/2, 2)
+    eq_connect_adr: eq_* addresses of type `CONNECT`
+    eq_wld_adr: eq_* addresses of type `WELD`
+    eq_jnt_adr: eq_* addresses of type `JOINT`
+    eq_ten_adr: eq_* addresses of type `TENDON`              (<=neq,)
     tendon_jnt_adr: joint tendon address                     (<=nwrap,)
-    tendon_site_adr: site tendon address                     (<=nwrap,)
     tendon_site_pair_adr: site pair tendon address           (<=nwrap,)
+    tendon_geom_adr: geom tendon address                     (<=nwrap,)
+    tendon_limited_adr: addresses for limited tendons        (<=ntendon,)
     ten_wrapadr_site: wrap object starting address for sites (ntendon,)
     ten_wrapnum_site: number of site wrap objects per tendon (ntendon,)
     wrap_jnt_adr: addresses for joint tendon wrap object     (<=nwrap,)
     wrap_site_adr: addresses for site tendon wrap object     (<=nwrap,)
     wrap_site_pair_adr: first address for site wrap pair     (<=nwrap,)
-    sensor_type: sensor type (mjtSensor)                     (nsensor,)
-    sensor_datatype: numeric data type (mjtDataType)         (nsensor,)
-    sensor_objtype: type of sensorized object (mjtObj)       (nsensor,)
-    sensor_objid: id of sensorized object                    (nsensor,)
-    sensor_reftype: type of reference frame (mjtObj)         (nsensor,)
-    sensor_refid: id of reference frame; -1: global frame    (nsensor,)
-    sensor_dim: number of scalar outputs                     (nsensor,)
-    sensor_adr: address in sensor array                      (nsensor,)
-    sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
+    wrap_geom_adr: addresses for geom tendon wrap object     (<=nwrap,)
+    wrap_pulley_scale: pulley scaling                        (nwrap,)
+    actuator_moment_tiles_nv: tiling configuration
+    actuator_moment_tiles_nu: tiling configuration
+    actuator_trntype_body_adr: addresses for actuators       (<=nu,)
+                               with body transmission
     sensor_pos_adr: addresses for position sensors           (<=nsensor,)
+    sensor_limitpos_adr: address for limit position sensors  (<=nsensor,)
     sensor_vel_adr: addresses for velocity sensors           (<=nsensor,)
+                    (excluding limit velocity sensors)
+    sensor_limitvel_adr: address for limit velocity sensors  (<=nsensor,)
     sensor_acc_adr: addresses for acceleration sensors       (<=nsensor,)
+    sensor_rangefinder_adr: addresses for rangefinder sensors(<=nsensor,)
+    sensor_collision_start_adr: address for sensor's first   (<=nsensor,)
+                                item in collision
+    rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
+                    (excluding limit force sensors)
+    collision_sensor_adr: map sensor id to collision id      (nsensor,)
     sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
+    sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
+    sensor_e_potential: evaluate energy_pos
+    sensor_e_kinetic: evaluate energy_vel
+    sensor_tendonactfrc_adr: address for tendonactfrc sensor (<=nsensor,)
     sensor_subtree_vel: evaluate subtree_vel
+    sensor_contact_adr: addresses for contact sensors        (nsensorcontact,)
+    sensor_adr_to_contact_adr: map sensor adr to contact adr (nsensor,)
     sensor_rne_postconstraint: evaluate rne_postconstraint
-    mocap_bodyid: id of body for mocap                       (nmocap,)
-    mat_rgba: rgba                                           (nworld, nmat, 4)
+    sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
+    taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
+    taxel_sensorid: address for tactile sensors              (<=nsensor,)
+    qM_tiles: tiling configuration
+    qLD_updates: tuple of index triples for sparse factorization
+    qM_fullm_i: sparse mass matrix addressing
+    qM_fullm_j: sparse mass matrix addressing
+    qM_mulm_i: sparse matmul addressing
+    qM_mulm_j: sparse matmul addressing
+    qM_madr_ij: sparse matmul addressing
   """
 
   nq: int
@@ -820,6 +1122,8 @@ class Model:
   na: int
   nbody: int
   njnt: int
+  nM: int
+  nC: int
   ngeom: int
   nsite: int
   ncam: int
@@ -829,35 +1133,28 @@ class Model:
   nflexedge: int
   nflexelem: int
   nflexelemdata: int
+  nmeshvert: int
+  nmeshface: int
+  nmeshgraph: int
+  nmeshpoly: int
+  nmeshpolyvert: int
+  nmeshpolymap: int
+  nhfield: int
+  nhfielddata: int
+  nmat: int
+  npair: int
   nexclude: int
   neq: int
-  nmocap: int
-  ngravcomp: int
-  nM: int
   ntendon: int
   nwrap: int
   nsensor: int
+  nmocap: int
+  ngravcomp: int
   nsensordata: int
-  nmeshvert: int
-  nmeshface: int
-  nlsp: int  # warp only
-  npair: int
   opt: Option
   stat: Statistic
   qpos0: wp.array2d(dtype=float)
   qpos_spring: wp.array2d(dtype=float)
-  qM_fullm_i: wp.array(dtype=int)  # warp only
-  qM_fullm_j: wp.array(dtype=int)  # warp only
-  qM_mulm_i: wp.array(dtype=int)  # warp only
-  qM_mulm_j: wp.array(dtype=int)  # warp only
-  qM_madr_ij: wp.array(dtype=int)  # warp only
-  qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]  # warp only
-  M_rownnz: wp.array(dtype=int)
-  M_rowadr: wp.array(dtype=int)
-  M_colind: wp.array(dtype=int)
-  mapM2M: wp.array(dtype=int)
-  qM_tiles: tuple[TileSet, ...]
-  body_tree: tuple[wp.array(dtype=int), ...]
   body_parentid: wp.array(dtype=int)
   body_rootid: wp.array(dtype=int)
   body_weldid: wp.array(dtype=int)
@@ -874,61 +1171,60 @@ class Model:
   body_iquat: wp.array2d(dtype=wp.quat)
   body_mass: wp.array2d(dtype=float)
   body_subtreemass: wp.array2d(dtype=float)
-  subtree_mass: wp.array2d(dtype=float)
   body_inertia: wp.array2d(dtype=wp.vec3)
-  body_invweight0: wp.array3d(dtype=float)
+  body_invweight0: wp.array2d(dtype=wp.vec2)
+  body_gravcomp: wp.array2d(dtype=float)
   body_contype: wp.array(dtype=int)
   body_conaffinity: wp.array(dtype=int)
-  body_gravcomp: wp.array2d(dtype=float)
+  oct_child: wp.array(dtype=vec8i)
+  oct_aabb: wp.array2d(dtype=wp.vec3)
+  oct_coeff: wp.array(dtype=vec8f)
   jnt_type: wp.array(dtype=int)
   jnt_qposadr: wp.array(dtype=int)
   jnt_dofadr: wp.array(dtype=int)
   jnt_bodyid: wp.array(dtype=int)
   jnt_limited: wp.array(dtype=int)
   jnt_actfrclimited: wp.array(dtype=bool)
+  jnt_actgravcomp: wp.array(dtype=int)
   jnt_solref: wp.array2d(dtype=wp.vec2)
   jnt_solimp: wp.array2d(dtype=vec5)
   jnt_pos: wp.array2d(dtype=wp.vec3)
   jnt_axis: wp.array2d(dtype=wp.vec3)
   jnt_stiffness: wp.array2d(dtype=float)
-  jnt_range: wp.array3d(dtype=float)
+  jnt_range: wp.array2d(dtype=wp.vec2)
   jnt_actfrcrange: wp.array2d(dtype=wp.vec2)
   jnt_margin: wp.array2d(dtype=float)
-  jnt_limited_slide_hinge_adr: wp.array(dtype=int)  # warp only
-  jnt_limited_ball_adr: wp.array(dtype=int)  # warp only
-  jnt_actgravcomp: wp.array(dtype=int)
   dof_bodyid: wp.array(dtype=int)
   dof_jntid: wp.array(dtype=int)
   dof_parentid: wp.array(dtype=int)
   dof_Madr: wp.array(dtype=int)
+  dof_solref: wp.array2d(dtype=wp.vec2)
+  dof_solimp: wp.array2d(dtype=vec5)
+  dof_frictionloss: wp.array2d(dtype=float)
   dof_armature: wp.array2d(dtype=float)
   dof_damping: wp.array2d(dtype=float)
   dof_invweight0: wp.array2d(dtype=float)
-  dof_frictionloss: wp.array2d(dtype=float)
-  dof_solimp: wp.array2d(dtype=vec5)
-  dof_solref: wp.array2d(dtype=wp.vec2)
-  dof_tri_row: wp.array(dtype=int)  # warp only
-  dof_tri_col: wp.array(dtype=int)  # warp only
   geom_type: wp.array(dtype=int)
   geom_contype: wp.array(dtype=int)
   geom_conaffinity: wp.array(dtype=int)
   geom_condim: wp.array(dtype=int)
   geom_bodyid: wp.array(dtype=int)
   geom_dataid: wp.array(dtype=int)
-  geom_group: wp.array(dtype=int)
   geom_matid: wp.array2d(dtype=int)
+  geom_group: wp.array(dtype=int)
   geom_priority: wp.array(dtype=int)
   geom_solmix: wp.array2d(dtype=float)
   geom_solref: wp.array2d(dtype=wp.vec2)
   geom_solimp: wp.array2d(dtype=vec5)
   geom_size: wp.array2d(dtype=wp.vec3)
-  geom_aabb: wp.array(dtype=wp.vec3)
+  geom_aabb: wp.array3d(dtype=wp.vec3)
   geom_rbound: wp.array2d(dtype=float)
   geom_pos: wp.array2d(dtype=wp.vec3)
   geom_quat: wp.array2d(dtype=wp.quat)
   geom_friction: wp.array2d(dtype=wp.vec3)
   geom_margin: wp.array2d(dtype=float)
   geom_gap: wp.array2d(dtype=float)
+  geom_fluid: wp.array2d(dtype=float)
   geom_rgba: wp.array2d(dtype=wp.vec4)
   site_type: wp.array(dtype=int)
   site_bodyid: wp.array(dtype=int)
@@ -950,6 +1246,9 @@ class Model:
   light_mode: wp.array(dtype=int)
   light_bodyid: wp.array(dtype=int)
   light_targetbodyid: wp.array(dtype=int)
+  light_type: wp.array2d(dtype=int)
+  light_castshadow: wp.array2d(dtype=bool)
+  light_active: wp.array2d(dtype=bool)
   light_pos: wp.array2d(dtype=wp.vec3)
   light_dir: wp.array2d(dtype=wp.vec3)
   light_poscom0: wp.array2d(dtype=wp.vec3)
@@ -962,16 +1261,50 @@ class Model:
   flex_elemedgeadr: wp.array(dtype=int)
   flex_vertbodyid: wp.array(dtype=int)
   flex_edge: wp.array(dtype=wp.vec2i)
+  flex_edgeflap: wp.array(dtype=wp.vec2i)
   flex_elem: wp.array(dtype=int)
   flex_elemedge: wp.array(dtype=int)
   flexedge_length0: wp.array(dtype=float)
   flex_stiffness: wp.array(dtype=float)
+  flex_bending: wp.array(dtype=float)
   flex_damping: wp.array(dtype=float)
   mesh_vertadr: wp.array(dtype=int)
   mesh_vertnum: wp.array(dtype=int)
-  mesh_vert: wp.array(dtype=wp.vec3)
   mesh_faceadr: wp.array(dtype=int)
+  mesh_normaladr: wp.array(dtype=int)
+  mesh_graphadr: wp.array(dtype=int)
+  mesh_vert: wp.array(dtype=wp.vec3)
+  mesh_normal: wp.array(dtype=wp.vec3)
   mesh_face: wp.array(dtype=wp.vec3i)
+  mesh_graph: wp.array(dtype=int)
+  mesh_quat: wp.array(dtype=wp.quat)
+  mesh_polynum: wp.array(dtype=int)
+  mesh_polyadr: wp.array(dtype=int)
+  mesh_polynormal: wp.array(dtype=wp.vec3)
+  mesh_polyvertadr: wp.array(dtype=int)
+  mesh_polyvertnum: wp.array(dtype=int)
+  mesh_polyvert: wp.array(dtype=int)
+  mesh_polymapadr: wp.array(dtype=int)
+  mesh_polymapnum: wp.array(dtype=int)
+  mesh_polymap: wp.array(dtype=int)
+  hfield_size: wp.array(dtype=wp.vec4)
+  hfield_nrow: wp.array(dtype=int)
+  hfield_ncol: wp.array(dtype=int)
+  hfield_adr: wp.array(dtype=int)
+  hfield_data: wp.array(dtype=float)
+  mat_texid: wp.array3d(dtype=int)
+  mat_texrepeat: wp.array2d(dtype=wp.vec2)
+  mat_rgba: wp.array2d(dtype=wp.vec4)
+  pair_dim: wp.array(dtype=int)
+  pair_geom1: wp.array(dtype=int)
+  pair_geom2: wp.array(dtype=int)
+  pair_solref: wp.array2d(dtype=wp.vec2)
+  pair_solreffriction: wp.array2d(dtype=wp.vec2)
+  pair_solimp: wp.array2d(dtype=vec5)
+  pair_margin: wp.array2d(dtype=float)
+  pair_gap: wp.array2d(dtype=float)
+  pair_friction: wp.array2d(dtype=vec5)
+  exclude_signature: wp.array(dtype=int)
   eq_type: wp.array(dtype=int)
   eq_obj1id: wp.array(dtype=int)
   eq_obj2id: wp.array(dtype=int)
@@ -980,13 +1313,27 @@ class Model:
   eq_solref: wp.array2d(dtype=wp.vec2)
   eq_solimp: wp.array2d(dtype=vec5)
   eq_data: wp.array2d(dtype=vec11)
-  eq_connect_adr: wp.array(dtype=int)
-  eq_wld_adr: wp.array(dtype=int)
-  eq_jnt_adr: wp.array(dtype=int)
-  eq_ten_adr: wp.array(dtype=int)
-  actuator_moment_tiles_nv: tuple[TileSet, ...]
-  actuator_moment_tiles_nu: tuple[TileSet, ...]
-  actuator_affine_bias_gain: bool  # warp only
+  tendon_adr: wp.array(dtype=int)
+  tendon_num: wp.array(dtype=int)
+  tendon_limited: wp.array(dtype=int)
+  tendon_actfrclimited: wp.array(dtype=bool)
+  tendon_solref_lim: wp.array2d(dtype=wp.vec2)
+  tendon_solimp_lim: wp.array2d(dtype=vec5)
+  tendon_solref_fri: wp.array2d(dtype=wp.vec2)
+  tendon_solimp_fri: wp.array2d(dtype=vec5)
+  tendon_range: wp.array2d(dtype=wp.vec2)
+  tendon_actfrcrange: wp.array2d(dtype=wp.vec2)
+  tendon_margin: wp.array2d(dtype=float)
+  tendon_stiffness: wp.array2d(dtype=float)
+  tendon_damping: wp.array2d(dtype=float)
+  tendon_armature: wp.array2d(dtype=float)
+  tendon_frictionloss: wp.array2d(dtype=float)
+  tendon_lengthspring: wp.array2d(dtype=wp.vec2)
+  tendon_length0: wp.array2d(dtype=float)
+  tendon_invweight0: wp.array2d(dtype=float)
+  wrap_type: wp.array(dtype=int)
+  wrap_objid: wp.array(dtype=int)
+  wrap_prm: wp.array(dtype=float)
   actuator_trntype: wp.array(dtype=int)
   actuator_dyntype: wp.array(dtype=int)
   actuator_gaintype: wp.array(dtype=int)
@@ -1000,67 +1347,111 @@ class Model:
   actuator_dynprm: wp.array2d(dtype=vec10f)
   actuator_gainprm: wp.array2d(dtype=vec10f)
   actuator_biasprm: wp.array2d(dtype=vec10f)
+  actuator_actearly: wp.array(dtype=bool)
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2)
   actuator_forcerange: wp.array2d(dtype=wp.vec2)
   actuator_actrange: wp.array2d(dtype=wp.vec2)
   actuator_gear: wp.array2d(dtype=wp.spatial_vector)
-  nxn_geom_pair: wp.array(dtype=wp.vec2i)  # warp only
-  nxn_pairid: wp.array(dtype=int)  # warp only
-  pair_dim: wp.array(dtype=int)
-  pair_geom1: wp.array(dtype=int)
-  pair_geom2: wp.array(dtype=int)
-  pair_solref: wp.array2d(dtype=wp.vec2)
-  pair_solreffriction: wp.array2d(dtype=wp.vec2)
-  pair_solimp: wp.array2d(dtype=vec5)
-  pair_margin: wp.array2d(dtype=float)
-  pair_gap: wp.array2d(dtype=float)
-  pair_friction: wp.array2d(dtype=vec5)
-  exclude_signature: wp.array(dtype=int)
-  condim_max: int  # warp only
-  tendon_adr: wp.array(dtype=int)
-  tendon_num: wp.array(dtype=int)
-  tendon_limited: wp.array(dtype=int)
-  tendon_limited_adr: wp.array(dtype=int)
-  tendon_solref_lim: wp.array2d(dtype=wp.vec2)
-  tendon_solimp_lim: wp.array2d(dtype=vec5)
-  tendon_solref_fri: wp.array2d(dtype=wp.vec2)
-  tendon_solimp_fri: wp.array2d(dtype=vec5)
-  tendon_range: wp.array2d(dtype=wp.vec2)
-  tendon_margin: wp.array2d(dtype=float)
-  tendon_stiffness: wp.array2d(dtype=float)
-  tendon_damping: wp.array2d(dtype=float)
-  tendon_frictionloss: wp.array2d(dtype=float)
-  tendon_lengthspring: wp.array2d(dtype=wp.vec2)
-  tendon_length0: wp.array2d(dtype=float)
-  tendon_invweight0: wp.array2d(dtype=float)
-  wrap_objid: wp.array(dtype=int)
-  wrap_prm: wp.array(dtype=float)
-  wrap_type: wp.array(dtype=int)
-  tendon_jnt_adr: wp.array(dtype=int)  # warp only
-  tendon_site_adr: wp.array(dtype=int)  # warp only
-  tendon_site_pair_adr: wp.array(dtype=int)  # warp only
-  ten_wrapadr_site: wp.array(dtype=int)  # warp only
-  ten_wrapnum_site: wp.array(dtype=int)  # warp only
-  wrap_jnt_adr: wp.array(dtype=int)  # warp only
-  wrap_site_adr: wp.array(dtype=int)  # warp only
-  wrap_site_pair_adr: wp.array(dtype=int)  # warp only
+  actuator_cranklength: wp.array(dtype=float)
+  actuator_acc0: wp.array(dtype=float)
+  actuator_lengthrange: wp.array(dtype=wp.vec2)
   sensor_type: wp.array(dtype=int)
   sensor_datatype: wp.array(dtype=int)
   sensor_objtype: wp.array(dtype=int)
   sensor_objid: wp.array(dtype=int)
   sensor_reftype: wp.array(dtype=int)
   sensor_refid: wp.array(dtype=int)
+  sensor_intprm: wp.array2d(dtype=int)
   sensor_dim: wp.array(dtype=int)
   sensor_adr: wp.array(dtype=int)
   sensor_cutoff: wp.array(dtype=float)
-  sensor_pos_adr: wp.array(dtype=int)  # warp only
-  sensor_vel_adr: wp.array(dtype=int)  # warp only
-  sensor_acc_adr: wp.array(dtype=int)  # warp only
-  sensor_touch_adr: wp.array(dtype=int)  # warp only
-  sensor_subtree_vel: bool  # warp only
-  sensor_rne_postconstraint: bool  # warp only
-  mocap_bodyid: wp.array(dtype=int)  # warp only
-  mat_rgba: wp.array2d(dtype=wp.vec4)
+  plugin: wp.array(dtype=int)
+  plugin_attr: wp.array(dtype=wp.vec3f)
+  M_rownnz: wp.array(dtype=int)
+  M_rowadr: wp.array(dtype=int)
+  M_colind: wp.array(dtype=int)
+  mapM2M: wp.array(dtype=int)
+  # warp only fields:
+  nacttrnbody: int
+  nsensorcollision: int
+  nsensortaxel: int
+  nsensorcontact: int
+  nrangefinder: int
+  condim_max: int
+  nmaxpolygon: int
+  nmaxmeshdeg: int
+  has_sdf_geom: bool
+  block_dim: BlockDim
+  body_tree: tuple[wp.array(dtype=int), ...]
+  mocap_bodyid: wp.array(dtype=int)
+  body_fluid_ellipsoid: wp.array(dtype=bool)
+  jnt_limited_slide_hinge_adr: wp.array(dtype=int)
+  jnt_limited_ball_adr: wp.array(dtype=int)
+  dof_tri_row: wp.array(dtype=int)
+  dof_tri_col: wp.array(dtype=int)
+  geom_pair_type_count: tuple[int, ...]
+  geom_plugin_index: wp.array(dtype=int)
+  nxn_geom_pair: wp.array(dtype=wp.vec2i)
+  nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)
+  nxn_pairid: wp.array(dtype=wp.vec2i)
+  nxn_pairid_filtered: wp.array(dtype=wp.vec2i)
+  eq_connect_adr: wp.array(dtype=int)
+  eq_wld_adr: wp.array(dtype=int)
+  eq_jnt_adr: wp.array(dtype=int)
+  eq_ten_adr: wp.array(dtype=int)
+  tendon_jnt_adr: wp.array(dtype=int)
+  tendon_site_pair_adr: wp.array(dtype=int)
+  tendon_geom_adr: wp.array(dtype=int)
+  tendon_limited_adr: wp.array(dtype=int)
+  ten_wrapadr_site: wp.array(dtype=int)
+  ten_wrapnum_site: wp.array(dtype=int)
+  wrap_jnt_adr: wp.array(dtype=int)
+  wrap_site_adr: wp.array(dtype=int)
+  wrap_site_pair_adr: wp.array(dtype=int)
+  wrap_geom_adr: wp.array(dtype=int)
+  wrap_pulley_scale: wp.array(dtype=float)
+  actuator_moment_tiles_nv: tuple[TileSet, ...]
+  actuator_moment_tiles_nu: tuple[TileSet, ...]
+  actuator_trntype_body_adr: wp.array(dtype=int)
+  sensor_pos_adr: wp.array(dtype=int)
+  sensor_limitpos_adr: wp.array(dtype=int)
+  sensor_vel_adr: wp.array(dtype=int)
+  sensor_limitvel_adr: wp.array(dtype=int)
+  sensor_acc_adr: wp.array(dtype=int)
+  sensor_rangefinder_adr: wp.array(dtype=int)
+  sensor_collision_start_adr: wp.array(dtype=int)
+  rangefinder_sensor_adr: wp.array(dtype=int)
+  collision_sensor_adr: wp.array(dtype=int)
+  sensor_touch_adr: wp.array(dtype=int)
+  sensor_limitfrc_adr: wp.array(dtype=int)
+  sensor_e_potential: bool
+  sensor_e_kinetic: bool
+  sensor_tendonactfrc_adr: wp.array(dtype=int)
+  sensor_subtree_vel: bool
+  sensor_contact_adr: wp.array(dtype=int)
+  sensor_adr_to_contact_adr: wp.array(dtype=int)
+  sensor_rne_postconstraint: bool
+  sensor_rangefinder_bodyid: wp.array(dtype=int)
+  taxel_vertadr: wp.array(dtype=int)
+  taxel_sensorid: wp.array(dtype=int)
+  qM_tiles: tuple[TileSet, ...]
+  qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]
+  qM_fullm_i: wp.array(dtype=int)
+  qM_fullm_j: wp.array(dtype=int)
+  qM_mulm_i: wp.array(dtype=int)
+  qM_mulm_j: wp.array(dtype=int)
+  qM_madr_ij: wp.array(dtype=int)
+
+
+class ContactType(enum.IntFlag):
+  """Type of contact.
+
+  CONSTRAINT: contact for constraint solver.
+  SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO).
+  """
+
+  CONSTRAINT = 1
+  SENSOR = 2
 
 
 @dataclasses.dataclass
@@ -1068,18 +1459,22 @@ class Contact:
   """Contact data.
 
   Attributes:
-    dist: distance between nearest points; neg: penetration
-    pos: position of contact point: midpoint between geoms
-    frame: normal is in [0-2], points from geom[0] to geom[1]
-    includemargin: include if dist<includemargin=margin-gap
-    friction: tangent1, 2, spin, roll1, 2
-    solref: constraint solver reference, normal direction
-    solreffriction: constraint solver reference, friction directions
-    solimp: constraint solver impedance
-    dim: contact space dimensionality: 1, 3, 4 or 6
-    geom: geom ids; -1 for flex
-    efc_address: address in efc; -1: not included
-    worldid: world id
+    dist: distance between nearest points; neg: penetration          (naconmax,)
+    pos: position of contact point: midpoint between geoms           (naconmax, 3)
+    frame: normal is in [0-2], points from geom[0] to geom[1]        (naconmax, 3, 3)
+    includemargin: include if dist<includemargin=margin-gap          (naconmax,)
+    friction: tangent1, 2, spin, roll1, 2                            (naconmax, 5)
+    solref: constraint solver reference, normal direction            (naconmax, 2)
+    solreffriction: constraint solver reference, friction directions (naconmax, 2)
+    solimp: constraint solver impedance                              (naconmax, 5)
+    dim: contact space dimensionality: 1, 3, 4 or 6                  (naconmax,)
+    geom: geom ids; -1 for flex                                      (naconmax, 2)
+    efc_address: address in efc; -1: not included                    (naconmax, ncondim)
+    worldid: world id                                                (naconmax,)
+    type: ContactType                                                (naconmax,)
+    geomcollisionid: i-th contact generated for geom                 (naconmax,)
+                     helps uniquely identity contact when multiple
+                     contacts are generated for geom pair
   """
 
   dist: wp.array(dtype=float)
@@ -1094,6 +1489,8 @@ class Contact:
   geom: wp.array(dtype=wp.vec2i)
   efc_address: wp.array2d(dtype=int)
   worldid: wp.array(dtype=int)
+  type: wp.array(dtype=int)
+  geomcollisionid: wp.array(dtype=int)
 
 
 @dataclasses.dataclass
@@ -1101,18 +1498,11 @@ class Data:
   """Dynamic state that updates each step.
 
   Attributes:
-    nworld: number of worlds                                    ()
-    nconmax: maximum number of contacts                         ()
-    njmax: maximum number of constraints                        ()
-    ncon: number of detected contacts                           ()
-    ne: number of equality constraints                          ()
-    ne_connect: number of equality connect constraints          ()
-    ne_weld: number of equality weld constraints                ()
-    ne_jnt: number of equality joint constraints                ()
-    ne_ten: number of equality tendon constraints               ()
-    nf: number of friction constraints                          ()
-    nl: number of limit constraints                             ()
-    nefc: number of constraints                                 (1,)
+    solver_niter: number of solver iterations                   (nworld,)
+    ne: number of equality constraints                          (nworld,)
+    nf: number of friction constraints                          (nworld,)
+    nl: number of limit constraints                             (nworld,)
+    nefc: number of constraints                                 (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1122,12 +1512,12 @@ class Data:
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
     xfrc_applied: applied Cartesian force/torque                (nworld, nbody, 6)
-    fluid_applied: applied fluid force/torque                   (nworld, nbody, 6)
     eq_active: enable/disable constraints                       (nworld, neq)
     mocap_pos: position of mocap bodies                         (nworld, nmocap, 3)
     mocap_quat: orientation of mocap bodies                     (nworld, nmocap, 4)
     qacc: acceleration                                          (nworld, nv)
     act_dot: time-derivative of actuator activation             (nworld, na)
+    sensordata: sensor data array                               (nsensordata,)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
     xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
     xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
@@ -1146,12 +1536,21 @@ class Data:
     subtree_com: center of mass of each subtree                 (nworld, nbody, 3)
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
+    flexvert_xpos: cartesian flex vertex positions              (nflexvert, 3)
+    flexedge_length: flex edge lengths                          (nflexedge, 1)
+    ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
+    ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
+    ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
+    ten_length: tendon lengths                                  (nworld, ntendon)
+    wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
+    wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     actuator_length: actuator lengths                           (nworld, nu)
     actuator_moment: actuator moments                           (nworld, nu, nv)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
     qM: total inertia (sparse) (nworld, 1, nM) or               (nworld, nv, nv) if dense
     qLD: L'*D*L factorization of M (sparse) (nworld, 1, nM) or  (nworld, nv, nv) if dense
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
+    flexedge_velocity: flex edge velocities                     (nflexedge,)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
     cvel: com-based velocity (rot:lin)                          (nworld, nbody, 6)
@@ -1164,61 +1563,39 @@ class Data:
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
-    subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     actuator_force: actuator force in actuation space           (nworld, nu)
     qfrc_actuator: actuator force                               (nworld, nv)
     qfrc_smooth: net unconstrained force                        (nworld, nv)
     qacc_smooth: unconstrained acceleration                     (nworld, nv)
     qfrc_constraint: constraint force                           (nworld, nv)
-    contact: contact data
-    efc: constraint data
-    rne_cacc: arrays used for smooth.rne                        (nworld, nbody, 6)
-    rne_cfrc: arrays used for smooth.rne                        (nworld, nbody, 6)
-    qpos_t0: temporary array for rk4                            (nworld, nq)
-    qvel_t0: temporary array for rk4                            (nworld, nv)
-    act_t0: temporary array for rk4                             (nworld, na)
-    qvel_rk: temporary array for rk4                            (nworld, nv)
-    qacc_rk: temporary array for rk4                            (nworld, nv)
-    act_dot_rk: temporary array for rk4                         (nworld, na)
-    qfrc_integration: temporary array for integration           (nworld, nv)
-    qacc_integration: temporary array for integration           (nworld, nv)
-    act_vel_integration: temporary array for integration        (nworld, nu)
-    qM_integration: temporary array for integration             (nworld, nv, nv) if dense
-    qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
-    qLDiagInv_integration: temporary array for integration      (nworld, nv)
-    boxes_sorted: min, max of sorted bounding boxes             (nworld, ngeom, 2)
-    sap_projections_lower: broadphase context                   (2*nworld, ngeom)
-    sap_projections_upper: broadphase context                   (nworld, ngeom)
-    sap_sort_index: broadphase context                          (2*nworld, ngeom)
-    sap_range: broadphase context                               (nworld, ngeom)
-    sap_cumulative_sum: broadphase context                      (nworld*ngeom,)
-    sap_segment_index: broadphase context                       (nworld+1,)
-    dyn_geom_aabb: dynamic geometry axis-aligned bounding boxes (nworld, ngeom, 2)
-    collision_pair: collision pairs from broadphase             (nconmax,)
-    collision_worldid: collision world ids from broadphase      (nconmax,)
-    ncollision: collision count from broadphase                 ()
+    qfrc_inverse: net external force; should equal:             (nworld, nv)
+                  qfrc_applied + J.T @ xfrc_applied
+                  + qfrc_actuator
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
-    ten_length: tendon lengths                                  (nworld, ntendon)
-    ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
-    ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
-    ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
-    wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
-    wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
-    sensordata: sensor data array                               (nsensordata,)
+    contact: contact data
+    efc: constraint data
+
+  warp only fields:
+    nworld: number of worlds
+    naconmax: maximum number of contacts (shared across all worlds)
+    njmax: maximum number of constraints per world
+    nacon: number of detected contacts (across all worlds)
+    ne_connect: number of equality connect constraints          (nworld,)
+    ne_weld: number of equality weld constraints                (nworld,)
+    ne_jnt: number of equality joint constraints                (nworld,)
+    ne_ten: number of equality tendon constraints               (nworld,)
+    nsolving: number of unconverged worlds                      (1,)
+    subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
+    collision_pair: collision pairs from broadphase             (naconmax,)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
+    collision_worldid: collision world ids from broadphase      (naconmax,)
+    ncollision: collision count from broadphase
   """
 
-  nworld: int  # warp only
-  nconmax: int  # warp only
-  njmax: int  # warp only
-
-  ncon: wp.array(dtype=int)
+  solver_niter: wp.array(dtype=int)
   ne: wp.array(dtype=int)
-  ne_connect: wp.array(dtype=int)  # warp only
-  ne_weld: wp.array(dtype=int)  # warp only
-  ne_jnt: wp.array(dtype=int)  # warp only
-  ne_ten: wp.array(dtype=int)  # warp only
   nf: wp.array(dtype=int)
   nl: wp.array(dtype=int)
   nefc: wp.array(dtype=int)
@@ -1231,12 +1608,12 @@ class Data:
   ctrl: wp.array2d(dtype=float)
   qfrc_applied: wp.array2d(dtype=float)
   xfrc_applied: wp.array2d(dtype=wp.spatial_vector)
-  fluid_applied: wp.array2d(dtype=wp.spatial_vector)  # warp only
   eq_active: wp.array2d(dtype=bool)
   mocap_pos: wp.array2d(dtype=wp.vec3)
   mocap_quat: wp.array2d(dtype=wp.quat)
   qacc: wp.array2d(dtype=float)
   act_dot: wp.array2d(dtype=float)
+  sensordata: wp.array2d(dtype=float)
   xpos: wp.array2d(dtype=wp.vec3)
   xquat: wp.array2d(dtype=wp.quat)
   xmat: wp.array2d(dtype=wp.mat33)
@@ -1257,13 +1634,19 @@ class Data:
   cinert: wp.array2d(dtype=vec10)
   flexvert_xpos: wp.array2d(dtype=wp.vec3)
   flexedge_length: wp.array2d(dtype=float)
-  flexedge_velocity: wp.array2d(dtype=float)
+  ten_wrapadr: wp.array2d(dtype=int)
+  ten_wrapnum: wp.array2d(dtype=int)
+  ten_J: wp.array3d(dtype=float)
+  ten_length: wp.array2d(dtype=float)
+  wrap_obj: wp.array2d(dtype=wp.vec2i)
+  wrap_xpos: wp.array2d(dtype=wp.spatial_vector)
   actuator_length: wp.array2d(dtype=float)
   actuator_moment: wp.array3d(dtype=float)
   crb: wp.array2d(dtype=vec10)
   qM: wp.array3d(dtype=float)
   qLD: wp.array3d(dtype=float)
   qLDiagInv: wp.array2d(dtype=float)
+  flexedge_velocity: wp.array2d(dtype=float)
   ten_velocity: wp.array2d(dtype=float)
   actuator_velocity: wp.array2d(dtype=float)
   cvel: wp.array2d(dtype=wp.spatial_vector)
@@ -1276,57 +1659,32 @@ class Data:
   qfrc_passive: wp.array2d(dtype=float)
   subtree_linvel: wp.array2d(dtype=wp.vec3)
   subtree_angmom: wp.array2d(dtype=wp.vec3)
-  subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)  # warp only
   actuator_force: wp.array2d(dtype=float)
   qfrc_actuator: wp.array2d(dtype=float)
   qfrc_smooth: wp.array2d(dtype=float)
   qacc_smooth: wp.array2d(dtype=float)
   qfrc_constraint: wp.array2d(dtype=float)
-  contact: Contact
-  efc: Constraint
-
-  # RK4
-  qpos_t0: wp.array2d(dtype=float)
-  qvel_t0: wp.array2d(dtype=float)
-  act_t0: wp.array2d(dtype=float)
-  qvel_rk: wp.array2d(dtype=float)
-  qacc_rk: wp.array2d(dtype=float)
-  act_dot_rk: wp.array2d(dtype=float)
-
-  # euler + implicit integration
-  qfrc_integration: wp.array2d(dtype=float)
-  qacc_integration: wp.array2d(dtype=float)
-  act_vel_integration: wp.array2d(dtype=float)
-  qM_integration: wp.array3d(dtype=float)
-  qLD_integration: wp.array3d(dtype=float)
-  qLDiagInv_integration: wp.array2d(dtype=float)
-
-  # sweep-and-prune broadphase
-  sap_projection_lower: wp.array2d(dtype=float)
-  sap_projection_upper: wp.array2d(dtype=float)
-  sap_sort_index: wp.array2d(dtype=int)
-  sap_range: wp.array2d(dtype=int)
-  sap_cumulative_sum: wp.array(dtype=int)
-  sap_segment_index: wp.array(dtype=int)
-
-  # collision driver
-  collision_pair: wp.array(dtype=wp.vec2i)
-  collision_pairid: wp.array(dtype=int)
-  collision_worldid: wp.array(dtype=int)
-  ncollision: wp.array(dtype=int)
-
-  # rne_postconstraint
+  qfrc_inverse: wp.array2d(dtype=float)
   cacc: wp.array2d(dtype=wp.spatial_vector)
   cfrc_int: wp.array2d(dtype=wp.spatial_vector)
   cfrc_ext: wp.array2d(dtype=wp.spatial_vector)
+  contact: Contact
+  efc: Constraint
 
-  # tendon
-  ten_length: wp.array2d(dtype=float)
-  ten_J: wp.array3d(dtype=float)
-  ten_wrapadr: wp.array2d(dtype=int)
-  ten_wrapnum: wp.array2d(dtype=int)
-  wrap_obj: wp.array2d(dtype=wp.vec2i)
-  wrap_xpos: wp.array2d(dtype=wp.spatial_vector)
+  # warp only fields:
+  nworld: int
+  naconmax: int
+  njmax: int
+  nacon: wp.array(dtype=int)
+  ne_connect: wp.array(dtype=int)
+  ne_weld: wp.array(dtype=int)
+  ne_jnt: wp.array(dtype=int)
+  ne_ten: wp.array(dtype=int)
+  nsolving: wp.array(dtype=int)
+  subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
 
-  # sensors
-  sensordata: wp.array2d(dtype=float)
+  # warp only: collision driver
+  collision_pair: wp.array(dtype=wp.vec2i)
+  collision_pairid: wp.array(dtype=wp.vec2i)
+  collision_worldid: wp.array(dtype=int)
+  ncollision: wp.array(dtype=int)

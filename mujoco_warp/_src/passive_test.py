@@ -15,14 +15,15 @@
 
 """Tests for passive force functions."""
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
-import mujoco_warp as mjwarp
-
-from . import test_util
+import mujoco_warp as mjw
+from mujoco_warp import DisableBit
+from mujoco_warp import test_data
 
 # tolerance for difference between MuJoCo and MJWarp passive force calculations - mostly
 # due to float precision
@@ -36,23 +37,27 @@ def _assert_eq(a, b, name):
 
 
 class PassiveTest(parameterized.TestCase):
-  @parameterized.parameters(True, False)
-  def test_passive(self, gravity):
+  @parameterized.product(spring=(0, DisableBit.SPRING), damper=(0, DisableBit.DAMPER), gravity=(0, DisableBit.GRAVITY))
+  def test_passive(self, spring, damper, gravity):
     """Tests passive."""
-    # TODO(taylorhowell): remove qpos0=True once tendon spring dampers are implemented
-    _, mjd, m, d = test_util.fixture("pendula.xml", gravity=gravity, qpos0=True)
+    _, mjd, m, d = test_data.fixture(
+      "pendula.xml",
+      qvel_noise=0.01,
+      ctrl_noise=0.1,
+      qfrc_noise=0.1,
+      xfrc_noise=0.1,
+      overrides={"opt.disableflags": DisableBit.CONTACT | spring | damper | gravity},
+    )
 
     for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_gravcomp, d.qfrc_passive):
       arr.zero_()
 
-    mjwarp.passive(m, d)
+    mjw.passive(m, d)
 
     _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, "qfrc_spring")
     _assert_eq(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, "qfrc_damper")
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
-
-  # TODO(team): test DisableBit.PASSIVE
 
   @parameterized.parameters(
     (1, 0, 0, 0, 0),
@@ -64,8 +69,7 @@ class PassiveTest(parameterized.TestCase):
   )
   def test_fluid(self, density, viscosity, wind0, wind1, wind2):
     """Tests fluid model."""
-
-    _, mjd, m, d = test_util.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <option density="{density}" viscosity="{viscosity}" wind="{wind0} {wind1} {wind2}"/>
@@ -86,16 +90,48 @@ class PassiveTest(parameterized.TestCase):
     for arr in (d.qfrc_passive, d.qfrc_fluid):
       arr.zero_()
 
-    mjwarp.passive(m, d)
+    mjw.passive(m, d)
 
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
     _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
 
-  @parameterized.parameters((True, True), (True, False), (False, True), (False, False))
-  def test_gravcomp(self, sparse, gravity):
-    """Tests gravity compenstation."""
+  def test_ellipsoid_fluid(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <geom type="sphere" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <freejoint/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.7 -0.3 0.4 -0.6 0.8 -0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
 
-    _, mjd, m, d = test_util.fixture(
+    max_err = 0.0
+    for _ in range(25):
+      mjw.step(m, d)
+      mujoco.mj_step(mjm, mjd)
+
+      warp_force = d.qfrc_fluid.numpy()[0]
+      mj_force = mjd.qfrc_fluid
+      diff = np.abs(warp_force - mj_force)
+      max_err = max(max_err, float(np.max(diff)))
+
+    self.assertLess(max_err, 5e-4)
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE), gravity=(0, DisableBit.GRAVITY)
+  )
+  def test_gravcomp(self, jacobian, gravity):
+    """Tests gravity compensation."""
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option gravity="1 2 3">
@@ -125,17 +161,16 @@ class PassiveTest(parameterized.TestCase):
           <motor joint="joint0"/>
           <motor joint="joint1"/>
         </actuator>
-      </mujoco>                        
+      </mujoco>
     """,
-      gravity=gravity,
-      sparse=sparse,
+      overrides={"opt.disableflags": DisableBit.CONTACT | gravity, "opt.jacobian": jacobian},
     )
 
     for arr in (d.qfrc_passive, d.qfrc_gravcomp, d.qfrc_actuator):
       arr.zero_()
 
-    mjwarp.passive(m, d)
-    mjwarp.fwd_actuation(m, d)
+    mjw.passive(m, d)
+    mjw.fwd_actuation(m, d)
 
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
