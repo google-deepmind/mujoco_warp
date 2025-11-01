@@ -16,13 +16,13 @@
 
   <worldbody>
     <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
-	<light pos="0 0 3" dir="0 0 -1" directional="true" />
+    <light pos="0 0 3" dir="0 0 -1" directional="true" />
 
-	<geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
-	<geom name="box front wall" pos="0.5 0.0 0.7" type="box" size="0.01 0.21 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
-	<geom name="box back wall" pos="0.9 0.0 0.7" type="box" size="0.01 0.21 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+    <geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+    <geom name="box front wall" pos="0.5 0.0 0.7" type="box" size="0.01 0.21 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+    <geom name="box back wall" pos="0.9 0.0 0.7" type="box" size="0.01 0.21 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
     <geom name="box right wall" pos="0.7 0.2 0.7" type="box" size="0.21 0.01 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
-	<geom name="box left wall" pos="0.7 -0.2 0.7" type="box" size="0.21 0.01 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+    <geom name="box left wall" pos="0.7 -0.2 0.7" type="box" size="0.21 0.01 0.2" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
 
     <body name="minicube_0">
       <joint name="joint_minicube_0" type="free"/>
@@ -33,7 +33,7 @@
       <geom name="minicube_1" size="0.03 0.03 0.03" pos="0.65 0.07 0.8" type="box" contype="1" conaffinity="1"/>
     </body>
 
-	<body name="cube_0">
+    <body name="cube_0">
       <joint name="joint_cube_0" type="free"/>
       <geom name="cube_0" size="0.05 0.05 0.05" pos="0.6 -0.07 0.9" type="box" contype="1" conaffinity="1"/>
     </body>
