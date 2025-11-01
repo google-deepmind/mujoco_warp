@@ -1097,7 +1097,7 @@ def _qfrc_bias(
 
 
 @event_scope
-def rne(m: Model, d: Data, flg_acc: Optional[bool] = False):
+def rne(m: Model, d: Data, flg_acc: bool = False):
   """Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
   Computes the bias forces (`qfrc_bias`) and internal forces (`cfrc_int`) for the current state,

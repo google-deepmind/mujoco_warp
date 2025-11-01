@@ -13,8 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Optional
-
 import warp as wp
 
 from .support import mul_m
@@ -139,7 +137,7 @@ def _qderiv_tendon_damping(
 
 
 @event_scope
-def deriv_smooth_vel(m: Model, d: Data, flg_forward: Optional[bool] = True):
+def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
   """Analytical derivative of smooth forces w.r.t. velocities.
 
   Args:

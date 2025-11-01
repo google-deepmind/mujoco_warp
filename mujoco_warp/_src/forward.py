@@ -553,7 +553,7 @@ def implicit(m: Model, d: Data):
 
 
 @event_scope
-def fwd_position(m: Model, d: Data, factorize: Optional[bool] = True):
+def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
 
   Args:
@@ -967,7 +967,7 @@ def _qfrc_smooth(
 
 
 @event_scope
-def fwd_acceleration(m: Model, d: Data, factorize: Optional[bool] = False):
+def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   """Add up all non-constraint forces, compute qacc_smooth.
 
   Args:

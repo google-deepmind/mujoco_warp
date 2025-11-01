@@ -953,7 +953,7 @@ def _get_padded_sizes(nv: int, njmax: int, nworld: int, is_sparse: bool, tile_si
 
 def make_data(
   mjm: mujoco.MjModel,
-  nworld: Optional[int] = 1,
+  nworld: int = 1,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
@@ -1178,7 +1178,7 @@ def make_data(
 def put_data(
   mjm: mujoco.MjModel,
   mjd: mujoco.MjData,
-  nworld: Optional[int] = 1,
+  nworld: int = 1,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,

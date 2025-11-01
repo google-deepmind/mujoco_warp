@@ -93,9 +93,9 @@ def benchmark(
   d: Data,
   nstep: int,
   ctrls: Optional[np.ndarray] = None,
-  event_trace: Optional[bool] = False,
-  measure_alloc: Optional[bool] = False,
-  measure_solver_niter: Optional[bool] = False,
+  event_trace: bool = False,
+  measure_alloc: bool = False,
+  measure_solver_niter: bool = False,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 
