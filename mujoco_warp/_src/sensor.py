@@ -42,7 +42,7 @@ from .types import vec8i
 from .util_misc import inside_geom
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
