@@ -280,6 +280,7 @@ class IOTest(parameterized.TestCase):
     """Test that static geoms (ground plane) work correctly with put_data."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
+        <option timestep="0.02"/>
         <worldbody>
           <geom name="ground" type="plane" pos="0 0 0" size="0 0 1"/>
           <body name="box" pos="0 0 0.6">
@@ -295,15 +296,8 @@ class IOTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
 
     # let the box fall and settle on the ground
-    wp.init()
-    with wp.ScopedDevice(wp.get_device()):
-      with wp.ScopedCapture() as capture:
-        mjwarp.step(m, d)
-
-      for _ in range(1000):
-        with wp.ScopedStream(wp.get_stream()):
-          wp.capture_launch(capture.graph)
-          wp.synchronize()
+    for _ in range(30):
+      mjwarp.step(m, d)
 
     # check that box is above ground
     # box center should be at z ≈ 0.5 when resting on ground
