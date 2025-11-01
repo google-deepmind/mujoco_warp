@@ -919,6 +919,56 @@ class CollisionTest(parameterized.TestCase):
     _assert_eq(d.contact.includemargin.numpy()[0], mjd.contact.includemargin[0], "includemargin")
     _assert_eq(d.contact.dim.numpy()[0], mjd.contact.dim[0], "dim")
 
+  def test_box_box_face_penetration_depth(self):
+    """Tests box-box face-to-face penetration depth calculation.
+
+    This test validates the bugfix for box-box collision depth calculation.
+    Two aligned boxes with face-to-face contact should report correct penetration depth.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 0">
+          <geom type="box" size="0.5 0.5 0.5"/>
+        </body>
+        <body pos="0 0 0.8">
+          <freejoint/>
+          <geom type="box" size="0.5 0.5 0.5"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="0 0 0.8 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    mujoco.mj_collision(mjm, mjd)
+    mjw.collision(m, d)
+
+    # Both boxes have size 0.5, so faces are at z=0.5 and z=0.3 (0.8-0.5)
+    # Penetration depth should be 0.5 - 0.3 = 0.2
+    expected_penetration = -0.2
+
+    self.assertGreater(d.nacon.numpy()[0], 0, "Should have contacts")
+    self.assertGreater(mjd.ncon, 0, "MuJoCo should have contacts")
+
+    # Check that penetration depths match between MuJoCo and mujoco_warp
+    for i in range(min(mjd.ncon, d.nacon.numpy()[0])):
+      mj_dist = mjd.contact.dist[i]
+      mjw_dist = d.contact.dist.numpy()[i]
+      _assert_eq(mjw_dist, mj_dist, f"penetration depth contact {i}")
+
+      # Verify the penetration is approximately correct
+      self.assertAlmostEqual(
+        mjw_dist,
+        expected_penetration,
+        places=2,
+        msg=f"Contact {i}: Expected penetration {expected_penetration:.4f}, got {mjw_dist:.4f}",
+      )
+
 
 if __name__ == "__main__":
   absltest.main()
