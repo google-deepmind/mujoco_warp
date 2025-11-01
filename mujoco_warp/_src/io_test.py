@@ -294,7 +294,7 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
 
-    # Let the box fall and setttle on the ground.
+    # let the box fall and settle on the ground
     wp.init()
     with wp.ScopedDevice(wp.get_device()):
       with wp.ScopedCapture() as capture:
@@ -305,9 +305,9 @@ class IOTest(parameterized.TestCase):
           wp.capture_launch(capture.graph)
           wp.synchronize()
 
-    # Check that box is above ground.
-    # Box center should be at z ≈ 0.5 when resting on ground.
-    box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate.
+    # check that box is above ground
+    # box center should be at z ≈ 0.5 when resting on ground
+    box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate
     self.assertGreater(box_z, 0.4, msg=f"Box fell through ground plane (z={box_z}, should be > 0.4)")
 
   def test_noslip_solver(self):

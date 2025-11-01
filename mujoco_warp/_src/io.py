@@ -1213,8 +1213,8 @@ def put_data(
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
-  # Ensure static geom positions are computed.
-  # TODO: Remove once MjData creation semantics are fixed.
+  # ensure static geom positions are computed
+  # TODO: remove once MjData creation semantics are fixed
   mujoco.mj_kinematics(mjm, mjd)
 
   # calculate some fields that cannot be easily computed inline:
