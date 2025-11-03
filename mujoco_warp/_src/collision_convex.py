@@ -229,6 +229,37 @@ def ccd_kernel_builder(
       for i in range(ncontact):
         points[i] = 0.5 * (witness1[i] + witness2[i])
       normal = witness1[0] - witness2[0]
+      if wp.static(is_hfield):
+        # Current prism (in hfield local frame): rows 3,4,5 are the top triangle
+        p3 = geom1.hfprism[3]
+        p4 = geom1.hfprism[4]
+        p5 = geom1.hfprism[5]
+
+        # Transform those three verts to world
+        v0 = geom1.pos + geom1.rot @ p3
+        v1 = geom1.pos + geom1.rot @ p4
+        v2 = geom1.pos + geom1.rot @ p5
+
+        # Top face normal (world)
+        top_n = wp.normalize(wp.cross(v1 - v0, v2 - v0))
+
+        # Hfield "up" (world)
+        up = geom1.rot[:, 2]
+        if wp.dot(top_n, up) < 0.0:
+            top_n = -top_n
+
+        # Start from the CCD/GJK normal but replace it if it's not in the up half-space
+        n = wp.normalize(normal)
+        if wp.dot(n, up) < 1.0e-6:
+            n = top_n
+
+        # (Optional but helpful) Re-project contact points onto the top face along n,
+        # so pos/normal are coherent for the solver:
+        for i in range(ncontact):
+            d = wp.dot((points[i] - v0), top_n)
+            points[i] = points[i] - d * top_n
+
+        normal = n
       frame = make_frame(normal)
 
     # flip if collision sensor
