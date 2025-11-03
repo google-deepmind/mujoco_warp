@@ -976,6 +976,10 @@ def make_data(
   """
   # TODO(team): move nconmax, njmax to Model?
   # TODO(team): improve heuristic for nconmax and njmax
+
+  if (nconmax and naconmax) and nworld * nconmax != naconmax:
+    raise ValueError("nworld * nconmax != naconmax.")
+
   nconmax = nconmax or 20
   njmax = njmax or nconmax * 6
 
@@ -1188,6 +1192,9 @@ def put_data(
   # TODO(team): move nconmax and njmax to Model?
   # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
+
+  if (nconmax and naconmax) and nworld * nconmax != naconmax:
+    raise ValueError("nworld * nconmax != naconmax.")
 
   # TODO(team): better heuristic for nconmax and njmax
   nconmax = nconmax or max(5, 4 * mjd.ncon)
