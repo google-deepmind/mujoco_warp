@@ -538,6 +538,16 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(m.opt.ls_parallel, True)
 
+  def test_nconmax_naconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("""<mujoco></mujoco>""")
+
+    with self.assertRaises(ValueError):
+      mjwarp.make_data(mjm, nworld=1, nconmax=2, naconmax=3)
+
+    mjd = mujoco.MjData(mjm)
+    with self.assertRaises(ValueError):
+      mjwarp.put_data(mjm, mjd, nworld=1, nconmax=2, naconmax=3)
+
 
 if __name__ == "__main__":
   wp.init()
