@@ -28,6 +28,44 @@ from .warp_util import kernel as nested_kernel
 _TOLERANCE_F32 = 1.0e-6
 
 
+def _compute_nmaxpolygon(mjm: mujoco.MjModel, geom_pair_type_count: tuple[int, ...]) -> int:
+  """Compute nmaxpolygon given the geom pairs for the model."""
+  nboxbox = geom_pair_type_count[math.upper_trid_index(len(types.GeomType), types.GeomType.BOX.value, types.GeomType.BOX.value)]
+  nboxmesh = geom_pair_type_count[
+    math.upper_trid_index(len(types.GeomType), types.GeomType.BOX.value, types.GeomType.MESH.value)
+  ]
+  nmeshmesh = geom_pair_type_count[
+    math.upper_trid_index(len(types.GeomType), types.GeomType.MESH.value, types.GeomType.MESH.value)
+  ]
+
+  # need at least 4 (square sides) if there's a box collision needing multiccd
+  box_factor = 4 if nboxbox + nboxmesh > 0 else 1
+
+  # possibly need to allocate more memory if there's meshes
+  if nmeshmesh + nboxmesh > 0:
+    return np.append(mjm.mesh_polyvertnum, box_factor).max()
+  return box_factor
+
+
+def _compute_nmaxmeshdeg(mjm: mujoco.MjModel, geom_pair_type_count: tuple[int, ...]) -> int:
+  """Compute nmaxmeshdeg given the geom pairs for the model."""
+  nboxbox = geom_pair_type_count[math.upper_trid_index(len(types.GeomType), types.GeomType.BOX.value, types.GeomType.BOX.value)]
+  nboxmesh = geom_pair_type_count[
+    math.upper_trid_index(len(types.GeomType), types.GeomType.BOX.value, types.GeomType.MESH.value)
+  ]
+  nmeshmesh = geom_pair_type_count[
+    math.upper_trid_index(len(types.GeomType), types.GeomType.MESH.value, types.GeomType.MESH.value)
+  ]
+
+  # need at least 3 (3 edges per vertex) if there's a box collision needing multiccd
+  box_factor = 3 if nboxbox + nboxmesh > 0 else 1
+
+  # possibly need to allocate more memory if there's meshes
+  if nmeshmesh + nboxmesh > 0:
+    return np.append(mjm.mesh_polymapnum, box_factor).max()
+  return box_factor
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -780,8 +818,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nsensorcontact=np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT),
     nrangefinder=sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER),
     condim_max=condim_max,  # TODO(team): get max after filtering,
-    nmaxpolygon=np.append(mjm.mesh_polyvertnum, 4).max(),
-    nmaxmeshdeg=np.append(mjm.mesh_polymapnum, 3).max(),
+    nmaxpolygon=_compute_nmaxpolygon(mjm, tuple(geom_type_pair_count)),
+    nmaxmeshdeg=_compute_nmaxmeshdeg(mjm, tuple(geom_type_pair_count)),
     has_sdf_geom=bool(np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)),
     block_dim=types.BlockDim(),
     body_tree=body_tree,
