@@ -15,7 +15,8 @@
 
 import warp as wp
 
-from .collision_gjk import ccd, multicontact
+from .collision_gjk import ccd
+from .collision_gjk import multicontact
 from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
@@ -216,7 +217,7 @@ def ccd_kernel_builder(
 
       if dist >= 0.0 and pairid[1] == -1:
         return 0
-      
+
       witness1[0] = w1
       witness2[0] = w2
 
