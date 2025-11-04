@@ -1,3 +1,18 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 from typing import Tuple
 
 import warp as wp
@@ -6,6 +21,9 @@ from .types import GeomType
 from .types import Model
 from .types import Data
 from .render_context import RenderContext
+
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def compute_box_bounds(
@@ -97,6 +115,7 @@ def compute_ellipsoid_bounds(
   rot: wp.mat33,
   size: wp.vec3,
 ) -> Tuple[wp.vec3, wp.vec3]:
+  # TODO: Implement ellipsoid bounds computation
   size_scale = 1.0
   return pos - wp.vec3(size_scale, size_scale, size_scale), pos + wp.vec3(size_scale, size_scale, size_scale)
 
@@ -187,7 +206,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
     groups=rc.groups,
   )
 
-  # Store BVH handles for later queries
+  # BVH handle must be stored to avoid garbage collection
   rc.bvh = bvh
   rc.bvh_id = bvh.id
 

@@ -180,7 +180,6 @@ def _main(argv: Sequence[str]):
 
 
 def main():
-    # absl flags assumes __main__ is the main running module for usage
     sys.argv[0] = "mujoco_warp.render"
     sys.modules["__main__"].__doc__ = __doc__
     app.run(_main)

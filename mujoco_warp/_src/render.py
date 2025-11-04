@@ -1,3 +1,18 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 from typing import Tuple
 
 import warp as wp
@@ -18,6 +33,8 @@ from .types import GeomType
 from .warp_util import event_scope
 from .render_context import RenderContext
 
+wp.set_module_options({"enable_backward": False})
+
 MAX_NUM_VIEWS_PER_THREAD = 8
 
 BACKGROUND_COLOR = (
@@ -27,13 +44,18 @@ BACKGROUND_COLOR = (
   int(0.1 * 255.0)
 )
 
-TILE_W: int = 32
-TILE_H: int = 8
+# Cached spotlight cone cosines
+SPOT_INNER_COS = wp.float32(0.95)
+SPOT_OUTER_COS = wp.float32(0.85)
+
+TILE_W: int = 16
+TILE_H: int = 16
 THREADS_PER_TILE: int = TILE_W * TILE_H
 
 @wp.func
 def ceil_div(a: int, b: int):
   return (a + b - 1) // b
+
 
 # Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
 @wp.func
@@ -441,8 +463,8 @@ def compute_lighting(
     if light_type == 0: # spot light
       spot_dir = wp.normalize(light_xdir)
       cos_theta = wp.dot(-L, spot_dir)
-      inner = 0.95
-      outer = 0.85
+      inner = SPOT_INNER_COS
+      outer = SPOT_OUTER_COS
       spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - outer) / (inner - outer)))
       attenuation = attenuation * spot_factor
 
@@ -514,6 +536,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     fov_rad: float,
     cam_xpos: wp.array2d(dtype=wp.vec3),
     cam_xmat: wp.array2d(dtype=wp.mat33),
+    rays_cam: wp.array(dtype=wp.vec3),
 
     # BVH
     bvh_id: wp.uint64,
@@ -586,15 +609,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       world_idx = view // ncam
       cam_idx = view % ncam
 
-      ray_dir_world, ray_origin_world = compute_camera_ray(
-        img_width,
-        img_height,
-        fov_rad,
-        px,
-        py,
-        cam_xpos[world_idx, cam_idx],
-        cam_xmat[world_idx, cam_idx],
-      )
+      ray_dir_local_cam = rays_cam[mapped_idx]
+      ray_dir_world = cam_xmat[world_idx, cam_idx] @ ray_dir_local_cam
+      ray_origin_world = cam_xpos[world_idx, cam_idx]
 
       geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
         bvh_id,
@@ -733,6 +750,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       rc.fov_rad,
       d.cam_xpos,
       d.cam_xmat,
+      rc.rays_cam,
 
       # BVH
       rc.bvh_id,
@@ -777,5 +795,3 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     ],
     block_dim=THREADS_PER_TILE,
   )
-
-

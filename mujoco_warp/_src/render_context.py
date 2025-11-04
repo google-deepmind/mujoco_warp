@@ -1,17 +1,29 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 import dataclasses
 
 import warp as wp
 import mujoco
-import threading
 
 from .types import Model
 from .types import Data
 from .types import GeomType
 from . import bvh
-from . import render
 
-
-_RENDER_CONTEXT_BUFFERS = {}
+wp.set_module_options({"enable_backward": False})
 
 
 def create_render_context(
@@ -45,43 +57,22 @@ def create_render_context(
   return rc
 
 
-def create_render_context_in_registry(
-  mjm: mujoco.MjModel,
-  m: Model,
-  d: Data,
-  nworld: int,
-  width: int,
-  height: int,
-  use_textures: bool,
-  use_shadows: bool,
-  fov_rad: float,
-  render_rgb: bool,
-  render_depth: bool,
-  enabled_geom_groups = [0, 1, 2],
-):
-  rc = RenderContext(
-    mjm,
-    m,
-    d,
-    nworld,
-    width,
-    height,
-    use_textures,
-    use_shadows,
-    fov_rad,
-    render_rgb,
-    render_depth,
-    enabled_geom_groups,
-  )
-  with threading.Lock():
-    key = len(_RENDER_CONTEXT_BUFFERS) + 1
-    _RENDER_CONTEXT_BUFFERS[key] = rc
-  return RenderContextRegistry(key)
-
-
-def render_registry(m: Model, d: Data, rc_id: int):
-  rc = _RENDER_CONTEXT_BUFFERS[rc_id]
-  render.render(m, d, rc)
+@wp.kernel
+def build_primary_rays(img_w: int, img_h: int, fov_rad: float, rays_cam: wp.array(dtype=wp.vec3)):
+  tid = wp.tid()
+  total = img_w * img_h
+  if tid >= total:
+    return
+  px = tid % img_w
+  py = tid // img_w
+  aspect_ratio = float(img_w) / float(img_h)
+  u = (float(px) + 0.5) / float(img_w) - 0.5
+  v = (float(py) + 0.5) / float(img_h) - 0.5
+  h = wp.tan(fov_rad / 2.0)
+  dx = u * 2.0 * h
+  dy = -v * 2.0 * h / aspect_ratio
+  dz = -1.0
+  rays_cam[tid] = wp.normalize(wp.vec3(dx, dy, dz))
 
 
 @wp.kernel
@@ -131,18 +122,6 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array
   )
 
   return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
-
-
-@dataclasses.dataclass
-class RenderContextRegistry:
-  key: int
-
-  def __init__(self, key: int):
-    self.key = key
-  
-  def __del__(self):
-    with threading.Lock():
-      del _RENDER_CONTEXT_BUFFERS[self.key]
 
 
 @dataclasses.dataclass
@@ -260,7 +239,13 @@ class RenderContext:
     self.group_roots = wp.zeros((nworld,), dtype=wp.int32)
     self.pixels = wp.zeros((nworld, mjm.ncam, width * height), dtype=wp.uint32)
     self.depth = wp.zeros((nworld, mjm.ncam, width * height), dtype=wp.float32)
-    
+    self.rays_cam = wp.zeros((width * height), dtype=wp.vec3)
+    wp.launch(
+      kernel=build_primary_rays,
+      dim=(width * height),
+      inputs=[width, height, fov_rad, self.rays_cam],
+    )
+
     self.bvh = None
     self.bvh_id = None
     bvh.build_warp_bvh(m, d, self)
