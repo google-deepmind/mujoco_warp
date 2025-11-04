@@ -35,7 +35,6 @@ def create_render_context(
   height: int,
   use_textures: bool,
   use_shadows: bool,
-  fov_rad: float,
   render_rgb: bool,
   render_depth: bool,
   enabled_geom_groups = [0, 1, 2],
@@ -49,7 +48,6 @@ def create_render_context(
     height,
     use_textures,
     use_shadows,
-    fov_rad,
     render_rgb,
     render_depth,
     enabled_geom_groups,
@@ -165,7 +163,6 @@ class RenderContext:
     height,
     use_textures,
     use_shadows,
-    fov_rad,
     render_rgb,
     render_depth,
     enabled_geom_groups = [0, 1, 2],
@@ -220,7 +217,7 @@ class RenderContext:
     self.height=height
     self.use_textures=use_textures
     self.use_shadows=use_shadows
-    self.fov_rad=fov_rad
+    self.fov_rad=wp.radians(mjm.cam_fovy[0])
     self.render_rgb=render_rgb
     self.render_depth=render_depth
     self.enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int)
@@ -243,7 +240,7 @@ class RenderContext:
     wp.launch(
       kernel=build_primary_rays,
       dim=(width * height),
-      inputs=[width, height, fov_rad, self.rays_cam],
+      inputs=[width, height, self.fov_rad, self.rays_cam],
     )
 
     self.bvh = None

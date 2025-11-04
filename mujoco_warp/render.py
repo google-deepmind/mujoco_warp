@@ -131,7 +131,6 @@ def _main(argv: Sequence[str]):
             _HEIGHT.value,
             _USE_TEXTURES.value,
             _USE_SHADOWS.value,
-            wp.radians(_FOV_DEG.value),
             _RENDER_RGB.value,
             _RENDER_DEPTH.value,
         )
