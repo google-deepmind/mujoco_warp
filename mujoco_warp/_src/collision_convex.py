@@ -90,6 +90,7 @@ def ccd_kernel_builder(
   epa_exact_neg_distance: bool,
   depth_extension: float,
   is_hfield: bool,
+  use_multiccd: bool,
 ):
   @wp.func
   def eval_ccd_write_contact(
@@ -215,40 +216,41 @@ def ccd_kernel_builder(
 
       if dist >= 0.0 and pairid[1] == -1:
         return 0
+      
+      witness1[0] = w1
+      witness2[0] = w2
 
-      if (
-        geom1.margin == 0.0
-        and geom2.margin == 0.0
-        and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
-        and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
-      ):
-        ncontact, witness1, witness2 = multicontact(
-          multiccd_polygon_in[tid],
-          multiccd_clipped_in[tid],
-          multiccd_pnormal_in[tid],
-          multiccd_pdist_in[tid],
-          multiccd_idx1_in[tid],
-          multiccd_idx2_in[tid],
-          multiccd_n1_in[tid],
-          multiccd_n2_in[tid],
-          multiccd_endvert_in[tid],
-          multiccd_face1_in[tid],
-          multiccd_face2_in[tid],
-          epa_vert1_in[tid],
-          epa_vert2_in[tid],
-          epa_vert_index1_in[tid],
-          epa_vert_index2_in[tid],
-          epa_face_in[tid, idx],
-          w1,
-          w2,
-          geom1,
-          geom2,
-          geomtype1,
-          geomtype2,
-        )
-      else:
-        witness1[0] = w1
-        witness2[0] = w2
+      if wp.static(use_multiccd):
+        if (
+          geom1.margin == 0.0
+          and geom2.margin == 0.0
+          and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
+          and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
+        ):
+          ncontact, witness1, witness2 = multicontact(
+            multiccd_polygon_in[tid],
+            multiccd_clipped_in[tid],
+            multiccd_pnormal_in[tid],
+            multiccd_pdist_in[tid],
+            multiccd_idx1_in[tid],
+            multiccd_idx2_in[tid],
+            multiccd_n1_in[tid],
+            multiccd_n2_in[tid],
+            multiccd_endvert_in[tid],
+            multiccd_face1_in[tid],
+            multiccd_face2_in[tid],
+            epa_vert1_in[tid],
+            epa_vert2_in[tid],
+            epa_vert_index1_in[tid],
+            epa_vert_index2_in[tid],
+            epa_face_in[tid, idx],
+            w1,
+            w2,
+            geom1,
+            geom2,
+            geomtype1,
+            geomtype2,
+          )
 
       for i in range(ncontact):
         points[i] = 0.5 * (witness1[i] + witness2[i])
@@ -741,7 +743,7 @@ def convex_narrowphase(m: Model, d: Data):
     g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
-        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD),
+        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD, False),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
