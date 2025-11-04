@@ -2144,215 +2144,214 @@ def _inflate(dist: float, x1: wp.vec3, x2: wp.vec3, margin1: float, margin2: flo
   return dist, x1, x2
 
 
-@wp.func
-def ccd(
-  # In:
-  multiccd: bool,
-  tolerance: float,
-  cutoff: float,
-  ccd_iterations: int,
-  geom1: Geom,
-  geom2: Geom,
-  geomtype1: int,
-  geomtype2: int,
-  x_1: wp.vec3,
-  x_2: wp.vec3,
-  vert: wp.array(dtype=wp.vec3),
-  vert1: wp.array(dtype=wp.vec3),
-  vert2: wp.array(dtype=wp.vec3),
-  vert_index1: wp.array(dtype=int),
-  vert_index2: wp.array(dtype=int),
-  face: wp.array(dtype=wp.vec3i),
-  face_pr: wp.array(dtype=wp.vec3),
-  face_norm2: wp.array(dtype=float),
-  face_index: wp.array(dtype=int),
-  face_map: wp.array(dtype=int),
-  horizon: wp.array(dtype=int),
-  polygon: wp.array(dtype=wp.vec3),
-  clipped: wp.array(dtype=wp.vec3),
-  plane_normal: wp.array(dtype=wp.vec3),
-  plane_dist: wp.array(dtype=float),
-  idx1: wp.array(dtype=int),
-  idx2: wp.array(dtype=int),
-  n1: wp.array(dtype=wp.vec3),
-  n2: wp.array(dtype=wp.vec3),
-  endvert: wp.array(dtype=wp.vec3),
-  face1: wp.array(dtype=wp.vec3),
-  face2: wp.array(dtype=wp.vec3),
-) -> Tuple[float, int, mat3c, mat3c]:
-  """General convex collision detection via GJK/EPA."""
-  witness1 = mat3c()
-  witness2 = mat3c()
-  full_margin1 = 0.0
-  full_margin2 = 0.0
-  size1 = 0.0
-  size2 = 0.0
+def ccd(multiccd: bool):
+  @wp.func
+  def _ccd(
+    # In:
+    tolerance: float,
+    cutoff: float,
+    ccd_iterations: int,
+    geom1: Geom,
+    geom2: Geom,
+    geomtype1: int,
+    geomtype2: int,
+    x_1: wp.vec3,
+    x_2: wp.vec3,
+    vert: wp.array(dtype=wp.vec3),
+    vert1: wp.array(dtype=wp.vec3),
+    vert2: wp.array(dtype=wp.vec3),
+    vert_index1: wp.array(dtype=int),
+    vert_index2: wp.array(dtype=int),
+    face: wp.array(dtype=wp.vec3i),
+    face_pr: wp.array(dtype=wp.vec3),
+    face_norm2: wp.array(dtype=float),
+    face_index: wp.array(dtype=int),
+    face_map: wp.array(dtype=int),
+    horizon: wp.array(dtype=int),
+    polygon: wp.array(dtype=wp.vec3),
+    clipped: wp.array(dtype=wp.vec3),
+    plane_normal: wp.array(dtype=wp.vec3),
+    plane_dist: wp.array(dtype=float),
+    idx1: wp.array(dtype=int),
+    idx2: wp.array(dtype=int),
+    n1: wp.array(dtype=wp.vec3),
+    n2: wp.array(dtype=wp.vec3),
+    endvert: wp.array(dtype=wp.vec3),
+    face1: wp.array(dtype=wp.vec3),
+    face2: wp.array(dtype=wp.vec3),
+  ) -> Tuple[float, int, mat3c, mat3c]:
+    """General convex collision detection via GJK/EPA."""
+    witness1 = mat3c()
+    witness2 = mat3c()
+    full_margin1 = 0.0
+    full_margin2 = 0.0
+    size1 = 0.0
+    size2 = 0.0
 
-  # determine if the geoms being tested are discrete
-  is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
+    # determine if the geoms being tested are discrete
+    is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
 
-  if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
-    size1 = geom1.size[0]
-    full_margin1 = size1 + 0.5 * geom1.margin
-    geom1.margin = 0.0
-    geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
+    if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
+      size1 = geom1.size[0]
+      full_margin1 = size1 + 0.5 * geom1.margin
+      geom1.margin = 0.0
+      geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
 
-  if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
-    size2 = geom2.size[0]
-    full_margin2 = size2 + 0.5 * geom2.margin
-    geom2.margin = 0.0
-    geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
+    if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
+      size2 = geom2.size[0]
+      full_margin2 = size2 + 0.5 * geom2.margin
+      geom2.margin = 0.0
+      geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
 
-  # special handling for sphere and capsule (shrink to point and line respectively)
-  if size1 + size2 > 0.0:
-    cutoff += full_margin1 + full_margin2
+    # special handling for sphere and capsule (shrink to point and line respectively)
+    if size1 + size2 > 0.0:
+      cutoff += full_margin1 + full_margin2
+      result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
+
+      # shallow penetration, inflate contact
+      if result.dist > tolerance:
+        if result.dist == FLOAT_MAX:
+          witness1[0] = result.x1
+          witness2[0] = result.x2
+          return result.dist, 1, witness1, witness2
+        dist, x1, x2 = _inflate(result.dist, result.x1, result.x2, full_margin1, full_margin2)
+        witness1[0] = x1
+        witness2[0] = x2
+        return dist, 1, witness1, witness2
+
+      # deep penetration, reset initial conditions and rerun GJK + EPA
+      geom1.margin = full_margin1 - size1
+      geom1.size = wp.vec3(size1, geom1.size[1], geom1.size[2])
+      geom2.margin = full_margin2 - size2
+      geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
+      cutoff -= full_margin1 + full_margin2
+
     result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
-    # shallow penetration, inflate contact
-    if result.dist > tolerance:
-      if result.dist == FLOAT_MAX:
-        witness1[0] = result.x1
-        witness2[0] = result.x2
-        return result.dist, 1, witness1, witness2
-      dist, x1, x2 = _inflate(result.dist, result.x1, result.x2, full_margin1, full_margin2)
-      witness1[0] = x1
-      witness2[0] = x2
-      return dist, 1, witness1, witness2
+    # no penetration depth to recover
+    if result.dist > tolerance or result.dim < 2:
+      witness1[0] = result.x1
+      witness2[0] = result.x2
+      return result.dist, 1, witness1, witness2
 
-    # deep penetration, reset initial conditions and rerun GJK + EPA
-    geom1.margin = full_margin1 - size1
-    geom1.size = wp.vec3(size1, geom1.size[1], geom1.size[2])
-    geom2.margin = full_margin2 - size2
-    geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
-    cutoff -= full_margin1 + full_margin2
+    pt = Polytope()
+    pt.nface = 0
+    pt.nmap = 0
+    pt.nvert = 0
+    pt.nhorizon = 0
+    pt.vert = vert
+    pt.vert1 = vert1
+    pt.vert2 = vert2
+    pt.vert_index1 = vert_index1
+    pt.vert_index2 = vert_index2
+    pt.face = face
+    pt.face_pr = face_pr
+    pt.face_norm2 = face_norm2
+    pt.face_index = face_index
+    pt.face_map = face_map
+    pt.horizon = horizon
 
-  result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
+    if result.dim == 2:
+      pt, new_result = _polytope2(
+        pt,
+        result.dist,
+        result.simplex,
+        result.simplex1,
+        result.simplex2,
+        result.simplex_index1,
+        result.simplex_index2,
+        geom1,
+        geom2,
+        geomtype1,
+        geomtype2,
+      )
+      if pt.status == -1:
+        result.simplex = new_result.simplex
+        result.simplex1 = new_result.simplex1
+        result.simplex2 = new_result.simplex2
+        result.simplex_index1 = new_result.simplex_index1
+        result.simplex_index2 = new_result.simplex_index2
+        result.dim = 3
+    elif result.dim == 4:
+      pt, new_result = _polytope4(
+        pt,
+        result.dist,
+        result.simplex,
+        result.simplex1,
+        result.simplex2,
+        result.simplex_index1,
+        result.simplex_index2,
+        geom1,
+        geom2,
+        geomtype1,
+        geomtype2,
+      )
+      if pt.status == -1:
+        result.simplex = new_result.simplex
+        result.simplex1 = new_result.simplex1
+        result.simplex2 = new_result.simplex2
+        result.simplex_index1 = new_result.simplex_index1
+        result.simplex_index2 = new_result.simplex_index2
+        result.dim = 3
 
-  # no penetration depth to recover
-  if result.dist > tolerance or result.dim < 2:
-    witness1[0] = result.x1
-    witness2[0] = result.x2
-    return result.dist, 1, witness1, witness2
+    # polytope2 and polytope4 may need to fallback here
+    if result.dim == 3:
+      pt = _polytope3(
+        pt,
+        result.dist,
+        result.simplex,
+        result.simplex1,
+        result.simplex2,
+        result.simplex_index1,
+        result.simplex_index2,
+        geom1,
+        geom2,
+        geomtype1,
+        geomtype2,
+      )
 
-  pt = Polytope()
-  pt.nface = 0
-  pt.nmap = 0
-  pt.nvert = 0
-  pt.nhorizon = 0
-  pt.vert = vert
-  pt.vert1 = vert1
-  pt.vert2 = vert2
-  pt.vert_index1 = vert_index1
-  pt.vert_index2 = vert_index2
-  pt.face = face
-  pt.face_pr = face_pr
-  pt.face_norm2 = face_norm2
-  pt.face_index = face_index
-  pt.face_map = face_map
-  pt.horizon = horizon
+    # origin on boundary (objects are not considered penetrating)
+    if pt.status:
+      witness1[0] = result.x1
+      witness2[0] = result.x2
+      return result.dist, 1, witness1, witness2
 
-  if result.dim == 2:
-    pt, new_result = _polytope2(
-      pt,
-      result.dist,
-      result.simplex,
-      result.simplex1,
-      result.simplex2,
-      result.simplex_index1,
-      result.simplex_index2,
-      geom1,
-      geom2,
-      geomtype1,
-      geomtype2,
-    )
-    if pt.status == -1:
-      result.simplex = new_result.simplex
-      result.simplex1 = new_result.simplex1
-      result.simplex2 = new_result.simplex2
-      result.simplex_index1 = new_result.simplex_index1
-      result.simplex_index2 = new_result.simplex_index2
-      result.dim = 3
-  elif result.dim == 4:
-    pt, new_result = _polytope4(
-      pt,
-      result.dist,
-      result.simplex,
-      result.simplex1,
-      result.simplex2,
-      result.simplex_index1,
-      result.simplex_index2,
-      geom1,
-      geom2,
-      geomtype1,
-      geomtype2,
-    )
-    if pt.status == -1:
-      result.simplex = new_result.simplex
-      result.simplex1 = new_result.simplex1
-      result.simplex2 = new_result.simplex2
-      result.simplex_index1 = new_result.simplex_index1
-      result.simplex_index2 = new_result.simplex_index2
-      result.dim = 3
+    dist, x1, x2, idx = _epa(tolerance, ccd_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
+    if idx == -1:
+      return FLOAT_MAX, 0, witness1, witness2
 
-  # polytope2 and polytope4 may need to fallback here
-  if result.dim == 3:
-    pt = _polytope3(
-      pt,
-      result.dist,
-      result.simplex,
-      result.simplex1,
-      result.simplex2,
-      result.simplex_index1,
-      result.simplex_index2,
-      geom1,
-      geom2,
-      geomtype1,
-      geomtype2,
-    )
+    if wp.static(multiccd):
+      if (
+        (geom1.margin == 0.0 and geom2.margin == 0.0)
+        and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
+        and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
+      ):
+        num, w1, w2 = _multicontact(
+          polygon,
+          clipped,
+          plane_normal,
+          plane_dist,
+          idx1,
+          idx2,
+          n1,
+          n2,
+          endvert,
+          face1,
+          face2,
+          pt,
+          pt.face[idx],
+          x1,
+          x2,
+          geom1,
+          geom2,
+          geomtype1,
+          geomtype2,
+        )
+        if num > 0:
+          return dist, num, w1, w2
 
-  # origin on boundary (objects are not considered penetrating)
-  if pt.status:
-    witness1[0] = result.x1
-    witness2[0] = result.x2
-    return result.dist, 1, witness1, witness2
+    witness1[0] = x1
+    witness2[0] = x2
+    return dist, 1, witness1, witness2
 
-  dist, x1, x2, idx = _epa(tolerance, ccd_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
-  if idx == -1:
-    return FLOAT_MAX, 0, witness1, witness2
-
-  # multiccd is always on for box-box collisions
-  if geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX:
-    multiccd = True
-
-  if (
-    multiccd
-    and (geom1.margin == 0.0 and geom2.margin == 0.0)
-    and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
-    and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
-  ):
-    num, w1, w2 = _multicontact(
-      polygon,
-      clipped,
-      plane_normal,
-      plane_dist,
-      idx1,
-      idx2,
-      n1,
-      n2,
-      endvert,
-      face1,
-      face2,
-      pt,
-      pt.face[idx],
-      x1,
-      x2,
-      geom1,
-      geom2,
-      geomtype1,
-      geomtype2,
-    )
-    if num > 0:
-      return dist, num, w1, w2
-  witness1[0] = x1
-  witness2[0] = x2
-  return dist, 1, witness1, witness2
+  return _ccd

@@ -83,6 +83,7 @@ assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid o
 
 @cache_kernel
 def ccd_kernel_builder(
+  multiccd: bool,
   legacy_gjk: bool,
   geomtype1: int,
   geomtype2: int,
@@ -188,8 +189,8 @@ def ccd_kernel_builder(
         cutoff = 1.0e32
       else:
         cutoff = 0.0
-      dist, ncontact, witness1, witness2 = ccd(
-        False,  # ignored for box-box, multiccd always on
+
+      dist, ncontact, witness1, witness2 = wp.static(ccd(multiccd))(
         opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
         cutoff,
         ccd_iterations,
@@ -716,8 +717,15 @@ def convex_narrowphase(m: Model, d: Data):
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
+      # multiccd is always on for box-box collisions
+      if g1 == GeomType.BOX and g1 == GeomType.BOX:
+        multiccd = True
+      else:
+        # TODO(team): multiccd on by default
+        multiccd = False
+
       wp.launch(
-        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD),
+        ccd_kernel_builder(multiccd, m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,

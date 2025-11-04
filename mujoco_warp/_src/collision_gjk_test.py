@@ -184,8 +184,7 @@ def _geom_dist(
       ncon,
       x1,
       x2,
-    ) = ccd(
-      multiccd,
+    ) = wp.static(ccd(multiccd))(
       tolerance[0],
       1.0e30,
       iterations,
