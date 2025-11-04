@@ -39,7 +39,8 @@ def _compute_nmaxpolygon(mjm: mujoco.MjModel, geom_pair_type_count: tuple[int, .
   ]
 
   # need at least 4 (square sides) if there's a box collision needing multiccd
-  box_factor = 4 if nboxbox + nboxmesh > 0 else 1
+  # TODO(kbayes): remove nboxbox or enable ccd for box-box collisions
+  box_factor = 4 if nboxbox + nboxmesh > 0 else 0
 
   # possibly need to allocate more memory if there's meshes
   if nmeshmesh + nboxmesh > 0:
@@ -58,7 +59,8 @@ def _compute_nmaxmeshdeg(mjm: mujoco.MjModel, geom_pair_type_count: tuple[int, .
   ]
 
   # need at least 3 (3 edges per vertex) if there's a box collision needing multiccd
-  box_factor = 3 if nboxbox + nboxmesh > 0 else 1
+  # TODO(kbayes): remove nboxbox or enable ccd for box-box collisions
+  box_factor = 3 if nboxbox + nboxmesh > 0 else 0
 
   # possibly need to allocate more memory if there's meshes
   if nmeshmesh + nboxmesh > 0:

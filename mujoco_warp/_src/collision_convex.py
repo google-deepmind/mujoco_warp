@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .collision_gjk import ccd
+from .collision_gjk import ccd, multicontact
 from .collision_gjk_legacy import epa_legacy
 from .collision_gjk_legacy import gjk_legacy
 from .collision_gjk_legacy import multicontact_legacy
@@ -181,6 +181,8 @@ def ccd_kernel_builder(
       frame = make_frame(normal)
     else:
       points = mat3c()
+      witness1 = mat3c()
+      witness2 = mat3c()
       geom1.margin = margin
       geom2.margin = margin
       if pairid[1] >= 0:
@@ -188,8 +190,7 @@ def ccd_kernel_builder(
         cutoff = 1.0e32
       else:
         cutoff = 0.0
-      dist, ncontact, witness1, witness2 = ccd(
-        False,  # ignored for box-box, multiccd always on
+      dist, ncontact, w1, w2, idx = ccd(
         opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
         cutoff,
         ccd_iterations,
@@ -210,21 +211,44 @@ def ccd_kernel_builder(
         epa_index_in[tid],
         epa_map_in[tid],
         epa_horizon_in[tid],
-        multiccd_polygon_in[tid],
-        multiccd_clipped_in[tid],
-        multiccd_pnormal_in[tid],
-        multiccd_pdist_in[tid],
-        multiccd_idx1_in[tid],
-        multiccd_idx2_in[tid],
-        multiccd_n1_in[tid],
-        multiccd_n2_in[tid],
-        multiccd_endvert_in[tid],
-        multiccd_face1_in[tid],
-        multiccd_face2_in[tid],
       )
 
       if dist >= 0.0 and pairid[1] == -1:
         return 0
+
+      if (
+        geom1.margin == 0.0
+        and geom2.margin == 0.0
+        and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
+        and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
+      ):
+        ncontact, witness1, witness2 = multicontact(
+          multiccd_polygon_in[tid],
+          multiccd_clipped_in[tid],
+          multiccd_pnormal_in[tid],
+          multiccd_pdist_in[tid],
+          multiccd_idx1_in[tid],
+          multiccd_idx2_in[tid],
+          multiccd_n1_in[tid],
+          multiccd_n2_in[tid],
+          multiccd_endvert_in[tid],
+          multiccd_face1_in[tid],
+          multiccd_face2_in[tid],
+          epa_vert1_in[tid],
+          epa_vert2_in[tid],
+          epa_vert_index1_in[tid],
+          epa_vert_index2_in[tid],
+          epa_face_in[tid, idx],
+          w1,
+          w2,
+          geom1,
+          geom2,
+          geomtype1,
+          geomtype2,
+        )
+      else:
+        witness1[0] = w1
+        witness2[0] = w2
 
       for i in range(ncontact):
         points[i] = 0.5 * (witness1[i] + witness2[i])

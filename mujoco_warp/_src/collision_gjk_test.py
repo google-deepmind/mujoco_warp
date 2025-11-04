@@ -22,7 +22,7 @@ from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
 
-from .collision_gjk import ccd
+from .collision_gjk import ccd, multicontact
 from .collision_primitive import Geom
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
@@ -41,6 +41,9 @@ def _geom_dist(
   mat1: wp.mat33 | None = None,
   mat2: wp.mat33 | None = None,
 ):
+  # we run multiccd on static scenes so these need to be initilized
+  nmaxpolygon = 10
+  nmaxmeshdeg = 10
   epa_vert = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
   epa_vert1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
   epa_vert2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
@@ -52,20 +55,20 @@ def _geom_dist(
   epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
   epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
   epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
-  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_pnormal = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_pdist = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=float)
-  multiccd_idx1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
-  multiccd_idx2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
-  multiccd_n1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
-  multiccd_n2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
-  multiccd_endvert = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
-  multiccd_face1 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_face2 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
+  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
+  multiccd_pnormal = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
+  multiccd_pdist = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=float)
+  multiccd_idx1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
+  multiccd_idx2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
+  multiccd_n1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_n2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_endvert = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_face1 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
+  multiccd_face2 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
 
   @nested_kernel(module="unique", enable_backward=False)
-  def _gjk_kernel(
+  def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -101,17 +104,17 @@ def _geom_dist(
     face_index: wp.array(dtype=int),
     face_map: wp.array(dtype=int),
     horizon: wp.array(dtype=int),
-    polygon: wp.array(dtype=wp.vec3),
-    clipped: wp.array(dtype=wp.vec3),
-    pnormal: wp.array(dtype=wp.vec3),
-    pdist: wp.array(dtype=float),
-    idx1: wp.array(dtype=int),
-    idx2: wp.array(dtype=int),
-    n1: wp.array(dtype=wp.vec3),
-    n2: wp.array(dtype=wp.vec3),
-    endvert: wp.array(dtype=wp.vec3),
-    face1: wp.array(dtype=wp.vec3),
-    face2: wp.array(dtype=wp.vec3),
+    polygon: wp.array2d(dtype=wp.vec3),
+    clipped: wp.array2d(dtype=wp.vec3),
+    pnormal: wp.array2d(dtype=wp.vec3),
+    pdist: wp.array2d(dtype=float),
+    idx1: wp.array2d(dtype=int),
+    idx2: wp.array2d(dtype=int),
+    n1: wp.array2d(dtype=wp.vec3),
+    n2: wp.array2d(dtype=wp.vec3),
+    endvert: wp.array2d(dtype=wp.vec3),
+    face1: wp.array2d(dtype=wp.vec3),
+    face2: wp.array2d(dtype=wp.vec3),
     # Out:
     dist_out: wp.array(dtype=float),
     ncon_out: wp.array(dtype=int),
@@ -184,8 +187,8 @@ def _geom_dist(
       ncon,
       x1,
       x2,
+      idx,
     ) = ccd(
-      multiccd,
       tolerance[0],
       1.0e30,
       iterations,
@@ -206,29 +209,44 @@ def _geom_dist(
       face_index,
       face_map,
       horizon,
-      polygon,
-      clipped,
-      pnormal,
-      pdist,
-      idx1,
-      idx2,
-      n1,
-      n2,
-      endvert,
-      face1,
-      face2,
     )
+
+    if wp.static(multiccd):
+      ncon, _, _ = multicontact(
+        polygon[0],
+        clipped[0],
+        pnormal[0],
+        pdist[0],
+        idx1[0],
+        idx2[0],
+        n1[0],
+        n2[0],
+        endvert[0],
+        face1[0],
+        face2[0],
+        vert1,
+        vert2,
+        vert_index1,
+        vert_index2,
+        face[idx],
+        x1,
+        x2,
+        geom1,
+        geom2,
+        geomtype1,
+        geomtype2,
+      )
 
     dist_out[0] = dist
     ncon_out[0] = ncon
-    pos_out[0] = x1[0]
-    pos_out[1] = x2[0]
+    pos_out[0] = x1
+    pos_out[1] = x2
 
   dist_out = wp.array(shape=(1,), dtype=float)
   ncon_out = wp.array(shape=(1,), dtype=int)
   pos_out = wp.array(shape=(2,), dtype=wp.vec3)
   wp.launch(
-    _gjk_kernel,
+    _ccd_kernel,
     dim=(1,),
     inputs=[
       m.geom_type,
@@ -263,17 +281,17 @@ def _geom_dist(
       epa_index[0],
       epa_map[0],
       epa_horizon[0],
-      multiccd_polygon[0],
-      multiccd_clipped[0],
-      multiccd_pnormal[0],
-      multiccd_pdist[0],
-      multiccd_idx1[0],
-      multiccd_idx2[0],
-      multiccd_n1[0],
-      multiccd_n2[0],
-      multiccd_endvert[0],
-      multiccd_face1[0],
-      multiccd_face2[0],
+      multiccd_polygon,
+      multiccd_clipped,
+      multiccd_pnormal,
+      multiccd_pdist,
+      multiccd_idx1,
+      multiccd_idx2,
+      multiccd_n1,
+      multiccd_n2,
+      multiccd_endvert,
+      multiccd_face1,
+      multiccd_face2,
     ],
     outputs=[
       dist_out,
