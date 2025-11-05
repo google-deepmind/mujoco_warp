@@ -42,9 +42,9 @@ def _geom_dist(
   mat1: wp.mat33 | None = None,
   mat2: wp.mat33 | None = None,
 ):
-  # we run multiccd on static scenes so these need to be initilized
-  nmaxpolygon = 10
-  nmaxmeshdeg = 10
+  # we run multiccd on static scenes so these need to be initialized
+  nmaxpolygon = 10 if multiccd else 0
+  nmaxmeshdeg = 10 if multiccd else 0
   epa_vert = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert1 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert2 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
