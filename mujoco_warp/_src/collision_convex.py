@@ -221,7 +221,8 @@ def ccd_kernel_builder(
       witness1[0] = w1
       witness2[0] = w2
 
-      if wp.static(use_multiccd):
+      # always use multiccd for box-box
+      if wp.static(use_multiccd or (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)):
         if (
           geom1.margin == 0.0
           and geom2.margin == 0.0
