@@ -221,8 +221,7 @@ def ccd_kernel_builder(
       witness1[0] = w1
       witness2[0] = w2
 
-      # always use multiccd for box-box
-      if wp.static(use_multiccd or (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)):
+      if wp.static(use_multiccd):
         if (
           geom1.margin == 0.0
           and geom2.margin == 0.0
@@ -694,6 +693,11 @@ def convex_narrowphase(m: Model, d: Data):
   # TODO(team): fix early return?
   if not any(m.geom_pair_type_count[upper_trid_index(len(GeomType), g[0].value, g[1].value)] for g in _CONVEX_COLLISION_PAIRS):
     return
+  
+  # set to true to enable multiccd
+  use_multiccd = False
+  nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
+  nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
   # epa_vert: vertices in EPA polytope in Minkowski space
   epa_vert = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
@@ -718,34 +722,34 @@ def convex_narrowphase(m: Model, d: Data):
   # epa_horizon: index pair (i j) of edges on horizon
   epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
   # multiccd_polygon: clipped contact surface
-  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
   # multiccd_clipped: clipped contact surface (intermediate)
-  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
   # multiccd_pnormal: plane normal of clipping polygon
-  multiccd_pnormal = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_pnormal = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
   # multiccd_pdist: plane distance of clipping polygon
-  multiccd_pdist = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=float)
+  multiccd_pdist = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=float)
   # multiccd_idx1: list of normal index candidates for Geom 1
-  multiccd_idx1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
+  multiccd_idx1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
   # multiccd_idx2: list of normal index candidates for Geom 2
-  multiccd_idx2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
+  multiccd_idx2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
   # multiccd_n1: list of normal candidates for Geom 1
-  multiccd_n1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_n1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
   # multiccd_n2: list of normal candidates for Geom 1
-  multiccd_n2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_n2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
   # multiccd_endvert: list of edge vertices candidates
-  multiccd_endvert = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
+  multiccd_endvert = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
   # multiccd_face1: contact face
-  multiccd_face1 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_face1 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
   # multiccd_face2: contact face
-  multiccd_face2 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  multiccd_face2 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
 
   for geom_pair in _CONVEX_COLLISION_PAIRS:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
     if m.geom_pair_type_count[upper_trid_index(len(GeomType), g1, g2)]:
       wp.launch(
-        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD, False),
+        ccd_kernel_builder(m.opt.legacy_gjk, g1, g2, m.opt.ccd_iterations, True, 1e9, g1 == GeomType.HFIELD, use_multiccd),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
