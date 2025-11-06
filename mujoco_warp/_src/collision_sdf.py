@@ -721,29 +721,29 @@ def _sdf_narrowphase(
   )
 
   geom1, geom2 = geom_collision_pair(
-      geoms,
-      geom_type,
-      geom_dataid,
-      geom_size,
-      mesh_vertadr,
-      mesh_vertnum,
-      mesh_graphadr,
-      mesh_vert,
-      mesh_graph,
-      mesh_polynum,
-      mesh_polyadr,
-      mesh_polynormal,
-      mesh_polyvertadr,
-      mesh_polyvertnum,
-      mesh_polyvert,
-      mesh_polymapadr,
-      mesh_polymapnum,
-      mesh_polymap,
-      geom_xpos_in,
-      geom_xmat_in,
-      worldid,
-    )
-  
+    geoms,
+    geom_type,
+    geom_dataid,
+    geom_size,
+    mesh_vertadr,
+    mesh_vertnum,
+    mesh_graphadr,
+    mesh_vert,
+    mesh_graph,
+    mesh_polynum,
+    mesh_polyadr,
+    mesh_polynormal,
+    mesh_polyvertadr,
+    mesh_polyvertnum,
+    mesh_polyvert,
+    mesh_polymapadr,
+    mesh_polymapnum,
+    mesh_polymap,
+    geom_xpos_in,
+    geom_xmat_in,
+    worldid,
+  )
+
   aabb_id = worldid % geom_aabb.shape[0]
   g1 = geoms[0]
   type1 = geom_type[g1]
