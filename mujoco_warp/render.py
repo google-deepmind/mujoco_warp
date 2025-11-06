@@ -18,7 +18,7 @@
 Usage: mjwarp-render <mjcf XML path> [flags]
 
 Example:
-  mjwarp-render benchmark/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512 -o "opt.solver=cg"
+  mjwarp-render benchmark/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
 """
 
 import sys
@@ -35,13 +35,11 @@ from PIL import Image
 import mujoco_warp as mjw
 from mujoco_warp._src.io import override_model
 
-
 _NWORLD = flags.DEFINE_integer("nworld", 1, "number of parallel worlds")
 _WORLD = flags.DEFINE_integer("world", 0, "world index to save from")
 _CAM = flags.DEFINE_integer("cam", 0, "camera index to render")
 _WIDTH = flags.DEFINE_integer("width", 512, "render width (pixels)")
 _HEIGHT = flags.DEFINE_integer("height", 512, "render height (pixels)")
-_FOV_DEG = flags.DEFINE_float("fov_deg", 60.0, "vertical field-of-view in degrees")
 _RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
 _RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
 _USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
@@ -52,9 +50,6 @@ _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation
 _OUTPUT_RGB = flags.DEFINE_string("output_rgb", "debug.png", "output path for RGB image")
 _OUTPUT_DEPTH = flags.DEFINE_string("output_depth", "debug_depth.png", "output path for depth image")
 _DEPTH_SCALE = flags.DEFINE_float("depth_scale", 5.0, "scale factor to map depth to 0..255 for preview")
-_ROLL = flags.DEFINE_bool("roll_kinematics", False, "advance simulation before rendering")
-_ROLL_STEPS = flags.DEFINE_integer("roll_steps", 50, "number of steps to advance when rolling")
-
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
     if not path.exists():
@@ -111,22 +106,15 @@ def _main(argv: Sequence[str]):
     with wp.ScopedDevice(_DEVICE.value):
         m = mjw.put_model(mjm)
 
-        # apply CLI overrides first
         if _OVERRIDE.value:
             override_model(m, _OVERRIDE.value)
 
-        # prepare Data from current MuJoCo state so camera/light transforms are valid
-        d = mjw.put_data(
-            mjm,
-            mjd,
-            nworld=_NWORLD.value,
-        )
+        d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value)
 
         rc = mjw.create_render_context(
             mjm,
             m,
             d,
-            _NWORLD.value,
             _WIDTH.value,
             _HEIGHT.value,
             _USE_TEXTURES.value,
@@ -135,18 +123,11 @@ def _main(argv: Sequence[str]):
             _RENDER_DEPTH.value,
         )
 
-        # optionally advance the simulation before rendering
-        if _ROLL.value and _ROLL_STEPS.value > 0:
-            print(f"Rolling kinematics for {_ROLL_STEPS.value} steps...")
-            for _ in range(int(_ROLL_STEPS.value)):
-                mjw.step(m, d)
-
         print(
             f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n"
             f"Render: {rc.width}x{rc.height} rgb={rc.render_rgb} depth={rc.render_depth}"
         )
 
-        # render
         print("Rendering...")
         mjw.render(m, d, rc)
 

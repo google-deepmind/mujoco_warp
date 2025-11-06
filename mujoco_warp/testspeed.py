@@ -172,7 +172,6 @@ def _main(argv: Sequence[str]):
         mjm,
         m,
         d,
-        _NWORLD.value,
         _WIDTH.value,
         _HEIGHT.value,
         _USE_TEXTURES.value,

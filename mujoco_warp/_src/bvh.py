@@ -17,16 +17,16 @@ from typing import Tuple
 
 import warp as wp
 
+from .render_context import RenderContext
+from .types import Data
 from .types import GeomType
 from .types import Model
-from .types import Data
-from .render_context import RenderContext
 
 wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def compute_box_bounds(
+def _compute_box_bounds(
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -50,7 +50,7 @@ def compute_box_bounds(
 
 
 @wp.func
-def compute_sphere_bounds(
+def _compute_sphere_bounds(
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -60,7 +60,7 @@ def compute_sphere_bounds(
 
 
 @wp.func
-def compute_capsule_bounds(
+def _compute_capsule_bounds(
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -80,7 +80,7 @@ def compute_capsule_bounds(
 
 
 @wp.func
-def compute_plane_bounds(
+def _compute_plane_bounds(
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -110,7 +110,7 @@ def compute_plane_bounds(
 
 
 @wp.func
-def compute_ellipsoid_bounds(
+def _compute_ellipsoid_bounds(
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -121,7 +121,7 @@ def compute_ellipsoid_bounds(
 
 
 @wp.kernel
-def compute_bvh_bounds(
+def _compute_bvh_bounds(
   bvh_ngeom: int,
   nworld: int,
   enabled_geom_ids: wp.array(dtype=int),
@@ -133,7 +133,7 @@ def compute_bvh_bounds(
   mesh_bounds_size: wp.array(dtype=wp.vec3),
   lowers: wp.array(dtype=wp.vec3),
   uppers: wp.array(dtype=wp.vec3),
-  groups: wp.array(dtype=wp.int32),
+  groups: wp.array(dtype=int),
 ):
   tid = wp.tid()
   world_id = tid // bvh_ngeom
@@ -150,18 +150,18 @@ def compute_bvh_bounds(
   type = geom_type[geom_id]
 
   if type == GeomType.SPHERE:
-    lower, upper = compute_sphere_bounds(pos, rot, size)
+    lower, upper = _compute_sphere_bounds(pos, rot, size)
   elif type == GeomType.CAPSULE:
-    lower, upper = compute_capsule_bounds(pos, rot, size)
+    lower, upper = _compute_capsule_bounds(pos, rot, size)
   elif type == GeomType.PLANE:
-    lower, upper = compute_plane_bounds(pos, rot, size)
+    lower, upper = _compute_plane_bounds(pos, rot, size)
   elif type == GeomType.MESH:
     size = mesh_bounds_size[geom_dataid[geom_id]]
-    lower, upper = compute_box_bounds(pos, rot, size)
+    lower, upper = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.ELLIPSOID:
-    lower, upper = compute_ellipsoid_bounds(pos, rot, size)
+    lower, upper = _compute_ellipsoid_bounds(pos, rot, size)
   elif type == GeomType.BOX:
-    lower, upper = compute_box_bounds(pos, rot, size)
+    lower, upper = _compute_box_bounds(pos, rot, size)
 
   lowers[world_id * bvh_ngeom + bvh_geom_local] = lower
   uppers[world_id * bvh_ngeom + bvh_geom_local] = upper
@@ -169,9 +169,9 @@ def compute_bvh_bounds(
 
 
 @wp.kernel
-def compute_bvh_group_roots(
+def _compute_bvh_group_roots(
   bvh_id: wp.uint64,
-  group_roots: wp.array(dtype=wp.int32),
+  group_roots: wp.array(dtype=int),
 ):
   tid = wp.tid()
   root = wp.bvh_get_group_root(bvh_id, tid)
@@ -182,11 +182,11 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
   """Build a Warp BVH for all geometries in all worlds."""
 
   wp.launch(
-    kernel=compute_bvh_bounds,
-    dim=(rc.nworld * rc.bvh_ngeom),
+    kernel=_compute_bvh_bounds,
+    dim=d.nworld * rc.bvh_ngeom,
     inputs=[
       rc.bvh_ngeom,
-      rc.nworld,
+      d.nworld,
       rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,
@@ -200,30 +200,26 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
     ],
   )
 
-  bvh = wp.Bvh(
-    rc.lowers,
-    rc.uppers,
-    groups=rc.groups,
-  )
+  bvh = wp.Bvh(rc.lowers, rc.uppers, groups=rc.groups)
 
   # BVH handle must be stored to avoid garbage collection
   rc.bvh = bvh
   rc.bvh_id = bvh.id
 
   wp.launch(
-    kernel=compute_bvh_group_roots,
-    dim=rc.nworld,
+    kernel=_compute_bvh_group_roots,
+    dim=d.nworld,
     inputs=[bvh.id, rc.group_roots],
   )
 
 
 def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
   wp.launch(
-    kernel=compute_bvh_bounds,
-    dim=(rc.nworld * rc.bvh_ngeom),
+    kernel=_compute_bvh_bounds,
+    dim=d.nworld * rc.bvh_ngeom,
     inputs=[
       rc.bvh_ngeom,
-      rc.nworld,
+      d.nworld,
       rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,

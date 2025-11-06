@@ -18,20 +18,22 @@ from typing import Tuple
 import warp as wp
 
 from . import bvh
-from .ray import ray_plane_with_normal
-from .ray import ray_sphere_with_normal
-from .ray import ray_capsule_with_normal
+from . import math
+from .ray import ray_box
 from .ray import ray_box_with_normal
+from .ray import ray_capsule
+from .ray import ray_capsule_with_normal
 from .ray import ray_mesh_with_bvh
-from .ray import _ray_plane
-from .ray import _ray_sphere
-from .ray import _ray_capsule
-from .ray import _ray_box
-from .types import Data
-from .types import Model
-from .types import GeomType
-from .warp_util import event_scope
+from .ray import ray_plane
+from .ray import ray_plane_with_normal
+from .ray import ray_sphere
+from .ray import ray_sphere_with_normal
 from .render_context import RenderContext
+from .types import Data
+from .types import GeomType
+from .types import Model
+from .warp_util import event_scope
+from .warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -44,29 +46,35 @@ BACKGROUND_COLOR = (
   int(0.1 * 255.0)
 )
 
-# Cached spotlight cone cosines
-SPOT_INNER_COS = wp.float32(0.95)
-SPOT_OUTER_COS = wp.float32(0.85)
+SPOT_INNER_COS = float(0.95)
+SPOT_OUTER_COS = float(0.85)
+INV_255 = float(1.0 / 255.0)
+SHADOW_MIN_VISIBILITY = float(0.3)  # reduce shadow darkness (0: full black, 1: no shadow)
+
+AMBIENT_UP = wp.vec3(0.0, 0.0, 1.0)
+AMBIENT_SKY = wp.vec3(0.4, 0.4, 0.45)
+AMBIENT_GROUND = wp.vec3(0.1, 0.1, 0.12)
+AMBIENT_INTENSITY = float(0.5)
 
 TILE_W: int = 16
 TILE_H: int = 16
 THREADS_PER_TILE: int = TILE_W * TILE_H
 
 @wp.func
-def ceil_div(a: int, b: int):
+def _ceil_div(a: int, b: int):
   return (a + b - 1) // b
 
 
 # Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
 @wp.func
-def tile_coords(tid: int, W: int, H: int):
+def _tile_coords(tid: int, W: int, H: int):
   tile_id = tid // THREADS_PER_TILE
   local = tid - tile_id * THREADS_PER_TILE
 
   u = local % TILE_W
   v = local // TILE_W
 
-  tiles_x = ceil_div(W, TILE_W)
+  tiles_x = _ceil_div(W, TILE_W)
   tile_x = (tile_id % tiles_x) * TILE_W
   tile_y = (tile_id // tiles_x) * TILE_H
 
@@ -77,37 +85,17 @@ def tile_coords(tid: int, W: int, H: int):
 
 @event_scope
 def render(m: Model, d: Data, rc: RenderContext):
+  """Render the current frame.
+
+  Outputs are stored in buffers within the render context.
+
+  Args:
+    m (Model): The model on device.
+    d (Data): The data on device.
+    rc (RenderContext): The render context on device.
+  """
   bvh.refit_warp_bvh(m, d, rc)
   render_megakernel(m, d, rc)
-
-
-@wp.func
-def compute_camera_ray(
-  width: int,
-  height: int,
-  fov_rad: float,
-  px: int,
-  py: int,
-  cam_xpos: wp.vec3,
-  cam_xmat:wp.mat33,
-):
-  aspect_ratio = float(width) / float(height)
-  u = (float(px) + 0.5) / float(width) - 0.5
-  v = (float(py) + 0.5) / float(height) - 0.5
-  h = wp.tan(fov_rad / 2.0)
-  ray_dir_cam_space_x = u * 2.0 * h
-  ray_dir_cam_space_y = -v * 2.0 * h / aspect_ratio
-  ray_dir_cam_space_z = -1.0
-  ray_dir_local_cam = wp.normalize(
-    wp.vec3(
-      ray_dir_cam_space_x,
-      ray_dir_cam_space_y,
-      ray_dir_cam_space_z,
-    )
-  )
-  ray_dir_world = cam_xmat @ ray_dir_local_cam
-  ray_origin = cam_xpos
-  return ray_dir_world, ray_origin
 
 
 @wp.func
@@ -117,7 +105,7 @@ def pack_rgba_to_uint32(r: wp.uint8, g: wp.uint8, b: wp.uint8, a: wp.uint8) -> w
 
 
 @wp.func
-def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float32) -> wp.uint32:
+def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
   """Pack RGBA values into a single uint32 for efficient memory access."""
   return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(b) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(r)
 
@@ -130,13 +118,13 @@ def sample_texture_2d(
   tex_adr: int,
   tex_data: wp.array(dtype=wp.uint32),
 ) -> wp.vec3:
-  ix = wp.min(width - 1, wp.int32(uv[0] * wp.float32(width)))
-  iy = wp.min(height - 1, wp.int32(uv[1] * wp.float32(height)))
+  ix = wp.min(width - 1, int(uv[0] * float(width)))
+  iy = wp.min(height - 1, int(uv[1] * float(height)))
   linear_idx = tex_adr + (iy * width + ix)
   packed_rgba = tex_data[linear_idx]
-  r = wp.float32((packed_rgba >> wp.uint32(16)) & wp.uint32(0xFF)) / 255.0
-  g = wp.float32((packed_rgba >> wp.uint32(8)) & wp.uint32(0xFF)) / 255.0
-  b = wp.float32(packed_rgba & wp.uint32(0xFF)) / 255.0
+  r = float((packed_rgba >> wp.uint32(16)) & wp.uint32(0xFF)) * INV_255
+  g = float((packed_rgba >> wp.uint32(8)) & wp.uint32(0xFF)) * INV_255
+  b = float(packed_rgba & wp.uint32(0xFF)) * INV_255
   return wp.vec3(r, g, b)
 
 
@@ -168,8 +156,8 @@ def sample_texture_plane(
 
 @wp.func
 def sample_texture_mesh(
-  bary_u: wp.float32,
-  bary_v: wp.float32,
+  bary_u: float,
+  bary_v: float,
   uv_baseadr: int,
   v_idx: wp.vec3i,
   mesh_texcoord: wp.array(dtype=wp.vec2),
@@ -217,17 +205,17 @@ def sample_texture(
   mesh_texcoord: wp.array(dtype=wp.vec2),
   mesh_texcoord_offsets: wp.array(dtype=int),
   hit_point: wp.vec3,
-  u: wp.float32,
-  v: wp.float32,
-  f: wp.int32,
-  mesh_id: wp.int32,
+  u: float,
+  v: float,
+  f: int,
+  mesh_id: int,
 ) -> wp.vec3:
   tex_color = wp.vec3(1.0, 1.0, 1.0)
 
   if geom_matid == -1 or mat_texid == -1:
     return tex_color
 
-  if geom_type[geom_id] == int(GeomType.PLANE.value):
+  if geom_type[geom_id] == GeomType.PLANE:
     tex_color = sample_texture_plane(
       hit_point,
       geom_xpos,
@@ -239,7 +227,7 @@ def sample_texture(
       tex_width,
     )
 
-  if geom_type[geom_id] == int(GeomType.MESH.value):
+  if geom_type[geom_id] == GeomType.MESH:
     if f < 0 or mesh_id < 0:
       return tex_color
 
@@ -277,17 +265,17 @@ def cast_ray(
   geom_xmat: wp.array2d(dtype=wp.mat33),
   ray_origin_world: wp.vec3,
   ray_dir_world: wp.vec3,
-) -> Tuple[wp.int32, wp.float32, wp.vec3, wp.float32, wp.float32, wp.int32, wp.int32]:
-  dist = wp.float32(wp.inf)
+) -> Tuple[int, float, wp.vec3, float, float, int, int]:
+  dist = float(wp.inf)
   normal = wp.vec3(0.0, 0.0, 0.0)
-  geom_id = wp.int32(-1)
-  bary_u = wp.float32(0.0)
-  bary_v = wp.float32(0.0)
-  face_idx = wp.int32(-1)
-  geom_mesh_id = wp.int32(-1)
+  geom_id = int(-1)
+  bary_u = float(0.0)
+  bary_v = float(0.0)
+  face_idx = int(-1)
+  geom_mesh_id = int(-1)
 
   query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
-  bounds_nr = wp.int32(0)
+  bounds_nr = int(0)
 
   while wp.bvh_query_next(query, bounds_nr, dist):
     gi_global = bounds_nr
@@ -362,19 +350,20 @@ def cast_ray_first_hit(
   geom_xmat: wp.array2d(dtype=wp.mat33),
   ray_origin_world: wp.vec3,
   ray_dir_world: wp.vec3,
-  max_dist: wp.float32,
+  max_dist: float,
 ) -> bool:
   """ A simpler version of cast_ray_first_hit that only checks for the first hit."""
   query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
-  bounds_nr = wp.int32(0)
+  bounds_nr = int(0)
 
   while wp.bvh_query_next(query, bounds_nr, max_dist):
     gi_global = bounds_nr
     gi_bvh_local = gi_global - (world_id * bvh_ngeom)
     gi = enabled_geom_ids[gi_bvh_local]
 
+    # TODO: Investigate branch elimination with static loop unrolling
     if geom_type[gi] == GeomType.PLANE:
-      d = _ray_plane(
+      d = ray_plane(
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
         geom_size[world_id, gi],
@@ -382,14 +371,14 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.SPHERE:
-      d = _ray_sphere(
+      d = ray_sphere(
         geom_xpos[world_id, gi],
         geom_size[world_id, gi][0] * geom_size[world_id, gi][0],
         ray_origin_world,
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.CAPSULE:
-      d = _ray_capsule(
+      d = ray_capsule(
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
         geom_size[world_id, gi],
@@ -397,7 +386,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.BOX:
-      d, all = _ray_box(
+      d, all = ray_box(
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
         geom_size[world_id, gi],
@@ -442,23 +431,23 @@ def compute_lighting(
   geom_xpos: wp.array2d(dtype=wp.vec3),
   geom_xmat: wp.array2d(dtype=wp.mat33),
   hit_point: wp.vec3,
-) -> wp.float32:
+) -> float:
 
-  light_contribution = wp.float32(0.0)
+  light_contribution = float(0.0)
 
+  # TODO: We should probably only be looping over active lights
+  # in the first place with a static loop of enabled light idx?
   if not light_active:
     return light_contribution
 
   L = wp.vec3(0.0, 0.0, 0.0)
-  dist_to_light = wp.float32(wp.inf)
-  attenuation = wp.float32(1.0)
+  dist_to_light = float(wp.inf)
+  attenuation = float(1.0)
 
   if light_type == 1: # directional light
     L = wp.normalize(-light_xdir)
   else:
-    to_light = light_xpos - hit_point
-    dist_to_light = wp.length(to_light)
-    L = wp.normalize(to_light)
+    L, dist_to_light = math.normalize_with_norm(light_xpos - hit_point)
     attenuation = 1.0 / (1.0 + 0.02 * dist_to_light * dist_to_light)
     if light_type == 0: # spot light
       spot_dir = wp.normalize(light_xdir)
@@ -472,8 +461,7 @@ def compute_lighting(
   if ndotl == 0.0:
     return light_contribution
 
-  visible = wp.float32(1.0)
-  shadow_min_visibility = wp.float32(0.3) # reduce shadow darkness (0: full black, 1: no shadow)
+  visible = float(1.0)
 
   if use_shadows and light_castshadow:
     # Nudge the origin slightly along the surface normal to avoid
@@ -481,9 +469,9 @@ def compute_lighting(
     eps = 1.0e-4
     shadow_origin = hit_point + normal * eps
     # Distance-limited shadows: cap by dist_to_light (for non-directional)
-    max_t = wp.float32(dist_to_light - 1.0e-3)
+    max_t = float(dist_to_light - 1.0e-3)
     if light_type == 1:  # directional light
-      max_t = wp.float32(1.0e+8)
+      max_t = float(1.0e+8)
 
     shadow_hit = cast_ray_first_hit(
       bvh_id,
@@ -503,14 +491,14 @@ def compute_lighting(
     )
 
     if shadow_hit:
-      visible = shadow_min_visibility
+      visible = SHADOW_MIN_VISIBILITY
 
   return ndotl * attenuation * visible
 
 
 @event_scope
 def render_megakernel(m: Model, d: Data, rc: RenderContext):
-  total_views = rc.nworld * m.ncam
+  total_views = d.nworld * m.ncam
   total_pixels = rc.width * rc.height
   num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
   if num_view_groups == 0:
@@ -520,9 +508,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     rc.pixels.fill_(wp.uint32(BACKGROUND_COLOR))
 
   if rc.render_depth:
-    rc.depth.fill_(wp.float32(0.0))
+    rc.depth.fill_(float(0.0))
 
-  @wp.kernel
+  @nested_kernel(module="unique", enable_backward="False")
   def _render_megakernel(
     # Model and Options
     nworld: int,
@@ -540,7 +528,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
     # BVH
     bvh_id: wp.uint64,
-    group_roots: wp.array(dtype=wp.int32),
+    group_roots: wp.array(dtype=int),
 
     # Geometry
     enabled_geom_ids: wp.array(dtype=int),
@@ -577,7 +565,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
     # Output
     out_pixels: wp.array3d(dtype=wp.uint32),
-    out_depth: wp.array3d(dtype=wp.float32),
+    out_depth: wp.array3d(dtype=float),
   ):
     tid = wp.tid()
 
@@ -594,11 +582,11 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     if group_idx >= num_view_groups:
       return
 
-    px, py = tile_coords(pixel_idx, img_width, img_height)
+    px, py = _tile_coords(pixel_idx, img_width, img_height)
     if px >= img_width or py >= img_height:
       return
     mapped_idx = py * img_width + px
-    
+
     base_view = group_idx * MAX_NUM_VIEWS_PER_THREAD
 
     for i in range(MAX_NUM_VIEWS_PER_THREAD):
@@ -632,10 +620,10 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       # Early Out
       if geom_id == -1:
         continue
-      
+
       if wp.static(rc.render_depth):
         out_depth[world_idx, cam_idx, mapped_idx] = dist
-      
+
       if not wp.static(rc.render_rgb):
         continue
 
@@ -683,19 +671,15 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
           base_color[2] * tex_color[2],
         )
 
-      up = wp.vec3(0.0, 0.0, 1.0)
       len_n = wp.length(normal)
-      n = normal if len_n > 0.0 else up
+      n = normal if len_n > 0.0 else AMBIENT_UP
       n = wp.normalize(n)
-      hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-      sky = wp.vec3(0.4, 0.4, 0.45)
-      ground = wp.vec3(0.1, 0.1, 0.12)
-      ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-      ambient_intensity = 0.5
+      hemispheric = 0.5 * (wp.dot(n, AMBIENT_UP) + 1.0)
+      ambient_color = AMBIENT_SKY * hemispheric + AMBIENT_GROUND * (1.0 - hemispheric)
       result = wp.vec3(
-        base_color[0] * (ambient_color[0] * ambient_intensity),
-        base_color[1] * (ambient_color[1] * ambient_intensity),
-        base_color[2] * (ambient_color[2] * ambient_intensity),
+        base_color[0] * (ambient_color[0] * AMBIENT_INTENSITY),
+        base_color[1] * (ambient_color[1] * AMBIENT_INTENSITY),
+        base_color[2] * (ambient_color[2] * AMBIENT_INTENSITY),
       )
 
       # Apply lighting and shadows
@@ -739,7 +723,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     dim=(num_view_groups * total_pixels),
     inputs=[
       # Model and Options
-      rc.nworld,
+      d.nworld,
       m.ncam,
       rc.bvh_ngeom,
       rc.width,

@@ -27,9 +27,9 @@ import warp as wp
 from . import forward
 from . import io
 from . import warp_util
+from .render_context import RenderContext
 from .types import Data
 from .types import Model
-from .render_context import RenderContext
 from .util_misc import halton
 
 
