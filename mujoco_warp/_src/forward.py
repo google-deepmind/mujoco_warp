@@ -444,7 +444,6 @@ def _rk_accumulate(
 @event_scope
 def rungekutta4(m: Model, d: Data):
   """Runge-Kutta explicit order 4 integrator."""
-
   # RK4 tableau
   A = [0.5, 0.5, 1.0]  # diagonal only
   B = [1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0]
