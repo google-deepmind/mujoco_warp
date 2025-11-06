@@ -1005,7 +1005,7 @@ def make_data(
     mjm: The model containing kinematic and dynamic information (host).
     nworld: Number of worlds.
     nconmax: Number of contacts to allocate per world. Contacts exist in large
-             heterogenous arrays: one world may have more than nconmax contacts.
+             heterogeneous arrays: one world may have more than nconmax contacts.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
@@ -1541,8 +1541,8 @@ def get_data_into(
   nl = d.nl.numpy()[0]
 
   # efc indexing
-  # mujoco expects contigious efc ordering for contacts
-  # this ordering is not guarenteed with mujoco warp, we enforce order here
+  # mujoco expects contiguous efc ordering for contacts
+  # this ordering is not guaranteed with mujoco warp, we enforce order here
   if nacon > 0:
     efc_idx_efl = np.arange(ne + nf + nl)
 
