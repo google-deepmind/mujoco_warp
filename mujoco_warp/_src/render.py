@@ -90,9 +90,9 @@ def render(m: Model, d: Data, rc: RenderContext):
   Outputs are stored in buffers within the render context.
 
   Args:
-    m (Model): The model on device.
-    d (Data): The data on device.
-    rc (RenderContext): The render context on device.
+    m: The model on device.
+    d: The data on device.
+    rc: The render context on device.
   """
   bvh.refit_warp_bvh(m, d, rc)
   render_megakernel(m, d, rc)

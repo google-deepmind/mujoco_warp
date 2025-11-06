@@ -277,6 +277,7 @@ def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: w
   sol, xx = _ray_quad(a, b, c)
 
   # make sure round solution is between flat sides (must use local z component)
+  #TODO: We should add a test to catch this case.
   if sol >= 0.0 and wp.abs(lpnt[2] + sol * lvec[2]) <= size[1]:
     if x < 0.0 or sol < x:
       x = sol

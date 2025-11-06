@@ -165,19 +165,19 @@ def create_render_context(
   """Creates a render context on device.
 
     Args:
-      mjm (mujoco.MjModel): The model containing kinematic and dynamic information (host).
-      m (Model): The model on device.
-      d (Data): The data on device.
-      width (int): The width to render every camera image.
-      height (int): The height to render every camera image.
-      use_textures (bool, optional): Whether to use textures. Defaults to True.
-      use_shadows (bool, optional): Whether to use shadows. Defaults to False.
-      render_rgb (bool, optional): Whether to render RGB images. Defaults to True.
-      render_depth (bool, optional): Whether to render depth images. Defaults to True.
-      enabled_geom_groups (list[int], optional): The geom groups to render. Defaults to [0, 1, 2].
+      mjm: The model containing kinematic and dynamic information on host.
+      m: The model on device.
+      d: The data on device.
+      width: The width to render every camera image.
+      height: The height to render every camera image.
+      use_textures: Whether to use textures.
+      use_shadows: Whether to use shadows.
+      render_rgb: Whether to render RGB images.
+      render_depth: Whether to render depth images.
+      enabled_geom_groups: The geom groups to render.
 
     Returns:
-      RenderContext: The render context containing rendering fields and output arrays (device).
+      The render context containing rendering fields and output arrays on device.
     """
 
   return RenderContext(
