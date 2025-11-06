@@ -325,8 +325,8 @@ def ray_capsule_with_normal(
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
   hit_local = lpnt + x * lvec
   z_clamped = wp.min(size[1], wp.max(-size[1], hit_local[2]))
-  axis_point = wp.vec3(0.0, 0.0, z_clamped)
-  normal_local = wp.normalize(hit_local - axis_point)
+  hit_local[2] -= z_clamped
+  normal_local = wp.normalize(hit_local)
   normal_world = mat @ normal_local
   normal_world = wp.normalize(normal_world)
   return True, x, normal_world
