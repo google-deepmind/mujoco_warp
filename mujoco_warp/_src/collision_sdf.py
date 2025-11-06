@@ -721,7 +721,6 @@ def _sdf_narrowphase(
   )
 
   geom1, geom2 = geom_collision_pair(
-    geoms,
     geom_type,
     geom_dataid,
     geom_size,
@@ -741,6 +740,7 @@ def _sdf_narrowphase(
     mesh_polymap,
     geom_xpos_in,
     geom_xmat_in,
+    geoms,
     worldid,
   )
 

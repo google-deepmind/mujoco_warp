@@ -513,7 +513,6 @@ def ccd_kernel_builder(
     )
 
     geom1, geom2 = geom_collision_pair(
-      geoms,
       geom_type,
       geom_dataid,
       geom_size,
@@ -533,6 +532,7 @@ def ccd_kernel_builder(
       mesh_polymap,
       geom_xpos_in,
       geom_xmat_in,
+      geoms,
       worldid,
     )
 

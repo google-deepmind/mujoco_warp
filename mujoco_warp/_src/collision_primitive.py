@@ -80,9 +80,7 @@ class Geom:
 
 @wp.func
 def geom_collision_pair(
-  # kernel_analyzer: off
   # Model:
-  geoms: wp.vec2i,
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
@@ -104,8 +102,8 @@ def geom_collision_pair(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
+  geoms: wp.vec2i,
   worldid: int,
-  # kernel_analyzer: on
 ) -> Tuple[Geom, Geom]:
   geom1 = Geom()
   geom2 = Geom()
@@ -1667,7 +1665,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     )
 
     geom1, geom2 = geom_collision_pair(
-      geoms,
       geom_type,
       geom_dataid,
       geom_size,
@@ -1687,6 +1684,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       mesh_polymap,
       geom_xpos_in,
       geom_xmat_in,
+      geoms,
       worldid,
     )
 
