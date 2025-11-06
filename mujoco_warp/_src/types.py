@@ -36,8 +36,7 @@ TILE_SIZE_JTDAJ_DENSE = 16
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """
-  Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension 'block_dim' settings for wp.launch_tiled.
 
   TODO(team): experimental and may be removed
   """
@@ -83,10 +82,10 @@ class BroadphaseFilter(enum.IntFlag):
   """Bitmask specifying which collision functions to run during broadphase.
 
   Attributes:
-    PLANE: collision between bounding sphere and plane.
-    SPHERE: collision between bounding spheres.
-    AABB: collision between axis-aligned bounding boxes.
-    OBB: collision between oriented bounding boxes.
+    PLANE: collision between bounding sphere and plane
+    SPHERE: collision between bounding spheres
+    AABB: collision between axis-aligned bounding boxes
+    OBB: collision between oriented bounding boxes
   """
 
   PLANE = 1
@@ -529,8 +528,9 @@ class WrapType(enum.IntEnum):
 
 
 class State(enum.IntEnum):
-  """
-  State component elements as integer bitflags and several convenient combinations of these flags.
+  """State component elements as integer bitflags.
+
+  Includes several convenient combinations of these flags.
 
   Attributes:
     TIME: time
@@ -633,11 +633,10 @@ class Option:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
-    graph_conditional: flag to use cuda graph conditional, should be False when JAX is used
+    graph_conditional: flag to use cuda graph conditional
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
-    legacy_gjk: run legacy gjk algorithm
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
   """
@@ -671,7 +670,6 @@ class Option:
   broadphase_filter: int
   graph_conditional: bool
   run_collision_detection: bool
-  legacy_gjk: bool
   contact_sensor_maxmatch: int
 
 
@@ -708,19 +706,19 @@ class Constraint:
     Mgrad: M / grad                                   (nworld, nv)
     search: linesearch vector                         (nworld, nv)
     search_dot: dot(search, search)                   (nworld,)
-    gauss: gauss Cost                                 (nworld,)
+    gauss: Gauss Cost                                 (nworld,)
     cost: constraint + Gauss cost                     (nworld,)
     prev_cost: cost from previous iter                (nworld,)
     state: constraint state                           (nworld, njmax)
     mv: qM @ search                                   (nworld, nv)
     jv: efc_J @ search                                (nworld, njmax)
     quad: quadratic cost coefficients                 (nworld, njmax, 3)
-    quad_gauss: quadratic cost gauss coefficients     (nworld, 3)
-    h: cone hessian                                   (nworld, nv, nv)
+    quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)
+    h: Hessian                                        (nworld, nv, nv)
     alpha: line search step size                      (nworld,)
     prev_grad: previous grad                          (nworld, nv)
     prev_Mgrad: previous Mgrad                        (nworld, nv)
-    beta: polak-ribiere beta                          (nworld,)
+    beta: Polak-Ribiere beta                          (nworld,)
     done: solver done                                 (nworld,)
   """
 
@@ -880,7 +878,7 @@ class Model:
     geom_solref: constraint solver reference: contact        (nworld, ngeom, mjNREF)
     geom_solimp: constraint solver impedance: contact        (nworld, ngeom, mjNIMP)
     geom_size: geom-specific size parameters                 (ngeom, 3)
-    geom_aabb: bounding box, (center, size)                  (ngeom, 6)
+    geom_aabb: bounding box, (center, size)                  (nworld, ngeom, 2, 3)
     geom_rbound: radius of bounding sphere                   (nworld, ngeom,)
     geom_pos: local position offset rel. to body             (nworld, ngeom, 3)
     geom_quat: local orientation offset rel. to body         (nworld, ngeom, 4)
@@ -1055,14 +1053,14 @@ class Model:
     dof_tri_row: np.tril_indices                             (mjm.nv)[0]
     dof_tri_col: np.tril_indices                             (mjm.nv)[1]
     geom_pair_type_count: count of max number of each potential collision
-    geom_plugin_index: geom index in plugin array            (ngeom, )
-    nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<= ngeom * (ngeom - 1) // 2,)
-    nxn_geom_pair_filtered: valid collision pair geom ids    (<= ngeom * (ngeom - 1) // 2,)
+    geom_plugin_index: geom index in plugin array            (ngeom,)
+    nxn_geom_pair: collision pair geom ids [-2, ngeom-1]     (<=ngeom*(ngeom-1)/2,)
+    nxn_geom_pair_filtered: valid collision pair geom ids    (<=ngeom*(ngeom-1)/2,)
                             [-1, ngeom - 1]
-    nxn_pairid: contact pair id, -1 if not predefined,       (<= ngeom * (ngeom - 1) // 2, 2)
+    nxn_pairid: contact pair id, -1 if not predefined,       (<=ngeom*(ngeom-1)/2, 2)
                   -2 if skipped
                 collision id, else -1
-    nxn_pairid_filtered: active subset of nxn_pairid         (<= ngeom * (ngeom - 1) // 2, 2)
+    nxn_pairid_filtered: active subset of nxn_pairid         (<=ngeom*(ngeom-1)/2, 2)
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
@@ -1444,8 +1442,7 @@ class Model:
 
 
 class ContactType(enum.IntFlag):
-  """
-  Type of contact.
+  """Type of contact.
 
   CONSTRAINT: contact for constraint solver.
   SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO).
@@ -1570,7 +1567,8 @@ class Data:
     qacc_smooth: unconstrained acceleration                     (nworld, nv)
     qfrc_constraint: constraint force                           (nworld, nv)
     qfrc_inverse: net external force; should equal:             (nworld, nv)
-              qfrc_applied + J.T @ xfrc_applied + qfrc_actuator
+                  qfrc_applied + J.T @ xfrc_applied
+                  + qfrc_actuator
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
@@ -1588,14 +1586,6 @@ class Data:
     ne_ten: number of equality tendon constraints               (nworld,)
     nsolving: number of unconverged worlds                      (1,)
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
-    geom_skip: skip calculating `geom_xpos` and `geom_xmat`     (ngeom,)
-               during step, reuse previous value
-    qfrc_integration: temporary array for integration           (nworld, nv)
-    qacc_integration: temporary array for integration           (nworld, nv)
-    act_vel_integration: temporary array for integration        (nworld, nu)
-    qM_integration: temporary array for integration             (nworld, nv, nv) if dense
-    qLD_integration: temporary array for integration            (nworld, nv, nv) if dense
-    qLDiagInv_integration: temporary array for integration      (nworld, nv)
     collision_pair: collision pairs from broadphase             (naconmax,)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1690,15 +1680,6 @@ class Data:
   ne_ten: wp.array(dtype=int)
   nsolving: wp.array(dtype=int)
   subtree_bodyvel: wp.array2d(dtype=wp.spatial_vector)
-  geom_skip: wp.array(dtype=bool)
-
-  # warp only: euler + implicit integration
-  qfrc_integration: wp.array2d(dtype=float)
-  qacc_integration: wp.array2d(dtype=float)
-  act_vel_integration: wp.array2d(dtype=float)
-  qM_integration: wp.array3d(dtype=float)
-  qLD_integration: wp.array3d(dtype=float)
-  qLDiagInv_integration: wp.array2d(dtype=float)
 
   # warp only: collision driver
   collision_pair: wp.array(dtype=wp.vec2i)

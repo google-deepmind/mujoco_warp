@@ -226,7 +226,6 @@ def _next_time(
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
-
   # TODO(team): can we assume static timesteps?
 
   # advance activations
@@ -280,7 +279,7 @@ def _euler_damp_qfrc_sparse(
   opt_timestep: wp.array(dtype=float),
   dof_Madr: wp.array(dtype=int),
   dof_damping: wp.array2d(dtype=float),
-  # Data out:
+  # Out:
   qM_integration_out: wp.array3d(dtype=float),
 ):
   worldid, tid = wp.tid()
@@ -288,17 +287,6 @@ def _euler_damp_qfrc_sparse(
 
   adr = dof_Madr[tid]
   qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
-
-
-def _euler_sparse(m: Model, d: Data):
-  wp.copy(d.qM_integration, d.qM)
-  wp.launch(
-    _euler_damp_qfrc_sparse,
-    dim=(d.nworld, m.nv),
-    inputs=[m.opt.timestep, m.dof_Madr, m.dof_damping],
-    outputs=[d.qM_integration],
-  )
-  smooth.factor_solve_i(m, d, d.qM_integration, d.qLD_integration, d.qLDiagInv_integration, d.qacc_integration, d.efc.Ma)
 
 
 @cache_kernel
@@ -313,8 +301,8 @@ def _tile_euler_dense(tile: TileSet):
     efc_Ma_in: wp.array2d(dtype=float),
     # In:
     adr_in: wp.array(dtype=int),
-    # Data out:
-    qacc_integration_out: wp.array2d(dtype=float),
+    # Out:
+    qacc_out: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
@@ -328,8 +316,8 @@ def _tile_euler_dense(tile: TileSet):
 
     Ma_tile = wp.tile_load(efc_Ma_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     L_tile = wp.tile_cholesky(qm_integration_tile)
-    qacc_integration_tile = wp.tile_cholesky_solve(L_tile, Ma_tile)
-    wp.tile_store(qacc_integration_out[worldid], qacc_integration_tile, offset=(dofid))
+    qacc_tile = wp.tile_cholesky_solve(L_tile, Ma_tile)
+    wp.tile_store(qacc_out[worldid], qacc_tile, offset=(dofid))
 
   return euler_dense
 
@@ -337,22 +325,30 @@ def _tile_euler_dense(tile: TileSet):
 @event_scope
 def euler(m: Model, d: Data):
   """Euler integrator, semi-implicit in velocity."""
-
   # integrate damping implicitly
   if not m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
+    qacc = wp.empty((d.nworld, m.nv), dtype=float)
     if m.opt.is_sparse:
-      _euler_sparse(m, d)
+      qM = wp.clone(d.qM)
+      qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
+      qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
+      wp.launch(
+        _euler_damp_qfrc_sparse,
+        dim=(d.nworld, m.nv),
+        inputs=[m.opt.timestep, m.dof_Madr, m.dof_damping],
+        outputs=[qM],
+      )
+      smooth.factor_solve_i(m, d, qM, qLD, qLDiagInv, qacc, d.efc.Ma)
     else:
       for tile in m.qM_tiles:
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
           inputs=[m.dof_damping, m.opt.timestep, d.qM, d.efc.Ma, tile.adr],
-          outputs=[d.qacc_integration],
+          outputs=[qacc],
           block_dim=m.block_dim.euler_dense,
         )
-
-    _advance(m, d, d.qacc_integration)
+    _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
 
@@ -428,8 +424,7 @@ def _rk_accumulate(
   qacc_rk: wp.array2d(dtype=float),
   act_dot_rk: Optional[wp.array] = None,
 ):
-  """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4"""
-
+  """Computes one term of 1/6 k_1 + 1/3 k_2 + 1/3 k_3 + 1/6 k_4."""
   wp.launch(
     _rk_accumulate_velocity_acceleration,
     dim=(d.nworld, m.nv),
@@ -488,19 +483,30 @@ def rungekutta4(m: Model, d: Data):
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
   if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
-    derivative.deriv_smooth_vel(m, d)
-    smooth.factor_solve_i(
-      m, d, d.qM_integration, d.qLD_integration, d.qLDiagInv_integration, d.qacc_integration, d.qfrc_integration
-    )
-    _advance(m, d, d.qacc_integration)
+    if m.opt.is_sparse:
+      qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
+      qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
+    else:
+      qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+      qLD = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+    qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
+    derivative.deriv_smooth_vel(m, d, qDeriv)
+    qacc = wp.empty((d.nworld, m.nv), dtype=float)
+    smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
+    _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
 
 
 @event_scope
 def fwd_position(m: Model, d: Data, factorize: bool = True):
-  """Position-dependent computations."""
+  """Position-dependent computations.
 
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    factorize: Flag to factorize interia matrix.
+  """
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
   smooth.camlight(m, d)
@@ -569,7 +575,6 @@ def _tendon_velocity(m: Model, d: Data):
 @event_scope
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
-
   _actuator_velocity(m, d)
 
   if m.ntendon > 0:
@@ -876,8 +881,13 @@ def _qfrc_smooth(
 
 @event_scope
 def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
-  """Add up all non-constraint forces, compute qacc_smooth."""
+  """Add up all non-constraint forces, compute qacc_smooth.
 
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    factorize: Flag to factorize inertia matrix.
+  """
   wp.launch(
     _qfrc_smooth,
     dim=(d.nworld, m.nv),

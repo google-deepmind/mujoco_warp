@@ -15,7 +15,6 @@
 
 import warp as wp
 
-from .support import mul_m
 from .types import BiasType
 from .types import Data
 from .types import DisableBit
@@ -52,8 +51,8 @@ def _qderiv_actuator_passive(
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
-  # Data out:
-  qM_integration_out: wp.array3d(dtype=float),
+  # Out:
+  qDeriv_out: wp.array3d(dtype=float),
 ):
   worldid, elemid = wp.tid()
 
@@ -93,12 +92,12 @@ def _qderiv_actuator_passive(
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
   if opt_is_sparse:
-    qM_integration_out[worldid, 0, elemid] = qM_in[worldid, 0, elemid] - qderiv
+    qDeriv_out[worldid, 0, elemid] = qM_in[worldid, 0, elemid] - qderiv
   else:
     qM = qM_in[worldid, dofiid, dofjid] - qderiv
-    qM_integration_out[worldid, dofiid, dofjid] = qM
+    qDeriv_out[worldid, dofiid, dofjid] = qM
     if dofiid != dofjid:
-      qM_integration_out[worldid, dofjid, dofiid] = qM
+      qDeriv_out[worldid, dofjid, dofiid] = qM
 
 
 # TODO(team): improve performance with tile operations?
@@ -114,8 +113,8 @@ def _qderiv_tendon_damping(
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
-  # Data out:
-  qM_integration_out: wp.array3d(dtype=float),
+  # Out:
+  qDeriv_out: wp.array3d(dtype=float),
 ):
   worldid, elemid = wp.tid()
   dofiid = qMi[elemid]
@@ -129,22 +128,21 @@ def _qderiv_tendon_damping(
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
   if opt_is_sparse:
-    qM_integration_out[worldid, 0, elemid] -= qderiv
+    qDeriv_out[worldid, 0, elemid] -= qderiv
   else:
-    qM_integration_out[worldid, dofiid, dofjid] -= qderiv
+    qDeriv_out[worldid, dofiid, dofjid] -= qderiv
     if dofiid != dofjid:
-      qM_integration_out[worldid, dofjid, dofiid] -= qderiv
+      qDeriv_out[worldid, dofjid, dofiid] -= qderiv
 
 
 @event_scope
-def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
+def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
   """Analytical derivative of smooth forces w.r.t. velocities.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    flg_forward (bool, optional): If True forward dynamics else inverse dynamics routine.
-                                  Default is True.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    qDeriv: Analytical derivative of smooth forces w.r.t. velocity.
   """
   qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row
   qMj = m.qM_fullm_j if m.opt.is_sparse else m.dof_tri_col
@@ -173,24 +171,18 @@ def deriv_smooth_vel(m: Model, d: Data, flg_forward: bool = True):
         qMi,
         qMj,
       ],
-      outputs=[d.qM_integration],
+      outputs=[qDeriv],
     )
   else:
     # TODO(team): directly utilize qM for these settings
-    wp.copy(d.qM_integration, d.qM)
+    wp.copy(qDeriv, d.qM)
 
   if not m.opt.disableflags & DisableBit.DAMPER:
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
       inputs=[m.ntendon, m.opt.timestep, m.opt.is_sparse, m.tendon_damping, d.ten_J, qMi, qMj],
-      outputs=[d.qM_integration],
+      outputs=[qDeriv],
     )
-
-  if flg_forward:
-    wp.copy(d.qfrc_integration, d.efc.Ma)
-  else:
-    # qfrc = qM @ qacc
-    mul_m(m, d, d.qfrc_integration, d.qacc, M=d.qM_integration)
 
   # TODO(team): rne derivative

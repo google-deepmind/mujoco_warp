@@ -276,6 +276,34 @@ class IOTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
+  def test_static_geom_collision_with_put_data(self):
+    """Test that static geoms (ground plane) work correctly with put_data."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option timestep="0.02"/>
+        <worldbody>
+          <geom name="ground" type="plane" pos="0 0 0" size="0 0 1"/>
+          <body name="box" pos="0 0 0.6">
+            <freejoint/>
+            <geom name="box" type="box" size="0.5 0.5 0.5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
+
+    # let the box fall and settle on the ground
+    for _ in range(30):
+      mjwarp.step(m, d)
+
+    # check that box is above ground
+    # box center should be at z ≈ 0.5 when resting on ground
+    box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate
+    self.assertGreater(box_z, 0.4, msg=f"Box fell through ground plane (z={box_z}, should be > 0.4)")
+
   def test_noslip_solver(self):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(

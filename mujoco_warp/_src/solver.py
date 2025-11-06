@@ -1250,7 +1250,6 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
 
 def _update_constraint(m: types.Model, d: types.Data):
   """Update constraint arrays after each solve iteration."""
-
   wp.launch(
     update_constraint_init_cost,
     dim=(d.nworld),

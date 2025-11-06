@@ -129,8 +129,8 @@ def kernel(
   enable_backward: Optional[bool] = None,
   module: Optional[Module] = None,
 ):
-  """
-  Decorator to register a Warp kernel from a Python function.
+  """Decorator to register a Warp kernel from a Python function.
+
   The function must be defined with type annotations for all arguments.
   The function must not return anything.
 
