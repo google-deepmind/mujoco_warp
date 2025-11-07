@@ -63,11 +63,10 @@ _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyf
 # Render
 _WIDTH = flags.DEFINE_integer("width", 64, "render width (pixels)")
 _HEIGHT = flags.DEFINE_integer("height", 64, "render height (pixels)")
-_FOV_DEG = flags.DEFINE_float("fov_deg", 60.0, "vertical field-of-view in degrees")
 _RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
 _RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
 _USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
-_USE_SHADOWS = flags.DEFINE_bool("shadows", True, "use shadows")
+_USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 
 def _print_table(matrix, headers, title):
   num_cols = len(headers)
