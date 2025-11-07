@@ -640,7 +640,11 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
       if wp.static(rc.use_textures):
         mat_id = geom_matid[world_idx, geom_id]
+        if mat_id < 0:
+          continue
         tex_id = mat_texid[world_idx, mat_id, 1]
+        if tex_id < 0:
+          continue
 
         tex_color = sample_texture(
           world_idx,
