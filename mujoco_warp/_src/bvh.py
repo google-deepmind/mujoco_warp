@@ -131,6 +131,7 @@ def _compute_bvh_bounds(
   geom_pos: wp.array2d(dtype=wp.vec3),
   geom_rot: wp.array2d(dtype=wp.mat33),
   mesh_bounds_size: wp.array(dtype=wp.vec3),
+  hfield_bounds_size: wp.array(dtype=wp.vec3),
   lowers: wp.array(dtype=wp.vec3),
   uppers: wp.array(dtype=wp.vec3),
   groups: wp.array(dtype=int),
@@ -161,6 +162,9 @@ def _compute_bvh_bounds(
   elif type == GeomType.ELLIPSOID:
     lower, upper = _compute_ellipsoid_bounds(pos, rot, size)
   elif type == GeomType.BOX:
+    lower, upper = _compute_box_bounds(pos, rot, size)
+  elif type == GeomType.HFIELD:
+    size = hfield_bounds_size[geom_dataid[geom_id]]
     lower, upper = _compute_box_bounds(pos, rot, size)
 
   lowers[world_id * bvh_ngeom + bvh_geom_local] = lower
@@ -194,6 +198,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
       d.geom_xpos,
       d.geom_xmat,
       rc.mesh_bounds_size,
+      rc.hfield_bounds_size,
       rc.lowers,
       rc.uppers,
       rc.groups,
@@ -227,6 +232,7 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
       d.geom_xpos,
       d.geom_xmat,
       rc.mesh_bounds_size,
+      rc.hfield_bounds_size,
       rc.lowers,
       rc.uppers,
       rc.groups,
