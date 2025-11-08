@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import dataclasses
-from typing import Optional
+from typing import Optional, Union
 
 import mujoco
 import warp as wp
@@ -30,13 +30,9 @@ wp.set_module_options({"enable_backward": False})
 @dataclasses.dataclass
 class RenderContext:
   ncam: int
-  height: int
-  width: int
-  render_rgb: bool
-  render_depth: bool
+  cam_resolutions: wp.array(dtype=wp.vec2i)
   use_textures: bool
   use_shadows: bool
-  fov_rad: float
   bvh_ngeom: int
   enabled_geom_ids: wp.array(dtype=int)
   mesh_bvh_ids: wp.array(dtype=wp.uint64)
@@ -54,20 +50,22 @@ class RenderContext:
   uppers: wp.array(dtype=wp.vec3)
   groups: wp.array(dtype=int)
   group_roots: wp.array(dtype=int)
-  pixels: wp.array3d(dtype=wp.uint32)
-  depth: wp.array3d(dtype=wp.float32)
+  rays: wp.array(dtype=wp.vec3)
+  rgb: wp.array2d(dtype=wp.uint32)
+  depth: wp.array2d(dtype=wp.float32)
+  rgb_offsets: wp.array(dtype=int)
+  depth_offsets: wp.array(dtype=int)
 
   def __init__(
     self,
     mjm: mujoco.MjModel,
     m: Model,
     d: Data,
-    width,
-    height,
-    use_textures,
-    use_shadows,
-    render_rgb,
-    render_depth,
+    cam_resolutions: Union[list[tuple[int, int]] | tuple[int, int]] = None,
+    render_rgb: Union[list[bool] | bool] = True,
+    render_depth: Union[list[bool] | bool] = False,
+    use_textures: Optional[bool] = True,
+    use_shadows: Optional[bool] = False,
     enabled_geom_groups = [0, 1, 2],
   ):
 
@@ -112,14 +110,61 @@ class RenderContext:
 
     tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
+    # If a global camera resolution is provided, use it for all cameras
+    # otherwise check the xml for camera resolutions
+    if cam_resolutions is not None:
+      if isinstance(cam_resolutions, tuple):
+        cam_resolutions = [cam_resolutions] * mjm.ncam
+      assert len(cam_resolutions) == mjm.ncam, "Camera resolutions must be provided for all cameras"
+      self.cam_resolutions = wp.array(cam_resolutions, dtype=wp.vec2i)
+    else:
+      self.cam_resolutions = wp.array(mjm.cam_resolution, dtype=wp.vec2i)
+    
+    if isinstance(render_rgb, bool):
+      render_rgb = [render_rgb] * mjm.ncam
+    assert len(render_rgb) == mjm.ncam, "Render RGB must be provided for all cameras"
+    
+    if isinstance(render_depth, bool):
+      render_depth = [render_depth] * mjm.ncam
+    assert len(render_depth) == mjm.ncam, "Render depth must be provided for all cameras"
+
+    rgb_offsets = [-1 for _ in range(mjm.ncam)]
+    depth_offsets = [-1 for _ in range(mjm.ncam)]
+    cam_resolutions = self.cam_resolutions.numpy()
+    ri = 0
+    di = 0
+    total = 0
+
+    for i in range(mjm.ncam):
+      if render_rgb[i]:
+        rgb_offsets[i] = ri
+        ri += cam_resolutions[i][0] * cam_resolutions[i][1]
+      if render_depth[i]:
+        depth_offsets[i] = di
+        di += cam_resolutions[i][0] * cam_resolutions[i][1]
+
+      total += cam_resolutions[i][0] * cam_resolutions[i][1]
+
+    self.rgb_offsets = wp.array(rgb_offsets, dtype=int)
+    self.depth_offsets = wp.array(depth_offsets, dtype=int)
+    self.rgb = wp.zeros((d.nworld, ri), dtype=wp.uint32)
+    self.depth = wp.zeros((d.nworld, di), dtype=wp.float32)
+    self.rays = wp.zeros(int(total), dtype=wp.vec3)
+
+    offset = 0
+    for i in range(mjm.ncam):
+      wp.launch(
+        kernel=build_primary_rays,
+        dim=int(cam_resolutions[i][0] * cam_resolutions[i][1]),
+        inputs=[offset, cam_resolutions[i][0], cam_resolutions[i][1], wp.radians(float(mjm.cam_fovy[i])), self.rays],
+      )
+      offset += cam_resolutions[i][0] * cam_resolutions[i][1]
+
     bvh_ngeom = len(geom_enabled_idx)
     self.bvh_ngeom=bvh_ngeom
     self.ncam=mjm.ncam
-    self.width=width
-    self.height=height
     self.use_textures=use_textures
     self.use_shadows=use_shadows
-    self.fov_rad=wp.radians(mjm.cam_fovy[0])
     self.render_rgb=render_rgb
     self.render_depth=render_depth
     self.enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int)
@@ -136,15 +181,6 @@ class RenderContext:
     self.uppers = wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3)
     self.groups = wp.zeros(d.nworld * bvh_ngeom, dtype=int)
     self.group_roots = wp.zeros(d.nworld, dtype=int)
-    self.pixels = wp.zeros((d.nworld, mjm.ncam, width * height), dtype=wp.uint32)
-    self.depth = wp.zeros((d.nworld, mjm.ncam, width * height), dtype=wp.float32)
-    self.rays_cam = wp.zeros((width * height), dtype=wp.vec3)
-    wp.launch(
-      kernel=build_primary_rays,
-      dim=width * height,
-      inputs=[width, height, self.fov_rad, self.rays_cam],
-    )
-
     self.bvh = None
     self.bvh_id = None
     bvh.build_warp_bvh(m, d, self)
@@ -154,13 +190,12 @@ def create_render_context(
   mjm: mujoco.MjModel,
   m: Model,
   d: Data,
-  width: int,
-  height: int,
+  cam_resolutions: Union[list[tuple[int, int]] | tuple[int, int]],
+  render_rgb: Union[list[bool] | bool] = True,
+  render_depth: Union[list[bool] | bool] = False,
   use_textures: Optional[bool] = True,
   use_shadows: Optional[bool] = False,
-  render_rgb: Optional[bool] = True,
-  render_depth: Optional[bool] = True,
-  enabled_geom_groups: Optional[list[int]] = [0, 1, 2],
+  enabled_geom_groups: list[int] = [0, 1, 2],
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -184,18 +219,23 @@ def create_render_context(
     mjm,
     m,
     d,
-    width,
-    height,
-    use_textures,
-    use_shadows,
+    cam_resolutions,
     render_rgb,
     render_depth,
+    use_textures,
+    use_shadows,
     enabled_geom_groups,
   )
 
 
 @wp.kernel
-def build_primary_rays(img_w: int, img_h: int, fov_rad: float, rays_cam: wp.array(dtype=wp.vec3)):
+def build_primary_rays(
+  offset: int,
+  img_w: int,
+  img_h: int,
+  fov_rad: float,
+  rays: wp.array(dtype=wp.vec3),
+):
   tid = wp.tid()
   total = img_w * img_h
   if tid >= total:
@@ -211,7 +251,7 @@ def build_primary_rays(img_w: int, img_h: int, fov_rad: float, rays_cam: wp.arra
   dx = u * 2.0 * h
   dy = -v * 2.0 * h / aspect_ratio
   dz = -1.0
-  rays_cam[tid] = wp.normalize(wp.vec3(dx, dy, dz))
+  rays[offset + tid] = wp.normalize(wp.vec3(dx, dy, dz))
 
 
 def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array]:

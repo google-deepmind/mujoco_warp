@@ -115,17 +115,15 @@ def _main(argv: Sequence[str]):
             mjm,
             m,
             d,
-            _WIDTH.value,
-            _HEIGHT.value,
-            _USE_TEXTURES.value,
-            _USE_SHADOWS.value,
+            (_WIDTH.value, _HEIGHT.value),
             _RENDER_RGB.value,
             _RENDER_DEPTH.value,
+            _USE_TEXTURES.value,
+            _USE_SHADOWS.value,
         )
 
         print(
             f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n"
-            f"Render: {rc.width}x{rc.height} rgb={rc.render_rgb} depth={rc.render_depth}"
         )
 
         print("Rendering...")
@@ -138,23 +136,20 @@ def _main(argv: Sequence[str]):
         if cam < 0 or cam >= m.ncam:
             raise ValueError(f"camera index out of range: {cam} not in [0, {m.ncam - 1}]")
 
-        width = rc.width
-        height = rc.height
-        num_pixels = width * height
+        width = rc.cam_resolutions.numpy()[cam][0]
+        height = rc.cam_resolutions.numpy()[cam][1]
+        rgb_offsets = rc.rgb_offsets.numpy()
+        depth_offsets = rc.depth_offsets.numpy()
 
-        if rc.render_rgb:
-            pixels = rc.pixels.numpy()
-            row = pixels[world, cam]
-            if row.shape[0] != num_pixels:
-                raise RuntimeError("unexpected pixel buffer size")
+        if rgb_offsets[cam] != -1:
+            rgb = rc.rgb.numpy()
+            row = rgb[world, rgb_offsets[cam]:rgb_offsets[cam] + width * height]
             _save_rgb_from_packed(row, width, height, _OUTPUT_RGB.value)
             print(f"Saved RGB to: {_OUTPUT_RGB.value}")
 
-        if rc.render_depth:
+        if depth_offsets[cam] != -1:
             depth = rc.depth.numpy()
-            row = depth[world, cam]
-            if row.shape[0] != num_pixels:
-                raise RuntimeError("unexpected depth buffer size")
+            row = depth[world, depth_offsets[cam]:depth_offsets[cam] + width * height]
             _save_depth(row, width, height, _DEPTH_SCALE.value, _OUTPUT_DEPTH.value)
             print(f"Saved depth to: {_OUTPUT_DEPTH.value}")
 

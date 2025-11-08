@@ -171,12 +171,12 @@ def _main(argv: Sequence[str]):
         mjm,
         m,
         d,
-        _WIDTH.value,
-        _HEIGHT.value,
+        (_WIDTH.value, _HEIGHT.value),
+        _RENDER_RGB.value,
+        _RENDER_DEPTH.value,
         _USE_TEXTURES.value,
         _USE_SHADOWS.value,
-        _RENDER_RGB.value,
-        _RENDER_DEPTH.value)
+      )
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
