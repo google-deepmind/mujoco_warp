@@ -667,14 +667,14 @@ class Option:
   gravity: array("*", wp.vec3)
   wind: array("*", wp.vec3)
   magnetic: array("*", wp.vec3)
-  integrator: IntegratorType
-  cone: ConeType
-  solver: SolverType
+  integrator: int
+  cone: int
+  solver: int
   iterations: int
   ls_iterations: int
   ccd_iterations: int
-  disableflags: DisableBit
-  enableflags: EnableBit
+  disableflags: int
+  enableflags: int
   sdf_initpoints: int
   sdf_iterations: int
   # warp only fields:

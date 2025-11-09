@@ -37,7 +37,7 @@ from .types import SensorType
 from .types import TrnType
 from .types import vec5
 from .types import vec6
-from .types import vec8f
+from .types import vec8
 from .types import vec8i
 from .util_misc import inside_geom
 from .warp_util import cache_kernel
@@ -482,8 +482,8 @@ def _sensor_pos(
   sensor_adr: wp.array(dtype=int),
   sensor_cutoff: wp.array(dtype=float),
   sensor_pos_adr: wp.array(dtype=int),
-  sensor_collision_start_adr: wp.array(dtype=int),
   rangefinder_sensor_adr: wp.array(dtype=int),
+  sensor_collision_start_adr: wp.array(dtype=int),
   collision_sensor_adr: wp.array(dtype=int),
   # Data in:
   time_in: wp.array(dtype=float),
@@ -844,8 +844,8 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_adr,
       m.sensor_cutoff,
       m.sensor_pos_adr,
-      m.sensor_collision_start_adr,
       m.rangefinder_sensor_adr,
+      m.sensor_collision_start_adr,
       m.collision_sensor_adr,
       d.time,
       d.energy,
@@ -2089,7 +2089,7 @@ def _sensor_tactile(
   body_weldid: wp.array(dtype=int),
   oct_child: wp.array(dtype=vec8i),
   oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8f),
+  oct_coeff: wp.array(dtype=vec8),
   geom_type: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
