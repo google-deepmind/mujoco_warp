@@ -607,7 +607,11 @@ vec11 = vec11f
 
 
 def array(*args) -> wp.array:
-  """A wrapper around wp.array that adds extra metadata to ease type introspection."""
+  """A wrapper around wp.array that adds extra metadata to ease type introspection.
+
+  Format is array(dim_1, dim_2, ..., dtype).  dim may be a constant int, or reference a size from
+  Model or Data (e.g. "nq" or "nworld").  dim may also be "*", which means any nonzero size.
+  """
   shape, dtype = args[:-1], args[-1]
 
   arr = wp.array(ndim=len(shape), dtype=dtype)
