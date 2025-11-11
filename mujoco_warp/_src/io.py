@@ -1535,7 +1535,7 @@ def get_data_into(
   ncon_filter[:nacon] = d.contact.worldid.numpy()[:nacon] == world_id
   ncon = ncon_filter.sum()
 
-  if nacon != result.ncon:
+  if ncon != result.ncon or nefc != result.nefc:
     # TODO(team): if sparse, set nJ based on sparse efc_J
     mujoco._functions._realloc_con_efc(result, ncon=ncon, nefc=nefc, nJ=nefc * mjm.nv)
 
