@@ -1529,13 +1529,13 @@ def get_data_into(
   """
   # nacon and nefc can overflow.  in that case, only pull up to the max contacts and constraints
   nacon = min(d.nacon.numpy()[0], d.naconmax)
-  nefc = min(d.nefc.numpy()[0], d.njmax)
+  nefc = min(d.nefc.numpy()[world_id], d.njmax)
 
   ncon_filter = np.zeros_like(d.contact.worldid.numpy(), dtype=bool)
   ncon_filter[:nacon] = d.contact.worldid.numpy()[:nacon] == world_id
   ncon = ncon_filter.sum()
 
-  if nacon != result.ncon or nefc != result.nefc:
+  if nacon != result.ncon:
     # TODO(team): if sparse, set nJ based on sparse efc_J
     mujoco._functions._realloc_con_efc(result, ncon=ncon, nefc=nefc, nJ=nefc * mjm.nv)
 
