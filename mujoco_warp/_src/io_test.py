@@ -88,14 +88,12 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
   @parameterized.named_parameters(
-      dict(testcase_name="nworld=1", nworld=1, world_id=0),
-      dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
+    dict(testcase_name="nworld=1", nworld=1, world_id=0),
+    dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
   )
   def test_get_data_into(self, nworld, world_id):
     # keyframe=0: ncon=8, nefc=32
-    mjm, mjd, _, d = test_data.fixture(
-        "humanoid/humanoid.xml", keyframe=0, nworld=nworld
-    )
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0, nworld=nworld)
 
     # keyframe=2: ncon=0, nefc=0
     mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
@@ -183,9 +181,9 @@ class IOTest(parameterized.TestCase):
       "sensordata",
     ]:
       _assert_eq(
-          getattr(d, field).numpy()[world_id].reshape(-1),
-          getattr(mjd, field).reshape(-1),
-          field,
+        getattr(d, field).numpy()[world_id].reshape(-1),
+        getattr(mjd, field).reshape(-1),
+        field,
       )
 
     # contact
@@ -204,9 +202,9 @@ class IOTest(parameterized.TestCase):
       # TODO(team): efc_address
     ]:
       _assert_eq(
-          getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
-          getattr(mjd.contact, field).reshape(-1),
-          field,
+        getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
+        getattr(mjd.contact, field).reshape(-1),
+        field,
       )
 
     # efc
@@ -224,9 +222,9 @@ class IOTest(parameterized.TestCase):
       "force",
     ]:
       _assert_eq(
-          getattr(d.efc, field).numpy()[world_id, :nefc].reshape(-1),
-          getattr(mjd, "efc_" + field).reshape(-1),
-          field,
+        getattr(d.efc, field).numpy()[world_id, :nefc].reshape(-1),
+        getattr(mjd, "efc_" + field).reshape(-1),
+        field,
       )
 
   def test_ellipsoid_fluid_model(self):

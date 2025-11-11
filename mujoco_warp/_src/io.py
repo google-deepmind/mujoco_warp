@@ -1527,13 +1527,12 @@ def get_data_into(
     d: The data object containing the current state and output arrays (device).
     world_id: The id of the world to get the data from.
   """
-
   # nacon and nefc can overflow.  in that case, only pull up to the max contacts and constraints
   nacon = min(d.nacon.numpy()[0], d.naconmax)
   nefc = min(d.nefc.numpy()[0], d.njmax)
 
   ncon_filter = np.zeros_like(d.contact.worldid.numpy(), dtype=bool)
-  ncon_filter[:nacon] = (d.contact.worldid.numpy()[:nacon] == world_id)
+  ncon_filter[:nacon] = d.contact.worldid.numpy()[:nacon] == world_id
   ncon = ncon_filter.sum()
 
   if nacon != result.ncon or nefc != result.nefc:
@@ -1614,7 +1613,11 @@ def get_data_into(
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
   mujoco.mju_dense2sparse(
-    result.actuator_moment, d.actuator_moment.numpy()[world_id], result.moment_rownnz, result.moment_rowadr, result.moment_colind
+    result.actuator_moment,
+    d.actuator_moment.numpy()[world_id],
+    result.moment_rownnz,
+    result.moment_rowadr,
+    result.moment_colind,
   )
   result.crb[:] = d.crb.numpy()[world_id]
   result.qLDiagInv[:] = d.qLDiagInv.numpy()[world_id]
