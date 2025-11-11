@@ -87,24 +87,30 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
-  def test_get_data_into(self):
+  @parameterized.named_parameters(
+      dict(testcase_name="nworld=1", nworld=1, world_id=0),
+      dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
+  )
+  def test_get_data_into(self, nworld, world_id):
     # keyframe=0: ncon=8, nefc=32
-    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+    mjm, mjd, _, d = test_data.fixture(
+        "humanoid/humanoid.xml", keyframe=0, nworld=nworld
+    )
 
     # keyframe=2: ncon=0, nefc=0
     mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
 
     # check that mujoco._functions._realloc_con_efc allocates for contact and efc
-    mjwarp.get_data_into(mjd, mjm, d)
+    mjwarp.get_data_into(mjd, mjm, d, world_id=world_id)
     self.assertEqual(mjd.ncon, 8)
     self.assertEqual(mjd.nefc, 32)
 
     # compare fields
-    self.assertEqual(d.solver_niter.numpy()[0], mjd.solver_niter[0])
-    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
-    self.assertEqual(d.ne.numpy()[0], mjd.ne)
-    self.assertEqual(d.nf.numpy()[0], mjd.nf)
-    self.assertEqual(d.nl.numpy()[0], mjd.nl)
+    self.assertEqual(d.solver_niter.numpy()[world_id], mjd.solver_niter[0])
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon * nworld)
+    self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
+    self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
+    self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
 
     for field in [
       "energy",
@@ -176,10 +182,14 @@ class IOTest(parameterized.TestCase):
       "wrap_xpos",
       "sensordata",
     ]:
-      _assert_eq(getattr(d, field).numpy()[0].reshape(-1), getattr(mjd, field).reshape(-1), field)
+      _assert_eq(
+          getattr(d, field).numpy()[world_id].reshape(-1),
+          getattr(mjd, field).reshape(-1),
+          field,
+      )
 
     # contact
-    ncon = d.nacon.numpy()[0]
+    ncon = int(d.nacon.numpy()[0] / nworld)
     for field in [
       "dist",
       "pos",
@@ -193,10 +203,14 @@ class IOTest(parameterized.TestCase):
       "geom",
       # TODO(team): efc_address
     ]:
-      _assert_eq(getattr(d.contact, field).numpy()[:ncon].reshape(-1), getattr(mjd.contact, field).reshape(-1), field)
+      _assert_eq(
+          getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
+          getattr(mjd.contact, field).reshape(-1),
+          field,
+      )
 
     # efc
-    nefc = d.nefc.numpy()[0]
+    nefc = d.nefc.numpy()[world_id]
     for field in [
       "type",
       "id",
@@ -209,7 +223,11 @@ class IOTest(parameterized.TestCase):
       "state",
       "force",
     ]:
-      _assert_eq(getattr(d.efc, field).numpy()[0, :nefc].reshape(-1), getattr(mjd, "efc_" + field).reshape(-1), field)
+      _assert_eq(
+          getattr(d.efc, field).numpy()[world_id, :nefc].reshape(-1),
+          getattr(mjd, "efc_" + field).reshape(-1),
+          field,
+      )
 
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
