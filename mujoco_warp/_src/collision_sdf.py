@@ -18,7 +18,7 @@ from typing import Tuple
 import warp as wp
 
 from .collision_primitive import contact_params
-from .collision_primitive import geom
+from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
 from .ray import ray_mesh
@@ -720,56 +720,34 @@ def _sdf_narrowphase(
     worldid,
   )
 
-  geom_size_id = worldid % geom_size.shape[0]
-  aabb_id = worldid % geom_aabb.shape[0]
+  geom1, geom2 = geom_collision_pair(
+    geom_type,
+    geom_dataid,
+    geom_size,
+    mesh_vertadr,
+    mesh_vertnum,
+    mesh_graphadr,
+    mesh_vert,
+    mesh_graph,
+    mesh_polynum,
+    mesh_polyadr,
+    mesh_polynormal,
+    mesh_polyvertadr,
+    mesh_polyvertnum,
+    mesh_polyvert,
+    mesh_polymapadr,
+    mesh_polymapnum,
+    mesh_polymap,
+    geom_xpos_in,
+    geom_xmat_in,
+    geoms,
+    worldid,
+  )
 
+  aabb_id = worldid % geom_aabb.shape[0]
   g1 = geoms[0]
   type1 = geom_type[g1]
-  geom1_dataid = geom_dataid[g1]
-  geom1 = geom(
-    type1,
-    geom1_dataid,
-    geom_size[geom_size_id, g1],
-    mesh_vertadr,
-    mesh_vertnum,
-    mesh_graphadr,
-    mesh_vert,
-    mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in[worldid, g1],
-    geom_xmat_in[worldid, g1],
-  )
 
-  geom2_dataid = geom_dataid[g2]
-  geom2 = geom(
-    type2,
-    geom2_dataid,
-    geom_size[geom_size_id, g2],
-    mesh_vertadr,
-    mesh_vertnum,
-    mesh_graphadr,
-    mesh_vert,
-    mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in[worldid, g2],
-    geom_xmat_in[worldid, g2],
-  )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
