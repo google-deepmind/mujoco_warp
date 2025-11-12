@@ -34,6 +34,7 @@ class RenderContext:
   cam_resolutions: wp.array(dtype=wp.vec2i)
   use_textures: bool
   use_shadows: bool
+  geom_count: int
   bvh_ngeom: int
   enabled_geom_ids: wp.array(dtype=int)
   mesh_bvh_ids: wp.array(dtype=wp.uint64)
@@ -49,6 +50,8 @@ class RenderContext:
   mesh_bvh_ids: wp.array(dtype=wp.uint64)
   hfield_bvh_ids: wp.array(dtype=wp.uint64)
   hfield_bounds_size: wp.array(dtype=wp.vec3)
+  flex_bvh_ids: wp.array(dtype=wp.uint64)
+  flex_bounds_size: wp.array(dtype=wp.vec3)
   lowers: wp.array(dtype=wp.vec3)
   uppers: wp.array(dtype=wp.vec3)
   groups: wp.array(dtype=int)
@@ -112,6 +115,7 @@ class RenderContext:
       half = 0.5 * (pmax - pmin)
       mesh_bounds_size[i] = half
 
+    # HField BVHs
     nhfield = int(mjm.nhfield)
     used_hfield_ids = set(
       int(mjm.geom_dataid[g])
@@ -129,6 +133,20 @@ class RenderContext:
       self.hfield_registry[hmesh.id] = hmesh
       hfield_bvh_ids[hid] = hmesh.id
       hfield_bounds_size[hid] = hhalf
+
+    # Flex BVHs
+    nflex = int(m.nflex)
+    self.flex_registry = {}
+    flex_bvh_ids = [wp.uint64(0) for _ in range(nflex)]
+    flex_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nflex)]
+    for fid in range(nflex):
+      dim = int(mjm.flex_dim[fid])
+      if dim != 2:
+        continue
+      fmesh, fhalf = _make_flex_mesh(mjm, d, fid)
+      self.flex_registry[fmesh.id] = fmesh
+      flex_bvh_ids[fid] = fmesh.id
+      flex_bounds_size[fid] = fhalf
 
     tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
@@ -182,7 +200,10 @@ class RenderContext:
       )
       offset += cam_resolutions[i][0] * cam_resolutions[i][1]
 
-    bvh_ngeom = len(geom_enabled_idx)
+    geom_count = len(geom_enabled_idx)
+    nflex = int(m.nflex)
+    bvh_ngeom = geom_count + nflex
+    self.geom_count=geom_count
     self.bvh_ngeom=bvh_ngeom
     self.ncam=mjm.ncam
     self.use_textures=use_textures
@@ -194,6 +215,8 @@ class RenderContext:
     self.mesh_bounds_size=wp.array(mesh_bounds_size, dtype=wp.vec3)
     self.hfield_bvh_ids=wp.array(hfield_bvh_ids, dtype=wp.uint64)
     self.hfield_bounds_size=wp.array(hfield_bounds_size, dtype=wp.vec3)
+    self.flex_bvh_ids=wp.array(flex_bvh_ids, dtype=wp.uint64)
+    self.flex_bounds_size=wp.array(flex_bounds_size, dtype=wp.vec3)
     self.mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2)
     self.mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int)
     self.mesh_texcoord_num=wp.array(mjm.mesh_texcoordnum, dtype=int)
@@ -413,3 +436,72 @@ def _make_hfield_mesh(mjm: mujoco.MjModel, hfieldid: int) -> tuple[wp.Mesh, wp.v
   half_z = 0.5 * (max_h - min_h) * float(sz[2])
   bounds_half = wp.vec3(float(sz[0]), float(sz[1]), half_z)
   return mesh, bounds_half
+
+def _make_flex_mesh(mjm, d, flexid: int) -> tuple[wp.Mesh, wp.vec3]:
+    """Create a Warp BVH mesh for a MuJoCo flex using edges+flaps (no mjvScene)."""
+
+    base_vert = int(mjm.flex_vertadr[flexid])
+    nvert     = int(mjm.flex_vertnum[flexid])
+
+    edge_start = int(mjm.flex_edgeadr[flexid])
+    nedges     = int(mjm.flex_edgenum[flexid])
+    edge_stop  = edge_start + nedges
+
+    # Edges and flaps for *this* flex (local vertex IDs)
+    # mjm.flex_edge: flat int array shaped (..., 2)
+    # mjm.flex_edgeflap: flat int array shaped (..., 2) with -1 for "no triangle"
+    edges_all  = np.asarray(mjm.flex_edge, dtype=np.int32).reshape(-1, 2)
+    flaps_all  = np.asarray(mjm.flex_edgeflap, dtype=np.int32).reshape(-1, 2)
+
+    edges  = edges_all[edge_start:edge_stop]
+    flaps  = flaps_all[edge_start:edge_stop]
+
+    # Build unique triangles from edges+flaps.
+    # Indices must be *local* (0..nvert-1) because points array is a local slice.
+    tri_list = []
+
+    for e in range(nedges):
+        v0, v1 = int(edges[e, 0]), int(edges[e, 1])
+        # two possible triangles per edge (one per "flap" / side)
+        f0, f1 = int(flaps[e, 0]), int(flaps[e, 1])
+
+        for f in (f0, f1):
+            if f < 0:
+                continue
+
+            i, j, k = v0, v1, f  # local indices
+            # canonical ownership test: only emit once
+            a = min(i, j, k)
+            c = max(i, j, k)
+            b = i + j + k - a - c
+
+            # current edge in ascending order
+            ei0, ei1 = (i, j) if i < j else (j, i)
+
+            # emit only if this edge == (a, b)
+            if ei0 == a and ei1 == b:
+                tri_list.append((i, j, k))
+
+    if not tri_list:
+        # empty mesh fallback
+        empty_points = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3)
+        empty_indices = wp.array(np.zeros((0,), dtype=np.int32), dtype=wp.int32)
+        mesh = wp.Mesh(points=empty_points, indices=empty_indices, bvh_constructor="sah")
+        return mesh, wp.vec3(0.0, 0.0, 0.0)
+
+    # Convert to contiguous index array (local indexing)
+    tris = np.asarray(tri_list, dtype=np.int32).reshape(-1, 3)
+    indices = wp.array(tris.ravel(), dtype=wp.int32)
+
+    # Vertex positions: local slice (Nx3). Use d.flexvert_xpos so you're in world space.
+    # If your Warp mesh/BVH should be in local space, swap this for the model-space array.
+    pts = np.asarray(d.flexvert_xpos.numpy()[0, base_vert: base_vert + nvert], dtype=np.float32)
+    points = wp.array(pts, dtype=wp.vec3)
+
+    flex_mesh = wp.Mesh(points=points, indices=indices, bvh_constructor="sah")
+
+    # Bounds from these points
+    pmin = pts.min(axis=0)
+    pmax = pts.max(axis=0)
+    half = 0.5 * (pmax - pmin)
+    return flex_mesh, wp.vec3(float(half[0]), float(half[1]), float(half[2]))
