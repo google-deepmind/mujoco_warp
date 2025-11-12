@@ -18,9 +18,6 @@
     <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
     <light pos="0 0 3" dir="0 0 -1" directional="true" />
 
-    <!-- attach Apptronik Apollo -->
-    <attach model="apptronik_apollo" body="base_link" prefix="_"/>
-
     <geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
     <!-- Walls of the container box -->
     <geom name="box back wall" pos="0.9 0.0 0.61" type="box" size="0.01 0.21 0.1" contype="1" conaffinity="1"/>
@@ -73,5 +70,8 @@
             <geom name="geom2" type="box" size="0.03 0.03 0.03" contype="1" conaffinity="1" rgba="0 1 1 1"/>
         </body>
     </replicate>
+    
+    <!-- attach Apptronik Apollo -->
+    <attach model="apptronik_apollo" body="base_link" prefix="_"/>
   </worldbody>
 </mujoco>
