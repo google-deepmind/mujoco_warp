@@ -162,8 +162,7 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-  NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
-  # unsupported: MIDPHASE, AUTORESET, ISLAND
+  # unsupported: MIDPHASE, AUTORESET, NATIVECCD, ISLAND
 
 
 class EnableBit(enum.IntFlag):
@@ -172,13 +171,11 @@ class EnableBit(enum.IntFlag):
   Attributes:
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
-    MULTICCD: multi-point convex collision detection (ignored in MJWarp)
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
-  MULTICCD = mujoco.mjtEnableBit.mjENBL_MULTICCD
-  # unsupported: OVERRIDE, FWDINV, ISLAND
+  # unsupported: OVERRIDE, FWDINV, ISLAND, MULTICCD
 
 
 class TrnType(enum.IntEnum):
@@ -1030,8 +1027,6 @@ class Model:
     wrap_site_pair_adr: first address for site wrap pair
     wrap_geom_adr: addresses for geom tendon wrap object
     wrap_pulley_scale: pulley scaling                        (nwrap,)
-    actuator_moment_tiles_nv: tiling configuration
-    actuator_moment_tiles_nu: tiling configuration
     actuator_trntype_body_adr: addresses for actuators
                                with body transmission
     sensor_pos_adr: addresses for position sensors
@@ -1368,8 +1363,6 @@ class Model:
   wrap_site_pair_adr: wp.array(dtype=int)
   wrap_geom_adr: wp.array(dtype=int)
   wrap_pulley_scale: array("nwrap", float)
-  actuator_moment_tiles_nv: tuple[TileSet, ...]
-  actuator_moment_tiles_nu: tuple[TileSet, ...]
   actuator_trntype_body_adr: wp.array(dtype=int)
   sensor_pos_adr: wp.array(dtype=int)
   sensor_limitpos_adr: wp.array(dtype=int)

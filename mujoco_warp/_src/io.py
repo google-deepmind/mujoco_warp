@@ -331,7 +331,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, m.nmaxpolygon).max()
     m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, m.nmaxmeshdeg).max()
 
-  # fitler plugins for only geom plugins, drop the rest
+  # filter plugins for only geom plugins, drop the rest
   m.plugin, m.plugin_attr = [], []
   m.geom_plugin_index = np.full_like(mjm.geom_type, -1)
 
@@ -412,61 +412,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       if tadr <= padr < tadr + tnum:
         m.wrap_pulley_scale[padr : tadr + tnum] = 1.0 / mjm.wrap_prm[padr]
 
-  # actuator_moment tiles are grouped by dof size and number of actuators
-  tile_corners = [i for i in range(mjm.nv) if mjm.dof_parentid[i] == -1]
-  tree_id = np.arange(len(tile_corners), dtype=np.int32)
-  num_trees = int(np.max(tree_id)) if len(tree_id) > 0 else 0
-  bodyid = []
-  for i in range(mjm.nu):
-    trntype = mjm.actuator_trntype[i]
-    if trntype == mujoco.mjtTrn.mjTRN_JOINT or trntype == mujoco.mjtTrn.mjTRN_JOINTINPARENT:
-      jntid = mjm.actuator_trnid[i, 0]
-      bodyid.append(mjm.jnt_bodyid[jntid])
-    elif trntype == mujoco.mjtTrn.mjTRN_TENDON:
-      tenid = mjm.actuator_trnid[i, 0]
-      adr = mjm.tendon_adr[tenid]
-      if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
-        ten_num = mjm.tendon_num[tenid]
-        for i in range(ten_num):
-          bodyid.append(mjm.jnt_bodyid[mjm.wrap_objid[adr + i]])
-      else:
-        for i in range(mjm.nv):
-          bodyid.append(mjm.dof_bodyid[i])
-    elif trntype == mujoco.mjtTrn.mjTRN_BODY:
-      pass
-    elif trntype == mujoco.mjtTrn.mjTRN_SITE:
-      siteid = mjm.actuator_trnid[i, 0]
-      bid = mjm.site_bodyid[siteid]
-      while bid > 0:
-        bodyid.append(bid)
-        bid = mjm.body_parentid[bid]
-    elif trntype == mujoco.mjtTrn.mjTRN_SLIDERCRANK:
-      for i in range(mjm.nv):
-        bodyid.append(mjm.dof_bodyid[i])
-    else:
-      raise NotImplementedError(f"Transmission type {trntype} not implemented.")
-  tree = mjm.body_treeid[np.array(bodyid, dtype=int)]
-  counts, ids = np.histogram(tree, bins=np.arange(0, num_trees + 2))
-  acts_per_tree = dict(zip(ids, counts))
-
-  tiles = {}
-  act_beg = 0
-  for i in range(len(tile_corners)):
-    tile_beg = tile_corners[i]
-    tile_end = mjm.nv if i == len(tile_corners) - 1 else tile_corners[i + 1]
-    tree = int(tree_id[i])
-    act_num = acts_per_tree[tree]
-    tiles.setdefault((tile_end - tile_beg, act_num), []).append((tile_beg, act_beg))
-    act_beg += act_num
-
-  m.actuator_moment_tiles_nv, m.actuator_moment_tiles_nu = tuple(), tuple()
-
-  for (nv, nu), adr in sorted(tiles.items()):
-    adr_nv = wp.array([nv for nv, _ in adr], dtype=int)
-    adr_nu = wp.array([nu for _, nu in adr], dtype=int)
-    m.actuator_moment_tiles_nv += (types.TileSet(adr=adr_nv, size=nv),)
-    m.actuator_moment_tiles_nu += (types.TileSet(adr=adr_nu, size=nu),)
-
   m.actuator_trntype_body_adr = np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0]
 
   # sensor addresses
@@ -535,6 +480,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   ]
 
   # qM_tiles records the block diagonal structure of qM
+  tile_corners = [i for i in range(mjm.nv) if mjm.dof_parentid[i] == -1]
   tiles = {}
   for i in range(len(tile_corners)):
     tile_beg = tile_corners[i]
