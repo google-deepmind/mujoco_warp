@@ -155,26 +155,23 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       vert_edgeadr = geom.graphadr + 2
       vert_globalid = geom.graphadr + 2 + numvert
       edge_localid = geom.graphadr + 2 + 2 * numvert
-      # hillclimb until no change
       prev = int(-1)
-      imax = int(0)
-      if geom.index > -1:
-        imax = geom.index
-        sp.cached_index = geom.index
+      imax = wp.where(geom.index > -1, geom.index, 0)
+      sp.cached_index = geom.index
 
-      while True:
-        prev = int(imax)
-        i = int(geom.graph[vert_edgeadr + imax])
-        while geom.graph[edge_localid + i] >= 0:
-          subidx = geom.graph[edge_localid + i]
+      # hillclimb until no change
+      while imax != prev:
+        prev = imax
+        i = geom.graph[vert_edgeadr + imax]
+        subidx = geom.graph[edge_localid + i]
+        while subidx >= 0:
           idx = geom.graph[vert_globalid + subidx]
           dist = wp.dot(local_dir, geom.vert[geom.vertadr + idx])
-          if dist > max_dist:
-            max_dist = dist
-            imax = int(subidx)
-          i += int(1)
-        if imax == prev:
-          break
+          imax = wp.where(dist > max_dist, subidx, imax)
+          max_dist = wp.where(dist > max_dist, dist, max_dist)
+          i += 1
+          subidx = geom.graph[edge_localid + i]
+
       sp.cached_index = imax
       imax = geom.graph[vert_globalid + imax]
       sp.vertex_index = imax
