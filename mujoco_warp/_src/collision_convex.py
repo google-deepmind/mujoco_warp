@@ -43,6 +43,8 @@ wp.set_module_options({"enable_backward": False})
 MULTI_CONTACT_COUNT = 8
 mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
+vec_maxconpair = wp.types.vector(length=MJ_MAXCONPAIR, dtype=float)
+mat_maxconpair = wp.types.matrix(shape=(MJ_MAXCONPAIR, 3), dtype=float)
 
 _CONVEX_COLLISION_PAIRS = [
   (GeomType.HFIELD, GeomType.SPHERE),
@@ -566,6 +568,14 @@ def ccd_kernel_builder(
 
       adr = hfield_adr[geom1_dataid]
 
+      hfield_contact_dist = vec_maxconpair()
+      hfield_contact_pos = mat_maxconpair()
+      hfield_contact_normal = mat_maxconpair()
+      min_dist = float(wp.inf)
+      min_normal = wp.vec3(wp.inf, wp.inf, wp.inf)
+      min_pos = wp.vec3(wp.inf, wp.inf, wp.inf)
+      min_id = int(-1)
+
       # process all prisms in subgrid
       count = int(0)
       for r in range(rmin, rmax):
@@ -573,6 +583,9 @@ def ccd_kernel_builder(
         for c in range(cmin, cmax + 1):
           # add both triangles from this cell
           for i in range(2):
+            if count + 1 >= MJ_MAXCONPAIR:
+              continue
+
             # add vert
             x = dx * float(c) - size[0]
             y = dy * float(r + dr[i]) - size[1]
@@ -607,66 +620,253 @@ def ccd_kernel_builder(
               x1_ += prism[i]
             x1 += geom1.rot @ (x1_ / 6.0)
 
-            ncontact = eval_ccd_write_contact(
-              opt_ccd_tolerance,
-              geom_type,
-              naconmax_in,
-              epa_vert_in,
-              epa_vert1_in,
-              epa_vert2_in,
-              epa_vert_index1_in,
-              epa_vert_index2_in,
-              epa_face_in,
-              epa_pr_in,
-              epa_norm2_in,
-              epa_index_in,
-              epa_map_in,
-              epa_horizon_in,
-              multiccd_polygon_in,
-              multiccd_clipped_in,
-              multiccd_pnormal_in,
-              multiccd_pdist_in,
-              multiccd_idx1_in,
-              multiccd_idx2_in,
-              multiccd_n1_in,
-              multiccd_n2_in,
-              multiccd_endvert_in,
-              multiccd_face1_in,
-              multiccd_face2_in,
+            geom1.margin = margin
+            geom2.margin = margin
+
+            if collision_pairid_in[tid][1] >= 0:
+              # if collision sensor, set large cutoff to work with various sensor cutoff values
+              cutoff = 1.0e32
+            else:
+              cutoff = 0.0
+            dist, ncontact, w1, w2, idx = ccd(
+              opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
+              cutoff,
+              ccd_iterations,
               geom1,
               geom2,
-              geoms,
-              worldid,
-              tid,
-              margin,
-              gap,
-              condim,
-              friction,
-              solref,
-              solreffriction,
-              solimp,
+              geomtype1,
+              geomtype2,
               x1,
               geom2.pos,
-              count,
-              collision_pairid_in[tid],
-              contact_dist_out,
-              contact_pos_out,
-              contact_frame_out,
-              contact_includemargin_out,
-              contact_friction_out,
-              contact_solref_out,
-              contact_solreffriction_out,
-              contact_solimp_out,
-              contact_dim_out,
-              contact_geom_out,
-              contact_worldid_out,
-              contact_type_out,
-              contact_geomcollisionid_out,
-              nacon_out,
+              epa_vert_in[tid],
+              epa_vert1_in[tid],
+              epa_vert2_in[tid],
+              epa_vert_index1_in[tid],
+              epa_vert_index2_in[tid],
+              epa_face_in[tid],
+              epa_pr_in[tid],
+              epa_norm2_in[tid],
+              epa_index_in[tid],
+              epa_map_in[tid],
+              epa_horizon_in[tid],
             )
-            count += ncontact
-            if count >= MJ_MAXCONPAIR:
-              return
+
+            if ncontact == 0:
+              continue
+
+            # cache contact information
+            hfield_contact_dist[count] = dist
+
+            pos = 0.5 * (w1 + w2)
+            hfield_contact_pos[count, 0] = pos[0]
+            hfield_contact_pos[count, 1] = pos[1]
+            hfield_contact_pos[count, 2] = pos[2]
+
+            frame = make_frame(w1 - w2)
+            normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
+            hfield_contact_normal[count, 0] = normal[0]
+            hfield_contact_normal[count, 1] = normal[1]
+            hfield_contact_normal[count, 2] = normal[2]
+
+            # contact with minimum distance
+            if dist < min_dist:
+              min_dist = dist
+              min_normal = normal
+              min_pos = pos
+              min_id = count
+
+            count += 1
+
+      # contact 0: minimum distance
+      write_contact(
+        naconmax_in,
+        0,
+        min_dist,
+        min_pos,
+        make_frame(min_normal),
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        geoms,
+        collision_pairid_in[tid],
+        worldid,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
+        nacon_out,
+      )
+
+      # TODO(team): if use_multiccd?
+      if wp.static(True):
+        # contact 1: furthest from minimum distance contact
+        id1 = int(-1)
+        dist1 = float(-wp.inf)
+        for i in range(count):
+          if i == min_id:
+            continue
+          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
+          if wp.norm_l2(hf_pos - min_pos) > dist1:
+            id1 = i
+
+        if id1 == -1:
+          return
+
+        pos1 = wp.vec3(hfield_contact_pos[id1, 0], hfield_contact_pos[id1, 1], hfield_contact_pos[id1, 2])
+        normal1 = wp.vec3(hfield_contact_normal[id1, 0], hfield_contact_normal[id1, 1], hfield_contact_normal[id1, 2])
+
+        write_contact(
+          naconmax_in,
+          1,
+          hfield_contact_dist[id1],
+          pos1,
+          make_frame(normal1),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          geoms,
+          collision_pairid_in[tid],
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          nacon_out,
+        )
+
+        # contact 2: point furthest from min_pos - pos1 line
+        dist_min1 = wp.cross(min_normal, min_pos - pos1)
+
+        id2 = int(-1)
+        dist_12 = float(-wp.inf)
+        for i in range(count):
+          if i == min_id or i == id1:
+            continue
+          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
+          if wp.norm_l2(hf_pos - dist_min1) > dist_12:
+            id2 = i
+
+        if id2 == -1:
+          return
+
+        pos2 = wp.vec3(hfield_contact_pos[id2, 0], hfield_contact_pos[id2, 1], hfield_contact_pos[id2, 2])
+        normal2 = wp.vec3(hfield_contact_normal[id2, 0], hfield_contact_normal[id2, 1], hfield_contact_normal[id2, 2])
+
+        write_contact(
+          naconmax_in,
+          2,
+          hfield_contact_dist[id2],
+          pos2,
+          make_frame(normal2),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          geoms,
+          collision_pairid_in[tid],
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          nacon_out,
+        )
+
+        # contact 3: point furthest from other triangle edge
+        vec_min2 = wp.cross(min_normal, min_pos - pos2)
+        vec_12 = wp.cross(min_normal, pos1 - pos2)
+
+        id3 = int(-1)
+        dist3 = float(-wp.inf)
+        for i in range(count):
+          if i == min_id or i == id1 or i == id2:
+            continue
+          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
+          ap = vec_min2 - hf_pos
+          bp = vec_12 - hf_pos
+
+          dap = wp.abs(wp.dot(ap, vec_min2))
+          dbp = wp.abs(wp.dot(bp, vec_12))
+
+          if dap + dbp > dist3:
+            id3 = i
+            dist3 = dap + dbp
+
+        if id3 == -1:
+          return
+
+        pos3 = wp.vec3(hfield_contact_pos[id3, 0], hfield_contact_pos[id3, 1], hfield_contact_pos[id3, 2])
+        normal3 = wp.vec3(hfield_contact_normal[id3, 0], hfield_contact_normal[id3, 1], hfield_contact_normal[id3, 2])
+
+        write_contact(
+          naconmax_in,
+          3,
+          hfield_contact_dist[id3],
+          pos3,
+          make_frame(normal3),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          geoms,
+          collision_pairid_in[tid],
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          nacon_out,
+        )
     else:
       eval_ccd_write_contact(
         opt_ccd_tolerance,

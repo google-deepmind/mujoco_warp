@@ -879,7 +879,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], types.MJ_MAXCONPAIR)
+    np.testing.assert_equal(d.nacon.numpy()[0], 4)
 
   def test_min_friction(self):
     _, _, _, d = test_data.fixture(
