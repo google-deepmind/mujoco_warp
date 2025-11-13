@@ -27,6 +27,7 @@ import warp as wp
 from . import forward
 from . import io
 from . import warp_util
+from .render_context import RenderContext
 from .types import Data
 from .types import Model
 from .util_misc import halton
@@ -96,6 +97,7 @@ def benchmark(
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
+  render_context: Optional[RenderContext] = None,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 
@@ -125,8 +127,14 @@ def benchmark(
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
     jit_beg = time.perf_counter()
-    with wp.ScopedCapture() as capture:
-      fn(m, d)
+
+    if render_context is not None:
+      with wp.ScopedCapture() as capture:
+        fn(m, d, render_context)
+    else:
+      with wp.ScopedCapture() as capture:
+        fn(m, d)
+
     jit_end = time.perf_counter()
     jit_duration = jit_end - jit_beg
 

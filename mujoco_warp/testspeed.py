@@ -43,6 +43,9 @@ from mujoco_warp._src.io import override_model
 
 _FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
 
+# Add render
+_FUNCS["render"] = mjw.render
+
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
@@ -59,6 +62,13 @@ _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device"
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 
+# Render
+_WIDTH = flags.DEFINE_integer("width", 64, "render width (pixels)")
+_HEIGHT = flags.DEFINE_integer("height", 64, "render height (pixels)")
+_RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
+_RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
+_USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
+_USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 
 def _print_table(matrix, headers, title):
   num_cols = len(headers)
@@ -179,10 +189,23 @@ def _main(argv: Sequence[str]):
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
+    rc = None
+    if _FUNCTION.value == "render":
+      rc = mjw.create_render_context(
+        mjm,
+        m,
+        d,
+        _WIDTH.value,
+        _HEIGHT.value,
+        _USE_TEXTURES.value,
+        _USE_SHADOWS.value,
+        _RENDER_RGB.value,
+        _RENDER_DEPTH.value)
+
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
-    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
+    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
     jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
