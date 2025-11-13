@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+
 import warp as wp
 
 from . import math
@@ -126,12 +127,7 @@ def _kinematics_level(
       xaxis = math.rot_vec_quat(jnt_axis_, xquat)
 
       if jnt_type_ == JointType.BALL:
-        qloc = wp.quat(
-          qpos[qadr + 0],
-          qpos[qadr + 1],
-          qpos[qadr + 2],
-          qpos[qadr + 3],
-        )
+        qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
         qloc = wp.normalize(qloc)
         xquat = math.mul_quat(xquat, qloc)
         # correct for off-center rotation
@@ -280,8 +276,7 @@ def _mocap(
 
 @event_scope
 def kinematics(m: Model, d: Data):
-  """
-  Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
+  """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
 
   This function updates the global positions and orientations of all bodies, as well as the
   derived positions and orientations of geoms, sites, and flexible elements, based on the
@@ -486,12 +481,11 @@ def _cdof(
 
 @event_scope
 def com_pos(m: Model, d: Data):
-  """
-  Computes subtree center of mass positions.  Transforms inertia and motion to global frame
-  centered at subtree CoM.
+  """Computes subtree center of mass positions.
 
-  Accumulates the mass-weighted positions up the kinematic tree, divides by total mass, and
-  computes composite inertias and motion degrees of freedom in the subtree CoM frame.
+  Transforms inertia and motion to global frame centered at subtree CoM. Accumulates the
+  mass-weighted positions up the kinematic tree, divides by total mass, and computes composite
+  inertias and motion degrees of freedom in the subtree CoM frame.
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
@@ -647,8 +641,7 @@ def _light_local_to_global(
 
 @event_scope
 def camlight(m: Model, d: Data):
-  """
-  Computes camera and light positions and orientations.
+  """Computes camera and light positions and orientations.
 
   Updates the global positions and orientations for all cameras and lights in the model,
   including special handling for tracking and target modes.
@@ -775,8 +768,7 @@ def _qM_dense(
 
 @event_scope
 def crb(m: Model, d: Data):
-  """
-  Computes composite rigid body inertias for each body and the joint-space inertia matrix.
+  """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
   Accumulates composite rigid body inertias up the kinematic tree and computes the
   joint-space inertia matrix in either sparse or dense format, depending on model options.
@@ -1101,17 +1093,15 @@ def _qfrc_bias(
 
 @event_scope
 def rne(m: Model, d: Data, flg_acc: bool = False):
-  """
-  Computes inverse dynamics using the recursive Newton-Euler algorithm.
+  """Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
-  Computes the bias forces (qfrc_bias) and internal forces (cfrc_int) for the current state,
+  Computes the bias forces (`qfrc_bias`) and internal forces (`cfrc_int`) for the current state,
   including the effects of gravity and optionally joint accelerations.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information.
-    d (Data): The data object containing the current state and output arrays.
-    flg_acc (bool, optional): If True, includes joint accelerations in the computation.
-                              Defaults to False.
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    flg_acc: If True, includes joint accelerations in the computation.
   """
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
@@ -1314,10 +1304,9 @@ def _cfrc_ext_contact(
 
 @event_scope
 def rne_postconstraint(m: Model, d: Data):
-  """
-  Computes the recursive Newton-Euler algorithm after constraints are applied.
+  """Computes the recursive Newton-Euler algorithm after constraints are applied.
 
-  Computes cacc, cfrc_ext, and cfrc_int, including the effects of applied forces, equality
+  Computes `cacc`, `cfrc_ext`, and `cfrc_int`, including the effects of applied forces, equality
   constraints, and contacts.
   """
   # cfrc_ext = perturb
@@ -1607,8 +1596,13 @@ def _tendon_bias_qfrc(
 
 @event_scope
 def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  """Add bias force due to tendon armature."""
+  """Add bias force due to tendon armature.
 
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    qfrc: Force.
+  """
   # time derivative of tendon Jacobian
   ten_Jdot = wp.zeros((d.nworld, m.ntendon, m.nv), dtype=float)
   wp.launch(
@@ -1732,8 +1726,7 @@ def _comvel_level(
 
 @event_scope
 def com_vel(m: Model, d: Data):
-  """
-  Computes the spatial velocities (cvel) and the derivative cdof_dot for all bodies.
+  """Computes the spatial velocities (cvel) and the derivative `cdof_dot` for all bodies.
 
   Propagates velocities down the kinematic tree, updating the spatial velocity and
   derivative for each body.
@@ -1799,14 +1792,7 @@ def _transmission(
     if jnt_typ == JointType.FREE:
       actuator_length_out[worldid, actid] = 0.0
       if trntype == TrnType.JOINTINPARENT:
-        quat = wp.normalize(
-          wp.quat(
-            qpos[qadr + 3],
-            qpos[qadr + 4],
-            qpos[qadr + 5],
-            qpos[qadr + 6],
-          )
-        )
+        quat = wp.normalize(wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6]))
         quat_neg = math.quat_inv(quat)
         gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
         actuator_moment_out[worldid, actid, vadr + 0] = gear[0]
@@ -1877,30 +1863,14 @@ def _transmission(
       # get Jacobians of axis(jacA) and vec(jac)
       # mj_jacPointAxis
       jacp, jacr = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        site_xpos_idslider,
-        site_bodyid[idslider],
-        i,
-        worldid,
+        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_idslider, site_bodyid[idslider], i, worldid
       )
       jacS = jacp
       jacA = wp.cross(jacr, axis)
 
       # mj_jacSite
       jac, _ = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        site_xpos_id,
-        site_bodyid[id],
-        i,
-        worldid,
+        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_id, site_bodyid[id], i, worldid
       )
       jac -= jacS
 
@@ -2025,28 +1995,12 @@ def _transmission(
       # TODO(team): parallelize
       for i in range(nv):
         jacp, jacr = support.jac(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          site_xpos,
-          site_bodyid[siteid],
-          i,
-          worldid,
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos, site_bodyid[siteid], i, worldid
         )
 
         # jacref: global Jacobian of reference site
         jacpref, jacrref = support.jac(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          ref_xpos,
-          site_bodyid[refid],
-          i,
-          worldid,
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, ref_xpos, site_bodyid[refid], i, worldid
         )
 
         jacpdif = jacp - jacpref
@@ -2158,28 +2112,8 @@ def _transmission_body_moment(
     normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
 
     # get Jacobian difference
-    jacp1, _ = support.jac(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      subtree_com_in,
-      cdof_in,
-      contact_pos,
-      b1,
-      dofid,
-      worldid,
-    )
-    jacp2, _ = support.jac(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      subtree_com_in,
-      cdof_in,
-      contact_pos,
-      b2,
-      dofid,
-      worldid,
-    )
+    jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, dofid, worldid)
+    jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b2, dofid, worldid)
     jacdif = jacp2 - jacp1
 
     # project Jacobian along the normal of the contact frame
@@ -2206,8 +2140,7 @@ def _transmission_body_moment_scale(
 
 @event_scope
 def transmission(m: Model, d: Data):
-  """
-  Computes actuator/transmission lengths and moments.
+  """Computes actuator/transmission lengths and moments.
 
   Updates the actuator length and moments for all actuators in the model, including joint
   and tendon transmissions.
@@ -2335,8 +2268,7 @@ def _solve_LD_sparse(
   x: wp.array2d(dtype=float),
   y: wp.array2d(dtype=float),
 ):
-  """Computes sparse backsubstitution: x = inv(L'*D*L)*y"""
-
+  """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
   wp.copy(x, y)
   for qLD_updates in reversed(m.qLD_updates):
     wp.launch(_solve_LD_sparse_x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
@@ -2373,7 +2305,7 @@ def _tile_cholesky_solve(tile: TileSet):
 
 
 def _solve_LD_dense(m: Model, d: Data, L: wp.array3d(dtype=float), x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
-  """Computes dense backsubstitution: x = inv(L'*L)*y"""
+  """Computes dense backsubstitution: x = inv(L'*L)*y."""
   for tile in m.qM_tiles:
     wp.launch_tiled(
       _tile_cholesky_solve(tile),
@@ -2392,19 +2324,19 @@ def solve_LD(
   x: wp.array2d(dtype=float),
   y: wp.array2d(dtype=float),
 ):
-  """
-  Computes backsubstitution to solve a linear system of the form x = inv(L'*D*L) * y,
-  where L and D are the factors from the Cholesky factorization of the inertia matrix.
+  """Computes backsubstitution to solve a linear system of the form x = inv(L'*D*L) * y.
+
+  L and D are the factors from the Cholesky factorization of the inertia matrix.
 
   This function dispatches to either a sparse or dense solver depending on Model options.
 
   Args:
-    m (Model): The model containing factorization and sparsity information.
-    d (Data): The data object containing workspace and factorization results.
-    L (array3d): Lower-triangular factor from the factorization (sparse or dense).
-    D (array2d): Diagonal factor from the factorization (only used for sparse).
-    x (array2d): Output array for the solution.
-    y (array2d): Input right-hand side array.
+    m: The model containing factorization and sparsity information.
+    d: The data object containing workspace and factorization results.
+    L: Lower-triangular factor from the factorization (sparse or dense).
+    D: Diagonal factor from the factorization (only used for sparse).
+    x: Output array for the solution.
+    y: Input right-hand side array.
   """
   if m.opt.is_sparse:
     _solve_LD_sparse(m, d, L, D, x, y)
@@ -2414,14 +2346,13 @@ def solve_LD(
 
 @event_scope
 def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
-  """
-  Computes backsubstitution: x = qLD * y.
+  """Computes backsubstitution: x = qLD * y.
 
   Args:
-    m (Model): The model containing inertia and factorization information.
-    d (Data): The data object containing factorization results.
-    x (array2d): Output array for the solution.
-    y (array2d): Input right-hand side array.
+    m: The model containing inertia and factorization information.
+    d: The data object containing factorization results.
+    x: Output array for the solution.
+    y: Input right-hand side array.
   """
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
 
@@ -2474,21 +2405,21 @@ def _factor_solve_i_dense(
 
 
 def factor_solve_i(m, d, M, L, D, x, y):
-  """
-  Factorizes and solves the linear system: x = inv(L'*D*L) * y or x = inv(L'*L) * y,
-  where M is an inertia-like matrix and L, D are its Cholesky-like factors.
+  """Factorizes and solves the linear system: x = inv(L'*D*L) * y or x = inv(L'*L) * y.
+
+  M is an inertia-like matrix and L, D are its Cholesky-like factors.
 
   This function first factorizes the matrix M (sparse or dense depending on model options),
   then solves the system for x given right-hand side y.
 
   Args:
-    m (Model): The model containing factorization and sparsity information.
-    d (Data): The data object containing workspace and factorization results.
-    M (array3d): The inertia-like matrix to factorize.
-    L (array3d): Output lower-triangular factor from the factorization (sparse or dense).
-    D (array2d): Output diagonal factor from the factorization (only used for sparse).
-    x (array2d): Output array for the solution.
-    y (array2d): Input right-hand side array.
+    m: The model containing factorization and sparsity information.
+    d: The data object containing workspace and factorization results.
+    M: The inertia-like matrix to factorize.
+    L: Output lower-triangular factor from the factorization (sparse or dense).
+    D: Output diagonal factor from the factorization (only used for sparse).
+    x: Output array for the solution.
+    y: Input right-hand side array.
   """
   if m.opt.is_sparse:
     _factor_i_sparse(m, d, M, L, D)
@@ -2610,13 +2541,11 @@ def _angular_momentum(
 
 
 def subtree_vel(m: Model, d: Data):
-  """
-  Computes subtree linear velocity and angular momentum.
+  """Computes subtree linear velocity and angular momentum.
 
   Computes the linear momentum and angular momentum for each subtree, accumulating
   contributions up the kinematic tree.
   """
-
   # bodywise quantities
   wp.launch(
     _subtree_vel_forward,
@@ -3045,8 +2974,7 @@ def _spatial_tendon_wrap(
 
 
 def tendon(m: Model, d: Data):
-  """
-  Computes tendon lengths and moments.
+  """Computes tendon lengths and moments.
 
   Updates the tendon length and moment arrays for all tendons in the model, including joint,
   site, and geom tendons.
@@ -3126,7 +3054,7 @@ def tendon(m: Model, d: Data):
   if spatial_site or spatial_geom:
     wp.launch(
       _spatial_tendon_wrap,
-      dim=(d.nworld,),
+      dim=d.nworld,
       inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, wrap_geom_xpos],
       outputs=[d.ten_wrapadr, d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
     )

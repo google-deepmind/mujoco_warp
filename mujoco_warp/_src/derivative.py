@@ -140,8 +140,8 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
   """Analytical derivative of smooth forces w.r.t. velocities.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
     qDeriv: Analytical derivative of smooth forces w.r.t. velocity.
   """
   qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row

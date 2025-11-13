@@ -74,7 +74,6 @@ _ROBOT = flags.DEFINE_enum("robot", "g1", _MENAGERIE_ROBOTS.keys(), "the robot t
 
 def main(argv: Sequence[str]):
   """Populates an environment with robot from MuJoCo Menagerie."""
-
   input_path = epath.Path(_INPUT.value)
   if not input_path.exists():
     raise FileNotFoundError("could not load file: {_INPUT.value}")

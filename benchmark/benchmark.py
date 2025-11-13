@@ -99,6 +99,7 @@ class Humanoid(benchmark.BenchmarkSuite):
 
 class ThreeHumanoids(benchmark.BenchmarkSuite):
   """Three MuJoCo humanoids on an infinite plane.
+
   Ideally, simulation time scales linearly with number of humanoids.
   """
 

@@ -55,7 +55,6 @@ def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> Tuple
 @wp.func
 def closest_segment_to_segment_points(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Returns closest points between two line segments."""
-
   dir_a, len_a = normalize_with_norm(a1 - a0)
   dir_b, len_b = normalize_with_norm(b1 - b0)
 
@@ -122,16 +121,15 @@ def sphere_sphere(
   """Sphere-sphere collision calculation.
 
   Args:
-    pos1: Center position of the first sphere
-    radius1: Radius of the first sphere
-    pos2: Center position of the second sphere
-    radius2: Radius of the second sphere
+    pos1: Center position of the first sphere.
+    radius1: Radius of the first sphere.
+    pos2: Center position of the second sphere.
+    radius2: Radius of the second sphere.
 
   Returns:
-    Tuple containing:
-      dist: Distance between sphere surfaces (negative if overlapping)
-      pos: Contact position
-      n: Contact normal vector
+    - Distance between sphere surfaces (negative if overlapping).
+    - Contact position.
+    - Contact normal vector.
   """
   dir = pos2 - pos1
   dist = wp.length(dir)
@@ -157,20 +155,18 @@ def sphere_capsule(
   """Core contact geometry calculation for sphere-capsule collision.
 
   Args:
-    sphere_pos: Center position of the sphere
-    sphere_radius: Radius of the sphere
-    capsule_pos: Center position of the capsule
-    capsule_axis: Axis direction of the capsule
-    capsule_radius: Radius of the capsule
-    capsule_half_length: Half length of the capsule
+    sphere_pos: Center position of the sphere.
+    sphere_radius: Radius of the sphere.
+    capsule_pos: Center position of the capsule.
+    capsule_axis: Axis direction of the capsule.
+    capsule_radius: Radius of the capsule.
+    capsule_half_length: Half length of the capsule.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances.
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
-
   # Calculate capsule segment
   segment = capsule_axis * capsule_half_length
 
@@ -196,22 +192,20 @@ def capsule_capsule(
   """Core contact geometry calculation for capsule-capsule collision.
 
   Args:
-    cap1_pos: Center position of the first capsule
-    cap1_axis: Axis direction of the first capsule
-    cap1_radius: Radius of the first capsule
-    cap1_half_length: Half length of the first capsule
-    cap2_pos: Center position of the second capsule
-    cap2_axis: Axis direction of the second capsule
-    cap2_radius: Radius of the second capsule
-    cap2_half_length: Half length of the second capsule
+    cap1_pos: Center position of the first capsule.
+    cap1_axis: Axis direction of the first capsule.
+    cap1_radius: Radius of the first capsule.
+    cap1_half_length: Half length of the first capsule.
+    cap2_pos: Center position of the second capsule.
+    cap2_axis: Axis direction of the second capsule.
+    cap2_radius: Radius of the second capsule.
+    cap2_half_length: Half length of the second capsule.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances.
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
-
   # TODO(team): parallel axes case
 
   # Calculate capsule segments
@@ -243,20 +237,18 @@ def plane_capsule(
   """Core contact geometry calculation for plane-capsule collision.
 
   Args:
-    plane_normal: Normal vector of the plane
-    plane_pos: Position point on the plane
-    capsule_pos: Center position of the capsule
-    capsule_axis: Axis direction of the capsule
-    capsule_radius: Radius of the capsule
-    capsule_half_length: Half length of the capsule
+    plane_normal: Normal vector of the plane.
+    plane_pos: Position point on the plane.
+    capsule_pos: Center position of the capsule.
+    capsule_axis: Axis direction of the capsule.
+    capsule_radius: Radius of the capsule.
+    capsule_half_length: Half length of the capsule.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: Matrix of contact positions (one per row)
-      contact_frame: Contact frame for both contacts
+    - Vector of contact distances.
+    - Matrix of contact positions (one per row).
+    - Contact frame for both contacts.
   """
-
   n = plane_normal
   axis = capsule_axis
 
@@ -297,17 +289,16 @@ def plane_ellipsoid(
   """Core contact geometry calculation for plane-ellipsoid collision.
 
   Args:
-    plane_normal: Normal vector of the plane
-    plane_pos: Position point on the plane
-    ellipsoid_pos: Center position of the ellipsoid
-    ellipsoid_rot: Rotation matrix of the ellipsoid
-    ellipsoid_size: Size (radii) of the ellipsoid along each axis
+    plane_normal: Normal vector of the plane.
+    plane_pos: Position point on the plane.
+    ellipsoid_pos: Center position of the ellipsoid.
+    ellipsoid_rot: Rotation matrix of the ellipsoid.
+    ellipsoid_size: Size (radii) of the ellipsoid along each axis.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances.
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
   sphere_support = -wp.normalize(wp.cw_mul(wp.transpose(ellipsoid_rot) @ plane_normal, ellipsoid_size))
   pos = ellipsoid_pos + ellipsoid_rot @ wp.cw_mul(sphere_support, ellipsoid_size)
@@ -329,19 +320,17 @@ def plane_box(
   """Core contact geometry calculation for plane-box collision.
 
   Args:
-    plane_normal: Normal vector of the plane
-    plane_pos: Position point on the plane
-    box_pos: Center position of the box
-    box_rot: Rotation matrix of the box
-    box_size: Half-extents of the box along each axis
+    plane_normal: Normal vector of the plane.
+    plane_pos: Position point on the plane.
+    box_pos: Center position of the box.
+    box_rot: Rotation matrix of the box.
+    box_size: Half-extents of the box along each axis.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances (wp.inf for unpopulated contacts)
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normal: contact normal vector
+    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Matrix of contact positions (one per row).
+    - Contact normal vector.
   """
-
   corner = wp.vec3()
   center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
@@ -389,18 +378,17 @@ def sphere_cylinder(
   """Core contact geometry calculation for sphere-cylinder collision.
 
   Args:
-    sphere_pos: Center position of the sphere
-    sphere_radius: Radius of the sphere
-    cylinder_pos: Center position of the cylinder
-    cylinder_axis: Axis direction of the cylinder
-    cylinder_radius: Radius of the cylinder
-    cylinder_half_height: Half height of the cylinder
+    sphere_pos: Center position of the sphere.
+    sphere_radius: Radius of the sphere.
+    cylinder_pos: Center position of the cylinder.
+    cylinder_axis: Axis direction of the cylinder.
+    cylinder_radius: Radius of the cylinder.
+    cylinder_half_height: Half height of the cylinder.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances.
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
   vec = sphere_pos - cylinder_pos
   x = wp.dot(vec, cylinder_axis)
@@ -462,20 +450,18 @@ def plane_cylinder(
   """Core contact geometry calculation for plane-cylinder collision.
 
   Args:
-    plane_normal: Normal vector of the plane
-    plane_pos: Position point on the plane
-    cylinder_center: Center position of the cylinder
-    cylinder_axis: Axis direction of the cylinder
-    cylinder_radius: Radius of the cylinder
-    cylinder_half_height: Half height of the cylinder
+    plane_normal: Normal vector of the plane.
+    plane_pos: Position point on the plane.
+    cylinder_center: Center position of the cylinder.
+    cylinder_axis: Axis direction of the cylinder.
+    cylinder_radius: Radius of the cylinder.
+    cylinder_half_height: Half height of the cylinder.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances.
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
-
   # Initialize output matrices
   contact_dist = wp.vec4(wp.inf)
   contact_pos = mat43f()
@@ -594,22 +580,20 @@ def box_box(
   """Core contact geometry calculation for box-box collision.
 
   Args:
-    box1_pos: Center position of the first box
-    box1_rot: Rotation matrix of the first box
-    box1_size: Half-extents of the first box along each axis
-    box2_pos: Center position of the second box
-    box2_rot: Rotation matrix of the second box
-    box2_size: Half-extents of the second box along each axis
+    box1_pos: Center position of the first box.
+    box1_rot: Rotation matrix of the first box.
+    box1_size: Half-extents of the first box along each axis.
+    box2_pos: Center position of the second box.
+    box2_rot: Rotation matrix of the second box.
+    box2_size: Half-extents of the second box along each axis.
     margin: Distance threshold for early contact generation (default: 0.0).
             When positive, contacts are generated before boxes overlap.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances (wp.inf for unpopulated contacts)
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
-
   # Initialize output matrices
   contact_dist = vec8f()
   for i in range(8):
@@ -819,8 +803,8 @@ def box_box(
       if i != n:
         points[n] = points[i]
 
-      points[n, 2] *= 0.5
       depth[n] = points[n, 2]
+      points[n, 2] *= 0.5
       n += 1
 
     # Set up contact frame
@@ -1050,19 +1034,17 @@ def sphere_box(
   """Core contact geometry calculation for sphere-box collision.
 
   Args:
-    sphere_pos: Center position of the sphere
-    sphere_radius: Radius of the sphere
-    box_pos: Center position of the box
-    box_rot: Rotation matrix of the box
-    box_size: Half-extents of the box along each axis
+    sphere_pos: Center position of the sphere.
+    sphere_radius: Radius of the sphere.
+    box_pos: Center position of the box.
+    box_rot: Rotation matrix of the box.
+    box_size: Half-extents of the box along each axis.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances
-      contact_pos: contact positions
-      contact_normal: contact normal vectors
+    - Vector of contact distances.
+    - Contact positions.
+    - Contact normal vectors.
   """
-
   center = wp.transpose(box_rot) @ (sphere_pos - box_pos)
 
   clamped = wp.max(-box_size, wp.min(box_size, center))
@@ -1109,21 +1091,19 @@ def capsule_box(
   """Core contact geometry calculation for capsule-box collision.
 
   Args:
-    capsule_pos: Center position of the capsule
-    capsule_axis: Axis direction of the capsule
-    capsule_radius: Radius of the capsule
-    capsule_half_length: Half length of the capsule
-    box_pos: Center position of the box
-    box_rot: Rotation matrix of the box
-    box_size: Half-extents of the box along each axis
+    capsule_pos: Center position of the capsule.
+    capsule_axis: Axis direction of the capsule.
+    capsule_radius: Radius of the capsule.
+    capsule_half_length: Half length of the capsule.
+    box_pos: Center position of the box.
+    box_rot: Rotation matrix of the box.
+    box_size: Half-extents of the box along each axis.
 
   Returns:
-    Tuple containing:
-      contact_dist: Vector of contact distances (wp.inf for unpopulated contacts)
-      contact_pos: Matrix of contact positions (one per row)
-      contact_normals: Matrix of contact normal vectors (one per row)
+    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Matrix of contact positions (one per row).
+    - Matrix of contact normal vectors (one per row).
   """
-
   # Based on the mjc implementation
   boxmatT = wp.transpose(box_rot)
   pos = boxmatT @ (capsule_pos - box_pos)
