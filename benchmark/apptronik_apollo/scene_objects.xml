@@ -11,6 +11,7 @@
     <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
     <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
     <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+    <model name="apptronik_apollo" file="apptronik_apollo.xml"/>
   </asset>
 
   <worldbody>
@@ -69,5 +70,8 @@
             <geom name="geom2" type="box" size="0.03 0.03 0.03" contype="1" conaffinity="1" rgba="0 1 1 1"/>
         </body>
     </replicate>
+    
+    <!-- attach Apptronik Apollo -->
+    <attach model="apptronik_apollo" body="base_link" prefix="_"/>
   </worldbody>
 </mujoco>
