@@ -22,7 +22,7 @@ import warp as wp
 from . import math
 from . import types
 from . import warp_util
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 # tolerance override for float32
 _TOLERANCE_F32 = 1.0e-6
