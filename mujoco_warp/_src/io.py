@@ -1032,21 +1032,21 @@ def make_data(
     raise ValueError("njmax must be >= 0")
 
   if mujoco.mj_isSparse(mjm):
-    qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
-    qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
-  else:
-    qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-    qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
-  condim_max = np.max(condim) if len(condim) > 0 else 0
-
-  if mujoco.mj_isSparse(mjm):
     tile_size = types.TILE_SIZE_JTDAJ_SPARSE
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
   njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
+
+  if mujoco.mj_isSparse(mjm):
+    qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
+    qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
+  else:
+    qM = wp.zeros((nworld, nv_padded, nv_padded), dtype=float)
+    qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
+  condim_max = np.max(condim) if len(condim) > 0 else 0
 
   # static geoms (attached to the world) have their poses calculated once during make_data instead
   # of during each physics step.  this speeds up scenes with many static geoms (e.g. terrains)
@@ -1319,6 +1319,12 @@ def put_data(
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
 
   njmax_padded, nv_padded = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
+
+  # Pad qM to nv_padded for dense case
+  if not mujoco.mj_isSparse(mjm) and nv_padded > mjm.nv:
+    qM_padded = np.zeros((nv_padded, nv_padded))
+    qM_padded[:mjm.nv, :mjm.nv] = qM
+    qM = qM_padded
 
   efc_type_fill = np.zeros((nworld, njmax))
   efc_id_fill = np.zeros((nworld, njmax))
@@ -1887,7 +1893,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
   wp.launch(
     reset_qM,
-    dim=(d.nworld, 1 if m.opt.is_sparse else m.nv, m.nM if m.opt.is_sparse else m.nv),
+    dim=(d.nworld, d.qM.shape[1], d.qM.shape[2]),
     inputs=[reset_input],
     outputs=[d.qM],
   )
