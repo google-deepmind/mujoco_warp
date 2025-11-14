@@ -79,10 +79,10 @@ def _qderiv_actuator_passive(
         continue
 
       if actuator_dyntype[actid] != DynType.NONE:
-        act_first = actuator_actadr[actid]
-        act_last = act_first + actuator_actnum[actid] - 1
         vel = bias
         if gain != 0.0:
+          act_first = actuator_actadr[actid]
+          act_last = act_first + actuator_actnum[actid] - 1
           vel += gain * act_in[worldid, act_last]
       else:
         vel = bias
