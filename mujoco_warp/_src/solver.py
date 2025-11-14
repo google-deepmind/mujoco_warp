@@ -1742,7 +1742,6 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
     else:
-      # it's ok to load an unpadded matrix with larger size because the padding will be zero-initialized
       nv_padded = d.efc.J.shape[2]
       wp.launch_tiled(
         update_gradient_JTDAJ_dense_tiled(nv_padded, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
