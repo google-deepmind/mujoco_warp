@@ -860,17 +860,17 @@ class CollisionTest(parameterized.TestCase):
     _XML = """
     <mujoco>
       <asset>
-        <hfield name="hfield" nrow="10" ncol="10" size="1e-6 1e-6 1 1"/>
+        <hfield name="hfield" nrow="10" ncol="10" size="1e-1 1e-1 1 1"/>
       </asset>
       <worldbody>
         <body>
           <joint type="slide" axis="0 0 1"/>
-          <geom type="sphere" size=".1"/>
+          <geom type="box" size="1 1 .1"/>
         </body>
         <geom type="hfield" hfield="hfield"/>
       </worldbody>
       <keyframe>
-        <key qpos=".0999"/>
+        <key qpos=".099"/>
       </keyframe>
     </mujoco>
     """
