@@ -1473,7 +1473,6 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
     nefc = nefc_in[worldid]
 
-    # we load more than qM here - the bounds-check takes care of zero-initializing the padded region.
     sum_val = wp.tile_load(qM_in[worldid], shape=(nv_padded, nv_padded), bounds_check=True)
 
     # Each tile processes one output tile by looping over all constraints
