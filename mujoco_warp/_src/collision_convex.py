@@ -603,7 +603,7 @@ def ccd_kernel_builder(
           # add both triangles from this cell
           for i in range(2):
             if count >= MJ_MAXCONPAIR:
-              wp.printf("height field collision overflow - please adjust resolution.")
+              wp.printf("height field collision overflow - please adjust resolution\n")
               continue
 
             # add vert
