@@ -576,6 +576,25 @@ def ccd_kernel_builder(
       min_pos = wp.vec3(wp.inf, wp.inf, wp.inf)
       min_id = int(-1)
 
+      # TODO(team): height field margin?
+      geom1.margin = margin
+      geom2.margin = margin
+
+      # EPA memory
+      epa_vert = epa_vert_in[tid]
+      epa_vert1 = epa_vert1_in[tid]
+      epa_vert2 = epa_vert2_in[tid]
+      epa_vert_index1 = epa_vert_index1_in[tid]
+      epa_vert_index2 = epa_vert_index2_in[tid]
+      epa_face = epa_face_in[tid]
+      epa_pr = epa_pr_in[tid]
+      epa_norm2 = epa_norm2_in[tid]
+      epa_index = epa_index_in[tid]
+      epa_map = epa_map_in[tid]
+      epa_horizon = epa_horizon_in[tid]
+
+      collision_pairid = collision_pairid_in[tid]
+
       # process all prisms in subgrid
       count = int(0)
       for r in range(rmin, rmax):
@@ -583,7 +602,8 @@ def ccd_kernel_builder(
         for c in range(cmin, cmax + 1):
           # add both triangles from this cell
           for i in range(2):
-            if count + 1 >= MJ_MAXCONPAIR:
+            if count >= MJ_MAXCONPAIR:
+              wp.printf("height field collision overflow - please adjust resolution.")
               continue
 
             # add vert
@@ -620,17 +640,9 @@ def ccd_kernel_builder(
               x1_ += prism[i]
             x1 += geom1.rot @ (x1_ / 6.0)
 
-            geom1.margin = margin
-            geom2.margin = margin
-
-            if collision_pairid_in[tid][1] >= 0:
-              # if collision sensor, set large cutoff to work with various sensor cutoff values
-              cutoff = 1.0e32
-            else:
-              cutoff = 0.0
             dist, ncontact, w1, w2, idx = ccd(
               opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
-              cutoff,
+              0.0,
               ccd_iterations,
               geom1,
               geom2,
@@ -638,17 +650,17 @@ def ccd_kernel_builder(
               geomtype2,
               x1,
               geom2.pos,
-              epa_vert_in[tid],
-              epa_vert1_in[tid],
-              epa_vert2_in[tid],
-              epa_vert_index1_in[tid],
-              epa_vert_index2_in[tid],
-              epa_face_in[tid],
-              epa_pr_in[tid],
-              epa_norm2_in[tid],
-              epa_index_in[tid],
-              epa_map_in[tid],
-              epa_horizon_in[tid],
+              epa_vert,
+              epa_vert1,
+              epa_vert2,
+              epa_vert_index1,
+              epa_vert_index2,
+              epa_face,
+              epa_pr,
+              epa_norm2,
+              epa_index,
+              epa_map,
+              epa_horizon,
             )
 
             if ncontact == 0:
@@ -692,7 +704,7 @@ def ccd_kernel_builder(
         solreffriction,
         solimp,
         geoms,
-        collision_pairid_in[tid],
+        collision_pairid,
         worldid,
         contact_dist_out,
         contact_pos_out,
@@ -718,11 +730,15 @@ def ccd_kernel_builder(
         for i in range(count):
           if i == min_id:
             continue
-          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
-          if wp.norm_l2(hf_pos - min_pos) > dist1:
-            id1 = i
 
-        if id1 == -1:
+          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
+          dist = wp.norm_l2(hf_pos - min_pos)
+
+          if dist > dist1:
+            id1 = i
+            dist1 = dist
+
+        if id1 == -1 or (0.0 < dist1 and dist1 < 1.0e-3):
           return
 
         pos1 = wp.vec3(hfield_contact_pos[id1, 0], hfield_contact_pos[id1, 1], hfield_contact_pos[id1, 2])
@@ -742,7 +758,7 @@ def ccd_kernel_builder(
           solreffriction,
           solimp,
           geoms,
-          collision_pairid_in[tid],
+          collision_pairid,
           worldid,
           contact_dist_out,
           contact_pos_out,
@@ -768,11 +784,15 @@ def ccd_kernel_builder(
         for i in range(count):
           if i == min_id or i == id1:
             continue
-          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
-          if wp.norm_l2(hf_pos - dist_min1) > dist_12:
-            id2 = i
 
-        if id2 == -1:
+          hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
+          dist = wp.abs(wp.dot(hf_pos - min_pos, dist_min1))
+
+          if dist > dist_12:
+            id2 = i
+            dist_12 = dist
+
+        if id2 == -1 or (0.0 < dist_12 and dist_12 < 1.0e-3):
           return
 
         pos2 = wp.vec3(hfield_contact_pos[id2, 0], hfield_contact_pos[id2, 1], hfield_contact_pos[id2, 2])
@@ -792,7 +812,7 @@ def ccd_kernel_builder(
           solreffriction,
           solimp,
           geoms,
-          collision_pairid_in[tid],
+          collision_pairid,
           worldid,
           contact_dist_out,
           contact_pos_out,
@@ -819,18 +839,15 @@ def ccd_kernel_builder(
         for i in range(count):
           if i == min_id or i == id1 or i == id2:
             continue
+
           hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
-          ap = vec_min2 - hf_pos
-          bp = vec_12 - hf_pos
+          dist = wp.abs(wp.dot(hf_pos - min_pos, vec_min2)) + wp.abs(wp.dot(pos1 - hf_pos, vec_12))
 
-          dap = wp.abs(wp.dot(ap, vec_min2))
-          dbp = wp.abs(wp.dot(bp, vec_12))
-
-          if dap + dbp > dist3:
+          if dist > dist3:
             id3 = i
-            dist3 = dap + dbp
+            dist3 = dist
 
-        if id3 == -1:
+        if id3 == -1 or (0.0 < dist3 and dist3 < 1.0e-3):
           return
 
         pos3 = wp.vec3(hfield_contact_pos[id3, 0], hfield_contact_pos[id3, 1], hfield_contact_pos[id3, 2])
@@ -850,7 +867,7 @@ def ccd_kernel_builder(
           solreffriction,
           solimp,
           geoms,
-          collision_pairid_in[tid],
+          collision_pairid,
           worldid,
           contact_dist_out,
           contact_pos_out,
