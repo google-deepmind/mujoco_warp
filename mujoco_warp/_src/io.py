@@ -1323,7 +1323,7 @@ def put_data(
   # Pad qM to nv_padded for dense case
   if not mujoco.mj_isSparse(mjm) and nv_padded > mjm.nv:
     qM_padded = np.zeros((nv_padded, nv_padded))
-    qM_padded[:mjm.nv, :mjm.nv] = qM
+    qM_padded[: mjm.nv, : mjm.nv] = qM
     qM = qM_padded
 
   efc_type_fill = np.zeros((nworld, njmax))
