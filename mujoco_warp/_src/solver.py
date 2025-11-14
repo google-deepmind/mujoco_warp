@@ -27,7 +27,7 @@ from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
