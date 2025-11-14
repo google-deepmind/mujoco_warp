@@ -182,57 +182,13 @@ def _compute_bvh_group_roots(
   group_roots[tid] = root
 
 
-@wp.kernel
-def _compute_flex_bounds(
-  geom_count: int,
-  bvh_ngeom: int,
-  nworld: int,
-  nflex: int,
-  flex_vertadr: wp.array(dtype=int),
-  flex_vertnum: wp.array(dtype=int),
-  flexvert_xpos: wp.array2d(dtype=wp.vec3),
-  lowers: wp.array(dtype=wp.vec3),
-  uppers: wp.array(dtype=wp.vec3),
-  groups: wp.array(dtype=int),
-  flex_bounds_size: wp.array(dtype=wp.vec3),
-):
-  tid = wp.tid()
-  world_id = tid // nflex
-  flex_id = tid % nflex
-  if world_id >= nworld or flex_id >= nflex:
-    return
-
-  start = flex_vertadr[flex_id]
-  count = flex_vertnum[flex_id]
-
-  mn = wp.vec3(wp.inf, wp.inf, wp.inf)
-  mx = wp.vec3(-wp.inf, -wp.inf, -wp.inf)
-
-  for i in range(count):
-    p = flexvert_xpos[world_id, start + i]
-    mn = wp.min(mn, p)
-    mx = wp.max(mx, p)
-
-  # write AABB into scene BVH slot for this flex
-  offset = world_id * bvh_ngeom + geom_count + flex_id
-  lowers[offset] = mn
-  uppers[offset] = mx
-  groups[offset] = world_id
-
-  # update half extents once (world 0)
-  if world_id == 0:
-    half = 0.5 * (mx - mn)
-    flex_bounds_size[flex_id] = half
-
 def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
   """Build a Warp BVH for all geometries in all worlds."""
-
-  # Geoms
   wp.launch(
     kernel=_compute_bvh_bounds,
-    dim=d.nworld * rc.geom_count,
+    dim=d.nworld * rc.bvh_ngeom,
     inputs=[
-      rc.geom_count,
+      rc.bvh_ngeom,
       d.nworld,
       rc.enabled_geom_ids,
       m.geom_type,
@@ -247,26 +203,6 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
       rc.groups,
     ],
   )
-
-  # Flex
-  if m.nflex > 0:
-    wp.launch(
-      kernel=_compute_flex_bounds,
-      dim=d.nworld * m.nflex,
-      inputs=[
-        rc.geom_count,
-        rc.bvh_ngeom,
-        d.nworld,
-        m.nflex,
-        m.flex_vertadr,
-        m.flex_vertnum,
-        d.flexvert_xpos,
-        rc.lowers,
-        rc.uppers,
-        rc.groups,
-        rc.flex_bounds_size,
-      ],
-    )
 
   bvh = wp.Bvh(rc.lowers, rc.uppers, groups=rc.groups)
 
@@ -282,12 +218,11 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
 
 
 def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
-  # Geoms
   wp.launch(
     kernel=_compute_bvh_bounds,
-    dim=d.nworld * rc.geom_count,
+    dim=d.nworld * rc.bvh_ngeom,
     inputs=[
-      rc.geom_count,
+      rc.bvh_ngeom,
       d.nworld,
       rc.enabled_geom_ids,
       m.geom_type,
@@ -302,25 +237,5 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
       rc.groups,
     ],
   )
-
-  # Flex (also updates rc.flex_bounds_size)
-  if m.nflex > 0:
-    wp.launch(
-      kernel=_compute_flex_bounds,
-      dim=d.nworld * m.nflex,
-      inputs=[
-        rc.geom_count,
-        rc.bvh_ngeom,
-        d.nworld,
-        m.nflex,
-        m.flex_vertadr,
-        m.flex_vertnum,
-        d.flexvert_xpos,
-        rc.lowers,
-        rc.uppers,
-        rc.groups,
-        rc.flex_bounds_size,
-      ],
-    )
 
   rc.bvh.refit()

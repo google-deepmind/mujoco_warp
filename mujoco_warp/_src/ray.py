@@ -720,7 +720,34 @@ def ray_mesh_with_bvh(
   if hit and wp.dot(lvec, n) < 0.0: # Backface culling in local space
     normal = mat @ n
     normal = wp.normalize(normal)
-    return True, t, normal, u, v, f, mesh_geom_id
+    return True, t, normal, u, v, f, 0
+
+  return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
+
+
+@wp.func
+def ray_flex_with_bvh(
+  flex_bvh_ids: wp.array(dtype=wp.uint64),
+  flex_id: int,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+  max_t: wp.float32,
+) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int, int]:
+  """Returns intersection information for flex intersections.
+
+  Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space."""
+  t = float(wp.inf)
+  u = float(0.0)
+  v = float(0.0)
+  sign = float(0.0)
+  n = wp.vec3(0.0, 0.0, 0.0)
+  f = int(-1)
+
+  hit = wp.mesh_query_ray(
+    flex_bvh_ids[flex_id], pnt, vec, max_t, t, u, v, sign, n, f)
+
+  if hit:
+    return True, t, n, u, v, f, 0
 
   return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
 

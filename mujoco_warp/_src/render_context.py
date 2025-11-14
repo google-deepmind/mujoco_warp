@@ -135,18 +135,17 @@ class RenderContext:
       hfield_bounds_size[hid] = hhalf
 
     # Flex BVHs
+    # Current only supports 2D flex (cloth)
     nflex = int(m.nflex)
     self.flex_registry = {}
     flex_bvh_ids = [wp.uint64(0) for _ in range(nflex)]
     flex_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nflex)]
     for fid in range(nflex):
-      dim = int(mjm.flex_dim[fid])
-      if dim != 2:
-        continue
-      fmesh, fhalf = _make_flex_mesh(mjm, d, fid)
-      self.flex_registry[fmesh.id] = fmesh
-      flex_bvh_ids[fid] = fmesh.id
-      flex_bounds_size[fid] = fhalf
+      if int(mjm.flex_dim[fid]) == 2:
+        fmesh, fhalf = _make_flex_mesh(mjm, d, fid)
+        self.flex_registry[fmesh.id] = fmesh
+        flex_bvh_ids[fid] = fmesh.id
+        flex_bounds_size[fid] = fhalf
 
     tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
@@ -200,11 +199,7 @@ class RenderContext:
       )
       offset += cam_resolutions[i][0] * cam_resolutions[i][1]
 
-    geom_count = len(geom_enabled_idx)
-    nflex = int(m.nflex)
-    bvh_ngeom = geom_count + nflex
-    self.geom_count=geom_count
-    self.bvh_ngeom=bvh_ngeom
+    self.bvh_ngeom=len(geom_enabled_idx)
     self.ncam=mjm.ncam
     self.use_textures=use_textures
     self.use_shadows=use_shadows
@@ -224,9 +219,9 @@ class RenderContext:
     self.tex_data=tex_data_packed
     self.tex_height = wp.array(mjm.tex_height, dtype=int)
     self.tex_width = wp.array(mjm.tex_width, dtype=int)
-    self.lowers = wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3)
-    self.uppers = wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3)
-    self.groups = wp.zeros(d.nworld * bvh_ngeom, dtype=int)
+    self.lowers = wp.zeros(d.nworld * self.bvh_ngeom, dtype=wp.vec3)
+    self.uppers = wp.zeros(d.nworld * self.bvh_ngeom, dtype=wp.vec3)
+    self.groups = wp.zeros(d.nworld * self.bvh_ngeom, dtype=int)
     self.group_roots = wp.zeros(d.nworld, dtype=int)
     self.bvh = None
     self.bvh_id = None
@@ -437,71 +432,261 @@ def _make_hfield_mesh(mjm: mujoco.MjModel, hfieldid: int) -> tuple[wp.Mesh, wp.v
   bounds_half = wp.vec3(float(sz[0]), float(sz[1]), half_z)
   return mesh, bounds_half
 
-def _make_flex_mesh(mjm, d, flexid: int) -> tuple[wp.Mesh, wp.vec3]:
-    """Create a Warp BVH mesh for a MuJoCo flex using edges+flaps (no mjvScene)."""
+@wp.kernel
+def _make_face_2d_elements(
+    vert_xpos: wp.array(dtype=wp.vec3),
+    flex_elem: wp.array(dtype=int),
+    elem_start: int,
+    elem_count: int,
+    radius: float,
+    face_points: wp.array(dtype=wp.vec3),
+    face_indices: wp.array(dtype=int),
+):
+    """Create faces from 2D flex elements (triangles). Two faces (top/bottom) per element."""
+    tid = wp.tid()
+    if tid >= elem_count:
+        return
+
+    # Get element vertex indices (3 vertices per triangle)
+    elem_base = elem_start + tid * 3
+    i0 = flex_elem[elem_base + 0]
+    i1 = flex_elem[elem_base + 1]
+    i2 = flex_elem[elem_base + 2]
+
+    # Get vertex positions
+    v0 = vert_xpos[i0]
+    v1 = vert_xpos[i1]
+    v2 = vert_xpos[i2]
+
+    # Compute triangle normal (CCW)
+    v01 = v1 - v0
+    v02 = v2 - v0
+    nrm = wp.cross(v01, v02)
+    nrm_len = wp.length(nrm)
+    if nrm_len < 1e-8:
+        nrm = wp.vec3(0.0, 0.0, 1.0)
+    else:
+        nrm = nrm / nrm_len
+
+    # Offset vertices by +/- radius along the normal to give the cloth thickness
+    offset_pos = nrm * radius
+    offset_neg = -offset_pos
+
+    p0_pos = v0 + offset_pos
+    p1_pos = v1 + offset_pos
+    p2_pos = v2 + offset_pos
+
+    p0_neg = v0 + offset_neg
+    p1_neg = v1 + offset_neg
+    p2_neg = v2 + offset_neg
+
+    # First face (top): i0, i1, i2
+    face_base = tid * 6  # 2 faces * 3 vertices
+    face_points[face_base + 0] = p0_pos
+    face_points[face_base + 1] = p1_pos
+    face_points[face_base + 2] = p2_pos
+
+    # Second face (bottom): i0, i2, i1 (opposite winding)
+    face_points[face_base + 3] = p0_neg
+    face_points[face_base + 4] = p2_neg
+    face_points[face_base + 5] = p1_neg
+
+    # Set indices (using sequential indices for the face points)
+    idx_base = tid * 6
+    face_indices[idx_base + 0] = idx_base + 0
+    face_indices[idx_base + 1] = idx_base + 1
+    face_indices[idx_base + 2] = idx_base + 2
+    face_indices[idx_base + 3] = idx_base + 3
+    face_indices[idx_base + 4] = idx_base + 4
+    face_indices[idx_base + 5] = idx_base + 5
+
+
+@wp.kernel
+def _make_sides_2d_elements(
+    vert_xpos: wp.array(dtype=wp.vec3),
+    vert_norm: wp.array(dtype=wp.vec3),
+    shell_pairs: wp.array(dtype=int),
+    shell_count: int,
+    radius: float,
+    face_offset: int,
+    face_points: wp.array(dtype=wp.vec3),
+    face_indices: wp.array(dtype=int),
+):
+    """Create side faces from 2D flex shell fragments.
+
+    For each shell fragment (edge i0 -> i1), we emit two triangles:
+      - one using +radius
+      - one using -radius (i0/i1 swapped), mimicking MuJoCo's makeSide logic.
+    """
+    tid = wp.tid()
+    if tid >= shell_count:
+        return
+
+    # Two local vertex indices per shell fragment (assumed dim == 2).
+    i0 = shell_pairs[2 * tid + 0]
+    i1 = shell_pairs[2 * tid + 1]
+
+    nvert = vert_xpos.shape[0]
+    if i0 < 0 or i0 >= nvert or i1 < 0 or i1 >= nvert:
+        return
+
+    # Two faces per shell fragment.
+    face_idx0 = face_offset + 2 * tid
+    face_idx1 = face_offset + 2 * tid + 1
+
+    # ---- First side: (i0, i1) with +radius ----
+    base0 = face_idx0 * 3
+    # k = 0, ind = i0, sign = +1
+    pos = vert_xpos[i0]
+    nrm = vert_norm[i0]
+    p = pos + nrm * (radius * 1.0)
+    face_points[base0 + 0] = p
+    face_indices[base0 + 0] = base0 + 0
+    # k = 1, ind = i1, sign = -1
+    pos = vert_xpos[i1]
+    nrm = vert_norm[i1]
+    p = pos + nrm * (radius * -1.0)
+    face_points[base0 + 1] = p
+    face_indices[base0 + 1] = base0 + 1
+    # k = 2, ind = i1, sign = +1
+    pos = vert_xpos[i1]
+    nrm = vert_norm[i1]
+    p = pos + nrm * (radius * 1.0)
+    face_points[base0 + 2] = p
+    face_indices[base0 + 2] = base0 + 2
+
+    # ---- Second side: (i1, i0) with -radius ----
+    base1 = face_idx1 * 3
+    neg_radius = -radius
+    # k = 0, ind = i1, sign = +1
+    pos = vert_xpos[i1]
+    nrm = vert_norm[i1]
+    p = pos + nrm * (neg_radius * 1.0)
+    face_points[base1 + 0] = p
+    face_indices[base1 + 0] = base1 + 0
+    # k = 1, ind = i0, sign = -1
+    pos = vert_xpos[i0]
+    nrm = vert_norm[i0]
+    p = pos + nrm * (neg_radius * -1.0)
+    face_points[base1 + 1] = p
+    face_indices[base1 + 1] = base1 + 1
+    # k = 2, ind = i0, sign = +1
+    pos = vert_xpos[i0]
+    nrm = vert_norm[i0]
+    p = pos + nrm * (neg_radius * 1.0)
+    face_points[base1 + 2] = p
+    face_indices[base1 + 2] = base1 + 2
+
+
+def _make_flex_mesh(mjm: mujoco.MjModel, d: Data, flexid: int) -> tuple[wp.Mesh, wp.vec3]:
+    """Create a Warp BVH mesh for 2D flex meshes.
+
+    This implements the core of MuJoCo's flex rendering path for the 2D flex case by:
+      * gathering vertex positions for this flex (world 0),
+      * building triangle faces for both sides of the cloth, offset by `radius`
+        along the element normal so the cloth has thickness,
+      * returning a Warp mesh plus an approximate half-extent for BVH bounds.
+    """
+
+    # We assume 2D flex (cloth) and that all flex-related fields exist.
+    dim = int(mjm.flex_dim[flexid])
 
     base_vert = int(mjm.flex_vertadr[flexid])
-    nvert     = int(mjm.flex_vertnum[flexid])
+    nvert = int(mjm.flex_vertnum[flexid])
 
-    edge_start = int(mjm.flex_edgeadr[flexid])
-    nedges     = int(mjm.flex_edgenum[flexid])
-    edge_stop  = edge_start + nedges
+    flexvert_xpos_np = d.flexvert_xpos.numpy()
+    vert_xpos_np = flexvert_xpos_np[0, base_vert : base_vert + nvert, :].astype(np.float32)
+    vert_xpos = wp.array(vert_xpos_np, dtype=wp.vec3)
 
-    # Edges and flaps for *this* flex (local vertex IDs)
-    # mjm.flex_edge: flat int array shaped (..., 2)
-    # mjm.flex_edgeflap: flat int array shaped (..., 2) with -1 for "no triangle"
-    edges_all  = np.asarray(mjm.flex_edge, dtype=np.int32).reshape(-1, 2)
-    flaps_all  = np.asarray(mjm.flex_edgeflap, dtype=np.int32).reshape(-1, 2)
+    elem_count = int(mjm.flex_elemnum[flexid])
+    elem_start = int(mjm.flex_elemdataadr[flexid])
 
-    edges  = edges_all[edge_start:edge_stop]
-    flaps  = flaps_all[edge_start:edge_stop]
+    flex_elem_global = np.asarray(
+        mjm.flex_elem[elem_start : elem_start + elem_count * (dim + 1)],
+        dtype=np.int32,
+    )
+    flex_elem_local = flex_elem_global - base_vert
+    flex_elem_tri = flex_elem_local.reshape(elem_count, dim + 1)
+    flex_elem_wp = wp.array(flex_elem_local, dtype=int)
 
-    # Build unique triangles from edges+flaps.
-    # Indices must be *local* (0..nvert-1) because points array is a local slice.
-    tri_list = []
+    # Build per-vertex normals (vertnorm) in host memory, similar to MuJoCo.
+    vertnorm = np.zeros_like(vert_xpos_np, dtype=np.float32)
+    eps = 1.0e-8
+    for tri in flex_elem_tri:
+        i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+        v0 = vert_xpos_np[i0]
+        v1 = vert_xpos_np[i1]
+        v2 = vert_xpos_np[i2]
+        nrm = np.cross(v1 - v0, v2 - v0)
+        nlen = float(np.linalg.norm(nrm))
+        if nlen > eps:
+            nrm /= nlen
+        else:
+            continue
+        vertnorm[i0] += nrm
+        vertnorm[i1] += nrm
+        vertnorm[i2] += nrm
 
-    for e in range(nedges):
-        v0, v1 = int(edges[e, 0]), int(edges[e, 1])
-        # two possible triangles per edge (one per "flap" / side)
-        f0, f1 = int(flaps[e, 0]), int(flaps[e, 1])
+    norms = np.linalg.norm(vertnorm, axis=1)
+    valid = norms > eps
+    if np.any(valid):
+        vertnorm[valid] /= norms[valid][:, None]
+    if np.any(~valid):
+        vertnorm[~valid] = np.array([0.0, 0.0, 1.0], dtype=np.float32)
 
-        for f in (f0, f1):
-            if f < 0:
-                continue
+    vert_norm = wp.array(vertnorm, dtype=wp.vec3)
 
-            i, j, k = v0, v1, f  # local indices
-            # canonical ownership test: only emit once
-            a = min(i, j, k)
-            c = max(i, j, k)
-            b = i + j + k - a - c
+    radius = float(getattr(mjm, "flex_radius", [0.0] * mjm.nflex)[flexid])
 
-            # current edge in ascending order
-            ei0, ei1 = (i, j) if i < j else (j, i)
+    # Number of side faces from shell fragments (2 per shell fragment).
+    shell_count = int(mjm.flex_shellnum[flexid])
+    shell_start = int(mjm.flex_shelldataadr[flexid])
+    shell_flat = np.asarray(
+        mjm.flex_shell[shell_start : shell_start + shell_count * dim],
+        dtype=np.int32,
+    ).reshape(shell_count, dim)
+    # Convert shell vertex indices to local indices [0, nvert) for this flex.
+    shell_pairs_local = (shell_flat - base_vert).astype(np.int32)
+    shell_pairs_flat = shell_pairs_local.reshape(shell_count * dim)
+    shell_pairs_wp = wp.array(shell_pairs_flat, dtype=int)
 
-            # emit only if this edge == (a, b)
-            if ei0 == a and ei1 == b:
-                tri_list.append((i, j, k))
+    n_side_faces = 2 * shell_count
+    nfaces = 2 * elem_count + n_side_faces
+    num_face_vertices = nfaces * 3
+    face_points = wp.zeros(num_face_vertices, dtype=wp.vec3)
+    face_indices = wp.zeros(num_face_vertices, dtype=wp.int32)
 
-    if not tri_list:
-        # empty mesh fallback
-        empty_points = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3)
-        empty_indices = wp.array(np.zeros((0,), dtype=np.int32), dtype=wp.int32)
-        mesh = wp.Mesh(points=empty_points, indices=empty_indices, bvh_constructor="sah")
-        return mesh, wp.vec3(0.0, 0.0, 0.0)
+    # Build top and bottom faces.
+    wp.launch(
+        kernel=_make_face_2d_elements,
+        dim=elem_count,
+        inputs=[vert_xpos, flex_elem_wp, 0, elem_count, radius, face_points, face_indices],
+    )
 
-    # Convert to contiguous index array (local indexing)
-    tris = np.asarray(tri_list, dtype=np.int32).reshape(-1, 3)
-    indices = wp.array(tris.ravel(), dtype=wp.int32)
+    # Build side faces from flex shell fragments.
+    if shell_count > 0:
+        face_offset = 2 * elem_count  # index of first side face
+        wp.launch(
+            kernel=_make_sides_2d_elements,
+            dim=shell_count,
+            inputs=[
+                vert_xpos,
+                vert_norm,
+                shell_pairs_wp,
+                shell_count,
+                radius,
+                face_offset,
+                face_points,
+                face_indices,
+            ],
+        )
 
-    # Vertex positions: local slice (Nx3). Use d.flexvert_xpos so you're in world space.
-    # If your Warp mesh/BVH should be in local space, swap this for the model-space array.
-    pts = np.asarray(d.flexvert_xpos.numpy()[0, base_vert: base_vert + nvert], dtype=np.float32)
-    points = wp.array(pts, dtype=wp.vec3)
+    flex_mesh = wp.Mesh(points=face_points, indices=face_indices, bvh_constructor="sah")
 
-    flex_mesh = wp.Mesh(points=points, indices=indices, bvh_constructor="sah")
-
-    # Bounds from these points
-    pmin = pts.min(axis=0)
-    pmax = pts.max(axis=0)
+    # Compute an approximate half-extent from the generated vertices.
+    face_points_np = face_points.numpy()
+    pmin = face_points_np.min(axis=0)
+    pmax = face_points_np.max(axis=0)
     half = 0.5 * (pmax - pmin)
+
     return flex_mesh, wp.vec3(float(half[0]), float(half[1]), float(half[2]))

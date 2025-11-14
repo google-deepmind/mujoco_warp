@@ -24,6 +24,7 @@ from .ray import ray_box_with_normal
 from .ray import ray_capsule
 from .ray import ray_capsule_with_normal
 from .ray import ray_mesh_with_bvh
+from .ray import ray_flex_with_bvh
 from .ray import ray_plane
 from .ray import ray_plane_with_normal
 from .ray import ray_sphere
@@ -559,6 +560,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     mesh_texcoord: wp.array(dtype=wp.vec2),
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_ids: wp.array(dtype=wp.uint64),
+    flex_bvh_ids: wp.array(dtype=wp.uint64),
 
     # Textures
     mat_texid: wp.array3d(dtype=int),
@@ -626,6 +628,20 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       ray_origin_world,
       ray_dir_world,
     )
+
+    for fid in range(wp.static(m.nflex)):
+      if flex_bvh_ids[fid] != 0:
+        h, d, n, u, v, f, flex_id = ray_flex_with_bvh(
+          flex_bvh_ids,
+          fid,
+          ray_origin_world,
+          ray_dir_world,
+          dist,
+        )
+        if h and d < dist:
+          dist = d
+          normal = n
+          geom_id = flex_id
 
     # Early Out
     if geom_id == -1:
@@ -765,6 +781,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       rc.mesh_texcoord,
       rc.mesh_texcoord_offsets,
       rc.hfield_bvh_ids,
+      rc.flex_bvh_ids,
 
       # Textures
       m.mat_texid,
