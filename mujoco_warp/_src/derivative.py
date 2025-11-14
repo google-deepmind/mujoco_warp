@@ -78,11 +78,18 @@ def _qderiv_actuator_passive(
       if actuator_dyntype[actid] != DynType.NONE:
         act_first = actuator_actadr[actid]
         act_last = act_first + actuator_actnum[actid] - 1
-        vel = bias + gain * act_in[worldid, act_last]
+        if gain != 0.0:
+          vel = bias + gain * act_in[worldid, act_last]
+        else:
+          vel = bias
       else:
-        vel = bias + gain * ctrl_in[worldid, actid]
+        if gain != 0.0:
+          vel = bias + gain * ctrl_in[worldid, actid]
+        else:
+          vel = bias
 
-      qderiv += actuator_moment_in[worldid, actid, dofiid] * actuator_moment_in[worldid, actid, dofjid] * vel
+      if vel != 0.0:
+        qderiv += actuator_moment_in[worldid, actid, dofiid] * actuator_moment_in[worldid, actid, dofjid] * vel
 
   # TODO(team): fluid model derivative
 
