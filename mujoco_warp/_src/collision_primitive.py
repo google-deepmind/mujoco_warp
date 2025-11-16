@@ -1576,11 +1576,6 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     mesh_polymapadr: wp.array(dtype=int),
     mesh_polymapnum: wp.array(dtype=int),
     mesh_polymap: wp.array(dtype=int),
-    hfield_size: wp.array(dtype=wp.vec4),
-    hfield_nrow: wp.array(dtype=int),
-    hfield_ncol: wp.array(dtype=int),
-    hfield_adr: wp.array(dtype=int),
-    hfield_data: wp.array(dtype=float),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array2d(dtype=wp.vec2),
     pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -1740,10 +1735,10 @@ def _primitive_narrowphase_builder(m: Model):
   _primitive_collisions_func = []
 
   for types, func in _PRIMITIVE_COLLISIONS.items():
-    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
-    if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
-      _primitive_collisions_types.append(types)
-      _primitive_collisions_func.append(func)
+    # idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
+    # if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
+    _primitive_collisions_types.append(types)
+    _primitive_collisions_func.append(func)
 
   return _create_narrowphase_kernel(_primitive_collisions_types, _primitive_collisions_func)
 
@@ -1795,11 +1790,6 @@ def primitive_narrowphase(m: Model, d: Data):
       m.mesh_polymapadr,
       m.mesh_polymapnum,
       m.mesh_polymap,
-      m.hfield_size,
-      m.hfield_nrow,
-      m.hfield_ncol,
-      m.hfield_adr,
-      m.hfield_data,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,

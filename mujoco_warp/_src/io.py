@@ -377,12 +377,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           return True
       return False
 
-    for geoms in [
-      (types.GeomType.BOX, types.GeomType.BOX),
-      (types.GeomType.CAPSULE, types.GeomType.BOX),
-      (types.GeomType.CYLINDER, types.GeomType.BOX),
-      (types.GeomType.PLANE, types.GeomType.BOX),
-    ]:
+    # TODO(team): collision sensors with box geoms
+    for geoms in [(geomtype, types.GeomType.BOX) for geomtype in list(types.GeomType)]:
       for objtype, objid, reftype, refid in zip(
         mjm.sensor_objtype[is_collision_sensor],
         mjm.sensor_objid[is_collision_sensor],
@@ -394,7 +390,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   nxn_pairid_collision = -1 * np.ones(len(geom1), dtype=int)
   pairids = []
-  collision_geom_adr = [0]
   sensor_collision_start_adr = []
   for i in range(sensor_collision_adr.size):
     sensorid = sensor_collision_adr[i]
@@ -418,7 +413,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       id2 = refid
 
     # collide all pairs
-    geomid = 0
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
         if geom2id < geom1id:
@@ -429,14 +423,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         if pairid in pairids:
           sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
         else:
+          npairids = len(pairids)
+          nxn_pairid_collision[pairid] = npairids
+          sensor_collision_start_adr.append(npairids)
           pairids.append(pairid)
-          adr = collision_geom_adr[-1] + geomid
-          nxn_pairid_collision[pairid] = adr
-          sensor_collision_start_adr.append(adr)
-
-        geomid += 1
-    if i < sensor_collision_adr.size - 1:
-      collision_geom_adr.append(collision_geom_adr[-1] + n1 * n2)
 
   include = (nxn_pairid_contact > -2) | (nxn_pairid_collision >= 0)
   nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])

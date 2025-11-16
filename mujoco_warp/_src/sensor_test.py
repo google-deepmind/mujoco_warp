@@ -606,79 +606,154 @@ class SensorTest(parameterized.TestCase):
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
   @parameterized.product(
-    geom1=["plane", "sphere", "capsule", "cylinder", "ellipsoid", "box"],
-    geom2=["sphere", "capsule", "cylinder", "ellipsoid", "box"],
+    type0=["sphere", "capsule", "ellipsoid", "cylinder"],
+    type1=["sphere", "capsule", "ellipsoid", "cylinder"],
+    type2=["sphere", "capsule", "ellipsoid", "cylinder"],
+    type3=["sphere", "capsule", "ellipsoid", "cylinder"],
   )
-  def test_sensor_collision(self, geom1, geom2):
+  def test_sensor_collision(self, type0, type1, type2, type3):
     """Tests collision sensors: distance, normal, fromto."""
-    # TODO(team): remove skips and restore mjcf after replacing box<>{geom} with mesh<>{geom}
-    skips = [
-      ("box", "box"),
-      ("capsule", "box"),
-      ("cylinder", "box"),
-      ("plane", "box"),
-      ("plane", "cylinder"),
-    ]
-
-    if (geom1, geom2) in skips or (geom2, geom1) in skips:
-      self.skipTest(f"Skipping collision sensor: {geom1} {geom2}")
-
-    if geom1 == "plane":
-      _GEOM1 = f"""
-      <geom name="geom0" type="plane" size="10 10 .001"/>
-      """
-    else:
-      _GEOM1 = f"""
-      <body name="geom0">
-        <geom name="geom0" type="{geom1}" size=".1 .1 .1"/>
-      </body>
-      """
-
     _MJCF = f"""
       <mujoco>
         <worldbody>
-          {_GEOM1}
-          <body name="geom1">
-            <geom name="geom1" type="{geom2}" size=".1 .1 .1"/>
-            <joint type="slide" axis="0 0 1"/>
+          <body name="obj0">
+            <geom name="obj0" type="{type0}" size=".1 .1 .1"/>
           </body>
-          <!-- <body name="geomgeom" pos="1 0 0">
-            <geom type="box" size=".075 .075 .075" pos=".2 0 0"/>
-            <joint type="slide" axis="0 0 1"/>
-          </body> -->
+          <body name="obj1" pos="0 0 1">
+            <geom name="obj1" type="{type1}" size=".1 .1 .1"/>
+          </body>
+          <body name="objobj" pos="0 0 -1">
+            <geom name="objobj0" pos=".01 0 0.005" type="{type2}" size=".09 .09 .09"/>
+            <geom name="objobj1" pos="-.01 0 -0.0025" type="{type3}" size=".11 .11 .11"/>
+          </body>
         </worldbody>
-        <keyframe>
-          <key qpos="1"/>
-        </keyframe>
         <sensor>
-          <distance geom1="geom0" geom2="geom1" cutoff=".001"/>
-          <distance geom1="geom0" geom2="geom1" cutoff=".9"/>
-          <distance geom1="geom0" geom2="geom1" cutoff=".91"/>
-          <distance geom1="geom0" geom2="geom1" cutoff="1"/>
-          <normal geom1="geom0" geom2="geom1" cutoff=".001"/>
-          <normal geom1="geom0" geom2="geom1" cutoff="1"/>
-          <normal geom1="geom1" geom2="geom0" cutoff="1"/>
-          <fromto geom1="geom0" geom2="geom1" cutoff=".001"/>
-          <fromto geom1="geom0" geom2="geom1" cutoff="1"/>
-          <fromto geom1="geom1" geom2="geom0" cutoff="1"/>
-          <!--
-          <distance body1="geom0" body2="geomgeom" cutoff="5"/>
-          <distance body1="geomgeom" body2="geom0" cutoff="5"/>
-          <normal body1="geom0" body2="geomgeom" cutoff="5"/>
-          <normal body1="geomgeom" body2="geom0" cutoff="5"/>
-          <fromto body1="geom0" body2="geomgeom" cutoff="5"/>
-          <fromto body1="geomgeom" body2="geom0" cutoff="5"/> -->
+          <!-- distance geom-geom -->
+          <distance geom1="obj0" geom2="obj1" cutoff="0"/>
+          <distance geom1="obj0" geom2="obj1" cutoff="10"/>
+          <distance geom1="obj1" geom2="obj0" cutoff="0"/>
+          <distance geom1="obj1" geom2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="obj1" cutoff="10"/>
+          <distance body1="obj1" body2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="obj1" cutoff="10"/>
+          <distance body1="obj1" body2="obj0" cutoff="10"/>
+          <distance geom1="obj0" body2="obj1" cutoff="10"/>
+          <distance body1="obj1" geom2="obj0" cutoff="10"/>
+
+          <!-- normal geom-geom -->
+          <normal geom1="obj0" geom2="obj1" cutoff="0"/>
+          <normal geom1="obj0" geom2="obj1" cutoff="10"/>
+          <normal geom1="obj1" geom2="obj0" cutoff="0"/>
+          <normal geom1="obj1" geom2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="obj1" cutoff="10"/>
+          <normal body1="obj1" body2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="obj1" cutoff="10"/>
+          <normal body1="obj1" body2="obj0" cutoff="10"/>
+          <normal geom1="obj0" body2="obj1" cutoff="10"/>
+          <normal body1="obj1" geom2="obj0" cutoff="10"/>
+
+          <!-- fromto geom-geom -->
+          <fromto geom1="obj0" geom2="obj1" cutoff="0"/>
+          <fromto geom1="obj0" geom2="obj1" cutoff="10"/>
+          <fromto geom1="obj1" geom2="obj0" cutoff="0"/>
+          <fromto geom1="obj1" geom2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="obj1" cutoff="10"/>
+          <fromto body1="obj1" body2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="obj1" cutoff="10"/>
+          <fromto body1="obj1" body2="obj0" cutoff="10"/>
+          <fromto geom1="obj0" body2="obj1" cutoff="10"/>
+          <fromto body1="obj1" geom2="obj0" cutoff="10"/>
+
+          <!-- distance geom body -->
+          <distance geom1="obj0" body2="objobj" cutoff="0"/>
+          <distance geom1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" geom2="obj0" cutoff="0"/>
+          <distance body1="objobj" geom2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" body2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" body2="obj0" cutoff="10"/>
+          <distance geom1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" geom2="obj0" cutoff="10"/>
+
+          <!-- normal geom body -->
+          <normal geom1="obj0" body2="objobj" cutoff="0"/>
+          <normal geom1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" geom2="obj0" cutoff="0"/>
+          <normal body1="objobj" geom2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" body2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" body2="obj0" cutoff="10"/>
+          <normal geom1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" geom2="obj0" cutoff="10"/>
+
+          <!-- fromto geom body -->
+          <fromto geom1="obj0" body2="objobj" cutoff="0"/>
+          <fromto geom1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" geom2="obj0" cutoff="0"/>
+          <fromto body1="objobj" geom2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" body2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" body2="obj0" cutoff="10"/>
+          <fromto geom1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" geom2="obj0" cutoff="10"/>
         </sensor>
       </mujoco>
       """
 
-    # TODO(team): remove nativeccd off once mujoco fix for mj_geomDistance lands
-    _, mjd, m, d = test_data.fixture(
-      xml=_MJCF, keyframe=0, overrides={"opt.disableflags": mujoco.mjtDisableBit.mjDSBL_NATIVECCD}
-    )
+    _, mjd, m, d = test_data.fixture(xml=_MJCF)
 
     d.sensordata.fill_(wp.inf)
-    mjw.forward(m, d)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  @parameterized.parameters("sphere", "capsule", "ellipsoid", "cylinder")
+  def test_sensor_collision_plane(self, type_):
+    """Tests collision sensors: distance, normal, fromto."""
+    _MJCF = f"""
+      <mujoco>
+        <worldbody>
+          <geom name="plane" type="plane" size="10 10 .01"/>
+          <body name="obj" pos="0 0 1">
+            <geom name="obj" type="{type_}" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <!-- distance geom-geom -->
+          <distance geom1="plane" geom2="obj" cutoff="0"/>
+          <distance geom1="plane" geom2="obj" cutoff="10"/>
+          <distance geom1="obj" geom2="plane" cutoff="0"/>
+          <distance geom1="obj" geom2="plane" cutoff="10"/>
+          <distance geom1="plane" body2="obj" cutoff="10"/>
+
+          <!-- normal geom-geom -->
+          <normal geom1="plane" geom2="obj" cutoff="0"/>
+          <normal geom1="plane" geom2="obj" cutoff="10"/>
+          <normal geom1="obj" geom2="plane" cutoff="0"/>
+          <normal geom1="obj" geom2="plane" cutoff="10"/>
+          <normal geom1="plane" body2="obj" cutoff="10"/>
+
+          <!-- fromto geom-geom -->
+          <fromto geom1="plane" geom2="obj" cutoff="0"/>
+          <fromto geom1="plane" geom2="obj" cutoff="10"/>
+          <fromto geom1="obj" geom2="plane" cutoff="0"/>
+          <fromto geom1="obj" geom2="plane" cutoff="10"/>
+          <fromto geom1="plane" body2="obj" cutoff="10"/>
+        </sensor>
+      </mujoco>
+      """
+
+    _, mjd, m, d = test_data.fixture(xml=_MJCF)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
