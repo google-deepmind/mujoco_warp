@@ -108,7 +108,7 @@ def pack_rgba_to_uint32(r: wp.uint8, g: wp.uint8, b: wp.uint8, a: wp.uint8) -> w
 @wp.func
 def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
   """Pack RGBA values into a single uint32 for efficient memory access."""
-  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(b) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(r)
+  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
 
 
 @wp.func
@@ -526,7 +526,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
   rc.rgb.fill_(wp.uint32(BACKGROUND_COLOR))
   rc.depth.fill_(float(0.0))
 
-  @nested_kernel(module="unique", enable_backward="False")
+  @nested_kernel(enable_backward="False")
   def _render_megakernel(
     # Model and Options
     n_rays: int,

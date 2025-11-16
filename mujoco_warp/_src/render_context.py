@@ -516,7 +516,7 @@ def _make_sides_2d_elements(
 
     For each shell fragment (edge i0 -> i1), we emit two triangles:
       - one using +radius
-      - one using -radius (i0/i1 swapped), mimicking MuJoCo's makeSide logic.
+      - one using -radius (i0/i1 swapped)
     """
     tid = wp.tid()
     if tid >= shell_count:
@@ -578,8 +578,10 @@ def _make_sides_2d_elements(
     face_indices[base1 + 2] = base1 + 2
 
 
-def _make_flex_mesh(mjm: mujoco.MjModel, d: Data, flexid: int) -> tuple[wp.Mesh, wp.vec3]:
-    """Create a Warp BVH mesh for 2D flex meshes.
+def _make_flex_mesh(mjm: mujoco.MjModel, d: Data) -> wp.Mesh:
+    """Create a Warp BVH mesh for flex meshes.
+
+    We create a single mesh for all flex objects across all worlds.
 
     This implements the core of MuJoCo's flex rendering path for the 2D flex case by:
       * gathering vertex positions for this flex (world 0),
