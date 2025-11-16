@@ -523,8 +523,8 @@ def compute_lighting(
 
 @event_scope
 def render_megakernel(m: Model, d: Data, rc: RenderContext):
-  rc.rgb.fill_(wp.uint32(BACKGROUND_COLOR))
-  rc.depth.fill_(float(0.0))
+  rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
+  rc.depth_data.fill_(float(0.0))
 
   @nested_kernel(enable_backward="False")
   def _render_megakernel(
@@ -540,8 +540,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     cam_xpos: wp.array2d(dtype=wp.vec3),
     cam_xmat: wp.array2d(dtype=wp.mat33),
     rays: wp.array(dtype=wp.vec3),
-    rgb_offsets: wp.array(dtype=int),
-    depth_offsets: wp.array(dtype=int),
+    rgb_adr: wp.array(dtype=int),
+    depth_adr: wp.array(dtype=int),
 
     # BVH
     bvh_id: wp.uint64,
@@ -647,10 +647,10 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     if geom_id == -1:
       return
 
-    if depth_offsets[cam_idx] != -1:
-      out_depth[world_idx, depth_offsets[cam_idx] + ray_idx_local] = dist
+    if depth_adr[cam_idx] != -1:
+      out_depth[world_idx, depth_adr[cam_idx] + ray_idx_local] = dist
     
-    if rgb_offsets[cam_idx] == -1:
+    if rgb_adr[cam_idx] == -1:
       return
 
     # Shade the pixel
@@ -738,7 +738,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
     hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 
-    out_rgb[world_idx, rgb_offsets[cam_idx] + ray_idx_local] = pack_rgba_to_uint32(
+    out_rgb[world_idx, rgb_adr[cam_idx] + ray_idx_local] = pack_rgba_to_uint32(
       hit_color[0] * 255.0,
       hit_color[1] * 255.0,
       hit_color[2] * 255.0,
@@ -747,10 +747,10 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
   wp.launch(
     kernel=_render_megakernel,
-    dim=(d.nworld * rc.rays.shape[0]),
+    dim=(d.nworld * rc.ray_data.shape[0]),
     inputs=[
       # Model and Options
-      rc.rays.shape[0],
+      rc.ray_data.shape[0],
       d.nworld,
       m.ncam,
       rc.use_shadows,
@@ -760,9 +760,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       rc.cam_resolutions,
       d.cam_xpos,
       d.cam_xmat,
-      rc.rays,
-      rc.rgb_offsets,
-      rc.depth_offsets,
+      rc.ray_data,
+      rc.rgb_adr,
+      rc.depth_adr,
 
       # BVH
       rc.bvh_id,
@@ -804,8 +804,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       d.geom_xmat,
     ],
     outputs=[
-      rc.rgb,
-      rc.depth,
+      rc.rgb_data,
+      rc.depth_data,
     ],
     block_dim=THREADS_PER_TILE,
   )

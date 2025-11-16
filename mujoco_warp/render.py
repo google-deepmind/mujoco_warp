@@ -74,9 +74,9 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
 
 def _save_rgb_from_packed(packed_row: np.ndarray, width: int, height: int, out_path: str):
     packed = packed_row.reshape(height, width).astype(np.uint32)
-    r = (packed & 0xFF).astype(np.uint8)
+    b = (packed & 0xFF).astype(np.uint8)
     g = ((packed >> 8) & 0xFF).astype(np.uint8)
-    b = ((packed >> 16) & 0xFF).astype(np.uint8)
+    r = ((packed >> 16) & 0xFF).astype(np.uint8)
     img = Image.fromarray(np.dstack([r, g, b]))
     img.save(out_path)
 
@@ -138,18 +138,18 @@ def _main(argv: Sequence[str]):
 
         width = rc.cam_resolutions.numpy()[cam][0]
         height = rc.cam_resolutions.numpy()[cam][1]
-        rgb_offsets = rc.rgb_offsets.numpy()
-        depth_offsets = rc.depth_offsets.numpy()
+        rgb_adr = rc.rgb_adr.numpy()
+        depth_adr = rc.depth_adr.numpy()
 
-        if rgb_offsets[cam] != -1:
-            rgb = rc.rgb.numpy()
-            row = rgb[world, rgb_offsets[cam]:rgb_offsets[cam] + width * height]
+        if rgb_adr[cam] != -1:
+            rgb = rc.rgb_data.numpy()
+            row = rgb[world, rgb_adr[cam]:rgb_adr[cam] + width * height]
             _save_rgb_from_packed(row, width, height, _OUTPUT_RGB.value)
             print(f"Saved RGB to: {_OUTPUT_RGB.value}")
 
-        if depth_offsets[cam] != -1:
-            depth = rc.depth.numpy()
-            row = depth[world, depth_offsets[cam]:depth_offsets[cam] + width * height]
+        if depth_adr[cam] != -1:
+            depth = rc.depth_data.numpy()
+            row = depth[world, depth_adr[cam]:depth_adr[cam] + width * height]
             _save_depth(row, width, height, _DEPTH_SCALE.value, _OUTPUT_DEPTH.value)
             print(f"Saved depth to: {_OUTPUT_DEPTH.value}")
 

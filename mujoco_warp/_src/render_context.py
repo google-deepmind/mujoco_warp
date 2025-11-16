@@ -142,7 +142,7 @@ class RenderContext:
     flex_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nflex)]
     for fid in range(nflex):
       if int(mjm.flex_dim[fid]) == 2:
-        fmesh, fhalf = _make_flex_mesh(mjm, d, fid)
+        fmesh, fhalf = _make_flex_mesh(mjm, d)
         self.flex_registry[fmesh.id] = fmesh
         flex_bvh_ids[fid] = fmesh.id
         flex_bounds_size[fid] = fhalf
@@ -167,8 +167,10 @@ class RenderContext:
       render_depth = [render_depth] * mjm.ncam
     assert len(render_depth) == mjm.ncam, "Render depth must be provided for all cameras"
 
-    rgb_offsets = [-1 for _ in range(mjm.ncam)]
-    depth_offsets = [-1 for _ in range(mjm.ncam)]
+    rgb_adr = [-1 for _ in range(mjm.ncam)]
+    depth_adr = [-1 for _ in range(mjm.ncam)]
+    rgb_size = [0 for _ in range(mjm.ncam)]
+    depth_size = [0 for _ in range(mjm.ncam)]
     cam_resolutions = self.cam_resolutions.numpy()
     ri = 0
     di = 0
@@ -176,26 +178,30 @@ class RenderContext:
 
     for i in range(mjm.ncam):
       if render_rgb[i]:
-        rgb_offsets[i] = ri
+        rgb_adr[i] = ri
         ri += cam_resolutions[i][0] * cam_resolutions[i][1]
+        rgb_size[i] = cam_resolutions[i][0] * cam_resolutions[i][1]
       if render_depth[i]:
-        depth_offsets[i] = di
+        depth_adr[i] = di
         di += cam_resolutions[i][0] * cam_resolutions[i][1]
+        depth_size[i] = cam_resolutions[i][0] * cam_resolutions[i][1]
 
       total += cam_resolutions[i][0] * cam_resolutions[i][1]
 
-    self.rgb_offsets = wp.array(rgb_offsets, dtype=int)
-    self.depth_offsets = wp.array(depth_offsets, dtype=int)
-    self.rgb = wp.zeros((d.nworld, ri), dtype=wp.uint32)
-    self.depth = wp.zeros((d.nworld, di), dtype=wp.float32)
-    self.rays = wp.zeros(int(total), dtype=wp.vec3)
+    self.rgb_adr = wp.array(rgb_adr, dtype=int)
+    self.depth_adr = wp.array(depth_adr, dtype=int)
+    self.rgb_size = wp.array(rgb_size, dtype=int)
+    self.depth_size = wp.array(depth_size, dtype=int)
+    self.rgb_data = wp.zeros((d.nworld, ri), dtype=wp.uint32)
+    self.depth_data = wp.zeros((d.nworld, di), dtype=wp.float32)
+    self.ray_data = wp.zeros(int(total), dtype=wp.vec3)
 
     offset = 0
     for i in range(mjm.ncam):
       wp.launch(
         kernel=build_primary_rays,
         dim=int(cam_resolutions[i][0] * cam_resolutions[i][1]),
-        inputs=[offset, cam_resolutions[i][0], cam_resolutions[i][1], wp.radians(float(mjm.cam_fovy[i])), self.rays],
+        inputs=[offset, cam_resolutions[i][0], cam_resolutions[i][1], wp.radians(float(mjm.cam_fovy[i])), self.ray_data],
       )
       offset += cam_resolutions[i][0] * cam_resolutions[i][1]
 
@@ -591,6 +597,7 @@ def _make_flex_mesh(mjm: mujoco.MjModel, d: Data) -> wp.Mesh:
     """
 
     # We assume 2D flex (cloth) and that all flex-related fields exist.
+    flexid = 0
     dim = int(mjm.flex_dim[flexid])
 
     base_vert = int(mjm.flex_vertadr[flexid])
