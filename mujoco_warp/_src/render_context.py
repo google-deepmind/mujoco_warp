@@ -32,6 +32,7 @@ wp.set_module_options({"enable_backward": False})
 class RenderContext:
   ncam: int
   cam_resolutions: wp.array(dtype=wp.vec2i)
+  cam_id_map: wp.array(dtype=int)
   use_textures: bool
   use_shadows: bool
   geom_count: int
@@ -78,6 +79,7 @@ class RenderContext:
     use_textures: Optional[bool] = True,
     use_shadows: Optional[bool] = False,
     enabled_geom_groups = [0, 1, 2],
+    cam_active: Optional[list[bool]] = None,
   ):
 
     nmesh = mjm.nmesh
@@ -159,44 +161,56 @@ class RenderContext:
 
     tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
+    # Filter active cameras based on cam_active parameter.
+    if cam_active is not None:
+      assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
+      active_cam_indices = [i for i in range(mjm.ncam) if cam_active[i]]
+    else:
+      active_cam_indices = list(range(mjm.ncam))
+
+    n_active_cams = len(active_cam_indices)
+
     # If a global camera resolution is provided, use it for all cameras
     # otherwise check the xml for camera resolutions
     if cam_resolutions is not None:
       if isinstance(cam_resolutions, tuple):
-        cam_resolutions = [cam_resolutions] * mjm.ncam
-      assert len(cam_resolutions) == mjm.ncam, "Camera resolutions must be provided for all cameras"
-      self.cam_resolutions = wp.array(cam_resolutions, dtype=wp.vec2i)
+        cam_resolutions = [cam_resolutions] * n_active_cams
+      assert len(cam_resolutions) == n_active_cams, f"Camera resolutions must be provided for all active cameras (got {len(cam_resolutions)}, expected {n_active_cams})"
+      active_cam_resolutions = cam_resolutions
     else:
-      self.cam_resolutions = wp.array(mjm.cam_resolution, dtype=wp.vec2i)
+      # Extract resolutions only for active cameras
+      active_cam_resolutions = [mjm.cam_resolution[i] for i in active_cam_indices]
+
+    self.cam_resolutions = wp.array(active_cam_resolutions, dtype=wp.vec2i)
 
     if isinstance(render_rgb, bool):
-      render_rgb = [render_rgb] * mjm.ncam
-    assert len(render_rgb) == mjm.ncam, "Render RGB must be provided for all cameras"
+      render_rgb = [render_rgb] * n_active_cams
+    assert len(render_rgb) == n_active_cams, f"Render RGB must be provided for all active cameras (got {len(render_rgb)}, expected {n_active_cams})"
 
     if isinstance(render_depth, bool):
-      render_depth = [render_depth] * mjm.ncam
-    assert len(render_depth) == mjm.ncam, "Render depth must be provided for all cameras"
+      render_depth = [render_depth] * n_active_cams
+    assert len(render_depth) == n_active_cams, f"Render depth must be provided for all active cameras (got {len(render_depth)}, expected {n_active_cams})"
 
-    rgb_adr = [-1 for _ in range(mjm.ncam)]
-    depth_adr = [-1 for _ in range(mjm.ncam)]
-    rgb_size = [0 for _ in range(mjm.ncam)]
-    depth_size = [0 for _ in range(mjm.ncam)]
+    rgb_adr = [-1 for _ in range(n_active_cams)]
+    depth_adr = [-1 for _ in range(n_active_cams)]
+    rgb_size = [0 for _ in range(n_active_cams)]
+    depth_size = [0 for _ in range(n_active_cams)]
     cam_resolutions = self.cam_resolutions.numpy()
     ri = 0
     di = 0
     total = 0
 
-    for i in range(mjm.ncam):
-      if render_rgb[i]:
-        rgb_adr[i] = ri
-        ri += cam_resolutions[i][0] * cam_resolutions[i][1]
-        rgb_size[i] = cam_resolutions[i][0] * cam_resolutions[i][1]
-      if render_depth[i]:
-        depth_adr[i] = di
-        di += cam_resolutions[i][0] * cam_resolutions[i][1]
-        depth_size[i] = cam_resolutions[i][0] * cam_resolutions[i][1]
+    for idx in range(n_active_cams):
+      if render_rgb[idx]:
+        rgb_adr[idx] = ri
+        ri += cam_resolutions[idx][0] * cam_resolutions[idx][1]
+        rgb_size[idx] = cam_resolutions[idx][0] * cam_resolutions[idx][1]
+      if render_depth[idx]:
+        depth_adr[idx] = di
+        di += cam_resolutions[idx][0] * cam_resolutions[idx][1]
+        depth_size[idx] = cam_resolutions[idx][0] * cam_resolutions[idx][1]
 
-      total += cam_resolutions[i][0] * cam_resolutions[i][1]
+      total += cam_resolutions[idx][0] * cam_resolutions[idx][1]
 
     self.rgb_adr = wp.array(rgb_adr, dtype=int)
     self.depth_adr = wp.array(depth_adr, dtype=int)
@@ -207,16 +221,17 @@ class RenderContext:
     self.ray_data = wp.zeros(int(total), dtype=wp.vec3)
 
     offset = 0
-    for i in range(mjm.ncam):
+    for idx, cam_id in enumerate(active_cam_indices):
       wp.launch(
         kernel=build_primary_rays,
-        dim=int(cam_resolutions[i][0] * cam_resolutions[i][1]),
-        inputs=[offset, cam_resolutions[i][0], cam_resolutions[i][1], wp.radians(float(mjm.cam_fovy[i])), self.ray_data],
+        dim=int(cam_resolutions[idx][0] * cam_resolutions[idx][1]),
+        inputs=[offset, cam_resolutions[idx][0], cam_resolutions[idx][1], wp.radians(float(mjm.cam_fovy[cam_id])), self.ray_data],
       )
-      offset += cam_resolutions[i][0] * cam_resolutions[i][1]
+      offset += cam_resolutions[idx][0] * cam_resolutions[idx][1]
 
     self.bvh_ngeom=len(geom_enabled_idx)
-    self.ncam=mjm.ncam
+    self.ncam=n_active_cams
+    self.cam_id_map=wp.array(active_cam_indices, dtype=int)
     self.use_textures=use_textures
     self.use_shadows=use_shadows
     self.render_rgb=render_rgb
@@ -252,6 +267,7 @@ def create_render_context(
   use_textures: Optional[bool] = True,
   use_shadows: Optional[bool] = False,
   enabled_geom_groups: list[int] = [0, 1, 2],
+  cam_active: Optional[list[bool]] = None,
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -259,13 +275,14 @@ def create_render_context(
       mjm: The model containing kinematic and dynamic information on host.
       m: The model on device.
       d: The data on device.
-      width: The width to render every camera image.
-      height: The height to render every camera image.
-      use_textures: Whether to use textures.
-      use_shadows: Whether to use shadows.
+      cam_resolutions: The width and height to render each camera image.
       render_rgb: Whether to render RGB images.
       render_depth: Whether to render depth images.
+      use_textures: Whether to use textures.
+      use_shadows: Whether to use shadows.
       enabled_geom_groups: The geom groups to render.
+      cam_active: List of booleans indicating which cameras to include in rendering.
+                  If None, all cameras are included.
 
     Returns:
       The render context containing rendering fields and output arrays on device.
@@ -281,6 +298,7 @@ def create_render_context(
     use_textures,
     use_shadows,
     enabled_geom_groups,
+    cam_active,
   )
 
 

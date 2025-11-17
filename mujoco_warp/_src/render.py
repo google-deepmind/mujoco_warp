@@ -539,6 +539,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
     # Camera
     cam_resolutions: wp.array(dtype=wp.vec2i),
+    cam_id_map: wp.array(dtype=int),
     cam_xpos: wp.array2d(dtype=wp.vec3),
     cam_xmat: wp.array2d(dtype=wp.mat33),
     rays: wp.array(dtype=wp.vec3),
@@ -611,9 +612,12 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     if cam_idx == -1 or ray_idx_local < 0:
       return
 
+    # Map active camera index to MuJoCo camera ID
+    mujoco_cam_id = cam_id_map[cam_idx]
+
     ray_dir_local_cam = rays[ray_idx]
-    ray_dir_world = cam_xmat[world_idx, cam_idx] @ ray_dir_local_cam
-    ray_origin_world = cam_xpos[world_idx, cam_idx]
+    ray_dir_world = cam_xmat[world_idx, mujoco_cam_id] @ ray_dir_local_cam
+    ray_origin_world = cam_xpos[world_idx, mujoco_cam_id]
 
     geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
       bvh_id,
@@ -754,12 +758,13 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       # Model and Options
       rc.ray_data.shape[0],
       d.nworld,
-      m.ncam,
+      rc.ncam,
       rc.use_shadows,
       rc.bvh_ngeom,
 
       # Camera
       rc.cam_resolutions,
+      rc.cam_id_map,
       d.cam_xpos,
       d.cam_xmat,
       rc.ray_data,
