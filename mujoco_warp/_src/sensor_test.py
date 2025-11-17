@@ -672,10 +672,7 @@ class SensorTest(parameterized.TestCase):
       </mujoco>
       """
 
-    # TODO(team): remove nativeccd off once mujoco fix for mj_geomDistance lands
-    _, mjd, m, d = test_data.fixture(
-      xml=_MJCF, keyframe=0, overrides={"opt.disableflags": mujoco.mjtDisableBit.mjDSBL_NATIVECCD}
-    )
+    _, mjd, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.fill_(wp.inf)
     mjw.forward(m, d)

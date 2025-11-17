@@ -27,7 +27,7 @@ from .collision_gjk import multicontact
 from .collision_primitive import Geom
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 
 def _geom_dist(

@@ -27,9 +27,11 @@ from .types import BroadphaseType
 from .types import Data
 from .types import DisableBit
 from .types import Model
+from .types import mat23
+from .types import mat63
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -168,10 +170,6 @@ def _aabb_filter(
     return False
 
   return True
-
-
-mat23 = wp.types.matrix(shape=(2, 3), dtype=float)
-mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
 
 
 # TODO(team): improve performance by precomputing bounding box
