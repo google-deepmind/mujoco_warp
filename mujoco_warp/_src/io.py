@@ -137,20 +137,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         return True
     return False
 
-  for geoms in [
-    (types.GeomType.BOX, types.GeomType.BOX),
-    (types.GeomType.CAPSULE, types.GeomType.BOX),
-    (types.GeomType.CYLINDER, types.GeomType.BOX),
-    (types.GeomType.PLANE, types.GeomType.BOX),
-  ]:
-    for objtype, objid, reftype, refid in zip(
-      mjm.sensor_objtype[is_collision_sensor],
-      mjm.sensor_objid[is_collision_sensor],
-      mjm.sensor_reftype[is_collision_sensor],
-      mjm.sensor_refid[is_collision_sensor],
-    ):
-      if not_implemented(objtype, objid, geoms[0]) and not_implemented(reftype, refid, geoms[1]):
-        raise NotImplementedError(f"Collision sensors with {geoms[0]} and {geoms[1]} are not implemented.")
+  for objtype, objid, reftype, refid in zip(
+    mjm.sensor_objtype[is_collision_sensor],
+    mjm.sensor_objid[is_collision_sensor],
+    mjm.sensor_reftype[is_collision_sensor],
+    mjm.sensor_refid[is_collision_sensor],
+  ):
+    if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
+      raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
 
   # create opt
   opt = types.Option(**{f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)})

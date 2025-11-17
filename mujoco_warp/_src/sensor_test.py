@@ -606,10 +606,10 @@ class SensorTest(parameterized.TestCase):
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
   @parameterized.product(
-    type0=["sphere", "capsule", "ellipsoid", "cylinder"],
-    type1=["sphere", "capsule", "ellipsoid", "cylinder"],
-    type2=["sphere", "capsule", "ellipsoid", "cylinder"],
-    type3=["sphere", "capsule", "ellipsoid", "cylinder"],
+    type0=["sphere", "capsule", "ellipsoid", "cylinder"],  # TODO(team): box
+    type1=["sphere", "capsule", "ellipsoid", "cylinder", "box"],
+    type2=["sphere", "capsule", "ellipsoid", "cylinder", "box"],
+    type3=["sphere", "capsule", "ellipsoid", "cylinder", "box"],
   )
   def test_sensor_collision(self, type0, type1, type2, type3):
     """Tests collision sensors: distance, normal, fromto."""
@@ -617,14 +617,14 @@ class SensorTest(parameterized.TestCase):
       <mujoco>
         <worldbody>
           <body name="obj0">
-            <geom name="obj0" type="{type0}" size=".1 .1 .1"/>
+            <geom name="obj0" type="{type0}" size=".1 .1 .1" euler="1 2 3"/>
           </body>
           <body name="obj1" pos="0 0 1">
-            <geom name="obj1" type="{type1}" size=".1 .1 .1"/>
+            <geom name="obj1" type="{type1}" size=".1 .1 .1" euler="-1 2 -1"/>
           </body>
           <body name="objobj" pos="0 0 -1">
-            <geom name="objobj0" pos=".01 0 0.005" type="{type2}" size=".09 .09 .09"/>
-            <geom name="objobj1" pos="-.01 0 -0.0025" type="{type3}" size=".11 .11 .11"/>
+            <geom name="objobj0" pos=".01 0 0.005" type="{type2}" size=".09 .09 .09" euler="2 1 3"/>
+            <geom name="objobj1" pos="-.01 0 -0.0025" type="{type3}" size=".11 .11 .11" euler="3 1 2"/>
           </body>
         </worldbody>
         <sensor>
@@ -712,15 +712,15 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
-  @parameterized.parameters("sphere", "capsule", "ellipsoid", "cylinder")
+  @parameterized.parameters("sphere", "capsule", "ellipsoid", "cylinder", "box")
   def test_sensor_collision_plane(self, type_):
     """Tests collision sensors: distance, normal, fromto."""
     _MJCF = f"""
       <mujoco>
         <worldbody>
-          <geom name="plane" type="plane" size="10 10 .01"/>
+          <geom name="plane" type="plane" size="10 10 .01" euler="2 2 2"/>
           <body name="obj" pos="0 0 1">
-            <geom name="obj" type="{type_}" size=".1 .1 .1"/>
+            <geom name="obj" type="{type_}" size=".1 .1 .1" euler="1 2 3"/>
           </body>
         </worldbody>
         <sensor>

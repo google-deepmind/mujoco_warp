@@ -1035,7 +1035,7 @@ def plane_box_wrapper(
   dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, box.rot, box.size)
   frame = make_frame(normal)
 
-  for i in range(4):
+  for i in range(8):
     write_contact(
       naconmax_in,
       i,
