@@ -603,7 +603,10 @@ def ccd_kernel_builder(
           # add both triangles from this cell
           for i in range(2):
             if count >= MJ_MAXCONPAIR:
-              wp.printf("height field collision overflow - please adjust resolution\n")
+              wp.printf(
+                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
+                MJ_MAXCONPAIR,
+              )
               continue
 
             # add vert
@@ -722,8 +725,11 @@ def ccd_kernel_builder(
         nacon_out,
       )
 
+      # TODO(team): routine for select subset of contacts
       # TODO(team): if use_multiccd?
       if wp.static(True):
+        MIN_DIST_TO_NEXT_CONTACT = 1.0e-3
+
         # contact 1: furthest from minimum distance contact
         id1 = int(-1)
         dist1 = float(-wp.inf)
@@ -738,7 +744,7 @@ def ccd_kernel_builder(
             id1 = i
             dist1 = dist
 
-        if id1 == -1 or (0.0 < dist1 and dist1 < 1.0e-3):
+        if id1 == -1 or (0.0 < dist1 and dist1 < MIN_DIST_TO_NEXT_CONTACT):
           return
 
         pos1 = wp.vec3(hfield_contact_pos[id1, 0], hfield_contact_pos[id1, 1], hfield_contact_pos[id1, 2])
@@ -792,7 +798,7 @@ def ccd_kernel_builder(
             id2 = i
             dist_12 = dist
 
-        if id2 == -1 or (0.0 < dist_12 and dist_12 < 1.0e-3):
+        if id2 == -1 or (0.0 < dist_12 and dist_12 < MIN_DIST_TO_NEXT_CONTACT):
           return
 
         pos2 = wp.vec3(hfield_contact_pos[id2, 0], hfield_contact_pos[id2, 1], hfield_contact_pos[id2, 2])
@@ -847,7 +853,7 @@ def ccd_kernel_builder(
             id3 = i
             dist3 = dist
 
-        if id3 == -1 or (0.0 < dist3 and dist3 < 1.0e-3):
+        if id3 == -1 or (0.0 < dist3 and dist3 < MIN_DIST_TO_NEXT_CONTACT):
           return
 
         pos3 = wp.vec3(hfield_contact_pos[id3, 0], hfield_contact_pos[id3, 1], hfield_contact_pos[id3, 2])
