@@ -623,18 +623,8 @@ def make_data(
     d.qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     d.qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
   else:
-    d.qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+    d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  if mujoco.mj_isSparse(mjm):
-    qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
-    qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
-  else:
-    qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
-    qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  condim = np.concatenate((mjm.geom_condim, mjm.pair_dim))
-  condim_max = np.max(condim) if len(condim) > 0 else 0
 
   # static geoms (attached to the world) have their poses calculated once during make_data instead
   # of during each physics step.  this speeds up scenes with many static geoms (e.g. terrains)
