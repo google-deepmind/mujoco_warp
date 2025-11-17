@@ -1537,8 +1537,8 @@ class Data:
     subtree_com: center of mass of each subtree                 (nworld, nbody, 3)
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
-    flexvert_xpos: cartesian flex vertex positions              (nflexvert, 3)
-    flexedge_length: flex edge lengths                          (nflexedge, 1)
+    flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
+    flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
     ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
@@ -1551,7 +1551,7 @@ class Data:
     qM: total inertia (sparse) (nworld, 1, nM) or               (nworld, nv, nv) if dense
     qLD: L'*D*L factorization of M (sparse) (nworld, 1, nM) or  (nworld, nv, nv) if dense
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
-    flexedge_velocity: flex edge velocities                     (nflexedge,)
+    flexedge_velocity: flex edge velocities                     (nworld, nflexedge, 1)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
     cvel: com-based velocity (rot:lin)                          (nworld, nbody, 6)
