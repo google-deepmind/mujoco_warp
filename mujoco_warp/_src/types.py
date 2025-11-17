@@ -596,11 +596,26 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
   pass
 
 
+class mat23f(wp.types.matrix(shape=(2, 3), dtype=float)):
+  pass
+
+
+class mat43f(wp.types.matrix(shape=(4, 3), dtype=float)):
+  pass
+
+
+class mat63f(wp.types.matrix(shape=(6, 3), dtype=float)):
+  pass
+
+
 vec5 = vec5f
 vec6 = vec6f
 vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
+mat23 = mat23f
+mat43 = mat43f
+mat63 = mat63f
 
 
 def array(*args) -> wp.array:

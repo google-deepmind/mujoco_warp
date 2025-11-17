@@ -32,6 +32,8 @@ from .types import MJ_MAXVAL
 from .types import Data
 from .types import GeomType
 from .types import Model
+from .types import mat43
+from .types import mat63
 from .types import vec5
 from .warp_util import cache_kernel
 from .warp_util import event_scope
@@ -39,10 +41,6 @@ from .warp_util import nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
-
-MULTI_CONTACT_COUNT = 8
-mat3c = wp.types.matrix(shape=(MULTI_CONTACT_COUNT, 3), dtype=float)
-mat63 = wp.types.matrix(shape=(6, 3), dtype=float)
 
 _CONVEX_COLLISION_PAIRS = [
   (GeomType.HFIELD, GeomType.SPHERE),
@@ -260,9 +258,9 @@ def ccd_kernel_builder(
     contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
   ) -> int:
-    points = mat3c()
-    witness1 = mat3c()
-    witness2 = mat3c()
+    points = mat43()
+    witness1 = mat43()
+    witness2 = mat43()
     geom1.margin = margin
     geom2.margin = margin
     if pairid[1] >= 0:
