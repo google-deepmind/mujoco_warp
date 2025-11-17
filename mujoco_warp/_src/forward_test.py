@@ -398,7 +398,7 @@ class ForwardTest(parameterized.TestCase):
         qM = np.zeros((mjm.nv, mjm.nv))
         mujoco.mj_fullM(mjm, qM, mjd.qM)
         mjd_arr = qM
-        d_arr = d_arr[:, :mjm.nv, :mjm.nv]
+        d_arr = d_arr[:mjm.nv, :mjm.nv]
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
