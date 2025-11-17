@@ -69,7 +69,6 @@ class PassiveTest(parameterized.TestCase):
   )
   def test_fluid(self, density, viscosity, wind0, wind1, wind2):
     """Tests fluid model."""
-
     _, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -132,7 +131,6 @@ class PassiveTest(parameterized.TestCase):
   )
   def test_gravcomp(self, jacobian, gravity):
     """Tests gravity compensation."""
-
     _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>

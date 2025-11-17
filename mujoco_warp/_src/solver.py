@@ -27,7 +27,7 @@ from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -458,7 +458,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
   """Iterative linesearch."""
   wp.launch(
     linesearch_iterative,
-    dim=(d.nworld,),
+    dim=d.nworld,
     inputs=[
       m.nv,
       m.opt.impratio,
@@ -1250,7 +1250,6 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
 
 def _update_constraint(m: types.Model, d: types.Data):
   """Update constraint arrays after each solve iteration."""
-
   wp.launch(
     update_constraint_init_cost,
     dim=(d.nworld),
@@ -1812,7 +1811,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     if m.nv < 32:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
-        dim=(d.nworld,),
+        dim=d.nworld,
         inputs=[d.efc.grad, d.efc.h, d.efc.done],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
@@ -1820,7 +1819,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch_tiled(
         update_gradient_cholesky_blocked(16),
-        dim=(d.nworld,),
+        dim=d.nworld,
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),
           d.efc.h,
@@ -1983,7 +1982,7 @@ def _solver_iteration(
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_beta,
-      dim=(d.nworld,),
+      dim=d.nworld,
       inputs=[m.nv, d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
       outputs=[d.efc.beta],
     )
@@ -1999,7 +1998,7 @@ def _solver_iteration(
 
   wp.launch(
     solve_done,
-    dim=(d.nworld,),
+    dim=d.nworld,
     inputs=[
       m.nv,
       m.opt.tolerance,

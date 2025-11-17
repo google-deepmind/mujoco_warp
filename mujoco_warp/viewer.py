@@ -45,6 +45,8 @@ from mujoco_warp._src.io import override_model
 
 
 class EngineOptions(enum.IntEnum):
+  """Engine option."""
+
   WARP = 0
   C = 1
 

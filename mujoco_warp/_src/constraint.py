@@ -166,7 +166,6 @@ def _efc_equality_connect(
   ne_connect_out: wp.array(dtype=int),
 ):
   """Calculates constraint rows for connect equality constraints."""
-
   worldid, eqconnectid = wp.tid()
   eqid = eq_connect_adr[eqconnectid]
 
@@ -1494,7 +1493,6 @@ def _num_equality(
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
-
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
@@ -1845,7 +1843,7 @@ def make_constraint(m: types.Model, d: types.Data):
       if m.opt.cone == types.ConeType.PYRAMIDAL:
         wp.launch(
           _efc_contact_pyramidal,
-          dim=(d.naconmax, 2 * (m.condim_max - 1) if m.condim_max > 1 else 1),
+          dim=(d.naconmax, m.nmaxpyramid),
           inputs=[
             m.nv,
             m.opt.timestep,
@@ -1890,7 +1888,7 @@ def make_constraint(m: types.Model, d: types.Data):
       elif m.opt.cone == types.ConeType.ELLIPTIC:
         wp.launch(
           _efc_contact_elliptic,
-          dim=(d.naconmax, m.condim_max),
+          dim=(d.naconmax, m.nmaxcondim),
           inputs=[
             m.nv,
             m.opt.timestep,

@@ -37,12 +37,12 @@ from .types import SensorType
 from .types import TrnType
 from .types import vec5
 from .types import vec6
-from .types import vec8f
+from .types import vec8
 from .types import vec8i
 from .util_misc import inside_geom
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -196,9 +196,9 @@ def _sensor_rangefinder_init(
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
-  # Data out:
-  sensor_rangefinder_pnt_out: wp.array2d(dtype=wp.vec3),
-  sensor_rangefinder_vec_out: wp.array2d(dtype=wp.vec3),
+  # Out:
+  pnt_out: wp.array2d(dtype=wp.vec3),
+  vec_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, rfid = wp.tid()
   sensorid = sensor_rangefinder_adr[rfid]
@@ -206,8 +206,8 @@ def _sensor_rangefinder_init(
   site_xpos = site_xpos_in[worldid, objid]
   site_xmat = site_xmat_in[worldid, objid]
 
-  sensor_rangefinder_pnt_out[worldid, rfid] = site_xpos
-  sensor_rangefinder_vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+  pnt_out[worldid, rfid] = site_xpos
+  vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
 
 
 @wp.func
@@ -503,8 +503,8 @@ def _sensor_pos(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   ten_length_in: wp.array2d(dtype=float),
   actuator_length_in: wp.array2d(dtype=float),
-  sensor_rangefinder_dist_in: wp.array2d(dtype=float),
   # In:
+  rangefinder_dist_in: wp.array2d(dtype=float),
   sensor_collision_in: wp.array4d(dtype=float),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
@@ -525,7 +525,7 @@ def _sensor_pos(
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 2, vec2, out)
   elif sensortype == SensorType.RANGEFINDER:
-    val = sensor_rangefinder_dist_in[worldid, rangefinder_sensor_adr[sensorid]]
+    val = rangefinder_dist_in[worldid, rangefinder_sensor_adr[sensorid]]
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
   elif sensortype == SensorType.JOINTPOS:
     val = _joint_pos(jnt_qposadr, qpos_in, worldid, objid)
@@ -760,39 +760,35 @@ def _sensor_collision(
 @event_scope
 def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
-
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
   # rangefinder
+  rangefinder_dist = wp.empty((d.nworld, m.nrangefinder), dtype=float)
   if m.sensor_rangefinder_adr.size > 0:
+    rangefinder_pnt = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
+    rangefinder_vec = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
+    rangefinder_geomid = wp.empty((d.nworld, m.nrangefinder), dtype=int)
+
     # get position and direction
     wp.launch(
       _sensor_rangefinder_init,
       dim=(d.nworld, m.sensor_rangefinder_adr.size),
-      inputs=[
-        m.sensor_objid,
-        m.sensor_rangefinder_adr,
-        d.site_xpos,
-        d.site_xmat,
-      ],
-      outputs=[
-        d.sensor_rangefinder_pnt,
-        d.sensor_rangefinder_vec,
-      ],
+      inputs=[m.sensor_objid, m.sensor_rangefinder_adr, d.site_xpos, d.site_xmat],
+      outputs=[rangefinder_pnt, rangefinder_vec],
     )
 
     # get distances
     ray.rays(
       m,
       d,
-      d.sensor_rangefinder_pnt,
-      d.sensor_rangefinder_vec,
+      rangefinder_pnt,
+      rangefinder_vec,
       vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
       True,
       m.sensor_rangefinder_bodyid,
-      d.sensor_rangefinder_dist,
-      d.sensor_rangefinder_geomid,
+      rangefinder_dist,
+      rangefinder_geomid,
     )
 
   if m.sensor_e_potential:
@@ -874,7 +870,7 @@ def sensor_pos(m: Model, d: Data):
       d.subtree_com,
       d.ten_length,
       d.actuator_length,
-      d.sensor_rangefinder_dist,
+      rangefinder_dist,
       sensor_collision,
     ],
     outputs=[d.sensordata],
@@ -1376,7 +1372,6 @@ def _sensor_vel(
 @event_scope
 def sensor_vel(m: Model, d: Data):
   """Compute velocity-dependent sensor values."""
-
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
@@ -2100,7 +2095,7 @@ def _sensor_tactile(
   body_weldid: wp.array(dtype=int),
   oct_child: wp.array(dtype=vec8i),
   oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8f),
+  oct_coeff: wp.array(dtype=vec8),
   geom_type: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
@@ -2254,6 +2249,7 @@ def _contact_match(
   contact_geom_in: wp.array(dtype=wp.vec2i),
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
+  contact_type_in: wp.array(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
   njmax_in: int,
   nacon_in: wp.array(dtype=int),
@@ -2267,6 +2263,9 @@ def _contact_match(
   sensorid = sensor_contact_adr[contactsensorid]
 
   if contactid >= nacon_in[0]:
+    return
+
+  if not contact_type_in[contactid] & ContactType.CONSTRAINT:
     return
 
   # sensor information
@@ -2505,6 +2504,7 @@ def sensor_acc(m: Model, d: Data):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
         d.efc.force,
         d.njmax,
         d.nacon,
@@ -2781,7 +2781,7 @@ def _energy_pos_passive_tendon(
 
 def energy_pos(m: Model, d: Data):
   """Position-dependent energy (potential)."""
-  wp.launch(_energy_pos_zero, dim=(d.nworld,), outputs=[d.energy])
+  wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
   if not m.opt.disableflags & DisableBit.GRAVITY:
@@ -2849,7 +2849,6 @@ def _energy_vel_kinetic(nv: int):
 
 def energy_vel(m: Model, d: Data):
   """Velocity-dependent energy (kinetic)."""
-
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel
@@ -2857,7 +2856,7 @@ def energy_vel(m: Model, d: Data):
 
   wp.launch_tiled(
     _energy_vel_kinetic(m.nv),
-    dim=(d.nworld,),
+    dim=d.nworld,
     inputs=[d.qvel, d.efc.mv],
     outputs=[d.energy],
     block_dim=m.block_dim.energy_vel_kinetic,
