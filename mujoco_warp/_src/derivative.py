@@ -134,7 +134,6 @@ def _qderiv_actuator_passive_actuation_sparse(
   if vel == 0.0:
     return
 
-  # Load moment row for this actuator (contiguous memory access)
   for elemid in range(qMi.size):
     dofiid = qMi[elemid]
     dofjid = qMj[elemid]
@@ -234,14 +233,8 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     qDeriv.zero_()
-    if m.nu > 0:  # Only launch kernel if there are actuators
-      vel = wp.empty(
-        (
-          d.nworld,
-          m.nu,
-        ),
-        dtype=float,
-      )
+    if m.nu > 0:
+      vel = wp.empty((d.nworld, m.nu), dtype=float)
       wp.launch(
         _qderiv_actuator_passive_vel,
         dim=(d.nworld,),
