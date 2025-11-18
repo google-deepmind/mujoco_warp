@@ -117,9 +117,9 @@ def _qderiv_actuator_passive_actuation_sparse(
   # Model:
   opt_disableflags: int,
   # Data in:
-  vel_in: wp.array2d(dtype=float),
   actuator_moment_in: wp.array3d(dtype=float),
   # In:
+  vel_in: wp.array2d(dtype=float),
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
   # Out:
@@ -260,8 +260,8 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
           dim=(d.nworld, m.nu),
           inputs=[
             m.opt.disableflags,
-            vel,
             d.actuator_moment,
+            vel,
             qMi,
             qMj,
           ],
