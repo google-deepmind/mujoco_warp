@@ -233,8 +233,8 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
   qMj = m.qM_fullm_j if m.opt.is_sparse else m.dof_tri_col
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
+    qDeriv.zero_()
     if m.nu > 0:  # Only launch kernel if there are actuators
-      qDeriv.zero_()
       vel = wp.empty(
         (
           d.nworld,
