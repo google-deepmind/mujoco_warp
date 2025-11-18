@@ -218,6 +218,8 @@ class RenderContext:
     self.depth_size = wp.array(depth_size, dtype=int)
     self.rgb_data = wp.zeros((d.nworld, ri), dtype=wp.uint32)
     self.depth_data = wp.zeros((d.nworld, di), dtype=wp.float32)
+    self.render_rgb=wp.array(render_rgb, dtype=bool)
+    self.render_depth=wp.array(render_depth, dtype=bool)
     self.ray_data = wp.zeros(int(total), dtype=wp.vec3)
 
     offset = 0
@@ -234,8 +236,6 @@ class RenderContext:
     self.cam_id_map=wp.array(active_cam_indices, dtype=int)
     self.use_textures=use_textures
     self.use_shadows=use_shadows
-    self.render_rgb=render_rgb
-    self.render_depth=render_depth
     self.enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int)
     self.mesh_bvh_ids=wp.array(mesh_bvh_ids, dtype=wp.uint64)
     self.mesh_bounds_size=wp.array(mesh_bounds_size, dtype=wp.vec3)

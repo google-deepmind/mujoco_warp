@@ -42,9 +42,9 @@ MAX_NUM_VIEWS_PER_THREAD = 8
 
 BACKGROUND_COLOR = (
   255 << 24 |
-  int(0.2 * 255.0) << 16 |
+  int(0.1 * 255.0) << 16 |
   int(0.1 * 255.0) << 8 |
-  int(0.1 * 255.0)
+  int(0.2 * 255.0)
 )
 
 SPOT_INNER_COS = float(0.95)
@@ -545,6 +545,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     rays: wp.array(dtype=wp.vec3),
     rgb_adr: wp.array(dtype=int),
     depth_adr: wp.array(dtype=int),
+    render_rgb: wp.array(dtype=bool),
+    render_depth: wp.array(dtype=bool),
 
     # BVH
     bvh_id: wp.uint64,
@@ -612,6 +614,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     if cam_idx == -1 or ray_idx_local < 0:
       return
 
+    if not render_rgb[cam_idx] and not render_depth[cam_idx]:
+      return
+
     # Map active camera index to MuJoCo camera ID
     mujoco_cam_id = cam_id_map[cam_idx]
 
@@ -653,10 +658,10 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     if geom_id == -1:
       return
 
-    if depth_adr[cam_idx] != -1:
+    if render_depth[cam_idx]:
       out_depth[world_idx, depth_adr[cam_idx] + ray_idx_local] = dist
 
-    if rgb_adr[cam_idx] == -1:
+    if not render_rgb[cam_idx]:
       return
 
     # Shade the pixel
@@ -770,6 +775,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       rc.ray_data,
       rc.rgb_adr,
       rc.depth_adr,
+      rc.render_rgb,
+      rc.render_depth,
 
       # BVH
       rc.bvh_id,
