@@ -653,10 +653,7 @@ def _sensor_pos(
             if geom_type[geomid1] > geom_type[geomid2]:
               flip = True
             elif geom_type[geomid1] == geom_type[geomid2]:
-              if geomid1 > geomid2:
-                flip = True
-              else:
-                flip = False
+              flip = geomid1 > geomid2
             else:
               flip = False
     if sensortype == int(SensorType.GEOMDIST.value):
