@@ -623,7 +623,7 @@ def make_data(
     d.qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     d.qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
   else:
-    d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
+    d.qM = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   # static geoms (attached to the world) have their poses calculated once during make_data instead
@@ -795,9 +795,7 @@ def put_data(
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
     qLD = np.linalg.cholesky(qM) if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
-    padding = sizes["nv_pad"] - mjm.nv
-    qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
-    d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
+    d.qM = wp.array(np.full((nworld, mjm.nv, mjm.nv), qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
@@ -1191,7 +1189,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
   wp.launch(
     reset_qM,
-    dim=(d.nworld, d.qM.shape[1], d.qM.shape[2]),
+    dim=(d.nworld, 1 if m.opt.is_sparse else m.nv, m.nM if m.opt.is_sparse else m.nv),
     inputs=[reset_input],
     outputs=[d.qM],
   )
