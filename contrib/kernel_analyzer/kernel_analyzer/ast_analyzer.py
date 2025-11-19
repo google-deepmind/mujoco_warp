@@ -115,8 +115,10 @@ def _get_classes(src: str) -> Dict[str, List[Tuple[str, str]]]:
   for line in src.splitlines():
     if line.startswith("class "):
       class_name = line[len("class ") : -1]
-    elif '"""' in line:
-      in_docstring = not in_docstring
+    if line.strip().startswith('"""'):
+      in_docstring = True
+    if line.strip().endswith('"""'):
+      in_docstring = False
 
     m = field_pattern.match(line)
     if not class_name or not m or in_docstring:
@@ -206,7 +208,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     is_kernel = False
     for d in node.decorator_list:
       decorator_name = ast.get_source_segment(source, d)
-      if decorator_name in ("kernel", "warp_util.kernel", "wp.kernel", "wp.func"):
+      if decorator_name in ("kernel", "warp_util.nested_kernel", "wp.kernel", "wp.func"):
         is_kernel = True
         break
 
@@ -285,6 +287,15 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
           expected_type = "float"
         elif "wp.bool" in param_type:
           expected_type = "bool"
+      elif expected_type.startswith("array("):
+        # array(...) is our custom annotation that we can translate to wp.array
+        expected_dtype = expected_type[expected_type.rfind(" ") + 1 : -1]
+        expected_ndim = expected_type.count(",")
+        if expected_ndim == 1:
+          expected_type = f"wp.array(dtype={expected_dtype})"
+        else:
+          expected_type = f"wp.array{expected_ndim}d(dtype={expected_dtype})"
+
       expected_types[param_name] = expected_type
       if expected_type and param_type != expected_type:
         issues.append(TypeMismatch(param, kernel, expected_type, param_source))

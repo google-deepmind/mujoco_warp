@@ -1,0 +1,77 @@
+<mujoco model="apptronik_apollo scene objects">
+
+  <visual>
+    <map znear="0.01" zfar="200" />
+    <quality shadowsize="8192" />
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
+    <global azimuth="140" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+    <model name="apptronik_apollo" file="apptronik_apollo.xml"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" />
+
+    <geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+    <!-- Walls of the container box -->
+    <geom name="box back wall" pos="0.9 0.0 0.61" type="box" size="0.01 0.21 0.1" contype="1" conaffinity="1"/>
+    <geom name="box front wall" pos="0.5 0.0 0.61" type="box" size="0.01 0.21 0.1" contype="1" conaffinity="1"/>
+    <geom name="box left wall" pos="0.7 -0.2 0.61" type="box" size="0.21 0.01 0.1" contype="1" conaffinity="1"/>
+    <geom name="box right wall" pos="0.7 0.2 0.61" type="box" size="0.21 0.01 0.1" contype="1" conaffinity="1"/>
+
+    <!-- 4 spheres -->
+    <replicate count="4" offset="0.075 0.075 0">
+        <body name="sphere" pos="0.6 -0.1 0.81">
+            <freejoint name="sphere"/>
+            <geom name="geom_sphere" type="sphere" size="0.05" contype="1" conaffinity="1" rgba="1 0 0 1"/>
+        </body>
+    </replicate>
+
+    <!-- 2 capsules -->
+    <replicate count="2" offset="0.2 0 0">
+        <body name="capsule" pos="0.6 -0.15 0.91" quat="1 0.5 0 0">
+            <freejoint name="capsule"/>
+            <geom name="geom_capsule" type="capsule" size="0.04 0.04" contype="1" conaffinity="1" rgba="0 1 0 1"/>
+        </body>
+    </replicate>
+
+    <!-- 4 ellipsoids -->
+    <replicate count="4" offset="0 0.1 0">
+        <body name="ellipsoid" pos="0.7 -0.15 1.16">
+            <freejoint name="ellipsoid"/>
+            <geom name="geom_ellipsoid" type="ellipsoid" size="0.05 0.04 0.03" contype="1" conaffinity="1" rgba="0 0 1 1"/>
+        </body>
+    </replicate>
+
+    <!-- 2 cylinders -->
+    <replicate count="2" offset="0.3 0 0" euler="0 0 15">
+        <body name="cylinder" pos="0.55 0 0.95" quat="0 0.5 0 1">
+            <freejoint name="cylinder"/>
+            <geom name="geom_cylinder" type="cylinder" size="0.04 0.04" contype="1" conaffinity="1" rgba="1 1 0 1"/>
+        </body>
+    </replicate>
+
+    <!-- Two stacks of 3 boxes -->
+    <replicate count="3" offset="0 0 0.06">
+        <body name="box1" pos="0.65 0 0.94">
+            <freejoint name="joint1"/>
+            <geom name="geom1" type="box" size="0.03 0.03 0.03" contype="1" conaffinity="1" rgba="0 1 1 1"/>
+        </body>
+    </replicate>
+    <replicate count="3" offset="0 0 0.06">
+        <body name="box2" pos="0.75 0 0.94">
+            <freejoint name="joint2"/>
+            <geom name="geom2" type="box" size="0.03 0.03 0.03" contype="1" conaffinity="1" rgba="0 1 1 1"/>
+        </body>
+    </replicate>
+    
+    <!-- attach Apptronik Apollo -->
+    <attach model="apptronik_apollo" body="base_link" prefix="_"/>
+  </worldbody>
+</mujoco>

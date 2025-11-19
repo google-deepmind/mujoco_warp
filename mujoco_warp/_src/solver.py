@@ -27,7 +27,7 @@ from .block_cholesky import create_blocked_cholesky_func
 from .block_cholesky import create_blocked_cholesky_solve_func
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -458,7 +458,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
   """Iterative linesearch."""
   wp.launch(
     linesearch_iterative,
-    dim=(d.nworld,),
+    dim=d.nworld,
     inputs=[
       m.nv,
       m.opt.impratio,
@@ -1448,7 +1448,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
 
 @cache_kernel
-def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
+def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int):
   if njmax < tile_size:
     tile_size = njmax
 
@@ -1473,7 +1473,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
 
     nefc = nefc_in[worldid]
 
-    sum_val = wp.tile_load(qM_in[worldid], shape=(nv, nv), bounds_check=False)
+    sum_val = wp.tile_load(qM_in[worldid], shape=(nv_padded, nv_padded), bounds_check=True)
 
     # Each tile processes one output tile by looping over all constraints
     for k in range(0, njmax, TILE_SIZE_K):
@@ -1483,7 +1483,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
       # AD: leaving bounds-check disabled here because I'm not entirely sure that
       # everything always hits the fast path. The padding takes care of any
       #  potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv), offset=(k, 0), bounds_check=False)
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_padded), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
 
       # state check
@@ -1499,7 +1499,7 @@ def update_gradient_JTDAJ_dense_tiled(nv: int, tile_size: int, njmax: int):
       active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv, TILE_SIZE_K)))
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv_padded, TILE_SIZE_K)))
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
@@ -1742,8 +1742,9 @@ def _update_gradient(m: types.Model, d: types.Data):
         outputs=[d.efc.h],
       )
     else:
+      nv_padded = d.efc.J.shape[2]
       wp.launch_tiled(
-        update_gradient_JTDAJ_dense_tiled(m.nv, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+        update_gradient_JTDAJ_dense_tiled(nv_padded, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
         dim=d.nworld,
         inputs=[
           d.nefc,
@@ -1811,7 +1812,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     if m.nv < 32:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
-        dim=(d.nworld,),
+        dim=d.nworld,
         inputs=[d.efc.grad, d.efc.h, d.efc.done],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
@@ -1819,7 +1820,7 @@ def _update_gradient(m: types.Model, d: types.Data):
     else:
       wp.launch_tiled(
         update_gradient_cholesky_blocked(16),
-        dim=(d.nworld,),
+        dim=d.nworld,
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),
           d.efc.h,
@@ -1982,7 +1983,7 @@ def _solver_iteration(
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_beta,
-      dim=(d.nworld,),
+      dim=d.nworld,
       inputs=[m.nv, d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
       outputs=[d.efc.beta],
     )
@@ -1998,7 +1999,7 @@ def _solver_iteration(
 
   wp.launch(
     solve_done,
-    dim=(d.nworld,),
+    dim=d.nworld,
     inputs=[
       m.nv,
       m.opt.tolerance,
