@@ -554,6 +554,28 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(m.opt.ls_parallel, True)
 
+  def test_contact_sensor_maxmatch(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.contact_sensor_maxmatch, 64)
+
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <custom>
+        <numeric data="5" name="contact_sensor_maxmatch"/>
+      </custom>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
+
 
 if __name__ == "__main__":
   wp.init()
