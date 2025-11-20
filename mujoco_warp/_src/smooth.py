@@ -121,7 +121,8 @@ def _kinematics_level(
     jnt_pos_id = worldid % jnt_pos.shape[0]
     pid = body_parentid[bodyid]
 
-    if pid == -1:
+    # mocap bodies have world body as parent
+    if pid == 0:
       mocapid = body_mocapid_in[bodyid]
     else:
       mocapid = -1
