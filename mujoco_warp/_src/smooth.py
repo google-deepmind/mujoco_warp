@@ -100,21 +100,7 @@ def _kinematics_level(
   body_quat_id = worldid % body_quat.shape[0]
   jnt_axis_id = worldid % jnt_axis.shape[0]
 
-  if jntnum == 0:
-    # no joints - apply fixed translation and rotation relative to parent
-    pid = body_parentid[bodyid]
-  
-    mocapid = body_mocapid_in[bodyid]
-    if mocapid != -1:
-      body_pos_ = mocap_pos_in[worldid, mocapid]
-      body_quat_ = mocap_quat_in[worldid, mocapid]
-    else:
-      body_pos_ = body_pos[body_pos_id, bodyid]
-      body_quat_ = body_quat[body_quat_id, bodyid]
-
-    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
-  elif jntnum == 1 and jnt_type[jntadr] == JointType.FREE:
+  if jntnum == 1 and jnt_type[jntadr] == JointType.FREE:
     # free joint
     qadr = jnt_qposadr[jntadr]
     xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
@@ -128,8 +114,21 @@ def _kinematics_level(
     qpos0_id = worldid % qpos0.shape[0]
     jnt_pos_id = worldid % jnt_pos.shape[0]
     pid = body_parentid[bodyid]
-    xpos = (xmat_in[worldid, pid] * body_pos[body_pos_id, bodyid]) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[body_quat_id, bodyid])
+
+    if pid == -1:
+      mocapid = body_mocapid_in[bodyid]
+    else:
+      mocapid = -1
+
+    if mocapid != -1:
+      body_pos_ = mocap_pos_in[worldid, mocapid]
+      body_quat_ = mocap_quat_in[worldid, mocapid]
+    else:
+      body_pos_ = body_pos[body_pos_id, bodyid]
+      body_quat_ = body_quat[body_quat_id, bodyid]
+
+    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
+    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
 
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
@@ -258,34 +257,6 @@ def _flex_edges(
   vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
   flexedge_velocity_out[worldid, edgeid] = math.safe_div(wp.dot(vel2 - vel1, vec), vecnorm)
 
-
-@wp.kernel
-def _mocap(
-  # Model:
-  body_ipos: wp.array2d(dtype=wp.vec3),
-  body_iquat: wp.array2d(dtype=wp.quat),
-  mocap_bodyid: wp.array(dtype=int),
-  # Data in:
-  mocap_pos_in: wp.array2d(dtype=wp.vec3),
-  mocap_quat_in: wp.array2d(dtype=wp.quat),
-  # Data out:
-  xpos_out: wp.array2d(dtype=wp.vec3),
-  xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
-):
-  worldid, mocapid = wp.tid()
-  bodyid = mocap_bodyid[mocapid]
-  mocap_quat = wp.normalize(mocap_quat_in[worldid, mocapid])
-  xpos = mocap_pos_in[worldid, mocapid]
-  xpos_out[worldid, bodyid] = xpos
-  xquat_out[worldid, bodyid] = mocap_quat
-  xmat_out[worldid, bodyid] = math.quat_to_mat(mocap_quat)
-  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], mocap_quat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(mocap_quat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
-
-
 @event_scope
 def kinematics(m: Model, d: Data):
   """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
@@ -294,13 +265,6 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  #wp.launch(
-  #  _mocap,
-  #  dim=(d.nworld, m.nmocap),
-  #  inputs=[m.body_ipos, m.body_iquat, m.mocap_bodyid, d.mocap_pos, d.mocap_quat],
-  #  outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat],
-  #)
-
   wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat])
 
   for i in range(1, len(m.body_tree)):
