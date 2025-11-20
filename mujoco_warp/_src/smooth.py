@@ -121,12 +121,8 @@ def _kinematics_level(
     pid = body_parentid[bodyid]
 
     # mocap bodies have world body as parent
-    if pid == 0:
-      mocapid = body_mocapid_in[bodyid]
-    else:
-      mocapid = -1
-
-    if mocapid != -1:
+    mocapid = body_mocapid_in[bodyid]
+    if pid == 0 and mocapid != -1:
       body_pos_ = mocap_pos_in[worldid, mocapid]
       body_quat_ = mocap_quat_in[worldid, mocapid]
     else:
