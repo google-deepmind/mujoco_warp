@@ -49,6 +49,16 @@ def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.
   return array
 
 
+def is_sparse(mjm: mujoco.MjModel) -> bool:
+  if mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_AUTO:
+    if mjm.nv > 32:
+      return True
+    else:
+      return False
+  else:
+    return bool(mujoco.mj_isSparse(mjm))
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -161,7 +171,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.tolerance = max(opt.tolerance, 1e-6)
 
   # warp only fields
-  opt.is_sparse = bool(mujoco.mj_isSparse(mjm))
+  opt.is_sparse = is_sparse(mjm)
   ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
   opt.ls_parallel = (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1)
   opt.ls_parallel_min_step = 1.0e-6  # TODO(team): determine good default setting
@@ -592,8 +602,8 @@ def make_data(
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if mujoco.mj_isSparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, is_sparse(mjm), tile_size)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -619,7 +629,7 @@ def make_data(
 
   d = types.Data(**d_kwargs)
 
-  if mujoco.mj_isSparse(mjm):
+  if is_sparse(mjm):
     d.qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     d.qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
   else:
@@ -691,8 +701,8 @@ def put_data(
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if mujoco.mj_isSparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, is_sparse(mjm), tile_size)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -785,7 +795,7 @@ def put_data(
   d = types.Data(**d_kwargs)
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
-  if mujoco.mj_isSparse(mjm):
+  if is_sparse(mjm):
     d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -957,7 +967,7 @@ def get_data_into(
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
-  if mujoco.mj_isSparse(mjm):
+  if is_sparse(mjm):
     result.qM[:] = d.qM.numpy()[world_id, 0]
     result.qLD[:] = d.qLD.numpy()[world_id, 0]
     if nefc > 0:
