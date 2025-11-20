@@ -100,7 +100,13 @@ def _kinematics_level(
   body_quat_id = worldid % body_quat.shape[0]
   jnt_axis_id = worldid % jnt_axis.shape[0]
 
-  if jntnum == 1 and jnt_type[jntadr] == JointType.FREE:
+  free_joint = False
+  if jntnum == 1:
+    jnt_type_ = jnt_type[jntadr]
+    if jnt_type_ == JointType.FREE:
+      free_joint = True
+
+  if free_joint:
     # free joint
     qadr = jnt_qposadr[jntadr]
     xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
