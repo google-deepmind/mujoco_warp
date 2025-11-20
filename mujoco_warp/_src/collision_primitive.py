@@ -1722,15 +1722,16 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
   return _primitive_narrowphase
 
 
-def _primitive_narrowphase_builder(m: Model):
-  _primitive_collisions_types = []
-  _primitive_collisions_func = []
+_primitive_collisions_types = []
+_primitive_collisions_func = []
 
+
+def _primitive_narrowphase_builder(m: Model):
   for types, func in _PRIMITIVE_COLLISIONS.items():
-    # idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
-    # if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
-    _primitive_collisions_types.append(types)
-    _primitive_collisions_func.append(func)
+    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
+    if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
+      _primitive_collisions_types.append(types)
+      _primitive_collisions_func.append(func)
 
   return _create_narrowphase_kernel(_primitive_collisions_types, _primitive_collisions_func)
 
