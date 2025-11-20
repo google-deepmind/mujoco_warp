@@ -62,13 +62,13 @@ def _kinematics_level(
   # Model:
   qpos0: wp.array2d(dtype=float),
   body_parentid: wp.array(dtype=int),
+  body_mocapid: wp.array(dtype=int),
   body_jntnum: wp.array(dtype=int),
   body_jntadr: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
   body_quat: wp.array2d(dtype=wp.quat),
   body_ipos: wp.array2d(dtype=wp.vec3),
   body_iquat: wp.array2d(dtype=wp.quat),
-  body_mocapid_in: wp.array(dtype=int),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array2d(dtype=wp.vec3),
@@ -121,7 +121,7 @@ def _kinematics_level(
     pid = body_parentid[bodyid]
 
     # mocap bodies have world body as parent
-    mocapid = body_mocapid_in[bodyid]
+    mocapid = body_mocapid[bodyid]
     if pid == 0 and mocapid != -1:
       body_pos_ = mocap_pos_in[worldid, mocapid]
       body_quat_ = mocap_quat_in[worldid, mocapid]
@@ -278,13 +278,13 @@ def kinematics(m: Model, d: Data):
       inputs=[
         m.qpos0,
         m.body_parentid,
+        m.body_mocapid,
         m.body_jntnum,
         m.body_jntadr,
         m.body_pos,
         m.body_quat,
         m.body_ipos,
         m.body_iquat,
-        m.body_mocapid,
         m.jnt_type,
         m.jnt_qposadr,
         m.jnt_pos,
