@@ -860,17 +860,17 @@ class CollisionTest(parameterized.TestCase):
     _XML = """
     <mujoco>
       <asset>
-        <hfield name="hfield" nrow="10" ncol="10" size="1e-6 1e-6 1 1"/>
+        <hfield name="hfield" nrow="10" ncol="10" size="1e-1 1e-1 1 1"/>
       </asset>
       <worldbody>
         <body>
           <joint type="slide" axis="0 0 1"/>
-          <geom type="sphere" size=".1"/>
+          <geom type="box" size="1 1 .1"/>
         </body>
         <geom type="hfield" hfield="hfield"/>
       </worldbody>
       <keyframe>
-        <key qpos=".0999"/>
+        <key qpos=".099"/>
       </keyframe>
     </mujoco>
     """
@@ -879,7 +879,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], types.MJ_MAXCONPAIR)
+    np.testing.assert_equal(d.nacon.numpy()[0], 4)
 
   def test_min_friction(self):
     _, _, _, d = test_data.fixture(
