@@ -163,7 +163,9 @@ class ConstraintTest(parameterized.TestCase):
   def test_constraints(self, cone):
     """Test constraints."""
     for key in range(3):
-      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE})
+      _, mjd, m, d = test_data.fixture(
+        "constraints.xml", keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE}
+      )
 
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)

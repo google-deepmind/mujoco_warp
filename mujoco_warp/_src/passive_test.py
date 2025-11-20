@@ -46,7 +46,10 @@ class PassiveTest(parameterized.TestCase):
       ctrl_noise=0.1,
       qfrc_noise=0.1,
       xfrc_noise=0.1,
-      overrides={"opt.disableflags": DisableBit.CONTACT | spring | damper | gravity, "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE},
+      overrides={
+        "opt.disableflags": DisableBit.CONTACT | spring | damper | gravity,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+      },
     )
 
     for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_gravcomp, d.qfrc_passive):
