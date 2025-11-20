@@ -40,7 +40,7 @@ def _assert_eq(a, b, name):
 class SmoothTest(parameterized.TestCase):
   def test_mocap_kinematics(self):
     """Tests that mocap body positions and child bodies are correctly updated after mocap_pos changes.
-    
+
     This is a regression test for a bug where mocap positions were updated after kinematics,
     causing child bodies of mocap bodies to have incorrect positions based on stale mocap data.
     """
@@ -58,58 +58,59 @@ class SmoothTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    
+
     mjm, mjd, m, d = test_data.fixture(xml=xml)
-    
+
     self.assertEqual(m.nmocap, 1)
-    
+
     # Find mocap body and child body IDs
     mocap_body_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "mocap_parent")
     child_body_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "child")
     child_site_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_SITE, "child_site")
-    
+
     # Initial kinematics
     mjw.kinematics(m, d)
     initial_mocap_xpos = d.xpos.numpy()[0, mocap_body_id]
     initial_child_xpos = d.xpos.numpy()[0, child_body_id]
     initial_site_xpos = d.site_xpos.numpy()[0, child_site_id].copy()
-    
+
     # Verify initial positions match MuJoCo
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "initial xpos")
-    
+
     # Expected: child should be at mocap_pos + (1, 0, 0) relative offset
     np.testing.assert_allclose(initial_child_xpos, [1.0, 0.0, 0.0], atol=1e-5)
     np.testing.assert_allclose(initial_site_xpos, [1.5, 0.0, 0.0], atol=1e-5)
-    
+
     # Update mocap_pos to a new position
     new_mocap_pos = np.array([[2.0, 3.0, 4.0]], dtype=np.float32)
     d.mocap_pos.assign(new_mocap_pos)
     mjd.mocap_pos[:] = new_mocap_pos
-    
+
     # Run kinematics again - this is the critical test
     # Before the fix, this would compute child positions based on the OLD mocap position
     mjw.kinematics(m, d)
     mujoco.mj_kinematics(mjm, mjd)
-    
+
     # Check positions after update
     updated_mocap_xpos = d.xpos.numpy()[0, mocap_body_id]
     updated_child_xpos = d.xpos.numpy()[0, child_body_id]
     updated_site_xpos = d.site_xpos.numpy()[0, child_site_id]
-    
+
     # Verify mocap body moved to new position
-    np.testing.assert_allclose(updated_mocap_xpos, new_mocap_pos[0], atol=1e-5, 
-                               err_msg="Mocap body should be at new position")
-    
+    np.testing.assert_allclose(updated_mocap_xpos, new_mocap_pos[0], atol=1e-5, err_msg="Mocap body should be at new position")
+
     # KEY TEST: Child body should be at new_mocap_pos + (1, 0, 0)
     expected_child_pos = new_mocap_pos[0] + np.array([1.0, 0.0, 0.0])
-    np.testing.assert_allclose(updated_child_xpos, expected_child_pos, atol=1e-5,
-                               err_msg="Child body should be offset from NEW mocap position")
-    
+    np.testing.assert_allclose(
+      updated_child_xpos, expected_child_pos, atol=1e-5, err_msg="Child body should be offset from NEW mocap position"
+    )
+
     # Site should also be correctly positioned relative to new mocap position
     expected_site_pos = new_mocap_pos[0] + np.array([1.5, 0.0, 0.0])
-    np.testing.assert_allclose(updated_site_xpos, expected_site_pos, atol=1e-5,
-                               err_msg="Site should be offset from NEW mocap position")
-    
+    np.testing.assert_allclose(
+      updated_site_xpos, expected_site_pos, atol=1e-5, err_msg="Site should be offset from NEW mocap position"
+    )
+
     # Verify matches MuJoCo reference
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "updated xpos")
     _assert_eq(d.site_xpos.numpy()[0], mjd.site_xpos, "updated site_xpos")

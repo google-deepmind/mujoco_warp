@@ -104,7 +104,7 @@ def _kinematics_level(
   if jntnum == 1:
     jnt_type_ = jnt_type[jntadr]
     free_joint = jnt_type_ == JointType.FREE
-  
+
   if free_joint:
     # free joint
     qadr = jnt_qposadr[jntadr]
@@ -258,6 +258,7 @@ def _flex_edges(
   vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
   vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
   flexedge_velocity_out[worldid, edgeid] = math.safe_div(wp.dot(vel2 - vel1, vec), vecnorm)
+
 
 @event_scope
 def kinematics(m: Model, d: Data):
