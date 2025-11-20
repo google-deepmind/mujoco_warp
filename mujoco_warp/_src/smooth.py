@@ -68,6 +68,7 @@ def _kinematics_level(
   body_quat: wp.array2d(dtype=wp.quat),
   body_ipos: wp.array2d(dtype=wp.vec3),
   body_iquat: wp.array2d(dtype=wp.quat),
+  body_mocapid_in: wp.array(dtype=int),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array2d(dtype=wp.vec3),
@@ -77,6 +78,8 @@ def _kinematics_level(
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
   xmat_in: wp.array2d(dtype=wp.mat33),
+  mocap_pos_in: wp.array2d(dtype=wp.vec3),
+  mocap_quat_in: wp.array2d(dtype=wp.quat),
   # In:
   body_tree_: wp.array(dtype=int),
   # Data out:
@@ -100,8 +103,17 @@ def _kinematics_level(
   if jntnum == 0:
     # no joints - apply fixed translation and rotation relative to parent
     pid = body_parentid[bodyid]
-    xpos = (xmat_in[worldid, pid] * body_pos[body_pos_id, bodyid]) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat[body_quat_id, bodyid])
+  
+    mocapid = body_mocapid_in[bodyid]
+    if mocapid != -1:
+      body_pos_ = mocap_pos_in[worldid, mocapid]
+      body_quat_ = mocap_quat_in[worldid, mocapid]
+    else:
+      body_pos_ = body_pos[body_pos_id, bodyid]
+      body_quat_ = body_quat[body_quat_id, bodyid]
+
+    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
+    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
   elif jntnum == 1 and jnt_type[jntadr] == JointType.FREE:
     # free joint
     qadr = jnt_qposadr[jntadr]
@@ -282,6 +294,13 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
+  #wp.launch(
+  #  _mocap,
+  #  dim=(d.nworld, m.nmocap),
+  #  inputs=[m.body_ipos, m.body_iquat, m.mocap_bodyid, d.mocap_pos, d.mocap_quat],
+  #  outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat],
+  #)
+
   wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat])
 
   for i in range(1, len(m.body_tree)):
@@ -298,6 +317,7 @@ def kinematics(m: Model, d: Data):
         m.body_quat,
         m.body_ipos,
         m.body_iquat,
+        m.body_mocapid,
         m.jnt_type,
         m.jnt_qposadr,
         m.jnt_pos,
@@ -306,17 +326,12 @@ def kinematics(m: Model, d: Data):
         d.xpos,
         d.xquat,
         d.xmat,
+        d.mocap_pos,
+        d.mocap_quat,
         body_tree,
       ],
       outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat, d.xanchor, d.xaxis],
     )
-
-  wp.launch(
-    _mocap,
-    dim=(d.nworld, m.nmocap),
-    inputs=[m.body_ipos, m.body_iquat, m.mocap_bodyid, d.mocap_pos, d.mocap_quat],
-    outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat],
-  )
 
   wp.launch(
     _geom_local_to_global,
