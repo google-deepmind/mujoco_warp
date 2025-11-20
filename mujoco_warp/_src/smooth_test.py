@@ -39,7 +39,8 @@ def _assert_eq(a, b, name):
 
 class SmoothTest(parameterized.TestCase):
   def test_mocap_kinematics(self):
-    """Tests that mocap body positions and child bodies are correctly updated after mocap_pos changes.
+    """Tests that mocap body positions and child bodies are correctly updated after mocap_pos
+    changes.
 
     This is a regression test for a bug where mocap positions were updated after kinematics,
     causing child bodies of mocap bodies to have incorrect positions based on stale mocap data.
