@@ -103,9 +103,8 @@ def _kinematics_level(
   free_joint = False
   if jntnum == 1:
     jnt_type_ = jnt_type[jntadr]
-    if jnt_type_ == JointType.FREE:
-      free_joint = True
-
+    free_joint = jnt_type_ == JointType.FREE
+  
   if free_joint:
     # free joint
     qadr = jnt_qposadr[jntadr]
