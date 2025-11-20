@@ -798,9 +798,6 @@ def put_data(
   if is_sparse(mjm):
     d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
-    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
   else:
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
@@ -809,6 +806,12 @@ def put_data(
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
+
+  if mujoco.mj_isSparse(mjm):
+    ten_J = np.zeros((mjm.ntendon, mjm.nv))
+    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+  else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
 
@@ -970,9 +973,6 @@ def get_data_into(
   if is_sparse(mjm):
     result.qM[:] = d.qM.numpy()[world_id, 0]
     result.qLD[:] = d.qLD.numpy()[world_id, 0]
-    if nefc > 0:
-      efc_J = d.efc.J.numpy()[world_id, efc_idx, : mjm.nv]
-      mujoco.mju_dense2sparse(result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
   else:
     qM = d.qM.numpy()[world_id]
     adr = 0
@@ -983,7 +983,12 @@ def get_data_into(
         j = mjm.dof_parentid[j]
         adr += 1
     mujoco.mj_factorM(mjm, result)
-    if nefc > 0:
+
+  if nefc > 0:
+    if mujoco.mj_isSparse(mjm):
+      efc_J = d.efc.J.numpy()[world_id, efc_idx, : mjm.nv]
+      mujoco.mju_dense2sparse(result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
+    else:
       result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[world_id, :nefc, : mjm.nv].flatten()
 
   # efc
