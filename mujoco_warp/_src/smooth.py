@@ -75,11 +75,11 @@ def _kinematics_level(
   jnt_axis: wp.array2d(dtype=wp.vec3),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
+  mocap_pos_in: wp.array2d(dtype=wp.vec3),
+  mocap_quat_in: wp.array2d(dtype=wp.quat),
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
   xmat_in: wp.array2d(dtype=wp.mat33),
-  mocap_pos_in: wp.array2d(dtype=wp.vec3),
-  mocap_quat_in: wp.array2d(dtype=wp.quat),
   # In:
   body_tree_: wp.array(dtype=int),
   # Data out:
@@ -290,11 +290,11 @@ def kinematics(m: Model, d: Data):
         m.jnt_pos,
         m.jnt_axis,
         d.qpos,
+        d.mocap_pos,
+        d.mocap_quat,
         d.xpos,
         d.xquat,
         d.xmat,
-        d.mocap_pos,
-        d.mocap_quat,
         body_tree,
       ],
       outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat, d.xanchor, d.xaxis],
