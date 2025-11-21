@@ -171,9 +171,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.graph_conditional = True
   opt.run_collision_detection = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
-  opt.contact_sensor_maxmatch = (
-    mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]] if contact_sensor_maxmatch_id > -1 else 64
-  )
+  if contact_sensor_maxmatch_id > -1:
+    opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
+  else:
+    opt.contact_sensor_maxmatch = 64
 
   # place opt on device
   for f in dataclasses.fields(types.Option):
