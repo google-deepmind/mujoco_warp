@@ -22,7 +22,7 @@ class AlohaCloth(benchmark.BenchmarkSuite):
   path = "aloha_cloth/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 256
-  nconmax = 900
+  nconmax = 920
   njmax = 3606
 
 
