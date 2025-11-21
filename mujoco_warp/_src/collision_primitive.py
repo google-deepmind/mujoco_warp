@@ -1035,7 +1035,7 @@ def plane_box_wrapper(
   dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, box.rot, box.size)
   frame = make_frame(normal)
 
-  for i in range(4):
+  for i in range(8):
     write_contact(
       naconmax_in,
       i,
@@ -1722,10 +1722,11 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
   return _primitive_narrowphase
 
 
-def _primitive_narrowphase_builder(m: Model):
-  _primitive_collisions_types = []
-  _primitive_collisions_func = []
+_primitive_collisions_types = []
+_primitive_collisions_func = []
 
+
+def _primitive_narrowphase_builder(m: Model):
   for types, func in _PRIMITIVE_COLLISIONS.items():
     idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _primitive_collisions_types:
