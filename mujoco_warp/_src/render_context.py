@@ -82,45 +82,28 @@ class RenderContext:
     cam_active: Optional[list[bool]] = None,
   ):
 
+    # Mesh BVHs
     nmesh = mjm.nmesh
     geom_enabled_idx = [i for i in range(mjm.ngeom) if mjm.geom_group[i] in enabled_geom_groups]
-
     used_mesh_ids = set(
       int(mjm.geom_dataid[g])
       for g in geom_enabled_idx
       if mjm.geom_type[g] == GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
     )
-
     self.mesh_registry = {}
     mesh_bvh_ids = [wp.uint64(0) for _ in range(nmesh)]
     mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
 
-    # Mesh BVHs
     for i in range(nmesh):
       if i not in used_mesh_ids:
         continue
-
-      v_start = mjm.mesh_vertadr[i]
-      v_end = v_start + mjm.mesh_vertnum[i]
-      points = mjm.mesh_vert[v_start:v_end]
-
-      f_start = mjm.mesh_faceadr[i]
-      f_end = mjm.mesh_face.shape[0] if (i + 1) >= nmesh else mjm.mesh_faceadr[i + 1]
-      indices = mjm.mesh_face[f_start:f_end]
-      indices = indices.flatten()
-
-      mesh = wp.Mesh(
-        points=wp.array(points, dtype=wp.vec3),
-        indices=wp.array(indices, dtype=wp.int32),
-        bvh_constructor="sah",
-      )
+      mesh, half = _build_mesh_bvh(mjm, i)
       self.mesh_registry[mesh.id] = mesh
       mesh_bvh_ids[i] = mesh.id
-
-      pmin = points.min(axis=0)
-      pmax = points.max(axis=0)
-      half = 0.5 * (pmax - pmin)
       mesh_bounds_size[i] = half
+
+    self.mesh_bvh_ids=wp.array(mesh_bvh_ids, dtype=wp.uint64)
+    self.mesh_bounds_size=wp.array(mesh_bounds_size, dtype=wp.vec3)
 
     # HField BVHs
     nhfield = int(mjm.nhfield)
@@ -136,10 +119,13 @@ class RenderContext:
     for hid in range(nhfield):
       if hid not in used_hfield_ids:
         continue
-      hmesh, hhalf = _make_hfield_mesh(mjm, hid)
+      hmesh, hhalf = _build_hfield_mesh(mjm, hid)
       self.hfield_registry[hmesh.id] = hmesh
       hfield_bvh_ids[hid] = hmesh.id
       hfield_bounds_size[hid] = hhalf
+
+    self.hfield_bvh_ids=wp.array(hfield_bvh_ids, dtype=wp.uint64)
+    self.hfield_bounds_size=wp.array(hfield_bounds_size, dtype=wp.vec3)
 
     # Flex BVHs
     self.flex_registry = {}
@@ -231,16 +217,10 @@ class RenderContext:
       )
       offset += cam_resolutions[idx][0] * cam_resolutions[idx][1]
 
-    self.bvh_ngeom=len(geom_enabled_idx)
     self.ncam=n_active_cams
     self.cam_id_map=wp.array(active_cam_indices, dtype=int)
     self.use_textures=use_textures
     self.use_shadows=use_shadows
-    self.enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int)
-    self.mesh_bvh_ids=wp.array(mesh_bvh_ids, dtype=wp.uint64)
-    self.mesh_bounds_size=wp.array(mesh_bounds_size, dtype=wp.vec3)
-    self.hfield_bvh_ids=wp.array(hfield_bvh_ids, dtype=wp.uint64)
-    self.hfield_bounds_size=wp.array(hfield_bounds_size, dtype=wp.vec3)
     self.mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2)
     self.mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int)
     self.mesh_texcoord_num=wp.array(mjm.mesh_texcoordnum, dtype=int)
@@ -248,6 +228,8 @@ class RenderContext:
     self.tex_data=tex_data_packed
     self.tex_height = wp.array(mjm.tex_height, dtype=int)
     self.tex_width = wp.array(mjm.tex_width, dtype=int)
+    self.bvh_ngeom=len(geom_enabled_idx)
+    self.enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int)
     self.lowers = wp.zeros(d.nworld * self.bvh_ngeom, dtype=wp.vec3)
     self.uppers = wp.zeros(d.nworld * self.bvh_ngeom, dtype=wp.vec3)
     self.groups = wp.zeros(d.nworld * self.bvh_ngeom, dtype=int)
@@ -374,95 +356,204 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array
   return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
 
 
-def _make_hfield_mesh(mjm: mujoco.MjModel, hfieldid: int) -> tuple[wp.Mesh, wp.vec3]:
+def _build_mesh_bvh(
+  mjm: mujoco.MjModel,
+  meshid: int,
+  constructor: str = "sah",
+  leaf_size: int = 1,
+) -> tuple[wp.Mesh, wp.vec3]:
+  """Create a Warp mesh BVH from mjcf mesh data."""
+  v_start = mjm.mesh_vertadr[meshid]
+  v_end = v_start + mjm.mesh_vertnum[meshid]
+  points = mjm.mesh_vert[v_start:v_end]
+
+  f_start = mjm.mesh_faceadr[meshid]
+  f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
+  indices = mjm.mesh_face[f_start:f_end]
+  indices = indices.flatten()
+  pmin = np.min(points, axis=0)
+  pmax = np.max(points, axis=0)
+  half = 0.5 * (pmax - pmin)
+
+  points = wp.array(points, dtype=wp.vec3)
+  indices = wp.array(indices, dtype=wp.int32)
+  mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
+
+  return mesh, half
+
+
+def _optimize_hfield_mesh(
+  data: np.ndarray,
+  nr: int,
+  nc: int,
+  sx: float,
+  sy: float,
+  sz_scale: float,
+  width: float,
+  height: float,
+) -> tuple[np.ndarray, np.ndarray]:
+  """
+  Greedy meshing for heightfield optimization.
+  
+  Merges coplanar adjacent cells into larger rectangles to
+  reduce triangle and vertex count.
+  """
+  points_map = {}
+  points_list = []
+  indices_list = []
+
+  def get_point_index(r, c):
+    if (r, c) in points_map:
+      return points_map[(r, c)]
+
+    # Compute vertex position
+    x = sx * (float(c) / width - 1.0)
+    y = sy * (float(r) / height - 1.0)
+    z = float(data[r, c]) * sz_scale
+
+    idx = len(points_list)
+    points_list.append([x, y, z])
+    points_map[(r, c)] = idx
+    return idx
+
+  visited = np.zeros((nr - 1, nc - 1), dtype=bool)
+
+  for r in range(nr - 1):
+    for c in range(nc - 1):
+      if visited[r, c]:
+        continue
+
+      # Check if current cell is planar
+      z00 = data[r, c]
+      z01 = data[r, c + 1]
+      z10 = data[r + 1, c]
+      z11 = data[r + 1, c + 1]
+
+      # Approx check for planarity: z00 + z11 == z01 + z10
+      is_planar = abs((z00 + z11) - (z01 + z10)) < 1e-5
+
+      if not is_planar:
+        # Must emit single cell (2 triangles)
+        idx00 = get_point_index(r, c)
+        idx01 = get_point_index(r, c + 1)
+        idx10 = get_point_index(r + 1, c)
+        idx11 = get_point_index(r + 1, c + 1)
+
+        # Tri 1: TL, TR, BR
+        indices_list.extend([idx00, idx01, idx11])
+        # Tri 2: TL, BR, BL
+        indices_list.extend([idx00, idx11, idx10])
+        visited[r, c] = True
+        continue
+
+      # If planar, try to expand
+      slope_x = z01 - z00
+      slope_y = z10 - z00
+      w = 1
+      h = 1
+
+      def fits_plane(rr, cc):
+        if rr >= nr - 1 or cc >= nc - 1:
+          return False
+        # Check planarity of the cell itself
+        cz00 = data[rr, cc]
+        cz01 = data[rr, cc + 1]
+        cz10 = data[rr + 1, cc]
+        cz11 = data[rr + 1, cc + 1]
+        if abs((cz00 + cz11) - (cz01 + cz10)) >= 1e-5:
+          return False
+
+        # Check if it lies on the SAME plane as start cell
+        # Expected z at (rr, cc)
+        z_pred = z00 + (rr - r) * slope_y + (cc - c) * slope_x
+        if abs(cz00 - z_pred) >= 1e-5:
+          return False
+        
+        # Since cell is planar and one corner matches, slopes must match if connected
+        cslope_x = cz01 - cz00
+        cslope_y = cz10 - cz00
+        if abs(cslope_x - slope_x) >= 1e-5 or abs(cslope_y - slope_y) >= 1e-5:
+          return False
+          
+        return True
+
+      # Expand width
+      while c + w < nc - 1 and not visited[r, c + w] and fits_plane(r, c + w):
+        w += 1
+
+      # Expand height
+      while r + h < nr - 1:
+        # Check entire row
+        row_ok = True
+        for k in range(w):
+          if visited[r + h, c + k] or not fits_plane(r + h, c + k):
+            row_ok = False
+            break
+        if row_ok:
+          h += 1
+        else:
+          break
+
+      # Mark visited
+      visited[r : r + h, c : c + w] = True
+
+      # Emit large quad
+      idx_tl = get_point_index(r, c)
+      idx_tr = get_point_index(r, c + w)
+      idx_bl = get_point_index(r + h, c)
+      idx_br = get_point_index(r + h, c + w)
+
+      # Tri 1: TL, TR, BR
+      indices_list.extend([idx_tl, idx_tr, idx_br])
+      # Tri 2: TL, BR, BL
+      indices_list.extend([idx_tl, idx_br, idx_bl])
+
+  return np.array(points_list, dtype=np.float32), np.array(indices_list, dtype=np.int32)
+
+
+def _build_hfield_mesh(
+  mjm: mujoco.MjModel,
+  hfieldid: int,
+  constructor: str = "sah",
+  leaf_size: int = 1,
+) -> tuple[wp.Mesh, wp.vec3]:
   """Create a Warp mesh BVH from mjcf heightfield data."""
   nr = int(mjm.hfield_nrow[hfieldid])
   nc = int(mjm.hfield_ncol[hfieldid])
   sz = np.asarray(mjm.hfield_size[hfieldid], dtype=np.float32)
 
   adr = int(mjm.hfield_adr[hfieldid])
-  data = wp.array(mjm.hfield_data[adr: adr + nr * nc], dtype=float)
+  # Use host data for optimization
+  data = mjm.hfield_data[adr: adr + nr * nc].reshape(nr, nc)
 
   width = 0.5 * max(nc - 1, 1)
   height = 0.5 * max(nr - 1, 1)
 
-  @wp.kernel
-  def _build_hfield_points_kernel(
-    nr: int,
-    nc: int,
-    sx: float,
-    sy: float,
-    sz_scale: float,
-    width: float,
-    height: float,
-    data: wp.array(dtype=float),
-    points: wp.array(dtype=wp.vec3),
-  ):
-    tid = wp.tid()
-    total = nr * nc
-    if tid >= total:
-      return
-    r = tid // nc
-    c = tid % nc
-    x = sx * (float(c) / width - 1.0)
-    y = sy * (float(r) / height - 1.0)
-    z = data[r * nc + c] * sz_scale
-    points[tid] = wp.vec3(x, y, z)
-
-  @wp.kernel
-  def _build_hfield_indices_kernel(
-    nr: int,
-    nc: int,
-    indices: wp.array(dtype=int),
-  ):
-    tid = wp.tid()
-    ncell = (nr - 1) * (nc - 1)
-    if tid >= ncell:
-      return
-    r = tid // (nc - 1)
-    c = tid % (nc - 1)
-    i00 = r * nc + c
-    i10 = r * nc + (c + 1)
-    i01 = (r + 1) * nc + c
-    i11 = (r + 1) * nc + (c + 1)
-    # first triangle (CCW): i00, i10, i11
-    base0 = (2 * tid) * 3
-    indices[base0 + 0] = i00
-    indices[base0 + 1] = i10
-    indices[base0 + 2] = i11
-    # second triangle (CCW): i00, i11, i01
-    base1 = (2 * tid + 1) * 3
-    indices[base1 + 0] = i00
-    indices[base1 + 1] = i11
-    indices[base1 + 2] = i01
-
-  n_points = int(nr * nc)
-  n_triangles = int((nr - 1) * (nc - 1) * 2)
-  points = wp.zeros(n_points, dtype=wp.vec3)
-  wp.launch(
-    kernel=_build_hfield_points_kernel,
-    dim=n_points,
-    inputs=[nr, nc, float(sz[0]), float(sz[1]), float(sz[2]), float(width), float(height), data, points],
+  points, indices = _optimize_hfield_mesh(
+      data,
+      nr,
+      nc,
+      float(sz[0]),
+      float(sz[1]),
+      float(sz[2]),
+      float(width),
+      float(height),
   )
+  pmin = np.min(points, axis=0)
+  pmax = np.max(points, axis=0)
+  half = 0.5 * (pmax - pmin)
 
-  indices = wp.zeros(n_triangles * 3, dtype=wp.int32)
-  wp.launch(
-    kernel=_build_hfield_indices_kernel,
-    dim=int((nr - 1) * (nc - 1)),
-    inputs=[nr, nc, indices],
-  )
+  points = wp.array(points, dtype=wp.vec3)
+  indices = wp.array(indices, dtype=wp.int32)
 
   mesh = wp.Mesh(
     points=points,
     indices=indices,
-    bvh_constructor="sah",
+    bvh_constructor=constructor,
+    bvh_leaf_size=leaf_size,
   )
 
-  min_h = float(np.min(data.numpy()))
-  max_h = float(np.max(data.numpy()))
-  half_z = 0.5 * (max_h - min_h) * float(sz[2])
-  bounds_half = wp.vec3(float(sz[0]), float(sz[1]), half_z)
-  return mesh, bounds_half
+  return mesh, half
 
 @wp.kernel
 def _make_face_2d_elements(
