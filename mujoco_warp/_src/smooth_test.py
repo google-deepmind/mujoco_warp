@@ -250,7 +250,7 @@ class SmoothTest(parameterized.TestCase):
   @parameterized.parameters("pendula.xml", "actuation/site.xml", "actuation/slidercrank.xml")
   def test_transmission(self, xml):
     """Tests transmission."""
-    mjm, mjd, m, d = test_data.fixture(xml, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE})
+    mjm, mjd, m, d = test_data.fixture(xml)
 
     for arr in (d.actuator_length, d.actuator_moment):
       arr.zero_()
