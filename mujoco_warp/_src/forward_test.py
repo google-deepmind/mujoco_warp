@@ -191,7 +191,7 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
   @parameterized.product(
-    jacobian=(mujoco.mjtJacobian.mjJAC_AUTO, mujoco.mjtJacobian.mjJAC_DENSE),
+    jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
     actuation=(0, DisableBit.ACTUATION),
     spring=(0, DisableBit.SPRING),
     damper=(0, DisableBit.DAMPER),
