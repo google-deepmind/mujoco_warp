@@ -48,7 +48,7 @@ class SmoothTest(parameterized.TestCase):
     xml = """
     <mujoco>
       <worldbody>
-        <body name="mocap_parent" mocap="true" pos="0 0 0">
+        <body name="mocap_parent" mocap="true">
           <geom type="sphere" size="0.1"/>
           <body name="child" pos="1 0 0">
             <geom type="box" size="0.1 0.1 0.1"/>
@@ -78,8 +78,8 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "initial xpos")
 
     # Expected: child should be at mocap_pos + (1, 0, 0) relative offset
-    np.testing.assert_allclose(initial_child_xpos, [1.0, 0.0, 0.0], atol=1e-5)
-    np.testing.assert_allclose(initial_site_xpos, [1.5, 0.0, 0.0], atol=1e-5)
+    _assert_eq(initial_child_xpos, [1.0, 0.0, 0.0], "initial child xpos")
+    _assert_eq(initial_site_xpos, [1.5, 0.0, 0.0], "initial site xpos")
 
     # Update mocap_pos to a new position
     new_mocap_pos = np.array([[2.0, 3.0, 4.0]], dtype=np.float32)
@@ -97,19 +97,15 @@ class SmoothTest(parameterized.TestCase):
     updated_site_xpos = d.site_xpos.numpy()[0, child_site_id]
 
     # Verify mocap body moved to new position
-    np.testing.assert_allclose(updated_mocap_xpos, new_mocap_pos[0], atol=1e-5, err_msg="Mocap body should be at new position")
+    _assert_eq(updated_mocap_xpos, new_mocap_pos[0], "Mocap body should be at new position")
 
     # KEY TEST: Child body should be at new_mocap_pos + (1, 0, 0)
     expected_child_pos = new_mocap_pos[0] + np.array([1.0, 0.0, 0.0])
-    np.testing.assert_allclose(
-      updated_child_xpos, expected_child_pos, atol=1e-5, err_msg="Child body should be offset from NEW mocap position"
-    )
+    _assert_eq(updated_child_xpos, expected_child_pos, "Child body should be offset from NEW mocap position")
 
     # Site should also be correctly positioned relative to new mocap position
     expected_site_pos = new_mocap_pos[0] + np.array([1.5, 0.0, 0.0])
-    np.testing.assert_allclose(
-      updated_site_xpos, expected_site_pos, atol=1e-5, err_msg="Site should be offset from NEW mocap position"
-    )
+    _assert_eq(updated_site_xpos, expected_site_pos, "Site should be offset from NEW mocap position")
 
     # Verify matches MuJoCo reference
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "updated xpos")
