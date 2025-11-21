@@ -147,20 +147,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         return True
     return False
 
-  for geoms in [
-    (types.GeomType.BOX, types.GeomType.BOX),
-    (types.GeomType.CAPSULE, types.GeomType.BOX),
-    (types.GeomType.CYLINDER, types.GeomType.BOX),
-    (types.GeomType.PLANE, types.GeomType.BOX),
-  ]:
-    for objtype, objid, reftype, refid in zip(
-      mjm.sensor_objtype[is_collision_sensor],
-      mjm.sensor_objid[is_collision_sensor],
-      mjm.sensor_reftype[is_collision_sensor],
-      mjm.sensor_refid[is_collision_sensor],
-    ):
-      if not_implemented(objtype, objid, geoms[0]) and not_implemented(reftype, refid, geoms[1]):
-        raise NotImplementedError(f"Collision sensors with {geoms[0]} and {geoms[1]} are not implemented.")
+  for objtype, objid, reftype, refid in zip(
+    mjm.sensor_objtype[is_collision_sensor],
+    mjm.sensor_objid[is_collision_sensor],
+    mjm.sensor_reftype[is_collision_sensor],
+    mjm.sensor_refid[is_collision_sensor],
+  ):
+    if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
+      raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
 
   # create opt
   opt = types.Option(**{f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)})
@@ -259,10 +253,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     nxn_pairid_contact[upper_tri_index(mjm.ngeom, mjm.pair_geom1[i], mjm.pair_geom2[i])] = i
 
   sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
+  collision_sensor_adr = np.full(mjm.nsensor, -1)
+  collision_sensor_adr[sensor_collision_adr] = np.arange(len(sensor_collision_adr))
+
   nxn_pairid_collision = -1 * np.ones(len(geom1), dtype=int)
   pairids = []
-  collision_geom_adr = [0]
-  m.sensor_collision_start_adr = []
+  sensor_collision_start_adr = []
   for i in range(sensor_collision_adr.size):
     sensorid = sensor_collision_adr[i]
     objtype = mjm.sensor_objtype[sensorid]
@@ -285,24 +281,20 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       id2 = refid
 
     # collide all pairs
-    geomid = 0
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
         pairid = upper_tri_index(mjm.ngeom, geom1id, geom2id)
 
         if pairid in pairids:
-          m.sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
+          sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
         else:
+          npairids = len(pairids)
+          nxn_pairid_collision[pairid] = npairids
+          sensor_collision_start_adr.append(npairids)
           pairids.append(pairid)
-          adr = collision_geom_adr[-1] + geomid
-          nxn_pairid_collision[pairid] = adr
-          m.sensor_collision_start_adr.append(adr)
-
-        geomid += 1
-    if i < sensor_collision_adr.size - 1:
-      collision_geom_adr.append(collision_geom_adr[-1] + n1 * n2)
 
   m.nsensorcollision = (nxn_pairid_collision >= 0).sum()
+  m.sensor_collision_start_adr = np.array(sensor_collision_start_adr)
   nxn_include = (nxn_pairid_contact > -2) | (nxn_pairid_collision >= 0)
 
   if nxn_include.sum() < 250_000:
