@@ -749,6 +749,21 @@ def put_data(
   efc.J[:, : mjd.nefc, : mjm.nv] = np.tile(efc_j, (nworld, 1, 1))
   efc.J = wp.array(efc.J, dtype=float)
 
+  # padding for block cholesky should be next multiple of 16 after m.nv
+  nv_pad = ((mjm.nv + 15) // 16) * 16
+
+  # pad correctly for blocked cholesky
+  efc_h = np.diag(np.ones(nv_pad))
+  efc.h = wp.array(np.full((nworld, nv_pad, nv_pad), efc_h), dtype=float)
+
+  efc.cholesky_L_tmp = wp.array(np.full((nworld, nv_pad, nv_pad), np.zeros((nv_pad, nv_pad))), dtype=float)
+  efc.cholesky_y_tmp = wp.array(np.full((nworld, nv_pad), np.zeros((nv_pad))), dtype=float)
+
+  efc_grad = np.zeros((nworld, nv_pad))
+  efc.grad = wp.array(np.full((nworld, nv_pad), efc_grad), dtype=float)
+
+  efc.Mgrad = wp.array(np.full((nworld, nv_pad), np.zeros((nv_pad))), dtype=float)
+
   # create data
   d_kwargs = {
     "contact": contact,

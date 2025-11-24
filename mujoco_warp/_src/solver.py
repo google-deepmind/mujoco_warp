@@ -1822,14 +1822,14 @@ def _update_gradient(m: types.Model, d: types.Data):
         update_gradient_cholesky_blocked(16),
         dim=d.nworld,
         inputs=[
-          d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),
+          d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)),
           d.efc.h,
           d.efc.done,
           m.nv,
           d.efc.cholesky_L_tmp,
-          d.efc.cholesky_y_tmp.reshape(shape=(d.nworld, m.nv, 1)),
+          d.efc.cholesky_y_tmp.reshape(shape=(d.nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
         ],
-        outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, m.nv, 1))],
+        outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
   else:
