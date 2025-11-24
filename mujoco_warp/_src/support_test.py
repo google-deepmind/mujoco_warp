@@ -321,8 +321,12 @@ class SupportTest(parameterized.TestCase):
         err_msg="Padding region should remain identity after factorization",
       )
 
-    # Compare with numpy cholesky on active region
-    L_numpy = np.linalg.cholesky(active_efc_h)
+    # The Hessian is stored lower-triangular only (JTDAJ kernel only writes lower triangle).
+    # Symmetrize it for comparison with Cholesky results.
+    active_efc_h_sym = np.tril(active_efc_h) + np.tril(active_efc_h, -1).T
+    
+    # Compare with numpy cholesky on symmetrized Hessian
+    L_numpy = np.linalg.cholesky(active_efc_h_sym)
     np.testing.assert_allclose(
       L_result[:nv, :nv],
       L_numpy,
@@ -331,8 +335,18 @@ class SupportTest(parameterized.TestCase):
       err_msg="Cholesky decomposition mismatch with numpy",
     )
 
-    # Verify solution: A @ x = b (solve test)
-    x_numpy = np.linalg.solve(active_efc_h, b)
+    # Verify L @ L.T = A (symmetrized Hessian)
+    A_reconstructed = L_result[:nv, :nv] @ L_result[:nv, :nv].T
+    np.testing.assert_allclose(
+      A_reconstructed,
+      active_efc_h_sym,
+      rtol=1e-5,
+      atol=1e-5,
+      err_msg="L @ L.T does not equal symmetrized Hessian",
+    )
+    
+    # Verify solution: A @ x = b using the symmetrized Hessian
+    x_numpy = np.linalg.solve(active_efc_h_sym, b)
     np.testing.assert_allclose(
       x_result[:nv],
       x_numpy,
