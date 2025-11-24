@@ -101,43 +101,14 @@ def create_blocked_cholesky_solve_func(block_size: int):
 
     # Forward substitution: solve L y = b
     for i in range(0, n, block_size):
-      i_end = i + block_size
       rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, 0))
-      if i > 0:
-        for j in range(0, i, block_size):
-          L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
-          y_block = wp.tile_load(tmp, shape=(block_size, 1), offset=(j, 0))
-          Ly_block = wp.tile_matmul(L_block, y_block)
-          rhs_tile -= Ly_block
+      for j in range(0, i, block_size):
+        L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
+        y_block = wp.tile_load(tmp, shape=(block_size, 1), offset=(j, 0))
+        Ly_block = wp.tile_matmul(L_block, y_block)
+        rhs_tile -= Ly_block
+      
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
-
-      # The following if pads the matrix if it is not divisible by block_size
-      if i + block_size > active_matrix_size:
-        num_tile_elements = block_size * block_size
-        num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-
-        for ii in range(num_iterations):
-          linear_index = tid_block + ii * num_threads_per_block
-          linear_index = linear_index % num_tile_elements
-          row = linear_index // block_size
-          col = linear_index % block_size
-          value = L_tile[row, col]
-          if i + row >= active_matrix_size or i + col >= active_matrix_size:
-            value = wp.where(row == col, float(1), float(0))
-          L_tile[row, col] = value
-
-        # Handle rhs
-        num_tile_elements = block_size
-        num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-
-        for ii in range(num_iterations):
-          linear_index = tid_block + ii * num_threads_per_block
-          linear_index = linear_index % num_tile_elements
-          value = rhs_tile[linear_index, 0]
-          if i + linear_index >= active_matrix_size:
-            value = float(0)
-          rhs_tile[linear_index, 0] = value
-
       y_tile = wp.tile_lower_solve(L_tile, rhs_tile)
       wp.tile_store(tmp, y_tile, offset=(i, 0))
 
@@ -145,41 +116,13 @@ def create_blocked_cholesky_solve_func(block_size: int):
     for i in range(n - block_size, -1, -block_size):
       i_end = i + block_size
       rhs_tile = wp.tile_load(tmp, shape=(block_size, 1), offset=(i, 0))
-      if i_end < n:
-        for j in range(i_end, n, block_size):
-          L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i))
-          L_T_tile = wp.tile_transpose(L_tile)
-          x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
-          L_T_x_tile = wp.tile_matmul(L_T_tile, x_tile)
-          rhs_tile -= L_T_x_tile
+      for j in range(i_end, n, block_size):
+        L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i))
+        L_T_tile = wp.tile_transpose(L_tile)
+        x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
+        L_T_x_tile = wp.tile_matmul(L_T_tile, x_tile)
+        rhs_tile -= L_T_x_tile
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
-
-      # The following if pads the matrix if it is not divisible by block_size
-      if i + block_size > active_matrix_size:
-        num_tile_elements = block_size * block_size
-        num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-
-        for ii in range(num_iterations):
-          linear_index = tid_block + ii * num_threads_per_block
-          linear_index = linear_index % num_tile_elements
-          row = linear_index // block_size
-          col = linear_index % block_size
-          value = L_tile[row, col]
-          if i + row >= active_matrix_size or i + col >= active_matrix_size:
-            value = wp.where(row == col, float(1), float(0))
-          L_tile[row, col] = value
-
-        # Handle rhs
-        num_tile_elements = block_size
-        num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-
-        for ii in range(num_iterations):
-          linear_index = tid_block + ii * num_threads_per_block
-          linear_index = linear_index % num_tile_elements
-          value = rhs_tile[linear_index, 0]
-          if i + linear_index >= active_matrix_size:
-            value = float(0)
-          rhs_tile[linear_index, 0] = value
 
       x_tile = wp.tile_upper_solve(wp.tile_transpose(L_tile), rhs_tile)
       wp.tile_store(x, x_tile, offset=(i, 0))

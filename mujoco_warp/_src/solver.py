@@ -1702,6 +1702,20 @@ def update_gradient_cholesky_blocked(tile_size: int):
 
   return kernel
 
+@wp.kernel
+def fix_padding_sparse(
+  efc_done_in: wp.array(dtype=bool),
+  nv: int,
+  efc_h_out: wp.array3d(dtype=float),
+):
+  worldid, elementid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  dofid = nv + elementid
+  efc_h_out[worldid, dofid, dofid] = 1.0
+ 
 
 def _update_gradient(m: types.Model, d: types.Data):
   # grad = Ma - qfrc_smooth - qfrc_constraint
@@ -1739,6 +1753,13 @@ def _update_gradient(m: types.Model, d: types.Data):
         update_gradient_set_h_qM_lower_sparse,
         dim=(d.nworld, m.qM_fullm_i.size),
         inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, d.efc.done],
+        outputs=[d.efc.h],
+      )
+
+      wp.launch(
+        fix_padding_sparse,
+        dim=(d.nworld, d.efc.h.shape[2] - m.nv),
+        inputs=[d.efc.done, m.nv],
         outputs=[d.efc.h],
       )
     else:

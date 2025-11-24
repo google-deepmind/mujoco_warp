@@ -177,6 +177,170 @@ class SupportTest(parameterized.TestCase):
     for field in state_integration:
       _assert_eq(getattr(d2, field).numpy()[1], getattr(mjd, field), field)
 
+  def test_block_cholesky(self):
+    """Tests block Cholesky decomposition and solve against numpy using n_humanoid model."""
+    from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
+    from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+    from mujoco_warp._src.support import nested_kernel
+    from pathlib import Path
+
+    # Load n_humanoid from benchmark directory (nv=81, larger than simple humanoid nv=27)
+    n_humanoid_path = Path(__file__).parent.parent.parent / "benchmark" / "humanoid" / "n_humanoid.xml"
+    mjm = mujoco.MjModel.from_xml_path(str(n_humanoid_path))
+    mjd = mujoco.MjData(mjm)
+    
+    # Add noise and initialize
+    np.random.seed(42)
+    mjd.qpos[:] += np.random.uniform(-0.1, 0.1, mjm.nq)
+    mjd.qvel[:] += np.random.uniform(-0.1, 0.1, mjm.nv)
+    mujoco.mj_step(mjm, mjd, 10)
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qacc_warmstart = mjd.qacc
+    
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=1)
+
+    # Run forward to populate everything including efc.h
+    mjwarp.forward(m, d)
+    
+    # Run solve to ensure efc.h is properly populated (needed for Newton solver)
+    mjwarp.solve(m, d)
+
+    # Get the constraint Hessian matrix size
+    nv = m.nv
+    nv_pad = d.efc.h.shape[2]
+    nworld = d.nworld
+
+    # Initialize the Hessian's padding region to identity
+    # This is required for the block cholesky algorithm to work correctly
+    efc_h_array = d.efc.h.numpy()
+    efc_h_array[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
+    d.efc.h.assign(efc_h_array)
+
+    # Save the efc.h matrix before we run our test (solve modifies internal state)
+    # Extract a copy of the matrix for verification
+    efc_h = d.efc.h.numpy()[0].copy()
+    active_efc_h = efc_h[:nv, :nv].copy()
+    
+    # Verify the matrix is positive definite by checking eigenvalues
+    eigvals = np.linalg.eigvalsh(active_efc_h)
+    self.assertGreater(eigvals.min(), 0, f"Matrix not positive definite, min eigenvalue: {eigvals.min()}")
+
+    # Create combined factor and solve kernel as in solver.py
+    @nested_kernel(module="unique", enable_backward=False)
+    def combined_cholesky_kernel(
+      grad_in: wp.array3d(dtype=float),
+      h_in: wp.array3d(dtype=float),
+      done_in: wp.array(dtype=bool),
+      matrix_size: int,
+      cholesky_L_tmp: wp.array3d(dtype=float),
+      cholesky_y_tmp: wp.array3d(dtype=float),
+      Mgrad_out: wp.array3d(dtype=float),
+    ):
+      worldid, tid_block = wp.tid()
+      TILE_SIZE = wp.static(16)
+
+      if done_in[worldid]:
+        return
+
+      wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
+      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
+        tid_block, cholesky_L_tmp[worldid], grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, Mgrad_out[worldid]
+      )
+
+    # Create test vector and fill the built-in arrays
+    b = np.random.randn(nv).astype(np.float32)
+    
+    # Reuse built-in arrays from data structure
+    # Fill d.efc.grad with test data
+    grad_np = d.efc.grad.numpy()
+    grad_np.fill(0)  # Zero out first
+    grad_np[0, :nv] = b
+    d.efc.grad.assign(grad_np)
+    
+    # Zero out the temporary arrays to ensure clean state
+    L_init = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
+    # Initialize padding region to identity
+    L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
+    d.efc.cholesky_L_tmp.assign(L_init)
+    
+    d.efc.cholesky_y_tmp.zero_()
+    d.efc.Mgrad.zero_()
+
+    
+    # Ensure done is False so kernel executes
+    d.efc.done.zero_()
+    
+    # Launch with same dimensions as solver.py, using built-in arrays
+    # Note: In io.py, d.efc.grad and d.efc.Mgrad are actually (nworld, nv_pad), despite types.py annotation
+    # But solver.py reshapes using d.efc.grad.shape[1] which is nv_pad
+    grad_shape_1 = d.efc.grad.shape[1]
+    wp.launch_tiled(
+      combined_cholesky_kernel,
+      dim=nworld,
+      inputs=[
+        d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)),
+        d.efc.h,
+        d.efc.done,
+        nv,
+        d.efc.cholesky_L_tmp,
+        d.efc.cholesky_y_tmp.reshape(shape=(nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
+      ],
+      outputs=[d.efc.Mgrad.reshape(shape=(nworld, d.efc.Mgrad.shape[1], 1))],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+    wp.synchronize()
+
+    # Get results from built-in arrays
+    L_result = d.efc.cholesky_L_tmp.numpy()[0]
+    x_result = d.efc.Mgrad.numpy()[0]
+    
+    # Verify padding outside active region doesn't affect active computation
+    # Off-diagonal padding should be zero (active region shouldn't touch padding)
+    np.testing.assert_array_equal(
+      L_result[nv:, :nv],
+      0.0,
+      err_msg="padding rows in active region were overwritten",
+    )
+    np.testing.assert_array_equal(
+      L_result[:nv, nv:],
+      0.0,
+      err_msg="padding columns in active region were overwritten",
+    )
+
+    # Check that padding region remains identity after factorization
+    padding_size = nv_pad - nv
+    if padding_size > 0:
+      padding_square = L_result[nv:, nv:]
+      expected_identity = np.eye(padding_size, dtype=np.float32)
+      np.testing.assert_allclose(
+        padding_square,
+        expected_identity,
+        rtol=1e-6,
+        atol=1e-6,
+        err_msg="Padding region should remain identity after factorization",
+      )
+
+    # Compare with numpy cholesky on active region
+    L_numpy = np.linalg.cholesky(active_efc_h)
+    np.testing.assert_allclose(
+      L_result[:nv, :nv],
+      L_numpy,
+      rtol=1e-4,
+      atol=1e-4,
+      err_msg="Cholesky decomposition mismatch with numpy",
+    )
+
+    # Verify solution: A @ x = b (solve test)
+    x_numpy = np.linalg.solve(active_efc_h, b)
+    np.testing.assert_allclose(
+      x_result[:nv],
+      x_numpy,
+      rtol=1e-3,
+      atol=1e-3,
+      err_msg="Solution mismatch with numpy",
+    )
+
 
 if __name__ == "__main__":
   wp.init()
