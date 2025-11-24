@@ -23,7 +23,6 @@ def create_blocked_cholesky_func(block_size: int):
   @wp.func
   def blocked_cholesky_func(
     # In:
-    tid_block: int,
     A: wp.array(dtype=float, ndim=2),
     active_matrix_size: int,
     # Out:
