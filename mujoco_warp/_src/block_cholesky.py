@@ -33,8 +33,6 @@ def create_blocked_cholesky_func(block_size: int):
 
     It returns a lower-triangular matrix L such that A = L L^T.
     """
-    num_threads_per_block = wp.block_dim()
-
     # Round up active_matrix_size to next multiple of block_size
     n = ((active_matrix_size + block_size - 1) // block_size) * block_size
 
@@ -45,20 +43,6 @@ def create_blocked_cholesky_func(block_size: int):
       # Load current diagonal block A[k:end, k:end]
       # and update with contributions from previously computed blocks.
       A_kk_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(k, k), storage="shared")
-      # The following if pads the matrix if it is not divisible by block_size
-      if k + block_size > active_matrix_size or k + block_size > active_matrix_size:
-        num_tile_elements = block_size * block_size
-        num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-
-        for i in range(num_iterations):
-          linear_index = tid_block + i * num_threads_per_block
-          linear_index = linear_index % num_tile_elements
-          row = linear_index // block_size
-          col = linear_index % block_size
-          value = A_kk_tile[row, col]
-          if k + row >= active_matrix_size or k + col >= active_matrix_size:
-            value = wp.where(row == col, float(1), float(0))
-          A_kk_tile[row, col] = value
 
       if k > 0:
         for j in range(0, k, block_size):
@@ -74,20 +58,6 @@ def create_blocked_cholesky_func(block_size: int):
       # Process the blocks below the current block
       for i in range(end, n, block_size):
         A_ik_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(i, k), storage="shared")
-        # The following if pads the matrix if it is not divisible by block_size
-        if i + block_size > active_matrix_size or k + block_size > active_matrix_size:
-          num_tile_elements = block_size * block_size
-          num_iterations = (num_tile_elements + num_threads_per_block - 1) // num_threads_per_block
-
-          for ii in range(num_iterations):
-            linear_index = tid_block + ii * num_threads_per_block
-            linear_index = linear_index % num_tile_elements
-            row = linear_index // block_size
-            col = linear_index % block_size
-            value = A_ik_tile[row, col]
-            if i + row >= active_matrix_size or k + col >= active_matrix_size:
-              value = wp.where(i + row == k + col, float(1), float(0))
-            A_ik_tile[row, col] = value
 
         if k > 0:
           for j in range(0, k, block_size):
