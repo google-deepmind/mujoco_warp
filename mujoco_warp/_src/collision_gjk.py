@@ -705,6 +705,7 @@ def signed_distance(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3):
     return normal, wp.dot(normal, v1)
   return normal, MJ_MAXVAL
 
+
 @wp.func
 def _gjk_intersect(result: GJKResult, iterations: int, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int):
   s = wp.vec4i(0, 1, 2, 3)
@@ -735,7 +736,7 @@ def _gjk_intersect(result: GJKResult, iterations: int, geom1: Geom, geom2: Geom,
     # if origin is on any affine hull, convergence will fail
     if dist[3] == 0.0 or dist[2] == 0.0 or dist[1] == 0.0 or dist[0] == 0.0:
       return result, -1
-    
+
     # find the face with the smallest distance to the origin
     i = wp.where(dist[0] < dist[1], 0, 1)
     j = wp.where(dist[2] < dist[3], 2, 3)
@@ -782,7 +783,7 @@ def _gjk_intersect(result: GJKResult, iterations: int, geom1: Geom, geom2: Geom,
       result.simplex_index2 = final_simplex_index2
 
       return result, 1
-    
+
     # replace worst vertex (farthest from origin) with new candidate
     sp = _support(geom1, geomtype1, normals[index])
     simplex1[s[index]] = sp.point
@@ -793,12 +794,12 @@ def _gjk_intersect(result: GJKResult, iterations: int, geom1: Geom, geom2: Geom,
     simplex_index2[s[index]] = sp.vertex_index
     geom2.index = sp.cached_index
     simplex[s[index]] = simplex1[s[index]] - simplex2[s[index]]
-    
+
     # found origin outside the Minkowski difference (return no collision)
     if wp.dot(normals[index], simplex[s[index]]) < 0.0:
       result.dist = MJ_MAXVAL
       return result, 0
-    
+
     i = (index + 1) & 3
     k = (index + 2) & 3
     swap = s[i]
