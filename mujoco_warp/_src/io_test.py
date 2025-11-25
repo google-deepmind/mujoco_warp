@@ -87,24 +87,28 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
-  def test_get_data_into(self):
+  @parameterized.named_parameters(
+    dict(testcase_name="nworld=1", nworld=1, world_id=0),
+    dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
+  )
+  def test_get_data_into(self, nworld, world_id):
     # keyframe=0: ncon=8, nefc=32
-    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0, nworld=nworld)
 
     # keyframe=2: ncon=0, nefc=0
     mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
 
     # check that mujoco._functions._realloc_con_efc allocates for contact and efc
-    mjwarp.get_data_into(mjd, mjm, d)
+    mjwarp.get_data_into(mjd, mjm, d, world_id=world_id)
     self.assertEqual(mjd.ncon, 8)
     self.assertEqual(mjd.nefc, 32)
 
     # compare fields
-    self.assertEqual(d.solver_niter.numpy()[0], mjd.solver_niter[0])
-    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
-    self.assertEqual(d.ne.numpy()[0], mjd.ne)
-    self.assertEqual(d.nf.numpy()[0], mjd.nf)
-    self.assertEqual(d.nl.numpy()[0], mjd.nl)
+    self.assertEqual(d.solver_niter.numpy()[world_id], mjd.solver_niter[0])
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon * nworld)
+    self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
+    self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
+    self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
 
     for field in [
       "energy",
@@ -176,10 +180,14 @@ class IOTest(parameterized.TestCase):
       "wrap_xpos",
       "sensordata",
     ]:
-      _assert_eq(getattr(d, field).numpy()[0].reshape(-1), getattr(mjd, field).reshape(-1), field)
+      _assert_eq(
+        getattr(d, field).numpy()[world_id].reshape(-1),
+        getattr(mjd, field).reshape(-1),
+        field,
+      )
 
     # contact
-    ncon = d.nacon.numpy()[0]
+    ncon = int(d.nacon.numpy()[0] / nworld)
     for field in [
       "dist",
       "pos",
@@ -193,10 +201,14 @@ class IOTest(parameterized.TestCase):
       "geom",
       # TODO(team): efc_address
     ]:
-      _assert_eq(getattr(d.contact, field).numpy()[:ncon].reshape(-1), getattr(mjd.contact, field).reshape(-1), field)
+      _assert_eq(
+        getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
+        getattr(mjd.contact, field).reshape(-1),
+        field,
+      )
 
     # efc
-    nefc = d.nefc.numpy()[0]
+    nefc = d.nefc.numpy()[world_id]
     for field in [
       "type",
       "id",
@@ -209,7 +221,11 @@ class IOTest(parameterized.TestCase):
       "state",
       "force",
     ]:
-      _assert_eq(getattr(d.efc, field).numpy()[0, :nefc].reshape(-1), getattr(mjd, "efc_" + field).reshape(-1), field)
+      _assert_eq(
+        getattr(d.efc, field).numpy()[world_id, :nefc].reshape(-1),
+        getattr(mjd, "efc_" + field).reshape(-1),
+        field,
+      )
 
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
@@ -275,6 +291,34 @@ class IOTest(parameterized.TestCase):
     mjd.qLD[:] = 0.0
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
+
+  def test_static_geom_collision_with_put_data(self):
+    """Test that static geoms (ground plane) work correctly with put_data."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option timestep="0.02"/>
+        <worldbody>
+          <geom name="ground" type="plane" pos="0 0 0" size="0 0 1"/>
+          <body name="box" pos="0 0 0.6">
+            <freejoint/>
+            <geom name="box" type="box" size="0.5 0.5 0.5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
+
+    # let the box fall and settle on the ground
+    for _ in range(30):
+      mjwarp.step(m, d)
+
+    # check that box is above ground
+    # box center should be at z ≈ 0.5 when resting on ground
+    box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate
+    self.assertGreater(box_z, 0.4, msg=f"Box fell through ground plane (z={box_z}, should be > 0.4)")
 
   def test_noslip_solver(self):
     with self.assertRaises(NotImplementedError):
@@ -403,27 +447,18 @@ class IOTest(parameterized.TestCase):
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
-  @parameterized.parameters(
-    '<distance geom1="box1" geom2="box2"/>',
-    '<distance geom1="capsule" geom2="box1"/>',
-    '<distance geom1="cylinder" geom2="box1"/>',
-    '<distance geom1="plane" geom2="box1"/>',
-  )
-  def test_collision_sensors(self, sensor):
+  def test_collision_sensor_box_box(self):
     """Tests for collision sensors that are not implemented."""
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
         xml=f"""
       <mujoco>
         <worldbody>
-          <geom name="plane" type="plane" size="10 10 .01"/>
-          <geom name="capsule" type="capsule" size=".1 .1"/>
-          <geom name="cylinder" type="cylinder" size=".1 .1"/>
           <geom name="box1" type="box" size=".1 .1 .1"/>
           <geom name="box2" type="box" size=".1 .1 .1"/>
         </worldbody>
         <sensor>
-          {sensor}
+          <distance geom1="box1" geom2="box2"/>
         </sensor>
       </mujoco>
       """
@@ -509,6 +544,28 @@ class IOTest(parameterized.TestCase):
     )
 
     self.assertEqual(m.opt.ls_parallel, True)
+
+  def test_contact_sensor_maxmatch(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.contact_sensor_maxmatch, 64)
+
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <custom>
+        <numeric data="5" name="contact_sensor_maxmatch"/>
+      </custom>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
 
 
 if __name__ == "__main__":

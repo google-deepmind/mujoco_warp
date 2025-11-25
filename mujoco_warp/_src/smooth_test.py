@@ -38,6 +38,79 @@ def _assert_eq(a, b, name):
 
 
 class SmoothTest(parameterized.TestCase):
+  def test_mocap_kinematics(self):
+    """Tests that mocap bodies and child bodies are correctly updated after mocap_pos changes.
+
+    This is a regression test for a bug where mocap positions were updated after kinematics,
+    causing child bodies of mocap bodies to have incorrect positions based on stale mocap data.
+    """
+    # Create a simple scene with a mocap body that has a child body attached
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="mocap_parent" mocap="true">
+          <geom type="sphere" size="0.1"/>
+          <body name="child" pos="1 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <site name="child_site" pos="0.5 0 0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nmocap, 1)
+
+    # Find mocap body and child body IDs
+    mocap_body_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "mocap_parent")
+    child_body_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "child")
+    child_site_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_SITE, "child_site")
+
+    # Initial kinematics
+    mjw.kinematics(m, d)
+    initial_mocap_xpos = d.xpos.numpy()[0, mocap_body_id]
+    initial_child_xpos = d.xpos.numpy()[0, child_body_id]
+    initial_site_xpos = d.site_xpos.numpy()[0, child_site_id].copy()
+
+    # Verify initial positions match MuJoCo
+    _assert_eq(d.xpos.numpy()[0], mjd.xpos, "initial xpos")
+
+    # Expected: child should be at mocap_pos + (1, 0, 0) relative offset
+    _assert_eq(initial_child_xpos, [1.0, 0.0, 0.0], "initial child xpos")
+    _assert_eq(initial_site_xpos, [1.5, 0.0, 0.0], "initial site xpos")
+
+    # Update mocap_pos to a new position
+    new_mocap_pos = np.array([[2.0, 3.0, 4.0]], dtype=np.float32)
+    d.mocap_pos.assign(new_mocap_pos)
+    mjd.mocap_pos[:] = new_mocap_pos
+
+    # Run kinematics again - this is the critical test
+    # Before the fix, this would compute child positions based on the OLD mocap position
+    mjw.kinematics(m, d)
+    mujoco.mj_kinematics(mjm, mjd)
+
+    # Check positions after update
+    updated_mocap_xpos = d.xpos.numpy()[0, mocap_body_id]
+    updated_child_xpos = d.xpos.numpy()[0, child_body_id]
+    updated_site_xpos = d.site_xpos.numpy()[0, child_site_id]
+
+    # Verify mocap body moved to new position
+    _assert_eq(updated_mocap_xpos, new_mocap_pos[0], "Mocap body should be at new position")
+
+    # KEY TEST: Child body should be at new_mocap_pos + (1, 0, 0)
+    expected_child_pos = new_mocap_pos[0] + np.array([1.0, 0.0, 0.0])
+    _assert_eq(updated_child_xpos, expected_child_pos, "Child body should be offset from NEW mocap position")
+
+    # Site should also be correctly positioned relative to new mocap position
+    expected_site_pos = new_mocap_pos[0] + np.array([1.5, 0.0, 0.0])
+    _assert_eq(updated_site_xpos, expected_site_pos, "Site should be offset from NEW mocap position")
+
+    # Verify matches MuJoCo reference
+    _assert_eq(d.xpos.numpy()[0], mjd.xpos, "updated xpos")
+    _assert_eq(d.site_xpos.numpy()[0], mjd.site_xpos, "updated site_xpos")
+
   def test_kinematics(self):
     """Tests kinematics."""
     _, mjd, m, d = test_data.fixture("pendula.xml")
@@ -113,7 +186,7 @@ class SmoothTest(parameterized.TestCase):
     else:
       qM = np.zeros((mjm.nv, mjm.nv))
       mujoco.mj_fullM(mjm, qM, mjd.qM)
-      _assert_eq(d.qM.numpy()[0], qM, "qM")
+      _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_m(self, jacobian):
@@ -386,7 +459,7 @@ class SmoothTest(parameterized.TestCase):
 
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
-    _assert_eq(d.qM.numpy()[0], qM, "qM")
+    _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
     # qfrc_bias
     d.qfrc_bias.zero_()
@@ -394,6 +467,30 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.rne(m, d)
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
+
+  def test_flex(self):
+    mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexedge_length.fill_(wp.inf)
+    d.flexedge_velocity.fill_(wp.inf)
+    d.flexedge_J.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    mujoco.mju_sparse2dense(
+      flexedge_J, mjd.flexedge_J.ravel(), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.ravel()
+    )
+
+    _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
+    _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
+    _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
+    _assert_eq(d.flexedge_J.numpy()[0], flexedge_J, "flexedge_J")
 
 
 if __name__ == "__main__":

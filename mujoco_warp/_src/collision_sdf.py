@@ -18,7 +18,7 @@ from typing import Tuple
 import warp as wp
 
 from .collision_primitive import contact_params
-from .collision_primitive import geom
+from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
 from .ray import ray_mesh
@@ -26,7 +26,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .types import vec5
-from .types import vec8f
+from .types import vec8
 from .types import vec8i
 from .util_misc import halton
 from .warp_util import event_scope
@@ -54,7 +54,7 @@ class VolumeData:
   half_size: wp.vec3
   oct_aabb: wp.array2d(dtype=wp.vec3)
   oct_child: wp.array(dtype=vec8i)
-  oct_coeff: wp.array(dtype=vec8f)
+  oct_coeff: wp.array(dtype=vec8)
   valid: bool = False
 
 
@@ -79,7 +79,7 @@ def get_sdf_params(
   # Model:
   oct_child: wp.array(dtype=vec8i),
   oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8f),
+  oct_coeff: wp.array(dtype=vec8),
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
   # In:
@@ -225,12 +225,12 @@ def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
 @wp.func
 def find_oct(
   oct_child: wp.array(dtype=vec8i), oct_aabb: wp.array2d(dtype=wp.vec3), p: wp.vec3, grad: bool
-) -> Tuple[int, Tuple[vec8f, vec8f, vec8f]]:
+) -> Tuple[int, Tuple[vec8, vec8, vec8]]:
   stack = int(0)
   niter = int(100)
-  rx = vec8f(0.0)
-  ry = vec8f(0.0)
-  rz = vec8f(0.0)
+  rx = vec8(0.0)
+  ry = vec8(0.0)
+  rz = vec8(0.0)
   eps = 1e-6
 
   while niter > 0:
@@ -621,7 +621,7 @@ def _sdf_narrowphase(
   nmeshface: int,
   oct_child: wp.array(dtype=vec8i),
   oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8f),
+  oct_coeff: wp.array(dtype=vec8),
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
@@ -650,11 +650,6 @@ def _sdf_narrowphase(
   mesh_polymapadr: wp.array(dtype=int),
   mesh_polymapnum: wp.array(dtype=int),
   mesh_polymap: wp.array(dtype=int),
-  hfield_size: wp.array(dtype=wp.vec4),
-  hfield_nrow: wp.array(dtype=int),
-  hfield_ncol: wp.array(dtype=int),
-  hfield_adr: wp.array(dtype=int),
-  hfield_data: wp.array(dtype=float),
   pair_dim: wp.array(dtype=int),
   pair_solref: wp.array2d(dtype=wp.vec2),
   pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -725,58 +720,34 @@ def _sdf_narrowphase(
     worldid,
   )
 
-  geom_size_id = worldid % geom_size.shape[0]
-  geom_xpos_id = worldid % geom_xpos_in.shape[0]
-  geom_xmat_id = worldid % geom_xmat_in.shape[0]
-  aabb_id = worldid % geom_aabb.shape[0]
+  geom1, geom2 = geom_collision_pair(
+    geom_type,
+    geom_dataid,
+    geom_size,
+    mesh_vertadr,
+    mesh_vertnum,
+    mesh_graphadr,
+    mesh_vert,
+    mesh_graph,
+    mesh_polynum,
+    mesh_polyadr,
+    mesh_polynormal,
+    mesh_polyvertadr,
+    mesh_polyvertnum,
+    mesh_polyvert,
+    mesh_polymapadr,
+    mesh_polymapnum,
+    mesh_polymap,
+    geom_xpos_in,
+    geom_xmat_in,
+    geoms,
+    worldid,
+  )
 
+  aabb_id = worldid % geom_aabb.shape[0]
   g1 = geoms[0]
   type1 = geom_type[g1]
-  geom1_dataid = geom_dataid[g1]
-  geom1 = geom(
-    type1,
-    geom1_dataid,
-    geom_size[geom_size_id, g1],
-    mesh_vertadr,
-    mesh_vertnum,
-    mesh_graphadr,
-    mesh_vert,
-    mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in[geom_xpos_id, g1],
-    geom_xmat_in[geom_xmat_id, g1],
-  )
 
-  geom2_dataid = geom_dataid[g2]
-  geom2 = geom(
-    type2,
-    geom2_dataid,
-    geom_size[geom_size_id, g2],
-    mesh_vertadr,
-    mesh_vertnum,
-    mesh_graphadr,
-    mesh_vert,
-    mesh_graph,
-    mesh_polynum,
-    mesh_polyadr,
-    mesh_polynormal,
-    mesh_polyvertadr,
-    mesh_polyvertnum,
-    mesh_polyvert,
-    mesh_polymapadr,
-    mesh_polymapnum,
-    mesh_polymap,
-    geom_xpos_in[geom_xpos_id, g2],
-    geom_xmat_in[geom_xmat_id, g2],
-  )
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
@@ -925,11 +896,6 @@ def sdf_narrowphase(m: Model, d: Data):
       m.mesh_polymapadr,
       m.mesh_polymapnum,
       m.mesh_polymap,
-      m.hfield_size,
-      m.hfield_nrow,
-      m.hfield_ncol,
-      m.hfield_adr,
-      m.hfield_data,
       m.pair_dim,
       m.pair_solref,
       m.pair_solreffriction,

@@ -51,7 +51,6 @@ class BroadphaseTest(parameterized.TestCase):
   )
   def test_broadphase(self, broadphase, filter):
     """Tests collision broadphase algorithms."""
-
     _XML = """
       <mujoco>
         <worldbody>

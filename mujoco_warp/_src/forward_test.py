@@ -373,6 +373,9 @@ class ForwardTest(parameterized.TestCase):
       return getattr(d, arr), False
 
     for arr in step1_field:
+      if arr in ("geom_xpos", "geom_xmat"):
+        # leave geom_xpos and geom_xmat untouched because they have static data
+        continue
       attr, _ = _getattr(arr)
       if attr.dtype == float:
         attr.fill_(wp.nan)
@@ -395,6 +398,7 @@ class ForwardTest(parameterized.TestCase):
         qM = np.zeros((mjm.nv, mjm.nv))
         mujoco.mj_fullM(mjm, qM, mjd.qM)
         mjd_arr = qM
+        d_arr = d_arr[: mjm.nv, : mjm.nv]
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
