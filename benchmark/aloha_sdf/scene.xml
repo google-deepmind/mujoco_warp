@@ -2,9 +2,7 @@
   <compiler autolimits="true" boundmass="0.01" boundinertia="9.9999999999999995e-07" angle="radian"
             texturedir="../../mujoco_warp/test_data/collision_sdf/asset" 
             meshdir="../aloha_pot"/>
-  <option impratio="10" cone="elliptic" sdf_iterations="10" sdf_initpoints="20">
-    <flag multiccd="enable"/>
-  </option>
+  <option impratio="10" cone="elliptic" sdf_iterations="10" sdf_initpoints="20"/>
   <visual>
     <global azimuth="90" elevation="-20" offwidth="848" offheight="480"/>
     <quality shadowsize="8192"/>
