@@ -447,27 +447,18 @@ class IOTest(parameterized.TestCase):
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
-  @parameterized.parameters(
-    '<distance geom1="box1" geom2="box2"/>',
-    '<distance geom1="capsule" geom2="box1"/>',
-    '<distance geom1="cylinder" geom2="box1"/>',
-    '<distance geom1="plane" geom2="box1"/>',
-  )
-  def test_collision_sensors(self, sensor):
+  def test_collision_sensor_box_box(self):
     """Tests for collision sensors that are not implemented."""
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
         xml=f"""
       <mujoco>
         <worldbody>
-          <geom name="plane" type="plane" size="10 10 .01"/>
-          <geom name="capsule" type="capsule" size=".1 .1"/>
-          <geom name="cylinder" type="cylinder" size=".1 .1"/>
           <geom name="box1" type="box" size=".1 .1 .1"/>
           <geom name="box2" type="box" size=".1 .1 .1"/>
         </worldbody>
         <sensor>
-          {sensor}
+          <distance geom1="box1" geom2="box2"/>
         </sensor>
       </mujoco>
       """
@@ -553,6 +544,28 @@ class IOTest(parameterized.TestCase):
     )
 
     self.assertEqual(m.opt.ls_parallel, True)
+
+  def test_contact_sensor_maxmatch(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.contact_sensor_maxmatch, 64)
+
+    _, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <custom>
+        <numeric data="5" name="contact_sensor_maxmatch"/>
+      </custom>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
 
 
 if __name__ == "__main__":
