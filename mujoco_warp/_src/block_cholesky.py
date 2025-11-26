@@ -44,12 +44,11 @@ def create_blocked_cholesky_func(block_size: int, matrix_size: int):
       # and update with contributions from previously computed blocks.
       A_kk_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(k, k), storage="shared")
 
-      if k > 0:
-        for j in range(0, k, block_size):
-          L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
-          L_block_T = wp.tile_transpose(L_block)
-          L_L_T_block = wp.tile_matmul(L_block, L_block_T)
-          A_kk_tile -= L_L_T_block
+      for j in range(0, k, block_size):
+        L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
+        L_block_T = wp.tile_transpose(L_block)
+        L_L_T_block = wp.tile_matmul(L_block, L_block_T)
+        A_kk_tile -= L_L_T_block
 
       # Compute the Cholesky factorization for the block
       L_kk_tile = wp.tile_cholesky(A_kk_tile)
@@ -59,13 +58,12 @@ def create_blocked_cholesky_func(block_size: int, matrix_size: int):
       for i in range(end, matrix_size, block_size):
         A_ik_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(i, k), storage="shared")
 
-        if k > 0:
-          for j in range(0, k, block_size):
-            L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
-            L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
-            L_T_tile = wp.tile_transpose(L_2_tile)
-            L_L_T_tile = wp.tile_matmul(L_tile, L_T_tile)
-            A_ik_tile -= L_L_T_tile
+        for j in range(0, k, block_size):
+          L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
+          L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
+          L_T_tile = wp.tile_transpose(L_2_tile)
+          L_L_T_tile = wp.tile_matmul(L_tile, L_T_tile)
+          A_ik_tile -= L_L_T_tile
 
         t = wp.tile_transpose(A_ik_tile)
         tmp = wp.tile_lower_solve(L_kk_tile, t)
