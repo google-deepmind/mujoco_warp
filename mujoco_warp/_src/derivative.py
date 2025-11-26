@@ -20,7 +20,6 @@ from .types import Data
 from .types import DisableBit
 from .types import DynType
 from .types import GainType
-from .types import IntegratorType
 from .types import Model
 from .types import vec10f
 from .warp_util import event_scope
