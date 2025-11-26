@@ -152,13 +152,9 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
     d: The data object containing the current state and output arrays (device).
     out: qM - dt * qDeriv (derivatives of smooth forces w.r.t velocities).
   """
-  if m.opt.integrator == IntegratorType.IMPLICITFAST:
-    qMi = m.qM_fullm_i
-    qMj = m.qM_fullm_j
-  # TODO(team): implicit
-  else:
-    qMi = m.dof_tri_row
-    qMj = m.dof_tri_col
+  qMi = m.qM_fullm_i
+  qMj = m.qM_fullm_j
+  # TODO(team): implicit requires different sparsity structure
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     wp.launch(
