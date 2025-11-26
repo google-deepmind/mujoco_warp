@@ -1694,9 +1694,9 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     if efc_done_in[worldid]:
       return
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE, matrix_size))(efc_h_in[worldid], cholesky_L_tmp[worldid])
-    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], efc_Mgrad_out[worldid]
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
+      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
 
   return kernel
