@@ -36,7 +36,8 @@ def _assert_eq(a, b, name):
 
 
 class DerivativeTest(parameterized.TestCase):
-  def test_smooth_vel(self):
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel(self, jacobian):
     """Tests qDeriv."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -89,19 +90,33 @@ class DerivativeTest(parameterized.TestCase):
     </mujoco>
     """,
       keyframe=0,
+      overrides={"opt.jacobian": jacobian},
     )
 
     mujoco.mj_step(mjm, mjd)  # step w/ implicitfast calls mjd_smooth_vel to compute qDeriv
 
-    out_smooth_vel = wp.empty((1, m.nv, m.nv), dtype=float)
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
-    mjw_qDeriv = (d.qM.numpy()[0][: m.nv, : m.nv] - out_smooth_vel.numpy()[0]) / m.opt.timestep.numpy()[0]
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
 
-    _assert_eq(mjw_qDeriv, mj_qDeriv, "qDeriv")
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
 
 if __name__ == "__main__":
