@@ -34,7 +34,6 @@ wp.set_module_options({"enable_backward": False})
 def _qderiv_actuator_passive_vel(
   # Model:
   nu: int,
-  opt_disableflags: int,
   actuator_dyntype: wp.array(dtype=int),
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
@@ -50,43 +49,40 @@ def _qderiv_actuator_passive_vel(
 ):
   worldid = wp.tid()
 
-  if not opt_disableflags & DisableBit.ACTUATION:
-    actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
-    actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
-    for actid in range(nu):
-      if actuator_gaintype[actid] == GainType.AFFINE:
-        gain = actuator_gainprm[actuator_gainprm_id, actid][2]
-      else:
-        gain = 0.0
+  actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
+  actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
+  for actid in range(nu):
+    if actuator_gaintype[actid] == GainType.AFFINE:
+      gain = actuator_gainprm[actuator_gainprm_id, actid][2]
+    else:
+      gain = 0.0
 
-      if actuator_biastype[actid] == BiasType.AFFINE:
-        bias = actuator_biasprm[actuator_biasprm_id, actid][2]
-      else:
-        bias = 0.0
+    if actuator_biastype[actid] == BiasType.AFFINE:
+      bias = actuator_biasprm[actuator_biasprm_id, actid][2]
+    else:
+      bias = 0.0
 
-      if bias == 0.0 and gain == 0.0:
-        vel_out[worldid, actid] = 0.0
-        continue
+    if bias == 0.0 and gain == 0.0:
+      vel_out[worldid, actid] = 0.0
+      continue
 
-      vel = float(bias)
-      if actuator_dyntype[actid] != DynType.NONE:
-        if gain != 0.0:
-          act_first = actuator_actadr[actid]
-          act_last = act_first + actuator_actnum[actid] - 1
-          vel += gain * act_in[worldid, act_last]
-      else:
-        if gain != 0.0:
-          vel += gain * ctrl_in[worldid, actid]
+    vel = float(bias)
+    if actuator_dyntype[actid] != DynType.NONE:
+      if gain != 0.0:
+        act_first = actuator_actadr[actid]
+        act_last = act_first + actuator_actnum[actid] - 1
+        vel += gain * act_in[worldid, act_last]
+    else:
+      if gain != 0.0:
+        vel += gain * ctrl_in[worldid, actid]
 
-      vel_out[worldid, actid] = vel
+    vel_out[worldid, actid] = vel
 
 
 @cache_kernel
 def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
-    # Model:
-    opt_disableflags: int,
     # Data in:
     vel_in: wp.array3d(dtype=float),
     actuator_moment_in: wp.array3d(dtype=float),
@@ -98,9 +94,6 @@ def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
     worldid, nodeid = wp.tid()
     TILE_SIZE = wp.static(tile.size)
     NU = wp.static(nu)
-
-    if opt_disableflags & DisableBit.ACTUATION:
-      return
 
     dofid = adr[nodeid]
     vel_tile = wp.tile_load(vel_in[worldid], shape=(NU, 1), bounds_check=False)
@@ -114,8 +107,6 @@ def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
 
 @wp.kernel
 def _qderiv_actuator_passive_actuation_sparse(
-  # Model:
-  opt_disableflags: int,
   # Data in:
   actuator_moment_in: wp.array3d(dtype=float),
   # In:
@@ -126,9 +117,6 @@ def _qderiv_actuator_passive_actuation_sparse(
   qDeriv_out: wp.array3d(dtype=float),
 ):
   worldid, actid = wp.tid()
-
-  if opt_disableflags & DisableBit.ACTUATION:
-    return
 
   vel = vel_in[worldid, actid]
   if vel == 0.0:
@@ -235,53 +223,53 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
     qDeriv.zero_()
     if m.nu > 0:
       vel = wp.empty((d.nworld, m.nu), dtype=float)
-      wp.launch(
-        _qderiv_actuator_passive_vel,
-        dim=(d.nworld,),
-        inputs=[
-          m.nu,
-          m.opt.disableflags,
-          m.actuator_dyntype,
-          m.actuator_gaintype,
-          m.actuator_biastype,
-          m.actuator_actadr,
-          m.actuator_actnum,
-          m.actuator_gainprm,
-          m.actuator_biasprm,
-          d.act,
-          d.ctrl,
-        ],
-        outputs=[vel],
-      )
+      if not m.opt.disableflags & DisableBit.ACTUATION:
+        wp.launch(
+          _qderiv_actuator_passive_vel,
+          dim=(d.nworld,),
+          inputs=[
+            m.nu,
+            m.actuator_dyntype,
+            m.actuator_gaintype,
+            m.actuator_biastype,
+            m.actuator_actadr,
+            m.actuator_actnum,
+            m.actuator_gainprm,
+            m.actuator_biasprm,
+            d.act,
+            d.ctrl,
+          ],
+          outputs=[vel],
+        )
 
       if m.opt.is_sparse:
-        wp.launch(
-          _qderiv_actuator_passive_actuation_sparse,
-          dim=(d.nworld, m.nu),
-          inputs=[
-            m.opt.disableflags,
-            d.actuator_moment,
-            vel,
-            qMi,
-            qMj,
-          ],
-          outputs=[qDeriv],
-        )
-      else:
-        vel_3d = vel.reshape(vel.shape + (1,))
-        for tile in m.qM_tiles:
-          wp.launch_tiled(
-            _qderiv_actuator_passive_actuation_dense(tile, m.nu),
-            dim=(d.nworld, tile.adr.size),
+        if not m.opt.disableflags & DisableBit.ACTUATION:
+          wp.launch(
+            _qderiv_actuator_passive_actuation_sparse,
+            dim=(d.nworld, m.nu),
             inputs=[
-              m.opt.disableflags,
-              vel_3d,
               d.actuator_moment,
-              tile.adr,
+              vel,
+              qMi,
+              qMj,
             ],
             outputs=[qDeriv],
-            block_dim=m.block_dim.mul_m_dense,
           )
+      else:
+        vel_3d = vel.reshape(vel.shape + (1,))
+        if not m.opt.disableflags & DisableBit.ACTUATION:
+          for tile in m.qM_tiles:
+            wp.launch_tiled(
+              _qderiv_actuator_passive_actuation_dense(tile, m.nu),
+              dim=(d.nworld, tile.adr.size),
+              inputs=[
+                vel_3d,
+                d.actuator_moment,
+                tile.adr,
+              ],
+              outputs=[qDeriv],
+              block_dim=m.block_dim.mul_m_dense,
+            )
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, qMi.size),
