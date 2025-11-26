@@ -19,12 +19,11 @@ import warp as wp
 
 
 @lru_cache(maxsize=None)
-def create_blocked_cholesky_func(block_size: int):
+def create_blocked_cholesky_func(block_size: int, matrix_size: int):
   @wp.func
   def blocked_cholesky_func(
     # In:
     A: wp.array(dtype=float, ndim=2),
-    active_matrix_size: int,
     # Out:
     L: wp.array(dtype=float, ndim=2),
   ):
@@ -32,8 +31,10 @@ def create_blocked_cholesky_func(block_size: int):
 
     It returns a lower-triangular matrix L such that A = L L^T.
     """
-    # Round up active_matrix_size to next multiple of block_size
-    n = ((active_matrix_size + block_size - 1) // block_size) * block_size
+    # workaround for compile error
+    n = matrix_size
+
+    #wp.printf("matrix_size: %d, n: %d\n", matrix_size, n)
 
     # Process the matrix in blocks along its leading dimension.
     for k in range(0, n, block_size):
@@ -55,7 +56,7 @@ def create_blocked_cholesky_func(block_size: int):
       wp.tile_store(L, L_kk_tile, offset=(k, k))
 
       # Process the blocks below the current block
-      for i in range(end, n, block_size):
+      for i in range(end, matrix_size, block_size):
         A_ik_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(i, k), storage="shared")
 
         if k > 0:
