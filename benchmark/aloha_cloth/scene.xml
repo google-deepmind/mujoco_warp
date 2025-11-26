@@ -1,6 +1,6 @@
 <mujoco model="aloha with cloth">
   <compiler autolimits="true" boundmass="0.01" boundinertia="9.9999999999999995e-07" angle="radian" meshdir="../aloha_pot"/>
-  <option timestep="0.0001" solver="CG" tolerance="1e-6" jacobian="sparse"/>
+  <option solver="CG" tolerance="1e-6" jacobian="sparse"/>
   <visual>
     <global azimuth="90" elevation="-20" offwidth="848" offheight="480"/>
     <quality shadowsize="8192"/>
@@ -306,8 +306,8 @@
     </body>
     <flexcomp name="towel" type="grid" count="30 30 1" spacing="0.014 0.014 0.014"
               radius="0.006" dim="2" rgba="1 0.5 0.5 1" pos="0 0 0" mass=".1">
-      <edge equality="false"/>
-      <elasticity young="3e4" poisson="0" thickness="2e-2" damping="1e-3" elastic2d="both"/>
+      <edge equality="true"/>
+      <elasticity young="3e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
       <contact vertcollide="true" conaffinity="0" contype="0"/>
     </flexcomp>
   </worldbody>

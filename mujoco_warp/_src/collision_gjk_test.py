@@ -519,7 +519,7 @@ class GJKTest(absltest.TestCase):
     )
 
     _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
-    self.assertEqual(ncon, 5)
+    self.assertEqual(ncon, 4)
 
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""

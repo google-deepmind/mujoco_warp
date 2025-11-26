@@ -232,14 +232,21 @@ def _flex_vertices(
 @wp.kernel
 def _flex_edges(
   # Model:
+  nv: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
+  dof_bodyid: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
+  flexedge_J_out: wp.array3d(dtype=float),
   flexedge_length_out: wp.array2d(dtype=float),
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
@@ -253,11 +260,20 @@ def _flex_edges(
   vecnorm = wp.length(vec)
   flexedge_length_out[worldid, edgeid] = vecnorm
   # TODO(quaglino): use Jacobian
-  i = body_dofadr[flex_vertbodyid[vbase + v[0]]]
-  j = body_dofadr[flex_vertbodyid[vbase + v[1]]]
+  b1 = flex_vertbodyid[vbase + v[0]]
+  b2 = flex_vertbodyid[vbase + v[1]]
+  i = body_dofadr[b1]
+  j = body_dofadr[b2]
   vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
   vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
-  flexedge_velocity_out[worldid, edgeid] = math.safe_div(wp.dot(vel2 - vel1, vec), vecnorm)
+  edge = wp.normalize(vec)
+  flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, edge)
+  # Edge jacobian
+  for k in range(nv):
+    jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, k, worldid)
+    jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, k, worldid)
+    jacdif = jacp2 - jacp1
+    flexedge_J_out[worldid, edgeid, k] = wp.dot(jacdif, edge)
 
 
 @event_scope
@@ -314,12 +330,28 @@ def kinematics(m: Model, d: Data):
     outputs=[d.site_xpos, d.site_xmat],
   )
 
+
+@event_scope
+def flex(m: Model, d: Data):
   wp.launch(_flex_vertices, dim=(d.nworld, m.nflexvert), inputs=[m.flex_vertbodyid, d.xpos], outputs=[d.flexvert_xpos])
   wp.launch(
     _flex_edges,
     dim=(d.nworld, m.nflexedge),
-    inputs=[m.body_dofadr, m.flex_vertadr, m.flex_vertbodyid, m.flex_edge, d.qvel, d.flexvert_xpos],
-    outputs=[d.flexedge_length, d.flexedge_velocity],
+    inputs=[
+      m.nv,
+      m.body_parentid,
+      m.body_rootid,
+      m.body_dofadr,
+      m.dof_bodyid,
+      m.flex_vertadr,
+      m.flex_vertbodyid,
+      m.flex_edge,
+      d.qvel,
+      d.subtree_com,
+      d.cdof,
+      d.flexvert_xpos,
+    ],
+    outputs=[d.flexedge_J, d.flexedge_length, d.flexedge_velocity],
   )
 
 

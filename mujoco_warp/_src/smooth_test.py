@@ -468,6 +468,30 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
+  def test_flex(self):
+    mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexedge_length.fill_(wp.inf)
+    d.flexedge_velocity.fill_(wp.inf)
+    d.flexedge_J.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    mujoco.mju_sparse2dense(
+      flexedge_J, mjd.flexedge_J.ravel(), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.ravel()
+    )
+
+    _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
+    _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
+    _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
+    _assert_eq(d.flexedge_J.numpy()[0], flexedge_J, "flexedge_J")
+
 
 if __name__ == "__main__":
   wp.init()

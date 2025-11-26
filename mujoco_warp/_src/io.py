@@ -49,6 +49,16 @@ def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.
   return array
 
 
+def is_sparse(mjm: mujoco.MjModel) -> bool:
+  if mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_AUTO:
+    if mjm.nv > 32:
+      return True
+    else:
+      return False
+  else:
+    return bool(mujoco.mj_isSparse(mjm))
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -155,7 +165,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.tolerance = max(opt.tolerance, 1e-6)
 
   # warp only fields
-  opt.is_sparse = bool(mujoco.mj_isSparse(mjm))
+  opt.is_sparse = is_sparse(mjm)
   ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
   opt.ls_parallel = (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1)
   opt.ls_parallel_min_step = 1.0e-6  # TODO(team): determine good default setting
@@ -359,6 +369,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.eq_wld_adr = np.nonzero(mjm.eq_type == types.EqType.WELD)[0]
   m.eq_jnt_adr = np.nonzero(mjm.eq_type == types.EqType.JOINT)[0]
   m.eq_ten_adr = np.nonzero(mjm.eq_type == types.EqType.TENDON)[0]
+  m.eq_flex_adr = np.nonzero(mjm.eq_type == types.EqType.FLEX)[0]
 
   # fixed tendon
   m.tendon_jnt_adr, m.wrap_jnt_adr = [], []
@@ -588,8 +599,8 @@ def make_data(
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if mujoco.mj_isSparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, is_sparse(mjm), tile_size)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -615,7 +626,7 @@ def make_data(
 
   d = types.Data(**d_kwargs)
 
-  if mujoco.mj_isSparse(mjm):
+  if is_sparse(mjm):
     d.qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     d.qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
   else:
@@ -687,8 +698,8 @@ def put_data(
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if mujoco.mj_isSparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, mujoco.mj_isSparse(mjm), tile_size)
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, is_sparse(mjm), tile_size)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -777,11 +788,13 @@ def put_data(
     "qLD": None,
     "ten_J": None,
     "actuator_moment": None,
+    "flexedge_J": None,
     "nacon": None,
     "ne_connect": None,
     "ne_weld": None,
     "ne_jnt": None,
     "ne_ten": None,
+    "ne_flex": None,
     "nsolving": None,
   }
   for f in dataclasses.fields(types.Data):
@@ -796,12 +809,9 @@ def put_data(
   d = types.Data(**d_kwargs)
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
-  if mujoco.mj_isSparse(mjm):
+  if is_sparse(mjm):
     d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
-    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
   else:
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
@@ -810,8 +820,21 @@ def put_data(
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
+
+  if mujoco.mj_isSparse(mjm):
+    ten_J = np.zeros((mjm.ntendon, mjm.nv))
+    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+    mujoco.mju_sparse2dense(
+      flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
+    )
+    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
+  else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+    flexedge_J = mjd.flexedge_J.reshape((mjm.nflexedge, mjm.nv))
+    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -823,6 +846,7 @@ def put_data(
   d.ne_weld = wp.full(nworld, 6 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active), dtype=int)
   d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
+  d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
   d.nsolving = wp.array([nworld], dtype=int)
 
   return d
@@ -924,6 +948,7 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
+  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id]
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -968,12 +993,9 @@ def get_data_into(
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
-  if mujoco.mj_isSparse(mjm):
+  if is_sparse(mjm):
     result.qM[:] = d.qM.numpy()[world_id, 0]
     result.qLD[:] = d.qLD.numpy()[world_id, 0]
-    if nefc > 0:
-      efc_J = d.efc.J.numpy()[world_id, efc_idx, : mjm.nv]
-      mujoco.mju_dense2sparse(result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
   else:
     qM = d.qM.numpy()[world_id]
     adr = 0
@@ -984,7 +1006,12 @@ def get_data_into(
         j = mjm.dof_parentid[j]
         adr += 1
     mujoco.mj_factorM(mjm, result)
-    if nefc > 0:
+
+  if nefc > 0:
+    if mujoco.mj_isSparse(mjm):
+      efc_J = d.efc.J.numpy()[world_id, efc_idx, : mjm.nv]
+      mujoco.mju_dense2sparse(result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
+    else:
       result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[world_id, :nefc, : mjm.nv].flatten()
 
   # efc
@@ -1083,6 +1110,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ne_weld_out: wp.array(dtype=int),
     ne_jnt_out: wp.array(dtype=int),
     ne_ten_out: wp.array(dtype=int),
+    ne_flex_out: wp.array(dtype=int),
     nsolving_out: wp.array(dtype=int),
   ):
     worldid = wp.tid()
@@ -1099,6 +1127,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ne_weld_out[worldid] = 0
     ne_jnt_out[worldid] = 0
     ne_ten_out[worldid] = 0
+    ne_flex_out[worldid] = 0
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
@@ -1106,8 +1135,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       nsolving_out[0] = nworld_in
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
+    qpos0_id = worldid % qpos0.shape[0]
     for i in range(nq):
-      qpos_out[worldid, i] = qpos0[worldid, i]
+      qpos_out[worldid, i] = qpos0[qpos0_id, i]
       if i < nv:
         qvel_out[worldid, i] = 0.0
         qacc_warmstart_out[worldid, i] = 0.0
@@ -1265,6 +1295,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.ne_weld,
       d.ne_jnt,
       d.ne_ten,
+      d.ne_flex,
       d.nsolving,
     ],
   )
