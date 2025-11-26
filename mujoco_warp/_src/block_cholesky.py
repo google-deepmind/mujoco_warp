@@ -42,7 +42,7 @@ def create_blocked_cholesky_func(block_size: int):
       A_kk_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(k, k), storage="shared")
 
       for j in range(0, k, block_size):
-        L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
+        L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j), storage="shared")
         L_block_T = wp.tile_transpose(L_block)
         wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
 
@@ -55,8 +55,8 @@ def create_blocked_cholesky_func(block_size: int):
         A_ik_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(i, k), storage="shared")
 
         for j in range(0, k, block_size):
-          L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
-          L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
+          L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j), storage="shared")
+          L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j), storage="shared")
           L_T_tile = wp.tile_transpose(L_2_tile)
           wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
 
@@ -88,28 +88,28 @@ def create_blocked_cholesky_solve_func(block_size: int):
     """
     # Forward substitution: solve L y = b
     for i in range(0, matrix_size, block_size):
-      rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, 0))
+      rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, 0), storage="shared", bounds_check=False)
       for j in range(0, i, block_size):
-        L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
-        y_block = wp.tile_load(tmp, shape=(block_size, 1), offset=(j, 0))
+        L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j), storage="shared")
+        y_block = wp.tile_load(tmp, shape=(block_size, 1), offset=(j, 0), storage="shared", bounds_check=False)
         wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
       
-      L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
+      L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
       y_tile = wp.tile_lower_solve(L_tile, rhs_tile)
-      wp.tile_store(tmp, y_tile, offset=(i, 0))
+      wp.tile_store(tmp, y_tile, offset=(i, 0), bounds_check=False)
 
     # Backward substitution: solve L^T x = y
     for i in range(matrix_size - block_size, -1, -block_size):
       i_end = i + block_size
-      rhs_tile = wp.tile_load(tmp, shape=(block_size, 1), offset=(i, 0))
+      rhs_tile = wp.tile_load(tmp, shape=(block_size, 1), offset=(i, 0), storage="shared", bounds_check=False)
       for j in range(i_end, matrix_size, block_size):
-        L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i))
+        L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i), storage="shared")
         L_T_tile = wp.tile_transpose(L_tile)
-        x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
+        x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0), storage="shared", bounds_check=False)
         wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
-      L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
+      L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
 
       x_tile = wp.tile_upper_solve(wp.tile_transpose(L_tile), rhs_tile)
-      wp.tile_store(x, x_tile, offset=(i, 0))
+      wp.tile_store(x, x_tile, offset=(i, 0), bounds_check=False)
 
   return blocked_cholesky_solve_func
