@@ -16,6 +16,16 @@
 from mujoco_warp._src import benchmark
 
 
+class AlohaCloth(benchmark.BenchmarkSuite):
+  """Aloha robot with a towel on the workbench."""
+
+  path = "aloha_cloth/scene.xml"
+  params = benchmark.BenchmarkSuite.params + ("step.euler",)
+  batch_size = 256
+  nconmax = 920
+  njmax = 3606
+
+
 class AlohaPot(benchmark.BenchmarkSuite):
   """Aloha robot with a pasta pot on the workbench."""
 
@@ -72,9 +82,9 @@ class Cloth(benchmark.BenchmarkSuite):
 
   path = "cloth/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
-  batch_size = 2048
-  nconmax = 84
-  njmax = 140
+  batch_size = 256
+  nconmax = 200
+  njmax = 600
 
 
 class FrankaEmikaPanda(benchmark.BenchmarkSuite):
