@@ -76,14 +76,13 @@ def create_blocked_cholesky_func(block_size: int):
 
 
 @lru_cache(maxsize=None)
-def create_blocked_cholesky_solve_func(block_size: int):
+def create_blocked_cholesky_solve_func(block_size: int, matrix_size: int):
   @wp.func
   def blocked_cholesky_solve_func(
     # In:
     L: wp.array(dtype=float, ndim=2),
     b: wp.array(dtype=float, ndim=2),
     tmp: wp.array(dtype=float, ndim=2),
-    active_matrix_size: int,
     # Out:
     x: wp.array(dtype=float, ndim=2),
   ):
@@ -92,13 +91,9 @@ def create_blocked_cholesky_solve_func(block_size: int):
     Solves A x = b given the Cholesky factor L (A = L L^T) using blocked forward and backward
     substitution.
     """
-    num_threads_per_block = wp.block_dim()
-
-    # Round up active_matrix_size to next multiple of block_size
-    n = ((active_matrix_size + block_size - 1) // block_size) * block_size
 
     # Forward substitution: solve L y = b
-    for i in range(0, n, block_size):
+    for i in range(0, matrix_size, block_size):
       rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, 0))
       for j in range(0, i, block_size):
         L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
@@ -111,10 +106,10 @@ def create_blocked_cholesky_solve_func(block_size: int):
       wp.tile_store(tmp, y_tile, offset=(i, 0))
 
     # Backward substitution: solve L^T x = y
-    for i in range(n - block_size, -1, -block_size):
+    for i in range(matrix_size - block_size, -1, -block_size):
       i_end = i + block_size
       rhs_tile = wp.tile_load(tmp, shape=(block_size, 1), offset=(i, 0))
-      for j in range(i_end, n, block_size):
+      for j in range(i_end, matrix_size, block_size):
         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i))
         L_T_tile = wp.tile_transpose(L_tile)
         x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))

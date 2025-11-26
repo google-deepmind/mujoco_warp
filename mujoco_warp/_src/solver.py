@@ -1676,14 +1676,13 @@ def update_gradient_cholesky(tile_size: int):
 
 
 @cache_kernel
-def update_gradient_cholesky_blocked(tile_size: int):
+def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     efc_grad_in: wp.array3d(dtype=float),
     efc_h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
-    matrix_size: int,
     cholesky_L_tmp: wp.array3d(dtype=float),
     cholesky_y_tmp: wp.array3d(dtype=float),
     # Data out:
@@ -1696,8 +1695,8 @@ def update_gradient_cholesky_blocked(tile_size: int):
       return
 
     wp.static(create_blocked_cholesky_func(TILE_SIZE))(efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
-    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
-      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, efc_Mgrad_out[worldid]
+    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], efc_Mgrad_out[worldid]
     )
 
   return kernel
@@ -1840,13 +1839,12 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch_tiled(
-        update_gradient_cholesky_blocked(16),
+        update_gradient_cholesky_blocked(16, d.efc.h.shape[1]),
         dim=d.nworld,
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)),
           d.efc.h,
           d.efc.done,
-          m.nv,
           d.efc.cholesky_L_tmp,
           d.efc.cholesky_y_tmp.reshape(shape=(d.nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
         ],

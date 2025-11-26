@@ -226,13 +226,14 @@ class SupportTest(parameterized.TestCase):
     eigvals = np.linalg.eigvalsh(active_efc_h)
     self.assertGreater(eigvals.min(), 0, f"Matrix not positive definite, min eigenvalue: {eigvals.min()}")
 
+    matrix_size = d.efc.h.shape[1]
+
     # Create combined factor and solve kernel as in solver.py
     @nested_kernel(module="unique", enable_backward=False)
     def combined_cholesky_kernel(
       grad_in: wp.array3d(dtype=float),
       h_in: wp.array3d(dtype=float),
       done_in: wp.array(dtype=bool),
-      matrix_size: int,
       cholesky_L_tmp: wp.array3d(dtype=float),
       cholesky_y_tmp: wp.array3d(dtype=float),
       Mgrad_out: wp.array3d(dtype=float),
@@ -244,8 +245,8 @@ class SupportTest(parameterized.TestCase):
         return
 
       wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
-      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
-        cholesky_L_tmp[worldid], grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, Mgrad_out[worldid]
+      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+        cholesky_L_tmp[worldid], grad_in[worldid], cholesky_y_tmp[worldid], Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -282,7 +283,6 @@ class SupportTest(parameterized.TestCase):
         d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)),
         d.efc.h,
         d.efc.done,
-        nv,
         d.efc.cholesky_L_tmp,
         d.efc.cholesky_y_tmp.reshape(shape=(nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
       ],
