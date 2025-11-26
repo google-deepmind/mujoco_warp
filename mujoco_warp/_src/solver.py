@@ -1849,7 +1849,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.cholesky_y_tmp.reshape(shape=(d.nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
         ],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
-        block_dim=m.block_dim.update_gradient_cholesky,
+        block_dim=32#m.block_dim.update_gradient_cholesky,
       )
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")
