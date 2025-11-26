@@ -237,7 +237,7 @@ class SupportTest(parameterized.TestCase):
       cholesky_y_tmp: wp.array3d(dtype=float),
       Mgrad_out: wp.array3d(dtype=float),
     ):
-      worldid, tid_block = wp.tid()
+      worldid = wp.tid()
       TILE_SIZE = wp.static(16)
 
       if done_in[worldid]:

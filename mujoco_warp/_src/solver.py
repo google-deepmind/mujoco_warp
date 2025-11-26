@@ -1689,7 +1689,7 @@ def update_gradient_cholesky_blocked(tile_size: int):
     # Data out:
     efc_Mgrad_out: wp.array3d(dtype=float),
   ):
-    worldid, tid_block = wp.tid()
+    worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
     if efc_done_in[worldid]:
