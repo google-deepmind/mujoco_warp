@@ -80,7 +80,6 @@ def create_blocked_cholesky_solve_func(block_size: int):
   @wp.func
   def blocked_cholesky_solve_func(
     # In:
-    tid_block: int,
     L: wp.array(dtype=float, ndim=2),
     b: wp.array(dtype=float, ndim=2),
     tmp: wp.array(dtype=float, ndim=2),
