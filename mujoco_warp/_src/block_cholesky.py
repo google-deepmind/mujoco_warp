@@ -34,8 +34,6 @@ def create_blocked_cholesky_func(block_size: int, matrix_size: int):
     # workaround for compile error
     n = matrix_size
 
-    #wp.printf("matrix_size: %d, n: %d\n", matrix_size, n)
-
     # Process the matrix in blocks along its leading dimension.
     for k in range(0, n, block_size):
       end = k + block_size
