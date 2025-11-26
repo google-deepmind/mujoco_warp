@@ -191,7 +191,7 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
   @parameterized.product(
-    jacobian=(mujoco.mjtJacobian.mjJAC_AUTO, mujoco.mjtJacobian.mjJAC_DENSE),
+    jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
     actuation=(0, DisableBit.ACTUATION),
     spring=(0, DisableBit.SPRING),
     damper=(0, DisableBit.DAMPER),
@@ -398,7 +398,6 @@ class ForwardTest(parameterized.TestCase):
         qM = np.zeros((mjm.nv, mjm.nv))
         mujoco.mj_fullM(mjm, qM, mjd.qM)
         mjd_arr = qM
-        d_arr = d_arr[: mjm.nv, : mjm.nv]
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
