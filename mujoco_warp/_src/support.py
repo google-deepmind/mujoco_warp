@@ -27,7 +27,7 @@ from .types import TileSet
 from .types import vec5
 from .warp_util import cache_kernel
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -95,7 +95,7 @@ def mul_m_sparse_ij(check_skip: bool):
 
 @cache_kernel
 def mul_m_dense(tile: TileSet, check_skip: bool):
-  """Returns a matmul kernel for some tile size"""
+  """Returns a matmul kernel for some tile size."""
 
   @nested_kernel(module="unique", enable_backward=False)
   def _mul_m_dense(
@@ -133,17 +133,16 @@ def mul_m(
   skip: Optional[wp.array] = None,
   M: Optional[wp.array] = None,
 ):
-  """Multiply vectors by inertia matrix.
+  """Multiply vectors by inertia matrix; optionally skip per world.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    res (wp.array2d(dtype=float)): Result: qM @ vec.
-    vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
-    skip (wp.array(dtype=float)): Skip output.
-    M (wp.array3d(dtype=float), optional): Input matrix: M @ vec.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    res: Result: qM @ vec.
+    vec: Input vector to multiply by qM.
+    skip: Per-world bitmask to skip computing output.
+    M: Input matrix: M @ vec.
   """
-
   check_skip = skip is not None
   skip = skip or wp.empty(0, dtype=bool)
 
@@ -238,13 +237,12 @@ def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: w
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  """
-  Map applied forces at each body via Jacobians to dof space and accumulate.
+  """Map applied forces at each body via Jacobians to dof space and accumulate.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    qfrc (wp.array2d(dtype=float)): Total applied force mapped to dof space.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    qfrc: Total applied force mapped to dof space.
   """
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
 
@@ -392,25 +390,20 @@ def contact_force_kernel(
 
 
 def contact_force(
-  m: Model,
-  d: Data,
-  contact_ids: wp.array(dtype=int),
-  to_world_frame: bool,
-  force: wp.array(dtype=wp.spatial_vector),
+  m: Model, d: Data, contact_ids: wp.array(dtype=int), to_world_frame: bool, force: wp.array(dtype=wp.spatial_vector)
 ):
-  """
-  Compute forces for contacts in Data.
+  """Compute forces for contacts in Data.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    contact_ids (wp.array(dtype=int)): IDs for each contact.
-    to_world_frame (bool): If True, map force from contact to world frame.
-    force (wp.array(dtype=wp.spatial_vector)): Contact forces.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    contact_ids: IDs for each contact.
+    to_world_frame: If True, map force from contact to world frame.
+    force: Contact forces.
   """
   wp.launch(
     contact_force_kernel,
-    dim=(contact_ids.size,),
+    dim=contact_ids.size,
     inputs=[
       m.opt.cone,
       d.contact.frame,
@@ -548,16 +541,16 @@ def jac_dot(
 
 
 def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
-  """
-  Copy concatenated state components specified by sig from Data into state. The bits of the integer
-  sig correspond to element fields of State.
+  """Copy concatenated state components specified by sig from Data into state.
+
+  The bits of the integer sig correspond to element fields of State.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output information (device).
-    state (array2d): Concatenation of state components.
-    sig (int): Bitflag specifying state components.
-    active (array): Per-world bitmask for getting state.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output information (device).
+    state: Concatenation of state components.
+    sig: Bitflag specifying state components.
+    active: Per-world bitmask for getting state.
   """
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
@@ -687,16 +680,16 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
 
 
 def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
-  """
-  Copy concatenated state components specified by sig from state into Data. The bits of the integer
-  sig correspond to element fields of State.
+  """Copy concatenated state components specified by sig from state into Data.
+
+  The bits of the integer sig correspond to element fields of State.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output information (device).
-    state (array2d): Concatenation of state components.
-    sig (int): Bitflag specifying state components.
-    active (array): Per-world bitmask for setting state.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output information (device).
+    state: Concatenation of state components.
+    sig: Bitflag specifying state components.
+    active: Per-world bitmask for setting state.
   """
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")

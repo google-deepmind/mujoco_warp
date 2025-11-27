@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import warp as wp
 
@@ -40,7 +40,6 @@ def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
   Returns:
       3D point and 3D direction in local geom frame
   """
-
   matT = wp.transpose(mat)
   lpnt = matT @ (pnt - pos)
   lvec = matT @ vec
@@ -184,7 +183,6 @@ def _ray_triangle(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, pnt: wp.vec3, vec: wp.v
 @wp.func
 def ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a plane."""
-
   # map to local frame
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
@@ -256,6 +254,10 @@ def ray_sphere_with_normal(
 def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a capsule."""
 
+
+@wp.func
+def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+  """Returns the distance at which a ray intersects with a capsule."""
   # bounding sphere test
   ssz = size[0] + size[1]
   if ray_sphere(pos, ssz * ssz, pnt, vec) < 0.0:
@@ -338,6 +340,11 @@ def ray_capsule_with_normal(
 def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with an ellipsoid."""
 
+
+
+@wp.func
+def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+  """Returns the distance at which a ray intersects with an ellipsoid."""
   # map to local frame
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
@@ -755,7 +762,6 @@ def ray_flex_with_bvh(
 @wp.func
 def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> float:
   """Returns distance along ray to intersection with geom, or infinity if none."""
-
   # TODO(team): static loop unrolling to remove unnecessary branching
   if geomtype == GeomType.PLANE:
     return ray_plane(pos, mat, size, pnt, vec)
@@ -959,29 +965,24 @@ def ray(
   d: Data,
   pnt: wp.array2d(dtype=wp.vec3),
   vec: wp.array2d(dtype=wp.vec3),
-  geomgroup: vec6 = None,
+  geomgroup: Optional[vec6] = None,
   flg_static: bool = True,
   bodyexclude: int = -1,
-) -> tuple[wp.array2d(dtype=float), wp.array2d(dtype=int)]:
+) -> Tuple[wp.array, wp.array]:
   """Returns the distance at which rays intersect with primitive geoms.
 
   Args:
-      m (Model): The model containing kinematic and dynamic information (device).
-      d (Data): The data object containing the current state and output arrays (device).
-      pnt (wp.array2d(dtype=wp.vec3)): Ray origin points.
-      vec (wp.array2d(dtype=wp.vec3)): Ray directions.
-      geomgroup (vec6, optional): Group inclusion/exclusion mask.
-                                  If all are wp.inf, ignore.
-      flg_static (bool, optional): If True, allows rays to intersect with static geoms.
-                                   Defaults to True.
-      bodyexclude (int, optional): Ignore geoms on specified body id (-1 to disable).
-                                   Defaults to -1.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    pnt: Ray origin points.
+    vec: Ray directions.
+    geomgroup: Group inclusion/exclusion mask. If all are wp.inf, ignore.
+    flg_static: If True, allows rays to intersect with static geoms.
+    bodyexclude: Ignore geoms on specified body id (-1 to disable).
 
   Returns:
-      wp.array2d(dtype=float): Distances from ray origins to geom surfaces.
-      wp.array2d(dtype=int): IDs of intersected geoms (-1 if none).
+    Distances from ray origins to geom surfaces and IDs of intersected geoms (-1 if none).
   """
-
   assert pnt.shape[0] == 1
   assert pnt.shape[0] == vec.shape[0]
 

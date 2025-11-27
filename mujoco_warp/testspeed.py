@@ -119,7 +119,6 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
 
 def _main(argv: Sequence[str]):
   """Runs testpeed app."""
-
   if len(argv) < 2:
     raise app.UsageError("Missing required input: mjcf path.")
   elif len(argv) > 2:

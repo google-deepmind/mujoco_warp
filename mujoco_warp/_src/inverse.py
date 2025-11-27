@@ -68,8 +68,13 @@ def _qfrc_inverse(
 
 
 def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float)):
-  """Convert discrete-time qacc to continuous-time qacc."""
+  """Convert discrete-time qacc to continuous-time qacc.
 
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    qacc: Acceleration.
+  """
   qfrc = wp.empty((d.nworld, m.nv), dtype=float)
 
   if m.opt.integrator == IntegratorType.RK4:
@@ -110,7 +115,6 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float)):
 
 def inv_constraint(m: Model, d: Data):
   """Inverse constraint solver."""
-
   # no constraints
   if d.njmax == 0:
     d.qfrc_constraint.zero_()

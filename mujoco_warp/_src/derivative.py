@@ -75,14 +75,21 @@ def _qderiv_actuator_passive(
       else:
         bias = 0.0
 
-      if actuator_dyntype[actid] != DynType.NONE:
-        act_first = actuator_actadr[actid]
-        act_last = act_first + actuator_actnum[actid] - 1
-        vel = bias + gain * act_in[worldid, act_last]
-      else:
-        vel = bias + gain * ctrl_in[worldid, actid]
+      if bias == 0.0 and gain == 0.0:
+        continue
 
-      qderiv += actuator_moment_in[worldid, actid, dofiid] * actuator_moment_in[worldid, actid, dofjid] * vel
+      vel = bias
+      if actuator_dyntype[actid] != DynType.NONE:
+        if gain != 0.0:
+          act_first = actuator_actadr[actid]
+          act_last = act_first + actuator_actnum[actid] - 1
+          vel += gain * act_in[worldid, act_last]
+      else:
+        if gain != 0.0:
+          vel += gain * ctrl_in[worldid, actid]
+
+      if vel != 0.0:
+        qderiv += actuator_moment_in[worldid, actid, dofiid] * actuator_moment_in[worldid, actid, dofjid] * vel
 
   # TODO(team): fluid model derivative
 
@@ -140,8 +147,8 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
   """Analytical derivative of smooth forces w.r.t. velocities.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
     qDeriv: Analytical derivative of smooth forces w.r.t. velocity.
   """
   qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row

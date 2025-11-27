@@ -23,10 +23,11 @@ from mujoco_warp import Model
 from mujoco_warp import test_data
 
 from .collision_gjk import ccd
+from .collision_gjk import multicontact
 from .collision_primitive import Geom
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 
 def _geom_dist(
@@ -41,31 +42,34 @@ def _geom_dist(
   mat1: wp.mat33 | None = None,
   mat2: wp.mat33 | None = None,
 ):
-  epa_vert = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
-  epa_vert1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
-  epa_vert2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=wp.vec3)
-  epa_vert_index1 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=int)
-  epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + m.opt.ccd_iterations), dtype=int)
-  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=wp.vec3i)
-  epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=wp.vec3)
-  epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=float)
-  epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
-  epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations), dtype=int)
-  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
-  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_pnormal = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_pdist = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=float)
-  multiccd_idx1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
-  multiccd_idx2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=int)
-  multiccd_n1 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
-  multiccd_n2 = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
-  multiccd_endvert = wp.empty(shape=(d.naconmax, m.nmaxmeshdeg), dtype=wp.vec3)
-  multiccd_face1 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
-  multiccd_face2 = wp.empty(shape=(d.naconmax, m.nmaxpolygon), dtype=wp.vec3)
+  # we run multiccd on static scenes so these need to be initialized
+  nmaxpolygon = 10 if multiccd else 0
+  nmaxmeshdeg = 10 if multiccd else 0
+  epa_vert = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
+  epa_vert1 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
+  epa_vert2 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
+  epa_vert_index1 = wp.empty(5 + m.opt.ccd_iterations, dtype=int)
+  epa_vert_index2 = wp.empty(5 + m.opt.ccd_iterations, dtype=int)
+  epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3i)
+  epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
+  epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
+  epa_index = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
+  epa_map = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
+  epa_horizon = wp.empty(2 * MJ_MAX_EPAHORIZON, dtype=int)
+  multiccd_polygon = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
+  multiccd_clipped = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
+  multiccd_pnormal = wp.empty(nmaxpolygon, dtype=wp.vec3)
+  multiccd_pdist = wp.empty(nmaxpolygon, dtype=float)
+  multiccd_idx1 = wp.empty(nmaxmeshdeg, dtype=int)
+  multiccd_idx2 = wp.empty(nmaxmeshdeg, dtype=int)
+  multiccd_n1 = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
+  multiccd_n2 = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
+  multiccd_endvert = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
+  multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
+  multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
 
   @nested_kernel(module="unique", enable_backward=False)
-  def _gjk_kernel(
+  def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
@@ -184,8 +188,8 @@ def _geom_dist(
       ncon,
       x1,
       x2,
+      idx,
     ) = ccd(
-      multiccd,
       tolerance[0],
       1.0e30,
       iterations,
@@ -206,30 +210,45 @@ def _geom_dist(
       face_index,
       face_map,
       horizon,
-      polygon,
-      clipped,
-      pnormal,
-      pdist,
-      idx1,
-      idx2,
-      n1,
-      n2,
-      endvert,
-      face1,
-      face2,
     )
+
+    if wp.static(multiccd):
+      ncon, _, _ = multicontact(
+        polygon,
+        clipped,
+        pnormal,
+        pdist,
+        idx1,
+        idx2,
+        n1,
+        n2,
+        endvert,
+        face1,
+        face2,
+        vert1,
+        vert2,
+        vert_index1,
+        vert_index2,
+        face[idx],
+        x1,
+        x2,
+        geom1,
+        geom2,
+        geomtype1,
+        geomtype2,
+      )
 
     dist_out[0] = dist
     ncon_out[0] = ncon
-    pos_out[0] = x1[0]
-    pos_out[1] = x2[0]
+    pos_out[0] = x1
+    pos_out[1] = x2
 
   dist_out = wp.array(shape=(1,), dtype=float)
   ncon_out = wp.array(shape=(1,), dtype=int)
   pos_out = wp.array(shape=(2,), dtype=wp.vec3)
   wp.launch(
-    _gjk_kernel,
-    dim=(1,),
+    _ccd_kernel,
+    dim=1,
     inputs=[
       m.geom_type,
       m.geom_dataid,
@@ -252,28 +271,28 @@ def _geom_dist(
       gid2,
       m.opt.ccd_iterations,
       m.opt.ccd_tolerance,
-      epa_vert[0],
-      epa_vert1[0],
-      epa_vert2[0],
-      epa_vert_index1[0],
-      epa_vert_index2[0],
-      epa_face[0],
-      epa_pr[0],
-      epa_norm2[0],
-      epa_index[0],
-      epa_map[0],
-      epa_horizon[0],
-      multiccd_polygon[0],
-      multiccd_clipped[0],
-      multiccd_pnormal[0],
-      multiccd_pdist[0],
-      multiccd_idx1[0],
-      multiccd_idx2[0],
-      multiccd_n1[0],
-      multiccd_n2[0],
-      multiccd_endvert[0],
-      multiccd_face1[0],
-      multiccd_face2[0],
+      epa_vert,
+      epa_vert1,
+      epa_vert2,
+      epa_vert_index1,
+      epa_vert_index2,
+      epa_face,
+      epa_pr,
+      epa_norm2,
+      epa_index,
+      epa_map,
+      epa_horizon,
+      multiccd_polygon,
+      multiccd_clipped,
+      multiccd_pnormal,
+      multiccd_pdist,
+      multiccd_idx1,
+      multiccd_idx2,
+      multiccd_n1,
+      multiccd_n2,
+      multiccd_endvert,
+      multiccd_face1,
+      multiccd_face2,
     ],
     outputs=[
       dist_out,
@@ -289,7 +308,6 @@ class GJKTest(absltest.TestCase):
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -307,8 +325,7 @@ class GJKTest(absltest.TestCase):
     self.assertEqual(0.5, x2[0])
 
   def test_spheres_touching(self):
-    """Test two touching spheres have zero distance"""
-
+    """Test two touching spheres have zero distance."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -324,8 +341,7 @@ class GJKTest(absltest.TestCase):
     self.assertEqual(0.0, dist)
 
   def test_box_mesh_distance(self):
-    """Test distance between a mesh and box"""
-
+    """Test distance between a mesh and box."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco model="MuJoCo Model">
@@ -353,7 +369,6 @@ class GJKTest(absltest.TestCase):
 
   def test_sphere_sphere_contact(self):
     """Test penetration depth between two spheres."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -370,7 +385,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_box_contact(self):
     """Test penetration between two boxes."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -392,7 +406,6 @@ class GJKTest(absltest.TestCase):
 
   def test_mesh_mesh_contact(self):
     """Test penetration between two meshes."""
-
     _, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -429,7 +442,6 @@ class GJKTest(absltest.TestCase):
 
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
-
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -446,7 +458,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_edge(self):
     """Test box edge."""
-
     _, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -461,7 +472,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_box_ccd(self):
     """Test box box."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -477,7 +487,6 @@ class GJKTest(absltest.TestCase):
 
   def test_mesh_mesh_ccd(self):
     """Test mesh-mesh multiccd."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -498,7 +507,6 @@ class GJKTest(absltest.TestCase):
 
   def test_box_box_ccd2(self):
     """Test box-box multiccd 2."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -511,11 +519,10 @@ class GJKTest(absltest.TestCase):
     )
 
     _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
-    self.assertEqual(ncon, 5)
+    self.assertEqual(ncon, 4)
 
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -536,7 +543,6 @@ class GJKTest(absltest.TestCase):
 
   def test_cylinder_box(self):
     """Test cylinder box collision."""
-
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
