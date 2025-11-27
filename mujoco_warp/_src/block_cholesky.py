@@ -85,6 +85,8 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
     Solves A x = b given the Cholesky factor L (A = L L^T) using blocked forward and backward
     substitution.
     """
+    # this is problematic because it still means we could eventually run out of shared memory.
+    # Probably needs a wp.static workaround for large arrays.
     rhs_tile = wp.tile_load(b, shape=(N, 1), offset=(0, 0), storage="shared", bounds_check=False)
     y_tile = wp.tile_zeros(shape=(N, 1), dtype=float, storage="shared")
 
@@ -97,8 +99,8 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
         wp.tile_matmul(L_block, y_block, rhs_view, alpha=-1.0)
       
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
-      y_block = wp.tile_lower_solve(L_tile, rhs_view)
-      wp.tile_assign(y_tile, y_block, (i, 0))
+      wp.tile_lower_solve_inplace(L_tile, rhs_view)
+      wp.tile_assign(y_tile, rhs_view, (i, 0))
 
     # Backward substitution: solve L^T x = y
     for i in range(matrix_size - block_size, -1, -block_size):
@@ -111,7 +113,7 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
         wp.tile_matmul(L_T_tile, x_tile, tmp_tile, alpha=-1.0)
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
 
-      x_tile = wp.tile_upper_solve(wp.tile_transpose(L_tile), tmp_tile)
-      wp.tile_store(x, x_tile, offset=(i, 0), bounds_check=False)
+      wp.tile_upper_solve_inplace(wp.tile_transpose(L_tile), tmp_tile)
+      wp.tile_store(x, tmp_tile, offset=(i, 0), bounds_check=False)
 
   return blocked_cholesky_solve_func
