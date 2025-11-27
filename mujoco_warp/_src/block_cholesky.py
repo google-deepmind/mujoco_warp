@@ -61,8 +61,8 @@ def create_blocked_cholesky_func(block_size: int):
           wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
 
         t = wp.tile_transpose(A_ik_tile)
-        tmp = wp.tile_lower_solve(L_kk_tile, t)
-        sol_tile = wp.tile_transpose(tmp)
+        wp.tile_lower_solve_inplace(L_kk_tile, t)
+        sol_tile = wp.tile_transpose(t)
 
         wp.tile_store(L, sol_tile, offset=(i, k))
 
