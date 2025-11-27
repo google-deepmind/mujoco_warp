@@ -1684,7 +1684,6 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     efc_h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
     cholesky_L_tmp: wp.array3d(dtype=float),
-    cholesky_y_tmp: wp.array3d(dtype=float),
     # Data out:
     efc_Mgrad_out: wp.array3d(dtype=float),
   ):
@@ -1696,7 +1695,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 
     wp.static(create_blocked_cholesky_func(TILE_SIZE))(efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
     wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-      cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, efc_Mgrad_out[worldid]
+      cholesky_L_tmp[worldid], efc_grad_in[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
 
   return kernel
@@ -1846,7 +1845,6 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.h,
           d.efc.done,
           d.efc.cholesky_L_tmp,
-          d.efc.cholesky_y_tmp.reshape(shape=(d.nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
         ],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
         block_dim=32#m.block_dim.update_gradient_cholesky,

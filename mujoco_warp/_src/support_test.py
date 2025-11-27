@@ -235,7 +235,6 @@ class SupportTest(parameterized.TestCase):
       h_in: wp.array3d(dtype=float),
       done_in: wp.array(dtype=bool),
       cholesky_L_tmp: wp.array3d(dtype=float),
-      cholesky_y_tmp: wp.array3d(dtype=float),
       Mgrad_out: wp.array3d(dtype=float),
     ):
       worldid = wp.tid()
@@ -246,7 +245,7 @@ class SupportTest(parameterized.TestCase):
 
       wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
       wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-        cholesky_L_tmp[worldid], grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, Mgrad_out[worldid]
+        cholesky_L_tmp[worldid], grad_in[worldid], matrix_size, Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -284,7 +283,6 @@ class SupportTest(parameterized.TestCase):
         d.efc.h,
         d.efc.done,
         d.efc.cholesky_L_tmp,
-        d.efc.cholesky_y_tmp.reshape(shape=(nworld, d.efc.cholesky_y_tmp.shape[1], 1)),
       ],
       outputs=[d.efc.Mgrad.reshape(shape=(nworld, d.efc.Mgrad.shape[1], 1))],
       block_dim=m.block_dim.update_gradient_cholesky,

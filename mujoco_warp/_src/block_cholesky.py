@@ -76,7 +76,6 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
     # In:
     L: wp.array(dtype=float, ndim=2),
     b: wp.array(dtype=float, ndim=2),
-    tmp: wp.array(dtype=float, ndim=2),
     matrix_size: int,
     # Out:
     x: wp.array(dtype=float, ndim=2),
