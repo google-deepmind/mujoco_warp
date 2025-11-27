@@ -34,7 +34,7 @@ from .types import Data
 from .types import GeomType
 from .types import Model
 from .warp_util import event_scope
-from .warp_util import kernel as nested_kernel
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
