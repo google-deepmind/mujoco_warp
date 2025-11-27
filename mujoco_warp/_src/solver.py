@@ -1753,13 +1753,6 @@ def _update_gradient(m: types.Model, d: types.Data):
         inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, d.efc.done],
         outputs=[d.efc.h],
       )
-
-      wp.launch(
-        fix_padding_sparse,
-        dim=(d.nworld, d.efc.h.shape[2] - m.nv),
-        inputs=[d.efc.done, m.nv],
-        outputs=[d.efc.h],
-      )
     else:
       nv_padded = d.efc.J.shape[2]
       wp.launch_tiled(
@@ -1837,8 +1830,15 @@ def _update_gradient(m: types.Model, d: types.Data):
         block_dim=m.block_dim.update_gradient_cholesky,
       )
     else:
+      wp.launch(
+        fix_padding_sparse,
+        dim=(d.nworld, d.efc.h.shape[2] - m.nv),
+        inputs=[d.efc.done, m.nv],
+        outputs=[d.efc.h],
+      )
+
       wp.launch_tiled(
-        update_gradient_cholesky_blocked(16, d.efc.h.shape[1]),
+        update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.efc.h.shape[1]),
         dim=d.nworld,
         inputs=[
           d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)),
