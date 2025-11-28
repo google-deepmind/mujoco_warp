@@ -1485,7 +1485,6 @@ class Constraint:
     Ma: M*qacc                                        (nworld, nv)
     grad: gradient of master cost                     (nworld, nv)
     cholesky_L_tmp: temporary for Cholesky factor     (nworld, nv, nv)
-    cholesky_y_tmp: temporary for Cholesky solve      (nworld, nv
     grad_dot: dot(grad, grad)                         (nworld,)
     Mgrad: M / grad                                   (nworld, nv)
     search: linesearch vector                         (nworld, nv)
@@ -1520,7 +1519,6 @@ class Constraint:
   Ma: array("nworld", "nv", float)
   grad: array("nworld", "nv", float)
   cholesky_L_tmp: array("nworld", "nv", "nv", float)
-  cholesky_y_tmp: array("nworld", "nv", float)
   grad_dot: array("nworld", float)
   Mgrad: array("nworld", "nv", float)
   search: array("nworld", "nv", float)

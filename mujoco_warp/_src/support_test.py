@@ -264,7 +264,6 @@ class SupportTest(parameterized.TestCase):
     L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
     d.efc.cholesky_L_tmp.assign(L_init)
     
-    d.efc.cholesky_y_tmp.zero_()
     d.efc.Mgrad.zero_()
 
     
