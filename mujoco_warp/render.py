@@ -198,7 +198,7 @@ def _main(argv: Sequence[str]):
       render_width = int(_WIDTH.value)
       render_height = int(_HEIGHT.value)
 
-    d = mjw.put_data(mjm, mjd, nworld=nworld, njmax=nworld * 100, nconmax=nworld * 100)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
 
     rc = mjw.create_render_context(
       mjm,
