@@ -1518,7 +1518,7 @@ class Constraint:
   Jaref: array("nworld", "njmax", float)
   Ma: array("nworld", "nv", float)
   grad: array("nworld", "nv", float)
-  cholesky_L_tmp: array("nworld", "nv", "nv", float)
+  cholesky_L_tmp: array("nworld", "nv_pad", "nv_pad", float)
   grad_dot: array("nworld", float)
   Mgrad: array("nworld", "nv", float)
   search: array("nworld", "nv", float)
