@@ -552,7 +552,7 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
     return ((x + multiple - 1) // multiple) * multiple
 
   njmax_padded = round_up(njmax, tile_size)
-  nv_padded = round_up(nv, tile_size) if is_sparse else round_up(nv, 4)
+  nv_padded = round_up(nv, tile_size) if (is_sparse or nv > 32) else round_up(nv, 4)
 
   return njmax_padded, nv_padded
 
