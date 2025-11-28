@@ -1701,7 +1701,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   return kernel
 
 @wp.kernel
-def fix_padding_sparse(
+def padding_efc_h(
   efc_done_in: wp.array(dtype=bool),
   nv: int,
   efc_h_out: wp.array3d(dtype=float),
@@ -1831,7 +1831,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
     else:
       wp.launch(
-        fix_padding_sparse,
+        padding_efc_h,
         dim=(d.nworld, d.efc.h.shape[2] - m.nv),
         inputs=[d.efc.done, m.nv],
         outputs=[d.efc.h],
@@ -1847,7 +1847,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.cholesky_L_tmp,
         ],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
-        block_dim=32#m.block_dim.update_gradient_cholesky,
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")
