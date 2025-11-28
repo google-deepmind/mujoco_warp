@@ -1701,7 +1701,7 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.11.0.dev20251116"
+version = "1.11.0.dev20251121"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1709,10 +1709,10 @@ dependencies = [
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251116-py3-none-macosx_11_0_arm64.whl", hash = "sha256:027c29d26057f8d54da32b5e4772f229060e56958bf19e4a548fc5a9d4f49f10" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251116-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:e6bdb23d0fb1d211d7cf4a771a8ecdfd13c3aa9dcdbe997c08b843b63c313518" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251116-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:505dd8ebbfc5308dea6755e78e3b6ed1ec26515d1cc14f8e8b17c83aff064ffa" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251116-py3-none-win_amd64.whl", hash = "sha256:f1813622d7c78bdb86d4d0af3d4f9c1fac71651d7d6ec07f076da3ad49ed0ed3" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251121-py3-none-macosx_11_0_arm64.whl", hash = "sha256:d7663ac8909b1c5ef9813d26fecb62dbbf9a5d48c4b69df2c4d99d92807c4779" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251121-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:572ef50d47e183399ae8f62e238fd14849178ef84178bc6c5f84f41bd1b361e8" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251121-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:c8d127bcca7e6f5207a331e5a861836b61fb28ea9271eb727ee304c79c3a9c10" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.11.0.dev20251121-py3-none-win_amd64.whl", hash = "sha256:e5117fe029cef773779d0821a20edddbd501362e32e95f79be82cc38f5137612" },
 ]
 
 [[package]]
