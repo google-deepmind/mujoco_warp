@@ -579,7 +579,7 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  cnt = 1
+  cnt = int(1)
   coordinates = wp.vec4()  # barycentric coordinates
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
 

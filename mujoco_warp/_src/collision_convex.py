@@ -486,7 +486,7 @@ def ccd_kernel_builder(
     worldid = collision_worldid_in[tid]
 
     # height field filter
-    if wp.static(g1 == GeomType.HFIELD):
+    if wp.static(geomtype1 == GeomType.HFIELD.value):
       no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
         geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
       )
@@ -540,7 +540,7 @@ def ccd_kernel_builder(
     )
 
     # see MuJoCo mjc_ConvexHField
-    if wp.static(g1 == GeomType.HFIELD):
+    if wp.static(geomtype1 == GeomType.HFIELD.value):
       geom1_dataid = geom_dataid[g1]
 
       # height field subgrid
@@ -644,7 +644,7 @@ def ccd_kernel_builder(
               x1_ += prism[i]
             x1 += geom1.rot @ (x1_ / 6.0)
 
-            dist, ncontact, w1, w2, _ = ccd(
+            dist, ncontact, w1, w2, idx = ccd(
               opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
               0.0,
               gjk_iterations,
