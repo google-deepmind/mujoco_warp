@@ -92,7 +92,7 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
         L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j), storage="shared")
         y_block = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(j, 0))
         wp.tile_matmul(L_block, y_block, rhs_view, alpha=-1.0)
-      
+
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
       wp.tile_lower_solve_inplace(L_tile, rhs_view)
 

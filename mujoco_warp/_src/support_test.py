@@ -188,14 +188,14 @@ class SupportTest(parameterized.TestCase):
     n_humanoid_path = Path(__file__).parent.parent.parent / "benchmark" / "humanoid" / "n_humanoid.xml"
     mjm = mujoco.MjModel.from_xml_path(str(n_humanoid_path))
     mjd = mujoco.MjData(mjm)
-    
+
     # Add noise and initialize
     np.random.seed(42)
     mjd.qpos[:] += np.random.uniform(-0.1, 0.1, mjm.nq)
     mjd.qvel[:] += np.random.uniform(-0.1, 0.1, mjm.nv)
     mujoco.mj_step(mjm, mjd, 10)
     mujoco.mj_forward(mjm, mjd)
-    
+
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nworld=1)
 
@@ -250,7 +250,7 @@ class SupportTest(parameterized.TestCase):
     # Add identity to the padding region
     padding_size = nv_pad - nv
     if padding_size > 0:
-        efc_h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
+      efc_h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
     d.efc.h.assign(efc_h_np)
 
     # 5. Reuse built-in arrays from data structure to fill d.efc.grad with test data
@@ -258,18 +258,18 @@ class SupportTest(parameterized.TestCase):
     grad_np.fill(0)  # Zero out first
     grad_np[0, :nv] = b
     d.efc.grad.assign(grad_np)
-    
+
     # Zero out the temporary arrays to ensure clean state
     L_init = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
     # Initialize padding region to identity
     L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
     d.efc.cholesky_L_tmp.assign(L_init)
-    
+
     d.efc.Mgrad.zero_()
 
     # Ensure done is False so kernel executes
     d.efc.done.zero_()
-    
+
     # Launch with same dimensions as solver.py, using built-in arrays
     grad_shape_1 = d.efc.grad.shape[1]
     wp.launch_tiled(
@@ -289,7 +289,7 @@ class SupportTest(parameterized.TestCase):
     # Get results from built-in arrays
     L_result = d.efc.cholesky_L_tmp.numpy()[0]
     x_result = d.efc.Mgrad.numpy()[0]
-    
+
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
     np.testing.assert_array_equal(
@@ -315,7 +315,7 @@ class SupportTest(parameterized.TestCase):
         atol=1e-6,
         err_msg="Padding region should remain identity after factorization",
       )
-    
+
     # Compare with numpy cholesky on symmetrized Hessian
     L_numpy = np.linalg.cholesky(SPD_active_hessian)
     np.testing.assert_allclose(
@@ -335,7 +335,7 @@ class SupportTest(parameterized.TestCase):
       atol=1e-5,
       err_msg="L @ L.T does not equal symmetrized Hessian",
     )
-    
+
     # Verify solution: A @ x = b using the symmetrized Hessian
     x_numpy = np.linalg.solve(SPD_active_hessian, b)
     np.testing.assert_allclose(

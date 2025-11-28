@@ -1700,6 +1700,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 
   return kernel
 
+
 @wp.kernel
 def padding_efc_h(
   efc_done_in: wp.array(dtype=bool),
@@ -1713,7 +1714,7 @@ def padding_efc_h(
 
   dofid = nv + elementid
   efc_h_out[worldid, dofid, dofid] = 1.0
- 
+
 
 def _update_gradient(m: types.Model, d: types.Data):
   # grad = Ma - qfrc_smooth - qfrc_constraint
