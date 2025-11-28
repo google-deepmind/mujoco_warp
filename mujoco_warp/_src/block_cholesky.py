@@ -43,8 +43,7 @@ def create_blocked_cholesky_func(block_size: int):
 
       for j in range(0, k, block_size):
         L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j), storage="shared")
-        L_block_T = wp.tile_transpose(L_block)
-        wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
+        wp.tile_matmul(L_block, wp.tile_transpose(L_block), A_kk_tile, alpha=-1.0)
 
       # Compute the Cholesky factorization for the block
       L_kk_tile = wp.tile_cholesky(A_kk_tile)
