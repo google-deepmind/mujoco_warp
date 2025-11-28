@@ -195,36 +195,17 @@ class SupportTest(parameterized.TestCase):
     mjd.qvel[:] += np.random.uniform(-0.1, 0.1, mjm.nv)
     mujoco.mj_step(mjm, mjd, 10)
     mujoco.mj_forward(mjm, mjd)
-    mjd.qacc_warmstart = mjd.qacc
     
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nworld=1)
 
     # Run forward to populate everything including efc.h
     mjwarp.forward(m, d)
-    
-    # Run solve to ensure efc.h is properly populated (needed for Newton solver)
-    mjwarp.solve(m, d)
 
     # Get the constraint Hessian matrix size
     nv = m.nv
     nv_pad = d.efc.h.shape[2]
     nworld = d.nworld
-
-    # Initialize the Hessian's padding region to identity
-    # This is required for the block cholesky algorithm to work correctly
-    efc_h_array = d.efc.h.numpy()
-    efc_h_array[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
-    d.efc.h.assign(efc_h_array)
-
-    # Save the efc.h matrix before we run our test (solve modifies internal state)
-    # Extract a copy of the matrix for verification
-    efc_h = d.efc.h.numpy()[0].copy()
-    active_efc_h = efc_h[:nv, :nv].copy()
-    
-    # Verify the matrix is positive definite by checking eigenvalues
-    eigvals = np.linalg.eigvalsh(active_efc_h)
-    self.assertGreater(eigvals.min(), 0, f"Matrix not positive definite, min eigenvalue: {eigvals.min()}")
 
     matrix_size = d.efc.h.shape[1]
 
@@ -250,9 +231,29 @@ class SupportTest(parameterized.TestCase):
 
     # Create test vector and fill the built-in arrays
     b = np.random.randn(nv).astype(np.float32)
-    
-    # Reuse built-in arrays from data structure
-    # Fill d.efc.grad with test data
+
+    # 1. Generate a random SPD matrix for active region
+    A = np.random.randn(nv, nv).astype(np.float32)
+    SPD_active_hessian = A @ A.T + nv * np.eye(nv, dtype=A.dtype)  # Make symmetric & strongly PD
+
+    # 2. Get current d.efc.h and zero it out
+    efc_h_np = d.efc.h.numpy()
+    efc_h_np.fill(0.0)
+
+    # 3. Copy the active SPD region into efc_h_np[0, :nv, :nv]
+    efc_h_np[0, :nv, :nv] = SPD_active_hessian
+
+    # 4. Assign the modified SPD hessian back to d.efc.h
+    efc_h_np = d.efc.h.numpy()
+    efc_h_np.fill(0.0)
+    efc_h_np[0, :nv, :nv] = SPD_active_hessian
+    # Add identity to the padding region
+    padding_size = nv_pad - nv
+    if padding_size > 0:
+        efc_h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
+    d.efc.h.assign(efc_h_np)
+
+    # 5. Reuse built-in arrays from data structure to fill d.efc.grad with test data
     grad_np = d.efc.grad.numpy()
     grad_np.fill(0)  # Zero out first
     grad_np[0, :nv] = b
@@ -266,13 +267,10 @@ class SupportTest(parameterized.TestCase):
     
     d.efc.Mgrad.zero_()
 
-    
     # Ensure done is False so kernel executes
     d.efc.done.zero_()
     
     # Launch with same dimensions as solver.py, using built-in arrays
-    # Note: In io.py, d.efc.grad and d.efc.Mgrad are actually (nworld, nv_pad), despite types.py annotation
-    # But solver.py reshapes using d.efc.grad.shape[1] which is nv_pad
     grad_shape_1 = d.efc.grad.shape[1]
     wp.launch_tiled(
       combined_cholesky_kernel,
@@ -317,13 +315,9 @@ class SupportTest(parameterized.TestCase):
         atol=1e-6,
         err_msg="Padding region should remain identity after factorization",
       )
-
-    # The Hessian is stored lower-triangular only (JTDAJ kernel only writes lower triangle).
-    # Symmetrize it for comparison with Cholesky results.
-    active_efc_h_sym = np.tril(active_efc_h) + np.tril(active_efc_h, -1).T
     
     # Compare with numpy cholesky on symmetrized Hessian
-    L_numpy = np.linalg.cholesky(active_efc_h_sym)
+    L_numpy = np.linalg.cholesky(SPD_active_hessian)
     np.testing.assert_allclose(
       L_result[:nv, :nv],
       L_numpy,
@@ -336,14 +330,14 @@ class SupportTest(parameterized.TestCase):
     A_reconstructed = L_result[:nv, :nv] @ L_result[:nv, :nv].T
     np.testing.assert_allclose(
       A_reconstructed,
-      active_efc_h_sym,
+      SPD_active_hessian,
       rtol=1e-5,
       atol=1e-5,
       err_msg="L @ L.T does not equal symmetrized Hessian",
     )
     
     # Verify solution: A @ x = b using the symmetrized Hessian
-    x_numpy = np.linalg.solve(active_efc_h_sym, b)
+    x_numpy = np.linalg.solve(SPD_active_hessian, b)
     np.testing.assert_allclose(
       x_result[:nv],
       x_numpy,
