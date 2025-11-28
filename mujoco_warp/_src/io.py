@@ -763,10 +763,6 @@ def put_data(
   # padding for block cholesky should be next multiple of 16 after m.nv
   nv_pad = ((mjm.nv + 15) // 16) * 16
 
-  # pad correctly for blocked cholesky
-  efc_h = np.diag(np.ones(nv_pad))
-  efc.h = wp.array(np.full((nworld, nv_pad, nv_pad), efc_h), dtype=float)
-
   efc.cholesky_L_tmp = wp.array(np.full((nworld, nv_pad, nv_pad), np.zeros((nv_pad, nv_pad))), dtype=float)
   efc.cholesky_y_tmp = wp.array(np.full((nworld, nv_pad), np.zeros((nv_pad))), dtype=float)
 
