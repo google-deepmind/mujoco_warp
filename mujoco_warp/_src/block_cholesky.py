@@ -56,8 +56,7 @@ def create_blocked_cholesky_func(block_size: int):
         for j in range(0, k, block_size):
           L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j), storage="shared")
           L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j), storage="shared")
-          L_T_tile = wp.tile_transpose(L_2_tile)
-          wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
+          wp.tile_matmul(L_tile, wp.tile_transpose(L_2_tile), A_ik_tile, alpha=-1.0)
 
         t = wp.tile_transpose(A_ik_tile)
         wp.tile_lower_solve_inplace(L_kk_tile, t)
