@@ -19,7 +19,6 @@ MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deep
 > * MJWarp developers will triage and respond to [bug report and feature requests](https://github.com/google-deepmind/mujoco_warp/issues).
 > * MJWarp is mostly feature complete but requires performance optimization, documentation, and testing.
 > * The intended audience during Beta are physics engine enthusiasts and learning framework integrators.
-> * Machine learning / robotics researchers who just want to train policies should wait for the [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) or [Isaac](https://isaac-sim.github.io/IsaacLab/main/index.html)/[Newton](https://github.com/newton-physics/newton) integrations, which are coming soon.
 
 MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). MJWarp is integrated into both [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) and [Newton](https://github.com/newton-physics/newton).
 
@@ -129,3 +128,13 @@ mjwarp-testspeed benchmark/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
+
+# Training Policies
+
+Train policies with MJWarp physics and reinforcement learning
+
+- [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) via [Newton](https://github.com/newton-physics/newton)
+
+- [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html)
+
+- [mjlab](https://github.com/mujocolab/mjlab) via MJWarp
