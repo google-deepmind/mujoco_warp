@@ -104,9 +104,8 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
       tmp_tile = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(i, 0))
       for j in range(i_end, matrix_size, block_size):
         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i), storage="shared")
-        L_T_tile = wp.tile_transpose(L_tile)
         x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0), storage="shared", bounds_check=False)
-        wp.tile_matmul(L_T_tile, x_tile, tmp_tile, alpha=-1.0)
+        wp.tile_matmul(wp.tile_transpose(L_tile), x_tile, tmp_tile, alpha=-1.0)
       L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i), storage="shared")
 
       wp.tile_upper_solve_inplace(wp.tile_transpose(L_tile), tmp_tile)
