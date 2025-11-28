@@ -1484,7 +1484,7 @@ class Constraint:
     Jaref: Jac*qacc - aref                            (nworld, njmax)
     Ma: M*qacc                                        (nworld, nv)
     grad: gradient of master cost                     (nworld, nv)
-    cholesky_L_tmp: temporary for Cholesky factor     (nworld, nv, nv)
+    cholesky_L_tmp: temporary for Cholesky factor     (nworld, nv_pad, nv_pad)
     grad_dot: dot(grad, grad)                         (nworld,)
     Mgrad: M / grad                                   (nworld, nv)
     search: linesearch vector                         (nworld, nv)
