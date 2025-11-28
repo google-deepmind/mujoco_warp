@@ -32,7 +32,6 @@ def create_blocked_cholesky_func(block_size: int):
 
     It returns a lower-triangular matrix L such that A = L L^T.
     """
-
     # Process the matrix in blocks along its leading dimension.
     for k in range(0, n, block_size):
       end = k + block_size

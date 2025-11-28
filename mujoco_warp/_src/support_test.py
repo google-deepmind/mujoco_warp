@@ -179,10 +179,11 @@ class SupportTest(parameterized.TestCase):
 
   def test_block_cholesky(self):
     """Tests block Cholesky decomposition and solve against numpy using n_humanoid model."""
+    from pathlib import Path
+
     from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
     from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
     from mujoco_warp._src.support import nested_kernel
-    from pathlib import Path
 
     # Load n_humanoid from benchmark directory (nv=81, larger than simple humanoid nv=27)
     n_humanoid_path = Path(__file__).parent.parent.parent / "benchmark" / "humanoid" / "n_humanoid.xml"
