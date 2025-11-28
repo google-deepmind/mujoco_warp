@@ -1703,8 +1703,11 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 
 @wp.kernel
 def padding_efc_h(
-  efc_done_in: wp.array(dtype=bool),
+  # Model:
   nv: int,
+  # Data in:
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
   efc_h_out: wp.array3d(dtype=float),
 ):
   worldid, elementid = wp.tid()
@@ -1834,7 +1837,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       wp.launch(
         padding_efc_h,
         dim=(d.nworld, d.efc.h.shape[2] - m.nv),
-        inputs=[d.efc.done, m.nv],
+        inputs=[m.nv, d.efc.done],
         outputs=[d.efc.h],
       )
 
