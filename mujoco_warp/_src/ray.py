@@ -363,49 +363,110 @@ def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec:
 
 
 @wp.func
-def ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
-  """Returns the distance at which a ray intersects with a cylinder."""
-  # bounding sphere test
-  ssz = size[0] * size[0] + size[1] * size[1]
-  if ray_sphere(pos, ssz, pnt, vec) < 0.0:
-    return wp.inf
+def ray_ellipsoid_with_normal(
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns distance and normal at which a ray intersects with an ellipsoid."""
+  sol = ray_ellipsoid(pos, mat, size, pnt, vec)
+  if sol == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
 
-  # map to local frame
+  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  hit_local = lpnt + sol * lvec
+  inv_sq = wp.vec3(
+    safe_div(1.0, size[0] * size[0]),
+    safe_div(1.0, size[1] * size[1]),
+    safe_div(1.0, size[2] * size[2]),
+  )
+  normal_local = wp.cw_mul(inv_sq, hit_local)
+  normal_world = mat @ normal_local
+  normal_world = wp.normalize(normal_world)
+  return True, sol, normal_world
+
+
+@wp.func
+def _ray_cylinder_hit(
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns hit information for ray-cylinder intersections in local space."""
+  radius = size[0]
+  half_height = size[1]
+
+  # Quick reject via bounding sphere
+  ssz = radius * radius + half_height * half_height
+  if ray_sphere(pos, ssz, pnt, vec) == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
+
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
-  # init solution
-  x = wp.inf
+  hit_dist = wp.inf
+  normal_local = wp.vec3(0.0, 0.0, 0.0)
 
-  # flat sides
+  # Test flat caps
   if wp.abs(lvec[2]) > MJ_MINVAL:
     for side in range(-1, 2, 2):
-      # solution of: lpnt[2] + x * lvec[2] = side * height_size
-      sol = (float(side) * size[1] - lpnt[2]) / lvec[2]
-
-      # process if non-negative
+      sol = (float(side) * half_height - lpnt[2]) / lvec[2]
       if sol >= 0.0:
-        # intersection with horizontal face
-        p = wp.vec2(lpnt[0] + sol * lvec[0], lpnt[1] + sol * lvec[1])
+        hit_local = lpnt + sol * lvec
+        radial = hit_local[0] * hit_local[0] + hit_local[1] * hit_local[1]
+        if radial <= radius * radius and sol < hit_dist:
+          hit_dist = sol
+          normal_local = wp.vec3(0.0, 0.0, float(side))
 
-        # accept within radius
-        if wp.dot(p, p) <= size[0] * size[0]:
-          if x < 0.0 or sol < x:
-            x = sol
-
-  # (x * lvec + lpnt)' * (x * lvec + lpnt) = size[0] * size[0]
+  # Test side surface
   a = lvec[0] * lvec[0] + lvec[1] * lvec[1]
   b = lvec[0] * lpnt[0] + lvec[1] * lpnt[1]
-  c = lpnt[0] * lpnt[0] + lpnt[1] * lpnt[1] - size[0] * size[0]
-
-  # solve a * x^2 + 2 * b * x + c = 0
+  c = lpnt[0] * lpnt[0] + lpnt[1] * lpnt[1] - radius * radius
   sol, _ = _ray_quad(a, b, c)
+  if sol >= 0.0:
+    hit_z = lpnt[2] + sol * lvec[2]
+    if wp.abs(hit_z) <= half_height and sol < hit_dist:
+      hit_dist = sol
+      radial_vec = wp.vec3(lpnt[0] + sol * lvec[0], lpnt[1] + sol * lvec[1], 0.0)
+      length = wp.length(radial_vec)
+      if length > MJ_MINVAL:
+        normal_local = radial_vec / length
+      else:
+        normal_local = wp.vec3(0.0, 0.0, 1.0)
 
-  # make sure round solution is between flat sides
-  if sol >= 0.0 and wp.abs(lpnt[2] + sol * lvec[2]) <= size[1]:
-    if x < 0.0 or sol < x:
-      x = sol
+  if hit_dist == wp.inf:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
 
-  return x
+  return True, hit_dist, normal_local
+
+
+@wp.func
+def ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+  """Returns the distance at which a ray intersects with a cylinder."""
+  hit, dist, _ = _ray_cylinder_hit(pos, mat, size, pnt, vec)
+  if not hit:
+    return wp.inf
+  return dist
+
+
+@wp.func
+def ray_cylinder_with_normal(
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+) -> Tuple[bool, wp.float32, wp.vec3]:
+  """Returns distance and normal at which a ray intersects with a cylinder."""
+  hit, dist, normal_local = _ray_cylinder_hit(pos, mat, size, pnt, vec)
+  if not hit:
+    return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
+  normal_world = mat @ normal_local
+  normal_world = wp.normalize(normal_world)
+  return True, dist, normal_world
 
 
 _IFACE = wp.types.matrix((3, 2), dtype=int)(1, 2, 0, 2, 0, 1)
@@ -739,7 +800,7 @@ def ray_flex_with_bvh(
   pnt: wp.vec3,
   vec: wp.vec3,
   max_t: wp.float32,
-) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int, int]:
+) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int]:
   """Returns intersection information for flex intersections.
 
   Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space."""
@@ -754,9 +815,9 @@ def ray_flex_with_bvh(
     bvh_id, pnt, vec, max_t, t, u, v, sign, n, f, group_root)
 
   if hit:
-    return True, t, n, u, v, f, 0
+    return True, t, n, u, v, f
 
-  return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
+  return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1
 
 
 @wp.func

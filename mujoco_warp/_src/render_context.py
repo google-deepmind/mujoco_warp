@@ -47,6 +47,8 @@ class RenderContext:
   tex_data: wp.array(dtype=wp.uint32)
   tex_height: wp.array(dtype=int)
   tex_width: wp.array(dtype=int)
+  flex_rgba: wp.array(dtype=wp.vec4)
+  flex_matid: wp.array(dtype=int)
   bvh_id: wp.uint64
   mesh_bvh_ids: wp.array(dtype=wp.uint64)
   hfield_bvh_ids: wp.array(dtype=wp.uint64)
@@ -250,6 +252,8 @@ class RenderContext:
     self.tex_data=tex_data_packed
     self.tex_height = wp.array(mjm.tex_height, dtype=int)
     self.tex_width = wp.array(mjm.tex_width, dtype=int)
+    self.flex_rgba = wp.array(mjm.flex_rgba, dtype=wp.vec4)
+    self.flex_matid = wp.array(mjm.flex_matid, dtype=int)
     self.bvh_ngeom=len(geom_enabled_idx)
     self.enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int)
     self.lowers = wp.zeros(d.nworld * self.bvh_ngeom, dtype=wp.vec3)
@@ -590,7 +594,10 @@ def _make_face_2d_elements(
     face_indices: wp.array(dtype=int),
     group: wp.array(dtype=int),
 ):
-    """Create faces from 2D flex elements (triangles). Two faces (top/bottom) per element."""
+    """Create faces from 2D flex elements (triangles).
+    
+    Two faces (top/bottom) per element, seperated by the radius of the flex element.
+    """
     worldid, elemid = wp.tid()
 
     # Get element vertex indices (3 vertices per triangle)
@@ -613,7 +620,7 @@ def _make_face_2d_elements(
     else:
         nrm = nrm / nrm_len
 
-    # Offset vertices by +/- radius along the normal to give the cloth thickness
+    # Offset vertices by +/- radius along the normal to give the 2d flex thickness
     offset = nrm * radius
 
     p0_pos = v0 + offset
@@ -942,6 +949,7 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
         inputs=[d.flexvert_xpos, elem_indices_arr, vert_norm],
       )
 
+      # 1) 2D top/bottom faces.
       wp.launch(
         kernel=_make_face_2d_elements,
         dim=(d.nworld, elem_count_2d),

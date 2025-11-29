@@ -115,9 +115,40 @@ def _compute_ellipsoid_bounds(
   rot: wp.mat33,
   size: wp.vec3,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  # TODO: Implement ellipsoid bounds computation
-  size_scale = 1.0
-  return pos - wp.vec3(size_scale, size_scale, size_scale), pos + wp.vec3(size_scale, size_scale, size_scale)
+  # Half-extent along each world axis equals the norm of the corresponding row of rot*diag(size)
+  row0 = wp.vec3(rot[0, 0] * size[0], rot[0, 1] * size[1], rot[0, 2] * size[2])
+  row1 = wp.vec3(rot[1, 0] * size[0], rot[1, 1] * size[1], rot[1, 2] * size[2])
+  row2 = wp.vec3(rot[2, 0] * size[0], rot[2, 1] * size[1], rot[2, 2] * size[2])
+  extent = wp.vec3(wp.length(row0), wp.length(row1), wp.length(row2))
+  return pos - extent, pos + extent
+
+
+@wp.func
+def _compute_cylinder_bounds(
+  pos: wp.vec3,
+  rot: wp.mat33,
+  size: wp.vec3,
+) -> Tuple[wp.vec3, wp.vec3]:
+  radius = size[0]
+  half_height = size[1]
+
+  axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
+  axis_abs = wp.vec3(wp.abs(axis[0]), wp.abs(axis[1]), wp.abs(axis[2]))
+
+  basis_x = wp.vec3(rot[0, 0], rot[1, 0], rot[2, 0])
+  basis_y = wp.vec3(rot[0, 1], rot[1, 1], rot[2, 1])
+
+  radial_x = radius * wp.sqrt(basis_x[0] * basis_x[0] + basis_y[0] * basis_y[0])
+  radial_y = radius * wp.sqrt(basis_x[1] * basis_x[1] + basis_y[1] * basis_y[1])
+  radial_z = radius * wp.sqrt(basis_x[2] * basis_x[2] + basis_y[2] * basis_y[2])
+
+  extent = wp.vec3(
+    radial_x + half_height * axis_abs[0],
+    radial_y + half_height * axis_abs[1],
+    radial_z + half_height * axis_abs[2],
+  )
+
+  return pos - extent, pos + extent
 
 
 @wp.kernel
@@ -161,6 +192,8 @@ def _compute_bvh_bounds(
     lower, upper = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.ELLIPSOID:
     lower, upper = _compute_ellipsoid_bounds(pos, rot, size)
+  elif type == GeomType.CYLINDER:
+    lower, upper = _compute_cylinder_bounds(pos, rot, size)
   elif type == GeomType.BOX:
     lower, upper = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.HFIELD:

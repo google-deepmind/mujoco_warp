@@ -23,6 +23,10 @@ from .ray import ray_box
 from .ray import ray_box_with_normal
 from .ray import ray_capsule
 from .ray import ray_capsule_with_normal
+from .ray import ray_cylinder
+from .ray import ray_cylinder_with_normal
+from .ray import ray_ellipsoid
+from .ray import ray_ellipsoid_with_normal
 from .ray import ray_flex_with_bvh
 from .ray import ray_mesh_with_bvh
 from .ray import ray_plane
@@ -311,8 +315,24 @@ def cast_ray(
         ray_origin_world,
         ray_dir_world,
       )
+    if geom_type[gi] == GeomType.ELLIPSOID:
+      h, d, n = ray_ellipsoid_with_normal(
+        geom_xpos[world_id, gi],
+        geom_xmat[world_id, gi],
+        geom_size[world_id, gi],
+        ray_origin_world,
+        ray_dir_world,
+      )
     if geom_type[gi] == GeomType.CAPSULE:
       h, d, n = ray_capsule_with_normal(
+        geom_xpos[world_id, gi],
+        geom_xmat[world_id, gi],
+        geom_size[world_id, gi],
+        ray_origin_world,
+        ray_dir_world,
+      )
+    if geom_type[gi] == GeomType.CYLINDER:
+      h, d, n = ray_cylinder_with_normal(
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
         geom_size[world_id, gi],
@@ -402,8 +422,24 @@ def cast_ray_first_hit(
         ray_origin_world,
         ray_dir_world,
       )
+    if geom_type[gi] == GeomType.ELLIPSOID:
+      d = ray_ellipsoid(
+        geom_xpos[world_id, gi],
+        geom_xmat[world_id, gi],
+        geom_size[world_id, gi],
+        ray_origin_world,
+        ray_dir_world,
+      )
     if geom_type[gi] == GeomType.CAPSULE:
       d = ray_capsule(
+        geom_xpos[world_id, gi],
+        geom_xmat[world_id, gi],
+        geom_size[world_id, gi],
+        ray_origin_world,
+        ray_dir_world,
+      )
+    if geom_type[gi] == GeomType.CYLINDER:
+      d = ray_cylinder(
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
         geom_size[world_id, gi],
@@ -572,6 +608,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     mat_texid: wp.array3d(dtype=int),
     mat_texrepeat: wp.array2d(dtype=wp.vec2),
     mat_rgba: wp.array2d(dtype=wp.vec4),
+    flex_rgba: wp.array(dtype=wp.vec4),
+    flex_matid: wp.array(dtype=int),
     tex_adr: wp.array(dtype=int),
     tex_data: wp.array(dtype=wp.uint32),
     tex_height: wp.array(dtype=int),
@@ -642,7 +680,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     )
 
     if wp.static(m.nflex > 0):
-      h, d, n, u, v, f, flex_id = ray_flex_with_bvh(
+      h, d, n, u, v, f = ray_flex_with_bvh(
         flex_bvh_id,
         flex_group_roots[world_idx],
         ray_origin_world,
@@ -652,7 +690,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       if h and d < dist:
         dist = d
         normal = n
-        geom_id = flex_id
+        geom_id = -2
 
     # Early Out
     if geom_id == -1:
@@ -667,7 +705,11 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     # Shade the pixel
     hit_point = ray_origin_world + ray_dir_world * dist
 
-    if geom_matid[world_idx, geom_id] == -1:
+    if geom_id == -2:
+      # TODO: Currently flex textures are not supported, and only the first rgba value
+      # is used until further flex support is added.
+      color = flex_rgba[0]
+    elif geom_matid[world_idx, geom_id] == -1:
       color = geom_rgba[world_idx, geom_id]
     else:
       color = mat_rgba[world_idx, geom_matid[world_idx, geom_id]]
@@ -676,38 +718,39 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     hit_color = base_color
 
     if wp.static(rc.use_textures):
-      mat_id = geom_matid[world_idx, geom_id]
-      if mat_id >= 0:
-        tex_id = mat_texid[world_idx, mat_id, 1]
-        if tex_id >= 0:
-          tex_color = sample_texture(
-            world_idx,
-            geom_id,
-            geom_type,
-            mat_id,
-            tex_id,
-            mat_texrepeat[world_idx, mat_id],
-            tex_adr[tex_id],
-            tex_data,
-            tex_height[tex_id],
-            tex_width[tex_id],
-            geom_xpos[world_idx, geom_id],
-            geom_xmat[world_idx, geom_id],
-            mesh_faceadr,
-            mesh_face,
-            mesh_texcoord,
-            mesh_texcoord_offsets,
-            hit_point,
-            u,
-            v,
-            f,
-            mesh_id,
-          )
-          base_color = wp.vec3(
-            base_color[0] * tex_color[0],
-            base_color[1] * tex_color[1],
-            base_color[2] * tex_color[2],
-          )
+      if geom_id != -2:
+        mat_id = geom_matid[world_idx, geom_id]
+        if mat_id >= 0:
+          tex_id = mat_texid[world_idx, mat_id, 1]
+          if tex_id >= 0:
+            tex_color = sample_texture(
+              world_idx,
+              geom_id,
+              geom_type,
+              mat_id,
+              tex_id,
+              mat_texrepeat[world_idx, mat_id],
+              tex_adr[tex_id],
+              tex_data,
+              tex_height[tex_id],
+              tex_width[tex_id],
+              geom_xpos[world_idx, geom_id],
+              geom_xmat[world_idx, geom_id],
+              mesh_faceadr,
+              mesh_face,
+              mesh_texcoord,
+              mesh_texcoord_offsets,
+              hit_point,
+              u,
+              v,
+              f,
+              mesh_id,
+            )
+            base_color = wp.vec3(
+              base_color[0] * tex_color[0],
+              base_color[1] * tex_color[1],
+              base_color[2] * tex_color[2],
+            )
 
     len_n = wp.length(normal)
     n = normal if len_n > 0.0 else AMBIENT_UP
@@ -802,6 +845,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       m.mat_texid,
       m.mat_texrepeat,
       m.mat_rgba,
+      rc.flex_rgba,
+      rc.flex_matid,
       rc.tex_adr,
       rc.tex_data,
       rc.tex_height,
