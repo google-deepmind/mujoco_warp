@@ -206,188 +206,6 @@ def _compute_bvh_bounds(
 
 
 @wp.kernel
-def compute_flex_points(
-  vert_xpos: wp.array2d(dtype=wp.vec3),
-  flex_elem: wp.array(dtype=int),
-  vert_norm: wp.array2d(dtype=wp.vec3),
-  face_points: wp.array(dtype=wp.vec3),
-  elem_count: int,
-  radius: float,
-  num_face_vertices: int,
-):
-  """Update top/bottom cloth faces for all worlds.
-
-  The initial flex mesh is built in `_make_flex_mesh` (see `render_context.py`)
-  using `_make_face_2d_elements`, which lays out per-world vertices as:
-
-    world_vertex_offset = world_id * num_face_vertices
-    local_face_top      = 2 * elem_id
-    local_face_bottom   = 2 * elem_id + 1
-
-  i.e. 6 vertices (2 triangles) per element, with a stride of
-  `num_face_vertices` per world. This kernel must mirror that layout exactly
-  so that the Warp mesh indices remain valid when we refit the geometry
-  each frame.
-  """
-  worldid, elemid = wp.tid()
-
-  if worldid >= vert_xpos.shape[0] or elemid >= elem_count:
-    return
-
-  # Element-local vertex indices (3 verts per triangle element).
-  base = elemid * 3
-  i0 = flex_elem[base + 0]
-  i1 = flex_elem[base + 1]
-  i2 = flex_elem[base + 2]
-
-  # Vertex positions for this element in the given world.
-  v0 = vert_xpos[worldid, i0]
-  v1 = vert_xpos[worldid, i1]
-  v2 = vert_xpos[worldid, i2]
-
-  # Per-element normal (used for thickness); we also store it as a simple
-  # per-vertex normal for use when building side faces.
-  nrm = wp.cross(v1 - v0, v2 - v0)
-  nrm_len = wp.length(nrm)
-  if nrm_len < 1.0e-8:
-    nrm = wp.vec3(0.0, 0.0, 1.0)
-  else:
-    nrm = nrm / nrm_len
-  offset = nrm * radius
-
-  # Store the same normal for all three vertices of the element. This is an
-  # approximation (shared across adjacent elements), but matches how the
-  # initial mesh was constructed and is sufficient for side extrusion.
-  vert_norm[worldid, i0] = nrm
-  vert_norm[worldid, i1] = nrm
-  vert_norm[worldid, i2] = nrm
-
-  # Top/bottom faces: match `_make_face_2d_elements` indexing exactly.
-  # Two faces (top & bottom) => 6 vertices per element.
-  world_vertex_offset = worldid * num_face_vertices
-
-  # First face (top): i0, i1, i2
-  face_local_top = 2 * elemid
-  base0 = world_vertex_offset + face_local_top * 3
-
-  face_points[base0 + 0] = v0 + offset
-  face_points[base0 + 1] = v1 + offset
-  face_points[base0 + 2] = v2 + offset
-
-  # Second face (bottom): i0, i2, i1 (opposite winding)
-  face_local_bottom = 2 * elemid + 1
-  base1 = world_vertex_offset + face_local_bottom * 3
-
-  face_points[base1 + 0] = v0 - offset
-  face_points[base1 + 1] = v2 - offset
-  face_points[base1 + 2] = v1 - offset
-
-@wp.kernel
-def compute_flex_shell_points(
-  vert_xpos: wp.array2d(dtype=wp.vec3),
-  vert_norm: wp.array2d(dtype=wp.vec3),
-  face_points: wp.array(dtype=wp.vec3),
-  shell_pairs: wp.array(dtype=int),
-  shell_count: int,
-  radius: float,
-  face_offset: int,
-  num_face_vertices: int,
-):
-  worldid, shellid = wp.tid()
-
-  i0 = shell_pairs[2 * shellid + 0]
-  i1 = shell_pairs[2 * shellid + 1]
-
-  # Per-world vertex offset and local face indices for this shell fragment.
-  world_vertex_offset = worldid * num_face_vertices
-  face_local0 = face_offset + (2 * shellid)
-  face_local1 = face_offset + (2 * shellid + 1)
-
-  # ---- First side: (i0, i1) with +radius ----
-  base0 = world_vertex_offset + face_local0 * 3
-  # k = 0, ind = i0, sign = +1
-  pos = vert_xpos[worldid, i0]
-  nrm = vert_norm[worldid, i0]
-  p = pos + nrm * (radius * 1.0)
-  face_points[base0 + 0] = p
-  # k = 1, ind = i1, sign = -1
-  pos = vert_xpos[worldid, i1]
-  nrm = vert_norm[worldid, i1]
-  p = pos + nrm * (radius * -1.0)
-  face_points[base0 + 1] = p
-  # k = 2, ind = i1, sign = +1
-  pos = vert_xpos[worldid, i1]
-  nrm = vert_norm[worldid, i1]
-  p = pos + nrm * (radius * 1.0)
-  face_points[base0 + 2] = p
-
-  # ---- Second side: (i1, i0) with -radius ----
-  base1 = world_vertex_offset + face_local1 * 3
-  neg_radius = -radius
-  # k = 0, ind = i1, sign = +1
-  pos = vert_xpos[worldid, i1]
-  nrm = vert_norm[worldid, i1]
-  p = pos + nrm * (neg_radius * 1.0)
-  face_points[base1 + 0] = p
-  # k = 1, ind = i0, sign = -1
-  pos = vert_xpos[worldid, i0]
-  nrm = vert_norm[worldid, i0]
-  p = pos + nrm * (neg_radius * -1.0)
-  face_points[base1 + 1] = p
-  # k = 2, ind = i0, sign = +1
-  pos = vert_xpos[worldid, i0]
-  nrm = vert_norm[worldid, i0]
-  p = pos + nrm * (neg_radius * 1.0)
-  face_points[base1 + 2] = p
-
-
-@wp.kernel
-def compute_flex_3d_shell_faces(
-  vert_xpos: wp.array2d(dtype=wp.vec3),
-  face_points: wp.array(dtype=wp.vec3),
-  shell_tris: wp.array(dtype=int),
-  shell_count: int,
-  face_offset: int,
-  num_face_vertices: int,
-):
-  """Update 3D flex shell triangle faces for all worlds.
-
-  Layout matches `_make_faces_3d_shells` in `render_context.py`:
-
-    world_vertex_offset = world_id * num_face_vertices
-    local_face         = shell_id
-    base               = world_vertex_offset + local_face * 3
-
-  Each shell fragment contributes a single triangle.
-  """
-  worldid, shellid = wp.tid()
-
-  if worldid >= vert_xpos.shape[0] or shellid >= shell_count:
-    return
-
-  base_idx = shellid * 3
-  i0 = shell_tris[base_idx + 0]
-  i1 = shell_tris[base_idx + 1]
-  i2 = shell_tris[base_idx + 2]
-
-  nvert = vert_xpos.shape[1]
-  if i0 < 0 or i0 >= nvert or i1 < 0 or i1 >= nvert or i2 < 0 or i2 >= nvert:
-    return
-
-  world_vertex_offset = worldid * num_face_vertices
-  face_local = face_offset + shellid
-  base = world_vertex_offset + face_local * 3
-
-  v0 = vert_xpos[worldid, i0]
-  v1 = vert_xpos[worldid, i1]
-  v2 = vert_xpos[worldid, i2]
-
-  face_points[base + 0] = v0
-  face_points[base + 1] = v1
-  face_points[base + 2] = v2
-
-
-@wp.kernel
 def compute_bvh_group_roots(
   bvh_id: wp.uint64,
   group_roots: wp.array(dtype=int),
@@ -456,66 +274,238 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
   rc.bvh.refit()
 
 
-def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
+@wp.kernel
+def accumulate_flex_vertex_normals(
+  vert_xpos: wp.array2d(dtype=wp.vec3),
+  flex_elem: wp.array(dtype=int),
+  vert_norm: wp.array2d(dtype=wp.vec3),
+  flex_elem_count: int,
+):
+  """Accumulate per-vertex normals by summing adjacent face normals."""
+  worldid, elemid = wp.tid()
 
-  # Refit faces for 2D and 3D flex simultaneously, using the same vertex data.
-  # Layout must match `_make_flex_mesh` in `render_context.py`.
-
-  # Total faces used when building the mesh.
-  nfaces = 2 * rc.flex_elem_count + 2 * rc.flex_shell_pairs_count + rc.flex_shell_tris_count
-  if nfaces == 0:
+  if worldid >= vert_xpos.shape[0] or elemid >= flex_elem_count:
     return
-  num_face_vertices = nfaces * 3
 
+  base = elemid * 3
+  i0 = flex_elem[base + 0]
+  i1 = flex_elem[base + 1]
+  i2 = flex_elem[base + 2]
+
+  v0 = vert_xpos[worldid, i0]
+  v1 = vert_xpos[worldid, i1]
+  v2 = vert_xpos[worldid, i2]
+
+  face_nrm = wp.cross(v1 - v0, v2 - v0)
+  face_nrm = wp.normalize(face_nrm)
+  vert_norm[worldid, i0] += face_nrm
+  vert_norm[worldid, i1] += face_nrm
+  vert_norm[worldid, i2] += face_nrm
+
+
+@wp.kernel
+def normalize_vertex_normals(
+  vert_norm: wp.array2d(dtype=wp.vec3),
+):
+  """Normalize accumulated vertex normals."""
+  worldid, vertid = wp.tid()
+  vert_norm[worldid, vertid] = wp.normalize(vert_norm[worldid, vertid])
+
+
+def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
+  
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
 
-  # 2D top/bottom faces.
-  if rc.flex_elem_count > 0:
-    wp.launch(
-      kernel=compute_flex_points,
-      dim=(d.nworld, rc.flex_elem_count),
-      inputs=[
-        d.flexvert_xpos,
-        rc.flex_elem,
-        flexvert_norm,
-        rc.flex_face_points,
-        rc.flex_elem_count,
-        rc.flex_radius,
-        num_face_vertices,
-      ],
-    )
+  wp.launch(
+    kernel=accumulate_flex_vertex_normals,
+    dim=(d.nworld, d.flexvert_xpos.shape[1]),
+    inputs=[
+      d.flexvert_xpos,
+      rc.flex_elem,
+      flexvert_norm,
+      d.flexvert_xpos.shape[1],
+    ],
+  )
 
-  # 2D side faces from shell edge pairs.
-  if rc.flex_shell_pairs_count > 0:
-    wp.launch(
-      kernel=compute_flex_shell_points,
-      dim=(d.nworld, rc.flex_shell_pairs_count),
-      inputs=[
-        d.flexvert_xpos,
-        flexvert_norm,
-        rc.flex_face_points,
-        rc.flex_shell_pairs,
-        rc.flex_shell_pairs_count,
-        rc.flex_radius,
-        rc.flex_side_face_offset,
-        num_face_vertices,
-      ],
-    )
+  wp.launch(
+    kernel=normalize_vertex_normals,
+    dim=(d.nworld, d.flexvert_xpos.shape[1]),
+    inputs=[flexvert_norm],
+  )
 
-  # 3D shell surface faces.
-  if rc.flex_shell_tris_count > 0:
-    wp.launch(
-      kernel=compute_flex_3d_shell_faces,
-      dim=(d.nworld, rc.flex_shell_tris_count),
-      inputs=[
-        d.flexvert_xpos,
-        rc.flex_face_points,
-        rc.flex_shell_tris,
-        rc.flex_shell_tris_count,
-        rc.flex_tris_face_offset,
-        num_face_vertices,
-      ],
-    )
+  @wp.kernel
+  def _update_flex_points(
+    vert_xpos: wp.array2d(dtype=wp.vec3),
+    flex_elem: wp.array(dtype=int),
+    vert_norm: wp.array2d(dtype=wp.vec3),
+    elem_adr: int,
+    face_offset: int,
+    radius: float,
+    nfaces: int,
+    face_points: wp.array(dtype=wp.vec3),
+  ):
+    worldid, elemid = wp.tid()
+
+    base = elem_adr + (elemid * 3)
+    i0 = flex_elem[base + 0]
+    i1 = flex_elem[base + 1]
+    i2 = flex_elem[base + 2]
+
+    v0 = vert_xpos[worldid, i0]
+    v1 = vert_xpos[worldid, i1]
+    v2 = vert_xpos[worldid, i2]
+
+    if wp.static(rc.flex_render_smooth):
+      n0 = vert_norm[worldid, i0]
+      n1 = vert_norm[worldid, i1]
+      n2 = vert_norm[worldid, i2]
+    else:
+      face_nrm = wp.cross(v1 - v0, v2 - v0)
+      face_nrm = wp.normalize(face_nrm)
+      n0 = face_nrm
+      n1 = face_nrm
+      n2 = face_nrm
+
+    p0_pos = v0 + radius * n0
+    p1_pos = v1 + radius * n1
+    p2_pos = v2 + radius * n2
+
+    p0_neg = v0 - radius * n0
+    p1_neg = v1 - radius * n1
+    p2_neg = v2 - radius * n2
+
+    world_face_offset = worldid * nfaces
+    base0 = (world_face_offset * 3) + ((face_offset + (2 * elemid)) * 3)
+    face_points[base0 + 0] = p0_pos
+    face_points[base0 + 1] = p1_pos
+    face_points[base0 + 2] = p2_pos
+
+    base1 = (world_face_offset * 3) + ((face_offset + (2 * elemid + 1)) * 3)
+    face_points[base1 + 0] = p0_neg
+    face_points[base1 + 1] = p2_neg
+    face_points[base1 + 2] = p1_neg
+  
+  @wp.kernel
+  def _update_flex_2d_shell_points(
+    vert_xpos: wp.array2d(dtype=wp.vec3),
+    flex_shell: wp.array(dtype=int),
+    vert_norm: wp.array2d(dtype=wp.vec3),
+    shell_adr: int,
+    face_offset: int,
+    radius: float,
+    nfaces: int,
+    face_points: wp.array(dtype=wp.vec3),
+  ):
+    worldid, shellid = wp.tid()
+
+    base = shell_adr + (2 * shellid)
+    i0 = flex_shell[base + 0]
+    i1 = flex_shell[base + 1]
+
+    v0 = vert_xpos[worldid, i0]
+    v1 = vert_xpos[worldid, i1]
+    
+    v01 = v1 - v0
+    nrm = wp.cross(v01, vert_norm[worldid, i1])
+    
+    if radius < 0.0:
+      nrm = -nrm
+
+    nrm = wp.normalize(nrm)
+
+    world_face_offset = worldid * nfaces
+    base0 = (world_face_offset * 3) + ((face_offset + (2 * shellid)) * 3)
+    face_points[base0 + 0] = vert_xpos[worldid, i0] + vert_norm[worldid, i0] * (radius * 1.0)
+    face_points[base0 + 1] = vert_xpos[worldid, i1] + vert_norm[worldid, i1] * (radius * -1.0)
+    face_points[base0 + 2] = vert_xpos[worldid, i1] + vert_norm[worldid, i1] * (radius * 1.0)
+
+    base1 = (world_face_offset * 3) + ((face_offset + (2 * shellid + 1)) * 3)
+    neg_radius = -radius
+    face_points[base1 + 0] = vert_xpos[worldid, i1] + vert_norm[worldid, i1] * (neg_radius * 1.0)
+    face_points[base1 + 1] = vert_xpos[worldid, i0] + vert_norm[worldid, i0] * (neg_radius * -1.0)
+    face_points[base1 + 2] = vert_xpos[worldid, i0] + vert_norm[worldid, i0] * (neg_radius * 1.0)
+
+  @wp.kernel
+  def update_flex_3d_shell_points(
+    vert_xpos: wp.array2d(dtype=wp.vec3),
+    flex_shell: wp.array(dtype=int),
+    shell_adr: int,
+    face_offset: int,
+    radius: float,
+    nfaces: int,
+    face_points: wp.array(dtype=wp.vec3),
+  ):
+    worldid, shellid = wp.tid()
+
+    base = shell_adr + (shellid * 3)
+    i0 = flex_shell[base + 0]
+    i1 = flex_shell[base + 1]
+    i2 = flex_shell[base + 2]
+    
+    v0 = vert_xpos[worldid, i0]
+    v1 = vert_xpos[worldid, i1]
+    v2 = vert_xpos[worldid, i2]
+
+    world_face_offset = worldid * nfaces
+    base = (world_face_offset * 3) + ((face_offset + shellid) * 3)
+
+    face_points[base + 0] = v0
+    face_points[base + 1] = v1
+    face_points[base + 2] = v2
+
+
+  for f in range(m.nflex):
+    dim = int(rc.flex_dim[f])
+    nelem = int(rc.flex_elemnum[f])
+    elem_adr = int(rc.flex_elemdataadr[f])
+    elem_count = int(rc.flex_elemnum[f])
+    nshell = int(rc.flex_shellnum[f])
+    shell_adr = int(rc.flex_shelldataadr[f])
+    face_offset = int(rc.flex_faceadr[f])
+    
+    if dim == 2:
+      wp.launch(
+        kernel=_update_flex_points,
+        dim=(d.nworld, nelem),
+        inputs=[
+          d.flexvert_xpos,
+          rc.flex_elem,
+          flexvert_norm,
+          elem_adr,
+          face_offset,
+          rc.flex_radius[f],
+          rc.flex_nfaces,
+          rc.flex_face_points,
+        ],
+      )
+      wp.launch(
+        kernel=_update_flex_2d_shell_points,
+        dim=(d.nworld, nshell),
+        inputs=[
+          d.flexvert_xpos,
+          rc.flex_shell,
+          flexvert_norm,
+          shell_adr,
+          face_offset + (2 * elem_count),
+          rc.flex_radius[f],
+          rc.flex_nfaces,
+          rc.flex_face_points,
+        ],
+      )
+    else:
+      wp.launch(
+        kernel=update_flex_3d_shell_points,
+        dim=(d.nworld, nshell),
+        inputs=[
+          d.flexvert_xpos,
+          rc.flex_shell,
+          shell_adr,
+          face_offset,
+          rc.flex_radius[f],
+          rc.flex_nfaces,
+          rc.flex_face_points,
+        ],
+      )
 
   rc.flex_registry[rc.flex_bvh_id].refit()
 
