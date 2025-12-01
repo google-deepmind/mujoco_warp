@@ -163,10 +163,10 @@ class SolverTest(parameterized.TestCase):
 
     # Calculate Mgrad with Mujoco C
     mj_Mgrad = np.zeros(shape=(1, mjm.nv), dtype=float)
-    mj_grad = np.tile(d.efc.grad.numpy()[:, :mjm.nv], (1, 1))
+    mj_grad = np.tile(d.efc.grad.numpy()[:, : mjm.nv], (1, 1))
     mujoco.mj_solveM(mjm, mjd, mj_Mgrad, mj_grad)
 
-    efc_Mgrad = d.efc.Mgrad.numpy()[0, :mjm.nv]
+    efc_Mgrad = d.efc.Mgrad.numpy()[0, : mjm.nv]
     _assert_eq(efc_Mgrad, mj_Mgrad[0], name="Mgrad")
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
