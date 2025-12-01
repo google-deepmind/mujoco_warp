@@ -186,7 +186,7 @@ class SmoothTest(parameterized.TestCase):
     else:
       qM = np.zeros((mjm.nv, mjm.nv))
       mujoco.mj_fullM(mjm, qM, mjd.qM)
-      _assert_eq(d.qM.numpy()[0], qM, "qM")
+      _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_m(self, jacobian):
@@ -459,7 +459,7 @@ class SmoothTest(parameterized.TestCase):
 
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
-    _assert_eq(d.qM.numpy()[0], qM, "qM")
+    _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
     # qfrc_bias
     d.qfrc_bias.zero_()
