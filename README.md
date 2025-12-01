@@ -25,8 +25,11 @@ MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of 
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
-# Documentation
-MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
+# Quickstart
+
+Try out MuJoCo Warp in colab that introduces the basics.  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-deepmind/mujoco_warp/blob/main/notebooks/tutorial.ipynb)
+
+For more details, see the MuJoCo Warp documentation at [mujoco.readthedocs.io](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
 
 # Installing for development
 
