@@ -33,7 +33,6 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _qderiv_actuator_passive_vel(
   # Model:
-  nu: int,
   actuator_dyntype: wp.array(dtype=int),
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
@@ -47,36 +46,36 @@ def _qderiv_actuator_passive_vel(
   # Out:
   vel_out: wp.array2d(dtype=float),
 ):
-  worldid = wp.tid()
+  worldid, actid = wp.tid()
 
   actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
   actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
-  for actid in range(nu):
-    if actuator_gaintype[actid] == GainType.AFFINE:
-      gain = actuator_gainprm[actuator_gainprm_id, actid][2]
-    else:
-      gain = 0.0
 
-    if actuator_biastype[actid] == BiasType.AFFINE:
-      bias = actuator_biasprm[actuator_biasprm_id, actid][2]
-    else:
-      bias = 0.0
+  if actuator_gaintype[actid] == GainType.AFFINE:
+    gain = actuator_gainprm[actuator_gainprm_id, actid][2]
+  else:
+    gain = 0.0
 
-    if bias == 0.0 and gain == 0.0:
-      vel_out[worldid, actid] = 0.0
-      continue
+  if actuator_biastype[actid] == BiasType.AFFINE:
+    bias = actuator_biasprm[actuator_biasprm_id, actid][2]
+  else:
+    bias = 0.0
 
-    vel = float(bias)
-    if actuator_dyntype[actid] != DynType.NONE:
-      if gain != 0.0:
-        act_first = actuator_actadr[actid]
-        act_last = act_first + actuator_actnum[actid] - 1
-        vel += gain * act_in[worldid, act_last]
-    else:
-      if gain != 0.0:
-        vel += gain * ctrl_in[worldid, actid]
+  if bias == 0.0 and gain == 0.0:
+    vel_out[worldid, actid] = 0.0
+    return
 
-    vel_out[worldid, actid] = vel
+  vel = float(bias)
+  if actuator_dyntype[actid] != DynType.NONE:
+    if gain != 0.0:
+      act_first = actuator_actadr[actid]
+      act_last = act_first + actuator_actnum[actid] - 1
+      vel += gain * act_in[worldid, act_last]
+  else:
+    if gain != 0.0:
+      vel += gain * ctrl_in[worldid, actid]
+
+  vel_out[worldid, actid] = vel
 
 
 @cache_kernel
@@ -226,9 +225,8 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
       if not m.opt.disableflags & DisableBit.ACTUATION:
         wp.launch(
           _qderiv_actuator_passive_vel,
-          dim=(d.nworld,),
+          dim=(d.nworld, m.nu),
           inputs=[
-            m.nu,
             m.actuator_dyntype,
             m.actuator_gaintype,
             m.actuator_biastype,
