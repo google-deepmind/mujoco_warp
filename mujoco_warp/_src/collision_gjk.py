@@ -667,7 +667,7 @@ def gjk(
     cnt += 1
 
   if cnt == gjk_iterations:
-    wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be inceased.\n", gjk_iterations)
+    wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   result = GJKResult()
 
@@ -1294,7 +1294,7 @@ def _epa(
     cnt += 1
 
   if cnt == epa_iterations:
-    wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be inceased.\n", gjk_iterations)
+    wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   # return from valid face
   if idx > -1:
