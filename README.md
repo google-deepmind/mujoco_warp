@@ -31,11 +31,11 @@ There's a few ways to jump into using MuJoCo Warp:
 * For a quick overview of MJWarp's API and design, please see [our colab that introduces the basics](https://colab.research.google.com/github/google-deepmind/mujoco_warp/blob/main/notebooks/tutorial.ipynb).
 * For more details and advanced topics on using MJWarp, see the [MuJoCo Warp documentation](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
 
-MJWarp is also integrated into robotics research toolkits that make it easy to train robot policies with MJWarp physics and reinforcement learning:
+If you would like to train robot policies using MJWarp, consider using a robotics research toolkit that integrates it:
 
-* [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) via [Newton](https://github.com/newton-physics/newton)
-* [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html)
-* [mjlab](https://github.com/mujocolab/mjlab) via MJWarp
+* [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) integrates MJWarp via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html)
+* [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) integrates MJWarp via [Newton](https://github.com/newton-physics/newton)
+* [mjlab](https://github.com/mujocolab/mjlab) integrates MJWarp directly
 
 # Installing for development
 
