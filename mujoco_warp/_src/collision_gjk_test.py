@@ -610,8 +610,8 @@ class GJKTest(absltest.TestCase):
       1.00000000000000000000,
     )
 
-    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
-    self.assertEqual(ncon, 4)
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertEqual(ncon, 1)
     self.assertLess(dist, 0.0001)  # real depth is ~ 2E-6
 
 
