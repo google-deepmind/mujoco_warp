@@ -24,7 +24,7 @@ def create_blocked_cholesky_func(block_size: int):
   def blocked_cholesky_func(
     # In:
     A: wp.array(dtype=float, ndim=2),
-    n: int,
+    matrix_size: int,
     # Out:
     L: wp.array(dtype=float, ndim=2),
   ):
@@ -33,7 +33,7 @@ def create_blocked_cholesky_func(block_size: int):
     It returns a lower-triangular matrix L such that A = L L^T.
     """
     # Process the matrix in blocks along its leading dimension.
-    for k in range(0, n, block_size):
+    for k in range(0, matrix_size, block_size):
       end = k + block_size
 
       # Load current diagonal block A[k:end, k:end]
@@ -49,7 +49,7 @@ def create_blocked_cholesky_func(block_size: int):
       wp.tile_store(L, L_kk_tile, offset=(k, k))
 
       # Process the blocks below the current block
-      for i in range(end, n, block_size):
+      for i in range(end, matrix_size, block_size):
         A_ik_tile = wp.tile_load(A, shape=(block_size, block_size), offset=(i, k), storage="shared")
 
         for j in range(0, k, block_size):
@@ -64,7 +64,7 @@ def create_blocked_cholesky_func(block_size: int):
 
 
 @lru_cache(maxsize=None)
-def create_blocked_cholesky_solve_func(block_size: int, N: int):
+def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int):
   @wp.func
   def blocked_cholesky_solve_func(
     # In:
@@ -79,7 +79,7 @@ def create_blocked_cholesky_solve_func(block_size: int, N: int):
     Solves A x = b given the Cholesky factor L (A = L L^T) using blocked forward and backward
     substitution.
     """
-    rhs_tile = wp.tile_load(b, shape=(N, 1), offset=(0, 0), storage="shared", bounds_check=False)
+    rhs_tile = wp.tile_load(b, shape=(matrix_size_static, 1), offset=(0, 0), storage="shared", bounds_check=False)
 
     # Forward substitution: solve L y = b
     for i in range(0, matrix_size, block_size):

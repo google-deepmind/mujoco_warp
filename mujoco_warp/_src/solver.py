@@ -1693,6 +1693,11 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     if efc_done_in[worldid]:
       return
 
+    # We need matrix size both as a runtime input as well as a static input:
+    # static input is needed to specify the tile sizes for the compiler
+    # runtime input is needed for the loop bounds, otherwise warp will unroll
+    # unconditionally leading to shared memory capacity issues.
+
     wp.static(create_blocked_cholesky_func(TILE_SIZE))(efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
     wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
       cholesky_L_tmp[worldid], efc_grad_in[worldid], matrix_size, efc_Mgrad_out[worldid]
