@@ -109,6 +109,7 @@ def _qderiv_actuator_passive_actuation_sparse(
   # Data in:
   actuator_moment_in: wp.array3d(dtype=float),
   # In:
+  nelem: int,
   vel_in: wp.array2d(dtype=float),
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
@@ -121,7 +122,7 @@ def _qderiv_actuator_passive_actuation_sparse(
   if vel == 0.0:
     return
 
-  for elemid in range(qMi.size):
+  for elemid in range(nelem):
     dofiid = qMi[elemid]
     dofjid = qMj[elemid]
 
@@ -144,6 +145,7 @@ def _qderiv_actuator_passive(
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
+  qDeriv_in: wp.array3d(dtype=float),
   # Out:
   qDeriv_out: wp.array3d(dtype=float),
 ):
@@ -153,9 +155,9 @@ def _qderiv_actuator_passive(
   dofjid = qMj[elemid]
 
   if opt_is_sparse:
-    qderiv = qDeriv_out[worldid, 0, elemid]
+    qderiv = qDeriv_in[worldid, 0, elemid]
   else:
-    qderiv = qDeriv_out[worldid, dofiid, dofjid]
+    qderiv = qDeriv_in[worldid, dofiid, dofjid]
 
   if not opt_disableflags & DisableBit.DAMPER and dofiid == dofjid:
     qderiv -= dof_damping[worldid % dof_damping.shape[0], dofiid]
@@ -239,13 +241,13 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         ],
         outputs=[vel],
       )
-
       if m.opt.is_sparse:
         wp.launch(
           _qderiv_actuator_passive_actuation_sparse,
           dim=(d.nworld, m.nu),
           inputs=[
             d.actuator_moment,
+            qMi.size,
             vel,
             qMi,
             qMj,
@@ -277,6 +279,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         d.qM,
         qMi,
         qMj,
+        out,
       ],
       outputs=[out],
     )
