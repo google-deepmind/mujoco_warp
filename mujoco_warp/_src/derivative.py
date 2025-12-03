@@ -220,7 +220,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   # TODO(team): implicit requires different sparsity structure
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
-    qDeriv.zero_()
+    out.zero_()
     if m.nu > 0:
       vel = wp.empty((d.nworld, m.nu), dtype=float)
       if not m.opt.disableflags & DisableBit.ACTUATION:
@@ -252,7 +252,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
               qMi,
               qMj,
             ],
-            outputs=[qDeriv],
+            outputs=[out],
           )
       else:
         vel_3d = vel.reshape(vel.shape + (1,))
@@ -266,7 +266,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
                 d.actuator_moment,
                 tile.adr,
               ],
-              outputs=[qDeriv],
+              outputs=[out],
               block_dim=m.block_dim.mul_m_dense,
             )
     wp.launch(
