@@ -207,16 +207,17 @@ def _qderiv_tendon_damping(
 
 
 @event_scope
-def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
+def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   """Analytical derivative of smooth forces w.r.t. velocities.
 
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
-    qDeriv: Analytical derivative of smooth forces w.r.t. velocity.
+    out: qM - dt * qDeriv (derivatives of smooth forces w.r.t velocities).
   """
-  qMi = m.qM_fullm_i if m.opt.is_sparse else m.dof_tri_row
-  qMj = m.qM_fullm_j if m.opt.is_sparse else m.dof_tri_col
+  qMi = m.qM_fullm_i
+  qMj = m.qM_fullm_j
+  # TODO(team): implicit requires different sparsity structure
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     qDeriv.zero_()
@@ -280,18 +281,18 @@ def deriv_smooth_vel(m: Model, d: Data, qDeriv: wp.array2d(dtype=float)):
         qMi,
         qMj,
       ],
-      outputs=[qDeriv],
+      outputs=[out],
     )
   else:
     # TODO(team): directly utilize qM for these settings
-    wp.copy(qDeriv, d.qM)
+    wp.copy(out, d.qM)
 
   if not m.opt.disableflags & DisableBit.DAMPER:
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
       inputs=[m.ntendon, m.opt.timestep, m.opt.is_sparse, m.tendon_damping, d.ten_J, qMi, qMj],
-      outputs=[qDeriv],
+      outputs=[out],
     )
 
   # TODO(team): rne derivative
