@@ -18,7 +18,6 @@ from typing import Tuple
 import warp as wp
 
 from .collision_primitive import Geom
-from .types import MJ_MINVAL
 from .types import GeomType
 from .types import mat43
 from .types import mat63
@@ -28,7 +27,8 @@ wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
-MJ_MINVAL2 = MJ_MINVAL * MJ_MINVAL
+MINVAL = 1e-15
+MIN_DIST = 1e-10
 
 # TODO(kbayes): write out formulas to derive these constants
 FACE_TOL = 0.99999872
@@ -122,7 +122,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
     d = wp.sqrt(local_dir[0] * local_dir[0] + local_dir[1] * local_dir[1])
-    if d > MJ_MINVAL:
+    if d > MINVAL:
       scl = geom.size[0] / d
       res[0] = local_dir[0] * scl
       res[1] = local_dir[1] * scl
@@ -241,7 +241,7 @@ def _linear_combine(n: int, coefs: wp.vec4, mat: mat43) -> wp.vec3:
 
 @wp.func
 def _almost_equal(v1: wp.vec3, v2: wp.vec3) -> bool:
-  return wp.abs(v1[0] - v2[0]) < MJ_MINVAL and wp.abs(v1[1] - v2[1]) < MJ_MINVAL and wp.abs(v1[2] - v2[2]) < MJ_MINVAL
+  return wp.abs(v1[0] - v2[0]) < MINVAL and wp.abs(v1[1] - v2[1]) < MINVAL and wp.abs(v1[2] - v2[2]) < MINVAL
 
 
 @wp.func
@@ -291,7 +291,7 @@ def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec
   nn = wp.dot(n, n)
   if nn == 0:
     return z, 1
-  if nv != 0 and nn > MJ_MINVAL:
+  if nv != 0 and nn > MINVAL:
     v = (nv / nn) * n
     return v, 0
 
@@ -301,7 +301,7 @@ def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec
   nn = wp.dot(n, n)
   if nn == 0:
     return z, 1
-  if nv != 0 and nn > MJ_MINVAL:
+  if nv != 0 and nn > MINVAL:
     v = (nv / nn) * n
     return v, 0
 
@@ -757,7 +757,7 @@ def _tri_point_intersect(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> b
   pr[0] = v1[0] * l1 + v2[0] * l2 + v3[0] * l3
   pr[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
   pr[2] = v1[2] * l1 + v2[2] * l2 + v3[2] * l3
-  return wp.norm_l2(pr - p) < MJ_MINVAL
+  return wp.norm_l2(pr - p) < MINVAL
 
 
 @wp.func
@@ -962,27 +962,27 @@ def _polytope2(
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
 
   # build hexahedron
-  if _attach_face(pt, 0, 0, 2, 3) < MJ_MINVAL:
+  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 1, 0, 4, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 1, 0, 4, 2) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 4, 2)
 
-  if _attach_face(pt, 2, 0, 3, 4) < MJ_MINVAL2:
+  if _attach_face(pt, 2, 0, 3, 4) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 4)
 
-  if _attach_face(pt, 3, 1, 3, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 3, 1, 3, 2) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 3, 2)
 
-  if _attach_face(pt, 4, 1, 2, 4) < MJ_MINVAL2:
+  if _attach_face(pt, 4, 1, 2, 4) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 2, 4)
 
-  if _attach_face(pt, 5, 1, 4, 3) < MJ_MINVAL2:
+  if _attach_face(pt, 5, 1, 4, 3) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 4, 3)
 
@@ -1022,7 +1022,7 @@ def _polytope3(
   """Create polytope for EPA given a 2-simplex from GJK."""
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
-  if wp.norm_l2(n) < MJ_MINVAL:
+  if wp.norm_l2(n) < MINVAL:
     pt.status = 2
     return pt
 
@@ -1072,22 +1072,22 @@ def _polytope3(
     return pt
 
   # create hexahedron for EPA
-  if _attach_face(pt, 0, 4, 0, 1) < MJ_MINVAL2:
+  if _attach_face(pt, 0, 4, 0, 1) < MIN_DIST:
     pt.status = 6
     return pt
-  if _attach_face(pt, 1, 4, 2, 0) < MJ_MINVAL2:
+  if _attach_face(pt, 1, 4, 2, 0) < MIN_DIST:
     pt.status = 7
     return pt
-  if _attach_face(pt, 2, 4, 1, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 2, 4, 1, 2) < MIN_DIST:
     pt.status = 8
     return pt
-  if _attach_face(pt, 3, 3, 1, 0) < MJ_MINVAL2:
+  if _attach_face(pt, 3, 3, 1, 0) < MIN_DIST:
     pt.status = 9
     return pt
-  if _attach_face(pt, 4, 3, 0, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 4, 3, 0, 2) < MIN_DIST:
     pt.status = 10
     return pt
-  if _attach_face(pt, 5, 3, 2, 1) < MJ_MINVAL2:
+  if _attach_face(pt, 5, 3, 2, 1) < MIN_DIST:
     pt.status = 11
     return pt
 
@@ -1146,19 +1146,19 @@ def _polytope4(
   pt.vert_index2[3] = simplex_index2[3]
 
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
-  if _attach_face(pt, 0, 0, 1, 2) < MJ_MINVAL2:
+  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
 
-  if _attach_face(pt, 1, 0, 3, 1) < MJ_MINVAL2:
+  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 1)
 
-  if _attach_face(pt, 2, 0, 2, 3) < MJ_MINVAL2:
+  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 3, 3, 2, 1) < MJ_MINVAL2:
+  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
 
@@ -1803,7 +1803,6 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[fl
 @wp.func
 def _polygon_clip(
   # In:
-  prune: bool,
   plane_normal: wp.array(dtype=wp.vec3),
   plane_dist: wp.array(dtype=float),
   face1: wp.array(dtype=wp.vec3),
@@ -1883,7 +1882,7 @@ def _polygon_clip(
   if npolygon < 1:
     return 0, witness1, witness2
 
-  if prune and npolygon > 4:
+  if npolygon > 4:
     quad = _polygon_quad(polygon_out, npolygon)
     for i in range(4):
       witness2[i] = polygon_out[quad[i]]
@@ -2114,27 +2113,20 @@ def multicontact(
         face2,
       )
 
-  # TODO(kbayes): this approximates the contact direction, by scaling the face normal by the
-  # single contact direction's magnitude. This is effective, but polygonClip should compute
-  # this for each contact point.
-  approx_dir = wp.vec3()
-
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
     approx_dir = wp.norm_l2(dir) * n2[j]
-    return _polygon_clip(False, plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped)
+    return _polygon_clip(plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped)
 
   # face2 is an edge; clip face2 against face1
   if is_edge_contact_geom2:
     approx_dir = -wp.norm_l2(dir) * n1[j]
-    return _polygon_clip(False, plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir, polygon, clipped)
+    return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir, polygon, clipped)
 
   # face-face collision
   approx_dir = wp.norm_l2(dir) * n2[j]
 
-  # don't prune box-box collisions (expect up to 8 contacts)
-  prune = not (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)
-  return _polygon_clip(prune, plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir, polygon, clipped)
+  return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir, polygon, clipped)
 
 
 @wp.func
