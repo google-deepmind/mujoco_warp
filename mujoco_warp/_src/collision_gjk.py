@@ -956,7 +956,7 @@ def _polytope2(
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
 
   # build hexahedron
-  if _attach_face(pt, 0, 0, 2, 3) < MINVAL:
+  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
