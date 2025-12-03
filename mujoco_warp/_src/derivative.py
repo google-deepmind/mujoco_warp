@@ -106,31 +106,33 @@ def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
 
 @wp.kernel
 def _qderiv_actuator_passive_actuation_sparse(
+  # Model:
+  nu: int,
   # Data in:
   actuator_moment_in: wp.array3d(dtype=float),
   # In:
-  nelem: int,
   vel_in: wp.array2d(dtype=float),
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
   # Out:
   qDeriv_out: wp.array3d(dtype=float),
 ):
-  worldid, actid = wp.tid()
+  worldid, elemid = wp.tid()
 
-  vel = vel_in[worldid, actid]
-  if vel == 0.0:
-    return
-
-  for elemid in range(nelem):
-    dofiid = qMi[elemid]
-    dofjid = qMj[elemid]
+  dofiid = qMi[elemid]
+  dofjid = qMj[elemid]
+  qderiv_contrib = float(0.0)
+  for actid in range(nu):
+    vel = vel_in[worldid, actid]
+    if vel == 0.0:
+      continue
 
     moment_i = actuator_moment_in[worldid, actid, dofiid]
     moment_j = actuator_moment_in[worldid, actid, dofjid]
 
-    qderiv_contrib = moment_i * moment_j * vel
-    wp.atomic_add(qDeriv_out[worldid, 0], elemid, qderiv_contrib)
+    qderiv_contrib += moment_i * moment_j * vel
+
+  qDeriv_out[worldid, 0, elemid] = qderiv_contrib
 
 
 @wp.kernel
@@ -244,10 +246,10 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
       if m.opt.is_sparse:
         wp.launch(
           _qderiv_actuator_passive_actuation_sparse,
-          dim=(d.nworld, m.nu),
+          dim=(d.nworld, qMi.size),
           inputs=[
+            m.nu,
             d.actuator_moment,
-            qMi.size,
             vel,
             qMi,
             qMj,
