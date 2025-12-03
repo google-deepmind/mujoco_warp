@@ -572,7 +572,7 @@ class GJKTest(absltest.TestCase):
     self.assertAlmostEqual(dist, -0.0016624178339902445)
 
   def test_box_box_float(self):
-    """Test box-box under float32"""
+    """Test box-box under float32."""
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
