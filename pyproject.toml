@@ -30,12 +30,12 @@ dependencies = [
     "etils[epath]",
     "mujoco>=3.3.7",
     "numpy",
-    "warp-lang>=1.9.1",
+    "warp-lang>=1.9.0.dev0",
 ]
 
 [[tool.uv.index]]
 name = "nvidia"
-url = "https://pypi.nvidia.com/warp-lang/"
+url = "https://pypi.nvidia.com/"
 explicit = true
 
 [[tool.uv.index]]
