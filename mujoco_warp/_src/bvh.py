@@ -421,14 +421,14 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_id0 = world_face_offset + face_offset + (2 * shellid)
     base0 = face_id0 * 3
     face_points_out[base0 + 0] = v0 + radius * n0
-    face_points_out[base0 + 1] = v1 + radius * n1
+    face_points_out[base0 + 1] = v1 - radius * n1
     face_points_out[base0 + 2] = v1 + radius * n1
 
     face_id1 = world_face_offset + face_offset + (2 * shellid + 1)
     base1 = face_id1 * 3
-    face_points_out[base1 + 0] = v1 + radius * n1
+    face_points_out[base1 + 0] = v1 - radius * n1
     face_points_out[base1 + 1] = v0 + radius * n0
-    face_points_out[base1 + 2] = v0 + radius * n0
+    face_points_out[base1 + 2] = v0 - radius * n0
 
   @wp.kernel
   def _update_flex_3d_shell_points(
