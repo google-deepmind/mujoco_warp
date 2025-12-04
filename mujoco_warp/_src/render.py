@@ -565,6 +565,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
   rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
   rc.depth_data.fill_(0.0)
 
+  # TODO: Adding "unique" causes kernel re-compilation issues, need to investigate
+  # and fix it.
   @nested_kernel(enable_backward="False")
   def _render_megakernel(
     # Model and Options

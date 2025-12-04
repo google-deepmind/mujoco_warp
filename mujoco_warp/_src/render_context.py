@@ -204,14 +204,14 @@ class RenderContext:
     else:
       active_cam_indices = list(range(mjm.ncam))
 
-    n_active_cams = len(active_cam_indices)
+    ncam = len(active_cam_indices)
 
     # If a global camera resolution is provided, use it for all cameras
     # otherwise check the xml for camera resolutions
     if cam_resolutions is not None:
       if isinstance(cam_resolutions, Tuple):
-        cam_resolutions = [cam_resolutions] * n_active_cams
-      assert len(cam_resolutions) == n_active_cams, f"Camera resolutions must be provided for all active cameras (got {len(cam_resolutions)}, expected {n_active_cams})"
+        cam_resolutions = [cam_resolutions] * ncam
+      assert len(cam_resolutions) == ncam, f"Camera resolutions must be provided for all active cameras (got {len(cam_resolutions)}, expected {ncam})"
       active_cam_resolutions = cam_resolutions
     else:
       # Extract resolutions only for active cameras
@@ -220,23 +220,23 @@ class RenderContext:
     self.cam_resolutions = wp.array(active_cam_resolutions, dtype=wp.vec2i)
 
     if isinstance(render_rgb, bool):
-      render_rgb = [render_rgb] * n_active_cams
-    assert len(render_rgb) == n_active_cams, f"Render RGB must be provided for all active cameras (got {len(render_rgb)}, expected {n_active_cams})"
+      render_rgb = [render_rgb] * ncam
+    assert len(render_rgb) == ncam, f"Render RGB must be provided for all active cameras (got {len(render_rgb)}, expected {ncam})"
 
     if isinstance(render_depth, bool):
-      render_depth = [render_depth] * n_active_cams
-    assert len(render_depth) == n_active_cams, f"Render depth must be provided for all active cameras (got {len(render_depth)}, expected {n_active_cams})"
+      render_depth = [render_depth] * ncam
+    assert len(render_depth) == ncam, f"Render depth must be provided for all active cameras (got {len(render_depth)}, expected {ncam})"
 
-    rgb_adr = -1 * np.ones(n_active_cams, dtype=int)
-    depth_adr = -1 * np.ones(n_active_cams, dtype=int)
-    rgb_size = np.zeros(n_active_cams, dtype=int)
-    depth_size = np.zeros(n_active_cams, dtype=int)
+    rgb_adr = -1 * np.ones(ncam, dtype=int)
+    depth_adr = -1 * np.ones(ncam, dtype=int)
+    rgb_size = np.zeros(ncam, dtype=int)
+    depth_size = np.zeros(ncam, dtype=int)
     cam_resolutions = self.cam_resolutions.numpy()
     ri = 0
     di = 0
     total = 0
 
-    for idx in range(n_active_cams):
+    for idx in range(ncam):
       if render_rgb[idx]:
         rgb_adr[idx] = ri
         ri += cam_resolutions[idx][0] * cam_resolutions[idx][1]
@@ -288,7 +288,7 @@ class RenderContext:
       )
       offset += img_w * img_h
 
-    self.ncam=n_active_cams
+    self.ncam=ncam
     self.cam_id_map=wp.array(active_cam_indices, dtype=int)
     self.use_textures=use_textures
     self.use_shadows=use_shadows
