@@ -100,7 +100,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     rc: The render context on device.
   """
   bvh.refit_warp_bvh(m, d, rc)
-  if (m.nflex > 0):
+  if m.nflex:
     bvh.refit_flex_bvh(m, d, rc)
   render_megakernel(m, d, rc)
 
@@ -290,6 +290,7 @@ def cast_ray(
     gi_bvh_local = gi_global - (world_id * bvh_ngeom)
     gi = enabled_geom_ids[gi_bvh_local]
 
+    # TODO: Investigate branch elimination with static loop unrolling
     if geom_type[gi] == GeomType.PLANE:
       h, d, n = ray_plane_with_normal(
         geom_xpos[world_id, gi],
@@ -562,19 +563,17 @@ def compute_lighting(
 @event_scope
 def render_megakernel(m: Model, d: Data, rc: RenderContext):
   rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
-  rc.depth_data.fill_(float(0.0))
+  rc.depth_data.fill_(0.0)
 
   @nested_kernel(enable_backward="False")
   def _render_megakernel(
     # Model and Options
-    n_rays: int,
-    nworld: int,
     ncam: int,
     use_shadows: bool,
     bvh_ngeom: int,
 
     # Camera
-    cam_resolutions: wp.array(dtype=wp.vec2i),
+    cam_res: wp.array(dtype=wp.vec2i),
     cam_id_map: wp.array(dtype=int),
     cam_xpos: wp.array2d(dtype=wp.vec3),
     cam_xmat: wp.array2d(dtype=wp.mat33),
@@ -627,23 +626,17 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     geom_xmat: wp.array2d(dtype=wp.mat33),
 
     # Output
-    out_rgb: wp.array2d(dtype=wp.uint32),
-    out_depth: wp.array2d(dtype=float),
+    rgb_out: wp.array2d(dtype=wp.uint32),
+    depth_out: wp.array2d(dtype=float),
   ):
-    tid = wp.tid()
-
-    if tid >= nworld * n_rays:
-      return
-
-    world_idx = tid // n_rays
-    ray_idx = tid % n_rays
+    world_idx, ray_idx = wp.tid()
 
     # Map global ray_idx -> (cam_idx, ray_idx_local) using cumulative sizes
     cam_idx = int(-1)
     ray_idx_local = int(-1)
     accum = int(0)
     for i in range(ncam):
-      num_i = cam_resolutions[i][0] * cam_resolutions[i][1]
+      num_i = cam_res[i][0] * cam_res[i][1]
       if ray_idx < accum + num_i:
         cam_idx = i
         ray_idx_local = ray_idx - accum
@@ -697,7 +690,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       return
 
     if render_depth[cam_idx]:
-      out_depth[world_idx, depth_adr[cam_idx] + ray_idx_local] = dist
+      depth_out[world_idx, depth_adr[cam_idx] + ray_idx_local] = dist
 
     if not render_rgb[cam_idx]:
       return
@@ -746,22 +739,14 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
               f,
               mesh_id,
             )
-            base_color = wp.vec3(
-              base_color[0] * tex_color[0],
-              base_color[1] * tex_color[1],
-              base_color[2] * tex_color[2],
-            )
+            base_color = wp.cw_mul(base_color, tex_color)
 
     len_n = wp.length(normal)
     n = normal if len_n > 0.0 else AMBIENT_UP
     n = wp.normalize(n)
     hemispheric = 0.5 * (wp.dot(n, AMBIENT_UP) + 1.0)
     ambient_color = AMBIENT_SKY * hemispheric + AMBIENT_GROUND * (1.0 - hemispheric)
-    result = wp.vec3(
-      base_color[0] * (ambient_color[0] * AMBIENT_INTENSITY),
-      base_color[1] * (ambient_color[1] * AMBIENT_INTENSITY),
-      base_color[2] * (ambient_color[2] * AMBIENT_INTENSITY),
-    )
+    result = AMBIENT_INTENSITY * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
@@ -792,7 +777,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
     hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 
-    out_rgb[world_idx, rgb_adr[cam_idx] + ray_idx_local] = pack_rgba_to_uint32(
+    rgb_out[world_idx, rgb_adr[cam_idx] + ray_idx_local] = pack_rgba_to_uint32(
       hit_color[0] * 255.0,
       hit_color[1] * 255.0,
       hit_color[2] * 255.0,
@@ -801,11 +786,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
   wp.launch(
     kernel=_render_megakernel,
-    dim=(d.nworld * rc.ray_data.shape[0]),
+    dim=(d.nworld, rc.ray_data.shape[0]),
     inputs=[
       # Model and Options
-      rc.ray_data.shape[0],
-      d.nworld,
       rc.ncam,
       rc.use_shadows,
       rc.bvh_ngeom,

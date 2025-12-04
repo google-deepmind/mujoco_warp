@@ -253,11 +253,6 @@ def ray_sphere_with_normal(
 @wp.func
 def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a capsule."""
-
-
-@wp.func
-def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
-  """Returns the distance at which a ray intersects with a capsule."""
   # bounding sphere test
   ssz = size[0] + size[1]
   if ray_sphere(pos, ssz * ssz, pnt, vec) < 0.0:
@@ -333,13 +328,6 @@ def ray_capsule_with_normal(
   normal_world = mat @ normal_local
   normal_world = wp.normalize(normal_world)
   return True, x, normal_world
-
-
-
-@wp.func
-def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
-  """Returns the distance at which a ray intersects with an ellipsoid."""
-
 
 
 @wp.func
