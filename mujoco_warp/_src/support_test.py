@@ -179,7 +179,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_block_cholesky(self):
     """Tests block Cholesky decomposition and solve against numpy using n_humanoid model."""
-
     from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
     from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
     from mujoco_warp._src.support import nested_kernel
