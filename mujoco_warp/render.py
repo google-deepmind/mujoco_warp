@@ -222,7 +222,7 @@ def _main(argv: Sequence[str]):
       if world < 0 or world >= d.nworld:
         raise ValueError(f"world index out of range: {world} not in [0, {d.nworld - 1}]")
 
-    cam_res = rc.cam_resolutions.numpy()
+    cam_res = rc.cam_res.numpy()
     base_width = int(cam_res[cam][0])
     base_height = int(cam_res[cam][1])
 

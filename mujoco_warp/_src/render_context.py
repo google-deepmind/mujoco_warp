@@ -64,7 +64,7 @@ def _camera_frustum_bounds(
 @dataclasses.dataclass
 class RenderContext:
   ncam: int
-  cam_resolutions: wp.array(dtype=wp.vec2i)
+  cam_res: wp.array(dtype=wp.vec2i)
   cam_id_map: wp.array(dtype=int)
   use_textures: bool
   use_shadows: bool
@@ -107,7 +107,7 @@ class RenderContext:
     mjm: mujoco.MjModel,
     m: Model,
     d: Data,
-    cam_resolutions: Union[list[Tuple[int, int]] | Tuple[int, int]] = [],
+    cam_res: Union[list[Tuple[int, int]] | Tuple[int, int]] = [],
     render_rgb: Union[list[bool] | bool] = True,
     render_depth: Union[list[bool] | bool] = False,
     use_textures: bool = True,
@@ -172,7 +172,6 @@ class RenderContext:
         face_point,
         flex_groups,
         flex_group_roots,
-        flex_elem,
         flex_shell,
         flex_faceadr,
         flex_nface,
@@ -184,7 +183,6 @@ class RenderContext:
       self.flex_group = flex_groups
       self.flex_group_root = flex_group_roots
       self.flex_dim = mjm.flex_dim
-      self.flex_elem = flex_elem
       self.flex_elemnum = mjm.flex_elemnum
       self.flex_elemdataadr = mjm.flex_elemdataadr
       self.flex_shell = flex_shell
@@ -208,16 +206,16 @@ class RenderContext:
 
     # If a global camera resolution is provided, use it for all cameras
     # otherwise check the xml for camera resolutions
-    if cam_resolutions is not None:
-      if isinstance(cam_resolutions, Tuple):
-        cam_resolutions = [cam_resolutions] * ncam
-      assert len(cam_resolutions) == ncam, f"Camera resolutions must be provided for all active cameras (got {len(cam_resolutions)}, expected {ncam})"
-      active_cam_resolutions = cam_resolutions
+    if cam_res is not None:
+      if isinstance(cam_res, Tuple):
+        cam_res = [cam_res] * ncam
+      assert len(cam_res) == ncam, f"Camera resolutions must be provided for all active cameras (got {len(cam_res)}, expected {ncam})"
+      active_cam_res = cam_res
     else:
       # Extract resolutions only for active cameras
-      mjm.cam_resolution[active_cam_indices]
+      mjm.cam_resoultion[active_cam_indices]
 
-    self.cam_resolutions = wp.array(active_cam_resolutions, dtype=wp.vec2i)
+    self.cam_res = wp.array(active_cam_res, dtype=wp.vec2i)
 
     if isinstance(render_rgb, bool):
       render_rgb = [render_rgb] * ncam
@@ -231,7 +229,7 @@ class RenderContext:
     depth_adr = -1 * np.ones(ncam, dtype=int)
     rgb_size = np.zeros(ncam, dtype=int)
     depth_size = np.zeros(ncam, dtype=int)
-    cam_resolutions = self.cam_resolutions.numpy()
+    cam_res = self.cam_res.numpy()
     ri = 0
     di = 0
     total = 0
@@ -239,14 +237,14 @@ class RenderContext:
     for idx in range(ncam):
       if render_rgb[idx]:
         rgb_adr[idx] = ri
-        ri += cam_resolutions[idx][0] * cam_resolutions[idx][1]
-        rgb_size[idx] = cam_resolutions[idx][0] * cam_resolutions[idx][1]
+        ri += cam_res[idx][0] * cam_res[idx][1]
+        rgb_size[idx] = cam_res[idx][0] * cam_res[idx][1]
       if render_depth[idx]:
         depth_adr[idx] = di
-        di += cam_resolutions[idx][0] * cam_resolutions[idx][1]
-        depth_size[idx] = cam_resolutions[idx][0] * cam_resolutions[idx][1]
+        di += cam_res[idx][0] * cam_res[idx][1]
+        depth_size[idx] = cam_res[idx][0] * cam_res[idx][1]
 
-      total += cam_resolutions[idx][0] * cam_resolutions[idx][1]
+      total += cam_res[idx][0] * cam_res[idx][1]
 
     self.rgb_adr = wp.array(rgb_adr, dtype=int)
     self.depth_adr = wp.array(depth_adr, dtype=int)
@@ -261,8 +259,8 @@ class RenderContext:
     offset = 0
     model_znear = mjm.vis.map.znear * mjm.stat.extent
     for idx, cam_id in enumerate(active_cam_indices):
-      img_w = cam_resolutions[idx][0]
-      img_h = cam_resolutions[idx][1]
+      img_w = cam_res[idx][0]
+      img_h = cam_res[idx][1]
       left, right, top, bottom, is_ortho = _camera_frustum_bounds(
         mjm,
         cam_id,
@@ -316,7 +314,7 @@ def create_render_context(
   mjm: mujoco.MjModel,
   m: Model,
   d: Data,
-  cam_resolutions: Union[list[Tuple[int, int]] | Tuple[int, int]],
+  cam_res: Union[list[Tuple[int, int]] | Tuple[int, int]],
   render_rgb: Union[list[bool] | bool] = True,
   render_depth: Union[list[bool] | bool] = False,
   use_textures: bool = True,
@@ -331,7 +329,7 @@ def create_render_context(
     mjm: The model containing kinematic and dynamic information on host.
     m: The model on device.
     d: The data on device.
-    cam_resolutions: The width and height to render each camera image.
+    cam_res: The width and height to render each camera image.
     render_rgb: Whether to render RGB images.
     render_depth: Whether to render depth images.
     use_textures: Whether to use textures.
@@ -348,7 +346,7 @@ def create_render_context(
     mjm,
     m,
     d,
-    cam_resolutions,
+    cam_res,
     render_rgb,
     render_depth,
     use_textures,
@@ -361,6 +359,7 @@ def create_render_context(
 
 @wp.kernel
 def build_primary_rays(
+  # In:
   offset: int,
   img_w: int,
   img_h: int,
@@ -370,6 +369,7 @@ def build_primary_rays(
   bottom: float,
   znear: float,
   orthographic: int,
+  # Out:
   ray_out: wp.array(dtype=wp.vec3),
 ):
   tid = wp.tid()
@@ -409,8 +409,10 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> Tuple[wp.array, wp.array
 
   @wp.kernel
   def convert_texture_to_packed(
+    # In:
     tex_data_uint8: wp.array(dtype=wp.uint8),
-    tex_data_packed: wp.array(dtype=wp.uint32),
+    # Out:
+    tex_data_packed_out: wp.array(dtype=wp.uint32),
   ):
     """Convert uint8 texture data to packed uint32 format for efficient sampling.
     """
@@ -424,12 +426,13 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> Tuple[wp.array, wp.array
     a = wp.uint8(255)
 
     packed = (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
-    tex_data_packed[tid] = packed
+    tex_data_packed_out[tid] = packed
 
   wp.launch(
     convert_texture_to_packed,
     dim=int(total_size),
-    inputs=[wp.array(mjm.tex_data, dtype=wp.uint8), tex_data_packed],
+    inputs=[wp.array(mjm.tex_data, dtype=wp.uint8)],
+    outputs=[tex_data_packed],
   )
 
   return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
@@ -636,13 +639,17 @@ def _build_hfield_mesh(
 
 @wp.kernel
 def _make_face_2d_elements(
-    vert_xpos_in: wp.array2d(dtype=wp.vec3),
-    flex_elem_in: wp.array(dtype=int),
-    vert_norm_in: wp.array2d(dtype=wp.vec3),
+    # Model:
+    flex_elem: wp.array(dtype=int),
+    # Data in:
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
+    flexvert_norm_in: wp.array2d(dtype=wp.vec3),
     elem_adr: int,
     face_offset: int,
     radius: float,
     nfaces: int,
+    # Out:
     face_point_out: wp.array(dtype=wp.vec3),
     face_index_out: wp.array(dtype=int),
     group_out: wp.array(dtype=int),
@@ -654,17 +661,17 @@ def _make_face_2d_elements(
     worldid, elemid = wp.tid()
 
     base = elem_adr + elemid * 3
-    i0 = flex_elem_in[base + 0]
-    i1 = flex_elem_in[base + 1]
-    i2 = flex_elem_in[base + 2]
+    i0 = flex_elem[base + 0]
+    i1 = flex_elem[base + 1]
+    i2 = flex_elem[base + 2]
 
-    v0 = vert_xpos_in[worldid, i0]
-    v1 = vert_xpos_in[worldid, i1]
-    v2 = vert_xpos_in[worldid, i2]
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+    v2 = flexvert_xpos_in[worldid, i2]
 
-    n0 = vert_norm_in[worldid, i0]
-    n1 = vert_norm_in[worldid, i1]
-    n2 = vert_norm_in[worldid, i2]
+    n0 = flexvert_norm_in[worldid, i0]
+    n1 = flexvert_norm_in[worldid, i1]
+    n2 = flexvert_norm_in[worldid, i2]
 
     p0_pos = v0 + radius * n0
     p1_pos = v1 + radius * n1
@@ -705,13 +712,16 @@ def _make_face_2d_elements(
 
 @wp.kernel
 def _make_sides_2d_elements(
-    vert_xpos_in: wp.array2d(dtype=wp.vec3),
-    vert_norm_in: wp.array2d(dtype=wp.vec3),
+    # Data in:
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
+    flexvert_norm_in: wp.array2d(dtype=wp.vec3),
     flex_shell_in: wp.array(dtype=int),
     shell_adr: int,
     face_offset: int,
     radius: float,
     nface: int,
+    # Out:
     face_point_out: wp.array(dtype=wp.vec3),
     face_index_out: wp.array(dtype=int),
     group_out: wp.array(dtype=int),
@@ -728,10 +738,11 @@ def _make_sides_2d_elements(
     i0 = flex_shell_in[base + 0]
     i1 = flex_shell_in[base + 1]
 
-    v0 = vert_xpos_in[worldid, i0]
-    v1 = vert_xpos_in[worldid, i1]
-    n0 = vert_norm_in[worldid, i0]
-    n1 = vert_norm_in[worldid, i1]
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+
+    n0 = flexvert_norm_in[worldid, i0]
+    n1 = flexvert_norm_in[worldid, i1]
 
     neg_radius = -radius
 
@@ -761,11 +772,14 @@ def _make_sides_2d_elements(
 
 @wp.kernel
 def _make_faces_3d_shells(
-    vert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # Data in:
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
     flex_shell_in: wp.array(dtype=int),
     shell_adr: int,
     face_offset: int,
     nface: int,
+    # Out:
     face_point_out: wp.array(dtype=wp.vec3),
     face_index_out: wp.array(dtype=int),
     group_out: wp.array(dtype=int),
@@ -785,9 +799,9 @@ def _make_faces_3d_shells(
     face_id = worldid * nface + face_offset + shellid
     base = face_id * 3
 
-    v0 = vert_xpos_in[worldid, i0]
-    v1 = vert_xpos_in[worldid, i1]
-    v2 = vert_xpos_in[worldid, i2]
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+    v2 = flexvert_xpos_in[worldid, i2]
 
     face_point_out[base + 0] = v0
     face_point_out[base + 1] = v1
@@ -830,25 +844,23 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
     face_index = wp.zeros(nface * 3 * d.nworld, dtype=wp.int32)
     group = wp.zeros(nface * d.nworld, dtype=int)
 
-    vert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
-    flex_elem = wp.array(mjm.flex_elem, dtype=int)
+    flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
     flex_shell = wp.array(mjm.flex_shell, dtype=int)
 
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
-      dim=(d.nworld, m.nflexvert),
+      dim=(d.nworld, m.nflexelem),
       inputs=[
+        m.flex_elem,
         d.flexvert_xpos,
-        flex_elem,
-        m.nflexelem,
       ],
-      outputs=[vert_norm],
+      outputs=[flexvert_norm],
     )
 
     wp.launch(
       kernel=bvh.normalize_vertex_normals,
       dim=(d.nworld, m.nflexvert),
-      inputs=[vert_norm],
+      inputs=[flexvert_norm],
     )
 
     for f in range(nflex):
@@ -863,9 +875,9 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
           kernel=_make_face_2d_elements,
           dim=(d.nworld, nelem),
           inputs=[
+            m.flex_elem,
             d.flexvert_xpos,
-            flex_elem,
-            vert_norm,
+            flexvert_norm,
             elem_adr,
             flex_faceadr[f],
             mjm.flex_radius[f],
@@ -879,7 +891,7 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
           dim=(d.nworld, nshell),
           inputs=[
             d.flexvert_xpos,
-            vert_norm,
+            flexvert_norm,
             flex_shell,
             shell_adr,
             flex_faceadr[f] + 2 * nelem,
@@ -922,7 +934,6 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
       face_point,
       group,
       group_root,
-      flex_elem,
       flex_shell,
       flex_faceadr,
       nface,

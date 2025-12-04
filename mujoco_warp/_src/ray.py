@@ -206,6 +206,7 @@ def ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.
 
 @wp.func
 def ray_plane_with_normal(
+  # In:
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
@@ -237,6 +238,7 @@ def ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> flo
 
 @wp.func
 def ray_sphere_with_normal(
+  # In:
   pos: wp.vec3,
   dist_sqr: float,
   pnt: wp.vec3,
@@ -309,6 +311,7 @@ def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: w
 
 @wp.func
 def ray_capsule_with_normal(
+  # In:
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
@@ -352,6 +355,7 @@ def ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec:
 
 @wp.func
 def ray_ellipsoid_with_normal(
+  # In:
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
@@ -378,6 +382,7 @@ def ray_ellipsoid_with_normal(
 
 @wp.func
 def _ray_cylinder_hit(
+  # In:
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
@@ -442,6 +447,7 @@ def ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
 
 @wp.func
 def ray_cylinder_with_normal(
+  # In:
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
@@ -506,6 +512,7 @@ def ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.ve
 
 @wp.func
 def ray_box_with_normal(
+  # In:
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
@@ -751,13 +758,14 @@ def ray_mesh(
 
 @wp.func
 def ray_mesh_with_bvh(
+  # In:
   mesh_bvh_id: wp.array(dtype=wp.uint64),
   mesh_geom_id: int,
   pos: wp.vec3,
   mat: wp.mat33,
   pnt: wp.vec3,
   vec: wp.vec3,
-  max_t: wp.float32,
+  max_t: float,
 ) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int, int]:
   """Returns intersection information for ray mesh intersections.
 
@@ -784,11 +792,12 @@ def ray_mesh_with_bvh(
 
 @wp.func
 def ray_flex_with_bvh(
+  # In:
   bvh_id: wp.uint64,
   group_root: int,
   pnt: wp.vec3,
   vec: wp.vec3,
-  max_t: wp.float32,
+  max_t: float,
 ) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int]:
   """Returns intersection information for flex intersections.
 

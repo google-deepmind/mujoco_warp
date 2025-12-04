@@ -27,6 +27,7 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def _compute_box_bounds(
+  # In:
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -51,6 +52,7 @@ def _compute_box_bounds(
 
 @wp.func
 def _compute_sphere_bounds(
+  # In:
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -61,6 +63,7 @@ def _compute_sphere_bounds(
 
 @wp.func
 def _compute_capsule_bounds(
+  # In:
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -81,6 +84,7 @@ def _compute_capsule_bounds(
 
 @wp.func
 def _compute_plane_bounds(
+  # In:
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -111,6 +115,7 @@ def _compute_plane_bounds(
 
 @wp.func
 def _compute_ellipsoid_bounds(
+  # In:
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -125,6 +130,7 @@ def _compute_ellipsoid_bounds(
 
 @wp.func
 def _compute_cylinder_bounds(
+  # In:
   pos: wp.vec3,
   rot: wp.mat33,
   size: wp.vec3,
@@ -153,31 +159,38 @@ def _compute_cylinder_bounds(
 
 @wp.kernel
 def _compute_bvh_bounds(
-  bvh_ngeom: int,
-  nworld: int,
-  enabled_geom_ids: wp.array(dtype=int),
+  # Model:
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  geom_pos: wp.array2d(dtype=wp.vec3),
-  geom_rot: wp.array2d(dtype=wp.mat33),
+  
+  # Data in:
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  nworld_in: int,
+
+  # In:
+  bvh_ngeom: int,
+  enabled_geom_ids: wp.array(dtype=int),
   mesh_bounds_size: wp.array(dtype=wp.vec3),
   hfield_bounds_size: wp.array(dtype=wp.vec3),
-  lower: wp.array(dtype=wp.vec3),
-  upper: wp.array(dtype=wp.vec3),
-  group: wp.array(dtype=int),
+  
+  # Out:
+  lower_out: wp.array(dtype=wp.vec3),
+  upper_out: wp.array(dtype=wp.vec3),
+  group_out: wp.array(dtype=int),
 ):
   tid = wp.tid()
   world_id = tid // bvh_ngeom
   bvh_geom_local = tid % bvh_ngeom
 
-  if bvh_geom_local >= bvh_ngeom or world_id >= nworld:
+  if bvh_geom_local >= bvh_ngeom or world_id >= nworld_in:
     return
 
   geom_id = enabled_geom_ids[bvh_geom_local]
 
-  pos = geom_pos[world_id, geom_id]
-  rot = geom_rot[world_id, geom_id]
+  pos = geom_xpos_in[world_id, geom_id]
+  rot = geom_xmat_in[world_id, geom_id]
   size = geom_size[world_id, geom_id]
   type = geom_type[geom_id]
 
@@ -201,19 +214,21 @@ def _compute_bvh_bounds(
     size = hfield_bounds_size[geom_dataid[geom_id]]
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
 
-  lower[world_id * bvh_ngeom + bvh_geom_local] = lower_bound
-  upper[world_id * bvh_ngeom + bvh_geom_local] = upper_bound
-  group[world_id * bvh_ngeom + bvh_geom_local] = world_id
+  lower_out[world_id * bvh_ngeom + bvh_geom_local] = lower_bound
+  upper_out[world_id * bvh_ngeom + bvh_geom_local] = upper_bound
+  group_out[world_id * bvh_ngeom + bvh_geom_local] = world_id
 
 
 @wp.kernel
 def compute_bvh_group_roots(
+  # In:
   bvh_id: wp.uint64,
-  group_root: wp.array(dtype=int),
+  # Out:
+  group_root_out: wp.array(dtype=int),
 ):
   tid = wp.tid()
   root = wp.bvh_get_group_root(bvh_id, tid)
-  group_root[tid] = root
+  group_root_out[tid] = root
 
 
 def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
@@ -222,14 +237,14 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
     kernel=_compute_bvh_bounds,
     dim=d.nworld * rc.bvh_ngeom,
     inputs=[
-      rc.bvh_ngeom,
-      d.nworld,
-      rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,
       m.geom_size,
       d.geom_xpos,
       d.geom_xmat,
+      d.nworld,
+      rc.bvh_ngeom,
+      rc.enabled_geom_ids,
       rc.mesh_bounds_size,
       rc.hfield_bounds_size,
       rc.lower,
@@ -257,14 +272,14 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
     kernel=_compute_bvh_bounds,
     dim=d.nworld * rc.bvh_ngeom,
     inputs=[
-      rc.bvh_ngeom,
-      d.nworld,
-      rc.enabled_geom_ids,
       m.geom_type,
       m.geom_dataid,
       m.geom_size,
       d.geom_xpos,
       d.geom_xmat,
+      d.nworld,
+      rc.bvh_ngeom,
+      rc.enabled_geom_ids,
       rc.mesh_bounds_size,
       rc.hfield_bounds_size,
       rc.lower,
@@ -278,40 +293,40 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
 
 @wp.kernel
 def accumulate_flex_vertex_normals(
-  vert_xpos_in: wp.array2d(dtype=wp.vec3),
-  flex_elem_in: wp.array(dtype=int),
-  flex_elem_count: int,
-  vert_norm_out: wp.array2d(dtype=wp.vec3),
+  # Model:
+  flex_elem: wp.array(dtype=int),
+  # Data in:
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  # Out:
+  flexvert_norm_out: wp.array2d(dtype=wp.vec3),
 ):
   """Accumulate per-vertex normals by summing adjacent face normals."""
   worldid, elemid = wp.tid()
 
-  if worldid >= vert_xpos_in.shape[0] or elemid >= flex_elem_count:
-    return
-
   base = elemid * 3
-  i0 = flex_elem_in[base + 0]
-  i1 = flex_elem_in[base + 1]
-  i2 = flex_elem_in[base + 2]
+  i0 = flex_elem[base + 0]
+  i1 = flex_elem[base + 1]
+  i2 = flex_elem[base + 2]
 
-  v0 = vert_xpos_in[worldid, i0]
-  v1 = vert_xpos_in[worldid, i1]
-  v2 = vert_xpos_in[worldid, i2]
+  v0 = flexvert_xpos_in[worldid, i0]
+  v1 = flexvert_xpos_in[worldid, i1]
+  v2 = flexvert_xpos_in[worldid, i2]
 
   face_nrm = wp.cross(v1 - v0, v2 - v0)
   face_nrm = wp.normalize(face_nrm)
-  vert_norm_out[worldid, i0] += face_nrm
-  vert_norm_out[worldid, i1] += face_nrm
-  vert_norm_out[worldid, i2] += face_nrm
+  flexvert_norm_out[worldid, i0] += face_nrm
+  flexvert_norm_out[worldid, i1] += face_nrm
+  flexvert_norm_out[worldid, i2] += face_nrm
 
 
 @wp.kernel
 def normalize_vertex_normals(
-  vert_norm: wp.array2d(dtype=wp.vec3),
+  # Out:
+  flexvert_norm_out: wp.array2d(dtype=wp.vec3),
 ):
   """Normalize accumulated vertex normals."""
   worldid, vertid = wp.tid()
-  vert_norm[worldid, vertid] = wp.normalize(vert_norm[worldid, vertid])
+  flexvert_norm_out[worldid, vertid] = wp.normalize(flexvert_norm_out[worldid, vertid])
 
 
 def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
@@ -327,11 +342,10 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     kernel=accumulate_flex_vertex_normals,
     dim=(d.nworld, m.nflexelem),
     inputs=[
+      m.flex_elem,
       d.flexvert_xpos,
-      rc.flex_elem,
-      m.nflexelem,
-      flexvert_norm,
     ],
+    outputs=[flexvert_norm],
   )
 
   wp.launch(
@@ -342,30 +356,34 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 
   @wp.kernel
   def _update_flex_2d_points(
-    vert_xpos_in: wp.array2d(dtype=wp.vec3),
-    flex_elem_in: wp.array(dtype=int),
-    vert_norm_in: wp.array2d(dtype=wp.vec3),
+    # Model:
+    flex_elem: wp.array(dtype=int),
+    # Data in:
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
+    flexvert_norm_in: wp.array2d(dtype=wp.vec3),
     elem_adr: int,
     face_offset: int,
     radius: float,
     nfaces: int,
+    # Out:
     face_point_out: wp.array(dtype=wp.vec3),
   ):
     worldid, elemid = wp.tid()
 
     base = elem_adr + elemid * 3
-    i0 = flex_elem_in[base + 0]
-    i1 = flex_elem_in[base + 1]
-    i2 = flex_elem_in[base + 2]
+    i0 = flex_elem[base + 0]
+    i1 = flex_elem[base + 1]
+    i2 = flex_elem[base + 2]
 
-    v0 = vert_xpos_in[worldid, i0]
-    v1 = vert_xpos_in[worldid, i1]
-    v2 = vert_xpos_in[worldid, i2]
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+    v2 = flexvert_xpos_in[worldid, i2]
 
     if wp.static(rc.flex_render_smooth):
-      n0 = vert_norm_in[worldid, i0]
-      n1 = vert_norm_in[worldid, i1]
-      n2 = vert_norm_in[worldid, i2]
+      n0 = flexvert_norm_in[worldid, i0]
+      n1 = flexvert_norm_in[worldid, i1]
+      n2 = flexvert_norm_in[worldid, i2]
     else:
       face_nrm = wp.cross(v1 - v0, v2 - v0)
       face_nrm = wp.normalize(face_nrm)
@@ -396,13 +414,16 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 
   @wp.kernel
   def _update_flex_2d_shell_points(
-    vert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # Data in:
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
     flex_shell_in: wp.array(dtype=int),
-    vert_norm_in: wp.array2d(dtype=wp.vec3),
+    flexvert_norm_in: wp.array2d(dtype=wp.vec3),
     shell_adr: int,
     face_offset: int,
     radius: float,
     nfaces: int,
+    # Out:
     face_point_out: wp.array(dtype=wp.vec3),
   ):
     worldid, shellid = wp.tid()
@@ -411,11 +432,11 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     i0 = flex_shell_in[base + 0]
     i1 = flex_shell_in[base + 1]
 
-    v0 = vert_xpos_in[worldid, i0]
-    v1 = vert_xpos_in[worldid, i1]
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
 
-    n0 = vert_norm_in[worldid, i0]
-    n1 = vert_norm_in[worldid, i1]
+    n0 = flexvert_norm_in[worldid, i0]
+    n1 = flexvert_norm_in[worldid, i1]
 
     world_face_offset = worldid * nfaces
     face_id0 = world_face_offset + face_offset + (2 * shellid)
@@ -432,11 +453,14 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 
   @wp.kernel
   def _update_flex_3d_shell_points(
-    vert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # Data in:
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # In:
     flex_shell_in: wp.array(dtype=int),
     shell_adr: int,
     face_offset: int,
     nfaces: int,
+    # Out:
     face_point_out: wp.array(dtype=wp.vec3),
   ):
     worldid, shellid = wp.tid()
@@ -446,9 +470,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     i1 = flex_shell_in[base + 1]
     i2 = flex_shell_in[base + 2]
 
-    v0 = vert_xpos_in[worldid, i0]
-    v1 = vert_xpos_in[worldid, i1]
-    v2 = vert_xpos_in[worldid, i2]
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+    v2 = flexvert_xpos_in[worldid, i2]
 
     world_face_offset = worldid * nfaces
     face_id = world_face_offset + face_offset + shellid
@@ -473,8 +497,8 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
         kernel=_update_flex_2d_points,
         dim=(d.nworld, nelem),
         inputs=[
+          m.flex_elem,
           d.flexvert_xpos,
-          rc.flex_elem,
           flexvert_norm,
           elem_adr,
           face_offset,

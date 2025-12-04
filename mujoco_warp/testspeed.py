@@ -176,7 +176,7 @@ def _main(argv: Sequence[str]):
         _USE_TEXTURES.value,
         _USE_SHADOWS.value,
       )
-      cam_str = f"ncam: {rc.ncam} cam_resolutions: {rc.cam_resolutions.numpy()}"
+      cam_str = f"ncam: {rc.ncam} cam_res: {rc.cam_res.numpy()}"
       print(f"Render Context\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} {cam_str}\n")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
