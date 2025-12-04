@@ -247,13 +247,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         wp.launch(
           _qderiv_actuator_passive_actuation_sparse,
           dim=(d.nworld, qMi.size),
-          inputs=[
-            m.nu,
-            d.actuator_moment,
-            vel,
-            qMi,
-            qMj,
-          ],
+          inputs=[m.nu, d.actuator_moment, vel, qMi, qMj],
           outputs=[out],
         )
       else:
@@ -262,11 +256,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
           wp.launch_tiled(
             _qderiv_actuator_passive_actuation_dense(tile, m.nu),
             dim=(d.nworld, tile.adr.size),
-            inputs=[
-              vel_3d,
-              d.actuator_moment,
-              tile.adr,
-            ],
+            inputs=[vel_3d, d.actuator_moment, tile.adr],
             outputs=[out],
             block_dim=m.block_dim.mul_m_dense,
           )
