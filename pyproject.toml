@@ -35,7 +35,7 @@ dependencies = [
 
 [[tool.uv.index]]
 name = "nvidia"
-url = "https://pypi.nvidia.com"
+url = "https://pypi.nvidia.com/warp-lang/"
 explicit = true
 
 [[tool.uv.index]]
