@@ -58,6 +58,7 @@ class BlockDim:
   cholesky_factorize_solve: int = 32
   # solver
   update_gradient_cholesky: int = 64
+  update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
   # support
@@ -1482,11 +1483,10 @@ class Constraint:
     force: constraint force in constraint space       (nworld, njmax)
     Jaref: Jac*qacc - aref                            (nworld, njmax)
     Ma: M*qacc                                        (nworld, nv)
-    grad: gradient of master cost                     (nworld, nv)
-    cholesky_L_tmp: temporary for Cholesky factor     (nworld, nv, nv)
-    cholesky_y_tmp: temporary for Cholesky solve      (nworld, nv
+    grad: gradient of master cost                     (nworld, nv_pad)
+    cholesky_L_tmp: temporary for Cholesky factor     (nworld, nv_pad, nv_pad)
     grad_dot: dot(grad, grad)                         (nworld,)
-    Mgrad: M / grad                                   (nworld, nv)
+    Mgrad: M / grad                                   (nworld, nv_pad)
     search: linesearch vector                         (nworld, nv)
     search_dot: dot(search, search)                   (nworld,)
     gauss: Gauss Cost                                 (nworld,)
@@ -1517,11 +1517,10 @@ class Constraint:
   force: array("nworld", "njmax", float)
   Jaref: array("nworld", "njmax", float)
   Ma: array("nworld", "nv", float)
-  grad: array("nworld", "nv", float)
-  cholesky_L_tmp: array("nworld", "nv", "nv", float)
-  cholesky_y_tmp: array("nworld", "nv", float)
+  grad: array("nworld", "nv_pad", float)
+  cholesky_L_tmp: array("nworld", "nv_pad", "nv_pad", float)
   grad_dot: array("nworld", float)
-  Mgrad: array("nworld", "nv", float)
+  Mgrad: array("nworld", "nv_pad", float)
   search: array("nworld", "nv", float)
   search_dot: array("nworld", float)
   gauss: array("nworld", float)

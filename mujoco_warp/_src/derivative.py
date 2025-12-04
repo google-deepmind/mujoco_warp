@@ -153,37 +153,41 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   """
   qMi = m.qM_fullm_i
   qMj = m.qM_fullm_j
+
   # TODO(team): implicit requires different sparsity structure
 
-  if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
-    wp.launch(
-      _qderiv_actuator_passive,
-      dim=(d.nworld, qMi.size),
-      inputs=[
-        m.nu,
-        m.opt.timestep,
-        m.opt.disableflags,
-        m.opt.is_sparse,
-        m.dof_damping,
-        m.actuator_dyntype,
-        m.actuator_gaintype,
-        m.actuator_biastype,
-        m.actuator_actadr,
-        m.actuator_actnum,
-        m.actuator_gainprm,
-        m.actuator_biasprm,
-        d.act,
-        d.ctrl,
-        d.actuator_moment,
-        d.qM,
-        qMi,
-        qMj,
-      ],
-      outputs=[out],
-    )
-  else:
-    # TODO(team): directly utilize qM for these settings
-    wp.copy(out, d.qM)
+  if not m.opt.is_sparse:
+    # TODO(team): only clear elements not set by _qderiv_actuator_passive
+    out.zero_()
+
+  wp.launch(
+    _qderiv_actuator_passive,
+    dim=(d.nworld, qMi.size),
+    inputs=[
+      m.nu,
+      m.opt.timestep,
+      m.opt.disableflags,
+      m.opt.is_sparse,
+      m.dof_damping,
+      m.actuator_dyntype,
+      m.actuator_gaintype,
+      m.actuator_biastype,
+      m.actuator_actadr,
+      m.actuator_actnum,
+      m.actuator_gainprm,
+      m.actuator_biasprm,
+      d.act,
+      d.ctrl,
+      d.actuator_moment,
+      d.qM,
+      qMi,
+      qMj,
+    ],
+    outputs=[out],
+  )
+
+  # TODO(team): if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)) use qM
+  # directly instead of computing out
 
   if not m.opt.disableflags & DisableBit.DAMPER:
     wp.launch(
