@@ -26,7 +26,7 @@ MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA]
 
 # Getting started
 
-There's a few ways to jump into using MuJoCo Warp:
+There are a few ways to jump into using MuJoCo Warp:
 
 * For a quick overview of MJWarp's API and design, please see [our colab that introduces the basics](https://colab.research.google.com/github/google-deepmind/mujoco_warp/blob/main/notebooks/tutorial.ipynb).
 * For more details and advanced topics on using MJWarp, see the [MuJoCo Warp documentation](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
