@@ -1306,6 +1306,7 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
   }
   mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
   mj_only_fields = {"opt.jacobian"}
+  readonly_fields = {"opt.is_sparse"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}
@@ -1322,6 +1323,9 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
       continue
     if key in mj_only_fields and isinstance(model, types.Model):
       continue
+
+    if key in readonly_fields and isinstance(model, types.Model):
+      raise ValueError(f"Cannot override {key} on mjw.Model: field affects model initialization and has side effects")
 
     obj, attrs = model, key.split(".")
     for i, attr in enumerate(attrs):
