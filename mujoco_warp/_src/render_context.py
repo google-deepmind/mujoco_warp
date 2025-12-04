@@ -28,6 +28,39 @@ from .types import Model
 wp.set_module_options({"enable_backward": False})
 
 
+def _camera_frustum_bounds(
+  mjm: mujoco.MjModel,
+  cam_id: int,
+  img_w: int,
+  img_h: int,
+  znear: float,
+) -> tuple[float, float, float, float, bool]:
+  """Replicate MuJoCo's frustum computation to derive near-plane bounds."""
+  orthographic = bool(mjm.cam_orthographic[cam_id])
+  if orthographic:
+    half_height = mjm.cam_fovy[cam_id] * 0.5
+    aspect = img_w / img_h
+    half_width = half_height * aspect
+    return (-half_width, half_width, half_height, -half_height, True)
+
+  sensorsize = mjm.cam_sensorsize[cam_id]
+  has_intrinsics = sensorsize[1] != 0.0
+  if has_intrinsics:
+    fx, fy, cx, cy = mjm.cam_intrinsic[cam_id]
+    sensor_w, sensor_h = sensorsize
+    left = -znear / fx * (sensor_w * 0.5 - cx)
+    right = znear / fx * (sensor_w * 0.5 + cx)
+    top = znear / fy * (sensor_h * 0.5 - cy)
+    bottom = -znear / fy * (sensor_h * 0.5 + cy)
+    return (float(left), float(right), float(top), float(bottom), False)
+
+  fovy_rad = np.deg2rad(float(mjm.cam_fovy[cam_id]))
+  half_height = znear * np.tan(0.5 * fovy_rad)
+  aspect = img_w / img_h
+  half_width = half_height * aspect
+  return (-half_width, half_width, half_height, -half_height, False)
+
+
 @dataclasses.dataclass
 class RenderContext:
   ncam: int
@@ -226,19 +259,34 @@ class RenderContext:
     self.ray = wp.zeros(int(total), dtype=wp.vec3)
 
     offset = 0
+    model_znear = mjm.vis.map.znear * mjm.stat.extent
     for idx, cam_id in enumerate(active_cam_indices):
+      img_w = cam_resolutions[idx][0]
+      img_h = cam_resolutions[idx][1]
+      left, right, top, bottom, is_ortho = _camera_frustum_bounds(
+        mjm,
+        cam_id,
+        img_w,
+        img_h,
+        model_znear,
+      )
       wp.launch(
         kernel=build_primary_rays,
-        dim=int(cam_resolutions[idx][0] * cam_resolutions[idx][1]),
+        dim=int(img_w * img_h),
         inputs=[
           offset,
-          cam_resolutions[idx][0],
-          cam_resolutions[idx][1],
-          wp.radians(mjm.cam_fovy[cam_id]),
+          img_w,
+          img_h,
+          left,
+          right,
+          top,
+          bottom,
+          model_znear,
+          int(is_ortho),
         ],
         outputs=[self.ray],
       )
-      offset += cam_resolutions[idx][0] * cam_resolutions[idx][1]
+      offset += img_w * img_h
 
     self.ncam=n_active_cams
     self.cam_id_map=wp.array(active_cam_indices, dtype=int)
@@ -317,25 +365,30 @@ def build_primary_rays(
   offset: int,
   img_w: int,
   img_h: int,
-  fov_rad: float,
+  left: float,
+  right: float,
+  top: float,
+  bottom: float,
+  znear: float,
+  orthographic: int,
   ray_out: wp.array(dtype=wp.vec3),
 ):
   tid = wp.tid()
   total = img_w * img_h
   if tid >= total:
     return
+
+  if orthographic:
+    ray_out[offset + tid] = wp.vec3(0.0, 0.0, -1.0)
+    return
+
   px = tid % img_w
   py = tid // img_w
-  inv_img_w = 1.0 / float(img_w)
-  inv_img_h = 1.0 / float(img_h)
-  aspect_ratio = float(img_w) * inv_img_h
-  u = (float(px) + 0.5) * inv_img_w - 0.5
-  v = (float(py) + 0.5) * inv_img_h - 0.5
-  h = wp.tan(fov_rad * 0.5)
-  dx = u * 2.0 * h
-  dy = -v * 2.0 * h / aspect_ratio
-  dz = -1.0
-  ray_out[offset + tid] = wp.normalize(wp.vec3(dx, dy, dz))
+  u = (float(px) + 0.5) / float(img_w)
+  v = (float(py) + 0.5) / float(img_h)
+  x = left + (right - left) * u
+  y = top + (bottom - top) * v
+  ray_out[offset + tid] = wp.normalize(wp.vec3(x, y, -znear))
 
 
 def _create_packed_texture_data(mjm: mujoco.MjModel) -> Tuple[wp.array, wp.array]:
