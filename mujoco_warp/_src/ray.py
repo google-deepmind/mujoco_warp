@@ -751,7 +751,7 @@ def ray_mesh(
 
 @wp.func
 def ray_mesh_with_bvh(
-  mesh_bvh_ids: wp.array(dtype=wp.uint64),
+  mesh_bvh_id: wp.array(dtype=wp.uint64),
   mesh_geom_id: int,
   pos: wp.vec3,
   mat: wp.mat33,
@@ -771,7 +771,7 @@ def ray_mesh_with_bvh(
 
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
   hit = wp.mesh_query_ray(
-    mesh_bvh_ids[mesh_geom_id], lpnt, lvec, max_t, t, u, v, sign, n, f)
+    mesh_bvh_id[mesh_geom_id], lpnt, lvec, max_t, t, u, v, sign, n, f)
 
   if hit and wp.dot(lvec, n) < 0.0: # Backface culling in local space
     normal = mat @ n

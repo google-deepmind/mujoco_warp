@@ -267,8 +267,8 @@ def cast_ray(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  mesh_bvh_ids: wp.array(dtype=wp.uint64),
-  hfield_bvh_ids: wp.array(dtype=wp.uint64),
+  mesh_bvh_id: wp.array(dtype=wp.uint64),
+  hfield_bvh_id: wp.array(dtype=wp.uint64),
   geom_xpos: wp.array2d(dtype=wp.vec3),
   geom_xmat: wp.array2d(dtype=wp.mat33),
   ray_origin_world: wp.vec3,
@@ -301,7 +301,7 @@ def cast_ray(
       )
     if geom_type[gi] == GeomType.HFIELD:
       h, d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
-        hfield_bvh_ids,
+        hfield_bvh_id,
         geom_dataid[gi],
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
@@ -350,7 +350,7 @@ def cast_ray(
       )
     if geom_type[gi] == GeomType.MESH:
       h, d, n, u, v, f, geom_mesh_id = ray_mesh_with_bvh(
-        mesh_bvh_ids,
+        mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
@@ -380,8 +380,8 @@ def cast_ray_first_hit(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  mesh_bvh_ids: wp.array(dtype=wp.uint64),
-  hfield_bvh_ids: wp.array(dtype=wp.uint64),
+  mesh_bvh_id: wp.array(dtype=wp.uint64),
+  hfield_bvh_id: wp.array(dtype=wp.uint64),
   geom_xpos: wp.array2d(dtype=wp.vec3),
   geom_xmat: wp.array2d(dtype=wp.mat33),
   ray_origin_world: wp.vec3,
@@ -408,7 +408,7 @@ def cast_ray_first_hit(
       )
     if geom_type[gi] == GeomType.HFIELD:
       h, d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
-        hfield_bvh_ids,
+        hfield_bvh_id,
         geom_dataid[gi],
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
@@ -457,7 +457,7 @@ def cast_ray_first_hit(
       )
     if geom_type[gi] == GeomType.MESH:
       h, d, n, u, v, f, mesh_id = ray_mesh_with_bvh(
-        mesh_bvh_ids,
+        mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos[world_id, gi],
         geom_xmat[world_id, gi],
@@ -489,8 +489,8 @@ def compute_lighting(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  mesh_bvh_ids: wp.array(dtype=wp.uint64),
-  hfield_bvh_ids: wp.array(dtype=wp.uint64),
+  mesh_bvh_id: wp.array(dtype=wp.uint64),
+  hfield_bvh_id: wp.array(dtype=wp.uint64),
   geom_xpos: wp.array2d(dtype=wp.vec3),
   geom_xmat: wp.array2d(dtype=wp.mat33),
   hit_point: wp.vec3,
@@ -545,8 +545,8 @@ def compute_lighting(
       geom_type,
       geom_dataid,
       geom_size,
-      mesh_bvh_ids,
-      hfield_bvh_ids,
+        mesh_bvh_id,
+        hfield_bvh_id,
       geom_xpos,
       geom_xmat,
       shadow_origin,
@@ -585,9 +585,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
     # BVH
     bvh_id: wp.uint64,
-    group_roots: wp.array(dtype=int),
+    group_root: wp.array(dtype=int),
     flex_bvh_id: wp.uint64,
-    flex_group_roots: wp.array(dtype=int),
+    flex_group_root: wp.array(dtype=int),
 
     # Geometry
     enabled_geom_ids: wp.array(dtype=int),
@@ -596,12 +596,12 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     geom_matid: wp.array2d(dtype=int),
     geom_size: wp.array2d(dtype=wp.vec3),
     geom_rgba: wp.array2d(dtype=wp.vec4),
-    mesh_bvh_ids: wp.array(dtype=wp.uint64),
+    mesh_bvh_id: wp.array(dtype=wp.uint64),
     mesh_faceadr: wp.array(dtype=int),
     mesh_face: wp.array(dtype=wp.vec3i),
     mesh_texcoord: wp.array(dtype=wp.vec2),
     mesh_texcoord_offsets: wp.array(dtype=int),
-    hfield_bvh_ids: wp.array(dtype=wp.uint64),
+    hfield_bvh_id: wp.array(dtype=wp.uint64),
 
     # Textures
     mat_texid: wp.array3d(dtype=int),
@@ -657,15 +657,15 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
     geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
       bvh_id,
-      group_roots[world_idx],
+      group_root[world_idx],
       world_idx,
       bvh_ngeom,
       enabled_geom_ids,
       geom_type,
       geom_dataid,
       geom_size,
-      mesh_bvh_ids,
-      hfield_bvh_ids,
+        mesh_bvh_id,
+        hfield_bvh_id,
       geom_xpos,
       geom_xmat,
       ray_origin_world,
@@ -675,7 +675,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     if wp.static(m.nflex > 0):
       h, d, n, u, v, f = ray_flex_with_bvh(
         flex_bvh_id,
-        flex_group_roots[world_idx],
+        flex_group_root[world_idx],
         ray_origin_world,
         ray_dir_world,
         dist,
@@ -753,7 +753,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       light_contribution = compute_lighting(
         use_shadows,
         bvh_id,
-        group_roots[world_idx],
+        group_root[world_idx],
         bvh_ngeom,
         enabled_geom_ids,
         world_idx,
@@ -766,8 +766,8 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
         geom_type,
         geom_dataid,
         geom_size,
-        mesh_bvh_ids,
-        hfield_bvh_ids,
+        mesh_bvh_id,
+        hfield_bvh_id,
         geom_xpos,
         geom_xmat,
         hit_point,
@@ -786,7 +786,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
   wp.launch(
     kernel=_render_megakernel,
-    dim=(d.nworld, rc.ray_data.shape[0]),
+    dim=(d.nworld, rc.ray.shape[0]),
     inputs=[
       # Model and Options
       rc.ncam,
@@ -798,7 +798,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       rc.cam_id_map,
       d.cam_xpos,
       d.cam_xmat,
-      rc.ray_data,
+      rc.ray,
       rc.rgb_adr,
       rc.depth_adr,
       rc.render_rgb,
@@ -806,9 +806,9 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
       # BVH
       rc.bvh_id,
-      rc.group_roots,
+      rc.group_root,
       rc.flex_bvh_id,
-      rc.flex_group_roots,
+      rc.flex_group_root,
 
       # Geometry
       rc.enabled_geom_ids,
@@ -817,12 +817,12 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       m.geom_matid,
       m.geom_size,
       m.geom_rgba,
-      rc.mesh_bvh_ids,
+      rc.mesh_bvh_id,
       m.mesh_faceadr,
       m.mesh_face,
       rc.mesh_texcoord,
       rc.mesh_texcoord_offsets,
-      rc.hfield_bvh_ids,
+      rc.hfield_bvh_id,
 
       # Textures
       m.mat_texid,

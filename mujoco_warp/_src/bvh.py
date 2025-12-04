@@ -163,9 +163,9 @@ def _compute_bvh_bounds(
   geom_rot: wp.array2d(dtype=wp.mat33),
   mesh_bounds_size: wp.array(dtype=wp.vec3),
   hfield_bounds_size: wp.array(dtype=wp.vec3),
-  lowers: wp.array(dtype=wp.vec3),
-  uppers: wp.array(dtype=wp.vec3),
-  groups: wp.array(dtype=int),
+  lower: wp.array(dtype=wp.vec3),
+  upper: wp.array(dtype=wp.vec3),
+  group: wp.array(dtype=int),
 ):
   tid = wp.tid()
   world_id = tid // bvh_ngeom
@@ -183,37 +183,37 @@ def _compute_bvh_bounds(
 
   # TODO: Investigate branch elimination with static loop unrolling
   if type == GeomType.SPHERE:
-    lower, upper = _compute_sphere_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_sphere_bounds(pos, rot, size)
   elif type == GeomType.CAPSULE:
-    lower, upper = _compute_capsule_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_capsule_bounds(pos, rot, size)
   elif type == GeomType.PLANE:
-    lower, upper = _compute_plane_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_plane_bounds(pos, rot, size)
   elif type == GeomType.MESH:
     size = mesh_bounds_size[geom_dataid[geom_id]]
-    lower, upper = _compute_box_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.ELLIPSOID:
-    lower, upper = _compute_ellipsoid_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_ellipsoid_bounds(pos, rot, size)
   elif type == GeomType.CYLINDER:
-    lower, upper = _compute_cylinder_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_cylinder_bounds(pos, rot, size)
   elif type == GeomType.BOX:
-    lower, upper = _compute_box_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.HFIELD:
     size = hfield_bounds_size[geom_dataid[geom_id]]
-    lower, upper = _compute_box_bounds(pos, rot, size)
+    lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
 
-  lowers[world_id * bvh_ngeom + bvh_geom_local] = lower
-  uppers[world_id * bvh_ngeom + bvh_geom_local] = upper
-  groups[world_id * bvh_ngeom + bvh_geom_local] = world_id
+  lower[world_id * bvh_ngeom + bvh_geom_local] = lower_bound
+  upper[world_id * bvh_ngeom + bvh_geom_local] = upper_bound
+  group[world_id * bvh_ngeom + bvh_geom_local] = world_id
 
 
 @wp.kernel
 def compute_bvh_group_roots(
   bvh_id: wp.uint64,
-  group_roots: wp.array(dtype=int),
+  group_root: wp.array(dtype=int),
 ):
   tid = wp.tid()
   root = wp.bvh_get_group_root(bvh_id, tid)
-  group_roots[tid] = root
+  group_root[tid] = root
 
 
 def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
@@ -232,13 +232,13 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
       d.geom_xmat,
       rc.mesh_bounds_size,
       rc.hfield_bounds_size,
-      rc.lowers,
-      rc.uppers,
-      rc.groups,
+      rc.lower,
+      rc.upper,
+      rc.group,
     ],
   )
 
-  bvh = wp.Bvh(rc.lowers, rc.uppers, groups=rc.groups, constructor="sah")
+  bvh = wp.Bvh(rc.lower, rc.upper, groups=rc.group, constructor="sah")
 
   # BVH handle must be stored to avoid garbage collection
   rc.bvh = bvh
@@ -248,7 +248,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
     kernel=compute_bvh_group_roots,
     dim=d.nworld,
     inputs=[bvh.id],
-    outputs=[rc.group_roots],
+    outputs=[rc.group_root],
   )
 
 
@@ -267,9 +267,9 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
       d.geom_xmat,
       rc.mesh_bounds_size,
       rc.hfield_bounds_size,
-      rc.lowers,
-      rc.uppers,
-      rc.groups,
+      rc.lower,
+      rc.upper,
+      rc.group,
     ],
   )
 
@@ -349,7 +349,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_offset: int,
     radius: float,
     nfaces: int,
-    face_points_out: wp.array(dtype=wp.vec3),
+    face_point_out: wp.array(dtype=wp.vec3),
   ):
     worldid, elemid = wp.tid()
 
@@ -384,15 +384,15 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     world_face_offset = worldid * nfaces
     face_id0 = world_face_offset + face_offset + (2 * elemid)
     base0 = face_id0 * 3
-    face_points_out[base0 + 0] = p0_pos
-    face_points_out[base0 + 1] = p1_pos
-    face_points_out[base0 + 2] = p2_pos
+    face_point_out[base0 + 0] = p0_pos
+    face_point_out[base0 + 1] = p1_pos
+    face_point_out[base0 + 2] = p2_pos
 
     face_id1 = world_face_offset + face_offset + (2 * elemid + 1)
     base1 = face_id1 * 3
-    face_points_out[base1 + 0] = p0_neg
-    face_points_out[base1 + 1] = p2_neg
-    face_points_out[base1 + 2] = p1_neg
+    face_point_out[base1 + 0] = p0_neg
+    face_point_out[base1 + 1] = p1_neg
+    face_point_out[base1 + 2] = p2_neg
   
   @wp.kernel
   def _update_flex_2d_shell_points(
@@ -403,7 +403,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_offset: int,
     radius: float,
     nfaces: int,
-    face_points_out: wp.array(dtype=wp.vec3),
+    face_point_out: wp.array(dtype=wp.vec3),
   ):
     worldid, shellid = wp.tid()
 
@@ -420,15 +420,15 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     world_face_offset = worldid * nfaces
     face_id0 = world_face_offset + face_offset + (2 * shellid)
     base0 = face_id0 * 3
-    face_points_out[base0 + 0] = v0 + radius * n0
-    face_points_out[base0 + 1] = v1 - radius * n1
-    face_points_out[base0 + 2] = v1 + radius * n1
+    face_point_out[base0 + 0] = v0 + radius * n0
+    face_point_out[base0 + 1] = v1 - radius * n1
+    face_point_out[base0 + 2] = v1 + radius * n1
 
     face_id1 = world_face_offset + face_offset + (2 * shellid + 1)
     base1 = face_id1 * 3
-    face_points_out[base1 + 0] = v1 - radius * n1
-    face_points_out[base1 + 1] = v0 + radius * n0
-    face_points_out[base1 + 2] = v0 - radius * n0
+    face_point_out[base1 + 0] = v1 - radius * n1
+    face_point_out[base1 + 1] = v0 + radius * n0
+    face_point_out[base1 + 2] = v0 - radius * n0
 
   @wp.kernel
   def _update_flex_3d_shell_points(
@@ -437,7 +437,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     shell_adr: int,
     face_offset: int,
     nfaces: int,
-    face_points_out: wp.array(dtype=wp.vec3),
+    face_point_out: wp.array(dtype=wp.vec3),
   ):
     worldid, shellid = wp.tid()
 
@@ -454,9 +454,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_id = world_face_offset + face_offset + shellid
     base = face_id * 3
 
-    face_points_out[base + 0] = v0
-    face_points_out[base + 1] = v1
-    face_points_out[base + 2] = v2
+    face_point_out[base + 0] = v0
+    face_point_out[base + 1] = v1
+    face_point_out[base + 2] = v2
 
 
   for f in range(m.nflex):
@@ -479,9 +479,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
           elem_adr,
           face_offset,
           rc.flex_radius[f],
-          rc.flex_nfaces,
+          rc.flex_nface,
         ],
-        outputs=[rc.flex_face_points],
+        outputs=[rc.flex_face_point],
       )
       wp.launch(
         kernel=_update_flex_2d_shell_points,
@@ -493,9 +493,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
           shell_adr,
           face_offset + (2 * elem_count),
           rc.flex_radius[f],
-          rc.flex_nfaces,
+          rc.flex_nface,
         ],
-        outputs=[rc.flex_face_points],
+        outputs=[rc.flex_face_point],
       )
     else:
       wp.launch(
@@ -506,9 +506,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
           rc.flex_shell,
           shell_adr,
           face_offset,
-          rc.flex_nfaces,
+          rc.flex_nface,
         ],
-        outputs=[rc.flex_face_points],
+        outputs=[rc.flex_face_point],
       )
 
   rc.flex_registry[rc.flex_bvh_id].refit()
