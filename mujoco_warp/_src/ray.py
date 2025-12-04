@@ -761,7 +761,8 @@ def ray_mesh_with_bvh(
 ) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int, int]:
   """Returns intersection information for ray mesh intersections.
 
-  Requires wp.Mesh be constructed and their ids to be passed."""
+  Requires wp.Mesh be constructed and their ids to be passed.
+  """
   t = float(wp.inf)
   u = float(0.0)
   v = float(0.0)
@@ -791,7 +792,8 @@ def ray_flex_with_bvh(
 ) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int]:
   """Returns intersection information for flex intersections.
 
-  Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space."""
+  Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space.
+  """
   t = float(wp.inf)
   u = float(0.0)
   v = float(0.0)

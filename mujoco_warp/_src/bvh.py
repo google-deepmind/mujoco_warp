@@ -393,7 +393,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_point_out[base1 + 0] = p0_neg
     face_point_out[base1 + 1] = p1_neg
     face_point_out[base1 + 2] = p2_neg
-  
+
   @wp.kernel
   def _update_flex_2d_shell_points(
     vert_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -445,7 +445,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     i0 = flex_shell_in[base + 0]
     i1 = flex_shell_in[base + 1]
     i2 = flex_shell_in[base + 2]
-    
+
     v0 = vert_xpos_in[worldid, i0]
     v1 = vert_xpos_in[worldid, i1]
     v2 = vert_xpos_in[worldid, i2]
@@ -467,7 +467,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     nshell = rc.flex_shellnum[f]
     shell_adr = rc.flex_shelldataadr[f]
     face_offset = rc.flex_faceadr[f]
-    
+
     if dim == 2:
       wp.launch(
         kernel=_update_flex_2d_points,

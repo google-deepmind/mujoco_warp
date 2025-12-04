@@ -388,7 +388,7 @@ def cast_ray_first_hit(
   ray_dir_world: wp.vec3,
   max_dist: float,
 ) -> bool:
-  """ A simpler version of cast_ray_first_hit that only checks for the first hit."""
+  """A simpler version of cast_ray_first_hit that only checks for the first hit."""
   query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
   bounds_nr = int(0)
 

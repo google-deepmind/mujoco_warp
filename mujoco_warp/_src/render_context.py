@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import dataclasses
-from typing import Union, Tuple
+from typing import Tuple, Union
 
 import mujoco
 import numpy as np
@@ -327,24 +327,23 @@ def create_render_context(
 ) -> RenderContext:
   """Creates a render context on device.
 
-    Args:
-      mjm: The model containing kinematic and dynamic information on host.
-      m: The model on device.
-      d: The data on device.
-      cam_resolutions: The width and height to render each camera image.
-      render_rgb: Whether to render RGB images.
-      render_depth: Whether to render depth images.
-      use_textures: Whether to use textures.
-      use_shadows: Whether to use shadows.
-      enabled_geom_groups: The geom groups to render.
-      cam_active: List of booleans indicating which cameras to include in rendering.
-                  If None, all cameras are included.
-      flex_render_smooth: Whether to render flex meshes smoothly.
+  Args:
+    mjm: The model containing kinematic and dynamic information on host.
+    m: The model on device.
+    d: The data on device.
+    cam_resolutions: The width and height to render each camera image.
+    render_rgb: Whether to render RGB images.
+    render_depth: Whether to render depth images.
+    use_textures: Whether to use textures.
+    use_shadows: Whether to use shadows.
+    enabled_geom_groups: The geom groups to render.
+    cam_active: List of booleans indicating which cameras to include in rendering.
+                If None, all cameras are included.
+    flex_render_smooth: Whether to render flex meshes smoothly.
 
-    Returns:
-      The render context containing rendering fields and output arrays on device.
-    """
-
+  Returns:
+    The render context containing rendering fields and output arrays on device.
+  """
   return RenderContext(
     mjm,
     m,
@@ -413,8 +412,7 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> Tuple[wp.array, wp.array
     tex_data_uint8: wp.array(dtype=wp.uint8),
     tex_data_packed: wp.array(dtype=wp.uint32),
   ):
-    """
-    Convert uint8 texture data to packed uint32 format for efficient sampling.
+    """Convert uint8 texture data to packed uint32 format for efficient sampling.
     """
     tid = wp.tid()
 
@@ -473,8 +471,7 @@ def _optimize_hfield_mesh(
   width: float,
   height: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-  """
-  Greedy meshing for heightfield optimization.
+  """Greedy meshing for heightfield optimization.
   
   Merges coplanar adjacent cells into larger rectangles to
   reduce triangle and vertex count.
@@ -549,13 +546,13 @@ def _optimize_hfield_mesh(
         z_pred = z00 + (rr - r) * slope_y + (cc - c) * slope_x
         if abs(cz00 - z_pred) >= 1e-5:
           return False
-        
+
         # Since cell is planar and one corner matches, slopes must match if connected
         cslope_x = cz01 - cz00
         cslope_y = cz10 - cz00
         if abs(cslope_x - slope_x) >= 1e-5 or abs(cslope_y - slope_y) >= 1e-5:
           return False
-          
+
         return True
 
       # Expand width
@@ -814,12 +811,11 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
         along the element normal so the cloth has thickness
       * returning a Warp mesh plus an approximate half-extent for BVH bounds
     """
-
     if (mjm.flex_dim == 1).any():
       raise ValueError("1D Flex objects are not currently supported.")
 
     nflex = mjm.nflex
-    
+
     flex_faceadr = [0]
     for f in range(nflex):
       if mjm.flex_dim[f] == 2:
@@ -861,7 +857,7 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
       nelem = mjm.flex_elemnum[f]
       shell_adr = mjm.flex_shelldataadr[f]
       nshell = mjm.flex_shellnum[f]
-      
+
       if dim == 2:
         wp.launch(
           kernel=_make_face_2d_elements,
