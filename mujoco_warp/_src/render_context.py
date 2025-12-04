@@ -621,7 +621,8 @@ def _make_face_2d_elements(
     world_face_offset = worldid * nfaces
 
     # First face (top): i0, i1, i2
-    base0 = (world_face_offset * 3) + (face_offset + (2 * elemid) * 3)
+    face_id0 = world_face_offset + face_offset + (2 * elemid)
+    base0 = face_id0 * 3
     face_points[base0 + 0] = p0_pos
     face_points[base0 + 1] = p1_pos
     face_points[base0 + 2] = p2_pos
@@ -630,10 +631,11 @@ def _make_face_2d_elements(
     face_indices[base0 + 1] = base0 + 1
     face_indices[base0 + 2] = base0 + 2
 
-    group[world_face_offset + (2 * elemid)] = worldid
+    group[face_id0] = worldid
 
     # Second face (bottom): i0, i2, i1 (opposite winding)
-    base1 = (world_face_offset * 3) + (face_offset + (2 * elemid + 1) * 3)
+    face_id1 = world_face_offset + face_offset + (2 * elemid + 1)
+    base1 = face_id1 * 3
     face_points[base1 + 0] = p0_neg
     face_points[base1 + 1] = p2_neg
     face_points[base1 + 2] = p1_neg
@@ -642,7 +644,7 @@ def _make_face_2d_elements(
     face_indices[base1 + 1] = base1 + 1
     face_indices[base1 + 2] = base1 + 2
 
-    group[world_face_offset + (2 * elemid + 1)] = worldid
+    group[face_id1] = worldid
 
 
 @wp.kernel
@@ -675,7 +677,8 @@ def _make_sides_2d_elements(
     world_face_offset = worldid * nfaces
 
     # First side i0, i1 with +radius
-    base0 = (world_face_offset * 3) + (face_offset + (2 * shellid) * 3)
+    face_id0 = world_face_offset + face_offset + (2 * shellid)
+    base0 = face_id0 * 3
     face_points[base0 + 0] = vert_xpos[worldid, i0] + vert_norm[worldid, i0] * (radius * 1.0)
     face_points[base0 + 1] = vert_xpos[worldid, i1] + vert_norm[worldid, i1] * (radius * -1.0)
     face_points[base0 + 2] = vert_xpos[worldid, i1] + vert_norm[worldid, i1] * (radius * 1.0)
@@ -684,14 +687,17 @@ def _make_sides_2d_elements(
     face_indices[base0 + 2] = base0 + 2
 
     # Second side i1, i0 with -radius
-    base1 = (world_face_offset * 3) + (face_offset + (2 * shellid + 1) * 3)
+    face_id1 = world_face_offset + face_offset + (2 * shellid + 1)
+    base1 = face_id1 * 3
     face_points[base1 + 0] = vert_xpos[worldid, i1] + vert_norm[worldid, i1] * (-radius * 1.0)
     face_points[base1 + 1] = vert_xpos[worldid, i0] + vert_norm[worldid, i0] * (-radius * -1.0)
     face_points[base1 + 2] = vert_xpos[worldid, i0] + vert_norm[worldid, i0] * (-radius * 1.0)
+    face_indices[base1 + 0] = base1 + 0
+    face_indices[base1 + 1] = base1 + 1
     face_indices[base1 + 2] = base1 + 2
 
-    groups[world_face_offset + (2 * shellid)] = worldid
-    groups[world_face_offset + (2 * shellid + 1)] = worldid
+    groups[face_id0] = worldid
+    groups[face_id1] = worldid
 
 
 @wp.kernel
@@ -718,7 +724,8 @@ def _make_faces_3d_shells(
     i2 = flex_shell[base + 2]
 
     world_face_offset = worldid * nfaces
-    base = (world_face_offset * 3) + ((face_offset + shellid) * 3)
+    face_id = world_face_offset + face_offset + shellid
+    base = face_id * 3
 
     v0 = vert_xpos[worldid, i0]
     v1 = vert_xpos[worldid, i1]
@@ -732,7 +739,8 @@ def _make_faces_3d_shells(
     face_indices[base + 1] = base + 1
     face_indices[base + 2] = base + 2
 
-    groups[world_face_offset + shellid] = worldid
+    face_id = world_face_offset + face_offset + shellid
+    groups[face_id] = worldid
 
 
 def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
@@ -772,18 +780,18 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
 
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
-      dim=(d.nworld, d.flexvert_xpos.shape[1]),
+      dim=(d.nworld, m.nflexelem),
       inputs=[
         d.flexvert_xpos,
         flex_elem,
+        m.nflexelem,
         vert_norm,
-        d.flexvert_xpos.shape[1],
       ],
     )
 
     wp.launch(
       kernel=bvh.normalize_vertex_normals,
-      dim=(d.nworld, d.flexvert_xpos.shape[1]),
+      dim=(d.nworld, m.nflexvert),
       inputs=[vert_norm],
     )
 
