@@ -126,7 +126,6 @@ class IOTest(parameterized.TestCase):
       "act_dot",
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
       "ximat",
       "xanchor",
