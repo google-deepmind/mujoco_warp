@@ -915,8 +915,21 @@ def get_data_into(
   result.qacc[:] = d.qacc.numpy()[world_id]
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
-  result.xquat[:] = d.xquat.numpy()[world_id]
-  result.xmat[:] = d.xmat.numpy()[world_id].reshape((-1, 9))
+  xquat = d.xquat.numpy()[world_id]
+  result.xquat[:] = xquat
+  # compute xmat from xquat
+  q = xquat
+  xmat = np.empty((q.shape[0], 9), dtype=np.float32)
+  xmat[:, 0] = q[:, 0] ** 2 + q[:, 1] ** 2 - q[:, 2] ** 2 - q[:, 3] ** 2
+  xmat[:, 1] = 2.0 * (q[:, 1] * q[:, 2] - q[:, 0] * q[:, 3])
+  xmat[:, 2] = 2.0 * (q[:, 1] * q[:, 3] + q[:, 0] * q[:, 2])
+  xmat[:, 3] = 2.0 * (q[:, 1] * q[:, 2] + q[:, 0] * q[:, 3])
+  xmat[:, 4] = q[:, 0] ** 2 - q[:, 1] ** 2 + q[:, 2] ** 2 - q[:, 3] ** 2
+  xmat[:, 5] = 2.0 * (q[:, 2] * q[:, 3] - q[:, 0] * q[:, 1])
+  xmat[:, 6] = 2.0 * (q[:, 1] * q[:, 3] - q[:, 0] * q[:, 2])
+  xmat[:, 7] = 2.0 * (q[:, 2] * q[:, 3] + q[:, 0] * q[:, 1])
+  xmat[:, 8] = q[:, 0] ** 2 - q[:, 1] ** 2 - q[:, 2] ** 2 + q[:, 3] ** 2
+  result.xmat[:] = xmat
   result.xipos[:] = d.xipos.numpy()[world_id]
   result.ximat[:] = d.ximat.numpy()[world_id].reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]

@@ -45,7 +45,6 @@ def _kinematics_root(
   # Data out:
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
   xipos_out: wp.array2d(dtype=wp.vec3),
   ximat_out: wp.array2d(dtype=wp.mat33),
 ):
@@ -53,7 +52,6 @@ def _kinematics_root(
   xpos_out[worldid, 0] = wp.vec3(0.0)
   xquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
   xipos_out[worldid, 0] = wp.vec3(0.0)
-  xmat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
   ximat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
 
 
@@ -79,13 +77,11 @@ def _kinematics_level(
   mocap_quat_in: wp.array2d(dtype=wp.quat),
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
-  xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
   body_tree_: wp.array(dtype=int),
   # Data out:
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
   xipos_out: wp.array2d(dtype=wp.vec3),
   ximat_out: wp.array2d(dtype=wp.mat33),
   xanchor_out: wp.array2d(dtype=wp.vec3),
@@ -129,7 +125,7 @@ def _kinematics_level(
       body_pos_ = body_pos[body_pos_id, bodyid]
       body_quat_ = body_quat[body_quat_id, bodyid]
 
-    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
+    xpos = math.rot_vec_quat(body_pos_, xquat_in[worldid, pid]) + xpos_in[worldid, pid]
     xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
 
     for _ in range(jntnum):
@@ -160,7 +156,6 @@ def _kinematics_level(
 
   xpos_out[worldid, bodyid] = xpos
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
-  xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
 
@@ -284,7 +279,7 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat])
+  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xipos, d.ximat])
 
   for i in range(1, len(m.body_tree)):
     body_tree = m.body_tree[i]
@@ -310,10 +305,9 @@ def kinematics(m: Model, d: Data):
         d.mocap_quat,
         d.xpos,
         d.xquat,
-        d.xmat,
         body_tree,
       ],
-      outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat, d.xanchor, d.xaxis],
+      outputs=[d.xpos, d.xquat, d.xipos, d.ximat, d.xanchor, d.xaxis],
     )
 
   wp.launch(
@@ -456,7 +450,7 @@ def _cdof(
   jnt_dofadr: wp.array(dtype=int),
   jnt_bodyid: wp.array(dtype=int),
   # Data in:
-  xmat_in: wp.array2d(dtype=wp.mat33),
+  xquat_in: wp.array2d(dtype=wp.quat),
   xanchor_in: wp.array2d(dtype=wp.vec3),
   xaxis_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -468,7 +462,7 @@ def _cdof(
   dofid = jnt_dofadr[jntid]
   jnt_type_ = jnt_type[jntid]
   xaxis = xaxis_in[worldid, jntid]
-  xmat = wp.transpose(xmat_in[worldid, bodyid])
+  xmat = wp.transpose(math.quat_to_mat(xquat_in[worldid, bodyid]))
 
   # compute com-anchor vector
   offset = subtree_com_in[worldid, body_rootid[bodyid]] - xanchor_in[worldid, jntid]
@@ -522,7 +516,7 @@ def com_pos(m: Model, d: Data):
   wp.launch(
     _cdof,
     dim=(d.nworld, m.njnt),
-    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xmat, d.xanchor, d.xaxis, d.subtree_com],
+    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xquat, d.xanchor, d.xaxis, d.subtree_com],
     outputs=[d.cdof],
   )
 
@@ -1157,7 +1151,7 @@ def _cfrc_ext_equality(
   eq_data: wp.array2d(dtype=vec11),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
-  xmat_in: wp.array2d(dtype=wp.mat33),
+  xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   efc_id_in: wp.array2d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
@@ -1214,7 +1208,7 @@ def _cfrc_ext_equality(
       offset = site_pos[worldid, obj1]
 
     # transform point on body1: local -> global
-    pos = xmat_in[worldid, bodyid1] @ offset + xpos_in[worldid, bodyid1]
+    pos = math.rot_vec_quat(offset, xquat_in[worldid, bodyid1]) + xpos_in[worldid, bodyid1]
 
     # subtree CoM-based torque_force vector
     newpos = subtree_com_in[worldid, body_rootid[bodyid1]]
@@ -1236,7 +1230,7 @@ def _cfrc_ext_equality(
       offset = site_pos[worldid, obj2]
 
     # transform point on body2: local -> global
-    pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
+    pos = math.rot_vec_quat(offset, xquat_in[worldid, bodyid2]) + xpos_in[worldid, bodyid2]
 
     # subtree CoM-based torque_force vector
     newpos = subtree_com_in[worldid, body_rootid[bodyid2]]
@@ -1343,7 +1337,7 @@ def rne_postconstraint(m: Model, d: Data):
       m.eq_objtype,
       m.eq_data,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.subtree_com,
       d.efc.id,
       d.efc.force,
