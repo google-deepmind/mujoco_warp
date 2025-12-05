@@ -193,6 +193,7 @@ def _geom_dist(
       tolerance[0],
       1.0e30,
       iterations,
+      iterations,
       geom1,
       geom2,
       geomtype1,
