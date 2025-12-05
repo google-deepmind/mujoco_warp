@@ -1212,7 +1212,7 @@ def _efc_contact_pyramidal(
   # Model:
   nv: int,
   opt_timestep: wp.array(dtype=float),
-  opt_impratio: wp.array(dtype=float),
+  opt_impratio_invsqrt: wp.array(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -1279,7 +1279,7 @@ def _efc_contact_pyramidal(
 
     opt_timestep_id = worldid % opt_timestep.shape[0]
     timestep = opt_timestep[opt_timestep_id]
-    impratio = opt_impratio[opt_timestep_id]
+    impratio_invsqrt = opt_impratio_invsqrt[opt_timestep_id]
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
@@ -1300,7 +1300,7 @@ def _efc_contact_pyramidal(
       fri0 = friction[0]
       frii = friction[dimid2 - 1]
       invweight = invweight + fri0 * fri0 * invweight
-      invweight = invweight * 2.0 * fri0 * fri0 / impratio
+      invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
     Jqvel = float(0.0)
     for i in range(nv):
@@ -1383,7 +1383,7 @@ def _efc_contact_elliptic(
   # Model:
   nv: int,
   opt_timestep: wp.array(dtype=float),
-  opt_impratio: wp.array(dtype=float),
+  opt_impratio_invsqrt: wp.array(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -1449,7 +1449,7 @@ def _efc_contact_elliptic(
 
     opt_timestep_id = worldid % opt_timestep.shape[0]
     timestep = opt_timestep[opt_timestep_id]
-    impratio = opt_impratio[opt_timestep_id]
+    impratio_invsqrt = opt_impratio_invsqrt[opt_timestep_id]
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
@@ -1509,8 +1509,7 @@ def _efc_contact_elliptic(
       if solreffriction[0] or solreffriction[1]:
         ref = solreffriction
 
-      # TODO(team): precompute 1 / impratio
-      invweight = invweight / impratio
+      invweight = invweight * impratio_invsqrt * impratio_invsqrt
       friction = friction_in[conid]
 
       if dimid > 1:
@@ -1957,7 +1956,7 @@ def make_constraint(m: types.Model, d: types.Data):
           inputs=[
             m.nv,
             m.opt.timestep,
-            m.opt.impratio,
+            m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
             m.body_invweight0,
@@ -2002,7 +2001,7 @@ def make_constraint(m: types.Model, d: types.Data):
           inputs=[
             m.nv,
             m.opt.timestep,
-            m.opt.impratio,
+            m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
             m.body_invweight0,

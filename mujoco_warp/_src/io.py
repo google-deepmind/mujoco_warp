@@ -157,7 +157,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
 
   # create opt
-  opt = types.Option(**{f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)})
+  opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}
+  if hasattr(mjm.opt, "impratio"):
+    opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(mjm.opt.impratio)
+  opt = types.Option(**opt_kwargs)
 
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
