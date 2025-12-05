@@ -1676,31 +1676,45 @@ def update_gradient_cholesky(tile_size: int):
 
 
 @cache_kernel
-def update_gradient_cholesky_blocked(tile_size: int):
+def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     efc_grad_in: wp.array3d(dtype=float),
     efc_h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
-    matrix_size: int,
     cholesky_L_tmp: wp.array3d(dtype=float),
-    cholesky_y_tmp: wp.array3d(dtype=float),
     # Data out:
     efc_Mgrad_out: wp.array3d(dtype=float),
   ):
-    worldid, tid_block = wp.tid()
+    worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
     if efc_done_in[worldid]:
       return
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE))(tid_block, efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
-    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE))(
-      tid_block, cholesky_L_tmp[worldid], efc_grad_in[worldid], cholesky_y_tmp[worldid], matrix_size, efc_Mgrad_out[worldid]
+    # We need matrix size both as a runtime input as well as a static input:
+    # static input is needed to specify the tile sizes for the compiler
+    # runtime input is needed for the loop bounds, otherwise warp will unroll
+    # unconditionally leading to shared memory capacity issues.
+
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+      cholesky_L_tmp[worldid], efc_grad_in[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
 
   return kernel
+
+
+@wp.kernel
+def padding_efc_h(nv: int, efc_done_in: wp.array(dtype=bool), efc_h_out: wp.array3d(dtype=float)):
+  worldid, elementid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  dofid = nv + elementid
+  efc_h_out[worldid, dofid, dofid] = 1.0
 
 
 def _update_gradient(m: types.Model, d: types.Data):
@@ -1809,7 +1823,7 @@ def _update_gradient(m: types.Model, d: types.Data):
       )
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
-    if m.nv < 32:
+    if m.nv <= 32:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
@@ -1818,19 +1832,24 @@ def _update_gradient(m: types.Model, d: types.Data):
         block_dim=m.block_dim.update_gradient_cholesky,
       )
     else:
+      wp.launch(
+        padding_efc_h,
+        dim=(d.nworld, d.efc.h.shape[2] - m.nv),
+        inputs=[m.nv, d.efc.done],
+        outputs=[d.efc.h],
+      )
+
       wp.launch_tiled(
-        update_gradient_cholesky_blocked(16),
+        update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.efc.h.shape[1]),
         dim=d.nworld,
         inputs=[
-          d.efc.grad.reshape(shape=(d.nworld, m.nv, 1)),
+          d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)),
           d.efc.h,
           d.efc.done,
-          m.nv,
           d.efc.cholesky_L_tmp,
-          d.efc.cholesky_y_tmp.reshape(shape=(d.nworld, m.nv, 1)),
         ],
-        outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, m.nv, 1))],
-        block_dim=m.block_dim.update_gradient_cholesky,
+        outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")

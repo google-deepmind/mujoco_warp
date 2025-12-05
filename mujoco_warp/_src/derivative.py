@@ -221,9 +221,11 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   """
   qMi = m.qM_fullm_i
   qMj = m.qM_fullm_j
+
   # TODO(team): implicit requires different sparsity structure
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
+    # TODO(team): only clear elements not set by _qderiv_actuator_passive
     out.zero_()
     if m.nu > 0 and not m.opt.disableflags & DisableBit.ACTUATION:
       vel = wp.empty((d.nworld, m.nu), dtype=float)

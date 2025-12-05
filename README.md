@@ -24,8 +24,18 @@ MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of 
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/).
 
-# Documentation
-MuJoCo Warp's documentation can be found at [mujoco.readthedocs.io](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
+# Getting started
+
+There are a few ways to jump into using MuJoCo Warp:
+
+* For a quick overview of MJWarp's API and design, please see [our colab that introduces the basics](https://colab.research.google.com/github/google-deepmind/mujoco_warp/blob/main/notebooks/tutorial.ipynb).
+* For more details and advanced topics on using MJWarp, see the [MuJoCo Warp documentation](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
+
+If you would like to train robot policies using MJWarp, consider using a robotics research toolkit that integrates it:
+
+* [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) integrates MJWarp via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html)
+* [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) integrates MJWarp via [Newton](https://github.com/newton-physics/newton)
+* [mjlab](https://github.com/mujocolab/mjlab) integrates MJWarp directly
 
 # Installing for development
 
@@ -128,13 +138,3 @@ mjwarp-testspeed benchmark/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
-
-# Training Policies
-
-Train policies with MJWarp physics and reinforcement learning
-
-- [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) via [Newton](https://github.com/newton-physics/newton)
-
-- [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html)
-
-- [mjlab](https://github.com/mujocolab/mjlab) via MJWarp
