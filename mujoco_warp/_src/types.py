@@ -1599,7 +1599,7 @@ class Data:
     qLD: L'*D*L factorization of M                              (nworld, nv, nv) if dense
                                                                 (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
-    flexedge_velocity: flex edge velocities                     (nworld, nflexedge, 1)
+    flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
     cvel: com-based velocity (rot:lin)                          (nworld, nbody, 6)
