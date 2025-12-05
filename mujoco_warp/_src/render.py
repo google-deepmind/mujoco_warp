@@ -807,8 +807,6 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       d.light_xdir,
       d.geom_xpos,
       d.geom_xmat,
-
-      # Model and Options
       rc.ncam,
       rc.use_shadows,
       rc.bvh_ngeom,
