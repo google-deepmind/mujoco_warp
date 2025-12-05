@@ -1277,9 +1277,8 @@ def _efc_contact_pyramidal(
       contact_efc_address_out[conid, dimid] = -1
       return
 
-    opt_timestep_id = worldid % opt_timestep.shape[0]
-    timestep = opt_timestep[opt_timestep_id]
-    impratio_invsqrt = opt_impratio_invsqrt[opt_timestep_id]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
@@ -1447,9 +1446,8 @@ def _efc_contact_elliptic(
       contact_efc_address_out[conid, dimid] = -1
       return
 
-    opt_timestep_id = worldid % opt_timestep.shape[0]
-    timestep = opt_timestep[opt_timestep_id]
-    impratio_invsqrt = opt_impratio_invsqrt[opt_timestep_id]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
