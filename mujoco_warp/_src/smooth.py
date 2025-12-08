@@ -85,6 +85,7 @@ def _kinematics_level(
   xquat_out: wp.array2d(dtype=wp.quat),
   xipos_out: wp.array2d(dtype=wp.vec3),
   ximat_out: wp.array2d(dtype=wp.mat33),
+  xiquat_out: wp.array2d(dtype=wp.quat),
   xanchor_out: wp.array2d(dtype=wp.vec3),
   xaxis_out: wp.array2d(dtype=wp.vec3),
 ):
@@ -159,6 +160,7 @@ def _kinematics_level(
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
+  xiquat_out[worldid, bodyid] = math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid])
 
 
 @wp.kernel
@@ -308,7 +310,7 @@ def kinematics(m: Model, d: Data):
         d.xquat,
         body_tree,
       ],
-      outputs=[d.xpos, d.xquat, d.xipos, d.ximat, d.xanchor, d.xaxis],
+      outputs=[d.xpos, d.xquat, d.xipos, d.ximat, d.xiquat, d.xanchor, d.xaxis],
     )
 
   wp.launch(
