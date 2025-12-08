@@ -315,7 +315,7 @@ def kinematics(m: Model, d: Data):
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
     inputs=[m.body_rootid, m.body_weldid, m.body_mocapid, m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
-    outputs=[d.geom_xpos, d.geom_xmat],
+    outputs=[d.geom_xpos, d.geom_xmat, d.geom_xquat],
   )
 
   wp.launch(
