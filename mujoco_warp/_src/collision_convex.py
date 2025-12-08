@@ -980,31 +980,6 @@ def convex_narrowphase(m: Model, d: Data):
 
   epa_iterations = m.opt.ccd_iterations
 
-  # count of smooth-smooth geom collisions
-  c1 = _pair_count(GeomType.ELLIPSOID.value, GeomType.ELLIPSOID.value)
-  c2 = _pair_count(GeomType.ELLIPSOID.value, GeomType.CYLINDER.value)
-  c3 = _pair_count(GeomType.CYLINDER.value, GeomType.CYLINDER.value)
-  nsmooth = c1 + c2 + c3
-  nsemismooth = 0
-
-  # count of smooth-discrete geom collisions
-  if not nsmooth:
-    s1 = _pair_count(GeomType.HFIELD.value, GeomType.ELLIPSOID.value)
-    s2 = _pair_count(GeomType.HFIELD.value, GeomType.CYLINDER.value)
-    s3 = _pair_count(GeomType.SPHERE.value, GeomType.ELLIPSOID.value)
-    s4 = _pair_count(GeomType.CAPSULE.value, GeomType.ELLIPSOID.value)
-    s5 = _pair_count(GeomType.CAPSULE.value, GeomType.CYLINDER.value)
-    s6 = _pair_count(GeomType.ELLIPSOID.value, GeomType.BOX.value)
-    s7 = _pair_count(GeomType.ELLIPSOID.value, GeomType.MESH.value)
-    s8 = _pair_count(GeomType.CYLINDER.value, GeomType.BOX.value)
-    s9 = _pair_count(GeomType.CYLINDER.value, GeomType.MESH.value)
-    nsemismooth = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9
-
-  if not nsmooth and not nsemismooth:
-    epa_iterations = math.ceil(m.opt.ccd_iterations / 3)
-  elif not nsmooth:
-    epa_iterations = math.ceil(m.opt.ccd_iterations / 2)
-
   # set to true to enable multiccd
   use_multiccd = False
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
