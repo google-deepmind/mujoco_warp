@@ -782,6 +782,7 @@ def put_data(
     "ne_flex": None,
     "nsolving": None,
     "xiquat": None,
+    "geom_xquat": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -827,11 +828,12 @@ def put_data(
   mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
-  # convert ximat to xiquat
-  xiquat = np.zeros((mjm.nbody, 4))
-  for i in range(mjm.nbody):
-    mujoco.mju_mat2Quat(xiquat[i], mjd.ximat[i])
-  d.xiquat = wp.array(np.full((nworld, mjm.nbody, 4), xiquat), dtype=wp.quat)
+  # convert xmat fields to xquat
+  for xmat, attr, n in [(mjd.ximat, "xiquat", mjm.nbody), (mjd.geom_xmat, "geom_xquat", mjm.ngeom)]:
+    xquat = np.zeros((n, 4))
+    for i in range(n):
+      mujoco.mju_mat2Quat(xquat[i], xmat[i])
+    setattr(d, attr, wp.array(np.full((nworld, n, 4), xquat), dtype=wp.quat))
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
   d.ne_connect = wp.full(nworld, 3 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active), dtype=int)

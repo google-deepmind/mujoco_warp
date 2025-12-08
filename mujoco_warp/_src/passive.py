@@ -282,7 +282,7 @@ def _fluid_force(
   xipos_in: wp.array2d(dtype=wp.vec3),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   # Out:
@@ -325,7 +325,7 @@ def _fluid_force(
 
       size = geom_size[worldid % geom_size.shape[0], geomid]
       semiaxes = _geom_semiaxes(size, geom_type[geomid])
-      geom_rot = geom_xmat_in[worldid, geomid]
+      geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
       geom_rotT = wp.transpose(geom_rot)
       geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -507,7 +507,7 @@ def _fluid(m: Model, d: Data):
       d.xipos,
       d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.subtree_com,
       d.cvel,
     ],
