@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-import math
 from typing import Tuple
 
 import warp as wp
