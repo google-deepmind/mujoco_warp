@@ -2110,7 +2110,7 @@ def _sensor_tactile(
   taxel_sensorid: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   contact_geom_in: wp.array(dtype=wp.vec2i),
@@ -2149,14 +2149,15 @@ def _sensor_tactile(
   # vertex local position
   vertid = taxel_vertadr[taxelid] - mesh_vertadr[mesh_id]
   pos = mesh_vert[vertid + mesh_vertadr[mesh_id]]
+  quat = geom_xquat_in[worldid, geom_id]
 
   # position in global frame
-  xpos = geom_xmat_in[worldid, geom_id] @ pos
+  xpos = math.rot_vec_quat(pos, quat)
   xpos += geom_xpos_in[worldid, geom_id]
 
   # position in other geom frame
   tmp = xpos - geom_xpos_in[worldid, geom]
-  lpos = wp.transpose(geom_xmat_in[worldid, geom]) @ tmp
+  lpos = wp.transpose(math.quat_to_mat(quat)) @ tmp
 
   plugin_id = geom_plugin_index[geom]
 
@@ -2451,7 +2452,7 @@ def sensor_acc(m: Model, d: Data):
       m.taxel_vertadr,
       m.taxel_sensorid,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.subtree_com,
       d.cvel,
       d.contact.geom,
