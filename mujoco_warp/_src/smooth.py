@@ -174,6 +174,7 @@ def _geom_local_to_global(
   # Data out:
   geom_xpos_out: wp.array2d(dtype=wp.vec3),
   geom_xmat_out: wp.array2d(dtype=wp.mat33),
+  geom_xquat_out: wp.array2d(dtype=wp.quat),
 ):
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
@@ -187,6 +188,7 @@ def _geom_local_to_global(
   xquat = xquat_in[worldid, bodyid]
   geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], xquat)
   geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
+  geom_xquat_out[worldid, geomid] = xquat
 
 
 @wp.kernel
