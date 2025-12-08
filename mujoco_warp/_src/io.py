@@ -902,6 +902,12 @@ def get_data_into(
 
   efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
 
+  # convert xiquat to ximat
+  ximat = np.zeros((mjm.nbody, 9))
+  for i in range(mjm.nbody):
+    mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[world_id, i])
+  result.ximat[:] = ximat.reshape((-1, 9))
+
   result.solver_niter[0] = d.solver_niter.numpy()[world_id]
   result.ncon = ncon
   result.ne = ne
@@ -938,7 +944,6 @@ def get_data_into(
   xmat[:, 8] = q[:, 0] ** 2 - q[:, 1] ** 2 - q[:, 2] ** 2 + q[:, 3] ** 2
   result.xmat[:] = xmat
   result.xipos[:] = d.xipos.numpy()[world_id]
-  result.ximat[:] = d.ximat.numpy()[world_id].reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]

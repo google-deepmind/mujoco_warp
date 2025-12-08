@@ -389,7 +389,7 @@ class ForwardTest(parameterized.TestCase):
       d_arr, is_nefc = _getattr(arr)
       d_arr = d_arr.numpy()[0]
       mjd_arr = getattr(mjd, arr)
-      if arr in ["ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
+      if arr in ["geom_xmat", "site_xmat", "cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "qM":
