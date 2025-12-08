@@ -283,7 +283,7 @@ def _frame_pos(
   xipos_in: wp.array2d(dtype=wp.vec3),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -319,7 +319,7 @@ def _frame_pos(
     xmat_ref = math.quat_to_mat(xquat_in[worldid, refid])
   elif reftype == ObjType.GEOM:
     xpos_ref = geom_xpos_in[worldid, refid]
-    xmat_ref = geom_xmat_in[worldid, refid]
+    xmat_ref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
     xpos_ref = site_xpos_in[worldid, refid]
     xmat_ref = site_xmat_in[worldid, refid]
@@ -339,7 +339,7 @@ def _frame_axis(
   # Data in:
   xquat_in: wp.array2d(dtype=wp.quat),
   xiquat_in: wp.array2d(dtype=wp.quat),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
@@ -357,7 +357,7 @@ def _frame_axis(
     xmat = math.quat_to_mat(xquat_in[worldid, objid])
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
   elif objtype == ObjType.GEOM:
-    xmat = geom_xmat_in[worldid, objid]
+    xmat = math.quat_to_mat(geom_xquat_in[worldid, objid])
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
   elif objtype == ObjType.SITE:
     xmat = site_xmat_in[worldid, objid]
@@ -376,7 +376,7 @@ def _frame_axis(
   elif reftype == ObjType.XBODY:
     xmat_ref = math.quat_to_mat(xquat_in[worldid, refid])
   elif reftype == ObjType.GEOM:
-    xmat_ref = geom_xmat_in[worldid, refid]
+    xmat_ref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
     xmat_ref = site_xmat_in[worldid, refid]
   elif reftype == ObjType.CAMERA:
@@ -494,7 +494,7 @@ def _sensor_pos(
   xipos_in: wp.array2d(dtype=wp.vec3),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -548,7 +548,7 @@ def _sensor_pos(
       xipos_in,
       xiquat_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       site_xpos_in,
       site_xmat_in,
       cam_xpos_in,
@@ -571,7 +571,7 @@ def _sensor_pos(
     elif sensortype == SensorType.FRAMEZAXIS:
       axis = 2
     vec3 = _frame_axis(
-      xquat_in, xiquat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
+      xquat_in, xiquat_in, geom_xquat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEQUAT:
@@ -857,7 +857,7 @@ def sensor_pos(m: Model, d: Data):
       d.xipos,
       d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
       d.site_xmat,
       d.cam_xpos,
