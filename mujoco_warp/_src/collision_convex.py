@@ -25,6 +25,7 @@ from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
+from .math import quat_to_mat
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR
@@ -92,7 +93,7 @@ def _hfield_filter(
   hfield_size: wp.array(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   worldid: int,
   g1: int,
@@ -111,7 +112,7 @@ def _hfield_filter(
   margin_id = worldid % geom_margin.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
-  mat1 = geom_xmat_in[worldid, g1]
+  mat1 = quat_to_mat(geom_xquat_in[worldid, g1])
   mat1T = wp.transpose(mat1)
   pos2 = geom_xpos_in[worldid, g2]
   pos = mat1T @ (pos2 - pos1)
@@ -132,7 +133,7 @@ def _hfield_filter(
   if -size1[3] > pos[2] + r2 + margin:  # down
     return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
 
-  mat2 = geom_xmat_in[worldid, g2]
+  mat2 = quat_to_mat(geom_xquat_in[worldid, g2])
   mat = mat1T @ mat2
 
   # aabb for geom in height field frame
@@ -426,7 +427,7 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
@@ -486,7 +487,7 @@ def ccd_kernel_builder(
     # height field filter
     if wp.static(is_hfield):
       no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-        geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+        geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xquat_in, worldid, g1, g2
       )
       if no_hf_collision:
         return
@@ -532,7 +533,7 @@ def ccd_kernel_builder(
       mesh_polymapnum,
       mesh_polymap,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       geoms,
       worldid,
     )
@@ -1070,7 +1071,7 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_friction,
           d.naconmax,
           d.geom_xpos,
-          d.geom_xmat,
+          d.geom_xquat,
           d.collision_pair,
           d.collision_pairid,
           d.collision_worldid,

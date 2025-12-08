@@ -29,6 +29,8 @@ from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .warp_util import nested_kernel
 
+from .math import quat_to_mat
+
 
 def _geom_dist(
   m: Model,
@@ -88,7 +90,7 @@ def _geom_dist(
     mesh_polymap: wp.array(dtype=int),
     # Data in:
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     # In:
     gid1: int,
     gid2: int,
@@ -129,7 +131,7 @@ def _geom_dist(
     else:
       geom1.pos = pos1
     if wp.static(mat1 == None):
-      geom1.rot = geom_xmat_in[0, gid1]
+      geom1.rot = quat_to_mat(geom_xquat_in[0, gid1])
     else:
       geom1.rot = mat1
     geom1.size = geom_size[0, gid1]
@@ -160,7 +162,7 @@ def _geom_dist(
     else:
       geom2.pos = pos2
     if wp.static(mat2 == None):
-      geom2.rot = geom_xmat_in[0, gid2]
+      geom2.rot = quat_to_mat(geom_xquat_in[0, gid2])
     else:
       geom2.rot = mat2
     geom2.size = geom_size[0, gid2]
@@ -266,7 +268,7 @@ def _geom_dist(
       m.mesh_polymapnum,
       m.mesh_polymap,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       gid1,
       gid2,
       m.opt.ccd_iterations,

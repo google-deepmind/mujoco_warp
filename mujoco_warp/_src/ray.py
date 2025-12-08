@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 import warp as wp
 
 from .math import safe_div
+from .math import quat_to_mat
 from .types import MJ_MINVAL
 from .types import Data
 from .types import GeomType
@@ -644,7 +645,7 @@ def _ray_geom_mesh(
   mat_rgba: wp.array2d(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   worldid: int,
   pnt: wp.vec3,
@@ -667,7 +668,7 @@ def _ray_geom_mesh(
     bodyexclude,
   ):
     pos = geom_xpos_in[worldid, geomid]
-    mat = geom_xmat_in[worldid, geomid]
+    mat = quat_to_mat(geom_xquat_in[worldid, geomid])
     type = geom_type[geomid]
 
     if type == GeomType.MESH:
@@ -729,7 +730,7 @@ def _ray(
   mat_rgba: wp.array2d(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   pnt: wp.array2d(dtype=wp.vec3),
   vec: wp.array2d(dtype=wp.vec3),
@@ -771,7 +772,7 @@ def _ray(
         hfield_data,
         mat_rgba,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         worldid,
         pnt[worldid, rayid],
         vec[worldid, rayid],
@@ -875,7 +876,7 @@ def rays(
       m.hfield_data,
       m.mat_rgba,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       pnt,
       vec,
       geomgroup,

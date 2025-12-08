@@ -21,6 +21,7 @@ from .collision_convex import convex_narrowphase
 from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
+from .math import quat_to_mat
 from .types import MJ_MAXVAL
 from .types import BroadphaseFilter
 from .types import BroadphaseType
@@ -239,7 +240,7 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
     geom_margin: wp.array2d(dtype=float),
     # Data in:
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     # In:
     geom1: int,
     geom2: int,
@@ -259,7 +260,7 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
     margin_id = worldid % ngeom_margin if wp.static(ngeom_margin > 1) else 0
     margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
-    xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
+    xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
@@ -415,7 +416,7 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     nworld_in: int,
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     # In:
     sort_index_in: wp.array2d(dtype=int),
     cumulative_sum_in: wp.array(dtype=int),
@@ -460,7 +461,7 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
 
       if (
         wp.static(_broadphase_filter(opt_broadphase_filter, ngeom_aabb, ngeom_rbound, ngeom_margin))(
-          geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
+          geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xquat_in, geom1, geom2, worldid
         )
         or pairid[1] >= 0
       ):
@@ -591,7 +592,7 @@ def sap_broadphase(m: Model, d: Data):
       d.nworld,
       d.naconmax,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       sort_index.reshape((-1, m.ngeom)),
       cumulative_sum.reshape(-1),
       nsweep,
@@ -614,7 +615,7 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     # Data in:
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
     collision_pairid_out: wp.array(dtype=wp.vec2i),
@@ -629,7 +630,7 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
 
     if (
       wp.static(_broadphase_filter(opt_broadphase_filter, ngeom_aabb, ngeom_rbound, ngeom_margin))(
-        geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
+        geom_aabb, geom_rbound, geom_margin, geom_xpos_in, geom_xquat_in, geom1, geom2, worldid
       )
       or nxn_pairid[elementid][1] >= 0
     ):
@@ -676,7 +677,7 @@ def nxn_broadphase(m: Model, d: Data):
       m.nxn_pairid_filtered,
       d.naconmax,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
     ],
     outputs=[
       d.collision_pair,

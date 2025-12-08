@@ -32,6 +32,7 @@ from .collision_primitive_core import sphere_sphere
 from .math import make_frame
 from .math import safe_div
 from .math import upper_trid_index
+from .math import quat_to_mat
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
 from .types import ContactType
@@ -95,7 +96,7 @@ def geom_collision_pair(
   mesh_polymap: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   geoms: wp.vec2i,
   worldid: int,
@@ -109,12 +110,12 @@ def geom_collision_pair(
   geom_type2 = geom_type[g2]
 
   geom1.pos = geom_xpos_in[worldid, g1]
-  geom1.rot = geom_xmat_in[worldid, g1]
+  geom1.rot = quat_to_mat(geom_xquat_in[worldid, g1])
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
   geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])  # plane
 
   geom2.pos = geom_xpos_in[worldid, g2]
-  geom2.rot = geom_xmat_in[worldid, g2]
+  geom2.rot = quat_to_mat(geom_xquat_in[worldid, g2])
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
   geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])  # plane
 
@@ -1607,7 +1608,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     naconmax_in: int,
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
@@ -1678,7 +1679,7 @@ def _create_narrowphase_kernel(primitive_collisions_types, primitive_collisions_
       mesh_polymapnum,
       mesh_polymap,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       geoms,
       worldid,
     )
@@ -1791,7 +1792,7 @@ def primitive_narrowphase(m: Model, d: Data):
       m.pair_gap,
       m.pair_friction,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.naconmax,
       d.collision_pair,
       d.collision_pairid,

@@ -640,6 +640,10 @@ def make_data(
   mujoco.mj_kinematics(mjm, mjd)
   d.geom_xpos = wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3)
   d.geom_xmat = wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33)
+  geom_xquat = np.zeros((mjm.ngeom, 4))
+  for i in range(mjm.ngeom):
+    mujoco.mju_mat2Quat(geom_xquat[i], mjd.geom_xmat[i])
+  d.geom_xquat = wp.array(np.tile(geom_xquat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat)
 
   return d
 
