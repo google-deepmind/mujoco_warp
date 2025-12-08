@@ -429,6 +429,13 @@ class ForwardTest(parameterized.TestCase):
 
       _assert_eq(d_arr, mjd_arr, arr)
 
+    # compare xiquat (warp) to ximat (mujoco) by converting quaternion to matrix
+    xiquat = d.xiquat.numpy()[0]
+    ximat = np.zeros((xiquat.shape[0], 9))
+    for i in range(xiquat.shape[0]):
+      mujoco.mju_quat2Mat(ximat[i], xiquat[i])
+    _assert_eq(ximat.reshape(-1), mjd.ximat.reshape(-1), "xiquat->ximat")
+
     # TODO(team): sensor_pos
     # TODO(team): sensor_vel
 
