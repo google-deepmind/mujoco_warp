@@ -2694,7 +2694,7 @@ def _spatial_geom_tendon(
   wrap_pulley_scale: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
@@ -2722,7 +2722,7 @@ def _spatial_geom_tendon(
 
   # get geom information
   geom_xpos = geom_xpos_in[worldid, wrap_objid_geom]
-  geom_xmat = geom_xmat_in[worldid, wrap_objid_geom]
+  geom_xmat = math.quat_to_mat(geom_xquat_in[worldid, wrap_objid_geom])
   geomsize = geom_size[worldid, wrap_objid_geom][0]
   geom_type = wrap_type[wrap_adr]
 
@@ -3052,7 +3052,7 @@ def tendon(m: Model, d: Data):
       m.wrap_geom_adr,
       m.wrap_pulley_scale,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
       d.subtree_com,
       d.cdof,
