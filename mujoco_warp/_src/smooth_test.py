@@ -121,7 +121,7 @@ class SmoothTest(parameterized.TestCase):
       d.xpos,
       d.xquat,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
       d.geom_xmat,
       d.site_xpos,
@@ -130,6 +130,10 @@ class SmoothTest(parameterized.TestCase):
       arr.zero_()
 
     mjw.kinematics(m, d)
+
+    ximat = np.zeros((m.nbody, 9), dtype=np.float64)
+    for i in range(m.nbody):
+      mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[0, i])
 
     _assert_eq(d.xanchor.numpy()[0], mjd.xanchor, "xanchor")
     _assert_eq(d.xaxis.numpy()[0], mjd.xaxis, "xaxis")

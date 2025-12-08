@@ -46,14 +46,12 @@ def _kinematics_root(
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
   xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
   xiquat_out: wp.array2d(dtype=wp.quat),
 ):
   worldid = wp.tid()
   xpos_out[worldid, 0] = wp.vec3(0.0)
   xquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
   xipos_out[worldid, 0] = wp.vec3(0.0)
-  ximat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
   xiquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
 
 @wp.kernel
@@ -84,7 +82,6 @@ def _kinematics_level(
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
   xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
   xiquat_out: wp.array2d(dtype=wp.quat),
   xanchor_out: wp.array2d(dtype=wp.vec3),
   xaxis_out: wp.array2d(dtype=wp.vec3),
@@ -159,7 +156,6 @@ def _kinematics_level(
   xpos_out[worldid, bodyid] = xpos
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
   xiquat_out[worldid, bodyid] = math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid])
 
 
@@ -282,7 +278,7 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xipos, d.ximat, d.xiquat])
+  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xipos, d.xiquat])
 
   for i in range(1, len(m.body_tree)):
     body_tree = m.body_tree[i]
@@ -310,7 +306,7 @@ def kinematics(m: Model, d: Data):
         d.xquat,
         body_tree,
       ],
-      outputs=[d.xpos, d.xquat, d.xipos, d.ximat, d.xiquat, d.xanchor, d.xaxis],
+      outputs=[d.xpos, d.xquat, d.xipos, d.xiquat, d.xanchor, d.xaxis],
     )
 
   wp.launch(

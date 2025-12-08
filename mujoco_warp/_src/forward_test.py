@@ -316,7 +316,6 @@ class ForwardTest(parameterized.TestCase):
       "xpos",
       "xquat",
       "xipos",
-      "ximat",
       "xanchor",
       "xaxis",
       "geom_xpos",
