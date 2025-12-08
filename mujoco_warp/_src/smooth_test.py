@@ -149,6 +149,7 @@ class SmoothTest(parameterized.TestCase):
     for arr in (d.subtree_com, d.cinert, d.cdof):
       arr.zero_()
 
+    mjw.kinematics(m, d)
     mjw.com_pos(m, d)
     _assert_eq(d.subtree_com.numpy()[0], mjd.subtree_com, "subtree_com")
     _assert_eq(d.cinert.numpy()[0], mjd.cinert, "cinert")

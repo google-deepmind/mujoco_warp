@@ -407,13 +407,13 @@ def _cinert(
   body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # Data out:
   cinert_out: wp.array2d(dtype=vec10),
 ):
   worldid, bodyid = wp.tid()
-  mat = ximat_in[worldid, bodyid]
+  mat = math.quat_to_mat(xiquat_in[worldid, bodyid])
   inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
@@ -513,7 +513,7 @@ def com_pos(m: Model, d: Data):
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
     outputs=[d.cinert],
   )
   wp.launch(
