@@ -2447,7 +2447,7 @@ def _subtree_vel_forward(
   body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   # Data out:
@@ -2463,7 +2463,7 @@ def _subtree_vel_forward(
   ang = wp.spatial_top(cvel)
   lin = wp.spatial_bottom(cvel)
   xipos = xipos_in[worldid, bodyid]
-  ximat = ximat_in[worldid, bodyid]
+  ximat = math.quat_to_mat(xiquat_in[worldid, bodyid])
   subtree_com_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
   # update linear velocity
@@ -2561,7 +2561,7 @@ def subtree_vel(m: Model, d: Data):
   wp.launch(
     _subtree_vel_forward,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com, d.cvel],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com, d.cvel],
     outputs=[d.subtree_linvel, d.subtree_angmom, d.subtree_bodyvel],
   )
 
