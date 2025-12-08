@@ -47,13 +47,14 @@ def _kinematics_root(
   xquat_out: wp.array2d(dtype=wp.quat),
   xipos_out: wp.array2d(dtype=wp.vec3),
   ximat_out: wp.array2d(dtype=wp.mat33),
+  xiquat_out: wp.array2d(dtype=wp.quat),
 ):
   worldid = wp.tid()
   xpos_out[worldid, 0] = wp.vec3(0.0)
   xquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
   xipos_out[worldid, 0] = wp.vec3(0.0)
   ximat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
-
+  xiquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
 
 @wp.kernel
 def _kinematics_level(
@@ -279,7 +280,7 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xipos, d.ximat])
+  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xipos, d.ximat, d.xiquat])
 
   for i in range(1, len(m.body_tree)):
     body_tree = m.body_tree[i]
