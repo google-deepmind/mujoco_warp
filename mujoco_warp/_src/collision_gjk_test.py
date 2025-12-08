@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -558,7 +559,7 @@ class GJKTest(absltest.TestCase):
     )
 
     pos = wp.vec3(0.00015228791744448245, -0.00074981129728257656, 0.29839199781417846680)
-    rot = wp.mat33(
+    rot_mat = np.array([
       0.99996972084045410156,
       0.00776371126994490623,
       -0.00043433305108919740,
@@ -568,9 +569,12 @@ class GJKTest(absltest.TestCase):
       0.00043175052269361913,
       0.00033431366318836808,
       0.99999988079071044922,
-    )
+    ])
+    rot_quat = np.zeros(4)
+    mujoco.mju_mat2Quat(rot_quat, rot_mat)
+    rot = wp.quat(rot_quat[0], rot_quat[1], rot_quat[2], rot_quat[3])
 
-    dist, _, _, _ = _geom_dist(m, d, 0, 1, pos2=pos, mat2=rot)
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, pos2=pos, quat2=rot)
     self.assertAlmostEqual(dist, -0.0016624178339902445)
 
   def test_box_box_float(self):
@@ -587,7 +591,7 @@ class GJKTest(absltest.TestCase):
     )
 
     pos1 = wp.vec3(-0.17624500393867492676, -0.12375499308109283447, 0.12499777972698211670)
-    rot1 = wp.mat33(
+    rot1_mat = np.array([
       1.00000000000000000000,
       -0.00000000184385418045,
       -0.00000025833372774287,
@@ -597,10 +601,13 @@ class GJKTest(absltest.TestCase):
       0.00000025833372774287,
       -0.00000024928382913458,
       1.0000000000000000000,
-    )
+    ])
+    rot1_quat = np.zeros(4)
+    mujoco.mju_mat2Quat(rot1_quat, rot1_mat)
+    rot1 = wp.quat(rot1_quat[0], rot1_quat[1], rot1_quat[2], rot1_quat[3])
 
     pos2 = wp.vec3(-0.17624500393867492676, -0.12375499308109283447, 0.17499557137489318848)
-    rot2 = wp.mat33(
+    rot2_mat = np.array([
       1.00000000000000000000,
       -0.00000000184292525685,
       0.00000012980596864054,
@@ -610,9 +617,12 @@ class GJKTest(absltest.TestCase):
       -0.00000012980596864054,
       0.00000014602545661546,
       1.00000000000000000000,
-    )
+    ])
+    rot2_quat = np.zeros(4)
+    mujoco.mju_mat2Quat(rot2_quat, rot2_mat)
+    rot2 = wp.quat(rot2_quat[0], rot2_quat[1], rot2_quat[2], rot2_quat[3])
 
-    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, quat1=rot1, pos2=pos2, quat2=rot2)
     self.assertEqual(ncon, 1)
     self.assertLess(dist, 0.0001)  # real depth is ~ 2E-6
 
