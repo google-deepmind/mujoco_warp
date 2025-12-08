@@ -1051,7 +1051,7 @@ def _frame_linvel(
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
   xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1082,7 +1082,7 @@ def _frame_linvel(
 
   if reftype == ObjType.BODY:
     xposref = xipos_in[worldid, refid]
-    xmatref = ximat_in[worldid, refid]
+    xmatref = math.quat_to_mat(xiquat_in[worldid, refid])
   elif reftype == ObjType.XBODY:
     xposref = xpos_in[worldid, refid]
     xmatref = math.quat_to_mat(xquat_in[worldid, refid])
@@ -1157,7 +1157,7 @@ def _frame_angvel(
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
   xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1193,7 +1193,7 @@ def _frame_angvel(
 
   if refid > -1:
     if reftype == ObjType.BODY:
-      xmatref = ximat_in[worldid, refid]
+      xmatref = math.quat_to_mat(xiquat_in[worldid, refid])
     elif reftype == ObjType.XBODY:
       xmatref = math.quat_to_mat(xquat_in[worldid, refid])
     elif reftype == ObjType.GEOM:
@@ -1260,7 +1260,7 @@ def _sensor_vel(
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
   xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1312,7 +1312,7 @@ def _sensor_vel(
       xpos_in,
       xquat_in,
       xipos_in,
-      ximat_in,
+      xiquat_in,
       geom_xpos_in,
       geom_xmat_in,
       site_xpos_in,
@@ -1340,7 +1340,7 @@ def _sensor_vel(
       xpos_in,
       xquat_in,
       xipos_in,
-      ximat_in,
+      xiquat_in,
       geom_xpos_in,
       geom_xmat_in,
       site_xpos_in,
@@ -1395,7 +1395,7 @@ def sensor_vel(m: Model, d: Data):
       d.xpos,
       d.xquat,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
       d.geom_xmat,
       d.site_xpos,
