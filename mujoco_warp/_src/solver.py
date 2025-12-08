@@ -291,10 +291,10 @@ def _eval(
 def linesearch_iterative(
   # Model:
   nv: int,
-  opt_impratio_invsqrt: wp.array(dtype=float),
   opt_tolerance: wp.array(dtype=float),
   opt_ls_tolerance: wp.array(dtype=float),
   opt_ls_iterations: int,
+  opt_impratio_invsqrt: wp.array(dtype=float),
   stat_meaninertia: float,
   # Data in:
   ne_in: wp.array(dtype=int),
@@ -495,8 +495,8 @@ def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> f
 @wp.kernel
 def linesearch_parallel_fused(
   # Model:
-  opt_impratio_invsqrt: wp.array(dtype=float),
   opt_ls_iterations: int,
+  opt_impratio_invsqrt: wp.array(dtype=float),
   opt_ls_parallel_min_step: float,
   # Data in:
   ne_in: wp.array(dtype=int),
