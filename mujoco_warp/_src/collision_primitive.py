@@ -52,7 +52,7 @@ wp.set_module_options({"enable_backward": False})
 @wp.struct
 class Geom:
   pos: wp.vec3
-  rot: wp.mat33
+  rot: wp.quat
   normal: wp.vec3
   size: wp.vec3
   margin: float
@@ -110,14 +110,16 @@ def geom_collision_pair(
   geom_type2 = geom_type[g2]
 
   geom1.pos = geom_xpos_in[worldid, g1]
-  geom1.rot = quat_to_mat(geom_xquat_in[worldid, g1])
+  geom1.rot = geom_xquat_in[worldid, g1]
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
-  geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])  # plane
+  mat1 = quat_to_mat(geom1.rot)
+  geom1.normal = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])  # plane
 
   geom2.pos = geom_xpos_in[worldid, g2]
-  geom2.rot = quat_to_mat(geom_xquat_in[worldid, g2])
+  geom2.rot = geom_xquat_in[worldid, g2]
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
-  geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])  # plane
+  mat2 = quat_to_mat(geom2.rot)
+  geom2.normal = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])  # plane
 
   if geom_type1 == GeomType.MESH:
     dataid = geom_dataid[g1]
@@ -185,8 +187,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   contact_count = int(0)
 
   # get points in the convex frame
-  plane_pos_local = wp.transpose(convex.rot) @ (plane_pos - convex.pos)
-  n = wp.transpose(convex.rot) @ plane_normal
+  mat_transposed = wp.transpose(quat_to_mat(convex.rot))
+  plane_pos_local = mat_transposed @ (plane_pos - convex.pos)
+  n = mat_transposed @ plane_normal
 
   # Store indices in vec4
   indices = wp.vec4i(-1, -1, -1, -1)
@@ -381,7 +384,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     # Check if the index is unique (appears exactly once)
     if count == 1:
       pos = convex.vert[convex.vertadr + idx]
-      pos = convex.pos + convex.rot @ pos
+      pos = convex.pos + quat_to_mat(convex.rot) @ pos
       support = wp.dot(plane_pos_local - convex.vert[convex.vertadr + idx], n)
       dist = -support
       pos = pos - 0.5 * dist * plane_normal
@@ -731,7 +734,8 @@ def sphere_capsule_wrapper(
 ):
   """Calculates one contact between a sphere and a capsule."""
   # capsule axis
-  axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
+  mat = quat_to_mat(cap.rot)
+  axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
 
   dist, pos, normal = sphere_capsule(sphere.pos, sphere.size[0], cap.pos, axis, cap.size[0], cap.size[1])
 
@@ -803,8 +807,10 @@ def capsule_capsule_wrapper(
 ):
   """Calculates contacts between two capsules."""
   # capsule axes
-  cap1_axis = wp.vec3(cap1.rot[0, 2], cap1.rot[1, 2], cap1.rot[2, 2])
-  cap2_axis = wp.vec3(cap2.rot[0, 2], cap2.rot[1, 2], cap2.rot[2, 2])
+  mat1 = quat_to_mat(cap1.rot)
+  cap1_axis = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
+  mat2 = quat_to_mat(cap2.rot)
+  cap2_axis = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])
 
   dist, pos, normal = capsule_capsule(
     cap1.pos,
@@ -885,7 +891,8 @@ def plane_capsule_wrapper(
 ):
   """Calculates contacts between a capsule and a plane."""
   # capsule axis
-  capsule_axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
+  mat = quat_to_mat(cap.rot)
+  capsule_axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
 
   dist, pos, frame = plane_capsule(
     plane.normal,
@@ -964,7 +971,7 @@ def plane_ellipsoid_wrapper(
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between an ellipsoid and a plane."""
-  dist, pos, normal = plane_ellipsoid(plane.normal, plane.pos, ellipsoid.pos, ellipsoid.rot, ellipsoid.size)
+  dist, pos, normal = plane_ellipsoid(plane.normal, plane.pos, ellipsoid.pos, quat_to_mat(ellipsoid.rot), ellipsoid.size)
 
   write_contact(
     naconmax_in,
@@ -1033,7 +1040,7 @@ def plane_box_wrapper(
   nacon_out: wp.array(dtype=int),
 ):
   """Calculates contacts between a box and a plane."""
-  dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, box.rot, box.size)
+  dist, pos, normal = plane_box(plane.normal, plane.pos, box.pos, quat_to_mat(box.rot), box.size)
   frame = make_frame(normal)
 
   for i in range(8):
@@ -1176,7 +1183,8 @@ def sphere_cylinder_wrapper(
 ):
   """Calculates contacts between a sphere and a cylinder."""
   # cylinder axis
-  cylinder_axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
+  mat = quat_to_mat(cylinder.rot)
+  cylinder_axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
 
   dist, pos, normal = sphere_cylinder(
     sphere.pos,
@@ -1255,7 +1263,8 @@ def plane_cylinder_wrapper(
 ):
   """Calculates contacts between a cylinder and a plane."""
   # cylinder axis
-  cylinder_axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
+  mat = quat_to_mat(cylinder.rot)
+  cylinder_axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
 
   dist, pos, normal = plane_cylinder(
     plane.normal,
@@ -1334,7 +1343,7 @@ def sphere_box_wrapper(
   contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ):
-  dist, pos, normal = sphere_box(sphere.pos, sphere.size[0], box.pos, box.rot, box.size)
+  dist, pos, normal = sphere_box(sphere.pos, sphere.size[0], box.pos, quat_to_mat(box.rot), box.size)
 
   write_contact(
     naconmax_in,
@@ -1404,7 +1413,8 @@ def capsule_box_wrapper(
 ):
   """Calculates contacts between a capsule and a box."""
   # Extract capsule axis
-  axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
+  mat = quat_to_mat(cap.rot)
+  axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
 
   # Call the core function to get contact geometry
   dist, pos, normal = capsule_box(
@@ -1413,7 +1423,7 @@ def capsule_box_wrapper(
     cap.size[0],  # capsule radius
     cap.size[1],  # capsule half length
     box.pos,
-    box.rot,
+    quat_to_mat(box.rot),
     box.size,
   )
 
@@ -1489,10 +1499,10 @@ def box_box_wrapper(
   # Call the core function to get contact geometry
   dist, pos, normal = box_box(
     box1.pos,
-    box1.rot,
+    quat_to_mat(box1.rot),
     box1.size,
     box2.pos,
-    box2.rot,
+    quat_to_mat(box2.rot),
     box2.size,
     margin,
   )

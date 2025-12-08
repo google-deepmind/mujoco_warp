@@ -21,6 +21,7 @@ from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
+from .math import quat_to_mat
 from .ray import ray_mesh
 from .types import Data
 from .types import GeomType
@@ -751,8 +752,10 @@ def _sdf_narrowphase(
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
-  g1_to_g2_rot = wp.transpose(geom1.rot) * geom2.rot
-  g1_to_g2_pos = wp.transpose(geom1.rot) * (geom2.pos - geom1.pos)
+  mat_rot_1 = quat_to_mat(geom1.rot)
+  mat_rot_2 = quat_to_mat(geom2.rot)
+  g1_to_g2_rot = wp.transpose(mat_rot_1) * mat_rot_2
+  g1_to_g2_pos = wp.transpose(mat_rot_1) * (geom2.pos - geom1.pos)
   aabb_pos = geom_aabb[aabb_id, g1, 0]
   aabb_size = geom_aabb[aabb_id, g1, 1]
   identity = wp.identity(3, dtype=float)
@@ -765,9 +768,9 @@ def _sdf_narrowphase(
   aabb_intersection.max = wp.min(aabb1.max, aabb2.max)
 
   pos2 = geom2.pos
-  rot2 = geom2.rot
+  rot2 = mat_rot_2
   pos1 = geom1.pos
-  rot1 = geom1.rot
+  rot1 = mat_rot_1
 
   attr1, g1_plugin_id, volume_data1, mesh_data1 = get_sdf_params(
     oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
@@ -784,7 +787,7 @@ def _sdf_narrowphase(
   mesh_data1.mesh_face = mesh_face
   mesh_data1.data_id = geom_dataid[g1]
   mesh_data1.pos = geom1.pos
-  mesh_data1.mat = geom1.rot
+  mesh_data1.mat = mat_rot_1
   mesh_data1.pnt = wp.vec3(-1.0)
   mesh_data1.vec = wp.vec3(0.0)
   mesh_data1.valid = True
@@ -796,7 +799,7 @@ def _sdf_narrowphase(
   mesh_data2.mesh_face = mesh_face
   mesh_data2.data_id = geom_dataid[g2]
   mesh_data2.pos = geom2.pos
-  mesh_data2.mat = geom2.rot
+  mesh_data2.mat = mat_rot_2
   mesh_data2.pnt = wp.vec3(-1.0)
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
@@ -806,7 +809,7 @@ def _sdf_narrowphase(
     aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
     aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
   )
-  x = geom1.rot * x_g2 + geom1.pos
+  x = mat_rot_1 * x_g2 + geom1.pos
   x0_initial = wp.transpose(rot2) * (x - pos2)
   dist, pos, n = gradient_descent(
     type1,

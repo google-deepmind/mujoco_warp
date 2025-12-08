@@ -21,6 +21,7 @@ from .collision_primitive import Geom
 from .types import GeomType
 from .types import mat43
 from .types import mat63
+from .math import quat_to_mat
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -99,11 +100,11 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
     return sp
 
-  local_dir = wp.transpose(geom.rot) @ dir
+  local_dir = wp.transpose(quat_to_mat(geom.rot)) @ dir
   if geomtype == GeomType.BOX:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
     sp.vertex_index = wp.where(tmp[0] > 0, 1, 0)
     sp.vertex_index += wp.where(tmp[1] > 0, 2, 0)
     sp.vertex_index += wp.where(tmp[2] > 0, 4, 0)
@@ -111,13 +112,13 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     res = local_dir * geom.size[0]
     # add cylinder contribution
     res[2] += wp.sign(local_dir[2]) * geom.size[1]
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
   elif geomtype == GeomType.ELLIPSOID:
     res = wp.cw_mul(local_dir, geom.size)
     res = wp.normalize(res)
     # transform to ellipsoid
     res = wp.cw_mul(res, geom.size)
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
   elif geomtype == GeomType.CYLINDER:
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
@@ -128,7 +129,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       res[1] = local_dir[1] * scl
     # set result in Z direction
     res[2] = wp.sign(local_dir[2]) * geom.size[1]
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
   elif geomtype == GeomType.MESH:
     max_dist = float(FLOAT_MIN)
     if geom.graphadr == -1 or geom.vertnum < 10:
@@ -170,7 +171,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       sp.vertex_index = geom.graph[vert_globalid + imax]
       sp.point = geom.vert[geom.vertadr + sp.vertex_index]
 
-    sp.point = geom.rot @ sp.point + geom.pos
+    sp.point = quat_to_mat(geom.rot) @ sp.point + geom.pos
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     for i in range(6):
@@ -179,7 +180,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
-    sp.point = geom.rot @ sp.point + geom.pos
+    sp.point = quat_to_mat(geom.rot) @ sp.point + geom.pos
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
@@ -1953,12 +1954,12 @@ def multicontact(
 
   # get all possible face normals for each geom
   if geomtype1 == GeomType.BOX:
-    nnorms1 = _box_normals(nface1, feature_index1, geom1.rot, dir_neg, n1, idx1)
+    nnorms1 = _box_normals(nface1, feature_index1, quat_to_mat(geom1.rot), dir_neg, n1, idx1)
   elif geomtype1 == GeomType.MESH:
     nnorms1 = _mesh_normals(
       nface1,
       feature_index1,
-      geom1.rot,
+      quat_to_mat(geom1.rot),
       geom1.vertadr,
       geom1.mesh_polyadr,
       polynormal,
@@ -1969,12 +1970,12 @@ def multicontact(
       idx1,
     )
   if geomtype2 == GeomType.BOX:
-    nnorms2 = _box_normals(nface2, feature_index2, geom2.rot, dir, n2, idx2)
+    nnorms2 = _box_normals(nface2, feature_index2, quat_to_mat(geom2.rot), dir, n2, idx2)
   elif geomtype2 == GeomType.MESH:
     nnorms2 = _mesh_normals(
       nface2,
       feature_index2,
-      geom2.rot,
+      quat_to_mat(geom2.rot),
       geom2.vertadr,
       geom2.mesh_polyadr,
       polynormal,
@@ -1995,12 +1996,12 @@ def multicontact(
       nnorms1 = 0
       if geomtype1 == GeomType.BOX:
         nnorms1 = _box_edge_normals(
-          nface1, geom1.rot, geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0], n1, endvert
+          nface1, quat_to_mat(geom1.rot), geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0], n1, endvert
         )
       elif geomtype1 == GeomType.MESH:
         nnorms1 = _mesh_edge_normals(
           nface1,
-          geom1.rot,
+          quat_to_mat(geom1.rot),
           geom1.pos,
           geom1.vertadr,
           geom1.mesh_polyadr,
@@ -2027,12 +2028,12 @@ def multicontact(
       nnorms2 = 0
       if geomtype2 == GeomType.BOX:
         nnorms2 = _box_edge_normals(
-          nface2, geom2.rot, geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0], n2, endvert
+          nface2, quat_to_mat(geom2.rot), geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0], n2, endvert
         )
       elif geomtype2 == GeomType.MESH:
         nnorms2 = _mesh_edge_normals(
           nface2,
-          geom2.rot,
+          quat_to_mat(geom2.rot),
           geom2.pos,
           geom2.vertadr,
           geom2.mesh_polyadr,
@@ -2066,10 +2067,10 @@ def multicontact(
   else:
     ind = wp.where(is_edge_contact_geom2, idx1[j], idx1[i])
     if geomtype1 == GeomType.BOX:
-      nface1 = _box_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
+      nface1 = _box_face(quat_to_mat(geom1.rot), geom1.pos, geom1.size, ind, face1)
     elif geomtype1 == GeomType.MESH:
       nface1 = _mesh_face(
-        geom1.rot,
+        quat_to_mat(geom1.rot),
         geom1.pos,
         geom1.vertadr,
         geom1.mesh_polyadr,
@@ -2086,10 +2087,10 @@ def multicontact(
     nface2 = _set_edge(epa_vert2, endvert, face[0], i, face2)
   else:
     if geomtype2 == GeomType.BOX:
-      nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
+      nface2 = _box_face(quat_to_mat(geom2.rot), geom2.pos, geom2.size, idx2[j], face2)
     elif geomtype2 == GeomType.MESH:
       nface2 = _mesh_face(
-        geom2.rot,
+        quat_to_mat(geom2.rot),
         geom2.pos,
         geom2.vertadr,
         geom2.mesh_polyadr,

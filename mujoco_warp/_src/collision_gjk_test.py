@@ -41,8 +41,8 @@ def _geom_dist(
   margin=0.0,
   pos1: wp.vec3 | None = None,
   pos2: wp.vec3 | None = None,
-  mat1: wp.mat33 | None = None,
-  mat2: wp.mat33 | None = None,
+  quat1: wp.quat | None = None,
+  quat2: wp.quat | None = None,
 ):
   # we run multiccd on static scenes so these need to be initialized
   nmaxpolygon = 10 if multiccd else 0
@@ -130,10 +130,10 @@ def _geom_dist(
       geom1.pos = geom_xpos_in[0, gid1]
     else:
       geom1.pos = pos1
-    if wp.static(mat1 == None):
-      geom1.rot = quat_to_mat(geom_xquat_in[0, gid1])
+    if wp.static(quat1 == None):
+      geom1.rot = geom_xquat_in[0, gid1]
     else:
-      geom1.rot = mat1
+      geom1.rot = quat1
     geom1.size = geom_size[0, gid1]
     geom1.margin = margin
     geom1.graphadr = -1
@@ -161,10 +161,10 @@ def _geom_dist(
       geom2.pos = geom_xpos_in[0, gid2]
     else:
       geom2.pos = pos2
-    if wp.static(mat2 == None):
-      geom2.rot = quat_to_mat(geom_xquat_in[0, gid2])
+    if wp.static(quat2 == None):
+      geom2.rot = geom_xquat_in[0, gid2]
     else:
-      geom2.rot = mat2
+      geom2.rot = quat2
     geom2.size = geom_size[0, gid2]
     geom2.margin = margin
     geom2.graphadr = -1

@@ -641,7 +641,7 @@ def ccd_kernel_builder(
             x1_ = wp.vec3(0.0, 0.0, 0.0)
             for i in range(6):
               x1_ += prism[i]
-            x1 += geom1.rot @ (x1_ / 6.0)
+            x1 += quat_to_mat(geom1.rot) @ (x1_ / 6.0)
 
             dist, ncontact, w1, w2, idx = ccd(
               opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
