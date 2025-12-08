@@ -488,9 +488,6 @@ def _fluid_force(
 def _fluid(m: Model, d: Data):
   fluid_applied = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
 
-  print(d.ximat.numpy()[0])
-  print(d.xiquat.numpy()[0])
-
   wp.launch(
     _fluid_force,
     dim=(d.nworld, m.nbody),
