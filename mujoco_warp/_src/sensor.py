@@ -1053,7 +1053,7 @@ def _frame_linvel(
   xipos_in: wp.array2d(dtype=wp.vec3),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1088,7 +1088,7 @@ def _frame_linvel(
     xmatref = math.quat_to_mat(xquat_in[worldid, refid])
   elif reftype == ObjType.GEOM:
     xposref = geom_xpos_in[worldid, refid]
-    xmatref = geom_xmat_in[worldid, refid]
+    xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
     xposref = site_xpos_in[worldid, refid]
     xmatref = site_xmat_in[worldid, refid]
@@ -1159,7 +1159,7 @@ def _frame_angvel(
   xipos_in: wp.array2d(dtype=wp.vec3),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1197,7 +1197,7 @@ def _frame_angvel(
     elif reftype == ObjType.XBODY:
       xmatref = math.quat_to_mat(xquat_in[worldid, refid])
     elif reftype == ObjType.GEOM:
-      xmatref = geom_xmat_in[worldid, refid]
+      xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
     elif reftype == ObjType.SITE:
       xmatref = site_xmat_in[worldid, refid]
     elif reftype == ObjType.CAMERA:
@@ -1262,7 +1262,7 @@ def _sensor_vel(
   xipos_in: wp.array2d(dtype=wp.vec3),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xmat_in: wp.array2d(dtype=wp.mat33),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -1314,7 +1314,7 @@ def _sensor_vel(
       xipos_in,
       xiquat_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       site_xpos_in,
       site_xmat_in,
       cam_xpos_in,
@@ -1342,7 +1342,7 @@ def _sensor_vel(
       xipos_in,
       xiquat_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       site_xpos_in,
       site_xmat_in,
       cam_xpos_in,
@@ -1397,7 +1397,7 @@ def sensor_vel(m: Model, d: Data):
       d.xipos,
       d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
       d.site_xmat,
       d.cam_xpos,
