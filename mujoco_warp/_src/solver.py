@@ -460,10 +460,10 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     dim=d.nworld,
     inputs=[
       m.nv,
-      m.opt.impratio_invsqrt,
       m.opt.tolerance,
       m.opt.ls_tolerance,
       m.opt.ls_iterations,
+      m.opt.impratio_invsqrt,
       m.stat.meaninertia,
       d.ne,
       d.nf,
@@ -648,8 +648,8 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
     linesearch_parallel_fused,
     dim=(d.nworld, m.opt.ls_iterations),
     inputs=[
-      m.opt.impratio_invsqrt,
       m.opt.ls_iterations,
+      m.opt.impratio_invsqrt,
       m.opt.ls_parallel_min_step,
       d.ne,
       d.nf,
