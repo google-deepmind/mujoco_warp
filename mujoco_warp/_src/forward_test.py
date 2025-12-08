@@ -370,7 +370,7 @@ class ForwardTest(parameterized.TestCase):
       return getattr(d, arr), False
 
     for arr in step1_field:
-      if arr in ("geom_xpos", "geom_xmat"):
+      if arr in ("geom_xpos", "geom_xmat", "geom_xquat"):
         # leave geom_xpos and geom_xmat untouched because they have static data
         continue
       attr, _ = _getattr(arr)
