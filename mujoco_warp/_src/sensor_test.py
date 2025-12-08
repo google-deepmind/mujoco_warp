@@ -292,7 +292,6 @@ class SensorTest(parameterized.TestCase):
 
     d.sensordata.zero_()
 
-    mjw.kinematics(m, d)
     mjw.sensor_pos(m, d)
     mjw.sensor_vel(m, d)
     mjw.sensor_acc(m, d)

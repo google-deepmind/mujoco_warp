@@ -90,7 +90,6 @@ class PassiveTest(parameterized.TestCase):
     for arr in (d.qfrc_passive, d.qfrc_fluid):
       arr.zero_()
 
-    mjw.kinematics(m, d)
     mjw.passive(m, d)
 
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
