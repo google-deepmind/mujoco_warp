@@ -617,7 +617,6 @@ def make_data(
     "qM": None,
     "qLD": None,
     "geom_xpos": None,
-    "geom_xmat": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -914,6 +913,11 @@ def get_data_into(
     mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[world_id, i])
   result.ximat[:] = ximat.reshape((-1, 9))
 
+  geom_xmat = np.zeros((mjm.ngeom, 9))
+  for i in range(mjm.ngeom):
+    mujoco.mju_quat2Mat(geom_xmat[i], d.geom_xquat.numpy()[world_id, i])
+  result.geom_xmat[:] = geom_xmat.reshape((-1, 9))
+
   result.solver_niter[0] = d.solver_niter.numpy()[world_id]
   result.ncon = ncon
   result.ne = ne
@@ -953,7 +957,6 @@ def get_data_into(
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
-  result.geom_xmat[:] = d.geom_xmat.numpy()[world_id].reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
   result.site_xmat[:] = d.site_xmat.numpy()[world_id].reshape((-1, 9))
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]

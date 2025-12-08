@@ -131,7 +131,7 @@ class IOTest(parameterized.TestCase):
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
+      #"geom_xmat",
       "site_xpos",
       "site_xmat",
       "cam_xpos",
