@@ -173,6 +173,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     sp.point = geom.rot @ sp.point + geom.pos
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
+    # TODO(kbayes): Support edge prisms
     sp.vertex_index = wp.where(local_dir[2] < 0, -2, -3)
     for i in range(6):
       vert = geom.hfprism[i]
@@ -903,12 +904,14 @@ def _epa_witness(
   i2 = pt.vert_index1[face[1]]
   i3 = pt.vert_index1[face[2]]
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
+    # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = geom1.rot[:, 2]
     a = geom1.hfprism[3]
     b = geom1.hfprism[4]
     c = geom1.hfprism[5]
     x2 = wp.normalize(x2)
 
+    # TODO(kbayes): Support cases where geom2 is larger than the height field
     sp = _support(geom2, geomtype2, x2)
     x2 = sp.point
 
