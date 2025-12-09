@@ -18,7 +18,8 @@ from typing import Optional, Tuple
 import warp as wp
 
 from .math import safe_div
-from .math import quat_to_mat
+from .math import quat_inv
+from .math import rot_vec_quat
 from .types import MJ_MINVAL
 from .types import Data
 from .types import GeomType
@@ -41,12 +42,10 @@ def _ray_map(pos: wp.vec3, quat: wp.quat, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
   Returns:
       3D point and 3D direction in local geom frame
   """
-  matT = wp.transpose(quat_to_mat(quat))
-  lpnt = matT @ (pnt - pos)
-  lvec = matT @ vec
-
+  quat_inv = quat_inv(quat)
+  lpnt = rot_vec_quat(pnt - pos, quat_inv)
+  lvec = rot_vec_quat(vec, quat_inv)
   return lpnt, lvec
-
 
 @wp.func
 def _ray_eliminate(
@@ -416,18 +415,17 @@ def _ray_hfield(
   size = hfield_size[hid]
   adr = hfield_adr[hid]
 
-  mat = quat_to_mat(quat)
-  mat_col = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+  normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), quat)
 
   # compute size and pos of base box
   base_scale = size[3] * 0.5
   base_size = wp.vec3(size[0], size[1], base_scale)
-  base_pos = pos + mat_col * base_scale
+  base_pos = pos + normal * base_scale
 
   # compute size and pos of top box
   top_scale = size[2] * 0.5
   top_size = wp.vec3(size[0], size[1], top_scale)
-  top_pos = pos + mat_col * top_scale
+  top_pos = pos + normal * top_scale
 
   # init: intersection with base box
   x, _ = _ray_box(base_pos, quat, base_size, pnt, vec)
