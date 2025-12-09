@@ -54,13 +54,13 @@ def _plane_filter(
 ) -> bool:
   if size1 == 0.0:
     # geom1 is a plane
-    mat = quat_to_mat(xquat1)
-    dist = wp.dot(xpos2 - xpos1, wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2]))
+    normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), xquat1)
+    dist = wp.dot(xpos2 - xpos1, normal)
     return dist <= size2 + wp.max(margin1, margin2)
   elif size2 == 0.0:
     # geom2 is a plane
-    mat = quat_to_mat(xquat2)
-    dist = wp.dot(xpos1 - xpos2, wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2]))
+    normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), xquat2)
+    dist = wp.dot(xpos1 - xpos2, normal)
     return dist <= size1 + wp.max(margin1, margin2)
 
   return True
