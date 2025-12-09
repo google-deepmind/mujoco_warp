@@ -22,6 +22,7 @@ from .types import GeomType
 from .types import mat43
 from .types import mat63
 from .math import quat_to_mat
+from .math import rot_vec_quat
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -1449,7 +1450,7 @@ def _mesh_normals(
   # In:
   feature_dim: int,
   feature_index: wp.vec3i,
-  mat: wp.mat33,
+  rot: wp.quat,
   vertadr: int,
   polyadr: int,
   polynormal: wp.array(dtype=wp.vec3),
@@ -1482,7 +1483,7 @@ def _mesh_normals(
       return 0
 
     # three vertices on mesh define a unique face
-    normals_out[0] = mat @ polynormal[polyadr + faceset[0]]
+    normals_out[0] = rot_vec_quat(polynormal[polyadr + faceset[0]], rot)
     indices_out[0] = faceset[0]
     return 1
 
@@ -1498,7 +1499,7 @@ def _mesh_normals(
     if n == 0:
       return 0
     for i in range(n):
-      normals_out[i] = mat @ polynormal[polyadr + edgeset[i]]
+      normals_out[i] = rot_vec_quat(polynormal[polyadr + edgeset[i]], rot)
       indices_out[i] = edgeset[i]
     return n
 
@@ -1507,7 +1508,7 @@ def _mesh_normals(
     v1_num = polymapnum[vertadr + v1]
     for i in range(v1_num):
       index = polymap[v1_adr + i]
-      normals_out[i] = mat @ polynormal[polyadr + index]
+      normals_out[i] = rot_vec_quat(polynormal[polyadr + index], rot)
       indices_out[i] = index
     return v1_num
   return 0
@@ -1971,7 +1972,7 @@ def multicontact(
     nnorms1 = _mesh_normals(
       nface1,
       feature_index1,
-      quat_to_mat(geom1.rot),
+      geom1.rot,
       geom1.vertadr,
       geom1.mesh_polyadr,
       polynormal,
@@ -1987,7 +1988,7 @@ def multicontact(
     nnorms2 = _mesh_normals(
       nface2,
       feature_index2,
-      quat_to_mat(geom2.rot),
+      geom2.rot,
       geom2.vertadr,
       geom2.mesh_polyadr,
       polynormal,
