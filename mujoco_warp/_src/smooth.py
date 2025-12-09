@@ -1920,9 +1920,9 @@ def _transmission(
     # reference site undefined
     if refid == -1:
       # wrench: gear expressed in global frame
-      site_xmat = math.quat_to_mat(site_xquat_in[worldid, siteid])
-      wrench_translation = site_xmat @ gear_translation
-      wrench_rotation = site_xmat @ gear_rotational
+      site_xquat = site_xquat_in[worldid, siteid]
+      wrench_translation = math.rot_vec_quat(gear_translation, site_xquat)
+      wrench_rotation = math.rot_vec_quat(gear_rotational, site_xquat)
 
       # moment: global Jacobian projected on wrench
       # TODO(team): parallelize
