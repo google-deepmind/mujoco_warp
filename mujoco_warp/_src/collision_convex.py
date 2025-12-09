@@ -26,6 +26,9 @@ from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
 from .math import quat_to_mat
+from .math import rot_vec_quat
+from .math import quat_inv
+from .math import mul_quat
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR
@@ -112,10 +115,9 @@ def _hfield_filter(
   margin_id = worldid % geom_margin.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
-  mat1 = quat_to_mat(geom_xquat_in[worldid, g1])
-  mat1T = wp.transpose(mat1)
   pos2 = geom_xpos_in[worldid, g2]
-  pos = mat1T @ (pos2 - pos1)
+  rot1_inv = quat_inv(geom_xquat_in[worldid, g1])
+  pos = rot_vec_quat(pos2 - pos1, rot1_inv)
   r2 = geom_rbound[rbound_id, g2]
 
   # TODO(team): margin?
@@ -133,9 +135,6 @@ def _hfield_filter(
   if -size1[3] > pos[2] + r2 + margin:  # down
     return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
 
-  mat2 = quat_to_mat(geom_xquat_in[worldid, g2])
-  mat = mat1T @ mat2
-
   # aabb for geom in height field frame
   xmax = -MJ_MAXVAL
   ymax = -MJ_MAXVAL
@@ -148,15 +147,18 @@ def _hfield_filter(
   center2 = geom_aabb[aabb_id, g2, 0]
   size2 = geom_aabb[aabb_id, g2, 1]
 
-  pos += mat1T @ center2
+  pos += rot_vec_quat(center2, rot1_inv)
 
   sign = wp.vec2(-1.0, 1.0)
+
+  rot2 = geom_xquat_in[worldid, g2]
+  rot12 = mul_quat(rot1_inv, rot2)
 
   for i in range(2):
     for j in range(2):
       for k in range(2):
         corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-        corner_hf = mat @ corner_local
+        corner_hf = rot_vec_quat(corner_local, rot12)
 
         if corner_hf[0] > xmax:
           xmax = corner_hf[0]
