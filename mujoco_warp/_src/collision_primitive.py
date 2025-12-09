@@ -736,8 +736,7 @@ def sphere_capsule_wrapper(
 ):
   """Calculates one contact between a sphere and a capsule."""
   # capsule axis
-  mat = quat_to_mat(cap.rot)
-  axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+  axis = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), cap.rot)
 
   dist, pos, normal = sphere_capsule(sphere.pos, sphere.size[0], cap.pos, axis, cap.size[0], cap.size[1])
 
