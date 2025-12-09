@@ -905,7 +905,7 @@ def _epa_witness(
     a = geom1.hfprism[3]
     b = geom1.hfprism[4]
     c = geom1.hfprism[5]
-    wp.normalize(x2)
+    x2 = wp.normalize(x2)
 
     sp = _support(geom2, geomtype2, x2)
     x2 = sp.point
@@ -918,8 +918,7 @@ def _epa_witness(
       p = wp.where(coordinates[1] > 0, b, p)
       p = wp.where(coordinates[0] > 0, a, p)
       x1 = x2 - wp.dot(x2 - p, n) * n
-    diff = x1 - x2
-    return x1, x2, -wp.sqrt(wp.dot(diff, diff))
+    return x1, x2, -wp.norm_l2(x1 - x2)
 
   # face on geom 1
   v1 = pt.vert1[pt.face[face_idx][0]]
