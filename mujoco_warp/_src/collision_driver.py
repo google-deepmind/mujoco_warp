@@ -84,16 +84,16 @@ def _aabb_filter(
   margin2: float,
   xpos1: wp.vec3,
   xpos2: wp.vec3,
-  xmat1: wp.mat33,
-  xmat2: wp.mat33,
+  xquat1: wp.quat,
+  xquat2: wp.quat,
 ) -> bool:
   """Axis aligned boxes collision.
 
   references: see Ericson, Real-time Collision Detection section 4.2.
               filterBox: filter contact based on global AABBs.
   """
-  center1 = xmat1 @ center1 + xpos1
-  center2 = xmat2 @ center2 + xpos2
+  center1 = rot_vec_quat(center1, xquat1) + xpos1
+  center2 = rot_vec_quat(center2, xquat2) + xpos2
 
   margin = wp.max(margin1, margin2)
 
@@ -117,10 +117,10 @@ def _aabb_filter(
     for j in range(2):
       for k in range(2):
         corner1 = wp.vec3(sign[i] * size1[0], sign[j] * size1[1], sign[k] * size1[2])
-        pos1 = xmat1 @ corner1
+        pos1 = rot_vec_quat(corner1, xquat1)
 
         corner2 = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-        pos2 = xmat2 @ corner2
+        pos2 = rot_vec_quat(corner2, xquat2)
 
         if pos1[0] > max_x1:
           max_x1 = pos1[0]
@@ -275,7 +275,7 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
         if not _sphere_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2):
           return False
       if wp.static(opt_broadphase_filter & BroadphaseFilter.AABB):
-        if not _aabb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
+        if not _aabb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xquat1, xquat2):
           return False
       if wp.static(opt_broadphase_filter & BroadphaseFilter.OBB):
         if not _obb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xquat1, xquat2):
