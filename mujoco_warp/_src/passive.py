@@ -302,8 +302,6 @@ def _fluid_force(
 
   # Body kinematics
   xipos = xipos_in[worldid, bodyid]
-  rot = math.quat_to_mat(xiquat_in[worldid, bodyid])
-  rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   ang_global = wp.spatial_top(cvel)
   lin_global = wp.spatial_bottom(cvel)
@@ -325,17 +323,17 @@ def _fluid_force(
 
       size = geom_size[worldid % geom_size.shape[0], geomid]
       semiaxes = _geom_semiaxes(size, geom_type[geomid])
-      geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
-      geom_rotT = wp.transpose(geom_rot)
       geom_pos = geom_xpos_in[worldid, geomid]
+      geom_rot = geom_xquat_in[worldid, geomid]
+      geom_rot_inv = math.quat_inv(geom_rot)
 
       lin_point = lin_com + wp.cross(ang_global, geom_pos - xipos)
 
-      l_ang = geom_rotT @ ang_global
-      l_lin = geom_rotT @ lin_point
+      l_ang = math.rot_vec_quat(ang_global, geom_rot_inv)
+      l_lin = math.rot_vec_quat(lin_point, geom_rot_inv)
 
       if wind[0] or wind[1] or wind[2]:
-        l_lin -= geom_rotT @ wind
+        l_lin -= math.rot_vec_quat(wind, geom_rot_inv)
 
       lfrc_torque = wp.vec3(0.0)
       lfrc_force = wp.vec3(0.0)
@@ -431,17 +429,20 @@ def _fluid_force(
       lfrc_force *= coef
 
       # map force/torque from local to world frame: lfrc -> bfrc
-      torque_global += geom_rot @ lfrc_torque
-      force_global += geom_rot @ lfrc_force
+      torque_global += math.rot_vec_quat(lfrc_torque, geom_rot)
+      force_global += math.rot_vec_quat(lfrc_force, geom_rot)
 
     fluid_applied_out[worldid, bodyid] = wp.spatial_vector(force_global, torque_global)
     return
 
-  l_ang = rotT @ ang_global
-  l_lin = rotT @ lin_com
+  rot = xiquat_in[worldid, bodyid]
+  rot_inv = math.quat_inv(rot)
+
+  l_ang = math.rot_vec_quat(ang_global, rot_inv)
+  l_lin = math.rot_vec_quat(lin_com, rot_inv)
 
   if wind[0] or wind[1] or wind[2]:
-    l_lin -= rotT @ wind
+    l_lin -= math.rot_vec_quat(wind, rot_inv)
 
   lfrc_torque = wp.vec3(0.0)
   lfrc_force = wp.vec3(0.0)
@@ -479,8 +480,8 @@ def _fluid_force(
       box2 * (box0_pow4 + box1_pow4) * wp.abs(l_ang[2]) * l_ang[2] * scl,
     )
 
-  torque_global = rot @ lfrc_torque
-  force_global = rot @ lfrc_force
+  torque_global = math.rot_vec_quat(lfrc_torque, rot)
+  force_global = math.rot_vec_quat(lfrc_force, rot)
 
   fluid_applied_out[worldid, bodyid] = wp.spatial_vector(force_global, torque_global)
 
