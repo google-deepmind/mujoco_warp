@@ -1409,8 +1409,7 @@ def capsule_box_wrapper(
 ):
   """Calculates contacts between a capsule and a box."""
   # Extract capsule axis
-  mat = quat_to_mat(cap.rot)
-  axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+  axis = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), cap.rot)
 
   # Call the core function to get contact geometry
   dist, pos, normal = capsule_box(
