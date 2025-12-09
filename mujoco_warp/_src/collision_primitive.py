@@ -189,9 +189,9 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   contact_count = int(0)
 
   # get points in the convex frame
-  mat_transposed = wp.transpose(quat_to_mat(convex.rot))
-  plane_pos_local = mat_transposed @ (plane_pos - convex.pos)
-  n = mat_transposed @ plane_normal
+  rot_inv = quat_inv(convex.rot)
+  plane_pos_local = rot_vec_quat(plane_pos - convex.pos, rot_inv)
+  n = rot_vec_quat(plane_normal, rot_inv)
 
   # Store indices in vec4
   indices = wp.vec4i(-1, -1, -1, -1)
