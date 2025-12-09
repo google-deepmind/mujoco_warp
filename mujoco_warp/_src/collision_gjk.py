@@ -877,10 +877,12 @@ def _delete_face(pt: Polytope, face_id: int) -> int:
 def _epa_witness(
   pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
 ) -> Tuple[wp.vec3, wp.vec3, float]:
+  face = pt.face[face_idx]
+
   # compute affine coordinates for witness points on plane defined by face
-  v1 = pt.vert[pt.face[face_idx][0]]
-  v2 = pt.vert[pt.face[face_idx][1]]
-  v3 = pt.vert[pt.face[face_idx][2]]
+  v1 = pt.vert[face[0]]
+  v2 = pt.vert[face[1]]
+  v3 = pt.vert[face[2]]
 
   coordinates = _tri_affine_coord(v1, v2, v3, pt.face_pr[face_idx])
   l1 = coordinates[0]
@@ -888,18 +890,18 @@ def _epa_witness(
   l3 = coordinates[2]
 
   # face on geom 2
-  v1 = pt.vert2[pt.face[face_idx][0]]
-  v2 = pt.vert2[pt.face[face_idx][1]]
-  v3 = pt.vert2[pt.face[face_idx][2]]
+  v1 = pt.vert2[face[0]]
+  v2 = pt.vert2[face[1]]
+  v3 = pt.vert2[face[2]]
   x2 = wp.vec3()
   x2[0] = v1[0] * l1 + v2[0] * l2 + v3[0] * l3
   x2[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
   x2[2] = v1[2] * l1 + v2[2] * l2 + v3[2] * l3
 
   # correct witness points for hfield geoms
-  i1 = pt.vert_index1[pt.face[face_idx][0]]
-  i2 = pt.vert_index1[pt.face[face_idx][1]]
-  i3 = pt.vert_index1[pt.face[face_idx][2]]
+  i1 = pt.vert_index1[face[0]]
+  i2 = pt.vert_index1[face[1]]
+  i3 = pt.vert_index1[face[2]]
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
     n = geom1.rot[:, 2]
     a = geom1.hfprism[3]
@@ -921,9 +923,9 @@ def _epa_witness(
     return x1, x2, -wp.norm_l2(x1 - x2)
 
   # face on geom 1
-  v1 = pt.vert1[pt.face[face_idx][0]]
-  v2 = pt.vert1[pt.face[face_idx][1]]
-  v3 = pt.vert1[pt.face[face_idx][2]]
+  v1 = pt.vert1[face[0]]
+  v2 = pt.vert1[face[1]]
+  v3 = pt.vert1[face[2]]
   x1 = wp.vec3()
   x1[0] = v1[0] * l1 + v2[0] * l2 + v3[0] * l3
   x1[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
