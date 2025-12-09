@@ -808,10 +808,8 @@ def capsule_capsule_wrapper(
 ):
   """Calculates contacts between two capsules."""
   # capsule axes
-  mat1 = quat_to_mat(cap1.rot)
-  cap1_axis = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
-  mat2 = quat_to_mat(cap2.rot)
-  cap2_axis = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])
+  cap1_axis = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), cap1.rot)
+  cap2_axis = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), cap2.rot)
 
   dist, pos, normal = capsule_capsule(
     cap1.pos,
