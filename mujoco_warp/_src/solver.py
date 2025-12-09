@@ -291,10 +291,10 @@ def _eval(
 def linesearch_iterative(
   # Model:
   nv: int,
-  opt_impratio: wp.array(dtype=float),
   opt_tolerance: wp.array(dtype=float),
   opt_ls_tolerance: wp.array(dtype=float),
   opt_ls_iterations: int,
+  opt_impratio_invsqrt: wp.array(dtype=float),
   stat_meaninertia: float,
   # Data in:
   ne_in: wp.array(dtype=int),
@@ -321,7 +321,7 @@ def linesearch_iterative(
   if efc_done_in[worldid]:
     return
 
-  impratio = opt_impratio[worldid % opt_impratio.shape[0]]
+  impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
   efc_type = efc_type_in[worldid]
   efc_id = efc_id_in[worldid]
   efc_D = efc_D_in[worldid]
@@ -335,7 +335,6 @@ def linesearch_iterative(
   ne_clip = min(njmax_in, ne_in[worldid])
   nef_clip = min(njmax_in, ne_clip + nf_in[worldid])
   nefc_clip = min(njmax_in, nefc_in[worldid])
-  impratio_invsqrt = 1.0 / wp.sqrt(impratio)
 
   # Calculate p0
   snorm = wp.math.sqrt(efc_search_dot_in[worldid])
@@ -461,10 +460,10 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
     dim=d.nworld,
     inputs=[
       m.nv,
-      m.opt.impratio,
       m.opt.tolerance,
       m.opt.ls_tolerance,
       m.opt.ls_iterations,
+      m.opt.impratio_invsqrt,
       m.stat.meaninertia,
       d.ne,
       d.nf,
@@ -496,8 +495,8 @@ def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> f
 @wp.kernel
 def linesearch_parallel_fused(
   # Model:
-  opt_impratio: wp.array(dtype=float),
   opt_ls_iterations: int,
+  opt_impratio_invsqrt: wp.array(dtype=float),
   opt_ls_parallel_min_step: float,
   # Data in:
   ne_in: wp.array(dtype=int),
@@ -569,7 +568,7 @@ def linesearch_parallel_fused(
         continue
 
       friction = contact_friction_in[conid]
-      mu = friction[0] / wp.sqrt(opt_impratio[worldid % opt_impratio.shape[0]])
+      mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
       # unpack quad
       efcid1 = contact_efc_address_in[conid, 1]
@@ -649,8 +648,8 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
     linesearch_parallel_fused,
     dim=(d.nworld, m.opt.ls_iterations),
     inputs=[
-      m.opt.impratio,
       m.opt.ls_iterations,
+      m.opt.impratio_invsqrt,
       m.opt.ls_parallel_min_step,
       d.ne,
       d.nf,
@@ -768,7 +767,7 @@ def linesearch_prepare_gauss(
 @wp.kernel
 def linesearch_prepare_quad(
   # Model:
-  opt_impratio: wp.array(dtype=float),
+  opt_impratio_invsqrt: wp.array(dtype=float),
   # Data in:
   nefc_in: wp.array(dtype=int),
   contact_friction_in: wp.array(dtype=types.vec5),
@@ -814,7 +813,7 @@ def linesearch_prepare_quad(
 
     dim = contact_dim_in[conid]
     friction = contact_friction_in[conid]
-    mu = friction[0] / wp.sqrt(opt_impratio[worldid])
+    mu = friction[0] * opt_impratio_invsqrt[worldid]
 
     u0 = Jaref * mu
     v0 = jv * mu
@@ -949,7 +948,7 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
     linesearch_prepare_quad,
     dim=(d.nworld, d.njmax),
     inputs=[
-      m.opt.impratio,
+      m.opt.impratio_invsqrt,
       d.nefc,
       d.contact.friction,
       d.contact.dim,
@@ -1061,7 +1060,7 @@ def update_constraint_init_cost(
 @wp.kernel
 def update_constraint_efc(
   # Model:
-  opt_impratio: wp.array(dtype=float),
+  opt_impratio_invsqrt: wp.array(dtype=float),
   # Data in:
   ne_in: wp.array(dtype=int),
   nf_in: wp.array(dtype=int),
@@ -1133,7 +1132,7 @@ def update_constraint_efc(
 
     dim = contact_dim_in[conid]
     friction = contact_friction_in[conid]
-    mu = friction[0] / wp.sqrt(opt_impratio[worldid])
+    mu = friction[0] * opt_impratio_invsqrt[worldid]
 
     efcid0 = contact_efc_address_in[conid, 0]
     if efcid0 < 0:
@@ -1261,7 +1260,7 @@ def _update_constraint(m: types.Model, d: types.Data):
     update_constraint_efc,
     dim=(d.nworld, d.njmax),
     inputs=[
-      m.opt.impratio,
+      m.opt.impratio_invsqrt,
       d.ne,
       d.nf,
       d.nefc,
@@ -1512,7 +1511,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 @wp.kernel
 def update_gradient_JTCJ(
   # Model:
-  opt_impratio: wp.array(dtype=float),
+  opt_impratio_invsqrt: wp.array(dtype=float),
   dof_tri_row: wp.array(dtype=int),
   dof_tri_col: wp.array(dtype=int),
   # Data in:
@@ -1564,7 +1563,7 @@ def update_gradient_JTCJ(
       continue
 
     fri = contact_friction_in[conid]
-    mu = math.safe_div(fri[0], wp.sqrt(opt_impratio[worldid]))
+    mu = fri[0] * opt_impratio_invsqrt[worldid]
 
     mu2 = mu * mu
     dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
@@ -1800,7 +1799,7 @@ def _update_gradient(m: types.Model, d: types.Data):
         update_gradient_JTCJ,
         dim=(dim_block, m.dof_tri_row.size),
         inputs=[
-          m.opt.impratio,
+          m.opt.impratio_invsqrt,
           m.dof_tri_row,
           m.dof_tri_col,
           d.contact.dist,

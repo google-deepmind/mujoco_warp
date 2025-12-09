@@ -88,18 +88,24 @@ def main(argv: Sequence[str]):
   # TODO(team): robot without assets (eg, humanoid)
   subprocess.run(f"cp -r {os.path.dirname(robot_path)}/assets {combined_assets_path}", shell=True, text=True)
 
-  # create xml
+  # robot position offset
+  offset = [1.5, -1.5, 0.0]
+
+  # get specs
   spec = mujoco.MjSpec.from_file(input_path.as_posix())
-  spec_xml = spec.to_xml().replace("assets/", f"{combined_assets_path}/assets/")
-  spec = mujoco.MjSpec.from_string(spec_xml)
   robot = mujoco.MjSpec.from_file(robot_path.as_posix())
 
+  # update robot keyframe
+  robot.keys[0].qpos[0] += offset[0]
+  robot.keys[0].qpos[1] += offset[1]
+  robot.keys[0].qpos[2] += offset[2]
+
   # add robot to environment
-  attach_frame = spec.worldbody.add_frame(pos=[1.5, -1.5, 0.0])
-  spec.attach(robot, frame=attach_frame, prefix="robot")
-  spec_xml = spec.to_xml()  # write to file
+  frame = spec.worldbody.add_frame(pos=offset)
+  frame.attach_body(robot.body("pelvis"), "robot")
 
   ## Saving the model to xml
+  spec_xml = spec.to_xml().replace("assets/", f"{combined_assets_path}/assets/")
   with open(_OUTPUT.value, "w", encoding="utf-8") as f:
     f.write(spec_xml)
 

@@ -641,7 +641,6 @@ class Option:
 
   Attributes:
     timestep: simulation timestep
-    impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
     ccd_tolerance: convex collision detection tolerance
@@ -662,6 +661,7 @@ class Option:
     sdf_iterations: max number of iterations for gradient descent
 
   warp only fields:
+    impratio_invsqrt: ratio of friction-to-normal contact impedance (stored as inverse square root)
     is_sparse: whether to use sparse representations
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
@@ -677,7 +677,6 @@ class Option:
   """
 
   timestep: array("*", float)
-  impratio: array("*", float)
   tolerance: array("*", float)
   ls_tolerance: array("*", float)
   ccd_tolerance: array("*", float)
@@ -697,6 +696,7 @@ class Option:
   sdf_initpoints: int
   sdf_iterations: int
   # warp only fields:
+  impratio_invsqrt: array("*", float)
   is_sparse: bool
   ls_parallel: bool
   ls_parallel_min_step: float

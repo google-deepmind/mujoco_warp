@@ -580,13 +580,14 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
+  cnt = int(1)
   coordinates = wp.vec4()  # barycentric coordinates
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
 
-  for k in range(gjk_iterations):
+  for _ in range(gjk_iterations):
     xnorm = wp.dot(x_k, x_k)
     # TODO(kbayes): determine new constant here
     if xnorm < 1e-12:
@@ -663,6 +664,11 @@ def gjk(
     # we have a tetrahedron containing the origin so return early
     if n == 4:
       break
+
+    cnt += 1
+
+  if cnt == gjk_iterations:
+    wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   result = GJKResult()
 
@@ -1178,6 +1184,7 @@ def _polytope4(
 def _epa(
   # In:
   tolerance: float,
+  gjk_iterations: int,
   epa_iterations: int,
   pt: Polytope,
   geom1: Geom,
@@ -1192,9 +1199,10 @@ def _epa(
   idx = int(-1)
   pidx = int(-1)
   epsilon = wp.where(is_discrete, 1e-15, tolerance)
+  cnt = int(1)
 
-  for k in range(epa_iterations):
-    pidx = int(idx)
+  for _ in range(epa_iterations):
+    pidx = idx
     idx = int(-1)
 
     # find the face closest to the origin (lower bound for penetration depth)
@@ -1284,6 +1292,10 @@ def _epa(
 
     # clear horizon
     pt.nhorizon = 0
+    cnt += 1
+
+  if cnt == epa_iterations:
+    wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   # return from valid face
   if idx > -1:
@@ -2135,7 +2147,8 @@ def ccd(
   # In:
   tolerance: float,
   cutoff: float,
-  ccd_iterations: int,
+  gjk_iterations: int,
+  epa_iterations: int,
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
@@ -2178,7 +2191,7 @@ def ccd(
   # special handling for sphere and capsule (shrink to point and line respectively)
   if size1 + size2 > 0.0:
     cutoff += full_margin1 + full_margin2
-    result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
+    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
     # shallow penetration, inflate contact
     if result.dist > tolerance:
@@ -2194,7 +2207,7 @@ def ccd(
     geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
     cutoff -= full_margin1 + full_margin2
 
-  result = gjk(tolerance, ccd_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
+  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
@@ -2280,7 +2293,7 @@ def ccd(
   if pt.status:
     return result.dist, 1, result.x1, result.x2, -1
 
-  dist, x1, x2, idx = _epa(tolerance, ccd_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
+  dist, x1, x2, idx = _epa(tolerance, gjk_iterations, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
   return dist, 1, x1, x2, idx
