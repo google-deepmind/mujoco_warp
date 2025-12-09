@@ -118,7 +118,7 @@ def _magnetometer(
   objid: int,
 ) -> wp.vec3:
   magnetic = opt_magnetic[worldid % opt_magnetic.shape[0]]
-  return wp.transpose(math.quat_to_mat(site_xquat_in[worldid, objid])) @ magnetic
+  return math.rot_vec_quat(magnetic, math.quat_inv(site_xquat_in[worldid, objid]))
 
 
 @wp.func
@@ -204,10 +204,10 @@ def _sensor_rangefinder_init(
   sensorid = sensor_rangefinder_adr[rfid]
   objid = sensor_objid[sensorid]
   site_xpos = site_xpos_in[worldid, objid]
-  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
+  site_normal = math.rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), site_xquat_in[worldid, objid])
 
   pnt_out[worldid, rfid] = site_xpos
-  vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+  vec_out[worldid, rfid] = site_normal
 
 
 @wp.func
