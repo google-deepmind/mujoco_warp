@@ -1833,8 +1833,7 @@ def _transmission(
     idslider = trnid[1]
     gear0 = gear[0]
     rod = actuator_cranklength[actid]
-    site_xmat = math.quat_to_mat(site_xquat_in[worldid, idslider])
-    axis = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
+    axis = math.rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), site_xquat_in[worldid, idslider])
     site_xpos_id = site_xpos_in[worldid, id]
     site_xpos_idslider = site_xpos_in[worldid, idslider]
     vec = site_xpos_id - site_xpos_idslider
@@ -1974,16 +1973,16 @@ def _transmission(
 
       site_xpos = site_xpos_in[worldid, siteid]
       ref_xpos = site_xpos_in[worldid, refid]
-      ref_xmat = math.quat_to_mat(site_xquat_in[worldid, refid])
+      ref_xquat = site_xquat_in[worldid, refid]
 
       length = float(0.0)
 
       if translational_transmission:
         # vec: site position in reference site frame
-        vec = wp.transpose(ref_xmat) @ (site_xpos - ref_xpos)
+        vec = math.rot_vec_quat(site_xpos - ref_xpos, math.quat_inv(ref_xquat))
         length += wp.dot(vec, gear_translation)
 
-        wrench_translation = ref_xmat @ gear_translation
+        wrench_translation = math.rot_vec_quat(gear_translation, ref_xquat)
 
       if rotational_transmission:
         # get site and refsite quats from parent bodies (avoid converting matrix to quat)
@@ -1994,7 +1993,7 @@ def _transmission(
         vec = math.quat_sub(quat, refquat)
         length += wp.dot(vec, gear_rotational)
 
-        wrench_rotation = ref_xmat @ gear_rotational
+        wrench_rotation = math.rot_vec_quat(gear_rotational, ref_xquat)
 
       actuator_length_out[worldid, actid] = length
 
