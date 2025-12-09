@@ -1260,8 +1260,7 @@ def plane_cylinder_wrapper(
 ):
   """Calculates contacts between a cylinder and a plane."""
   # cylinder axis
-  mat = quat_to_mat(cylinder.rot)
-  cylinder_axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+  cylinder_axis = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), cylinder.rot)
 
   dist, pos, normal = plane_cylinder(
     plane.normal,
