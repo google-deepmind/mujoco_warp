@@ -22,6 +22,7 @@ from .collision_primitive import primitive_narrowphase
 from .collision_sdf import sdf_narrowphase
 from .math import upper_tri_index
 from .math import quat_to_mat
+from .math import rot_vec_quat
 from .types import MJ_MAXVAL
 from .types import BroadphaseFilter
 from .types import BroadphaseType
@@ -185,8 +186,8 @@ def _obb_filter(
   margin2: float,
   xpos1: wp.vec3,
   xpos2: wp.vec3,
-  xmat1: wp.mat33,
-  xmat2: wp.mat33,
+  xquat1: wp.quat,
+  xquat2: wp.quat,
 ) -> bool:
   """Oriented bounding boxes collision (see Gottschalk et al.), see mj_collideOBB."""
   margin = wp.max(margin1, margin2)
@@ -197,8 +198,11 @@ def _obb_filter(
   radius = wp.vec2()
 
   # compute centers in local coordinates
-  xcenter[0] = xmat1 @ center1 + xpos1
-  xcenter[1] = xmat2 @ center2 + xpos2
+  xcenter[0] = rot_vec_quat(center1, xquat1) + xpos1
+  xcenter[1] = rot_vec_quat(center2, xquat2) + xpos2
+
+  xmat1 = quat_to_mat(xquat1)
+  xmat2 = quat_to_mat(xquat2)
 
   # compute normals in global coordinates
   normal[0] = wp.vec3(xmat1[0, 0], xmat1[1, 0], xmat1[2, 0])
@@ -260,7 +264,8 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
     margin_id = worldid % ngeom_margin if wp.static(ngeom_margin > 1) else 0
     margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
-    xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
+    xquat1, xquat2 = geom_xquat_in[worldid, geom1], geom_xquat_in[worldid, geom2]
+    xmat1, xmat2 = quat_to_mat(xquat1), quat_to_mat(xquat2)
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
@@ -273,7 +278,7 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
         if not _aabb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
           return False
       if wp.static(opt_broadphase_filter & BroadphaseFilter.OBB):
-        if not _obb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xmat1, xmat2):
+        if not _obb_filter(center1, center2, size1, size2, margin1, margin2, xpos1, xpos2, xquat1, xquat2):
           return False
 
     return True
