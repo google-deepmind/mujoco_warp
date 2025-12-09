@@ -599,7 +599,7 @@ def muscle_dynamics(control: float, activation: float, prm: vec10) -> float:
 
 
 @wp.func
-def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point: wp.vec3) -> bool:
+def inside_geom(pos: wp.vec3, quat: wp.quat, size: wp.vec3, geomtype: int, point: wp.vec3) -> bool:
   """Return True if point is inside primitive geom, False otherwise."""
   # vector from geom to point
   vec = point - pos
@@ -609,6 +609,7 @@ def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point
     return wp.dot(vec, vec) < size[0] * size[0]
 
   # rotate into local frame
+  mat = math.quat_to_mat(quat)
   plocal = wp.transpose(mat) @ vec
 
   # handle other geom types

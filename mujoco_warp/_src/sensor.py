@@ -112,13 +112,13 @@ def _magnetometer(
   # Model:
   opt_magnetic: wp.array(dtype=wp.vec3),
   # Data in:
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   worldid: int,
   objid: int,
 ) -> wp.vec3:
   magnetic = opt_magnetic[worldid % opt_magnetic.shape[0]]
-  return wp.transpose(site_xmat_in[worldid, objid]) @ magnetic
+  return wp.transpose(math.quat_to_mat(site_xquat_in[worldid, objid])) @ magnetic
 
 
 @wp.func
@@ -195,7 +195,7 @@ def _sensor_rangefinder_init(
   sensor_rangefinder_adr: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   # Out:
   pnt_out: wp.array2d(dtype=wp.vec3),
   vec_out: wp.array2d(dtype=wp.vec3),
@@ -204,7 +204,7 @@ def _sensor_rangefinder_init(
   sensorid = sensor_rangefinder_adr[rfid]
   objid = sensor_objid[sensorid]
   site_xpos = site_xpos_in[worldid, objid]
-  site_xmat = site_xmat_in[worldid, objid]
+  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
 
   pnt_out[worldid, rfid] = site_xpos
   vec_out[worldid, rfid] = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
@@ -285,7 +285,7 @@ def _frame_pos(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
@@ -322,7 +322,7 @@ def _frame_pos(
     xmat_ref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
     xpos_ref = site_xpos_in[worldid, refid]
-    xmat_ref = site_xmat_in[worldid, refid]
+    xmat_ref = math.quat_to_mat(site_xquat_in[worldid, refid])
   elif reftype == ObjType.CAMERA:
     xpos_ref = cam_xpos_in[worldid, refid]
     xmat_ref = cam_xmat_in[worldid, refid]
@@ -340,7 +340,7 @@ def _frame_axis(
   xquat_in: wp.array2d(dtype=wp.quat),
   xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xquat_in: wp.array2d(dtype=wp.quat),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   # In:
   worldid: int,
@@ -360,7 +360,7 @@ def _frame_axis(
     xmat = math.quat_to_mat(geom_xquat_in[worldid, objid])
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
   elif objtype == ObjType.SITE:
-    xmat = site_xmat_in[worldid, objid]
+    xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
     axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
   elif objtype == ObjType.CAMERA:
     xmat = cam_xmat_in[worldid, objid]
@@ -378,7 +378,7 @@ def _frame_axis(
   elif reftype == ObjType.GEOM:
     xmat_ref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
-    xmat_ref = site_xmat_in[worldid, refid]
+    xmat_ref = math.quat_to_mat(site_xquat_in[worldid, refid])
   elif reftype == ObjType.CAMERA:
     xmat_ref = cam_xmat_in[worldid, refid]
   else:  # UNKNOWN
@@ -496,7 +496,7 @@ def _sensor_pos(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -515,7 +515,7 @@ def _sensor_pos(
   out = sensordata_out[worldid]
 
   if sensortype == SensorType.MAGNETOMETER:
-    vec3 = _magnetometer(opt_magnetic, site_xmat_in, worldid, objid)
+    vec3 = _magnetometer(opt_magnetic, site_xquat_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.CAMPROJECTION:
     refid = sensor_refid[sensorid]
@@ -550,7 +550,7 @@ def _sensor_pos(
       geom_xpos_in,
       geom_xquat_in,
       site_xpos_in,
-      site_xmat_in,
+      site_xquat_in,
       cam_xpos_in,
       cam_xmat_in,
       worldid,
@@ -571,7 +571,7 @@ def _sensor_pos(
     elif sensortype == SensorType.FRAMEZAXIS:
       axis = 2
     vec3 = _frame_axis(
-      xquat_in, xiquat_in, geom_xquat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
+      xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEQUAT:
@@ -689,7 +689,7 @@ def _sensor_pos(
     else:
       return  # should not occur
     refid = sensor_refid[sensorid]
-    val_bool = inside_geom(site_xpos_in[worldid, refid], site_xmat_in[worldid, refid], site_size[refid], site_type[refid], xpos)
+    val_bool = inside_geom(site_xpos_in[worldid, refid], site_xquat_in[worldid, refid], site_size[refid], site_type[refid], xpos)
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, float(val_bool), out)
   elif sensortype == SensorType.E_POTENTIAL:
     val = energy_in[worldid][0]
@@ -770,7 +770,7 @@ def sensor_pos(m: Model, d: Data):
     wp.launch(
       _sensor_rangefinder_init,
       dim=(d.nworld, m.sensor_rangefinder_adr.size),
-      inputs=[m.sensor_objid, m.sensor_rangefinder_adr, d.site_xpos, d.site_xmat],
+      inputs=[m.sensor_objid, m.sensor_rangefinder_adr, d.site_xpos, d.site_xquat],
       outputs=[rangefinder_pnt, rangefinder_vec],
     )
 
@@ -859,7 +859,7 @@ def sensor_pos(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.cam_xpos,
       d.cam_xmat,
       d.subtree_com,
@@ -2236,7 +2236,7 @@ def _contact_match(
   sensor_contact_adr: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   contact_dist_in: wp.array(dtype=float),
   contact_pos_in: wp.array(dtype=wp.vec3),
   contact_frame_in: wp.array(dtype=wp.mat33),
@@ -2276,7 +2276,7 @@ def _contact_match(
   # site filter
   if objtype == ObjType.SITE:
     if not inside_geom(
-      site_xpos_in[worldid, objid], site_xmat_in[worldid, objid], site_size[objid], site_type[objid], contact_pos_in[contactid]
+      site_xpos_in[worldid, objid], site_xquat_in[worldid, objid], site_size[objid], site_type[objid], contact_pos_in[contactid]
     ):
       return
 
@@ -2491,7 +2491,7 @@ def sensor_acc(m: Model, d: Data):
         m.sensor_intprm,
         m.sensor_contact_adr,
         d.site_xpos,
-        d.site_xmat,
+        d.site_xquat,
         d.contact.dist,
         d.contact.pos,
         d.contact.frame,
