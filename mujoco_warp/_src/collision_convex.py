@@ -25,7 +25,6 @@ from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
-from .math import quat_to_mat
 from .math import rot_vec_quat
 from .math import quat_inv
 from .math import mul_quat
@@ -644,7 +643,7 @@ def ccd_kernel_builder(
             x1_ = wp.vec3(0.0, 0.0, 0.0)
             for i in range(6):
               x1_ += prism[i]
-            x1 += quat_to_mat(geom1.rot) @ (x1_ / 6.0)
+            x1 += rot_vec_quat(x1_ / 6.0, geom1.rot)
 
             dist, ncontact, w1, w2, idx = ccd(
               opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],

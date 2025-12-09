@@ -30,8 +30,6 @@ from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .warp_util import nested_kernel
 
-from .math import quat_to_mat
-
 
 def _geom_dist(
   m: Model,
