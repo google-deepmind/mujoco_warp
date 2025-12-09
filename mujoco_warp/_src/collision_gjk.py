@@ -1566,7 +1566,7 @@ def _mesh_edge_normals(
 @wp.func
 def _box_normals2(
   # In:
-  mat: wp.mat33,
+  quat: wp.quat,
   n: wp.vec3,
   # Out:
   normal_out: wp.array(dtype=wp.vec3),
@@ -1576,7 +1576,7 @@ def _box_normals2(
   face_normals = mat63(1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0)
 
   # get local coordinates of the normal
-
+  mat = quat_to_mat(quat)
   local_n = wp.normalize(
     wp.vec3(
       mat[0][0] * n[0] + mat[1][0] * n[1] + mat[2][0] * n[2],
@@ -1588,7 +1588,7 @@ def _box_normals2(
   # determine if there is a side close to the normal
   for i in range(6):
     if wp.dot(local_n, face_normals[i]) > FACE_TOL:
-      normal_out[0] = mat @ face_normals[i]
+      normal_out[0] = rot_vec_quat(face_normals[i], quat)
       index_out[0] = i
       return 1
 
@@ -1601,7 +1601,7 @@ def _box_normals(
   # In:
   feature_dim: int,
   feature_index: wp.vec3i,
-  mat: wp.mat33,
+  quat: wp.quat,
   dir: wp.vec3,
   # Out:
   normal_out: wp.array(dtype=wp.vec3),
@@ -1616,7 +1616,7 @@ def _box_normals(
     x = float((v1 & 1) and (v2 & 1) and (v3 & 1)) - float(not (v1 & 1) and not (v2 & 1) and not (v3 & 1))
     y = float((v1 & 2) and (v2 & 2) and (v3 & 2)) - float(not (v1 & 2) and not (v2 & 2) and not (v3 & 2))
     z = float((v1 & 4) and (v2 & 4) and (v3 & 4)) - float(not (v1 & 4) and not (v2 & 4) and not (v3 & 4))
-    normal_out[0] = mat @ wp.vec3(x, y, z)
+    normal_out[0] = rot_vec_quat(wp.vec3(x, y, z), quat)
     sgn = x + y + z
     if x != 0.0:
       index_out[c] = 0
@@ -1631,35 +1631,35 @@ def _box_normals(
       index_out[0] = index_out[0] + 1
     if c == 1:
       return 1
-    return _box_normals2(mat, dir, normal_out, index_out)
+    return _box_normals2(quat, dir, normal_out, index_out)
   if feature_dim == 2:
     c = 0
     x = float((v1 & 1) and (v2 & 1)) - float(not (v1 & 1) and not (v2 & 1))
     y = float((v1 & 2) and (v2 & 2)) - float(not (v1 & 2) and not (v2 & 2))
     z = float((v1 & 4) and (v2 & 4)) - float(not (v1 & 4) and not (v2 & 4))
     if x != 0.0:
-      normal_out[c] = mat @ wp.vec3(float(x), 0.0, 0.0)
+      normal_out[c] = rot_vec_quat(wp.vec3(float(x), 0.0, 0.0), quat)
       index_out[c] = wp.where(x > 0.0, 0, 1)
       c += 1
     if y != 0.0:
-      normal_out[c] = mat @ wp.vec3(0.0, y, 0.0)
+      normal_out[c] = rot_vec_quat(wp.vec3(0.0, y, 0.0), quat)
       index_out[c] = wp.where(y > 0.0, 2, 3)
       c += 1
     if z != 0.0:
-      normal_out[c] = mat @ wp.vec3(0.0, 0.0, z)
+      normal_out[c] = rot_vec_quat(wp.vec3(0.0, 0.0, z), quat)
       index_out[c] = wp.where(z > 0.0, 4, 5)
       c += 1
     if c == 2:
       return 2
-    return _box_normals2(mat, dir, normal_out, index_out)
+    return _box_normals2(quat, dir, normal_out, index_out)
 
   if feature_dim == 1:
     x = wp.where(v1 & 1, 1.0, -1.0)
     y = wp.where(v1 & 2, 1.0, -1.0)
     z = wp.where(v1 & 4, 1.0, -1.0)
-    normal_out[0] = mat @ wp.vec3(x, 0.0, 0.0)
-    normal_out[1] = mat @ wp.vec3(0.0, y, 0.0)
-    normal_out[2] = mat @ wp.vec3(0.0, 0.0, z)
+    normal_out[0] = rot_vec_quat(wp.vec3(x, 0.0, 0.0), quat)
+    normal_out[1] = rot_vec_quat(wp.vec3(0.0, y, 0.0), quat)
+    normal_out[2] = rot_vec_quat(wp.vec3(0.0, 0.0, z), quat)
     index_out[0] = wp.where(x > 0.0, 0, 1)
     index_out[1] = wp.where(y > 0.0, 2, 3)
     index_out[2] = wp.where(z > 0.0, 4, 5)
@@ -1967,7 +1967,7 @@ def multicontact(
 
   # get all possible face normals for each geom
   if geomtype1 == GeomType.BOX:
-    nnorms1 = _box_normals(nface1, feature_index1, quat_to_mat(geom1.rot), dir_neg, n1, idx1)
+    nnorms1 = _box_normals(nface1, feature_index1, geom1.rot, dir_neg, n1, idx1)
   elif geomtype1 == GeomType.MESH:
     nnorms1 = _mesh_normals(
       nface1,
@@ -1983,7 +1983,7 @@ def multicontact(
       idx1,
     )
   if geomtype2 == GeomType.BOX:
-    nnorms2 = _box_normals(nface2, feature_index2, quat_to_mat(geom2.rot), dir, n2, idx2)
+    nnorms2 = _box_normals(nface2, feature_index2, geom2.rot, dir, n2, idx2)
   elif geomtype2 == GeomType.MESH:
     nnorms2 = _mesh_normals(
       nface2,
