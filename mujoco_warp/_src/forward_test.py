@@ -319,7 +319,6 @@ class ForwardTest(parameterized.TestCase):
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "site_xmat",
       "subtree_com",
       "cinert",
       "cdof",
@@ -388,7 +387,7 @@ class ForwardTest(parameterized.TestCase):
       d_arr, is_nefc = _getattr(arr)
       d_arr = d_arr.numpy()[0]
       mjd_arr = getattr(mjd, arr)
-      if arr in ["site_xmat", "cam_xmat"]:
+      if arr in ["cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "qM":
@@ -441,6 +440,13 @@ class ForwardTest(parameterized.TestCase):
     for i in range(geom_xquat.shape[0]):
       mujoco.mju_quat2Mat(geom_xmat[i], geom_xquat[i])
     _assert_eq(geom_xmat.reshape(-1), mjd.geom_xmat.reshape(-1), "geom_xquat->geom_xmat")
+
+    # compare site_xquat (warp) to site_xmat (mujoco) by converting quaternion to matrix
+    site_xquat = d.site_xquat.numpy()[0]
+    site_xmat = np.zeros((site_xquat.shape[0], 9))
+    for i in range(site_xquat.shape[0]):
+      mujoco.mju_quat2Mat(site_xmat[i], site_xquat[i])
+    _assert_eq(site_xmat.reshape(-1), mjd.site_xmat.reshape(-1), "site_xquat->site_xmat")
 
     # TODO(team): sensor_pos
     # TODO(team): sensor_vel
