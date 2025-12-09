@@ -40,7 +40,7 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.struct
 class OptimizationParams:
-  rel_mat: wp.mat33
+  rel_mat: wp.quat
   rel_pos: wp.vec3
   attr1: wp.vec3
   attr2: wp.vec3
@@ -489,7 +489,7 @@ def compute_grad(
   B = sdf(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad1 = sdf_grad(type1, p1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   grad2 = sdf_grad(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
-  grad1_transformed = wp.transpose(params.rel_mat) * grad1
+  grad1_transformed = rot_vec_quat(grad1, quat_inv(params.rel_mat))
   if sfd_intersection:
     if A > B:
       return grad1_transformed
@@ -529,7 +529,7 @@ def gradient_step(
   for i in range(niter):
     alpha = float(2.0)
     x2 = wp.vec3(x[0], x[1], x[2])
-    x1 = params.rel_mat * x2 + params.rel_pos
+    x1 = rot_vec_quat(x2, params.rel_mat) + params.rel_pos
     grad = compute_grad(
       type1, x1, x2, params, sdf_type1, sdf_type2, sfd_intersection, volume_data1, volume_data2, mesh_data1, mesh_data2
     )
@@ -555,7 +555,7 @@ def gradient_step(
       alpha *= rho
       wolfe *= rho
       x = x2 - grad * alpha
-      x1 = params.rel_mat * x + params.rel_pos
+      x1 = rot_vec_quat(x, params.rel_mat) + params.rel_pos
       dist = clearance(
         type1,
         x1,
@@ -597,7 +597,7 @@ def gradient_descent(
   mesh_data2: MeshData,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   params = OptimizationParams()
-  params.rel_mat = quat_to_mat(mul_quat(quat_inv(rot1), rot2))
+  params.rel_mat = mul_quat(quat_inv(rot1), rot2)
   params.rel_pos = rot_vec_quat(pos2 - pos1, quat_inv(rot1))
   params.attr1 = attr1
   params.attr2 = attr2
@@ -605,9 +605,9 @@ def gradient_descent(
     type1, x0_initial, params, sdf_type1, sdf_type2, sdf_iterations, False, volume_data1, volume_data2, mesh_data1, mesh_data2
   )
   dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True, volume_data1, volume_data2, mesh_data1, mesh_data2)
-  x_1 = params.rel_mat * x + params.rel_pos
+  x_1 = rot_vec_quat(x, params.rel_mat) + params.rel_pos
   grad1 = sdf_grad(type1, x_1, params.attr1, sdf_type1, volume_data1, mesh_data1)
-  grad1 = wp.transpose(params.rel_mat) * grad1
+  grad1 = rot_vec_quat(grad1, quat_inv(params.rel_mat))
   grad1 = wp.normalize(grad1)
   grad2 = sdf_grad(GeomType.SDF, x, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad2 = wp.normalize(grad2)
