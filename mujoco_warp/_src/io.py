@@ -788,6 +788,7 @@ def put_data(
     "nsolving": None,
     "xiquat": None,
     "geom_xquat": None,
+    "site_xquat": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -834,7 +835,7 @@ def put_data(
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
   # convert xmat fields to xquat
-  for xmat, attr, n in [(mjd.ximat, "xiquat", mjm.nbody), (mjd.geom_xmat, "geom_xquat", mjm.ngeom)]:
+  for xmat, attr, n in [(mjd.ximat, "xiquat", mjm.nbody), (mjd.geom_xmat, "geom_xquat", mjm.ngeom), (mjd.site_xmat, "site_xquat", mjm.nsite)]:
     xquat = np.zeros((n, 4))
     for i in range(n):
       mujoco.mju_mat2Quat(xquat[i], xmat[i])
@@ -913,12 +914,17 @@ def get_data_into(
   ximat = np.zeros((mjm.nbody, 9))
   for i in range(mjm.nbody):
     mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[world_id, i])
-  result.ximat[:] = ximat.reshape((-1, 9))
+  result.ximat[:] = ximat
 
   geom_xmat = np.zeros((mjm.ngeom, 9))
   for i in range(mjm.ngeom):
     mujoco.mju_quat2Mat(geom_xmat[i], d.geom_xquat.numpy()[world_id, i])
-  result.geom_xmat[:] = geom_xmat.reshape((-1, 9))
+  result.geom_xmat[:] = geom_xmat
+
+  site_xmat = np.zeros((mjm.nsite, 9))
+  for i in range(mjm.nsite):
+    mujoco.mju_quat2Mat(site_xmat[i], d.site_xquat.numpy()[world_id, i])
+  result.site_xmat[:] = site_xmat
 
   result.solver_niter[0] = d.solver_niter.numpy()[world_id]
   result.ncon = ncon
