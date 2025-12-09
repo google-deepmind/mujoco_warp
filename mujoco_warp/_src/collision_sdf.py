@@ -22,6 +22,9 @@ from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import quat_to_mat
+from .math import rot_vec_quat
+from .math import quat_inv
+from .math import mul_quat
 from .ray import ray_mesh
 from .types import Data
 from .types import GeomType
@@ -582,9 +585,9 @@ def gradient_descent(
   attr1: wp.vec3,
   attr2: wp.vec3,
   pos1: wp.vec3,
-  rot1: wp.mat33,
+  rot1: wp.quat,
   pos2: wp.vec3,
-  rot2: wp.mat33,
+  rot2: wp.quat,
   sdf_type1: int,
   sdf_type2: int,
   sdf_iterations: int,
@@ -594,8 +597,8 @@ def gradient_descent(
   mesh_data2: MeshData,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   params = OptimizationParams()
-  params.rel_mat = wp.transpose(rot1) * rot2
-  params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
+  params.rel_mat = quat_to_mat(mul_quat(quat_inv(rot1), rot2))
+  params.rel_pos = rot_vec_quat(pos2 - pos1, quat_inv(rot1))
   params.attr1 = attr1
   params.attr2 = attr2
   dist, x = gradient_step(
@@ -610,8 +613,8 @@ def gradient_descent(
   grad2 = wp.normalize(grad2)
   n = grad1 - grad2
   n = wp.normalize(n)
-  pos = rot2 * x + pos2
-  n = rot2 * n
+  pos = rot_vec_quat(x , rot2) + pos2
+  n = rot_vec_quat(n, rot2)
   pos3 = pos - n * dist / 2.0
   return dist, pos3, n
 
@@ -768,9 +771,9 @@ def _sdf_narrowphase(
   aabb_intersection.max = wp.min(aabb1.max, aabb2.max)
 
   pos2 = geom2.pos
-  rot2 = mat_rot_2
+  rot2 = geom2.rot
   pos1 = geom1.pos
-  rot1 = mat_rot_1
+  rot1 = geom1.rot
 
   attr1, g1_plugin_id, volume_data1, mesh_data1 = get_sdf_params(
     oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
@@ -810,7 +813,7 @@ def _sdf_narrowphase(
     aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
   )
   x = mat_rot_1 * x_g2 + geom1.pos
-  x0_initial = wp.transpose(rot2) * (x - pos2)
+  x0_initial = rot_vec_quat(x - pos2, quat_inv(rot2))
   dist, pos, n = gradient_descent(
     type1,
     x0_initial,
