@@ -1002,6 +1002,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
                       geom distance sensors
@@ -1345,6 +1346,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  nv_pad: int
   nacttrnbody: int
   nsensorcollision: int
   nsensortaxel: int
@@ -1497,7 +1499,6 @@ class Constraint:
     jv: efc_J @ search                                (nworld, njmax)
     quad: quadratic cost coefficients                 (nworld, njmax, 3)
     quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)
-    h: Hessian                                        (nworld, nv_pad, nv_pad)
     alpha: line search step size                      (nworld,)
     prev_grad: previous grad                          (nworld, nv)
     prev_Mgrad: previous Mgrad                        (nworld, nv)
@@ -1531,7 +1532,6 @@ class Constraint:
   jv: array("nworld", "njmax", float)
   quad: array("nworld", "njmax", wp.vec3)
   quad_gauss: array("nworld", wp.vec3)
-  h: array("nworld", "nv_pad", "nv_pad", float)
   alpha: array("nworld", float)
   prev_grad: array("nworld", "nv", float)
   prev_Mgrad: array("nworld", "nv", float)

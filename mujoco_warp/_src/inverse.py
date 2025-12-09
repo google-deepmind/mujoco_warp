@@ -121,7 +121,8 @@ def inv_constraint(m: Model, d: Data):
     return
 
   # update
-  solver.create_context(m, d, grad=False)
+  h = wp.empty((d.nworld, 0, 0), dtype=float)  # not used
+  solver.create_context(m, d, h, grad=False)
 
 
 def inverse(m: Model, d: Data):

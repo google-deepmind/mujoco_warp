@@ -1716,7 +1716,7 @@ def padding_efc_h(nv: int, efc_done_in: wp.array(dtype=bool), efc_h_out: wp.arra
   efc_h_out[worldid, dofid, dofid] = 1.0
 
 
-def _update_gradient(m: types.Model, d: types.Data):
+def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float)):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.grad_dot])
 
@@ -1744,7 +1744,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.state,
           d.efc.done,
         ],
-        outputs=[d.efc.h],
+        outputs=[h],
         block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
 
@@ -1752,7 +1752,7 @@ def _update_gradient(m: types.Model, d: types.Data):
         update_gradient_set_h_qM_lower_sparse,
         dim=(d.nworld, m.qM_fullm_i.size),
         inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, d.efc.done],
-        outputs=[d.efc.h],
+        outputs=[h],
       )
     else:
       nv_padded = d.efc.J.shape[2]
@@ -1767,7 +1767,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           d.efc.state,
           d.efc.done,
         ],
-        outputs=[d.efc.h],
+        outputs=[h],
         block_dim=m.block_dim.update_gradient_JTDAJ_dense,
       )
 
@@ -1818,7 +1818,7 @@ def _update_gradient(m: types.Model, d: types.Data):
           nblocks_perblock,
           dim_block,
         ],
-        outputs=[d.efc.h],
+        outputs=[h],
       )
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
@@ -1826,27 +1826,22 @@ def _update_gradient(m: types.Model, d: types.Data):
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
-        inputs=[d.efc.grad, d.efc.h, d.efc.done],
+        inputs=[d.efc.grad, h, d.efc.done],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
     else:
       wp.launch(
         padding_efc_h,
-        dim=(d.nworld, d.efc.h.shape[2] - m.nv),
+        dim=(d.nworld, m.nv_pad - m.nv),
         inputs=[m.nv, d.efc.done],
-        outputs=[d.efc.h],
+        outputs=[h],
       )
 
       wp.launch_tiled(
-        update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.efc.h.shape[1]),
+        update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[
-          d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)),
-          d.efc.h,
-          d.efc.done,
-          d.efc.cholesky_L_tmp,
-        ],
+        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), h, d.efc.done, d.efc.cholesky_L_tmp],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
@@ -1982,6 +1977,7 @@ def solve_done(
 def _solver_iteration(
   m: types.Model,
   d: types.Data,
+  h: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
   _linesearch(m, d, step_size_cost)
@@ -1995,7 +1991,7 @@ def _solver_iteration(
     )
 
   _update_constraint(m, d)
-  _update_gradient(m, d)
+  _update_gradient(m, d, h)
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
@@ -2032,7 +2028,7 @@ def _solver_iteration(
   )
 
 
-def create_context(m: types.Model, d: types.Data, grad: bool = True):
+def create_context(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), grad: bool = True):
   # initialize some efc arrays
   wp.launch(
     solve_init_efc,
@@ -2054,7 +2050,7 @@ def create_context(m: types.Model, d: types.Data, grad: bool = True):
   _update_constraint(m, d)
 
   if grad:
-    _update_gradient(m, d)
+    _update_gradient(m, d, h)
 
 
 @event_scope
@@ -2073,8 +2069,12 @@ def _solve(m: types.Model, d: types.Data):
   else:
     wp.copy(d.qacc, d.qacc_smooth)
 
+  # Newton solver Hessian
+  h_nv = m.nv_pad if m.opt.solver == types.SolverType.NEWTON else 0
+  h = wp.empty((d.nworld, h_nv, h_nv), dtype=float)
+
   # create context
-  create_context(m, d, grad=True)
+  create_context(m, d, h, grad=True)
 
   # search = -Mgrad
   wp.launch(
@@ -2095,16 +2095,10 @@ def _solve(m: types.Model, d: types.Data):
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
     d.nsolving.fill_(d.nworld)
-    wp.capture_while(
-      d.nsolving,
-      while_body=_solver_iteration,
-      m=m,
-      d=d,
-      step_size_cost=step_size_cost,
-    )
+    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, step_size_cost=step_size_cost)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, step_size_cost)
+      _solver_iteration(m, d, h, step_size_cost)

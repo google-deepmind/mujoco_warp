@@ -200,10 +200,8 @@ class SupportTest(parameterized.TestCase):
 
     # Get the constraint Hessian matrix size
     nv = m.nv
-    nv_pad = d.efc.h.shape[2]
+    nv_pad = m.nv_pad
     nworld = d.nworld
-
-    matrix_size = d.efc.h.shape[1]
 
     # Create combined factor and solve kernel as in solver.py
     @nested_kernel(module="unique", enable_backward=False)
@@ -220,9 +218,9 @@ class SupportTest(parameterized.TestCase):
       if done_in[worldid]:
         return
 
-      wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
-      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-        cholesky_L_tmp[worldid], grad_in[worldid], matrix_size, Mgrad_out[worldid]
+      wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], nv_pad, cholesky_L_tmp[worldid])
+      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
+        cholesky_L_tmp[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -232,24 +230,17 @@ class SupportTest(parameterized.TestCase):
     A = np.random.randn(nv, nv).astype(np.float32)
     SPD_active_hessian = A @ A.T + nv * np.eye(nv, dtype=A.dtype)  # Make symmetric & strongly PD
 
-    # 2. Get current d.efc.h and zero it out
-    efc_h_np = d.efc.h.numpy()
-    efc_h_np.fill(0.0)
-
-    # 3. Copy the active SPD region into efc_h_np[0, :nv, :nv]
+    # 2. Copy the active SPD region into efc_h_np[0, :nv, :nv]
+    efc_h_np = np.zeros((nworld, nv_pad, nv_pad), dtype=float)
     efc_h_np[0, :nv, :nv] = SPD_active_hessian
 
-    # 4. Assign the modified SPD hessian back to d.efc.h
-    efc_h_np = d.efc.h.numpy()
-    efc_h_np.fill(0.0)
-    efc_h_np[0, :nv, :nv] = SPD_active_hessian
     # Add identity to the padding region
     padding_size = nv_pad - nv
     if padding_size > 0:
       efc_h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
-    d.efc.h.assign(efc_h_np)
+    h = wp.array(efc_h_np, dtype=float)
 
-    # 5. Reuse built-in arrays from data structure to fill d.efc.grad with test data
+    # 3. Reuse built-in arrays from data structure to fill d.efc.grad with test data
     grad_np = d.efc.grad.numpy()
     grad_np.fill(0)  # Zero out first
     grad_np[0, :nv] = b
@@ -271,12 +262,7 @@ class SupportTest(parameterized.TestCase):
     wp.launch_tiled(
       combined_cholesky_kernel,
       dim=nworld,
-      inputs=[
-        d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)),
-        d.efc.h,
-        d.efc.done,
-        d.efc.cholesky_L_tmp,
-      ],
+      inputs=[d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)), h, d.efc.done, d.efc.cholesky_L_tmp],
       outputs=[d.efc.Mgrad.reshape(shape=(nworld, d.efc.Mgrad.shape[1], 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
