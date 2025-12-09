@@ -1442,7 +1442,7 @@ def _accelerometer(
   site_bodyid: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   cacc_in: wp.array2d(dtype=wp.spatial_vector),
@@ -1451,7 +1451,7 @@ def _accelerometer(
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
-  rot = site_xmat_in[worldid, objid]
+  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
   rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   cvel_top = wp.spatial_top(cvel)
@@ -1472,7 +1472,7 @@ def _force(
   # Model:
   site_bodyid: wp.array(dtype=int),
   # Data in:
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   worldid: int,
@@ -1480,7 +1480,7 @@ def _force(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
-  site_xmat = site_xmat_in[worldid, objid]
+  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
   return wp.transpose(site_xmat) @ wp.spatial_bottom(cfrc_int)
 
 
@@ -1491,7 +1491,7 @@ def _torque(
   site_bodyid: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
@@ -1500,7 +1500,7 @@ def _torque(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
-  site_xmat = site_xmat_in[worldid, objid]
+  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
   return wp.transpose(site_xmat) @ (wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)))
 
@@ -1705,7 +1705,7 @@ def _sensor_acc(
   xipos_in: wp.array2d(dtype=wp.vec3),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
@@ -1948,14 +1948,14 @@ def _sensor_acc(
 
   elif sensortype == SensorType.ACCELEROMETER:
     vec3 = _accelerometer(
-      body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
+      body_rootid, site_bodyid, site_xpos_in, site_xquat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FORCE:
-    vec3 = _force(site_bodyid, site_xmat_in, cfrc_int_in, worldid, objid)
+    vec3 = _force(site_bodyid, site_xquat_in, cfrc_int_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.TORQUE:
-    vec3 = _torque(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cfrc_int_in, worldid, objid)
+    vec3 = _torque(body_rootid, site_bodyid, site_xpos_in, site_xquat_in, subtree_com_in, cfrc_int_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.ACTUATORFRC:
     val = _actuator_force(actuator_force_in, worldid, objid)
@@ -2010,7 +2010,7 @@ def _sensor_touch(
   sensor_touch_adr: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   contact_pos_in: wp.array(dtype=wp.vec3),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_dim_in: wp.array(dtype=int),
@@ -2066,7 +2066,7 @@ def _sensor_touch(
     if (
       ray.ray_geom(
         site_xpos_in[worldid, objid],
-        site_xmat_in[worldid, objid],
+        site_xquat_in[worldid, objid],
         site_size[objid],
         contact_pos_in[conid],
         conray,
@@ -2410,7 +2410,7 @@ def sensor_acc(m: Model, d: Data):
       m.sensor_adr,
       m.sensor_touch_adr,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.contact.pos,
       d.contact.frame,
       d.contact.dim,
@@ -2544,7 +2544,7 @@ def sensor_acc(m: Model, d: Data):
       d.xipos,
       d.geom_xpos,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.cam_xpos,
       d.subtree_com,
       d.cvel,
