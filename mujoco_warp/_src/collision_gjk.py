@@ -1666,7 +1666,7 @@ def _box_normals(
 def _box_edge_normals(
   # In:
   dim: int,
-  mat: wp.mat33,
+  quat: wp.quat,
   pos: wp.vec3,
   size: wp.vec3,
   v1: wp.vec3,
@@ -1687,13 +1687,13 @@ def _box_edge_normals(
     y = wp.where(v1i & 2, size[1], -size[1])
     z = wp.where(v1i & 4, size[2], -size[2])
 
-    endvert_out[0] = mat @ wp.vec3(-x, y, z) + pos
+    endvert_out[0] = rot_vec_quat(wp.vec3(-x, y, z), quat) + pos
     normal_out[0] = wp.normalize(endvert_out[0] - v1)
 
-    endvert_out[1] = mat @ wp.vec3(x, -y, z) + pos
+    endvert_out[1] = rot_vec_quat(wp.vec3(x, -y, z), quat) + pos
     normal_out[1] = wp.normalize(endvert_out[1] - v1)
 
-    endvert_out[2] = mat @ wp.vec3(x, y, -z) + pos
+    endvert_out[2] = rot_vec_quat(wp.vec3(x, y, -z), quat) + pos
     normal_out[2] = wp.normalize(endvert_out[2] - v1)
     return 3
   return 0
@@ -2003,7 +2003,7 @@ def multicontact(
       nnorms1 = 0
       if geomtype1 == GeomType.BOX:
         nnorms1 = _box_edge_normals(
-          nface1, quat_to_mat(geom1.rot), geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0], n1, endvert
+          nface1, geom1.rot, geom1.pos, geom1.size, feature_vertex1[0], feature_vertex1[1], feature_index1[0], n1, endvert
         )
       elif geomtype1 == GeomType.MESH:
         nnorms1 = _mesh_edge_normals(
@@ -2035,7 +2035,7 @@ def multicontact(
       nnorms2 = 0
       if geomtype2 == GeomType.BOX:
         nnorms2 = _box_edge_normals(
-          nface2, quat_to_mat(geom2.rot), geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0], n2, endvert
+          nface2, geom2.rot, geom2.pos, geom2.size, feature_vertex2[0], feature_vertex2[1], feature_index2[0], n2, endvert
         )
       elif geomtype2 == GeomType.MESH:
         nnorms2 = _mesh_edge_normals(
