@@ -209,7 +209,7 @@ class SupportTest(parameterized.TestCase):
       grad_in: wp.array3d(dtype=float),
       h_in: wp.array3d(dtype=float),
       done_in: wp.array(dtype=bool),
-      cholesky_L_tmp: wp.array3d(dtype=float),
+      hfactor_in: wp.array3d(dtype=float),
       Mgrad_out: wp.array3d(dtype=float),
     ):
       worldid = wp.tid()
@@ -218,9 +218,9 @@ class SupportTest(parameterized.TestCase):
       if done_in[worldid]:
         return
 
-      wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], nv_pad, cholesky_L_tmp[worldid])
+      wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], nv_pad, hfactor_in[worldid])
       wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
-        cholesky_L_tmp[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
+        hfactor_in[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -250,7 +250,8 @@ class SupportTest(parameterized.TestCase):
     L_init = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
     # Initialize padding region to identity
     L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
-    d.efc.cholesky_L_tmp.assign(L_init)
+
+    hfactor = wp.array(L_init, dtype=float)
 
     d.efc.Mgrad.zero_()
 
@@ -262,14 +263,14 @@ class SupportTest(parameterized.TestCase):
     wp.launch_tiled(
       combined_cholesky_kernel,
       dim=nworld,
-      inputs=[d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)), h, d.efc.done, d.efc.cholesky_L_tmp],
+      inputs=[d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)), h, d.efc.done, hfactor],
       outputs=[d.efc.Mgrad.reshape(shape=(nworld, d.efc.Mgrad.shape[1], 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
     wp.synchronize()
 
     # Get results from built-in arrays
-    L_result = d.efc.cholesky_L_tmp.numpy()[0]
+    L_result = hfactor.numpy()[0]
     x_result = d.efc.Mgrad.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation

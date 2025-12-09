@@ -31,6 +31,8 @@ from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
+_BLOCK_CHOLESKY_DIM = 32
+
 
 @wp.func
 def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
@@ -1682,7 +1684,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     efc_grad_in: wp.array3d(dtype=float),
     h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
-    cholesky_L_tmp: wp.array3d(dtype=float),
+    hfactor: wp.array3d(dtype=float),
     # Data out:
     efc_Mgrad_out: wp.array3d(dtype=float),
   ):
@@ -1697,9 +1699,9 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     # runtime input is needed for the loop bounds, otherwise warp will unroll
     # unconditionally leading to shared memory capacity issues.
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], matrix_size, hfactor[worldid])
     wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-      cholesky_L_tmp[worldid], efc_grad_in[worldid], matrix_size, efc_Mgrad_out[worldid]
+      hfactor[worldid], efc_grad_in[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
 
   return kernel
@@ -1716,7 +1718,7 @@ def padding_h(nv: int, efc_done_in: wp.array(dtype=bool), h: wp.array3d(dtype=fl
   h[worldid, dofid, dofid] = 1.0
 
 
-def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float)):
+def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), hfactor: wp.array3d(dtype=float)):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.grad_dot])
 
@@ -1822,7 +1824,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float)):
       )
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
-    if m.nv <= 32:
+    if m.nv <= _BLOCK_CHOLESKY_DIM:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
@@ -1841,7 +1843,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float)):
       wp.launch_tiled(
         update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), h, d.efc.done, d.efc.cholesky_L_tmp],
+        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), h, d.efc.done, hfactor],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
@@ -1978,6 +1980,7 @@ def _solver_iteration(
   m: types.Model,
   d: types.Data,
   h: wp.array3d(dtype=float),
+  hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
   _linesearch(m, d, step_size_cost)
@@ -1991,7 +1994,7 @@ def _solver_iteration(
     )
 
   _update_constraint(m, d)
-  _update_gradient(m, d, h)
+  _update_gradient(m, d, h, hfactor)
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
@@ -2028,7 +2031,9 @@ def _solver_iteration(
   )
 
 
-def create_context(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), grad: bool = True):
+def create_context(
+  m: types.Model, d: types.Data, h: wp.array3d(dtype=float), hfactor: wp.array3d(dtype=float), grad: bool = True
+):
   # initialize some efc arrays
   wp.launch(
     solve_init_efc,
@@ -2050,7 +2055,7 @@ def create_context(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), gr
   _update_constraint(m, d)
 
   if grad:
-    _update_gradient(m, d, h)
+    _update_gradient(m, d, h, hfactor)
 
 
 @event_scope
@@ -2072,9 +2077,11 @@ def _solve(m: types.Model, d: types.Data):
   # Newton solver Hessian
   h_nv = m.nv_pad if m.opt.solver == types.SolverType.NEWTON else 0
   h = wp.empty((d.nworld, h_nv, h_nv), dtype=float)
+  hfactor_nv = m.nv_pad if (m.opt.solver == types.SolverType.NEWTON) and (m.nv > _BLOCK_CHOLESKY_DIM) else 0
+  hfactor = wp.empty((d.nworld, hfactor_nv, hfactor_nv), dtype=float)
 
   # create context
-  create_context(m, d, h, grad=True)
+  create_context(m, d, h, hfactor, grad=True)
 
   # search = -Mgrad
   wp.launch(
@@ -2095,10 +2102,10 @@ def _solve(m: types.Model, d: types.Data):
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
     d.nsolving.fill_(d.nworld)
-    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, step_size_cost=step_size_cost)
+    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, h, step_size_cost)
+      _solver_iteration(m, d, h, hfactor, step_size_cost)
