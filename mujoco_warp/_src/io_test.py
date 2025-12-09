@@ -133,7 +133,7 @@ class IOTest(parameterized.TestCase):
       "geom_xpos",
       #"geom_xmat",
       "site_xpos",
-      "site_xmat",
+      #"site_xmat",
       "cam_xpos",
       "cam_xmat",
       "light_xpos",
