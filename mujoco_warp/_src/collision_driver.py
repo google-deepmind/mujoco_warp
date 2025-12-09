@@ -50,15 +50,17 @@ def _zero_nacon_ncollision(
 
 @wp.func
 def _plane_filter(
-  size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3, xmat1: wp.mat33, xmat2: wp.mat33
+  size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3, xquat1: wp.quat, xquat2: wp.quat
 ) -> bool:
   if size1 == 0.0:
     # geom1 is a plane
-    dist = wp.dot(xpos2 - xpos1, wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2]))
+    mat = quat_to_mat(xquat1)
+    dist = wp.dot(xpos2 - xpos1, wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2]))
     return dist <= size2 + wp.max(margin1, margin2)
   elif size2 == 0.0:
     # geom2 is a plane
-    dist = wp.dot(xpos1 - xpos2, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
+    mat = quat_to_mat(xquat2)
+    dist = wp.dot(xpos1 - xpos2, wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2]))
     return dist <= size1 + wp.max(margin1, margin2)
 
   return True
@@ -265,11 +267,10 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
     margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
     xquat1, xquat2 = geom_xquat_in[worldid, geom1], geom_xquat_in[worldid, geom2]
-    xmat1, xmat2 = quat_to_mat(xquat1), quat_to_mat(xquat2)
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
-        return _plane_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2, xmat1, xmat2)
+        return _plane_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2, xquat1, xquat2)
     else:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.SPHERE):
         if not _sphere_filter(rbound1, rbound2, margin1, margin2, xpos1, xpos2):
