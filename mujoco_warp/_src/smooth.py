@@ -186,7 +186,7 @@ def _geom_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], xquat)
-  geom_xquat_out[worldid, geomid] = xquat
+  geom_xquat_out[worldid, geomid] = math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid])
 
 
 @wp.kernel
