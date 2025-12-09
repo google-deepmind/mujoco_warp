@@ -230,15 +230,15 @@ class SupportTest(parameterized.TestCase):
     A = np.random.randn(nv, nv).astype(np.float32)
     SPD_active_hessian = A @ A.T + nv * np.eye(nv, dtype=A.dtype)  # Make symmetric & strongly PD
 
-    # 2. Copy the active SPD region into efc_h_np[0, :nv, :nv]
-    efc_h_np = np.zeros((nworld, nv_pad, nv_pad), dtype=float)
-    efc_h_np[0, :nv, :nv] = SPD_active_hessian
+    # 2. Copy the active SPD region into h_np[0, :nv, :nv]
+    h_np = np.zeros((nworld, nv_pad, nv_pad), dtype=float)
+    h_np[0, :nv, :nv] = SPD_active_hessian
 
     # Add identity to the padding region
     padding_size = nv_pad - nv
     if padding_size > 0:
-      efc_h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
-    h = wp.array(efc_h_np, dtype=float)
+      h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
+    h = wp.array(h_np, dtype=float)
 
     # 3. Reuse built-in arrays from data structure to fill d.efc.grad with test data
     grad_np = d.efc.grad.numpy()

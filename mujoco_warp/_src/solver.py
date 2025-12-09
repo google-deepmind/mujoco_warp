@@ -1348,8 +1348,8 @@ def update_gradient_set_h_qM_lower_sparse(
   # Data in:
   qM_in: wp.array3d(dtype=float),
   efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
+  # Out:
+  h: wp.array3d(dtype=float),
 ):
   worldid, elementid = wp.tid()
 
@@ -1358,7 +1358,7 @@ def update_gradient_set_h_qM_lower_sparse(
 
   i = qM_fullm_i[elementid]
   j = qM_fullm_j[elementid]
-  efc_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
+  h[worldid, i, j] += qM_in[worldid, 0, elementid]
 
 
 @wp.func
@@ -1389,8 +1389,8 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
     efc_D_in: wp.array2d(dtype=float),
     efc_state_in: wp.array2d(dtype=int),
     efc_done_in: wp.array(dtype=bool),
-    # Data out:
-    efc_h_out: wp.array3d(dtype=float),
+    # Out:
+    h: wp.array3d(dtype=float),
   ):
     worldid, elementid = wp.tid()
 
@@ -1441,7 +1441,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
     # AD: setting bounds_check to True explicitly here because for some reason it was
     # slower to disable it.
-    wp.tile_store(efc_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
+    wp.tile_store(h[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
 
   return kernel
 
@@ -1462,8 +1462,8 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
     efc_D_in: wp.array2d(dtype=float),
     efc_state_in: wp.array2d(dtype=int),
     efc_done_in: wp.array(dtype=bool),
-    # Data out:
-    efc_h_out: wp.array3d(dtype=float),
+    # Out:
+    h: wp.array3d(dtype=float),
   ):
     worldid = wp.tid()
 
@@ -1502,7 +1502,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
-    wp.tile_store(efc_h_out[worldid], sum_val, bounds_check=False)
+    wp.tile_store(h[worldid], sum_val, bounds_check=False)
 
   return kernel
 
@@ -1531,8 +1531,8 @@ def update_gradient_JTCJ(
   # In:
   nblocks_perblock: int,
   dim_block: int,
-  # Data out:
-  efc_h_out: wp.array3d(dtype=float),
+  # Out:
+  h_out: wp.array3d(dtype=float),
 ):
   conid_start, elementid = wp.tid()
 
@@ -1588,7 +1588,7 @@ def update_gradient_JTCJ(
     t = wp.max(t, types.MJ_MINVAL)
     ttt = wp.max(t * t * t, types.MJ_MINVAL)
 
-    efc_h = float(0.0)
+    h = float(0.0)
 
     for dim1id in range(condim):
       if dim1id == 0:
@@ -1640,12 +1640,12 @@ def update_gradient_JTCJ(
         hcone *= dm * fri1 * fri2
 
         if hcone != 0.0:
-          efc_h += hcone * efc_J11 * efc_J22
+          h += hcone * efc_J11 * efc_J22
 
           if dim1id != dim2id:
-            efc_h += hcone * efc_J12 * efc_J21
+            h += hcone * efc_J12 * efc_J21
 
-    efc_h_out[worldid, dof1id, dof2id] += efc_h
+    h_out[worldid, dof1id, dof2id] += h
 
 
 @cache_kernel
@@ -1654,7 +1654,7 @@ def update_gradient_cholesky(tile_size: int):
   def kernel(
     # Data in:
     efc_grad_in: wp.array2d(dtype=float),
-    efc_h_in: wp.array3d(dtype=float),
+    h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
     # Data out:
     efc_Mgrad_out: wp.array2d(dtype=float),
@@ -1665,7 +1665,7 @@ def update_gradient_cholesky(tile_size: int):
     if efc_done_in[worldid]:
       return
 
-    mat_tile = wp.tile_load(efc_h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
     fact_tile = wp.tile_cholesky(mat_tile)
     input_tile = wp.tile_load(efc_grad_in[worldid], shape=TILE_SIZE)
     output_tile = wp.tile_cholesky_solve(fact_tile, input_tile)
@@ -1680,7 +1680,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   def kernel(
     # Data in:
     efc_grad_in: wp.array3d(dtype=float),
-    efc_h_in: wp.array3d(dtype=float),
+    h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
     cholesky_L_tmp: wp.array3d(dtype=float),
     # Data out:
@@ -1697,7 +1697,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     # runtime input is needed for the loop bounds, otherwise warp will unroll
     # unconditionally leading to shared memory capacity issues.
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE))(efc_h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
+    wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], matrix_size, cholesky_L_tmp[worldid])
     wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
       cholesky_L_tmp[worldid], efc_grad_in[worldid], matrix_size, efc_Mgrad_out[worldid]
     )
@@ -1706,14 +1706,14 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 
 
 @wp.kernel
-def padding_efc_h(nv: int, efc_done_in: wp.array(dtype=bool), efc_h_out: wp.array3d(dtype=float)):
+def padding_h(nv: int, efc_done_in: wp.array(dtype=bool), h: wp.array3d(dtype=float)):
   worldid, elementid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
   dofid = nv + elementid
-  efc_h_out[worldid, dofid, dofid] = 1.0
+  h[worldid, dofid, dofid] = 1.0
 
 
 def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float)):
@@ -1832,7 +1832,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float)):
       )
     else:
       wp.launch(
-        padding_efc_h,
+        padding_h,
         dim=(d.nworld, m.nv_pad - m.nv),
         inputs=[m.nv, d.efc.done],
         outputs=[h],
