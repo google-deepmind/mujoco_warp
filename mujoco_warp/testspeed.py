@@ -23,6 +23,7 @@ Example:
 
 import inspect
 import sys
+from dataclasses import fields
 from typing import Sequence
 
 import mujoco
@@ -56,6 +57,7 @@ _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of 
 _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to summarize rollout measurements")
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
+_MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 
 
 def _print_table(matrix, headers, title):
@@ -198,6 +200,50 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
         idx += size
 
       _print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
+
+    if _MEMORY.value:
+      bytes_per_megabyte = 1024 * 1024
+      total_available_memory = wp.get_device(_DEVICE.value).total_memory
+      utilized_memory = wp.get_mempool_used_mem_current(_DEVICE.value)
+
+      def dataclass_memory(dataclass):
+        total_memory = 0
+        out = ""
+        for field in fields(dataclass):
+          value = getattr(dataclass, field.name)
+          fieldinfo = []
+          if isinstance(value, mjw.Contact) or isinstance(value, mjw.Constraint):
+            for vfield in fields(value):
+              vvalue = getattr(value, vfield.name)
+              if type(vvalue) is wp.array:
+                fieldinfo.append((f"{field.name}.{vfield.name}", vvalue.capacity))
+          elif type(value) is wp.array:
+            fieldinfo.append((field.name, value.capacity))
+          for array in fieldinfo:
+            total_memory += array[1]
+            field_percentage = 100 * (array[1] / utilized_memory)
+            # only print if field contributes at least 0.01% of total memory usage
+            if field_percentage >= 1:
+              out += f" {array[0]}: {(array[1] / bytes_per_megabyte):.2f} MB ({field_percentage:.2f}%)\n"
+        return out, total_memory
+
+      memory_str = f"""
+Total device memory: {(total_available_memory / bytes_per_megabyte):.2f} MB
+Total utilized memory: {(utilized_memory / bytes_per_megabyte):.2f} MB ({100 * (utilized_memory / total_available_memory):.2f}%)\n
+"""
+      model_field_str, total_model_memory = dataclass_memory(m)
+      memory_str += f"Model memory ({100 * total_model_memory / utilized_memory:.2f}%):\n"
+      if model_field_str != "":
+        memory_str += model_field_str
+      else:
+        memory_str += " (no field >= 1% of utilized memory)\n"
+      data_field_str, total_data_memory = dataclass_memory(d)
+      memory_str += f"Data memory ({100 * total_data_memory / utilized_memory:.2f}%):\n"
+      if data_field_str != "":
+        memory_str += data_field_str
+      else:
+        memory_str += " (no field >= 1% of utilized memory)\n"
+      print(memory_str)
 
 
 def main():
