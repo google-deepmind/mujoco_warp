@@ -125,7 +125,7 @@ class SmoothTest(parameterized.TestCase):
       d.geom_xpos,
       d.geom_xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
     ):
       arr.zero_()
 
@@ -139,6 +139,10 @@ class SmoothTest(parameterized.TestCase):
     for i in range(m.ngeom):
       mujoco.mju_quat2Mat(geom_xmat[i], d.geom_xquat.numpy()[0, i])
 
+    site_xmat = np.zeros((m.nsite, 9), dtype=np.float64)
+    for i in range(m.nsite):
+      mujoco.mju_quat2Mat(site_xmat[i], d.site_xquat.numpy()[0, i])
+
     _assert_eq(d.xanchor.numpy()[0], mjd.xanchor, "xanchor")
     _assert_eq(d.xaxis.numpy()[0], mjd.xaxis, "xaxis")
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
@@ -148,7 +152,7 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.geom_xpos.numpy()[0], mjd.geom_xpos, "geom_xpos")
     _assert_eq(geom_xmat, mjd.geom_xmat, "geom_xmat")
     _assert_eq(d.site_xpos.numpy()[0], mjd.site_xpos, "site_xpos")
-    _assert_eq(d.site_xmat.numpy()[0], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
+    _assert_eq(site_xmat, mjd.site_xmat, "site_xmat")
 
   def test_com_pos(self):
     """Tests com_pos."""

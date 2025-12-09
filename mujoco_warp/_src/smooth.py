@@ -200,7 +200,6 @@ def _site_local_to_global(
   xquat_in: wp.array2d(dtype=wp.quat),
   # Data out:
   site_xpos_out: wp.array2d(dtype=wp.vec3),
-  site_xmat_out: wp.array2d(dtype=wp.mat33),
   site_xquat_out: wp.array2d(dtype=wp.quat),
 ):
   worldid, siteid = wp.tid()
@@ -208,7 +207,6 @@ def _site_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[worldid % site_pos.shape[0], siteid], xquat)
-  site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid]))
   site_xquat_out[worldid, siteid] = math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid])
 
 @wp.kernel
@@ -321,7 +319,7 @@ def kinematics(m: Model, d: Data):
     _site_local_to_global,
     dim=(d.nworld, m.nsite),
     inputs=[m.site_bodyid, m.site_pos, m.site_quat, d.xpos, d.xquat],
-    outputs=[d.site_xpos, d.site_xmat, d.site_xquat],
+    outputs=[d.site_xpos, d.site_xquat],
   )
 
 
