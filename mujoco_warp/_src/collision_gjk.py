@@ -1701,43 +1701,43 @@ def _box_edge_normals(
 
 # recover face of a box from its index
 @wp.func
-def _box_face(mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp.array(dtype=wp.vec3)) -> int:
+def _box_face(quat: wp.quat, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp.array(dtype=wp.vec3)) -> int:
   # compute global coordinates of the box face and face normal
   if idx == 0:  # right
-    face_out[0] = mat @ wp.vec(size[0], size[1], size[2]) + pos
-    face_out[1] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
-    face_out[2] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
-    face_out[3] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec(size[0], size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec(size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec(size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec(size[0], -size[1], size[2]), quat) + pos
     return 4
   if idx == 1:  # left
-    face_out[0] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
-    face_out[1] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
-    face_out[2] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
-    face_out[3] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec(-size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec(-size[0], size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec(-size[0], -size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec(-size[0], -size[1], -size[2]), quat) + pos
     return 4
   if idx == 2:  # top
-    face_out[0] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
-    face_out[1] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
-    face_out[2] = mat @ wp.vec(size[0], size[1], size[2]) + pos
-    face_out[3] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec(-size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec(size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec(size[0], size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec(-size[0], size[1], size[2]), quat) + pos
     return 4
   if idx == 3:  # bottom
-    face_out[0] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
-    face_out[1] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
-    face_out[2] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
-    face_out[3] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec(-size[0], -size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec(size[0], -size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec(size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec(-size[0], -size[1], -size[2]), quat) + pos
     return 4
   if idx == 4:  # front
-    face_out[0] = mat @ wp.vec(-size[0], size[1], size[2]) + pos
-    face_out[1] = mat @ wp.vec(size[0], size[1], size[2]) + pos
-    face_out[2] = mat @ wp.vec(size[0], -size[1], size[2]) + pos
-    face_out[3] = mat @ wp.vec(-size[0], -size[1], size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec(-size[0], size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec(size[0], size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec(size[0], -size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec(-size[0], -size[1], size[2]), quat) + pos
     return 4
   if idx == 5:  # back
-    face_out[0] = mat @ wp.vec(size[0], size[1], -size[2]) + pos
-    face_out[1] = mat @ wp.vec(-size[0], size[1], -size[2]) + pos
-    face_out[2] = mat @ wp.vec(-size[0], -size[1], -size[2]) + pos
-    face_out[3] = mat @ wp.vec(size[0], -size[1], -size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec(size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec(-size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec(-size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec(size[0], -size[1], -size[2]), quat) + pos
     return 4
   return 0
 
@@ -2074,7 +2074,7 @@ def multicontact(
   else:
     ind = wp.where(is_edge_contact_geom2, idx1[j], idx1[i])
     if geomtype1 == GeomType.BOX:
-      nface1 = _box_face(quat_to_mat(geom1.rot), geom1.pos, geom1.size, ind, face1)
+      nface1 = _box_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
     elif geomtype1 == GeomType.MESH:
       nface1 = _mesh_face(
         quat_to_mat(geom1.rot),
@@ -2094,7 +2094,7 @@ def multicontact(
     nface2 = _set_edge(epa_vert2, endvert, face[0], i, face2)
   else:
     if geomtype2 == GeomType.BOX:
-      nface2 = _box_face(quat_to_mat(geom2.rot), geom2.pos, geom2.size, idx2[j], face2)
+      nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
     elif geomtype2 == GeomType.MESH:
       nface2 = _mesh_face(
         quat_to_mat(geom2.rot),
