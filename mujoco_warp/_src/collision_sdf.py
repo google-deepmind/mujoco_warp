@@ -21,7 +21,6 @@ from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
-from .math import quat_to_mat
 from .math import rot_vec_quat
 from .math import quat_inv
 from .math import mul_quat
@@ -755,8 +754,7 @@ def _sdf_narrowphase(
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
-  mat_rot_1 = quat_to_mat(geom1.rot)
-  g1_to_g2_pos = wp.transpose(mat_rot_1) * (geom2.pos - geom1.pos)
+  g1_to_g2_pos = rot_vec_quat(geom2.pos - geom1.pos, quat_inv(geom1.rot))
   aabb_pos = geom_aabb[aabb_id, g1, 0]
   aabb_size = geom_aabb[aabb_id, g1, 1]
   aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), wp.quat(1.0, 0.0, 0.0, 0.0))
@@ -809,7 +807,7 @@ def _sdf_narrowphase(
     aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
     aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
   )
-  x = mat_rot_1 * x_g2 + geom1.pos
+  x = rot_vec_quat(x_g2, geom1.rot) + geom1.pos
   x0_initial = rot_vec_quat(x - pos2, quat_inv(rot2))
   dist, pos, n = gradient_descent(
     type1,
