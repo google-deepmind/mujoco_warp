@@ -23,6 +23,7 @@ from .types import mat43
 from .types import mat63
 from .math import quat_to_mat
 from .math import rot_vec_quat
+from .math import quat_inv
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -1576,14 +1577,7 @@ def _box_normals2(
   face_normals = mat63(1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0)
 
   # get local coordinates of the normal
-  mat = quat_to_mat(quat)
-  local_n = wp.normalize(
-    wp.vec3(
-      mat[0][0] * n[0] + mat[1][0] * n[1] + mat[2][0] * n[2],
-      mat[0][1] * n[0] + mat[1][1] * n[1] + mat[2][1] * n[2],
-      mat[0][2] * n[0] + mat[1][2] * n[1] + mat[2][2] * n[2],
-    )
-  )
+  local_n = wp.normalize(rot_vec_quat(n, quat_inv(quat)))
 
   # determine if there is a side close to the normal
   for i in range(6):
