@@ -102,7 +102,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
     return sp
 
-  local_dir = wp.transpose(quat_to_mat(geom.rot)) @ dir
+  local_dir = rot_vec_quat(dir, quat_inv(geom.rot))
   if geomtype == GeomType.BOX:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
@@ -114,13 +114,13 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     res = local_dir * geom.size[0]
     # add cylinder contribution
     res[2] += wp.sign(local_dir[2]) * geom.size[1]
-    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
   elif geomtype == GeomType.ELLIPSOID:
     res = wp.cw_mul(local_dir, geom.size)
     res = wp.normalize(res)
     # transform to ellipsoid
     res = wp.cw_mul(res, geom.size)
-    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
   elif geomtype == GeomType.CYLINDER:
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
@@ -131,7 +131,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       res[1] = local_dir[1] * scl
     # set result in Z direction
     res[2] = wp.sign(local_dir[2]) * geom.size[1]
-    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
   elif geomtype == GeomType.MESH:
     max_dist = float(FLOAT_MIN)
     if geom.graphadr == -1 or geom.vertnum < 10:
@@ -173,7 +173,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       sp.vertex_index = geom.graph[vert_globalid + imax]
       sp.point = geom.vert[geom.vertadr + sp.vertex_index]
 
-    sp.point = quat_to_mat(geom.rot) @ sp.point + geom.pos
+    sp.point = rot_vec_quat(sp.point, geom.rot) + geom.pos
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     for i in range(6):
@@ -182,7 +182,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
-    sp.point = quat_to_mat(geom.rot) @ sp.point + geom.pos
+    sp.point = rot_vec_quat(sp.point, geom.rot) + geom.pos
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
