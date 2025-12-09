@@ -2719,7 +2719,7 @@ def _spatial_geom_tendon(
 
   # get geom information
   geom_xpos = geom_xpos_in[worldid, wrap_objid_geom]
-  geom_xmat = math.quat_to_mat(geom_xquat_in[worldid, wrap_objid_geom])
+  geom_xquat = geom_xquat_in[worldid, wrap_objid_geom]
   geomsize = geom_size[worldid, wrap_objid_geom][0]
   geom_type = wrap_type[wrap_adr]
 
@@ -2736,7 +2736,7 @@ def _spatial_geom_tendon(
     side = wp.vec3(wp.inf)
 
   # compute geom wrap length and connect points (if wrap occurs)
-  length_geomgeom, geom_pnt0, geom_pnt1 = util_misc.wrap(site_pnt0, site_pnt1, geom_xpos, geom_xmat, geomsize, geom_type, side)
+  length_geomgeom, geom_pnt0, geom_pnt1 = util_misc.wrap(site_pnt0, site_pnt1, geom_xpos, geom_xquat, geomsize, geom_type, side)
 
   # store geom points
   wrap_geom_xpos_out[worldid, elementid] = wp.spatial_vector(geom_pnt0, geom_pnt1)
