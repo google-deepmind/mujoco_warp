@@ -803,25 +803,14 @@ def _replace_simplex3(pt: Polytope, v1: int, v2: int, v3: int) -> GJKResult:
 
 
 @wp.func
-def _rotmat(axis: wp.vec3) -> wp.mat33:
-  n = wp.norm_l2(axis)
-  u1 = axis[0] / n
-  u2 = axis[1] / n
-  u3 = axis[2] / n
-
-  sin = 0.86602540378  # sin(120 deg)
-  cos = -0.5  # cos(120 deg)
-  R = wp.mat33()
-  R[0, 0] = cos + u1 * u1 * (1.0 - cos)
-  R[0, 1] = u1 * u2 * (1.0 - cos) - u3 * sin
-  R[0, 2] = u1 * u3 * (1.0 - cos) + u2 * sin
-  R[1, 0] = u2 * u1 * (1.0 - cos) + u3 * sin
-  R[1, 1] = cos + u2 * u2 * (1.0 - cos)
-  R[1, 2] = u2 * u3 * (1.0 - cos) - u1 * sin
-  R[2, 0] = u1 * u3 * (1.0 - cos) - u2 * sin
-  R[2, 1] = u2 * u3 * (1.0 - cos) + u1 * sin
-  R[2, 2] = cos + u3 * u3 * (1.0 - cos)
-  return R
+def _rotquat(axis: wp.vec3) -> wp.quat:
+  """Returns quaternion for 120 degree rotation around axis."""
+  u = wp.normalize(axis)
+  # θ = 120°, so θ/2 = 60°
+  # cos(60°) = 0.5, sin(60°) = √3/2
+  half_sin = 0.86602540378  # sin(60°)
+  half_cos = 0.5  # cos(60°)
+  return wp.quat(half_cos, half_sin * u[0], half_sin * u[1], half_sin * u[2])
 
 
 @wp.func
@@ -940,9 +929,9 @@ def _polytope2(
   d1 = wp.cross(e, diff)
 
   # rotate around the line segment to get three more points spaced 120 degrees apart
-  R = _rotmat(diff)
-  d2 = R @ d1
-  d3 = R @ d2
+  rot_qaut = _rotquat(diff)
+  d2 = rot_vec_quat(d1, rot_qaut)
+  d3 = rot_vec_quat(d2, rot_qaut)
 
   # save vertices and get indices for each one
   pt.vert[0] = simplex[0]
@@ -1746,7 +1735,7 @@ def _box_face(quat: wp.quat, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp
 @wp.func
 def _mesh_face(
   # In:
-  mat: wp.mat33,
+  quat: wp.quat,
   pos: wp.vec3,
   vertadr: int,
   polyadr: int,
@@ -1763,7 +1752,7 @@ def _mesh_face(
   nvert = polyvertnum[polyadr + idx]
   for i in range(nvert - 1, -1, -1):
     v = vert[vertadr + polyvert[adr + i]]
-    face_out[j] = mat @ v + pos
+    face_out[j] = rot_vec_quat(v, quat) + pos
     j += 1
   return nvert
 
@@ -2077,7 +2066,7 @@ def multicontact(
       nface1 = _box_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
     elif geomtype1 == GeomType.MESH:
       nface1 = _mesh_face(
-        quat_to_mat(geom1.rot),
+        geom1.rot,
         geom1.pos,
         geom1.vertadr,
         geom1.mesh_polyadr,
@@ -2097,7 +2086,7 @@ def multicontact(
       nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
     elif geomtype2 == GeomType.MESH:
       nface2 = _mesh_face(
-        quat_to_mat(geom2.rot),
+        geom2.rot,
         geom2.pos,
         geom2.vertadr,
         geom2.mesh_polyadr,
