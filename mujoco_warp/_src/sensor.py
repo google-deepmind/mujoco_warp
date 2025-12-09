@@ -903,7 +903,7 @@ def _velocimeter(
   site_bodyid: wp.array(dtype=int),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
@@ -912,7 +912,7 @@ def _velocimeter(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   pos = site_xpos_in[worldid, objid]
-  rot = site_xmat_in[worldid, objid]
+  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
   lin = wp.spatial_bottom(cvel)
@@ -926,14 +926,14 @@ def _gyro(
   # Model:
   site_bodyid: wp.array(dtype=int),
   # Data in:
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   worldid: int,
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
-  rot = site_xmat_in[worldid, objid]
+  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
   return wp.transpose(rot) @ ang
@@ -1055,7 +1055,7 @@ def _frame_linvel(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -1091,7 +1091,7 @@ def _frame_linvel(
     xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
     xposref = site_xpos_in[worldid, refid]
-    xmatref = site_xmat_in[worldid, refid]
+    xmatref = math.quat_to_mat(site_xquat_in[worldid, refid])
   elif reftype == ObjType.CAMERA:
     xposref = cam_xpos_in[worldid, refid]
     xmatref = cam_xmat_in[worldid, refid]
@@ -1161,7 +1161,7 @@ def _frame_angvel(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -1199,7 +1199,7 @@ def _frame_angvel(
     elif reftype == ObjType.GEOM:
       xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
     elif reftype == ObjType.SITE:
-      xmatref = site_xmat_in[worldid, refid]
+      xmatref = math.quat_to_mat(site_xquat_in[worldid, refid])
     elif reftype == ObjType.CAMERA:
       xmatref = cam_xmat_in[worldid, refid]
     else:  # UNKNOWN
@@ -1264,7 +1264,7 @@ def _sensor_vel(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xmat_in: wp.array2d(dtype=wp.mat33),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -1283,10 +1283,10 @@ def _sensor_vel(
   out = sensordata_out[worldid]
 
   if sensortype == SensorType.VELOCIMETER:
-    vec3 = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, worldid, objid)
+    vec3 = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xquat_in, subtree_com_in, cvel_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.GYRO:
-    vec3 = _gyro(site_bodyid, site_xmat_in, cvel_in, worldid, objid)
+    vec3 = _gyro(site_bodyid, site_xquat_in, cvel_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.JOINTVEL:
     val = _joint_vel(jnt_dofadr, qvel_in, worldid, objid)
@@ -1316,7 +1316,7 @@ def _sensor_vel(
       geom_xpos_in,
       geom_xquat_in,
       site_xpos_in,
-      site_xmat_in,
+      site_xquat_in,
       cam_xpos_in,
       cam_xmat_in,
       subtree_com_in,
@@ -1344,7 +1344,7 @@ def _sensor_vel(
       geom_xpos_in,
       geom_xquat_in,
       site_xpos_in,
-      site_xmat_in,
+      site_xquat_in,
       cam_xpos_in,
       cam_xmat_in,
       subtree_com_in,
@@ -1399,7 +1399,7 @@ def sensor_vel(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.cam_xpos,
       d.cam_xmat,
       d.subtree_com,
