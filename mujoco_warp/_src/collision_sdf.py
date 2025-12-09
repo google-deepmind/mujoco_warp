@@ -112,7 +112,7 @@ def get_sdf_params(
 
 
 @wp.func
-def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.mat33) -> AABB:
+def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.quat) -> AABB:
   aabb = AABB()
   aabb.max = wp.vec3(-1000000000.0, -1000000000.0, -1000000000.0)
   aabb.min = wp.vec3(1000000000.0, 1000000000.0, 1000000000.0)
@@ -122,7 +122,7 @@ def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.
       aabb_size.y * (1.0 if (i & 2) else -1.0),
       aabb_size.z * (1.0 if (i & 4) else -1.0),
     )
-    frame_vec = ori * (vec + aabb_pos) + pos
+    frame_vec = rot_vec_quat(vec + aabb_pos, ori) + pos
     aabb.min = wp.min(aabb.min, frame_vec)
     aabb.max = wp.max(aabb.max, frame_vec)
   return aabb
@@ -756,16 +756,13 @@ def _sdf_narrowphase(
   g2_plugin = geom_plugin_index[g2]
 
   mat_rot_1 = quat_to_mat(geom1.rot)
-  mat_rot_2 = quat_to_mat(geom2.rot)
-  g1_to_g2_rot = wp.transpose(mat_rot_1) * mat_rot_2
   g1_to_g2_pos = wp.transpose(mat_rot_1) * (geom2.pos - geom1.pos)
   aabb_pos = geom_aabb[aabb_id, g1, 0]
   aabb_size = geom_aabb[aabb_id, g1, 1]
-  identity = wp.identity(3, dtype=float)
-  aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), identity)
+  aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), wp.quat(1.0, 0.0, 0.0, 0.0))
   aabb_pos = geom_aabb[aabb_id, g2, 0]
   aabb_size = geom_aabb[aabb_id, g2, 1]
-  aabb2 = transform_aabb(aabb_pos, aabb_size, g1_to_g2_pos, g1_to_g2_rot)
+  aabb2 = transform_aabb(aabb_pos, aabb_size, g1_to_g2_pos, mul_quat(quat_inv(geom1.rot), geom2.rot))
   aabb_intersection = AABB()
   aabb_intersection.min = wp.max(aabb1.min, aabb2.min)
   aabb_intersection.max = wp.min(aabb1.max, aabb2.max)
