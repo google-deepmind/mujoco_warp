@@ -2210,6 +2210,7 @@ def ccd(
     geom1.margin = 0.0
     geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
 
+  # TODO(kbayes): support gjk margin trick with height fields
   if geomtype1 != GeomType.HFIELD and (geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE):
     size2 = geom2.size[0]
     full_margin2 = size2 + 0.5 * geom2.margin
