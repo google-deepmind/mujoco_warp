@@ -33,6 +33,8 @@ from .math import make_frame
 from .math import safe_div
 from .math import upper_trid_index
 from .math import quat_to_mat
+from .math import rot_vec_quat
+from .math import quat_inv
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
 from .types import ContactType
@@ -112,14 +114,14 @@ def geom_collision_pair(
   geom1.pos = geom_xpos_in[worldid, g1]
   geom1.rot = geom_xquat_in[worldid, g1]
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
-  mat1 = quat_to_mat(geom1.rot)
-  geom1.normal = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])  # plane
-
+  if geom_type1 == GeomType.PLANE:
+    geom1.normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), geom1.rot)
+  
   geom2.pos = geom_xpos_in[worldid, g2]
   geom2.rot = geom_xquat_in[worldid, g2]
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
-  mat2 = quat_to_mat(geom2.rot)
-  geom2.normal = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])  # plane
+  if geom_type2 == GeomType.PLANE:
+    geom2.normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), geom2.rot)
 
   if geom_type1 == GeomType.MESH:
     dataid = geom_dataid[g1]
