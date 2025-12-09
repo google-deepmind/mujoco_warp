@@ -1520,7 +1520,7 @@ def _mesh_normals(
 def _mesh_edge_normals(
   # In:
   dim: int,
-  mat: wp.mat33,
+  quat: wp.quat,
   pos: wp.vec3,
   vertadr: int,
   polyadr: int,
@@ -1557,7 +1557,7 @@ def _mesh_edge_normals(
       for j in range(nvert):
         if polyvert[adr + j] == v1i:
           k = wp.where(j == 0, nvert - 1, j - 1)
-          endverts_out[i] = mat @ vert[vertadr + polyvert[adr + k]] + pos
+          endverts_out[i] = rot_vec_quat(vert[vertadr + polyvert[adr + k]], quat) + pos
           normals_out[i] = wp.normalize(endverts_out[i] - v1)
     return v1_num
   return 0
@@ -2008,7 +2008,7 @@ def multicontact(
       elif geomtype1 == GeomType.MESH:
         nnorms1 = _mesh_edge_normals(
           nface1,
-          quat_to_mat(geom1.rot),
+          geom1.rot,
           geom1.pos,
           geom1.vertadr,
           geom1.mesh_polyadr,
@@ -2040,7 +2040,7 @@ def multicontact(
       elif geomtype2 == GeomType.MESH:
         nnorms2 = _mesh_edge_normals(
           nface2,
-          quat_to_mat(geom2.rot),
+          geom2.rot,
           geom2.pos,
           geom2.vertadr,
           geom2.mesh_polyadr,
