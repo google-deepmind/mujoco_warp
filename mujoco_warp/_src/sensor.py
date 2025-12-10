@@ -939,8 +939,8 @@ def _gyro(
   # Model:
   site_bodyid: wp.array(dtype=int),
   # Data in:
-  site_xquat_in: wp.array2d(dtype=wp.quat),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   worldid: int,
   objid: int,
