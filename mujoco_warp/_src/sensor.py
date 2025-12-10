@@ -554,7 +554,7 @@ def _sensor_pos(
       objid,
       objtype,
       refid,
-      reftype
+      reftype,
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEXAXIS or sensortype == SensorType.FRAMEYAXIS or sensortype == SensorType.FRAMEZAXIS:
@@ -2579,7 +2579,6 @@ def sensor_acc(m: Model, d: Data):
       d.njmax,
       d.nacon,
       d.site_xquat,
-
       sensor_contact_nmatch,
       sensor_contact_matchid,
       sensor_contact_direction,
