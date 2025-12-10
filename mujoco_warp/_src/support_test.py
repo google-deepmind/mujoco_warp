@@ -26,6 +26,10 @@ from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
 
+from .block_cholesky import create_blocked_cholesky_func
+from .block_cholesky import create_blocked_cholesky_solve_func
+from .warp_util import nested_kernel
+
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-5
@@ -179,10 +183,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_block_cholesky(self):
     """Tests block Cholesky decomposition and solve against numpy using n_humanoid model."""
-    from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
-    from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
-    from mujoco_warp._src.support import nested_kernel
-
     mjm, mjd, m, d = test_data.fixture("humanoid/n_humanoid.xml")
 
     # Add noise and initialize
