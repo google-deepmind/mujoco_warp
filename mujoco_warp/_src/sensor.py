@@ -1485,8 +1485,7 @@ def _force(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
-  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
-  return wp.transpose(site_xmat) @ wp.spatial_bottom(cfrc_int)
+  return math.rot_vec_quat(wp.spatial_bottom(cfrc_int), math.quat_inv(site_xquat_in[worldid, objid]))
 
 
 @wp.func
@@ -1505,9 +1504,8 @@ def _torque(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
-  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  return wp.transpose(site_xmat) @ (wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)))
+  return math.rot_vec_quat(wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)), math.quat_inv(site_xquat_in[worldid, objid]))
 
 
 @wp.func
