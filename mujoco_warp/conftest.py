@@ -17,6 +17,7 @@ import mujoco_warp as mjw
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 
+
 def pytest_configure(config):
   ## initialize primitive colliders
   # clear cache
