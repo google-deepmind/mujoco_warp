@@ -17,9 +17,6 @@ import warp as wp
 
 collect_ignore = ["benchmark/mujoco_menagerie"]
 
-# this file only makes sure we ignore the menagerie tests. Please add any other 
-# pytest configuration to mujoco_warp/conftest.py
-
 def pytest_addoption(parser):
   parser.addoption("--cpu", action="store_true", default=False, help="run tests with cpu")
   parser.addoption(
