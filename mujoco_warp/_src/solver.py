@@ -1351,7 +1351,7 @@ def update_gradient_set_h_qM_lower_sparse(
   qM_in: wp.array3d(dtype=float),
   efc_done_in: wp.array(dtype=bool),
   # Out:
-  h: wp.array3d(dtype=float),
+  h_out: wp.array3d(dtype=float),
 ):
   worldid, elementid = wp.tid()
 
@@ -1360,7 +1360,7 @@ def update_gradient_set_h_qM_lower_sparse(
 
   i = qM_fullm_i[elementid]
   j = qM_fullm_j[elementid]
-  h[worldid, i, j] += qM_in[worldid, 0, elementid]
+  h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
 
 
 @wp.func
@@ -1392,7 +1392,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
     efc_state_in: wp.array2d(dtype=int),
     efc_done_in: wp.array(dtype=bool),
     # Out:
-    h: wp.array3d(dtype=float),
+    h_out: wp.array3d(dtype=float),
   ):
     worldid, elementid = wp.tid()
 
@@ -1443,7 +1443,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
     # AD: setting bounds_check to True explicitly here because for some reason it was
     # slower to disable it.
-    wp.tile_store(h[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
+    wp.tile_store(h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
 
   return kernel
 
@@ -1465,7 +1465,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
     efc_state_in: wp.array2d(dtype=int),
     efc_done_in: wp.array(dtype=bool),
     # Out:
-    h: wp.array3d(dtype=float),
+    h_out: wp.array3d(dtype=float),
   ):
     worldid = wp.tid()
 
@@ -1504,7 +1504,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
-    wp.tile_store(h[worldid], sum_val, bounds_check=False)
+    wp.tile_store(h_out[worldid], sum_val, bounds_check=False)
 
   return kernel
 
@@ -1708,14 +1708,14 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 
 
 @wp.kernel
-def padding_h(nv: int, efc_done_in: wp.array(dtype=bool), h: wp.array3d(dtype=float)):
+def padding_h(nv: int, efc_done_in: wp.array(dtype=bool), h_out: wp.array3d(dtype=float)):
   worldid, elementid = wp.tid()
 
   if efc_done_in[worldid]:
     return
 
   dofid = nv + elementid
-  h[worldid, dofid, dofid] = 1.0
+  h_out[worldid, dofid, dofid] = 1.0
 
 
 def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), hfactor: wp.array3d(dtype=float)):
