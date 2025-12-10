@@ -143,7 +143,6 @@ def _kinematics_level(
 
   xpos_out[worldid, bodyid] = xpos
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
-  #wp.printf("writing xquat: %u\n", bodyid)
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
