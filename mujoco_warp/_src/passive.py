@@ -280,11 +280,11 @@ def _fluid_force(
   body_fluid_ellipsoid: wp.array(dtype=bool),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
-  xiquat_in: wp.array2d(dtype=wp.quat),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  xiquat_in: wp.array2d(dtype=wp.quat),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # Out:
   fluid_applied_out: wp.array2d(dtype=wp.spatial_vector),
 ):

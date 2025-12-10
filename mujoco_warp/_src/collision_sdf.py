@@ -665,12 +665,12 @@ def _sdf_narrowphase(
   geom_plugin_index: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xquat_in: wp.array2d(dtype=wp.quat),
   naconmax_in: int,
   collision_pair_in: wp.array(dtype=wp.vec2i),
   collision_pairid_in: wp.array(dtype=wp.vec2i),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   sdf_initpoints: int,
   sdf_iterations: int,
