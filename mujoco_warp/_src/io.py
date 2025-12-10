@@ -774,18 +774,6 @@ def put_data(
   efc.J[:, : mjd.nefc, : mjm.nv] = np.tile(efc_j, (nworld, 1, 1))
   efc.J = wp.array(efc.J, dtype=float)
 
-  # world body (body 0): zero position, identity orientation
-  #xpos = np.full((nworld,) + mjd.xpos.shape, mjd.xpos)
-  #xpos[:, 0] = 0
-  #xquat = np.full((nworld,) + mjd.xquat.shape, mjd.xquat)
-  #xquat[:, 0] = (1, 0, 0, 0)
-  #xmat = np.full((nworld,) + mjd.xmat.shape, mjd.xmat).reshape(nworld, mjm.nbody, 3, 3)
-  #xmat[:, 0] = np.eye(3)
-  #xipos = np.full((nworld,) + mjd.xipos.shape, mjd.xipos)
-  #xipos[:, 0] = 0
-  #ximat = np.full((nworld,) + mjd.ximat.shape, mjd.ximat).reshape(nworld, mjm.nbody, 3, 3)
-  #ximat[:, 0] = np.eye(3)
-
   # create data
   d_kwargs = {
     "contact": contact,
@@ -807,11 +795,6 @@ def put_data(
     "ne_ten": None,
     "ne_flex": None,
     "nsolving": None,
-    #"xpos": wp.array(xpos, dtype=wp.vec3),
-    #"xquat": wp.array(xquat, dtype=wp.quat),
-    #"xmat": wp.array(xmat, dtype=wp.mat33),
-    #"xipos": wp.array(xipos, dtype=wp.vec3),
-    #"ximat": wp.array(ximat, dtype=wp.mat33),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
