@@ -547,14 +547,14 @@ def _sensor_pos(
       site_xpos_in,
       cam_xpos_in,
       cam_xmat_in,
+      xiquat_in,
+      geom_xquat_in,
+      site_xquat_in,
       worldid,
       objid,
       objtype,
       refid,
-      reftype,
-      xiquat_in,
-      geom_xquat_in,
-      site_xquat_in,
+      reftype
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEXAXIS or sensortype == SensorType.FRAMEYAXIS or sensortype == SensorType.FRAMEZAXIS:
