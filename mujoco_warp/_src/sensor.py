@@ -1196,17 +1196,17 @@ def _frame_angvel(
 
   if refid > -1:
     if reftype == ObjType.BODY:
-      xmatref = math.quat_to_mat(xiquat_in[worldid, refid])
+      xquatref = xiquat_in[worldid, refid]
     elif reftype == ObjType.XBODY:
-      xmatref = math.quat_to_mat(xquat_in[worldid, refid])
+      xquatref = xquat_in[worldid, refid]
     elif reftype == ObjType.GEOM:
-      xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
+      xquatref = geom_xquat_in[worldid, refid]
     elif reftype == ObjType.SITE:
-      xmatref = math.quat_to_mat(site_xquat_in[worldid, refid])
+      xquatref = site_xquat_in[worldid, refid]
     elif reftype == ObjType.CAMERA:
       xmatref = cam_xmat_in[worldid, refid]
     else:  # UNKNOWN
-      xmatref = wp.identity(3, dtype=float)
+      xquatref = wp.quat(1.0, 0.0, 0.0, 0.0)
 
     cvelref, _ = _cvel_offset(
       body_rootid,
@@ -1226,7 +1226,10 @@ def _frame_angvel(
     )
     cangvelref = wp.spatial_top(cvelref)
 
-    return wp.transpose(xmatref) @ (cangvel - cangvelref)
+    if reftype == ObjType.CAMERA:
+      return wp.transpose(xmatref) @ (cangvel - cangvelref)
+    else:
+      return math.rot_vec_quat(cangvel - cangvelref, math.quat_inv(xquatref))
   else:
     return cangvel
 
