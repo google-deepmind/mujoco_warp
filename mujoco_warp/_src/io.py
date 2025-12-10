@@ -946,6 +946,7 @@ def get_data_into(
   result.qacc[:] = d.qacc.numpy()[world_id]
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
+  result.xquat[:] = d.xquat.numpy()[world_id]
   result.xipos[:] = d.xipos.numpy()[world_id]
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
