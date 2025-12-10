@@ -914,21 +914,17 @@ def get_data_into(
 
   efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
 
-  # convert xiquat to ximat
-  ximat = np.zeros((mjm.nbody, 9))
-  for i in range(mjm.nbody):
-    mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[world_id, i])
-  result.ximat[:] = ximat
-
-  geom_xmat = np.zeros((mjm.ngeom, 9))
-  for i in range(mjm.ngeom):
-    mujoco.mju_quat2Mat(geom_xmat[i], d.geom_xquat.numpy()[world_id, i])
-  result.geom_xmat[:] = geom_xmat
-
-  site_xmat = np.zeros((mjm.nsite, 9))
-  for i in range(mjm.nsite):
-    mujoco.mju_quat2Mat(site_xmat[i], d.site_xquat.numpy()[world_id, i])
-  result.site_xmat[:] = site_xmat
+  # convert quaternions to rotation matrices
+  for n, quat, xmat in [
+    (mjm.nbody, d.xquat, result.xmat),
+    (mjm.nbody, d.xiquat, result.ximat),
+    (mjm.ngeom, d.geom_xquat, result.geom_xmat),
+    (mjm.nsite, d.site_xquat, result.site_xmat),
+  ]:
+    mat = np.zeros((n, 9))
+    for i in range(n):
+      mujoco.mju_quat2Mat(mat[i], quat.numpy()[world_id, i])
+    xmat[:] = mat
 
   result.solver_niter[0] = d.solver_niter.numpy()[world_id]
   result.ncon = ncon
@@ -950,21 +946,6 @@ def get_data_into(
   result.qacc[:] = d.qacc.numpy()[world_id]
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
-  xquat = d.xquat.numpy()[world_id]
-  result.xquat[:] = xquat
-  # compute xmat from xquat
-  q = xquat
-  xmat = np.empty((q.shape[0], 9), dtype=np.float32)
-  xmat[:, 0] = q[:, 0] ** 2 + q[:, 1] ** 2 - q[:, 2] ** 2 - q[:, 3] ** 2
-  xmat[:, 1] = 2.0 * (q[:, 1] * q[:, 2] - q[:, 0] * q[:, 3])
-  xmat[:, 2] = 2.0 * (q[:, 1] * q[:, 3] + q[:, 0] * q[:, 2])
-  xmat[:, 3] = 2.0 * (q[:, 1] * q[:, 2] + q[:, 0] * q[:, 3])
-  xmat[:, 4] = q[:, 0] ** 2 - q[:, 1] ** 2 + q[:, 2] ** 2 - q[:, 3] ** 2
-  xmat[:, 5] = 2.0 * (q[:, 2] * q[:, 3] - q[:, 0] * q[:, 1])
-  xmat[:, 6] = 2.0 * (q[:, 1] * q[:, 3] - q[:, 0] * q[:, 2])
-  xmat[:, 7] = 2.0 * (q[:, 2] * q[:, 3] + q[:, 0] * q[:, 1])
-  xmat[:, 8] = q[:, 0] ** 2 - q[:, 1] ** 2 - q[:, 2] ** 2 + q[:, 3] ** 2
-  result.xmat[:] = xmat
   result.xipos[:] = d.xipos.numpy()[world_id]
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
