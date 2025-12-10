@@ -119,16 +119,17 @@ class SmoothTest(parameterized.TestCase):
       d.xanchor,
       d.xaxis,
       d.xpos,
-      d.xquat,
-      d.xmat,
       d.xipos,
-      d.ximat,
       d.geom_xpos,
       d.geom_xmat,
       d.site_xpos,
       d.site_xmat,
     ):
       arr.zero_()
+
+    for arr in (d.xquat, d.xmat, d.ximat):
+      arr_view = arr[:, 1:]
+      arr_view.zero_()
 
     mjw.kinematics(m, d)
 
