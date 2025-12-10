@@ -912,13 +912,13 @@ def _velocimeter(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   pos = site_xpos_in[worldid, objid]
-  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
+  rot = site_xquat_in[worldid, objid]
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
   lin = wp.spatial_bottom(cvel)
   subtree_com = subtree_com_in[worldid, body_rootid[bodyid]]
   dif = pos - subtree_com
-  return wp.transpose(rot) @ (lin - wp.cross(dif, ang))
+  return math.rot_vec_quat(lin - wp.cross(dif, ang), math.quat_inv(rot))
 
 
 @wp.func
