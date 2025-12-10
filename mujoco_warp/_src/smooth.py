@@ -83,9 +83,9 @@ def _kinematics_level(
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
   xipos_out: wp.array2d(dtype=wp.vec3),
-  xiquat_out: wp.array2d(dtype=wp.quat),
   xanchor_out: wp.array2d(dtype=wp.vec3),
   xaxis_out: wp.array2d(dtype=wp.vec3),
+  xiquat_out: wp.array2d(dtype=wp.quat),
 ):
   worldid, nodeid = wp.tid()
   bodyid = body_tree_[nodeid]
@@ -307,7 +307,7 @@ def kinematics(m: Model, d: Data):
         d.xquat,
         body_tree,
       ],
-      outputs=[d.xpos, d.xquat, d.xipos, d.xiquat, d.xanchor, d.xaxis],
+      outputs=[d.xpos, d.xquat, d.xipos, d.xanchor, d.xaxis, d.xiquat],
     )
 
   wp.launch(
@@ -404,8 +404,8 @@ def _cinert(
   body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
-  xiquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   # Data out:
   cinert_out: wp.array2d(dtype=vec10),
 ):
@@ -510,7 +510,7 @@ def com_pos(m: Model, d: Data):
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.subtree_com, d.xiquat],
     outputs=[d.cinert],
   )
   wp.launch(
@@ -1778,11 +1778,11 @@ def _transmission(
   qpos_in: wp.array2d(dtype=float),
   xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
-  site_xquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   ten_J_in: wp.array3d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
+  site_xquat_in: wp.array2d(dtype=wp.quat),
   # Data out:
   actuator_length_out: wp.array2d(dtype=float),
   actuator_moment_out: wp.array3d(dtype=float),
@@ -2180,11 +2180,11 @@ def transmission(m: Model, d: Data):
       d.qpos,
       d.xquat,
       d.site_xpos,
-      d.site_xquat,
       d.subtree_com,
       d.cdof,
       d.ten_J,
       d.ten_length,
+      d.site_xquat,
     ],
     outputs=[d.actuator_length, d.actuator_moment],
   )
@@ -2443,9 +2443,9 @@ def _subtree_vel_forward(
   body_inertia: wp.array2d(dtype=wp.vec3),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
-  xiquat_in: wp.array2d(dtype=wp.quat),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  xiquat_in: wp.array2d(dtype=wp.quat),
   # Data out:
   subtree_linvel_out: wp.array2d(dtype=wp.vec3),
   subtree_angmom_out: wp.array2d(dtype=wp.vec3),
@@ -2557,7 +2557,7 @@ def subtree_vel(m: Model, d: Data):
   wp.launch(
     _subtree_vel_forward,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com, d.cvel],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.subtree_com, d.cvel, d.xiquat],
     outputs=[d.subtree_linvel, d.subtree_angmom, d.subtree_bodyvel],
   )
 
@@ -2692,10 +2692,10 @@ def _spatial_geom_tendon(
   wrap_pulley_scale: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # Data out:
   ten_J_out: wp.array3d(dtype=float),
   ten_length_out: wp.array2d(dtype=float),
@@ -3050,10 +3050,10 @@ def tendon(m: Model, d: Data):
       m.wrap_geom_adr,
       m.wrap_pulley_scale,
       d.geom_xpos,
-      d.geom_xquat,
       d.site_xpos,
       d.subtree_com,
       d.cdof,
+      d.geom_xquat,
     ],
     outputs=[d.ten_J, d.ten_length, wrap_geom_xpos],
   )

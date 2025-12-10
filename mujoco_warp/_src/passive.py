@@ -508,9 +508,9 @@ def _fluid(m: Model, d: Data):
       d.xipos,
       d.xiquat,
       d.geom_xpos,
-      d.geom_xquat,
       d.subtree_com,
       d.cvel,
+      d.geom_xquat,
     ],
     outputs=[fluid_applied],
   )
