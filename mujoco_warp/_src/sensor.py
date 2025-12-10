@@ -933,10 +933,10 @@ def _gyro(
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
-  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
+  rot = site_xquat_in[worldid, objid]
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
-  return wp.transpose(rot) @ ang
+  return math.rot_vec_quat(ang, math.quat_inv(rot))
 
 
 @wp.func
@@ -1082,22 +1082,22 @@ def _frame_linvel(
 
   if reftype == ObjType.BODY:
     xposref = xipos_in[worldid, refid]
-    xmatref = math.quat_to_mat(xiquat_in[worldid, refid])
+    xquatref = xiquat_in[worldid, refid]
   elif reftype == ObjType.XBODY:
     xposref = xpos_in[worldid, refid]
-    xmatref = math.quat_to_mat(xquat_in[worldid, refid])
+    xquatref = xquat_in[worldid, refid]
   elif reftype == ObjType.GEOM:
     xposref = geom_xpos_in[worldid, refid]
-    xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
+    xquatref = geom_xquat_in[worldid, refid]
   elif reftype == ObjType.SITE:
     xposref = site_xpos_in[worldid, refid]
-    xmatref = math.quat_to_mat(site_xquat_in[worldid, refid])
+    xquatref = site_xquat_in[worldid, refid]
   elif reftype == ObjType.CAMERA:
     xposref = cam_xpos_in[worldid, refid]
     xmatref = cam_xmat_in[worldid, refid]
   else:  # UNKNOWN
     xposref = wp.vec3(0.0)
-    xmatref = wp.identity(3, dtype=float)
+    xquatref = wp.quat(1.0, 0.0, 0.0, 0.0)
 
   cvel, offset = _cvel_offset(
     body_rootid,
@@ -1141,7 +1141,10 @@ def _frame_linvel(
     xlinvelref = clinvelref - wp.cross(offsetref, cangvelref)
     rvec = xpos - xposref
     rel_vel = xlinvel - xlinvelref + wp.cross(rvec, cangvelref)
-    return wp.transpose(xmatref) @ rel_vel
+    if reftype == ObjType.CAMERA:
+      return wp.transpose(xmatref) @ rel_vel
+    else:
+      return math.rot_vec_quat(rel_vel, math.quat_inv(xquatref))
   else:
     return xlinvel
 
