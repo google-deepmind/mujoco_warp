@@ -30,11 +30,11 @@ from .collision_primitive_core import sphere_capsule
 from .collision_primitive_core import sphere_cylinder
 from .collision_primitive_core import sphere_sphere
 from .math import make_frame
-from .math import safe_div
-from .math import upper_trid_index
+from .math import quat_inv
 from .math import quat_to_mat
 from .math import rot_vec_quat
-from .math import quat_inv
+from .math import safe_div
+from .math import upper_trid_index
 from .types import MJ_MINMU
 from .types import MJ_MINVAL
 from .types import ContactType

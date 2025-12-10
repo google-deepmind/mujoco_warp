@@ -18,12 +18,12 @@ from typing import Tuple
 import warp as wp
 
 from .collision_primitive import Geom
+from .math import quat_inv
+from .math import quat_to_mat
+from .math import rot_vec_quat
 from .types import GeomType
 from .types import mat43
 from .types import mat63
-from .math import quat_to_mat
-from .math import rot_vec_quat
-from .math import quat_inv
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})

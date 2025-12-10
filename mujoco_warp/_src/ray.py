@@ -17,9 +17,9 @@ from typing import Optional, Tuple
 
 import warp as wp
 
-from .math import safe_div
 from .math import quat_inv
 from .math import rot_vec_quat
+from .math import safe_div
 from .types import MJ_MINVAL
 from .types import Data
 from .types import GeomType
@@ -35,7 +35,7 @@ def _ray_map(pos: wp.vec3, quat: wp.quat, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
 
   Args:
       pos: position of geom frame
-      mat: orientation of geom frame
+      quat: orientation of geom frame
       pnt: starting point of ray in world coordinates
       vec: direction of ray in world coordinates
 

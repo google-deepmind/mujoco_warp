@@ -24,10 +24,10 @@ from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
-from .math import upper_trid_index
-from .math import rot_vec_quat
-from .math import quat_inv
 from .math import mul_quat
+from .math import quat_inv
+from .math import rot_vec_quat
+from .math import upper_trid_index
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR

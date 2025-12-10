@@ -332,7 +332,7 @@ def wrap(
     x0: 3D endpoint.
     x1: 3D endpoint.
     pos: Position of geom.
-    mat: Orientation of geom.
+    quat: Orientation of geom.
     radius: Geom radius.
     geomtype: Wrap type (mjtWrap).
     side: 3D position for sidesite, no side point: wp.vec3(wp.inf).
