@@ -2464,11 +2464,11 @@ def _subtree_vel_forward(
   lin -= wp.cross(xipos - subtree_com_root, ang)
 
   subtree_linvel_out[worldid, bodyid] = body_mass[body_mass_id, bodyid] * lin
-  dv = wp.transpose(ximat) @ ang
+  dv = math.rot_vec_quat(ang, math.quat_inv(xiquat_in[worldid, bodyid]))
   dv[0] *= body_inertia[body_inertia_id, bodyid][0]
   dv[1] *= body_inertia[body_inertia_id, bodyid][1]
   dv[2] *= body_inertia[body_inertia_id, bodyid][2]
-  subtree_angmom_out[worldid, bodyid] = ximat @ dv
+  subtree_angmom_out[worldid, bodyid] = math.rot_vec_quat(dv, xiquat_in[worldid, bodyid])
   subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
 
