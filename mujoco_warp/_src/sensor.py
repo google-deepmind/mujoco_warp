@@ -875,11 +875,11 @@ def sensor_pos(m: Model, d: Data):
       d.subtree_com,
       d.ten_length,
       d.actuator_length,
-      rangefinder_dist,
-      sensor_collision,
       d.xiquat,
       d.geom_xquat,
       d.site_xquat,
+      rangefinder_dist,
+      sensor_collision,
     ],
     outputs=[d.sensordata],
   )
