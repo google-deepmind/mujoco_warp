@@ -2075,10 +2075,15 @@ def _solve(m: types.Model, d: types.Data):
     wp.copy(d.qacc, d.qacc_smooth)
 
   # Newton solver Hessian
-  h_nv = m.nv_pad if m.opt.solver == types.SolverType.NEWTON else 0
-  h = wp.empty((d.nworld, h_nv, h_nv), dtype=float)
-  hfactor_nv = m.nv_pad if (m.opt.solver == types.SolverType.NEWTON) and (m.nv > _BLOCK_CHOLESKY_DIM) else 0
-  hfactor = wp.empty((d.nworld, hfactor_nv, hfactor_nv), dtype=float)
+  if m.opt.solver == types.SolverType.NEWTON:
+    h = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
+    if m.nv > _BLOCK_CHOLESKY_DIM:
+      hfactor = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
+    else:
+      hfactor = wp.empty((d.nworld, 0, 0), dtype=float)
+  else:
+    h = wp.empty((d.nworld, 0, 0), dtype=float)
+    hfactor = wp.empty((d.nworld, 0, 0), dtype=float)
 
   # create context
   create_context(m, d, h, hfactor, grad=True)
