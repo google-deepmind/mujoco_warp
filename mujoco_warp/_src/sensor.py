@@ -313,25 +313,26 @@ def _frame_pos(
 
   if reftype == ObjType.BODY:
     xpos_ref = xipos_in[worldid, refid]
-    xmat_ref = math.quat_to_mat(xiquat_in[worldid, refid])
+    xquat_ref = xiquat_in[worldid, refid]
   elif objtype == ObjType.XBODY:
     xpos_ref = xpos_in[worldid, refid]
-    xmat_ref = math.quat_to_mat(xquat_in[worldid, refid])
+    xquat_ref = xquat_in[worldid, refid]
   elif reftype == ObjType.GEOM:
     xpos_ref = geom_xpos_in[worldid, refid]
-    xmat_ref = math.quat_to_mat(geom_xquat_in[worldid, refid])
+    xquat_ref = geom_xquat_in[worldid, refid]
   elif reftype == ObjType.SITE:
     xpos_ref = site_xpos_in[worldid, refid]
-    xmat_ref = math.quat_to_mat(site_xquat_in[worldid, refid])
+    xquat_ref = site_xquat_in[worldid, refid]
   elif reftype == ObjType.CAMERA:
     xpos_ref = cam_xpos_in[worldid, refid]
     xmat_ref = cam_xmat_in[worldid, refid]
+    return wp.transpose(xmat_ref) @ (xpos - xpos_ref)
 
   else:  # UNKNOWN
     xpos_ref = wp.vec3(0.0)
-    xmat_ref = wp.identity(3, wp.float32)
+    xquat_ref = wp.quat(1.0, 0.0, 0.0, 0.0)
 
-  return wp.transpose(xmat_ref) @ (xpos - xpos_ref)
+  return math.rot_vec_quat(xpos - xpos_ref, math.quat_inv(xquat_ref))
 
 
 @wp.func
@@ -348,43 +349,39 @@ def _frame_axis(
   objtype: int,
   refid: int,
   reftype: int,
-  frame_axis: int,
+  frame_axis_index: int,
+  frame_axis_vec: wp.vec3,
 ) -> wp.vec3:
   if objtype == ObjType.BODY:
-    xmat = math.quat_to_mat(xiquat_in[worldid, objid])
-    axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
+    axis = math.rot_vec_quat(frame_axis_vec, xiquat_in[worldid, objid])
   elif objtype == ObjType.XBODY:
-    xmat = math.quat_to_mat(xquat_in[worldid, objid])
-    axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
+    axis = math.rot_vec_quat(frame_axis_vec, xquat_in[worldid, objid])
   elif objtype == ObjType.GEOM:
-    xmat = math.quat_to_mat(geom_xquat_in[worldid, objid])
-    axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
+    axis = math.rot_vec_quat(frame_axis_vec, geom_xquat_in[worldid, objid])
   elif objtype == ObjType.SITE:
-    xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
-    axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
+    axis = math.rot_vec_quat(frame_axis_vec, site_xquat_in[worldid, objid])
   elif objtype == ObjType.CAMERA:
     xmat = cam_xmat_in[worldid, objid]
-    axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
-  else:  # UNKNOWN
-    axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
+    axis = wp.vec3(xmat[0, frame_axis_index], xmat[1, frame_axis_index], xmat[2, frame_axis_index])
 
   if refid == -1:
     return axis
 
   if reftype == ObjType.BODY:
-    xmat_ref = math.quat_to_mat(xiquat_in[worldid, refid])
+    xquat_ref = xiquat_in[worldid, refid]
   elif reftype == ObjType.XBODY:
-    xmat_ref = math.quat_to_mat(xquat_in[worldid, refid])
+    xquat_ref = xquat_in[worldid, refid]
   elif reftype == ObjType.GEOM:
-    xmat_ref = math.quat_to_mat(geom_xquat_in[worldid, refid])
+    xquat_ref = geom_xquat_in[worldid, refid]
   elif reftype == ObjType.SITE:
-    xmat_ref = math.quat_to_mat(site_xquat_in[worldid, refid])
+    xquat_ref = site_xquat_in[worldid, refid]
   elif reftype == ObjType.CAMERA:
     xmat_ref = cam_xmat_in[worldid, refid]
+    return wp.transpose(xmat_ref) @ axis
   else:  # UNKNOWN
     xmat_ref = wp.identity(3, dtype=wp.float32)
 
-  return wp.transpose(xmat_ref) @ axis
+  return math.rot_vec_quat(axis, math.quat_inv(xquat_ref))
 
 
 @wp.func
@@ -565,13 +562,16 @@ def _sensor_pos(
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
     if sensortype == SensorType.FRAMEXAXIS:
-      axis = 0
+      frame_axis_vec = wp.vec3(1.0, 0.0, 0.0)
+      frame_axis_index = 0
     elif sensortype == SensorType.FRAMEYAXIS:
-      axis = 1
+      frame_axis_vec = wp.vec3(0.0, 1.0, 0.0)
+      frame_axis_index = 1
     elif sensortype == SensorType.FRAMEZAXIS:
-      axis = 2
+      frame_axis_vec = wp.vec3(0.0, 0.0, 1.0)
+      frame_axis_index = 2
     vec3 = _frame_axis(
-      xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
+      xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, frame_axis_index, frame_axis_vec
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEQUAT:
