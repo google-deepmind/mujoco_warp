@@ -47,6 +47,7 @@ def _ray_map(pos: wp.vec3, quat: wp.quat, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
   lvec = rot_vec_quat(vec, quat_inv)
   return lpnt, lvec
 
+
 @wp.func
 def _ray_eliminate(
   # Model:

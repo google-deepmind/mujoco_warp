@@ -1739,4 +1739,3 @@ class Data:
   xiquat: array("nworld", "nbody", wp.quat)
   geom_xquat: array("nworld", "ngeom", wp.quat)
   site_xquat: array("nworld", "nsite", wp.quat)
-

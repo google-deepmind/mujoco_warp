@@ -612,7 +612,7 @@ def gradient_descent(
   grad2 = wp.normalize(grad2)
   n = grad1 - grad2
   n = wp.normalize(n)
-  pos = rot_vec_quat(x , rot2) + pos2
+  pos = rot_vec_quat(x, rot2) + pos2
   n = rot_vec_quat(n, rot2)
   pos3 = pos - n * dist / 2.0
   return dist, pos3, n

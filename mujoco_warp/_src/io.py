@@ -835,7 +835,11 @@ def put_data(
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
   # convert xmat fields to xquat
-  for xmat, attr, n in [(mjd.ximat, "xiquat", mjm.nbody), (mjd.geom_xmat, "geom_xquat", mjm.ngeom), (mjd.site_xmat, "site_xquat", mjm.nsite)]:
+  for xmat, attr, n in [
+    (mjd.ximat, "xiquat", mjm.nbody),
+    (mjd.geom_xmat, "geom_xquat", mjm.ngeom),
+    (mjd.site_xmat, "site_xquat", mjm.nsite),
+  ]:
     xquat = np.zeros((n, 4))
     for i in range(n):
       mujoco.mju_mat2Quat(xquat[i], xmat[i])

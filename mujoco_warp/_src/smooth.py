@@ -54,6 +54,7 @@ def _kinematics_root(
   xipos_out[worldid, 0] = wp.vec3(0.0)
   xiquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
 
+
 @wp.kernel
 def _kinematics_level(
   # Model:
@@ -208,6 +209,7 @@ def _site_local_to_global(
   xquat = xquat_in[worldid, bodyid]
   site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[worldid % site_pos.shape[0], siteid], xquat)
   site_xquat_out[worldid, siteid] = math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid])
+
 
 @wp.kernel
 def _flex_vertices(

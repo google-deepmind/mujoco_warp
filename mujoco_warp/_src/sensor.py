@@ -571,7 +571,18 @@ def _sensor_pos(
       frame_axis_vec = wp.vec3(0.0, 0.0, 1.0)
       frame_axis_index = 2
     vec3 = _frame_axis(
-      xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, frame_axis_index, frame_axis_vec
+      xquat_in,
+      xiquat_in,
+      geom_xquat_in,
+      site_xquat_in,
+      cam_xmat_in,
+      worldid,
+      objid,
+      objtype,
+      refid,
+      reftype,
+      frame_axis_index,
+      frame_axis_vec,
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEQUAT:
@@ -689,7 +700,9 @@ def _sensor_pos(
     else:
       return  # should not occur
     refid = sensor_refid[sensorid]
-    val_bool = inside_geom(site_xpos_in[worldid, refid], site_xquat_in[worldid, refid], site_size[refid], site_type[refid], xpos)
+    val_bool = inside_geom(
+      site_xpos_in[worldid, refid], site_xquat_in[worldid, refid], site_size[refid], site_type[refid], xpos
+    )
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, float(val_bool), out)
   elif sensortype == SensorType.E_POTENTIAL:
     val = energy_in[worldid][0]
@@ -1505,7 +1518,9 @@ def _torque(
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  return math.rot_vec_quat(wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)), math.quat_inv(site_xquat_in[worldid, objid]))
+  return math.rot_vec_quat(
+    wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)), math.quat_inv(site_xquat_in[worldid, objid])
+  )
 
 
 @wp.func

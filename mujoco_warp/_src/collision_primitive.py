@@ -116,7 +116,7 @@ def geom_collision_pair(
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
   if geom_type1 == GeomType.PLANE:
     geom1.normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), geom1.rot)
-  
+
   geom2.pos = geom_xpos_in[worldid, g2]
   geom2.rot = geom_xquat_in[worldid, g2]
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
