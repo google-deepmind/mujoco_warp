@@ -1457,8 +1457,6 @@ def _accelerometer(
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
-  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
-  rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   cvel_top = wp.spatial_top(cvel)
   cvel_bottom = wp.spatial_bottom(cvel)
@@ -1466,9 +1464,10 @@ def _accelerometer(
   cacc_top = wp.spatial_top(cacc)
   cacc_bottom = wp.spatial_bottom(cacc)
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  ang = rotT @ cvel_top
-  lin = rotT @ (cvel_bottom - wp.cross(dif, cvel_top))
-  acc = rotT @ (cacc_bottom - wp.cross(dif, cacc_top))
+  rotT = math.quat_inv(site_xquat_in[worldid, objid])
+  ang = math.rot_vec_quat(cvel_top, rotT)
+  lin = math.rot_vec_quat(cvel_bottom - wp.cross(dif, cvel_top), rotT)
+  acc = math.rot_vec_quat(cacc_bottom - wp.cross(dif, cacc_top), rotT)
   correction = wp.cross(ang, lin)
   return acc + correction
 
