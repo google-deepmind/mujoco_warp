@@ -13,7 +13,28 @@
 # limitations under the License.
 # ==============================================================================
 
+import warp as wp
+
 collect_ignore = ["benchmark/mujoco_menagerie"]
 
 # this file only makes sure we ignore the menagerie tests. Please add any other 
 # pytest configuration to mujoco_warp/conftest.py
+
+def pytest_addoption(parser):
+  parser.addoption("--cpu", action="store_true", default=False, help="run tests with cpu")
+  parser.addoption(
+    "--verify_cuda",
+    action="store_true",
+    default=False,
+    help="run tests with cuda error checking",
+  )
+  parser.addoption("--lineinfo", action="store_true", default=False, help="add lineinfo to warp kernel")
+
+
+def pytest_configure(config):
+  if config.getoption("--cpu"):
+    wp.set_device("cpu")
+  if config.getoption("--verify_cuda"):
+    wp.config.verify_cuda = True
+  if config.getoption("--lineinfo"):
+    wp.config.lineinfo = True

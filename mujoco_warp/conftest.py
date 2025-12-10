@@ -13,34 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
-import warp as wp
-
 import mujoco_warp as mjw
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 
-collect_ignore = ["benchmark/mujoco_menagerie"]
-
-
-def pytest_addoption(parser):
-  parser.addoption("--cpu", action="store_true", default=False, help="run tests with cpu")
-  parser.addoption(
-    "--verify_cuda",
-    action="store_true",
-    default=False,
-    help="run tests with cuda error checking",
-  )
-  parser.addoption("--lineinfo", action="store_true", default=False, help="add lineinfo to warp kernel")
-
-
 def pytest_configure(config):
-  if config.getoption("--cpu"):
-    wp.set_device("cpu")
-  if config.getoption("--verify_cuda"):
-    wp.config.verify_cuda = True
-  if config.getoption("--lineinfo"):
-    wp.config.lineinfo = True
-
   ## initialize primitive colliders
   # clear cache
   mjw._src.collision_primitive._PRIMITIVE_COLLISION_TYPES.clear()
