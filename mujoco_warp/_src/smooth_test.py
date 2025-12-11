@@ -121,29 +121,40 @@ class SmoothTest(parameterized.TestCase):
       d.xpos,
       d.xipos,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
     ):
       arr.zero_()
 
-    for arr in (d.xquat, d.xmat, d.ximat):
+    for arr in (d.xquat, d.xiquat):
       arr_view = arr[:, 1:]
       arr_view.zero_()
 
     mjw.kinematics(m, d)
 
+    ximat = np.zeros((m.nbody, 9), dtype=np.float64)
+    for i in range(m.nbody):
+      mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[0, i])
+
+    geom_xmat = np.zeros((m.ngeom, 9), dtype=np.float64)
+    for i in range(m.ngeom):
+      mujoco.mju_quat2Mat(geom_xmat[i], d.geom_xquat.numpy()[0, i])
+
+    site_xmat = np.zeros((m.nsite, 9), dtype=np.float64)
+    for i in range(m.nsite):
+      mujoco.mju_quat2Mat(site_xmat[i], d.site_xquat.numpy()[0, i])
+
     _assert_eq(d.xanchor.numpy()[0], mjd.xanchor, "xanchor")
     _assert_eq(d.xaxis.numpy()[0], mjd.xaxis, "xaxis")
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
     _assert_eq(d.xquat.numpy()[0], mjd.xquat, "xquat")
-    _assert_eq(d.xmat.numpy()[0], mjd.xmat.reshape((-1, 3, 3)), "xmat")
     _assert_eq(d.xipos.numpy()[0], mjd.xipos, "xipos")
-    _assert_eq(d.ximat.numpy()[0], mjd.ximat.reshape((-1, 3, 3)), "ximat")
+    _assert_eq(ximat, mjd.ximat, "ximat")
     _assert_eq(d.geom_xpos.numpy()[0], mjd.geom_xpos, "geom_xpos")
-    _assert_eq(d.geom_xmat.numpy()[0], mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
+    _assert_eq(geom_xmat, mjd.geom_xmat, "geom_xmat")
     _assert_eq(d.site_xpos.numpy()[0], mjd.site_xpos, "site_xpos")
-    _assert_eq(d.site_xmat.numpy()[0], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
+    _assert_eq(site_xmat, mjd.site_xmat, "site_xmat")
 
   def test_com_pos(self):
     """Tests com_pos."""

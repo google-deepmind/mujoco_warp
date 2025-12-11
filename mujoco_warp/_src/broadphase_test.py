@@ -15,6 +15,7 @@
 
 """Tests for broadphase functions."""
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -145,10 +146,11 @@ class BroadphaseTest(parameterized.TestCase):
       np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
       dtype=wp.vec3,
     )
-    d3.geom_xmat = wp.array(
-      np.vstack([np.expand_dims(mjd1.geom_xmat, axis=0), np.expand_dims(mjd2.geom_xmat, axis=0)]),
-      dtype=wp.mat33,
-    )
+    geom_xquat = np.zeros((2, mjm.ngeom, 4))
+    for j, mjd in enumerate([mjd1, mjd2]):
+      for i in range(mjm.ngeom):
+        mujoco.mju_mat2Quat(geom_xquat[j, i], mjd.geom_xmat[i])
+    d3.geom_xquat = wp.array(geom_xquat, dtype=wp.quat)
     broadphase_caller(m, d3)
 
     ncollision = d3.ncollision.numpy()[0]
