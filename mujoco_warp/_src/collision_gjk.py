@@ -956,7 +956,7 @@ def _polytope2(
       index = i
 
   # cross product with best coordinate axis
-  e = wp.vec(0.0, 0.0, 0.0)
+  e = wp.vec3(0.0, 0.0, 0.0)
   e[index] = 1.0
   d1 = wp.cross(e, diff)
 
@@ -1725,40 +1725,40 @@ def _box_edge_normals(
 def _box_face(quat: wp.quat, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp.array(dtype=wp.vec3)) -> int:
   # compute global coordinates of the box face and face normal
   if idx == 0:  # right
-    face_out[0] = rot_vec_quat(wp.vec(size[0], size[1], size[2]), quat) + pos
-    face_out[1] = rot_vec_quat(wp.vec(size[0], size[1], -size[2]), quat) + pos
-    face_out[2] = rot_vec_quat(wp.vec(size[0], -size[1], -size[2]), quat) + pos
-    face_out[3] = rot_vec_quat(wp.vec(size[0], -size[1], size[2]), quat) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(size[0], size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(size[0], -size[1], size[2]), quat) + pos
     return 4
   if idx == 1:  # left
-    face_out[0] = rot_vec_quat(wp.vec(-size[0], size[1], -size[2]), quat) + pos
-    face_out[1] = rot_vec_quat(wp.vec(-size[0], size[1], size[2]), quat) + pos
-    face_out[2] = rot_vec_quat(wp.vec(-size[0], -size[1], size[2]), quat) + pos
-    face_out[3] = rot_vec_quat(wp.vec(-size[0], -size[1], -size[2]), quat) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(-size[0], size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(-size[0], -size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], -size[1], -size[2]), quat) + pos
     return 4
   if idx == 2:  # top
-    face_out[0] = rot_vec_quat(wp.vec(-size[0], size[1], -size[2]), quat) + pos
-    face_out[1] = rot_vec_quat(wp.vec(size[0], size[1], -size[2]), quat) + pos
-    face_out[2] = rot_vec_quat(wp.vec(size[0], size[1], size[2]), quat) + pos
-    face_out[3] = rot_vec_quat(wp.vec(-size[0], size[1], size[2]), quat) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], size[1], size[2]), quat) + pos
     return 4
   if idx == 3:  # bottom
-    face_out[0] = rot_vec_quat(wp.vec(-size[0], -size[1], size[2]), quat) + pos
-    face_out[1] = rot_vec_quat(wp.vec(size[0], -size[1], size[2]), quat) + pos
-    face_out[2] = rot_vec_quat(wp.vec(size[0], -size[1], -size[2]), quat) + pos
-    face_out[3] = rot_vec_quat(wp.vec(-size[0], -size[1], -size[2]), quat) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], -size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], -size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], -size[1], -size[2]), quat) + pos
     return 4
   if idx == 4:  # front
-    face_out[0] = rot_vec_quat(wp.vec(-size[0], size[1], size[2]), quat) + pos
-    face_out[1] = rot_vec_quat(wp.vec(size[0], size[1], size[2]), quat) + pos
-    face_out[2] = rot_vec_quat(wp.vec(size[0], -size[1], size[2]), quat) + pos
-    face_out[3] = rot_vec_quat(wp.vec(-size[0], -size[1], size[2]), quat) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], -size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], -size[1], size[2]), quat) + pos
     return 4
   if idx == 5:  # back
-    face_out[0] = rot_vec_quat(wp.vec(size[0], size[1], -size[2]), quat) + pos
-    face_out[1] = rot_vec_quat(wp.vec(-size[0], size[1], -size[2]), quat) + pos
-    face_out[2] = rot_vec_quat(wp.vec(-size[0], -size[1], -size[2]), quat) + pos
-    face_out[3] = rot_vec_quat(wp.vec(size[0], -size[1], -size[2]), quat) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(-size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(-size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(size[0], -size[1], -size[2]), quat) + pos
     return 4
   return 0
 

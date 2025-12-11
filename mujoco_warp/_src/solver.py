@@ -36,7 +36,7 @@ _BLOCK_CHOLESKY_DIM = 32
 
 @wp.func
 def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
-  return value / (stat_meaninertia * float(wp.max(1, nv)))
+  return value / (stat_meaninertia * float(nv))
 
 
 @wp.func
@@ -339,8 +339,8 @@ def linesearch_iterative(
   nefc_clip = min(njmax_in, nefc_in[worldid])
 
   # Calculate p0
-  snorm = wp.math.sqrt(efc_search_dot_in[worldid])
-  scale = stat_meaninertia * wp.float(wp.max(1, nv))
+  snorm = wp.sqrt(efc_search_dot_in[worldid])
+  scale = stat_meaninertia * wp.float(nv)
   gtol = tolerance * ls_tolerance * snorm * scale
   p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2])
   p0 += _eval_init(
@@ -1966,7 +1966,7 @@ def solve_done(
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
 
   improvement = _rescale(nv, stat_meaninertia, efc_prev_cost_in[worldid] - efc_cost_in[worldid])
-  gradient = _rescale(nv, stat_meaninertia, wp.math.sqrt(efc_grad_dot_in[worldid]))
+  gradient = _rescale(nv, stat_meaninertia, wp.sqrt(efc_grad_dot_in[worldid]))
   done = (improvement < tolerance) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then

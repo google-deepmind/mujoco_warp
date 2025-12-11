@@ -582,15 +582,15 @@ def _flex_elasticity(
   nedge = nvert * (nvert - 1) / 2
   edges = wp.where(
     dim == 3,
-    wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-    wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+    wp.types.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
+    wp.types.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
   )
   if timestep > 0.0 and not dsbl_damper:
     kD = flex_damping[f] / timestep
   else:
     kD = 0.0
 
-  gradient = wp.mat(0.0, shape=(6, 6))
+  gradient = wp.types.matrix(0.0, shape=(6, 6))
   for e in range(nedge):
     vert0 = flex_elem[(dim + 1) * elemid + edges[e, 0]]
     vert1 = flex_elem[(dim + 1) * elemid + edges[e, 1]]
@@ -609,7 +609,7 @@ def _flex_elasticity(
     previous = deformed - vel * timestep
     elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
 
-  metric = wp.mat(0.0, shape=(6, 6))
+  metric = wp.types.matrix(0.0, shape=(6, 6))
   id = int(0)
   for ed1 in range(nedge):
     for ed2 in range(ed1, nedge):
@@ -617,7 +617,7 @@ def _flex_elasticity(
       metric[ed2, ed1] = flex_stiffness[elemid, id]
       id += 1
 
-  force = wp.mat(0.0, shape=(6, 3))
+  force = wp.types.matrix(0.0, shape=(6, 3))
   for ed1 in range(nedge):
     for ed2 in range(nedge):
       for i in range(2):
@@ -664,7 +664,7 @@ def _flex_bending(
   if v[3] == -1:
     return
 
-  frc = wp.mat(0.0, shape=(4, 3))
+  frc = wp.types.matrix(0.0, shape=(4, 3))
   if flex_bending[edgeid, 16]:
     v0 = flexvert_xpos_in[worldid, v[0]]
     v1 = flexvert_xpos_in[worldid, v[1]]
@@ -675,7 +675,7 @@ def _flex_bending(
     frc[3] = wp.cross(v1 - v0, v2 - v0)
     frc[0] = -(frc[1] + frc[2] + frc[3])
 
-  force = wp.mat(0.0, shape=(nvert, 3))
+  force = wp.types.matrix(0.0, shape=(nvert, 3))
   for i in range(nvert):
     for x in range(3):
       for j in range(nvert):
