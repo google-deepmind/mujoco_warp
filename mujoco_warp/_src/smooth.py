@@ -105,15 +105,19 @@ def _kinematics_level(
 
     # mocap bodies have world body as parent
     mocapid = body_mocapid[bodyid]
-    if pid == 0 and mocapid != -1:
+    if mocapid >= 0:
       body_pos_ = mocap_pos_in[worldid, mocapid]
       body_quat_ = mocap_quat_in[worldid, mocapid]
     else:
       body_pos_ = body_pos[body_pos_id, bodyid]
       body_quat_ = body_quat[body_quat_id, bodyid]
 
-    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
+    if pid >= 0:
+      xpos = xmat_in[worldid, pid] @ body_pos_ + xpos_in[worldid, pid]
+      xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
+    else:
+      xpos = body_pos_
+      xquat = body_quat_
 
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
@@ -142,7 +146,8 @@ def _kinematics_level(
       jntadr += 1
 
   xpos_out[worldid, bodyid] = xpos
-  xquat_out[worldid, bodyid] = wp.normalize(xquat)
+  xquat = wp.normalize(xquat)
+  xquat_out[worldid, bodyid] = xquat
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
