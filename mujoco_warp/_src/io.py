@@ -199,6 +199,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt = opt
   m.stat = stat
 
+  m.nv_pad = _get_padded_sizes(
+    mjm.nv, 0, is_sparse(mjm), types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  )[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
   m.nsensorcontact = (mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT).sum()
@@ -611,6 +614,12 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
+  # world body (body 0): zero position, identity orientation
+  xquat = np.zeros((nworld, mjm.nbody, 4))
+  xquat[:, 0] = (1, 0, 0, 0)
+  xiquat = np.zeros((nworld, mjm.nbody, 4))
+  xiquat[:, 0] = (1, 0, 0, 0)
+
   d_kwargs = {
     "contact": contact,
     "efc": efc,
@@ -620,6 +629,9 @@ def make_data(
     "qM": None,
     "qLD": None,
     "geom_xpos": None,
+    "geom_xquat": None,
+    "xquat": wp.array(xquat, dtype=wp.quat),
+    "xiquat": wp.array(xiquat, dtype=wp.quat),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
