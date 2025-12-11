@@ -897,7 +897,7 @@ def _epa_witness(
   i3 = pt.vert_index1[face[2]]
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
-    n = geom1.rot[:, 2]
+    n = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), geom1.rot)
     a = geom1.hfprism[3]
     b = geom1.hfprism[4]
     c = geom1.hfprism[5]
