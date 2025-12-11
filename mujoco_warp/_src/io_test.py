@@ -621,6 +621,10 @@ class IOTest(parameterized.TestCase):
           </body>
         </body>
       </worldbody>
+      <actuator>
+        <motor name="motor1" joint="j1" gear="1"/>
+        <motor name="motor2" joint="j2" gear="1"/>
+      </actuator>
     </mujoco>
     """)
     mjd = mujoco.MjData(mjm)
@@ -639,6 +643,8 @@ class IOTest(parameterized.TestCase):
     mjwarp.set_const(m, d)
 
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
+    _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
     np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], rtol=1e-4)
 
   def test_set_const_freejoint(self):

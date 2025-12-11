@@ -1307,11 +1307,39 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 def set_const(m: types.Model, d: types.Data):
   """Recomputes qpos0-dependent constant model fields.
 
+  Skips dof_M0, actuator_length0 (not in mjwarp).
+
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
   """
   qpos_saved = wp.clone(d.qpos)
+
+  # Recompute body_subtreemass: subtreemass[i] = sum of mass of body i and all descendants
+  @nested_kernel(module="unique", enable_backward=False)
+  def init_subtreemass(
+    body_mass_in: wp.array2d(dtype=float),
+    body_subtreemass_out: wp.array2d(dtype=float),
+  ):
+    worldid, bodyid = wp.tid()
+    body_mass_id = worldid % body_mass_in.shape[0]
+    body_subtreemass_id = worldid % body_subtreemass_out.shape[0]
+    body_subtreemass_out[body_subtreemass_id, bodyid] = body_mass_in[body_mass_id, bodyid]
+
+  @nested_kernel(module="unique", enable_backward=False)
+  def accumulate_subtreemass(
+    bodyid: int,
+    body_parentid: wp.array(dtype=int),
+    body_subtreemass_io: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+    body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
+    parentid = body_parentid[bodyid]
+    body_subtreemass_io[body_subtreemass_id, parentid] += body_subtreemass_io[body_subtreemass_id, bodyid]
+
+  wp.launch(init_subtreemass, dim=(d.nworld, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
+  for bodyid in range(m.nbody - 1, 0, -1):
+    wp.launch(accumulate_subtreemass, dim=d.nworld, inputs=[bodyid, m.body_parentid], outputs=[m.body_subtreemass])
 
   @nested_kernel(module="unique", enable_backward=False)
   def copy_qpos0_to_qpos(
@@ -1725,6 +1753,40 @@ def set_const(m: types.Model, d: types.Data):
       inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
       outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
     )
+
+  # actuator_acc0[i] = ||inv(M) * actuator_moment[i]|| - acceleration from unit actuator force
+  if m.nu > 0 and m.nv > 0:
+    act_moment_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    act_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def copy_actuator_moment(
+      actid_target: int,
+      actuator_moment_in: wp.array3d(dtype=float),
+      act_moment_vec_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+      nv = actuator_moment_in.shape[2]
+      for i in range(nv):
+        act_moment_vec_out[worldid, i] = actuator_moment_in[worldid, actid_target, i]
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def compute_actuator_acc0(
+      actid_target: int,
+      nv: int,
+      result_vec_in: wp.array2d(dtype=float),
+      actuator_acc0_out: wp.array(dtype=float),
+    ):
+      worldid = wp.tid()
+      norm_sq = float(0.0)
+      for i in range(nv):
+        norm_sq += result_vec_in[worldid, i] * result_vec_in[worldid, i]
+      actuator_acc0_out[actid_target] = wp.sqrt(norm_sq)
+
+    for actid in range(m.nu):
+      wp.launch(copy_actuator_moment, dim=d.nworld, inputs=[actid, d.actuator_moment], outputs=[act_moment_vec])
+      smooth.solve_m(m, d, act_result_vec, act_moment_vec)
+      wp.launch(compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
 
   wp.copy(d.qpos, qpos_saved)
 
