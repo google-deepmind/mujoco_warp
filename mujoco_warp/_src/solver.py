@@ -36,7 +36,7 @@ _BLOCK_CHOLESKY_DIM = 32
 
 @wp.func
 def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
-  return value / (stat_meaninertia * float(wp.max(1, nv)))
+  return value / (stat_meaninertia * float(nv))
 
 
 @wp.func
@@ -340,7 +340,7 @@ def linesearch_iterative(
 
   # Calculate p0
   snorm = wp.math.sqrt(efc_search_dot_in[worldid])
-  scale = stat_meaninertia * wp.float(wp.max(1, nv))
+  scale = stat_meaninertia * wp.float(nv)
   gtol = tolerance * ls_tolerance * snorm * scale
   p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2])
   p0 += _eval_init(
