@@ -614,15 +614,18 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
-  # world body (body 0): zero position, identity orientation
-  xquat = np.zeros((nworld, mjm.nbody, 4))
-  xquat[:, 0] = (1, 0, 0, 0)
-  xmat = np.zeros((nworld, mjm.nbody, 3, 3))
-  xmat[:, 0] = np.eye(3)
-  ximat = np.zeros((nworld, mjm.nbody, 3, 3))
-  ximat[:, 0] = np.eye(3)
+  # world body and static geom (attached to the world) poses are precomputed
+  # this speeds up scenes with many static geoms (e.g. terrains)
+  # TODO(team): remove this when we introduce dof islands + sleeping
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_kinematics(mjm, mjd)
+
+  # mocap
+  mocap_body = np.nonzero(mjm.body_mocapid >= 0)[0]
+  mocap_id = mjm.body_mocapid[mocap_body]
 
   d_kwargs = {
+    "qpos": wp.array(np.tile(mjm.qpos0, nworld), shape=(nworld, mjm.nq), dtype=float),
     "contact": contact,
     "efc": efc,
     "nworld": nworld,
@@ -630,11 +633,20 @@ def make_data(
     "njmax": njmax,
     "qM": None,
     "qLD": None,
-    "geom_xpos": None,
-    "geom_xmat": None,
-    "xquat": wp.array(xquat, dtype=wp.quat),
-    "xmat": wp.array(xmat, dtype=wp.mat33),
-    "ximat": wp.array(ximat, dtype=wp.mat33),
+    # world body
+    "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
+    "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    "ximat": wp.array(np.tile(mjd.ximat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    # static geoms
+    "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
+    "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
+    # mocap
+    "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
+    "mocap_quat": wp.array(
+      np.tile(mjm.body_quat[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.quat
+    ),
+    # equality constraints
+    "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -649,14 +661,6 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  # static geoms (attached to the world) have their poses calculated once during make_data instead
-  # of during each physics step.  this speeds up scenes with many static geoms (e.g. terrains)
-  # TODO(team): remove this when we introduce dof islands + sleeping
-  mjd = mujoco.MjData(mjm)
-  mujoco.mj_kinematics(mjm, mjd)
-  d.geom_xpos = wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3)
-  d.geom_xmat = wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33)
 
   return d
 
