@@ -15,6 +15,9 @@
 
 """Tests for io functions."""
 
+import sys
+sys.path.insert(0, ".")
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -23,6 +26,8 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
+
+print(f"DEBUG: mjwarp location: {mjwarp.__file__}")
 
 
 def _assert_eq(a, b, name):
@@ -566,6 +571,23 @@ class IOTest(parameterized.TestCase):
     )
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
+
+  def test_make_data_eq_type(self):
+    mjm, _, _, _ = test_data.fixture(path="constraints.xml")
+
+    d = mjwarp.make_data(mjm)
+
+    # It should not crash and fields should exist
+    self.assertTrue(hasattr(d, "ne_connect"))
+    self.assertTrue(hasattr(d, "ne_weld"))
+    self.assertTrue(hasattr(d, "ne_jnt"))
+    self.assertTrue(hasattr(d, "ne_ten"))
+
+    # All values must be integers (not floats)
+    self.assertIsInstance(int(d.ne_connect.numpy()[0]), int)
+    self.assertIsInstance(int(d.ne_weld.numpy()[0]), int)
+    self.assertIsInstance(int(d.ne_jnt.numpy()[0]), int)
+    self.assertIsInstance(int(d.ne_ten.numpy()[0]), int)
 
 
 if __name__ == "__main__":
