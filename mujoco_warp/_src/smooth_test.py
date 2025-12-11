@@ -127,7 +127,7 @@ class SmoothTest(parameterized.TestCase):
     ):
       arr.zero_()
 
-    for arr in (d.xquat, d.xmat, d.ximat):
+    for arr in (d.xquat, d.xiquat):
       arr_view = arr[:, 1:]
       arr_view.zero_()
 
