@@ -485,6 +485,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
       d.njmax,
     ],
     outputs=[d.efc.alpha],
+    block_dim=64
   )
 
 
