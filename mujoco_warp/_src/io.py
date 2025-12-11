@@ -1304,18 +1304,18 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   )
 
 
-def set_const(m: types.Model, d: types.Data):
-  """Recomputes qpos0-dependent constant model fields.
+def set_const_fixed(m: types.Model, d: types.Data):
+  """Compute fixed quantities (independent of qpos0).
 
-  Skips dof_M0, actuator_length0 (not in mjwarp).
+  Computes:
+    - body_subtreemass: mass of body and all descendants (depends on body_mass)
+    - ngravcomp: count of bodies with gravity compensation (depends on body_gravcomp)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
   """
-  qpos_saved = wp.clone(d.qpos)
 
-  # Recompute body_subtreemass: subtreemass[i] = sum of mass of body i and all descendants
   @nested_kernel(module="unique", enable_backward=False)
   def init_subtreemass(
     body_mass_in: wp.array2d(dtype=float),
@@ -1341,6 +1341,29 @@ def set_const(m: types.Model, d: types.Data):
   for bodyid in range(m.nbody - 1, 0, -1):
     wp.launch(accumulate_subtreemass, dim=d.nworld, inputs=[bodyid, m.body_parentid], outputs=[m.body_subtreemass])
 
+  # ngravcomp: count bodies with nonzero gravcomp (use first world for batched array)
+  body_gravcomp_np = m.body_gravcomp.numpy()
+  m.ngravcomp = sum(1 for bodyid in range(m.nbody) if body_gravcomp_np[0, bodyid] > 0.0)
+
+
+def set_const_0(m: types.Model, d: types.Data):
+  """Compute quantities that depend on qpos0.
+
+  Computes:
+    - tendon_length0: tendon resting lengths
+    - dof_invweight0: inverse inertia for DOFs
+    - body_invweight0: inverse spatial inertia for bodies
+    - tendon_invweight0: inverse weight for tendons
+    - cam_pos0, cam_poscom0, cam_mat0: camera reference positions
+    - light_pos0, light_poscom0, light_dir0: light reference positions
+    - actuator_acc0: acceleration from unit actuator force
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+  """
+  qpos_saved = wp.clone(d.qpos)
+
   @nested_kernel(module="unique", enable_backward=False)
   def copy_qpos0_to_qpos(
     nq: int,
@@ -1354,7 +1377,6 @@ def set_const(m: types.Model, d: types.Data):
 
   wp.launch(copy_qpos0_to_qpos, dim=d.nworld, inputs=[m.nq, m.qpos0], outputs=[d.qpos])
 
-  # Run position-dependent computations in qpos0 configuration
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
   smooth.camlight(m, d)
@@ -1789,6 +1811,60 @@ def set_const(m: types.Model, d: types.Data):
       wp.launch(compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
 
   wp.copy(d.qpos, qpos_saved)
+
+
+def set_const(m: types.Model, d: types.Data):
+  """Recomputes qpos0-dependent constant model fields.
+
+  This function propagates changes from some model fields to derived fields,
+  allowing modifications that would otherwise be unsafe. It should be called
+  after modifying model parameters at runtime.
+
+  Model fields that can be modified safely with set_const:
+
+    Field                            | Notes
+    ---------------------------------|----------------------------------------------
+    qpos0, qpos_spring               |
+    body_mass, body_inertia,         | Mass and inertia are usually scaled together
+    body_ipos, body_iquat            | since inertia is sum(m * r^2).
+    body_pos, body_quat              | Unsafe for static bodies (invalidates BVH).
+    body_gravcomp                    | If changing from 0 to >0 bodies, required.
+    dof_armature                     |
+    eq_data                          | For connect/weld, offsets computed if not set.
+    hfield_size                      |
+    tendon_stiffness, tendon_damping | Only if changing from/to zero.
+    actuator_gainprm, actuator_biasprm | For position actuators with dampratio.
+
+  For selective updates, use the sub-functions directly based on what changed:
+
+    Modified Field    | Call
+    ------------------|------------------
+    body_mass         | set_const (both)
+    body_gravcomp     | set_const_fixed
+    body_inertia      | set_const_0
+    qpos0             | set_const_0
+
+  Computes:
+    - Fixed quantities (via set_const_fixed):
+      - body_subtreemass: mass of body and all descendants
+      - ngravcomp: count of bodies with gravity compensation
+    - qpos0-dependent quantities (via set_const_0):
+      - tendon_length0: tendon resting lengths
+      - dof_invweight0: inverse inertia for DOFs
+      - body_invweight0: inverse spatial inertia for bodies
+      - tendon_invweight0: inverse weight for tendons
+      - cam_pos0, cam_poscom0, cam_mat0: camera reference positions
+      - light_pos0, light_poscom0, light_dir0: light reference positions
+      - actuator_acc0: acceleration from unit actuator force
+
+  Skips: dof_M0, actuator_length0 (not in mjwarp).
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+  """
+  set_const_fixed(m, d)
+  set_const_0(m, d)
 
 
 def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[dict[str, Any], Sequence[str]]):

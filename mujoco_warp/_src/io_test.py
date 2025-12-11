@@ -758,6 +758,229 @@ class IOTest(parameterized.TestCase):
 
     _assert_eq(d.qpos.numpy(), qpos_before, "qpos")
 
+  def test_set_fixed_body_subtreemass(self):
+    """Test body_subtreemass accumulation for multi-level tree."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="root" pos="0 0 0">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+          <body name="child1" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="sphere" size="0.1" mass="2.0"/>
+            <body name="grandchild1" pos="0.5 0 0">
+              <joint name="j3" type="hinge" axis="0 0 1"/>
+              <geom name="g3" type="sphere" size="0.1" mass="3.0"/>
+            </body>
+          </body>
+          <body name="child2" pos="0 0.5 0">
+            <joint name="j4" type="hinge" axis="0 0 1"/>
+            <geom name="g4" type="sphere" size="0.1" mass="4.0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    # Modify body masses and recompute
+    mjm.body_mass[1] = 10.0  # root
+    mjm.body_mass[2] = 20.0  # child1
+    mjm.body_mass[3] = 30.0  # grandchild1
+    mjm.body_mass[4] = 40.0  # child2
+
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = 10.0
+    body_mass_np[0, 2] = 20.0
+    body_mass_np[0, 3] = 30.0
+    body_mass_np[0, 4] = 40.0
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
+
+    # Verify: root=10+(20+30)+40=100, child1=20+30=50, grandchild1=30, child2=40
+    np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 1], 100.0, rtol=1e-6)
+    np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 2], 50.0, rtol=1e-6)
+    np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 3], 30.0, rtol=1e-6)
+    np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 4], 40.0, rtol=1e-6)
+
+  def test_set_fixed_ngravcomp(self):
+    """Test ngravcomp counting with gravcomp bodies."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="body1" pos="0 0 0" gravcomp="1">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="body2" pos="1 0 0" gravcomp="0">
+          <joint name="j2" type="hinge" axis="0 0 1"/>
+          <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="body3" pos="2 0 0" gravcomp="1">
+          <joint name="j3" type="hinge" axis="0 0 1"/>
+          <geom name="g3" type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    self.assertEqual(m.ngravcomp, mjm.ngravcomp)
+    self.assertEqual(m.ngravcomp, 2)  # body1 and body3
+
+  def test_set_const_camera_light_positions(self):
+    """Test camera and light reference position computations."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="body1" pos="1 2 3">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+          <camera name="cam1" pos="0.1 0.2 0.3"/>
+          <light name="light1" pos="0.4 0.5 0.6" dir="0 0 -1"/>
+        </body>
+        <body name="body2" pos="4 5 6">
+          <joint name="j2" type="hinge" axis="0 0 1"/>
+          <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    np.testing.assert_allclose(m.cam_pos0.numpy()[0, 0], mjm.cam_pos0[0], rtol=1e-5)
+    np.testing.assert_allclose(m.cam_poscom0.numpy()[0, 0], mjm.cam_poscom0[0], rtol=1e-5)
+    np.testing.assert_allclose(m.cam_mat0.numpy()[0, 0].flatten(), mjm.cam_mat0[0], rtol=1e-5)
+    np.testing.assert_allclose(m.light_pos0.numpy()[0, 0], mjm.light_pos0[0], rtol=1e-5)
+    np.testing.assert_allclose(m.light_poscom0.numpy()[0, 0], mjm.light_poscom0[0], rtol=1e-5)
+    np.testing.assert_allclose(m.light_dir0.numpy()[0, 0], mjm.light_dir0[0], rtol=1e-5)
+
+  def test_set_const_idempotent(self):
+    """Test calling set_const twice gives same results."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="link1" pos="0 0 0">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          </body>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor name="motor1" joint="j1" gear="1"/>
+      </actuator>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mjwarp.set_const(m, d)
+    dof_invweight0_1 = m.dof_invweight0.numpy().copy()
+    body_invweight0_1 = m.body_invweight0.numpy().copy()
+    body_subtreemass_1 = m.body_subtreemass.numpy().copy()
+    actuator_acc0_1 = m.actuator_acc0.numpy().copy()
+
+    mjwarp.set_const(m, d)
+    _assert_eq(m.dof_invweight0.numpy(), dof_invweight0_1, "dof_invweight0")
+    _assert_eq(m.body_invweight0.numpy(), body_invweight0_1, "body_invweight0")
+    _assert_eq(m.body_subtreemass.numpy(), body_subtreemass_1, "body_subtreemass")
+    _assert_eq(m.actuator_acc0.numpy(), actuator_acc0_1, "actuator_acc0")
+
+  def test_set_const_full_pipeline(self):
+    """Test complete set_const matches MuJoCo for complex model."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="torso" pos="0 0 1">
+          <freejoint/>
+          <geom name="torso_geom" type="box" size="0.1 0.2 0.3" mass="10.0"/>
+          <body name="arm" pos="0.2 0 0">
+            <joint name="shoulder" type="ball"/>
+            <geom name="arm_geom" type="capsule" fromto="0 0 0 0.3 0 0" size="0.05" mass="2.0"/>
+            <site name="arm_site" pos="0.15 0 0"/>
+            <body name="forearm" pos="0.3 0 0">
+              <joint name="elbow" type="hinge" axis="0 1 0"/>
+              <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.04" mass="1.0"/>
+              <site name="hand_site" pos="0.25 0 0"/>
+            </body>
+          </body>
+          <body name="leg" pos="0 0 -0.3">
+            <joint name="hip" type="hinge" axis="0 1 0"/>
+            <geom name="leg_geom" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.06" mass="3.0"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="arm_tendon">
+          <site site="arm_site"/>
+          <site site="hand_site"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <motor name="elbow_motor" joint="elbow" gear="1"/>
+        <motor name="hip_motor" joint="hip" gear="1"/>
+      </actuator>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mjm.qpos0[7:11] = [0.9, 0.1, 0.1, 0.1]
+    mjm.qpos0[11] = 0.5
+    mjm.qpos0[12] = 0.3
+
+    qpos0_np = m.qpos0.numpy()
+    qpos0_np[0, 7:11] = [0.9, 0.1, 0.1, 0.1]
+    qpos0_np[0, 11] = 0.5
+    qpos0_np[0, 12] = 0.3
+    wp.copy(m.qpos0, wp.array(qpos0_np, dtype=m.qpos0.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
+    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+    np.testing.assert_allclose(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, rtol=1e-3, atol=1e-10)
+    np.testing.assert_allclose(m.tendon_length0.numpy()[0], mjm.tendon_length0, rtol=1e-4)
+    _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
+
+    for i in range(mjm.nbody):
+      np.testing.assert_allclose(
+        m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], rtol=1e-3, err_msg=f"body_invweight0 mismatch for body {i}"
+      )
+
 
 if __name__ == "__main__":
   wp.init()
