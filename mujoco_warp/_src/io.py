@@ -20,6 +20,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from . import smooth
 from . import types
 from . import warp_util
 from .warp_util import nested_kernel
@@ -1301,6 +1302,431 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.nsolving,
     ],
   )
+
+
+def set_const(m: types.Model, d: types.Data):
+  """Recomputes qpos0-dependent constant model fields.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+  """
+  qpos_saved = wp.clone(d.qpos)
+
+  @nested_kernel(module="unique", enable_backward=False)
+  def copy_qpos0_to_qpos(
+    nq: int,
+    qpos0: wp.array2d(dtype=float),
+    qpos_out: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+    qpos0_id = worldid % qpos0.shape[0]
+    for i in range(nq):
+      qpos_out[worldid, i] = qpos0[qpos0_id, i]
+
+  wp.launch(copy_qpos0_to_qpos, dim=d.nworld, inputs=[m.nq, m.qpos0], outputs=[d.qpos])
+
+  # Run position-dependent computations in qpos0 configuration
+  smooth.kinematics(m, d)
+  smooth.com_pos(m, d)
+  smooth.camlight(m, d)
+  smooth.flex(m, d)
+  smooth.tendon(m, d)
+  smooth.crb(m, d)
+  smooth.tendon_armature(m, d)
+  smooth.factor_m(m, d)
+  smooth.transmission(m, d)
+
+  @nested_kernel(module="unique", enable_backward=False)
+  def copy_tendon_length0(
+    tendon_length0_out: wp.array2d(dtype=float),
+    ten_length_in: wp.array2d(dtype=float),
+  ):
+    worldid, tenid = wp.tid()
+    tendon_length0_id = worldid % tendon_length0_out.shape[0]
+    tendon_length0_out[tendon_length0_id, tenid] = ten_length_in[worldid, tenid]
+
+  if m.ntendon > 0:
+    wp.launch(copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[], outputs=[m.tendon_length0, d.ten_length])
+
+  # dof_invweight0: computed per joint with averaging for multi-DOF joints
+  # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])
+  # BALL: 3 DOFs, all get mean(A[0:3])
+  # HINGE/SLIDE: 1 DOF, gets A[0,0]
+  if m.nv > 0:
+    unit_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    jnt_A_diag = wp.zeros((d.nworld, m.njnt, 6), dtype=float)
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def set_unit_vector(
+      dofid_target: int,
+      unit_vec_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+      nv = unit_vec_out.shape[1]
+      for i in range(nv):
+        if i == dofid_target:
+          unit_vec_out[worldid, i] = 1.0
+        else:
+          unit_vec_out[worldid, i] = 0.0
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def extract_jnt_A_diag(
+      jntid: int,
+      local_dof_idx: int,
+      dofid: int,
+      result_vec_in: wp.array2d(dtype=float),
+      jnt_A_diag_out: wp.array3d(dtype=float),
+    ):
+      worldid = wp.tid()
+      jnt_A_diag_id = worldid % jnt_A_diag_out.shape[0]
+      jnt_A_diag_out[jnt_A_diag_id, jntid, local_dof_idx] = result_vec_in[worldid, dofid]
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def finalize_dof_invweight0(
+      jnt_type: wp.array(dtype=int),
+      jnt_dofadr: wp.array(dtype=int),
+      jnt_A_diag_in: wp.array3d(dtype=float),
+      dof_invweight0_out: wp.array2d(dtype=float),
+    ):
+      worldid, jntid = wp.tid()
+      dof_invweight0_id = worldid % dof_invweight0_out.shape[0]
+      jnt_A_diag_id = worldid % jnt_A_diag_in.shape[0]
+      dofadr = jnt_dofadr[jntid]
+      jtype = jnt_type[jntid]
+
+      if jtype == int(types.JointType.FREE.value):
+        trans_avg = (
+          jnt_A_diag_in[jnt_A_diag_id, jntid, 0]
+          + jnt_A_diag_in[jnt_A_diag_id, jntid, 1]
+          + jnt_A_diag_in[jnt_A_diag_id, jntid, 2]
+        ) / 3.0
+        rot_avg = (
+          jnt_A_diag_in[jnt_A_diag_id, jntid, 3]
+          + jnt_A_diag_in[jnt_A_diag_id, jntid, 4]
+          + jnt_A_diag_in[jnt_A_diag_id, jntid, 5]
+        ) / 3.0
+        dof_invweight0_out[dof_invweight0_id, dofadr + 0] = trans_avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 1] = trans_avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 2] = trans_avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 3] = rot_avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 4] = rot_avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 5] = rot_avg
+      elif jtype == int(types.JointType.BALL.value):
+        avg = (
+          jnt_A_diag_in[jnt_A_diag_id, jntid, 0]
+          + jnt_A_diag_in[jnt_A_diag_id, jntid, 1]
+          + jnt_A_diag_in[jnt_A_diag_id, jntid, 2]
+        ) / 3.0
+        dof_invweight0_out[dof_invweight0_id, dofadr + 0] = avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 1] = avg
+        dof_invweight0_out[dof_invweight0_id, dofadr + 2] = avg
+      else:
+        dof_invweight0_out[dof_invweight0_id, dofadr] = jnt_A_diag_in[jnt_A_diag_id, jntid, 0]
+
+    jnt_type_np = m.jnt_type.numpy()
+    jnt_dofadr_np = m.jnt_dofadr.numpy()
+
+    for jntid in range(m.njnt):
+      jtype = jnt_type_np[jntid]
+      dofadr = jnt_dofadr_np[jntid]
+
+      if jtype == types.JointType.FREE.value:
+        dnum = 6
+      elif jtype == types.JointType.BALL.value:
+        dnum = 3
+      else:
+        dnum = 1
+
+      for local_idx in range(dnum):
+        dofid = dofadr + local_idx
+        wp.launch(set_unit_vector, dim=d.nworld, inputs=[dofid], outputs=[unit_vec])
+        smooth.solve_m(m, d, result_vec, unit_vec)
+        wp.launch(
+          extract_jnt_A_diag,
+          dim=d.nworld,
+          inputs=[jntid, local_idx, dofid, result_vec],
+          outputs=[jnt_A_diag],
+        )
+
+    wp.launch(
+      finalize_dof_invweight0,
+      dim=(d.nworld, m.njnt),
+      inputs=[m.jnt_type, m.jnt_dofadr, jnt_A_diag],
+      outputs=[m.dof_invweight0],
+    )
+
+  # body_invweight0: computed as mean diagonal of J * inv(M) * J'
+  # where J is the 6xnv body Jacobian (3 rows translation, 3 rows rotation)
+  if m.nv > 0:
+    body_jac_row = wp.zeros((d.nworld, m.nv), dtype=float)
+    body_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    body_A_diag = wp.zeros((d.nworld, m.nbody, 6), dtype=float)
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def compute_body_jac_row(
+      nv: int,
+      bodyid_target: int,
+      row_idx: int,
+      body_parentid: wp.array(dtype=int),
+      body_rootid: wp.array(dtype=int),
+      body_dofadr: wp.array(dtype=int),
+      body_dofnum: wp.array(dtype=int),
+      dof_parentid: wp.array(dtype=int),
+      subtree_com_in: wp.array2d(dtype=wp.vec3),
+      xipos_in: wp.array2d(dtype=wp.vec3),
+      cdof_in: wp.array2d(dtype=wp.spatial_vector),
+      body_jac_row_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+
+      for i in range(nv):
+        body_jac_row_out[worldid, i] = 0.0
+
+      bodyid = bodyid_target
+      while bodyid > 0 and body_dofnum[bodyid] == 0:
+        bodyid = body_parentid[bodyid]
+
+      if bodyid == 0:
+        return
+
+      # Compute offset from point (xipos) to subtree_com of root body
+      point = xipos_in[worldid, bodyid_target]
+      offset = point - subtree_com_in[worldid, body_rootid[bodyid_target]]
+
+      # Get last dof that affects this body
+      dofid = body_dofadr[bodyid] + body_dofnum[bodyid] - 1
+
+      # Backward pass over dof ancestor chain
+      while dofid >= 0:
+        cdof = cdof_in[worldid, dofid]
+        cdof_ang = wp.spatial_top(cdof)
+        cdof_lin = wp.spatial_bottom(cdof)
+
+        if row_idx < 3:
+          tmp = wp.cross(cdof_ang, offset)
+          if row_idx == 0:
+            body_jac_row_out[worldid, dofid] = cdof_lin[0] + tmp[0]
+          elif row_idx == 1:
+            body_jac_row_out[worldid, dofid] = cdof_lin[1] + tmp[1]
+          else:
+            body_jac_row_out[worldid, dofid] = cdof_lin[2] + tmp[2]
+        else:
+          if row_idx == 3:
+            body_jac_row_out[worldid, dofid] = cdof_ang[0]
+          elif row_idx == 4:
+            body_jac_row_out[worldid, dofid] = cdof_ang[1]
+          else:
+            body_jac_row_out[worldid, dofid] = cdof_ang[2]
+
+        dofid = dof_parentid[dofid]
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def compute_body_A_diag_entry(
+      nv: int,
+      bodyid_target: int,
+      row_idx: int,
+      body_jac_row_in: wp.array2d(dtype=float),
+      result_vec_in: wp.array2d(dtype=float),
+      body_A_diag_out: wp.array3d(dtype=float),
+    ):
+      worldid = wp.tid()
+      body_A_diag_id = worldid % body_A_diag_out.shape[0]
+      # A[row,row] = J[row] · inv(M) · J[row]' = J[row] · result_vec
+      dot_prod = float(0.0)
+      for i in range(nv):
+        dot_prod += body_jac_row_in[worldid, i] * result_vec_in[worldid, i]
+      body_A_diag_out[body_A_diag_id, bodyid_target, row_idx] = dot_prod
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def finalize_body_invweight0(
+      body_weldid: wp.array(dtype=int),
+      body_A_diag_in: wp.array3d(dtype=float),
+      body_invweight0_out: wp.array2d(dtype=wp.vec2),
+    ):
+      worldid, bodyid = wp.tid()
+      body_invweight0_id = worldid % body_invweight0_out.shape[0]
+      body_A_diag_id = worldid % body_A_diag_in.shape[0]
+
+      # World body and static bodies have zero invweight
+      if bodyid == 0 or body_weldid[bodyid] == 0:
+        body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(0.0, 0.0)
+        return
+
+      # Average diagonal: trans = (A[0,0]+A[1,1]+A[2,2])/3, rot = (A[3,3]+A[4,4]+A[5,5])/3
+      inv_trans = (
+        body_A_diag_in[body_A_diag_id, bodyid, 0]
+        + body_A_diag_in[body_A_diag_id, bodyid, 1]
+        + body_A_diag_in[body_A_diag_id, bodyid, 2]
+      ) / 3.0
+      inv_rot = (
+        body_A_diag_in[body_A_diag_id, bodyid, 3]
+        + body_A_diag_in[body_A_diag_id, bodyid, 4]
+        + body_A_diag_in[body_A_diag_id, bodyid, 5]
+      ) / 3.0
+
+      body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
+
+    for bodyid in range(1, m.nbody):
+      for row_idx in range(6):
+        wp.launch(
+          compute_body_jac_row,
+          dim=d.nworld,
+          inputs=[
+            m.nv,
+            bodyid,
+            row_idx,
+            m.body_parentid,
+            m.body_rootid,
+            m.body_dofadr,
+            m.body_dofnum,
+            m.dof_parentid,
+            d.subtree_com,
+            d.xipos,
+            d.cdof,
+          ],
+          outputs=[body_jac_row],
+        )
+        smooth.solve_m(m, d, body_result_vec, body_jac_row)
+        wp.launch(
+          compute_body_A_diag_entry,
+          dim=d.nworld,
+          inputs=[m.nv, bodyid, row_idx, body_jac_row, body_result_vec],
+          outputs=[body_A_diag],
+        )
+
+    wp.launch(
+      finalize_body_invweight0,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_weldid, body_A_diag],
+      outputs=[m.body_invweight0],
+    )
+  else:
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def zero_body_invweight0(
+      body_invweight0_out: wp.array2d(dtype=wp.vec2),
+    ):
+      worldid, bodyid = wp.tid()
+      body_invweight0_id = worldid % body_invweight0_out.shape[0]
+      body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(0.0, 0.0)
+
+    wp.launch(
+      zero_body_invweight0,
+      dim=(d.nworld, m.nbody),
+      inputs=[],
+      outputs=[m.body_invweight0],
+    )
+
+  # tendon_invweight0[t] = J_t * inv(M) * J_t'
+  if m.ntendon > 0:
+    ten_J_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    ten_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def copy_tendon_jacobian(
+      tenid_target: int,
+      ten_J_in: wp.array3d(dtype=float),
+      ten_J_vec_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+      nv = ten_J_in.shape[2]
+      for i in range(nv):
+        ten_J_vec_out[worldid, i] = ten_J_in[worldid, tenid_target, i]
+
+    @nested_kernel(module="unique", enable_backward=False)
+    def compute_tendon_dot_product(
+      tenid_target: int,
+      nv: int,
+      ten_J_in: wp.array3d(dtype=float),
+      result_vec_in: wp.array2d(dtype=float),
+      tendon_invweight0_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+      tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
+      dot_prod = float(0.0)
+      for i in range(nv):
+        dot_prod += ten_J_in[worldid, tenid_target, i] * result_vec_in[worldid, i]
+      tendon_invweight0_out[tendon_invweight0_id, tenid_target] = dot_prod
+
+    for tenid in range(m.ntendon):
+      wp.launch(copy_tendon_jacobian, dim=d.nworld, inputs=[tenid, d.ten_J], outputs=[ten_J_vec])
+      smooth.solve_m(m, d, ten_result_vec, ten_J_vec)
+      wp.launch(
+        compute_tendon_dot_product,
+        dim=d.nworld,
+        inputs=[tenid, m.nv, d.ten_J, ten_result_vec],
+        outputs=[m.tendon_invweight0],
+      )
+
+  @nested_kernel(module="unique", enable_backward=False)
+  def compute_cam_pos0(
+    cam_bodyid: wp.array(dtype=int),
+    cam_targetbodyid: wp.array(dtype=int),
+    cam_xpos_in: wp.array2d(dtype=wp.vec3),
+    cam_xmat_in: wp.array2d(dtype=wp.mat33),
+    xpos_in: wp.array2d(dtype=wp.vec3),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cam_pos0_out: wp.array2d(dtype=wp.vec3),
+    cam_poscom0_out: wp.array2d(dtype=wp.vec3),
+    cam_mat0_out: wp.array2d(dtype=wp.mat33),
+  ):
+    worldid, camid = wp.tid()
+    cam_pos0_id = worldid % cam_pos0_out.shape[0]
+    bodyid = cam_bodyid[camid]
+    targetid = cam_targetbodyid[camid]
+    cam_xpos = cam_xpos_in[worldid, camid]
+
+    cam_pos0_out[cam_pos0_id, camid] = cam_xpos - xpos_in[worldid, bodyid]
+    if targetid >= 0:
+      cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, targetid]
+    else:
+      cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, bodyid]
+    cam_mat0_out[cam_pos0_id, camid] = cam_xmat_in[worldid, camid]
+
+  if m.ncam > 0:
+    wp.launch(
+      compute_cam_pos0,
+      dim=(d.nworld, m.ncam),
+      inputs=[m.cam_bodyid, m.cam_targetbodyid, d.cam_xpos, d.cam_xmat, d.xpos, d.subtree_com],
+      outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
+    )
+
+  @nested_kernel(module="unique", enable_backward=False)
+  def compute_light_pos0(
+    light_bodyid: wp.array(dtype=int),
+    light_targetbodyid: wp.array(dtype=int),
+    light_xpos_in: wp.array2d(dtype=wp.vec3),
+    light_xdir_in: wp.array2d(dtype=wp.vec3),
+    xpos_in: wp.array2d(dtype=wp.vec3),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    light_pos0_out: wp.array2d(dtype=wp.vec3),
+    light_poscom0_out: wp.array2d(dtype=wp.vec3),
+    light_dir0_out: wp.array2d(dtype=wp.vec3),
+  ):
+    worldid, lightid = wp.tid()
+    light_pos0_id = worldid % light_pos0_out.shape[0]
+    bodyid = light_bodyid[lightid]
+    targetid = light_targetbodyid[lightid]
+    light_xpos = light_xpos_in[worldid, lightid]
+
+    light_pos0_out[light_pos0_id, lightid] = light_xpos - xpos_in[worldid, bodyid]
+    if targetid >= 0:
+      light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, targetid]
+    else:
+      light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, bodyid]
+    light_dir0_out[light_pos0_id, lightid] = light_xdir_in[worldid, lightid]
+
+  if m.nlight > 0:
+    wp.launch(
+      compute_light_pos0,
+      dim=(d.nworld, m.nlight),
+      inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
+      outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
+    )
+
+  wp.copy(d.qpos, qpos_saved)
 
 
 def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[dict[str, Any], Sequence[str]]):

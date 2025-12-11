@@ -44,6 +44,7 @@ from ._src.io import make_data as make_data
 from ._src.io import put_data as put_data
 from ._src.io import put_model as put_model
 from ._src.io import reset_data as reset_data
+from ._src.io import set_const as set_const
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
 from ._src.sensor import energy_pos as energy_pos

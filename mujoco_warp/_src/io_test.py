@@ -567,6 +567,191 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
 
+  def test_set_const_qpos0_modification(self):
+    """Test set_const recomputes fields after qpos0 modification."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="link1" pos="0 0 0">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          <site name="s1" pos="0.1 0 0"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+            <site name="s2" pos="0.4 0 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="tendon1">
+          <site site="s1"/>
+          <site site="s2"/>
+        </spatial>
+      </tendon>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mjm.qpos0[:] = [0.3, 0.5]
+    m.qpos0.numpy()[0, :] = [0.3, 0.5]
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+    np.testing.assert_allclose(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, rtol=1e-3)
+    np.testing.assert_allclose(m.tendon_length0.numpy()[0], mjm.tendon_length0, rtol=1e-4)
+
+  def test_set_const_body_mass_modification(self):
+    """Test set_const recomputes fields after body_mass modification."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="link1" pos="0 0 0">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    new_mass = 3.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+    np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], rtol=1e-4)
+
+  def test_set_const_freejoint(self):
+    """Test set_const with freejoint (6 DOFs with special averaging)."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="floating" pos="0 0 1">
+          <freejoint/>
+          <geom name="box" type="box" size="0.1 0.2 0.3" mass="2.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    new_mass = 5.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+    np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], rtol=1e-3)
+
+  def test_set_const_balljoint(self):
+    """Test set_const with ball joint (3 DOFs with averaging)."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="arm" pos="0 0 0">
+          <joint name="ball" type="ball"/>
+          <geom name="box" type="box" size="0.1 0.2 0.3" mass="2.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    new_inertia = np.array([0.1, 0.2, 0.3])
+    mjm.body_inertia[1] = new_inertia
+    body_inertia_np = m.body_inertia.numpy()
+    body_inertia_np[0, 1] = new_inertia
+    wp.copy(m.body_inertia, wp.array(body_inertia_np, dtype=m.body_inertia.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+
+  def test_set_const_static_body(self):
+    """Test set_const with static body (welded to world)."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="static_body" pos="1 0 0">
+          <geom name="static_geom" type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="dynamic_body" pos="0 0 0">
+          <joint name="slide" type="slide" axis="1 0 0"/>
+          <geom name="dynamic_geom" type="sphere" size="0.1" mass="2.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1], [0.0, 0.0], atol=1e-6)
+    self.assertGreater(m.body_invweight0.numpy()[0, 2, 0], 0.0)
+    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+
+  def test_set_const_preserves_qpos(self):
+    """Test that qpos is restored after set_const."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="mass" pos="0 0 0">
+          <joint name="slide" type="slide" axis="1 0 0"/>
+          <geom name="mass_geom" type="sphere" size="0.1" mass="1.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mjd.qpos[0] = 0.5
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+
+    qpos_before = d.qpos.numpy().copy()
+    mjwarp.set_const(m, d)
+
+    _assert_eq(d.qpos.numpy(), qpos_before, "qpos")
+
 
 if __name__ == "__main__":
   wp.init()
