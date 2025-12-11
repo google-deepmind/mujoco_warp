@@ -1341,9 +1341,8 @@ def set_const_fixed(m: types.Model, d: types.Data):
   for bodyid in range(m.nbody - 1, 0, -1):
     wp.launch(accumulate_subtreemass, dim=d.nworld, inputs=[bodyid, m.body_parentid], outputs=[m.body_subtreemass])
 
-  # ngravcomp: count bodies with nonzero gravcomp (use first world for batched array)
   body_gravcomp_np = m.body_gravcomp.numpy()
-  m.ngravcomp = sum(1 for bodyid in range(m.nbody) if body_gravcomp_np[0, bodyid] > 0.0)
+  m.ngravcomp = int((body_gravcomp_np > 0.0).any(axis=0).sum())
 
 
 def set_const_0(m: types.Model, d: types.Data):
@@ -1406,7 +1405,7 @@ def set_const_0(m: types.Model, d: types.Data):
   if m.nv > 0:
     unit_vec = wp.zeros((d.nworld, m.nv), dtype=float)
     result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
-    jnt_A_diag = wp.zeros((d.nworld, m.njnt, 6), dtype=float)
+    dof_A_diag = wp.zeros((d.nworld, m.nv), dtype=float)
 
     @nested_kernel(module="unique", enable_backward=False)
     def set_unit_vector(
@@ -1422,88 +1421,67 @@ def set_const_0(m: types.Model, d: types.Data):
           unit_vec_out[worldid, i] = 0.0
 
     @nested_kernel(module="unique", enable_backward=False)
-    def extract_jnt_A_diag(
-      jntid: int,
-      local_dof_idx: int,
+    def extract_dof_A_diag(
       dofid: int,
       result_vec_in: wp.array2d(dtype=float),
-      jnt_A_diag_out: wp.array3d(dtype=float),
+      dof_A_diag_out: wp.array2d(dtype=float),
     ):
       worldid = wp.tid()
-      jnt_A_diag_id = worldid % jnt_A_diag_out.shape[0]
-      jnt_A_diag_out[jnt_A_diag_id, jntid, local_dof_idx] = result_vec_in[worldid, dofid]
+      dof_A_diag_id = worldid % dof_A_diag_out.shape[0]
+      dof_A_diag_out[dof_A_diag_id, dofid] = result_vec_in[worldid, dofid]
 
     @nested_kernel(module="unique", enable_backward=False)
     def finalize_dof_invweight0(
+      dof_jntid: wp.array(dtype=int),
       jnt_type: wp.array(dtype=int),
       jnt_dofadr: wp.array(dtype=int),
-      jnt_A_diag_in: wp.array3d(dtype=float),
+      dof_A_diag_in: wp.array2d(dtype=float),
       dof_invweight0_out: wp.array2d(dtype=float),
     ):
-      worldid, jntid = wp.tid()
+      worldid, dofid = wp.tid()
       dof_invweight0_id = worldid % dof_invweight0_out.shape[0]
-      jnt_A_diag_id = worldid % jnt_A_diag_in.shape[0]
-      dofadr = jnt_dofadr[jntid]
+      dof_A_diag_id = worldid % dof_A_diag_in.shape[0]
+
+      jntid = dof_jntid[dofid]
       jtype = jnt_type[jntid]
+      dofadr = jnt_dofadr[jntid]
 
       if jtype == int(types.JointType.FREE.value):
-        trans_avg = (
-          jnt_A_diag_in[jnt_A_diag_id, jntid, 0]
-          + jnt_A_diag_in[jnt_A_diag_id, jntid, 1]
-          + jnt_A_diag_in[jnt_A_diag_id, jntid, 2]
-        ) / 3.0
-        rot_avg = (
-          jnt_A_diag_in[jnt_A_diag_id, jntid, 3]
-          + jnt_A_diag_in[jnt_A_diag_id, jntid, 4]
-          + jnt_A_diag_in[jnt_A_diag_id, jntid, 5]
-        ) / 3.0
-        dof_invweight0_out[dof_invweight0_id, dofadr + 0] = trans_avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 1] = trans_avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 2] = trans_avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 3] = rot_avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 4] = rot_avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 5] = rot_avg
+        # FREE joint: 6 DOFs, average first 3 (trans) and last 3 (rot) separately
+        if dofid < dofadr + 3:
+          avg = (
+            dof_A_diag_in[dof_A_diag_id, dofadr + 0]
+            + dof_A_diag_in[dof_A_diag_id, dofadr + 1]
+            + dof_A_diag_in[dof_A_diag_id, dofadr + 2]
+          ) / 3.0
+        else:
+          avg = (
+            dof_A_diag_in[dof_A_diag_id, dofadr + 3]
+            + dof_A_diag_in[dof_A_diag_id, dofadr + 4]
+            + dof_A_diag_in[dof_A_diag_id, dofadr + 5]
+          ) / 3.0
+        dof_invweight0_out[dof_invweight0_id, dofid] = avg
       elif jtype == int(types.JointType.BALL.value):
+        # BALL joint: 3 DOFs, average all
         avg = (
-          jnt_A_diag_in[jnt_A_diag_id, jntid, 0]
-          + jnt_A_diag_in[jnt_A_diag_id, jntid, 1]
-          + jnt_A_diag_in[jnt_A_diag_id, jntid, 2]
+          dof_A_diag_in[dof_A_diag_id, dofadr + 0]
+          + dof_A_diag_in[dof_A_diag_id, dofadr + 1]
+          + dof_A_diag_in[dof_A_diag_id, dofadr + 2]
         ) / 3.0
-        dof_invweight0_out[dof_invweight0_id, dofadr + 0] = avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 1] = avg
-        dof_invweight0_out[dof_invweight0_id, dofadr + 2] = avg
+        dof_invweight0_out[dof_invweight0_id, dofid] = avg
       else:
-        dof_invweight0_out[dof_invweight0_id, dofadr] = jnt_A_diag_in[jnt_A_diag_id, jntid, 0]
+        # HINGE/SLIDE: 1 DOF, no averaging
+        dof_invweight0_out[dof_invweight0_id, dofid] = dof_A_diag_in[dof_A_diag_id, dofid]
 
-    jnt_type_np = m.jnt_type.numpy()
-    jnt_dofadr_np = m.jnt_dofadr.numpy()
-
-    for jntid in range(m.njnt):
-      jtype = jnt_type_np[jntid]
-      dofadr = jnt_dofadr_np[jntid]
-
-      if jtype == types.JointType.FREE.value:
-        dnum = 6
-      elif jtype == types.JointType.BALL.value:
-        dnum = 3
-      else:
-        dnum = 1
-
-      for local_idx in range(dnum):
-        dofid = dofadr + local_idx
-        wp.launch(set_unit_vector, dim=d.nworld, inputs=[dofid], outputs=[unit_vec])
-        smooth.solve_m(m, d, result_vec, unit_vec)
-        wp.launch(
-          extract_jnt_A_diag,
-          dim=d.nworld,
-          inputs=[jntid, local_idx, dofid, result_vec],
-          outputs=[jnt_A_diag],
-        )
+    for dofid in range(m.nv):
+      wp.launch(set_unit_vector, dim=d.nworld, inputs=[dofid], outputs=[unit_vec])
+      smooth.solve_m(m, d, result_vec, unit_vec)
+      wp.launch(extract_dof_A_diag, dim=d.nworld, inputs=[dofid, result_vec], outputs=[dof_A_diag])
 
     wp.launch(
       finalize_dof_invweight0,
-      dim=(d.nworld, m.njnt),
-      inputs=[m.jnt_type, m.jnt_dofadr, jnt_A_diag],
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_jntid, m.jnt_type, m.jnt_dofadr, dof_A_diag],
       outputs=[m.dof_invweight0],
     )
 
