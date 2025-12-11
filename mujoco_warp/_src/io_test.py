@@ -567,6 +567,32 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
 
+  @parameterized.product(active=["true", "false"], make_data=[True, False])
+  def test_eq_active(self, active, make_data):
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <body name="body1">
+          <joint/>
+          <geom size=".1"/>
+        </body>
+        <body name="body2">
+          <joint/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="body1" body2="body2" active="{active}"/>
+      </equality>
+    </mujoco>
+    """
+    )
+    if make_data:
+      d = mjwarp.make_data(mjm)
+
+    _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
+
 
 if __name__ == "__main__":
   wp.init()
