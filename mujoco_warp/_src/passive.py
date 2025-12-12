@@ -609,7 +609,7 @@ def _flex_elasticity(
 
   elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
-    idx = flex_elemedge[flex_elemedgeadr[f] + elemid * nedge + e]
+    idx = flex_elemedge[elemid * nedge + e]
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
     deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
     reference = flexedge_length0[flex_edgeadr[f] + idx]
@@ -667,7 +667,7 @@ def _flex_bending(
 
   if flex_dim[f] != 2:
     return
-  
+
   if flex_edgeflap[edgeid][1] == -1:
     return
 
