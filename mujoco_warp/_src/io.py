@@ -103,9 +103,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if field & ~np.bitwise_or.reduce(field_type):
       raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
 
-  if mjm.nflex > 1:
-    raise NotImplementedError("Only one flex is unsupported.")
-
   if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
     raise NotImplementedError("Flex collisions are not implemented.")
 
