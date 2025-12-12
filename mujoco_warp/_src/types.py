@@ -288,7 +288,7 @@ class IntegratorType(enum.IntEnum):
   EULER = mujoco.mjtIntegrator.mjINT_EULER
   RK4 = mujoco.mjtIntegrator.mjINT_RK4
   IMPLICITFAST = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-  # unsupported: IMPLICIT
+  IMPLICIT = mujoco.mjtIntegrator.mjINT_IMPLICIT
 
 
 class GeomType(enum.IntEnum):

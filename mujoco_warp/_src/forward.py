@@ -481,7 +481,11 @@ def rungekutta4(m: Model, d: Data):
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
-  if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
+  # check for implicit or implicitfast integrator
+  is_implicit = m.opt.integrator == IntegratorType.IMPLICIT
+  is_implicitfast = m.opt.integrator == IntegratorType.IMPLICITFAST
+
+  if (is_implicit or is_implicitfast) and ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
     if m.opt.is_sparse:
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
@@ -489,7 +493,11 @@ def implicit(m: Model, d: Data):
       qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
       qLD = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
-    derivative.deriv_smooth_vel(m, d, qDeriv)
+
+    # IMPLICIT enables RNE derivatives, IMPLICITFAST skips them
+    flg_rne = is_implicit
+    derivative.deriv_smooth_vel(m, d, qDeriv, flg_rne=flg_rne)
+
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
     _advance(m, d, qacc)
