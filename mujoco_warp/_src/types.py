@@ -674,6 +674,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    use_branch_traversal: use branch-based tree traversal
   """
 
   timestep: array("*", float)
@@ -706,6 +707,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  use_branch_traversal: bool
 
 
 @dataclasses.dataclass
@@ -1015,6 +1017,12 @@ class Model:
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
+    num_branches: number of branches (leaf-to-root paths)
+    branch_bodies: flattened body ids for all branches
+    branch_start: start index in branch_bodies for each branch
+    branch_length: number of bodies in each branch
+    bottom_up_segment_bodies: tuple of body arrays for bottom-up traversal segments
+    bottom_up_segment_is_chain: whether each segment is a sequential chain
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
@@ -1357,6 +1365,12 @@ class Model:
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
+  num_branches: int
+  branch_bodies: wp.array(dtype=int)
+  branch_start: wp.array(dtype=int)
+  branch_length: wp.array(dtype=int)
+  bottom_up_segment_bodies: tuple[wp.array(dtype=int), ...]
+  bottom_up_segment_is_chain: tuple[bool, ...]
   mocap_bodyid: array("nmocap", int)
   body_fluid_ellipsoid: array("nbody", bool)
   jnt_limited_slide_hinge_adr: wp.array(dtype=int)

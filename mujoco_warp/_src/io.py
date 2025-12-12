@@ -25,6 +25,98 @@ from . import warp_util
 from .warp_util import nested_kernel
 
 
+def _compute_bottom_up_segments(mjm: mujoco.MjModel) -> list[tuple[list[int], bool]]:
+  """Compute segments for bottom-up tree traversal.
+
+  Segments are ordered from deepest to shallowest. Each segment contains bodies
+  that can be processed together:
+  - Parallel segments: bodies at same depth that add to different parents
+  - Chain segments: linear chain of bodies
+  """
+  nbody = mjm.nbody
+  parent = mjm.body_parentid
+
+  if nbody <= 1:
+    return []
+
+  body_depth = np.zeros(nbody, dtype=int)
+  for i in range(1, nbody):
+    body_depth[i] = body_depth[parent[i]] + 1
+  max_depth = body_depth.max()
+
+  segments = []
+  processed = [0]
+
+  # Process from deepest to shallowest
+  for depth in range(max_depth, 0, -1):
+    bodies_at_depth = np.where(body_depth == depth)[0]
+    unprocessed = [b for b in bodies_at_depth if b not in processed]
+
+    if len(bodies_at_depth) == 0 or len(unprocessed) == 0:
+      continue
+
+    # Try to build chains for each unprocessed body at that depth
+    parallel_bodies = []
+    chain_bodies = []
+    for b in bodies_at_depth:
+      if b in unprocessed:
+        chain = [b]
+        current = parent[b]
+        while current > 0 and current not in processed:
+          # Check if current is ready to be processed
+          children = np.where(parent == current)[0]
+          if not all(c in processed or c in chain for c in children):
+            break
+          chain.append(current)
+          processed.append(current)
+          current = parent[current]
+
+        if len(chain) > 1:
+          chain_bodies.append(chain)
+          processed.append(b)
+        else:
+          parallel_bodies.append(b)
+          processed.append(b)
+
+    # Add first independent bodies and then chains, order is important
+    if parallel_bodies:
+      segments.append((parallel_bodies, False))
+    for chain in chain_bodies:
+      segments.append((chain, True))
+
+  return segments
+
+
+def _compute_branches(mjm: mujoco.MjModel) -> list[list[int]]:
+  """Identify branches in kinematic tree.
+
+  Each branch includes the full path, even if ancestors are shared with other
+  branches. This ensures each thread can process its branch independently
+  without race conditions.
+  """
+  nbody = mjm.nbody
+  parent = mjm.body_parentid
+
+  children_count = np.zeros(nbody, dtype=int)
+  for i in range(1, nbody):
+    children_count[parent[i]] += 1
+
+  branches = []
+  leaves = np.where((children_count == 0) & (np.arange(nbody) > 0))[0]
+  for leaf in leaves:
+    branch = []
+    bodyid = leaf
+    while bodyid > 0:
+      # Iterate until root
+      branch.append(bodyid)
+      bodyid = parent[bodyid]
+    if branch:
+      # Reverse order
+      branches.append(branch[::-1])
+
+  return branches
+
+
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
   """Creates a warp array and populates it with data.
 
@@ -162,6 +254,42 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
   opt = types.Option(**opt_kwargs)
 
+  # create model
+  m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+
+  # body ids grouped by tree level (depth-based traversal)
+  bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
+  for i in range(mjm.nbody):
+    body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
+    bodies.setdefault(body_depth[i], []).append(i)
+  m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
+
+  # branch-based traversal data
+  branches = _compute_branches(mjm)
+  m.num_branches = len(branches)
+
+  opt.use_branch_traversal = m.num_branches < len(m.body_tree)
+
+  if opt.use_branch_traversal:
+    branch_bodies_flat = []
+    branch_start = []
+    branch_length = []
+    offset = 0
+
+    for branch in branches:
+      branch_start.append(offset)
+      branch_length.append(len(branch))
+      branch_bodies_flat.extend(branch)
+      offset += len(branch)
+
+    m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
+    m.branch_start = np.array(branch_start, dtype=int)
+    m.branch_length = np.array(branch_length, dtype=int)
+  else:
+    m.branch_bodies = np.array([], dtype=int)
+    m.branch_start = np.array([], dtype=int)
+    m.branch_length = np.array([], dtype=int)
+
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
   # bouncing around the optimal solution
@@ -193,9 +321,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # create stat
   stat = types.Statistic(meaninertia=mjm.stat.meaninertia)
 
-  # create model
-  m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
-
   m.opt = opt
   m.stat = stat
 
@@ -208,12 +333,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
 
-  # body ids grouped by tree level
-  bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
-  for i in range(mjm.nbody):
-    body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
-    bodies.setdefault(body_depth[i], []).append(i)
-  m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
+  # Segment-based bottom-up traversal data
+  segments = _compute_bottom_up_segments(mjm)
+  m.bottom_up_segment_bodies = tuple(wp.array(bodies, dtype=int) for bodies, _ in segments)
+  m.bottom_up_segment_is_chain = tuple(is_chain for _, is_chain in segments)
 
   m.mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
