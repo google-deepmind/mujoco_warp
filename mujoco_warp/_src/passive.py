@@ -667,16 +667,16 @@ def _flex_bending(
 
   if flex_dim[f] != 2:
     return
+  
+  if flex_edgeflap[edgeid][1] == -1:
+    return
 
   v = wp.vec4i(
-    flex_edge[edgeid + flex_edgeadr[f]][0],
-    flex_edge[edgeid + flex_edgeadr[f]][1],
-    flex_edgeflap[edgeid + flex_edgeadr[f]][0],
-    flex_edgeflap[edgeid + flex_edgeadr[f]][1],
+    flex_vertadr[f] + flex_edge[edgeid][0],
+    flex_vertadr[f] + flex_edge[edgeid][1],
+    flex_vertadr[f] + flex_edgeflap[edgeid][0],
+    flex_vertadr[f] + flex_edgeflap[edgeid][1],
   )
-
-  if v[3] == -1:
-    return
 
   frc = wp.types.matrix(0.0, shape=(4, 3))
   if flex_bending[edgeid, 16]:
