@@ -115,7 +115,7 @@ class SmoothTest(parameterized.TestCase):
   def test_kinematics(self, make_data):
     """Tests kinematics."""
     nworld = 2
-    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=nworld)
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=nworld, keyframe=0)
     if make_data:
       mjd = mujoco.MjData(mjm)
       d = mjw.make_data(mjm, nworld=nworld)
@@ -124,14 +124,13 @@ class SmoothTest(parameterized.TestCase):
       arr_view = arr[:, 1:]  # skip world body
       arr_view.fill_(wp.inf)
 
-    qpos = np.random.uniform(size=mjm.nq)
-    mocap_pos = np.random.normal(size=mjd.mocap_pos.shape)
-    mocap_quat = np.random.normal(size=mjd.mocap_quat.shape)
-    mocap_quat /= np.linalg.norm(mocap_quat)
+    qpos = mjm.key_qpos[0]
+    mocap_pos = mjm.key_mpos[0]
+    mocap_quat = mjm.key_mquat[0]
 
     mjd.qpos[:] = qpos
-    mjd.mocap_pos[:] = mocap_pos
-    mjd.mocap_quat[:] = mocap_quat
+    mjd.mocap_pos[:] = mocap_pos.reshape((mjm.nmocap, 3))
+    mjd.mocap_quat[:] = mocap_quat.reshape((mjm.nmocap, 4))
 
     wp.copy(d.qpos, wp.array(np.tile(qpos, (nworld, 1)), shape=(nworld, mjm.nq), dtype=float))
     wp.copy(d.mocap_pos, wp.array(np.tile(mocap_pos, (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3))
