@@ -109,6 +109,29 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
   return spec.compile()
 
 
+def _dataclass_memory(dataclass, total_bytes, conversion, unit):
+  total_memory = 0
+  out = ""
+  for field in fields(dataclass):
+    value = getattr(dataclass, field.name)
+    fieldinfo = []
+    if isinstance(value, mjw.Contact) or isinstance(value, mjw.Constraint):
+      for vfield in fields(value):
+        vvalue = getattr(value, vfield.name)
+        if type(vvalue) is wp.array:
+          fieldinfo.append((f"{field.name}.{vfield.name}", vvalue.capacity))
+    elif type(value) is wp.array:
+      fieldinfo.append((field.name, value.capacity))
+    for array in fieldinfo:
+      total_memory += array[1]
+      field_percentage = 100 * (array[1] / total_bytes)
+      # only print if field contributes at least 1% of total memory usage
+      if field_percentage >= 1:
+        out += f" {array[0]}: {(array[1] / conversion):.2f} {unit} ({field_percentage:.2f}%)\n"
+  out = out or " (no field >= 1% of utilized memory)\n"
+  return out, total_memory
+
+
 def _main(argv: Sequence[str]):
   """Runs testpeed app."""
   if len(argv) < 2:
@@ -202,47 +225,22 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       _print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
 
     if _MEMORY.value:
-      bytes_per_megabyte = 1024 * 1024
-      total_available_memory = wp.get_device(_DEVICE.value).total_memory
-      utilized_memory = wp.get_mempool_used_mem_current(_DEVICE.value)
-
-      def dataclass_memory(dataclass):
-        total_memory = 0
-        out = ""
-        for field in fields(dataclass):
-          value = getattr(dataclass, field.name)
-          fieldinfo = []
-          if isinstance(value, mjw.Contact) or isinstance(value, mjw.Constraint):
-            for vfield in fields(value):
-              vvalue = getattr(value, vfield.name)
-              if type(vvalue) is wp.array:
-                fieldinfo.append((f"{field.name}.{vfield.name}", vvalue.capacity))
-          elif type(value) is wp.array:
-            fieldinfo.append((field.name, value.capacity))
-          for array in fieldinfo:
-            total_memory += array[1]
-            field_percentage = 100 * (array[1] / utilized_memory)
-            # only print if field contributes at least 0.01% of total memory usage
-            if field_percentage >= 1:
-              out += f" {array[0]}: {(array[1] / bytes_per_megabyte):.2f} MB ({field_percentage:.2f}%)\n"
-        return out, total_memory
-
-      memory_str = f"""
-Total device memory: {(total_available_memory / bytes_per_megabyte):.2f} MB
-Total utilized memory: {(utilized_memory / bytes_per_megabyte):.2f} MB ({100 * (utilized_memory / total_available_memory):.2f}%)\n
-"""
-      model_field_str, total_model_memory = dataclass_memory(m)
-      memory_str += f"Model memory ({100 * total_model_memory / utilized_memory:.2f}%):\n"
-      if model_field_str != "":
-        memory_str += model_field_str
-      else:
-        memory_str += " (no field >= 1% of utilized memory)\n"
-      data_field_str, total_data_memory = dataclass_memory(d)
-      memory_str += f"Data memory ({100 * total_data_memory / utilized_memory:.2f}%):\n"
-      if data_field_str != "":
-        memory_str += data_field_str
-      else:
-        memory_str += " (no field >= 1% of utilized memory)\n"
+      memory_unit = "MB"
+      memory_conversion = 1024 * 1024
+      total_bytes = wp.get_device(_DEVICE.value).total_memory
+      utilized_bytes = wp.get_mempool_used_mem_current(_DEVICE.value)
+      utilized_mb = utilized_bytes / memory_conversion
+      total_mb = total_bytes / memory_conversion
+      utilized_percentage = 100 * (utilized_bytes / total_bytes)
+      memory_str = (
+        f"\nTotal memory: {utilized_mb:.2f} {memory_unit} / {total_mb:.2f} {memory_unit} ({utilized_percentage:.2f}%)\n"
+      )
+      model_field_str, model_bytes = _dataclass_memory(m, utilized_bytes, memory_conversion, memory_unit)
+      memory_str += f"Model memory ({100 * model_bytes / utilized_bytes:.2f}%):\n"
+      memory_str += model_field_str
+      data_field_str, data_bytes = _dataclass_memory(d, utilized_bytes, memory_conversion, memory_unit)
+      memory_str += f"Data memory ({100 * data_bytes / utilized_bytes:.2f}%):\n"
+      memory_str += data_field_str
       print(memory_str)
 
 
