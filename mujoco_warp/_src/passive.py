@@ -579,7 +579,7 @@ def _flex_elasticity(
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   for i in range(nflex):
-    locid = elemid - flex_elemadr[i] 
+    locid = elemid - flex_elemadr[i]
     if locid >= 0 and locid < flex_elemnum[i]:
       f = i
       break
@@ -660,7 +660,7 @@ def _flex_bending(
   nvert = 4
 
   for i in range(nflex):
-    locid = edgeid - flex_edgeadr[i] 
+    locid = edgeid - flex_edgeadr[i]
     if locid >= 0 and locid < flex_edgenum[i]:
       f = i
       break

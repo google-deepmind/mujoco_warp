@@ -238,7 +238,7 @@ def _flex_edges(
 ):
   worldid, edgeid = wp.tid()
   for i in range(nflex):
-    locid = edgeid - flex_edgeadr[i] 
+    locid = edgeid - flex_edgeadr[i]
     if locid >= 0 and locid < flex_edgenum[i]:
       f = i
       break
