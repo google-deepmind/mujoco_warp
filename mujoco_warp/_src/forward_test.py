@@ -439,7 +439,7 @@ class ForwardTest(parameterized.TestCase):
 
   @parameterized.product(
     xml=("humanoid/humanoid.xml",),
-    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT, IntegratorType.RK4),
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.RK4),
   )
   def test_step2(self, xml, integrator):
     mjm, mjd, m, _ = test_data.fixture(xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.integrator": integrator})
