@@ -67,8 +67,6 @@ def _compute_body_kinematics(
   body_jntadr: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
   body_quat: wp.array2d(dtype=wp.quat),
-  body_ipos: wp.array2d(dtype=wp.vec3),
-  body_iquat: wp.array2d(dtype=wp.quat),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array2d(dtype=wp.vec3),
@@ -77,91 +75,79 @@ def _compute_body_kinematics(
   qpos_in: wp.array2d(dtype=float),
   mocap_pos_in: wp.array2d(dtype=wp.vec3),
   mocap_quat_in: wp.array2d(dtype=wp.quat),
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  xmat_in: wp.array2d(dtype=wp.mat33),
+  xpos_in: wp.vec3,
+  xquat_in: wp.quat,
+  xmat_in: wp.mat33,
   # In:
   worldid: int,
   bodyid: int,
   # Data out:
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
   xanchor_out: wp.array2d(dtype=wp.vec3),
   xaxis_out: wp.array2d(dtype=wp.vec3),
 ):
   jntadr = body_jntadr[bodyid]
   jntnum = body_jntnum[bodyid]
   qpos = qpos_in[worldid]
-  body_pos_id = worldid % body_pos.shape[0]
-  body_quat_id = worldid % body_quat.shape[0]
-  jnt_axis_id = worldid % jnt_axis.shape[0]
 
-  free_joint = False
   if jntnum == 1:
     jnt_type_ = jnt_type[jntadr]
-    free_joint = jnt_type_ == JointType.FREE
-
-  if free_joint:
-    # free joint
-    qadr = jnt_qposadr[jntadr]
-    xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
-    xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
-    xquat = wp.normalize(xquat)
-    xanchor_out[worldid, jntadr] = xpos
-    xaxis_out[worldid, jntadr] = jnt_axis[jnt_axis_id, jntadr]
-  else:
-    # regular or no joints
-    # apply fixed translation and rotation relative to parent
-    qpos0_id = worldid % qpos0.shape[0]
-    jnt_pos_id = worldid % jnt_pos.shape[0]
-    pid = body_parentid[bodyid]
-
-    # mocap bodies have world body as parent
-    mocapid = body_mocapid[bodyid]
-    if pid == 0 and mocapid != -1:
-      body_pos_ = mocap_pos_in[worldid, mocapid]
-      body_quat_ = mocap_quat_in[worldid, mocapid]
-    else:
-      body_pos_ = body_pos[body_pos_id, bodyid]
-      body_quat_ = body_quat[body_quat_id, bodyid]
-
-    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
-
-    for _ in range(jntnum):
+    if jnt_type_ == JointType.FREE:
+      # free joint
       qadr = jnt_qposadr[jntadr]
-      jnt_type_ = jnt_type[jntadr]
-      jnt_axis_ = jnt_axis[jnt_axis_id, jntadr]
-      xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
-      xaxis = math.rot_vec_quat(jnt_axis_, xquat)
+      xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
+      xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
+      xquat = wp.normalize(xquat)
 
-      if jnt_type_ == JointType.BALL:
-        qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
-        qloc = wp.normalize(qloc)
-        xquat = math.mul_quat(xquat, qloc)
-        # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
-      elif jnt_type_ == JointType.SLIDE:
-        xpos += xaxis * (qpos[qadr] - qpos0[qpos0_id, qadr])
-      elif jnt_type_ == JointType.HINGE:
-        qpos0_ = qpos0[qpos0_id, qadr]
-        qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
-        xquat = math.mul_quat(xquat, qloc_)
-        # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+      xpos_out[worldid, bodyid] = xpos
+      xquat_out[worldid, bodyid] = xquat
+      xanchor_out[worldid, jntadr] = xpos
+      xaxis_out[worldid, jntadr] = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
+      return
 
-      xanchor_out[worldid, jntadr] = xanchor
-      xaxis_out[worldid, jntadr] = xaxis
-      jntadr += 1
+  # regular or no joints
+  # apply fixed translation and rotation relative to parent
+  jnt_pos_id = worldid % jnt_pos.shape[0]
+  pid = body_parentid[bodyid]
+
+  # mocap bodies have world body as parent
+  mocapid = body_mocapid[bodyid]
+  if pid == 0 and mocapid != -1:
+    xpos = (xmat_in * mocap_pos_in[worldid, mocapid]) + xpos_in
+    xquat = math.mul_quat(xquat_in, mocap_quat_in[worldid, mocapid])
+  else:
+    xpos = (xmat_in * body_pos[worldid % body_pos.shape[0], bodyid]) + xpos_in
+    xquat = math.mul_quat(xquat_in, body_quat[worldid % body_quat.shape[0], bodyid])
+
+  for _ in range(jntnum):
+    qadr = jnt_qposadr[jntadr]
+    jnt_type_ = jnt_type[jntadr]
+    jnt_axis_ = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
+    xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
+    xaxis = math.rot_vec_quat(jnt_axis_, xquat)
+
+    if jnt_type_ == JointType.BALL:
+      qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
+      qloc = wp.normalize(qloc)
+      xquat = math.mul_quat(xquat, qloc)
+      # correct for off-center rotation
+      xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+    elif jnt_type_ == JointType.SLIDE:
+      xpos += xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
+    elif jnt_type_ == JointType.HINGE:
+      qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
+      qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
+      xquat = math.mul_quat(xquat, qloc_)
+      # correct for off-center rotation
+      xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+
+    xanchor_out[worldid, jntadr] = xanchor
+    xaxis_out[worldid, jntadr] = xaxis
+    jntadr += 1
 
   xpos_out[worldid, bodyid] = xpos
   xquat_out[worldid, bodyid] = wp.normalize(xquat)
-  xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
-  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
 
 
 @wp.kernel
@@ -193,13 +179,15 @@ def _kinematics_level(
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
   xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
   xanchor_out: wp.array2d(dtype=wp.vec3),
   xaxis_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, nodeid = wp.tid()
   bodyid = body_tree_[nodeid]
+  pid = body_parentid[bodyid]
+  xpos = xpos_in[worldid, pid]
+  xquat = xquat_in[worldid, pid]
+  xmat = xmat_in[worldid, pid]
   _compute_body_kinematics(
     qpos0,
     body_parentid,
@@ -208,8 +196,6 @@ def _kinematics_level(
     body_jntadr,
     body_pos,
     body_quat,
-    body_ipos,
-    body_iquat,
     jnt_type,
     jnt_qposadr,
     jnt_pos,
@@ -217,19 +203,38 @@ def _kinematics_level(
     qpos_in,
     mocap_pos_in,
     mocap_quat_in,
-    xpos_in,
-    xquat_in,
-    xmat_in,
+    xpos,
+    xquat,
+    xmat,
     worldid,
     bodyid,
     xpos_out,
     xquat_out,
-    xmat_out,
-    xipos_out,
-    ximat_out,
     xanchor_out,
     xaxis_out,
   )
+  xpos = xpos_out[worldid, bodyid]
+  xquat = xquat_out[worldid, bodyid]
+  xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
+
+
+@wp.kernel
+def _compute_body_inertial_frames(
+  # Model:
+  body_ipos: wp.array2d(dtype=wp.vec3),
+  body_iquat: wp.array2d(dtype=wp.quat),
+  # Data in:
+  xpos_in: wp.array2d(dtype=wp.vec3),
+  xquat_in: wp.array2d(dtype=wp.quat),
+  # Data out:
+  xipos_out: wp.array2d(dtype=wp.vec3),
+  ximat_out: wp.array2d(dtype=wp.mat33),
+):
+  worldid, bodyid = wp.tid()
+  xpos = xpos_in[worldid, bodyid]
+  xquat = xquat_in[worldid, bodyid]
+  xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
+  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
 
 
 @wp.kernel
@@ -262,8 +267,6 @@ def _kinematics_branch(
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
   xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
   xanchor_out: wp.array2d(dtype=wp.vec3),
   xaxis_out: wp.array2d(dtype=wp.vec3),
 ):
@@ -272,11 +275,12 @@ def _kinematics_branch(
   start = branch_start[branchid]
   length = branch_length[branchid]
 
-  xpos = xpos_in
-  xquat = xquat_in
-  xmat = xmat_in
   for i in range(length):
     bodyid = branch_bodies[start + i]
+    pid = body_parentid[bodyid]
+    xpos = xpos_out[worldid, pid]
+    xquat = xquat_out[worldid, pid]
+    xmat = xmat_out[worldid, pid]
     _compute_body_kinematics(
       qpos0,
       body_parentid,
@@ -285,8 +289,6 @@ def _kinematics_branch(
       body_jntadr,
       body_pos,
       body_quat,
-      body_ipos,
-      body_iquat,
       jnt_type,
       jnt_qposadr,
       jnt_pos,
@@ -301,15 +303,12 @@ def _kinematics_branch(
       bodyid,
       xpos_out,
       xquat_out,
-      xmat_out,
-      xipos_out,
-      ximat_out,
       xanchor_out,
       xaxis_out,
     )
-    xpos = xpos_out
-    xquat = xquat_out
-    xmat = xmat_out
+    xpos = xpos_out[worldid, bodyid]
+    xquat = xquat_out[worldid, bodyid]
+    xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
 
 
 @wp.kernel
@@ -462,7 +461,7 @@ def kinematics(m: Model, d: Data):
         d.xquat,
         d.xmat,
       ],
-      outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat, d.xanchor, d.xaxis],
+      outputs=[d.xpos, d.xquat, d.xmat, d.xanchor, d.xaxis],
     )
   else:
     # Depth-level traversal
@@ -493,8 +492,16 @@ def kinematics(m: Model, d: Data):
           d.xmat,
           body_tree,
         ],
-        outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat, d.xanchor, d.xaxis],
+        outputs=[d.xpos, d.xquat, d.xmat, d.xanchor, d.xaxis],
       )
+
+  # Compute inertial frame transformations for all bodies
+  wp.launch(
+    _compute_body_inertial_frames,
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_ipos, m.body_iquat, d.xpos, d.xquat],
+    outputs=[d.xipos, d.ximat],
+  )
 
   wp.launch(
     _geom_local_to_global,
@@ -2024,7 +2031,6 @@ def _comvel_root(cvel_out: wp.array2d(dtype=wp.spatial_vector)):
 @wp.func
 def _compute_body_comvel(
   # Model:
-  body_parentid: wp.array(dtype=int),
   body_jntnum: wp.array(dtype=int),
   body_jntadr: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
@@ -2032,10 +2038,10 @@ def _compute_body_comvel(
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   worldid: int,
   bodyid: int,
+  cvel: wp.spatial_vector,
   # Data out:
   cvel_out: wp.array2d(dtype=wp.spatial_vector),
   cdof_dot_out: wp.array2d(dtype=wp.spatial_vector),
@@ -2043,13 +2049,11 @@ def _compute_body_comvel(
   dofid = body_dofadr[bodyid]
   jntid = body_jntadr[bodyid]
   jntnum = body_jntnum[bodyid]
-  pid = body_parentid[bodyid]
 
   if jntnum == 0:
-    cvel_out[worldid, bodyid] = cvel_in[worldid, pid]
+    cvel_out[worldid, bodyid] = cvel
     return
 
-  cvel = cvel_in[worldid, pid]
   qvel = qvel_in[worldid]
   cdof = cdof_in[worldid]
 
@@ -2109,17 +2113,18 @@ def _comvel_level(
 ):
   worldid, nodeid = wp.tid()
   bodyid = body_tree_[nodeid]
+  pid = body_parentid[bodyid]
+
   _compute_body_comvel(
-    body_parentid,
     body_jntnum,
     body_jntadr,
     body_dofadr,
     jnt_type,
     qvel_in,
     cdof_in,
-    cvel_in,
     worldid,
     bodyid,
+    cvel_in[worldid, pid],
     cvel_out,
     cdof_dot_out,
   )
@@ -2149,24 +2154,23 @@ def _comvel_branch(
   start = branch_start[branchid]
   length = branch_length[branchid]
 
-  cvel = cvel_in
   for i in range(length):
     bodyid = branch_bodies[start + i]
+    pid = body_parentid[bodyid]
+    cvel = cvel_out[worldid, pid]
     _compute_body_comvel(
-      body_parentid,
       body_jntnum,
       body_jntadr,
       body_dofadr,
       jnt_type,
       qvel_in,
       cdof_in,
-      cvel,
       worldid,
       bodyid,
+      cvel,
       cvel_out,
       cdof_dot_out,
     )
-    cvel = cvel_out
 
 
 @event_scope
