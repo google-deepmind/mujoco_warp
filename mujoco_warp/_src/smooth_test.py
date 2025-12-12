@@ -114,6 +114,7 @@ class SmoothTest(parameterized.TestCase):
   @parameterized.parameters(True, False)
   def test_kinematics(self, make_data):
     """Tests kinematics."""
+    # TODO(team): improve batched Model field testing (eg, body_pos, body_quat, jnt_axis)
     nworld = 2
     mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=nworld, keyframe=0)
     if make_data:
