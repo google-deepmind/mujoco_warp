@@ -43,6 +43,9 @@ class JAXTest(parameterized.TestCase):
     if jax.default_backend() != "gpu":
       self.skipTest("JAX default backend is not GPU")
 
+    if not wp.get_device().is_cuda:
+      self.skipTest("Skipping test that requires GPU.")
+
     NWORLDS = 2
     NCONTACTS = 16
     UNROLL_LENGTH = 1
@@ -86,7 +89,7 @@ class JAXTest(parameterized.TestCase):
 
     # temp qpos0 array to get the right numpy shape
     qpos0_temp = wp.array(ptr=m.qpos0.ptr, shape=(1,) + m.qpos0.shape[1:], dtype=wp.float32)
-    jax_qpos = jp.tile(jp.array(qpos0_temp), (NWORLDS, 1))
+    jax_qpos = jp.tile(jp.array(qpos0_temp, dtype=jp.float32), (NWORLDS, 1))
     jax_qvel = jp.zeros((NWORLDS, m.nv))
 
     jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
