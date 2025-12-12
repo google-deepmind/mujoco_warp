@@ -216,11 +216,14 @@ def _flex_vertices(
 def _flex_edges(
   # Model:
   nv: int,
+  nflex: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
+  flex_edgeadr: wp.array(dtype=int),
+  flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   # Data in:
@@ -234,7 +237,11 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
   worldid, edgeid = wp.tid()
-  f = 0  # TODO(quaglino): get f from edgeid
+  for i in range(nflex):
+    locid = edgeid - flex_edgeadr[i] 
+    if locid >= 0 and locid < flex_edgenum[i]:
+      f = i
+      break
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
   pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
@@ -320,11 +327,14 @@ def flex(m: Model, d: Data):
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.nv,
+      m.nflex,
       m.body_parentid,
       m.body_rootid,
       m.body_dofadr,
       m.dof_bodyid,
       m.flex_vertadr,
+      m.flex_edgeadr,
+      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
       d.qvel,
