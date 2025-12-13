@@ -69,6 +69,13 @@ jobs:
       - name: Test with pytest
         run: |
           pytest
+      - name: Uninstall dev warp-lang and install release warp-lang
+        run: |
+          pip uninstall -y warp-lang
+          pip install warp-lang
+      - name: Test release warp-lang
+        run: |
+          pytest
 
   kernel_analyzer:
     name: Kernel analyzer
