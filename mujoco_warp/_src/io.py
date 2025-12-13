@@ -582,9 +582,15 @@ def make_data(
     The data object containing the current state and output arrays (device).
   """
   # TODO(team): move nconmax, njmax to Model?
-  # TODO(team): improve heuristic for nconmax and njmax
-  nconmax = nconmax or 20
-  njmax = njmax or nconmax * 6
+  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  has_flex = mjm.nflex > 0
+  if nconmax is None:
+    nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf)
+    nconmax = int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
+  if njmax is None:
+    njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, 512 * has_flex, 256 * has_sdf)
+    njmax = int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -592,7 +598,7 @@ def make_data(
   if naconmax is None:
     if nconmax < 0:
       raise ValueError("nconmax must be >= 0")
-    naconmax = max(512, nworld * nconmax)
+    naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
@@ -690,8 +696,15 @@ def put_data(
   #             we need to ensure these are only workspace fields and don't carry state
 
   # TODO(team): better heuristic for nconmax and njmax
-  nconmax = nconmax or max(5, 4 * mjd.ncon)
-  njmax = njmax or max(5, 4 * mjd.nefc)
+  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  has_flex = mjm.nflex > 0
+  if nconmax is None:
+    nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon)
+    nconmax = int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
+  if njmax is None:
+    njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, 512 * has_flex, 256 * has_sdf, mjd.nefc)
+    njmax = int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -699,11 +712,9 @@ def put_data(
   if naconmax is None:
     if nconmax < 0:
       raise ValueError("nconmax must be >= 0")
-
     if mjd.ncon > nconmax:
       raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
-
-    naconmax = max(512, nworld * nconmax)
+    naconmax = nworld * nconmax
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
