@@ -40,6 +40,7 @@ _IO_TEST_MODELS = (
   "hfield/hfield.xml",
 )
 
+
 class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
@@ -57,7 +58,7 @@ class IOTest(parameterized.TestCase):
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_sizes(self, xml):
     EXPECTED_SIZES = {
-      "pendula.xml" : (48, 64),
+      "pendula.xml": (48, 64),
       "collision_sdf/tactile.xml": (64, 256),
       "flex/floppy.xml": (256, 512),
       "actuation/tendon_force_limit.xml": (48, 64),
