@@ -904,14 +904,23 @@ def _epa_witness(
   i2 = pt.vert_index1[face[1]]
   i3 = pt.vert_index1[face[2]]
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
-    # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = geom1.rot[:, 2]
-    a = geom1.hfprism[3]
-    b = geom1.hfprism[4]
-    c = geom1.hfprism[5]
+
+    # determine which prism face to use based on vertex indices
+    # use the face that has the majority of contributing vertices
+    use_bottom = (i1 == -2 and i2 == -2) or (i1 == -2 and i3 == -2) or (i2 == -2 and i3 == -2)
+
+    if use_bottom:
+      a = geom1.hfprism[0]
+      b = geom1.hfprism[1]
+      c = geom1.hfprism[2]
+    else:
+      a = geom1.hfprism[3]
+      b = geom1.hfprism[4]
+      c = geom1.hfprism[5]
+
     x2 = wp.normalize(x2)
 
-    # TODO(kbayes): Support cases where geom2 is larger than the height field
     sp = _support(geom2, geomtype2, x2)
     x2 = sp.point
 
@@ -2213,8 +2222,8 @@ def ccd(
     geom1.margin = 0.0
     geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
 
-  # TODO(kbayes): support gjk margin trick with height fields
-  if geomtype1 != GeomType.HFIELD and (geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE):
+  # shrink sphere/capsule to point/line, then inflate result (margin trick)
+  if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
     size2 = geom2.size[0]
     full_margin2 = size2 + 0.5 * geom2.margin
     geom2.margin = 0.0
