@@ -24,6 +24,7 @@ from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
+from .math import safe_normalize
 from .math import upper_trid_index
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
@@ -333,9 +334,9 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-    for i in range(ncontact):
-      points[i] = 0.5 * (witness1[i] + witness2[i])
-    normal = witness1[0] - witness2[0]
+    normal, is_safe = safe_normalize(witness1[0] - witness2[0])
+    if not is_safe:
+      return 0
     frame = make_frame(normal)
 
     # flip if collision sensor
@@ -348,7 +349,7 @@ def ccd_kernel_builder(
         naconmax_in,
         i,
         dist,
-        points[i],
+        0.5 * (witness1[i] + witness2[i]),
         frame,
         margin,
         gap,
@@ -678,7 +679,11 @@ def ccd_kernel_builder(
             hfield_contact_pos[count, 1] = pos[1]
             hfield_contact_pos[count, 2] = pos[2]
 
-            frame = make_frame(w1 - w2)
+            normal, is_safe = safe_normalize(w1 - w2)
+            if not is_safe:
+              continue
+
+            frame = make_frame(normal)
             normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
             hfield_contact_normal[count, 0] = normal[0]
             hfield_contact_normal[count, 1] = normal[1]

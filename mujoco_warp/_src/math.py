@@ -184,7 +184,7 @@ def orthonormal(normal: wp.vec3) -> wp.vec3:
     dir = wp.vec3(-normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2])
   else:
     dir = wp.vec3(-normal[2] * normal[0], -normal[2] * normal[1], 1.0 - normal[2] * normal[2])
-  dir, _ = gjk_normalize(dir)
+  dir, _ = safe_normalize(dir)
   return dir
 
 
@@ -194,12 +194,12 @@ def orthonormal_to_z(normal: wp.vec3) -> wp.vec3:
     dir = wp.vec3(1.0 - normal[0] * normal[0], -normal[0] * normal[1], -normal[0] * normal[2])
   else:
     dir = wp.vec3(-normal[1] * normal[0], 1.0 - normal[1] * normal[1], -normal[1] * normal[2])
-  dir, _ = gjk_normalize(dir)
+  dir, _ = safe_normalize(dir)
   return dir
 
 
 @wp.func
-def gjk_normalize(a: wp.vec3):
+def safe_normalize(a: wp.vec3):
   norm = wp.length(a)
   if norm > 1e-8 and norm < 1e12:
     return a / norm, True
@@ -207,13 +207,13 @@ def gjk_normalize(a: wp.vec3):
 
 
 @wp.func
-def make_frame(a: wp.vec3):
-  a = wp.normalize(a)
-  b, c = orthogonals(a)
+def make_frame(n: wp.vec3):
+  """Returns frame given a normal vector."""
+  b, c = orthogonals(n)
 
   # fmt: off
   return wp.mat33(
-    a.x, a.y, a.z,
+    n.x, n.y, n.z,
     b.x, b.y, b.z,
     c.x, c.y, c.z
   )
