@@ -104,8 +104,8 @@ def _compute_body_kinematics(
     xquat = body_quat[worldid % body_quat.shape[0], bodyid]
 
   if pid >= 0:
-    xpos = xmat_in[worldid, pid] @ xpos + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], xquat)
+    xpos = xmat_in @ xpos + xpos_in
+    xquat = math.mul_quat(xquat_in, xquat)
 
   for _ in range(jntnum):
     qadr = jnt_qposadr[jntadr]
