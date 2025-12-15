@@ -58,9 +58,10 @@ def _compute_body_kinematics(
   qpos_in: wp.array2d(dtype=float),
   mocap_pos_in: wp.array2d(dtype=wp.vec3),
   mocap_quat_in: wp.array2d(dtype=wp.quat),
-  xpos_in: wp.vec3,
-  xquat_in: wp.quat,
-  xmat_in: wp.mat33,
+  # In:
+  xpos_bodyid: wp.vec3,
+  xquat_bodyid: wp.quat,
+  xmat_bodyid: wp.mat33,
   # In:
   worldid: int,
   bodyid: int,
@@ -104,8 +105,8 @@ def _compute_body_kinematics(
     xquat = body_quat[worldid % body_quat.shape[0], bodyid]
 
   if pid >= 0:
-    xpos = xmat_in @ xpos + xpos_in
-    xquat = math.mul_quat(xquat_in, xquat)
+    xpos = xmat_bodyid @ xpos + xpos_bodyid
+    xquat = math.mul_quat(xquat_bodyid, xquat)
 
   for _ in range(jntnum):
     qadr = jnt_qposadr[jntadr]
@@ -2037,7 +2038,7 @@ def _compute_body_comvel(
   # In:
   worldid: int,
   bodyid: int,
-  cvel: wp.spatial_vector,
+  cvel_bodyid: wp.spatial_vector,
   # Data out:
   cvel_out: wp.array2d(dtype=wp.spatial_vector),
   cdof_dot_out: wp.array2d(dtype=wp.spatial_vector),
@@ -2047,7 +2048,7 @@ def _compute_body_comvel(
   jntnum = body_jntnum[bodyid]
 
   if jntnum == 0:
-    cvel_out[worldid, bodyid] = cvel
+    cvel_out[worldid, bodyid] = cvel_bodyid
     return
 
   qvel = qvel_in[worldid]
@@ -2057,36 +2058,36 @@ def _compute_body_comvel(
     jnttype = jnt_type[j]
 
     if jnttype == JointType.FREE:
-      cvel += cdof[dofid + 0] * qvel[dofid + 0]
-      cvel += cdof[dofid + 1] * qvel[dofid + 1]
-      cvel += cdof[dofid + 2] * qvel[dofid + 2]
+      cvel_bodyid += cdof[dofid + 0] * qvel[dofid + 0]
+      cvel_bodyid += cdof[dofid + 1] * qvel[dofid + 1]
+      cvel_bodyid += cdof[dofid + 2] * qvel[dofid + 2]
 
-      cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
-      cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
-      cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
+      cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel_bodyid, cdof[dofid + 3])
+      cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel_bodyid, cdof[dofid + 4])
+      cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel_bodyid, cdof[dofid + 5])
 
-      cvel += cdof[dofid + 3] * qvel[dofid + 3]
-      cvel += cdof[dofid + 4] * qvel[dofid + 4]
-      cvel += cdof[dofid + 5] * qvel[dofid + 5]
+      cvel_bodyid += cdof[dofid + 3] * qvel[dofid + 3]
+      cvel_bodyid += cdof[dofid + 4] * qvel[dofid + 4]
+      cvel_bodyid += cdof[dofid + 5] * qvel[dofid + 5]
 
       dofid += 6
     elif jnttype == JointType.BALL:
-      cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
-      cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
-      cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
+      cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel_bodyid, cdof[dofid + 0])
+      cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel_bodyid, cdof[dofid + 1])
+      cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel_bodyid, cdof[dofid + 2])
 
-      cvel += cdof[dofid + 0] * qvel[dofid + 0]
-      cvel += cdof[dofid + 1] * qvel[dofid + 1]
-      cvel += cdof[dofid + 2] * qvel[dofid + 2]
+      cvel_bodyid += cdof[dofid + 0] * qvel[dofid + 0]
+      cvel_bodyid += cdof[dofid + 1] * qvel[dofid + 1]
+      cvel_bodyid += cdof[dofid + 2] * qvel[dofid + 2]
 
       dofid += 3
     else:
-      cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
-      cvel += cdof[dofid] * qvel[dofid]
+      cdof_dot_out[worldid, dofid] = math.motion_cross(cvel_bodyid, cdof[dofid])
+      cvel_bodyid += cdof[dofid] * qvel[dofid]
 
       dofid += 1
 
-  cvel_out[worldid, bodyid] = cvel
+  cvel_out[worldid, bodyid] = cvel_bodyid
 
 
 @wp.kernel
