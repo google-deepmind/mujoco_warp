@@ -40,23 +40,6 @@ from .warp_util import nested_kernel
 wp.set_module_options({"enable_backward": False})
 
 
-@wp.kernel
-def _kinematics_root(
-  # Data out:
-  xpos_out: wp.array2d(dtype=wp.vec3),
-  xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
-):
-  worldid = wp.tid()
-  xpos_out[worldid, 0] = wp.vec3(0.0)
-  xquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
-  xipos_out[worldid, 0] = wp.vec3(0.0)
-  xmat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
-  ximat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
-
-
 @wp.func
 def _compute_body_kinematics(
   # Model:
@@ -113,12 +96,16 @@ def _compute_body_kinematics(
 
   # mocap bodies have world body as parent
   mocapid = body_mocapid[bodyid]
-  if pid == 0 and mocapid != -1:
-    xpos = (xmat_in * mocap_pos_in[worldid, mocapid]) + xpos_in
-    xquat = math.mul_quat(xquat_in, mocap_quat_in[worldid, mocapid])
+  if mocapid >= 0:
+    xpos = mocap_pos_in[worldid, mocapid]
+    xquat = mocap_quat_in[worldid, mocapid]
   else:
-    xpos = (xmat_in * body_pos[worldid % body_pos.shape[0], bodyid]) + xpos_in
-    xquat = math.mul_quat(xquat_in, body_quat[worldid % body_quat.shape[0], bodyid])
+    xpos = body_pos[worldid % body_pos.shape[0], bodyid]
+    xquat = body_quat[worldid % body_quat.shape[0], bodyid]
+
+  if pid >= 0:
+    xpos = xmat_in[worldid, pid] @ xpos + xpos_in[worldid, pid]
+    xquat = math.mul_quat(xquat_in[worldid, pid], xquat)
 
   for _ in range(jntnum):
     qadr = jnt_qposadr[jntadr]
@@ -146,8 +133,9 @@ def _compute_body_kinematics(
     xaxis_out[worldid, jntadr] = xaxis
     jntadr += 1
 
+  xquat = wp.normalize(xquat)
   xpos_out[worldid, bodyid] = xpos
-  xquat_out[worldid, bodyid] = wp.normalize(xquat)
+  xquat_out[worldid, bodyid] = xquat
 
 
 @wp.kernel
@@ -379,11 +367,14 @@ def _flex_vertices(
 def _flex_edges(
   # Model:
   nv: int,
+  nflex: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
+  flex_edgeadr: wp.array(dtype=int),
+  flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   # Data in:
@@ -397,7 +388,11 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
   worldid, edgeid = wp.tid()
-  f = 0  # TODO(quaglino): get f from edgeid
+  for i in range(nflex):
+    locid = edgeid - flex_edgeadr[i]
+    if locid >= 0 and locid < flex_edgenum[i]:
+      f = i
+      break
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
   pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
@@ -430,8 +425,6 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat])
-
   if m.opt.use_branch_traversal and m.num_branches > 0:
     # Branch-based traversal
     wp.launch(
@@ -526,11 +519,14 @@ def flex(m: Model, d: Data):
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.nv,
+      m.nflex,
       m.body_parentid,
       m.body_rootid,
       m.body_dofadr,
       m.dof_bodyid,
       m.flex_vertadr,
+      m.flex_edgeadr,
+      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
       d.qvel,
