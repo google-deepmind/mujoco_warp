@@ -736,6 +736,149 @@ class TileSet:
 
 
 @dataclasses.dataclass
+class CCD:
+  """Memory for convex collision detection.
+
+  epa_vert: polytope vertices (Minkowski space)  (naconmax, 5 + epa_iterations)
+  epa_vert1: polytope vertices (geom space)      (naconmax, 5 + epa_iterations)
+  epa_vert2: polytope vertices (geom space)      (naconmax, 5 + epa_iterations)
+  epa_vert_index1: polytope vertex index         (naconmax, 5 + ccd_iterations)
+  epa_vert_index2: polytope vertex index         (naconmax, 5 + ccd_iterations)
+  epa_face: 3 index polytope face                (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+  epa_pr: origin projection on polytope face     (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+  epa_norm2: epa_pr * epa_pr                     (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+  epa_index: polytope map face index             (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+  epa_map: polytope face status                  (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+  epa_horizon: horizon edge index pair (i j)     (naconmax, 6 + MJ_MAX_EPAHORIZON)
+  multi_polygon: clipped contact surface         (naconmax, 2 * nmaxpolygon)
+  multi_clipped: clipped contact surface         (naconmax, 2 * nmaxpolygon)
+  multi_pnormal: plane normal of clip polygon    (naconmax, nmaxpolygon)
+  multi_pdist: plane distance of clip polygon    (naconmax, nmaxpolygon)
+  multi_idx1: normal index candidates            (naconmax, nmaxmeshdeg)
+  multi_idx2: normal index candidates            (naconmax, nmaxmeshdeg)
+  multi_n1: normal candidates                    (naconmax, nmaxmeshdeg)
+  multi_n2: normal candidates                    (naconmax, nmaxmeshdeg)
+  multi_endvert: edge vertices candidates        (naconmax, nmaxmeshdeg)
+  multi_face1: contact face                      (naconmax, nmaxpolygon)
+  multi_face2: contact face                      (naconmax, nmaxpolygon)
+  """
+
+  epa_vert: wp.array2d(dtype=wp.vec3)
+  epa_vert1: wp.array2d(dtype=wp.vec3)
+  epa_vert2: wp.array2d(dtype=wp.vec3)
+  epa_vert_index1: wp.array2d(dtype=int)
+  epa_vert_index2: wp.array2d(dtype=int)
+  epa_face: wp.array2d(dtype=wp.vec3i)
+  epa_pr: wp.array2d(dtype=wp.vec3)
+  epa_norm2: wp.array2d(dtype=float)
+  epa_index: wp.array2d(dtype=int)
+  epa_map: wp.array2d(dtype=int)
+  epa_horizon: wp.array2d(dtype=int)
+  multi_polygon: wp.array2d(dtype=wp.vec3)
+  multi_clipped: wp.array2d(dtype=wp.vec3)
+  multi_pnormal: wp.array2d(dtype=wp.vec3)
+  multi_pdist: wp.array2d(dtype=float)
+  multi_idx1: wp.array2d(dtype=int)
+  multi_idx2: wp.array2d(dtype=int)
+  multi_n1: wp.array2d(dtype=wp.vec3)
+  multi_n2: wp.array2d(dtype=wp.vec3)
+  multi_endvert: wp.array2d(dtype=wp.vec3)
+  multi_face1: wp.array2d(dtype=wp.vec3)
+  multi_face2: wp.array2d(dtype=wp.vec3)
+
+  def __init__(self):
+    self.epa_vert = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.epa_vert1 = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.epa_vert2 = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.epa_vert_index1 = wp.empty(shape=(0, 0), dtype=int)
+    self.epa_vert_index2 = wp.empty(shape=(0, 0), dtype=int)
+    self.epa_face = wp.empty(shape=(0, 0), dtype=wp.vec3i)
+    self.epa_pr = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.epa_norm2 = wp.empty(shape=(0, 0), dtype=float)
+    self.epa_index = wp.empty(shape=(0, 0), dtype=int)
+    self.epa_map = wp.empty(shape=(0, 0), dtype=int)
+    self.epa_horizon = wp.empty(shape=(0, 0), dtype=int)
+    self.multi_polygon = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_clipped = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_pnormal = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_pdist = wp.empty(shape=(0, 0), dtype=float)
+    self.multi_idx1 = wp.empty(shape=(0, 0), dtype=int)
+    self.multi_idx2 = wp.empty(shape=(0, 0), dtype=int)
+    self.multi_n1 = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_n2 = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_endvert = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_face1 = wp.empty(shape=(0, 0), dtype=wp.vec3)
+    self.multi_face2 = wp.empty(shape=(0, 0), dtype=wp.vec3)
+
+  def allocate(self, naconmax, nmaxpolygon, nmaxmeshdeg, epa_iterations):
+    if self.epa_vert.shape != (naconmax, 5 + epa_iterations):
+      self.epa_vert = wp.empty(shape=(naconmax, 5 + epa_iterations), dtype=wp.vec3)
+
+    if self.epa_vert1.shape != (naconmax, 5 + epa_iterations):
+      self.epa_vert1 = wp.empty(shape=(naconmax, 5 + epa_iterations), dtype=wp.vec3)
+
+    if self.epa_vert2.shape != (naconmax, 5 + epa_iterations):
+      self.epa_vert2 = wp.empty(shape=(naconmax, 5 + epa_iterations), dtype=wp.vec3)
+
+    if self.epa_vert_index1.shape != (naconmax, 5 + epa_iterations):
+      self.epa_vert_index1 = wp.empty(shape=(naconmax, 5 + epa_iterations), dtype=int)
+
+    if self.epa_vert_index2.shape != (naconmax, 5 + epa_iterations):
+      self.epa_vert_index2 = wp.empty(shape=(naconmax, 5 + epa_iterations), dtype=int)
+
+    if self.epa_face.shape != (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations):
+      self.epa_face = wp.empty(shape=(naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3i)
+
+    if self.epa_pr.shape != (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations):
+      self.epa_pr = wp.empty(shape=(naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
+
+    if self.epa_norm2.shape != (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations):
+      self.epa_norm2 = wp.empty(shape=(naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
+
+    if self.epa_index.shape != (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations):
+      self.epa_index = wp.empty(shape=(naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
+
+    if self.epa_map.shape != (naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations):
+      self.epa_map = wp.empty(shape=(naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
+
+    if self.epa_horizon.shape != (naconmax, 2 * MJ_MAX_EPAHORIZON):
+      self.epa_horizon = wp.empty(shape=(naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+
+    if self.multi_polygon.shape != (naconmax, 2 * nmaxpolygon):
+      self.multi_polygon = wp.empty(shape=(naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
+
+    if self.multi_clipped.shape != (naconmax, 2 * nmaxpolygon):
+      self.multi_clipped = wp.empty(shape=(naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
+
+    if self.multi_pnormal.shape != (naconmax, nmaxpolygon):
+      self.multi_pnormal = wp.empty(shape=(naconmax, nmaxpolygon), dtype=wp.vec3)
+
+    if self.multi_pdist.shape != (naconmax, nmaxpolygon):
+      self.multi_pdist = wp.empty(shape=(naconmax, nmaxpolygon), dtype=float)
+
+    if self.multi_idx1.shape != (naconmax, nmaxmeshdeg):
+      self.multi_idx1 = wp.empty(shape=(naconmax, nmaxmeshdeg), dtype=int)
+
+    if self.multi_idx2.shape != (naconmax, nmaxmeshdeg):
+      self.multi_idx2 = wp.empty(shape=(naconmax, nmaxmeshdeg), dtype=int)
+
+    if self.multi_n1.shape != (naconmax, nmaxmeshdeg):
+      self.multi_n1 = wp.empty(shape=(naconmax, nmaxmeshdeg), dtype=wp.vec3)
+
+    if self.multi_n2.shape != (naconmax, nmaxmeshdeg):
+      self.multi_n2 = wp.empty(shape=(naconmax, nmaxmeshdeg), dtype=wp.vec3)
+
+    if self.multi_endvert.shape != (naconmax, nmaxmeshdeg):
+      self.multi_endvert = wp.empty(shape=(naconmax, nmaxmeshdeg), dtype=wp.vec3)
+
+    if self.multi_face1.shape != (naconmax, nmaxpolygon):
+      self.multi_face1 = wp.empty(shape=(naconmax, nmaxpolygon), dtype=wp.vec3)
+
+    if self.multi_face2.shape != (naconmax, nmaxpolygon):
+      self.multi_face2 = wp.empty(shape=(naconmax, nmaxpolygon), dtype=wp.vec3)
+
+
+@dataclasses.dataclass
 class Model:
   """Model definition and parameters.
 
@@ -1647,6 +1790,7 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
+    ccd: convex collision detection
   """
 
   solver_niter: array("nworld", int)
@@ -1745,3 +1889,4 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+  ccd: CCD

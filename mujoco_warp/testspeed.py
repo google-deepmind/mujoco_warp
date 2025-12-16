@@ -40,6 +40,7 @@ from mujoco_warp._src.benchmark import benchmark
 from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
+from mujoco_warp._src.types import CCD
 
 _FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
 
@@ -115,7 +116,7 @@ def _dataclass_memory(dataclass, total_bytes, conversion, unit):
   for field in fields(dataclass):
     value = getattr(dataclass, field.name)
     fieldinfo = []
-    if isinstance(value, mjw.Contact) or isinstance(value, mjw.Constraint):
+    if any(isinstance(value, mjw_type) for mjw_type in (mjw.Contact, mjw.Constraint, CCD)):
       for vfield in fields(value):
         vvalue = getattr(value, vfield.name)
         if type(vvalue) is wp.array:
@@ -124,7 +125,7 @@ def _dataclass_memory(dataclass, total_bytes, conversion, unit):
       fieldinfo.append((field.name, value.capacity))
     for array in fieldinfo:
       total_memory += array[1]
-      field_percentage = 100 * (array[1] / total_bytes)
+      field_percentage = 100 * (array[1] / total_bytes) if total_bytes else 0
       # only print if field contributes at least 1% of total memory usage
       if field_percentage >= 1:
         out += f" {array[0]}: {(array[1] / conversion):.2f} {unit} ({field_percentage:.2f}%)\n"
@@ -228,17 +229,19 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       memory_unit = "MB"
       memory_conversion = 1024 * 1024
       total_bytes = wp.get_device(_DEVICE.value).total_memory
-      utilized_bytes = wp.get_mempool_used_mem_current(_DEVICE.value)
+      _, model_bytes = _dataclass_memory(m, 0, memory_conversion, memory_unit)
+      _, data_bytes = _dataclass_memory(d, 0, memory_conversion, memory_unit)
+      utilized_bytes = model_bytes + data_bytes
       utilized_mb = utilized_bytes / memory_conversion
       total_mb = total_bytes / memory_conversion
       utilized_percentage = 100 * (utilized_bytes / total_bytes)
       memory_str = (
         f"\nTotal memory: {utilized_mb:.2f} {memory_unit} / {total_mb:.2f} {memory_unit} ({utilized_percentage:.2f}%)\n"
       )
-      model_field_str, model_bytes = _dataclass_memory(m, utilized_bytes, memory_conversion, memory_unit)
+      model_field_str, _ = _dataclass_memory(m, utilized_bytes, memory_conversion, memory_unit)
       memory_str += f"Model memory ({100 * model_bytes / utilized_bytes:.2f}%):\n"
       memory_str += model_field_str
-      data_field_str, data_bytes = _dataclass_memory(d, utilized_bytes, memory_conversion, memory_unit)
+      data_field_str, _ = _dataclass_memory(d, utilized_bytes, memory_conversion, memory_unit)
       memory_str += f"Data memory ({100 * data_bytes / utilized_bytes:.2f}%):\n"
       memory_str += data_field_str
       print(memory_str)
