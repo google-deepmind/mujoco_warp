@@ -2178,7 +2178,7 @@ def _inflate(
   if geomtype1 == GeomType.HFIELD:
     v = result.simplex_index1[0]
     is_side = False
-    for i in range(result.ndim):
+    for i in range(result.dim):
       if result.simplex_index1[i].index1 != v:
         is_side = True
         break
