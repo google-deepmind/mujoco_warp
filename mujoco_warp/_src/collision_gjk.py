@@ -914,7 +914,7 @@ def _epa_witness(
     if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
       radius = geom2.size[0]
       margin = geom2.margin
-      geom2.margin = 0
+      geom2.margin = 0.0
       geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
       sp = _support(geom2, geomtype1, x2)
       x2 = sp.point - (0.5 * margin + radius) * n
@@ -2175,11 +2175,14 @@ def multicontact(
 def _inflate(
   result: GJKResult, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, margin1: float, margin2: float
 ) -> Tuple[float, wp.vec3, wp.vec3]:
+  x1 = result.x1
+  x2 = result.x2
+
   if geomtype1 == GeomType.HFIELD:
     v = result.simplex_index1[0]
-    is_side = False
+    is_side = bool(False)
     for i in range(result.dim):
-      if result.simplex_index1[i].index1 != v:
+      if result.simplex_index1[i] != v:
         is_side = True
         break
 
