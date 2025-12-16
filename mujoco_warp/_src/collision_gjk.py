@@ -2175,6 +2175,7 @@ def multicontact(
 def _inflate(
   result: GJKResult, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, margin1: float, margin2: float
 ) -> Tuple[float, wp.vec3, wp.vec3]:
+  dist = result.dist
   x1 = result.x1
   x2 = result.x2
 
