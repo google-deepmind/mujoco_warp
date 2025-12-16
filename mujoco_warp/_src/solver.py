@@ -31,8 +31,6 @@ from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
-_BLOCK_CHOLESKY_DIM = 32
-
 
 @wp.func
 def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
@@ -1825,7 +1823,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
       )
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
-    if m.nv <= _BLOCK_CHOLESKY_DIM:
+    if m.nv <= types.BLOCK_CHOLESKY_DIM:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
@@ -2075,19 +2073,11 @@ def _solve(m: types.Model, d: types.Data):
   else:
     wp.copy(d.qacc, d.qacc_smooth)
 
-  # Newton solver Hessian
   if m.opt.solver == types.SolverType.NEWTON:
-    h = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
-    if m.nv > _BLOCK_CHOLESKY_DIM:
-      hfactor = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
-    else:
-      hfactor = wp.empty((d.nworld, 0, 0), dtype=float)
-  else:
-    h = wp.empty((d.nworld, 0, 0), dtype=float)
-    hfactor = wp.empty((d.nworld, 0, 0), dtype=float)
+    d.newton.allocate(d.nworld, m.nv, m.nv_pad)
 
   # create context
-  create_context(m, d, h, hfactor, grad=True)
+  create_context(m, d, d.newton.hessian, d.newton.hessian_factor, grad=True)
 
   # search = -Mgrad
   wp.launch(
@@ -2108,10 +2098,18 @@ def _solve(m: types.Model, d: types.Data):
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
     d.nsolving.fill_(d.nworld)
-    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost)
+    wp.capture_while(
+      d.nsolving,
+      while_body=_solver_iteration,
+      m=m,
+      d=d,
+      h=d.newton.hessian,
+      hfactor=d.newton.hessian_factor,
+      step_size_cost=step_size_cost,
+    )
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, h, hfactor, step_size_cost)
+      _solver_iteration(m, d, d.newton.hessian, d.newton.hessian_factor, step_size_cost)
