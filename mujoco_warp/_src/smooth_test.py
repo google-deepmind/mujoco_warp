@@ -121,7 +121,7 @@ class SmoothTest(parameterized.TestCase):
       mjd = mujoco.MjData(mjm)
       d = mjw.make_data(mjm, nworld=nworld)
 
-    for arr in (d.xpos, d.xipos, d.xquat, d.xmat, d.ximat, d.xanchor, d.xaxis, d.site_xpos, d.site_xmat):
+    for arr in (d.xpos, d.xipos, d.xquat, d.xiquat, d.xanchor, d.xaxis, d.site_xpos, d.site_xquat):
       arr_view = arr[:, 1:]  # skip world body
       arr_view.fill_(wp.inf)
 
