@@ -140,17 +140,20 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_kinematics(mjm, mjd)
     mjw.kinematics(m, d)
 
-    ximat = np.zeros((m.nbody, 9), dtype=np.float64)
-    for i in range(m.nbody):
-      mujoco.mju_quat2Mat(ximat[i], d.xiquat.numpy()[0, i])
+    ximat = np.zeros((nworld, m.nbody, 9), dtype=np.float64)
+    for i in range(nworld):
+      for j in range(m.nbody):
+        mujoco.mju_quat2Mat(ximat[i, j], d.xiquat.numpy()[i, j])
 
-    geom_xmat = np.zeros((m.ngeom, 9), dtype=np.float64)
-    for i in range(m.ngeom):
-      mujoco.mju_quat2Mat(geom_xmat[i], d.geom_xquat.numpy()[0, i])
+    geom_xmat = np.zeros((nworld, m.ngeom, 9), dtype=np.float64)
+    for i in range(nworld):
+      for j in range(m.ngeom):
+        mujoco.mju_quat2Mat(geom_xmat[i, j], d.geom_xquat.numpy()[i, j])
 
-    site_xmat = np.zeros((m.nsite, 9), dtype=np.float64)
-    for i in range(m.nsite):
-      mujoco.mju_quat2Mat(site_xmat[i], d.site_xquat.numpy()[0, i])
+    site_xmat = np.zeros((nworld, m.nsite, 9), dtype=np.float64)
+    for i in range(nworld):
+      for j in range(m.nsite):
+        mujoco.mju_quat2Mat(site_xmat[i, j], d.site_xquat.numpy()[i, j])
 
     for i in range(nworld):
       _assert_eq(d.xanchor.numpy()[i], mjd.xanchor, "xanchor")
