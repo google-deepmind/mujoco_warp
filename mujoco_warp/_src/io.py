@@ -623,9 +623,6 @@ def make_data(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_kinematics(mjm, mjd)
 
-  mjd.xquat[0] = (1, 0, 0, 0)
-  mjd.ximat[0] = np.eye(3)
-
   # mocap
   mocap_body = np.nonzero(mjm.body_mocapid >= 0)[0]
   mocap_id = mjm.body_mocapid[mocap_body]
