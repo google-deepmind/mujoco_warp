@@ -611,12 +611,6 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
-  # world body (body 0): zero position, identity orientation
-  xquat = np.zeros((nworld, mjm.nbody, 4))
-  xquat[:, 0] = (1, 0, 0, 0)
-  xiquat = np.zeros((nworld, mjm.nbody, 4))
-  xiquat[:, 0] = (1, 0, 0, 0)
-
   # world body and static geom (attached to the world) poses are precomputed
   # this speeds up scenes with many static geoms (e.g. terrains)
   # TODO(team): remove this when we introduce dof islands + sleeping
