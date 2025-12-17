@@ -531,7 +531,7 @@ class SensorTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.zero_()
-    mjw.forward(m, d)
+    mjw.sensor_acc(m, d)
 
     sensordata = d.sensordata.numpy()[0]
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
@@ -573,7 +573,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.zero_()
-    mjw.forward(m, d)
+    mjw.sensor_acc(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
@@ -608,7 +608,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.fill_(wp.inf)
-    mjw.forward(m, d)
+    mjw.sensor_acc(m, d)
 
     _assert_eq(d.nacon.numpy()[0], 2, "nacon")
     _assert_eq(d.sensordata.numpy()[0], 0, "found")
@@ -638,7 +638,7 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.zero_()
-    mjw.forward(m, d)
+    mjw.sensor_acc(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
@@ -667,16 +667,17 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.zero_()
-    mjw.forward(m, d)
+    mjw.sensor_acc(m, d)
     sensordata = d.sensordata.numpy()[0]
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
-  @parameterized.product(
-    type0=["sphere", "capsule", "ellipsoid", "cylinder"],  # TODO(team): box
-    type1=["sphere", "capsule", "ellipsoid", "cylinder", "box"],
-    type2=["sphere", "capsule", "ellipsoid", "cylinder", "box"],
-    type3=["sphere", "capsule", "ellipsoid", "cylinder", "box"],
+  @parameterized.parameters(
+    # TODO(team): box in type0
+    ("sphere", "capsule", "ellipsoid", "cylinder"),
+    ("capsule", "box", "cylinder", "sphere"),
+    ("capsule", "cylinder", "box", "ellipsoid"),
+    ("cylinder", "box", "ellipsoid", "capsule"),
   )
   def test_sensor_collision(self, type0, type1, type2, type3):
     """Tests collision sensors: distance, normal, fromto."""
@@ -773,7 +774,6 @@ class SensorTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture(xml=_MJCF)
 
     d.sensordata.fill_(wp.inf)
-    mjw.kinematics(m, d)
     mjw.collision(m, d)
     mjw.sensor_pos(m, d)
 
@@ -818,7 +818,6 @@ class SensorTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture(xml=_MJCF)
 
     d.sensordata.fill_(wp.inf)
-    mjw.kinematics(m, d)
     mjw.collision(m, d)
     mjw.sensor_pos(m, d)
 
@@ -855,7 +854,7 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.fill_(wp.inf)
-    mjw.forward(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 

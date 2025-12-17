@@ -61,6 +61,7 @@ class BlockDim:
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
+  linesearch_iterative: int = 64
   # support
   mul_m_dense: int = 32
 
@@ -886,6 +887,9 @@ class Model:
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
     flex_edgeadr: first edge address                         (nflex,)
+    flex_edgenum: number of edges                            (nflex,)
+    flex_elemadr: first element address                      (nflex,)
+    flex_elemnum: number of elements                         (nflex,)
     flex_elemedgeadr: first element address                  (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
@@ -1231,6 +1235,9 @@ class Model:
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
   flex_edgeadr: array("nflex", int)
+  flex_edgenum: array("nflex", int)
+  flex_elemadr: array("nflex", int)
+  flex_elemnum: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)

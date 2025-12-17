@@ -552,11 +552,14 @@ def _qfrc_passive(
 @wp.kernel
 def _flex_elasticity(
   # Model:
+  nflex: int,
   opt_timestep: wp.array(dtype=float),
   body_dofadr: wp.array(dtype=int),
   flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_edgeadr: wp.array(dtype=int),
+  flex_elemadr: wp.array(dtype=int),
+  flex_elemnum: wp.array(dtype=int),
   flex_elemedgeadr: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
@@ -575,7 +578,12 @@ def _flex_elasticity(
 ):
   worldid, elemid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  f = 0  # TODO(quaglino): this should become a function of t
+
+  for i in range(nflex):
+    locid = elemid - flex_elemadr[i]
+    if locid >= 0 and locid < flex_elemnum[i]:
+      f = i
+      break
 
   dim = flex_dim[f]
   nvert = dim + 1
@@ -602,7 +610,7 @@ def _flex_elasticity(
 
   elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
-    idx = flex_elemedge[flex_elemedgeadr[f] + elemid * nedge + e]
+    idx = flex_elemedge[elemid * nedge + e]
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
     deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
     reference = flexedge_length0[flex_edgeadr[f] + idx]
@@ -634,10 +642,12 @@ def _flex_elasticity(
 @wp.kernel
 def _flex_bending(
   # Model:
+  nflex: int,
   body_dofadr: wp.array(dtype=int),
   flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_edgeadr: wp.array(dtype=int),
+  flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   flex_edgeflap: wp.array(dtype=wp.vec2i),
@@ -649,20 +659,25 @@ def _flex_bending(
 ):
   worldid, edgeid = wp.tid()
   nvert = 4
-  f = 0  # TODO(quaglino): this should become a function of t
+
+  for i in range(nflex):
+    locid = edgeid - flex_edgeadr[i]
+    if locid >= 0 and locid < flex_edgenum[i]:
+      f = i
+      break
 
   if flex_dim[f] != 2:
     return
 
-  v = wp.vec4i(
-    flex_edge[edgeid + flex_edgeadr[f]][0],
-    flex_edge[edgeid + flex_edgeadr[f]][1],
-    flex_edgeflap[edgeid + flex_edgeadr[f]][0],
-    flex_edgeflap[edgeid + flex_edgeadr[f]][1],
-  )
-
-  if v[3] == -1:
+  if flex_edgeflap[edgeid][1] == -1:
     return
+
+  v = wp.vec4i(
+    flex_vertadr[f] + flex_edge[edgeid][0],
+    flex_vertadr[f] + flex_edge[edgeid][1],
+    flex_vertadr[f] + flex_edgeflap[edgeid][0],
+    flex_vertadr[f] + flex_edgeflap[edgeid][1],
+  )
 
   frc = wp.types.matrix(0.0, shape=(4, 3))
   if flex_bending[edgeid, 16]:
@@ -744,11 +759,14 @@ def passive(m: Model, d: Data):
       _flex_elasticity,
       dim=(d.nworld, m.nflexelem),
       inputs=[
+        m.nflex,
         m.opt.timestep,
         m.body_dofadr,
         m.flex_dim,
         m.flex_vertadr,
         m.flex_edgeadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
         m.flex_elemedgeadr,
         m.flex_vertbodyid,
         m.flex_elem,
@@ -767,10 +785,12 @@ def passive(m: Model, d: Data):
     _flex_bending,
     dim=(d.nworld, m.nflexedge),
     inputs=[
+      m.nflex,
       m.body_dofadr,
       m.flex_dim,
       m.flex_vertadr,
       m.flex_edgeadr,
+      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
       m.flex_edgeflap,

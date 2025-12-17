@@ -225,10 +225,10 @@ class ForwardTest(parameterized.TestCase):
 
     m = mjw.put_model(mjm)
     d = mjw.put_data(mjm, mjd)
+    # compute efc.Ma - used by mjw.implicit
+    d.efc.Ma = wp.array(mjd.qfrc_constraint + mjd.qfrc_smooth, dtype=wp.float32, shape=(1, -1))
 
     mujoco.mj_implicit(mjm, mjd)
-
-    mjw.solve(m, d)  # compute efc.Ma
     mjw.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
