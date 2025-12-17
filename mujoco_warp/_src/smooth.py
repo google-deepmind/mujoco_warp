@@ -214,58 +214,135 @@ def _flex_vertices(
   flexvert_xpos_out[worldid, vertid] = xpos_in[worldid, flex_vertbodyid[vertid]]
 
 
-@wp.kernel
-def _flex_edges(
-  # Model:
-  nv: int,
-  nflex: int,
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_dofadr: wp.array(dtype=int),
-  dof_bodyid: wp.array(dtype=int),
-  flex_vertadr: wp.array(dtype=int),
-  flex_edgeadr: wp.array(dtype=int),
-  flex_edgenum: wp.array(dtype=int),
-  flex_vertbodyid: wp.array(dtype=int),
-  flex_edge: wp.array(dtype=wp.vec2i),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
-  # Data out:
-  flexedge_J_out: wp.array3d(dtype=float),
-  flexedge_length_out: wp.array2d(dtype=float),
-  flexedge_velocity_out: wp.array2d(dtype=float),
-):
-  worldid, edgeid = wp.tid()
-  for i in range(nflex):
-    locid = edgeid - flex_edgeadr[i]
-    if locid >= 0 and locid < flex_edgenum[i]:
-      f = i
-      break
-  vbase = flex_vertadr[f]
-  v = flex_edge[edgeid]
-  pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
-  pos2 = flexvert_xpos_in[worldid, vbase + v[1]]
-  vec = pos2 - pos1
-  vecnorm = wp.length(vec)
-  flexedge_length_out[worldid, edgeid] = vecnorm
-  # TODO(quaglino): use Jacobian
-  b1 = flex_vertbodyid[vbase + v[0]]
-  b2 = flex_vertbodyid[vbase + v[1]]
-  i = body_dofadr[b1]
-  j = body_dofadr[b2]
-  vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
-  vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
-  edge = wp.normalize(vec)
-  flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, edge)
-  # Edge jacobian
-  for k in range(nv):
-    jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, k, worldid)
-    jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, k, worldid)
-    jacdif = jacp2 - jacp1
-    flexedge_J_out[worldid, edgeid, k] = wp.dot(jacdif, edge)
+@cache_kernel
+def _flex_edges(opt_is_sparse: bool):
+  @nested_kernel(module="unique", enable_backward=False)
+  def flex_edges(
+    # Model:
+    nv: int,
+    nflex: int,
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    body_dofadr: wp.array(dtype=int),
+    dof_bodyid: wp.array(dtype=int),
+    flex_vertadr: wp.array(dtype=int),
+    flex_edgeadr: wp.array(dtype=int),
+    flex_edgenum: wp.array(dtype=int),
+    flex_vertbodyid: wp.array(dtype=int),
+    flex_edge: wp.array(dtype=wp.vec2i),
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cdof_in: wp.array2d(dtype=wp.spatial_vector),
+    flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+    # Data out:
+    flexedge_J_rownnz_out: wp.array2d(dtype=int),
+    flexedge_J_rowadr_out: wp.array2d(dtype=int),
+    flexedge_J_colind_out: wp.array2d(dtype=int),
+    flexedge_J_out: wp.array3d(dtype=float),
+    flexedge_length_out: wp.array2d(dtype=float),
+    flexedge_velocity_out: wp.array2d(dtype=float),
+  ):
+    worldid, edgeid = wp.tid()
+    for i in range(nflex):
+      locid = edgeid - flex_edgeadr[i]
+      if locid >= 0 and locid < flex_edgenum[i]:
+        f = i
+        break
+
+    vbase = flex_vertadr[f]
+    v = flex_edge[edgeid]
+    vbase0 = vbase + v[0]
+    vbase1 = vbase + v[1]
+
+    pos1 = flexvert_xpos_in[worldid, vbase0]
+    pos2 = flexvert_xpos_in[worldid, vbase1]
+    vec = pos2 - pos1
+    edge, edge_length = math.normalize_with_norm(vec)
+    flexedge_length_out[worldid, edgeid] = edge_length
+    # TODO(quaglino): use Jacobian
+    b1 = flex_vertbodyid[vbase0]
+    b2 = flex_vertbodyid[vbase1]
+
+    dofi = body_dofadr[b1]
+    dofj = body_dofadr[b2]
+    dofi0 = dofi + 0
+    dofi1 = dofi + 1
+    dofi2 = dofi + 2
+    dofj0 = dofj + 0
+    dofj1 = dofj + 1
+    dofj2 = dofj + 2
+
+    vel1 = wp.vec3(qvel_in[worldid, dofi0], qvel_in[worldid, dofi1], qvel_in[worldid, dofi2])
+    vel2 = wp.vec3(qvel_in[worldid, dofj0], qvel_in[worldid, dofj1], qvel_in[worldid, dofj2])
+    flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, edge)
+
+    if wp.static(opt_is_sparse):
+      flexedge_J_rownnz_out[worldid, edgeid] = 6
+      rowadr = edgeid * 6
+      flexedge_J_rowadr_out[worldid, edgeid] = rowadr
+
+      sparseid0 = rowadr + 0
+      sparseid1 = rowadr + 1
+      sparseid2 = rowadr + 2
+      sparseid3 = rowadr + 3
+      sparseid4 = rowadr + 4
+      sparseid5 = rowadr + 5
+
+      flexedge_J_colind_out[worldid, sparseid0] = dofi0
+      flexedge_J_colind_out[worldid, sparseid1] = dofi1
+      flexedge_J_colind_out[worldid, sparseid2] = dofi2
+      flexedge_J_colind_out[worldid, sparseid3] = dofj0
+      flexedge_J_colind_out[worldid, sparseid4] = dofj1
+      flexedge_J_colind_out[worldid, sparseid5] = dofj2
+
+      # TODO(team): jacdif
+
+      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi0, worldid)
+      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi0, worldid)
+      jacdif = jacp2 - jacp1
+      Ji0 = wp.dot(jacdif, edge)
+
+      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi1, worldid)
+      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi1, worldid)
+      jacdif = jacp2 - jacp1
+      Ji1 = wp.dot(jacdif, edge)
+
+      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi2, worldid)
+      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi2, worldid)
+      jacdif = jacp2 - jacp1
+      Ji2 = wp.dot(jacdif, edge)
+
+      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj0, worldid)
+      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj0, worldid)
+      jacdif = jacp2 - jacp1
+      Jj0 = wp.dot(jacdif, edge)
+
+      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj1, worldid)
+      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj1, worldid)
+      jacdif = jacp2 - jacp1
+      Jj1 = wp.dot(jacdif, edge)
+
+      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj2, worldid)
+      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj2, worldid)
+      jacdif = jacp2 - jacp1
+      Jj2 = wp.dot(jacdif, edge)
+
+      flexedge_J_out[worldid, 0, sparseid0] = Ji0
+      flexedge_J_out[worldid, 0, sparseid1] = Ji1
+      flexedge_J_out[worldid, 0, sparseid2] = Ji2
+      flexedge_J_out[worldid, 0, sparseid3] = Jj0
+      flexedge_J_out[worldid, 0, sparseid4] = Jj1
+      flexedge_J_out[worldid, 0, sparseid5] = Jj2
+    else:
+      # Edge jacobian
+      for k in range(nv):
+        jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, k, worldid)
+        jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, k, worldid)
+        jacdif = jacp2 - jacp1
+        flexedge_J_out[worldid, edgeid, k] = wp.dot(jacdif, edge)
+
+  return flex_edges
 
 
 @event_scope
@@ -325,7 +402,7 @@ def kinematics(m: Model, d: Data):
 def flex(m: Model, d: Data):
   wp.launch(_flex_vertices, dim=(d.nworld, m.nflexvert), inputs=[m.flex_vertbodyid, d.xpos], outputs=[d.flexvert_xpos])
   wp.launch(
-    _flex_edges,
+    _flex_edges(m.opt.is_sparse),
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.nv,
@@ -344,7 +421,14 @@ def flex(m: Model, d: Data):
       d.cdof,
       d.flexvert_xpos,
     ],
-    outputs=[d.flexedge_J, d.flexedge_length, d.flexedge_velocity],
+    outputs=[
+      d.flexedge_J_rownnz,
+      d.flexedge_J_rowadr,
+      d.flexedge_J_colind,
+      d.flexedge_J,
+      d.flexedge_length,
+      d.flexedge_velocity,
+    ],
   )
 
 

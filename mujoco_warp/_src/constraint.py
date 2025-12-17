@@ -22,7 +22,9 @@ from .types import ConstraintType
 from .types import ContactType
 from .types import vec5
 from .types import vec11
+from .warp_util import cache_kernel
 from .warp_util import event_scope
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -487,79 +489,102 @@ def _efc_equality_tendon(
   )
 
 
-@wp.kernel
-def _efc_equality_flex(
-  # Model:
-  nv: int,
-  opt_timestep: wp.array(dtype=float),
-  flexedge_length0: wp.array(dtype=float),
-  flexedge_invweight0: wp.array(dtype=float),
-  eq_solref: wp.array2d(dtype=wp.vec2),
-  eq_solimp: wp.array2d(dtype=vec5),
-  eq_flex_adr: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  flexedge_J_in: wp.array3d(dtype=float),
-  flexedge_length_in: wp.array2d(dtype=float),
-  njmax_in: int,
-  # In:
-  refsafe_in: int,
-  # Data out:
-  nefc_out: wp.array(dtype=int),
-  efc_type_out: wp.array2d(dtype=int),
-  efc_id_out: wp.array2d(dtype=int),
-  efc_J_out: wp.array3d(dtype=float),
-  efc_pos_out: wp.array2d(dtype=float),
-  efc_margin_out: wp.array2d(dtype=float),
-  efc_D_out: wp.array2d(dtype=float),
-  efc_vel_out: wp.array2d(dtype=float),
-  efc_aref_out: wp.array2d(dtype=float),
-  efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_flex_out: wp.array(dtype=int),
-):
-  worldid, eqflexid, edgeid = wp.tid()
-  eqid = eq_flex_adr[eqflexid]
+@cache_kernel
+def _efc_equality_flex(opt_is_sparse: bool):
+  @nested_kernel(module="unqiue", enable_backward=False)
+  def equality_flex(
+    # Model:
+    nv: int,
+    opt_timestep: wp.array(dtype=float),
+    flexedge_length0: wp.array(dtype=float),
+    flexedge_invweight0: wp.array(dtype=float),
+    eq_solref: wp.array2d(dtype=wp.vec2),
+    eq_solimp: wp.array2d(dtype=vec5),
+    eq_flex_adr: wp.array(dtype=int),
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    flexedge_J_rownnz_in: wp.array2d(dtype=int),
+    flexedge_J_rowadr_in: wp.array2d(dtype=int),
+    flexedge_J_colind_in: wp.array2d(dtype=int),
+    flexedge_J_in: wp.array3d(dtype=float),
+    flexedge_length_in: wp.array2d(dtype=float),
+    njmax_in: int,
+    # In:
+    refsafe_in: int,
+    # Data out:
+    nefc_out: wp.array(dtype=int),
+    efc_type_out: wp.array2d(dtype=int),
+    efc_id_out: wp.array2d(dtype=int),
+    efc_J_out: wp.array3d(dtype=float),
+    efc_pos_out: wp.array2d(dtype=float),
+    efc_margin_out: wp.array2d(dtype=float),
+    efc_D_out: wp.array2d(dtype=float),
+    efc_vel_out: wp.array2d(dtype=float),
+    efc_aref_out: wp.array2d(dtype=float),
+    efc_frictionloss_out: wp.array2d(dtype=float),
+    ne_flex_out: wp.array(dtype=int),
+  ):
+    worldid, eqflexid, edgeid = wp.tid()
+    eqid = eq_flex_adr[eqflexid]
 
-  wp.atomic_add(ne_flex_out, worldid, 1)
-  efcid = wp.atomic_add(nefc_out, worldid, 1)
+    wp.atomic_add(ne_flex_out, worldid, 1)
+    efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-  if efcid >= njmax_in:
-    return
+    if efcid >= njmax_in:
+      return
 
-  pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
-  solref = eq_solref[worldid % eq_solref.shape[0], eqid]
-  solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
+    pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
+    solref = eq_solref[worldid % eq_solref.shape[0], eqid]
+    solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
 
-  Jqvel = float(0.0)
-  for i in range(nv):
-    J = flexedge_J_in[worldid, edgeid, i]
-    efc_J_out[worldid, efcid, i] = J
-    Jqvel += J * qvel_in[worldid, i]
+    Jqvel = float(0.0)
 
-  _update_efc_row(
-    worldid,
-    opt_timestep[worldid % opt_timestep.shape[0]],
-    refsafe_in,
-    efcid,
-    pos,
-    pos,
-    flexedge_invweight0[edgeid],
-    solref,
-    solimp,
-    0.0,
-    Jqvel,
-    0.0,
-    ConstraintType.EQUALITY,
-    eqid,
-    efc_type_out,
-    efc_id_out,
-    efc_pos_out,
-    efc_margin_out,
-    efc_D_out,
-    efc_vel_out,
-    efc_aref_out,
-    efc_frictionloss_out,
-  )
+    if wp.static(opt_is_sparse):
+      # TODO(team): remove once efc.J is sparse
+      for i in range(nv):
+        efc_J_out[worldid, efcid, i] = 0.0
+
+      rownnz = flexedge_J_rownnz_in[worldid, edgeid]
+      rowadr = flexedge_J_rowadr_in[worldid, edgeid]
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        colind = flexedge_J_colind_in[worldid, sparseid]
+        J = flexedge_J_in[worldid, 0, sparseid]
+        # TODO(team): sparse efc.J
+        efc_J_out[worldid, efcid, colind] = J
+        Jqvel += J * qvel_in[worldid, colind]
+    else:
+      for i in range(nv):
+        J = flexedge_J_in[worldid, edgeid, i]
+        efc_J_out[worldid, efcid, i] = J
+        Jqvel += J * qvel_in[worldid, i]
+
+    _update_efc_row(
+      worldid,
+      opt_timestep[worldid % opt_timestep.shape[0]],
+      refsafe_in,
+      efcid,
+      pos,
+      pos,
+      flexedge_invweight0[edgeid],
+      solref,
+      solimp,
+      0.0,
+      Jqvel,
+      0.0,
+      ConstraintType.EQUALITY,
+      eqid,
+      efc_type_out,
+      efc_id_out,
+      efc_pos_out,
+      efc_margin_out,
+      efc_D_out,
+      efc_vel_out,
+      efc_aref_out,
+      efc_frictionloss_out,
+    )
+
+  return equality_flex
 
 
 @wp.kernel
@@ -1739,7 +1764,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _efc_equality_flex,
+        _efc_equality_flex(m.opt.is_sparse),
         dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
         inputs=[
           m.nv,
@@ -1750,6 +1775,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solimp,
           m.eq_flex_adr,
           d.qvel,
+          d.flexedge_J_rownnz,
+          d.flexedge_J_rowadr,
+          d.flexedge_J_colind,
           d.flexedge_J,
           d.flexedge_length,
           d.njmax,
