@@ -621,6 +621,14 @@ def make_data(
   mocap_body = np.nonzero(mjm.body_mocapid >= 0)[0]
   mocap_id = mjm.body_mocapid[mocap_body]
 
+  xiquat = np.zeros((mjm.nbody, 4))
+  for i in range(mjm.nbody):
+    mujoco.mju_mat2Quat(xiquat[i], mjd.ximat[i])
+
+  geom_xquat = np.zeros((mjm.ngeom, 4))
+  for i in range(mjm.ngeom):
+    mujoco.mju_mat2Quat(geom_xquat[i], mjd.geom_xmat[i])
+
   d_kwargs = {
     "qpos": wp.array(np.tile(mjm.qpos0, nworld), shape=(nworld, mjm.nq), dtype=float),
     "contact": contact,
@@ -632,11 +640,10 @@ def make_data(
     "qLD": None,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
-    "ximat": wp.array(np.tile(mjd.ximat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    "xiquat": wp.array(np.tile(xiquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
+    "geom_xquat": wp.array(np.tile(geom_xquat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(

@@ -2173,7 +2173,7 @@ def _inflate(
         break
 
     if is_side:
-      n = geom1.rot[:, 2]
+      n = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), geom1.rot)
       sp = _support(geom2, geomtype2, x2)
       x2 = sp.point - margin2 * n
 
