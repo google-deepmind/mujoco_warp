@@ -1647,6 +1647,7 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     njmax: maximum number of constraints per world
     njmax_pad: maximum number of constraints per world +
+    nefcdof: maximum number of dofs per constraint
     nacon: number of detected contacts (across all worlds)      (1,)
     ne_connect: number of equality connect constraints          (nworld,)
     ne_weld: number of equality weld constraints                (nworld,)
@@ -1747,6 +1748,7 @@ class Data:
   naconmax: int
   njmax: int
   njmax_pad: int
+  nefcdof: int
   nacon: array(1, int)
   ne_connect: array("nworld", int)
   ne_weld: array("nworld", int)

@@ -154,9 +154,9 @@ def make_constraint(m: types.Model, d: types.Data):
   ):
     worldid, efcid, dofid = wp.tid()
 
-    rowadr = efcid * wp.static(m.nv)
+    rowadr = efcid * wp.static(d.nefcdof)
     if dofid == 0:
-      efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
+      efc_J_rownnz_out[worldid, efcid] = wp.static(d.nefcdof)
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
     sparseid = rowadr + dofid
@@ -256,9 +256,9 @@ def make_constraint(m: types.Model, d: types.Data):
       efcid1 = efcid + 1
       efcid2 = efcid + 2
 
-      rowadr0 = efcid0 * wp.static(m.nv)
-      rowadr1 = efcid1 * wp.static(m.nv)
-      rowadr2 = efcid2 * wp.static(m.nv)
+      rowadr0 = efcid0 * wp.static(d.nefcdof)
+      rowadr1 = efcid1 * wp.static(d.nefcdof)
+      rowadr2 = efcid2 * wp.static(d.nefcdof)
 
       efc_J_rowadr_out[worldid, efcid0] = rowadr0
       efc_J_rowadr_out[worldid, efcid1] = rowadr1
@@ -444,7 +444,7 @@ def make_constraint(m: types.Model, d: types.Data):
       else:
         rownnz = 1
       efc_J_rownnz_out[worldid, efcid] = rownnz
-      rowadr = efcid * wp.static(m.nv)
+      rowadr = efcid * wp.static(d.nefcdof)
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, rowadr] = dofadr1
       efc_J_out[worldid, 0, rowadr] = 1.0
@@ -809,12 +809,12 @@ def make_constraint(m: types.Model, d: types.Data):
       efcid4 = efcid + 4
       efcid5 = efcid + 5
 
-      rowadr0 = efcid0 * wp.static(m.nv)
-      rowadr1 = efcid1 * wp.static(m.nv)
-      rowadr2 = efcid2 * wp.static(m.nv)
-      rowadr3 = efcid3 * wp.static(m.nv)
-      rowadr4 = efcid4 * wp.static(m.nv)
-      rowadr5 = efcid5 * wp.static(m.nv)
+      rowadr0 = efcid0 * wp.static(d.nefcdof)
+      rowadr1 = efcid1 * wp.static(d.nefcdof)
+      rowadr2 = efcid2 * wp.static(d.nefcdof)
+      rowadr3 = efcid3 * wp.static(d.nefcdof)
+      rowadr4 = efcid4 * wp.static(d.nefcdof)
+      rowadr5 = efcid5 * wp.static(d.nefcdof)
 
       efc_J_rowadr_out[worldid, efcid0] = rowadr0
       efc_J_rowadr_out[worldid, efcid1] = rowadr1
@@ -1042,7 +1042,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
     if wp.static(m.opt.is_sparse):
       efc_J_rownnz_out[worldid, efcid] = 1
-      rowadr = efcid * wp.static(m.nv)
+      rowadr = efcid * wp.static(d.nefcdof)
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, rowadr] = dofid
       efc_J_out[worldid, 0, rowadr] = 1.0
@@ -1214,7 +1214,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       if wp.static(m.opt.is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 1
-        rowadr = efcid * wp.static(m.nv)
+        rowadr = efcid * wp.static(d.nefcdof)
         efc_J_rowadr_out[worldid, efcid] = rowadr
         efc_J_colind_out[worldid, rowadr] = dofadr
         efc_J_out[worldid, 0, rowadr] = J
@@ -1314,7 +1314,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       if wp.static(m.opt.is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 3
-        rowadr = efcid * wp.static(m.nv)
+        rowadr = efcid * wp.static(d.nefcdof)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
         sparseid0 = rowadr + 0
@@ -1580,7 +1580,7 @@ def make_constraint(m: types.Model, d: types.Data):
         da2 = body_dofadr[body2] + body_dofnum[body2] - 1
 
         rownnz = int(0)
-        rowadr = efcid * wp.static(m.nv)
+        rowadr = efcid * wp.static(d.nefcdof)
         while da1 >= 0 or da2 >= 0:
           da = wp.max(da1, da2)
           if da1 == da:
@@ -1812,7 +1812,7 @@ def make_constraint(m: types.Model, d: types.Data):
         da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
         rownnz = int(0)
-        rowadr = efcid * wp.static(m.nv)
+        rowadr = efcid * wp.static(d.nefcdof)
         while da1 >= 0 or da2 >= 0:
           da = wp.max(da1, da2)
           if da1 == da:
@@ -1960,7 +1960,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if m.opt.is_sparse:
       wp.launch(
         efc_J_initialize,
-        dim=(d.nworld, d.njmax, m.nv),
+        dim=(d.nworld, d.njmax, d.nefcdof),
         inputs=[],
         outputs=[d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J],
       )
@@ -2430,3 +2430,5 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.frictionloss,
           ],
         )
+
+  # TODO(team): print warning if d.nefcdof is exceeded for any constraint

@@ -566,6 +566,7 @@ def make_data(
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  nefcdof: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -576,7 +577,8 @@ def make_data(
              heterogeneous arrays: one world may have more than nconmax contacts.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
-    naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.]
+    nefcdof: Maximum number of dofs per constraint.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -599,6 +601,9 @@ def make_data(
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
 
+  nefcdof = nefcdof or mjm.nv
+  # TODO(team): raise error if constraint type requires dense row
+
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
@@ -614,8 +619,8 @@ def make_data(
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
-    efc.J_colind = wp.zeros((nworld, njmax * mjm.nv), dtype=int)
-    efc.J = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=float)
+    efc.J_colind = wp.zeros((nworld, njmax * nefcdof), dtype=int)
+    efc.J = wp.zeros((nworld, 1, njmax * nefcdof), dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
@@ -640,6 +645,7 @@ def make_data(
     "naconmax": naconmax,
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
+    "nefcdof": nefcdof,
     "qM": None,
     "qLD": None,
     # world body
@@ -697,6 +703,7 @@ def put_data(
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  nefcdof: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -709,6 +716,7 @@ def put_data(
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    nefcdof: Maximum number of dofs per constraint.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -740,6 +748,9 @@ def put_data(
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
+
+  nefcdof = nefcdof or mjm.nv
+  # TODO(team): raise error if constraint type requires dense row
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
@@ -803,7 +814,9 @@ def put_data(
     efc.J_rowadr = wp.array(
       np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
     )
-    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, -1)), dtype=int)
+    efc.J_colind = wp.array(
+      np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, -1))[:, : (njmax * nefcdof)], dtype=int
+    )
 
     if mujoco.mj_isSparse(mjm):
       mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
@@ -812,7 +825,9 @@ def put_data(
       mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
     efc_J = np.zeros((njmax, mjm.nv), dtype=float)
     efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
-    efc.J = wp.array(np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1)), dtype=float)
+    efc.J = wp.array(
+      np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1))[:, :, : (njmax * nefcdof)], dtype=float
+    )
   else:
     # TODO(team): don't need to allocate sparsity arrays if not sparse
     efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
@@ -845,6 +860,7 @@ def put_data(
     "naconmax": naconmax,
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
+    "nefcdof": nefcdof,
     # fields set after initialization:
     "solver_niter": None,
     "qM": None,
