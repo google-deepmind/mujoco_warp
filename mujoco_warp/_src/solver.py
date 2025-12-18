@@ -702,11 +702,14 @@ def linesearch_zero_jv(
 
 
 @cache_kernel
-def linesearch_jv_fused(nv: int, dofs_per_thread: int):
+def linesearch_jv_fused(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
+    efc_J_rownnz_in: wp.array2d(dtype=int),
+    efc_J_rowadr_in: wp.array2d(dtype=int),
+    efc_J_colind_in: wp.array2d(dtype=int),
     efc_J_in: wp.array3d(dtype=float),
     efc_search_in: wp.array2d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
@@ -725,14 +728,31 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
     if wp.static(dofs_per_thread >= nv):
       for i in range(wp.static(min(dofs_per_thread, nv))):
-        jv_out += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
+        if wp.static(opt_is_sparse):
+          rownnz = efc_J_rownnz_in[worldid, efcid]
+          if i >= rownnz:
+            continue
+          rowadr = efc_J_rowadr_in[worldid, efcid]
+          sparseid = rowadr + i
+          colind = efc_J_colind_in[worldid, sparseid]
+          jv_out += efc_J_in[worldid, 0, sparseid] * efc_search_in[worldid, colind]
+        else:
+          jv_out += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
       efc_jv_out[worldid, efcid] = jv_out
-
     else:
       for i in range(wp.static(dofs_per_thread)):
         ii = dofstart * wp.static(dofs_per_thread) + i
         if ii < nv:
-          jv_out += efc_J_in[worldid, efcid, ii] * efc_search_in[worldid, ii]
+          if wp.static(opt_is_sparse):
+            rownnz = efc_J_rownnz_in[worldid, efcid]
+            if ii >= rownnz:
+              continue
+            rowadr = efc_J_rowadr_in[worldid, efcid]
+            sparseid = rowadr + ii
+            colind = efc_J_colind_in[worldid, sparseid]
+            jv_out += efc_J_in[worldid, 0, sparseid] * efc_search_in[worldid, colind]
+          else:
+            jv_out += efc_J_in[worldid, efcid, ii] * efc_search_in[worldid, ii]
       wp.atomic_add(efc_jv_out, worldid, efcid, jv_out)
 
   return kernel
@@ -931,9 +951,9 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
     )
 
   wp.launch(
-    linesearch_jv_fused(m.nv, dofs_per_thread),
+    linesearch_jv_fused(m.opt.is_sparse, m.nv, dofs_per_thread),
     dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
+    inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.search, d.efc.done],
     outputs=[d.efc.jv],
   )
 
@@ -1002,28 +1022,40 @@ def solve_init_efc(
   efc_search_dot_out[worldid] = 0.0
 
 
-@wp.kernel
-def solve_init_jaref(
-  # Model:
-  nv: int,
-  # Data in:
-  nefc_in: wp.array(dtype=int),
-  qacc_in: wp.array2d(dtype=float),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_aref_in: wp.array2d(dtype=float),
-  # Data out:
-  efc_Jaref_out: wp.array2d(dtype=float),
-):
-  worldid, efcid = wp.tid()
+def solve_init_jaref(opt_is_sparse: bool, nv: int):
+  @wp.kernel
+  def _solve_init_jaref(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    qacc_in: wp.array2d(dtype=float),
+    efc_J_rownnz_in: wp.array2d(dtype=int),
+    efc_J_rowadr_in: wp.array2d(dtype=int),
+    efc_J_colind_in: wp.array2d(dtype=int),
+    efc_J_in: wp.array3d(dtype=float),
+    efc_aref_in: wp.array2d(dtype=float),
+    # Data out:
+    efc_Jaref_out: wp.array2d(dtype=float),
+  ):
+    worldid, efcid = wp.tid()
 
-  if efcid >= nefc_in[worldid]:
-    return
+    if efcid >= nefc_in[worldid]:
+      return
 
-  jaref = float(0.0)
-  for i in range(nv):
-    jaref += efc_J_in[worldid, efcid, i] * qacc_in[worldid, i]
+    jaref = float(0.0)
+    if wp.static(opt_is_sparse):
+      rownnz = efc_J_rownnz_in[worldid, efcid]
+      for i in range(rownnz):
+        rowadr = efc_J_rowadr_in[worldid, efcid]
+        sparseid = rowadr + i
+        colind = efc_J_colind_in[worldid, sparseid]
+        jaref += efc_J_in[worldid, 0, sparseid] * qacc_in[worldid, colind]
+    else:
+      for i in range(wp.static(nv)):
+        jaref += efc_J_in[worldid, efcid, i] * qacc_in[worldid, i]
 
-  efc_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
+    efc_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
+
+  return _solve_init_jaref
 
 
 @wp.kernel
@@ -1186,7 +1218,39 @@ def update_constraint_efc(
 
 
 @wp.kernel
-def update_constraint_init_qfrc_constraint(
+def update_constraint_init_qfrc_constraint_sparse(
+  # Data in:
+  nefc_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array2d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_force_in: wp.array2d(dtype=float),
+  efc_done_in: wp.array(dtype=bool),
+  # Data out:
+  qfrc_constraint_out: wp.array2d(dtype=float),
+):
+  worldid, efcid = wp.tid()
+
+  if efc_done_in[worldid]:
+    return
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  force = efc_force_in[worldid, efcid]
+
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    colind = efc_J_colind_in[worldid, sparseid]
+    efc_J = efc_J_in[worldid, 0, sparseid]
+    wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
+
+
+@wp.kernel
+def update_constraint_init_qfrc_constraint_dense(
   # Data in:
   nefc_in: wp.array(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
@@ -1282,12 +1346,21 @@ def _update_constraint(m: types.Model, d: types.Data):
   )
 
   # qfrc_constraint = efc_J.T @ efc_force
-  wp.launch(
-    update_constraint_init_qfrc_constraint,
-    dim=(d.nworld, m.nv),
-    inputs=[d.nefc, d.efc.J, d.efc.force, d.efc.done, d.njmax],
-    outputs=[d.qfrc_constraint],
-  )
+  if m.opt.is_sparse:
+    d.qfrc_constraint.zero_()
+    wp.launch(
+      update_constraint_init_qfrc_constraint_sparse,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.force, d.efc.done],
+      outputs=[d.qfrc_constraint],
+    )
+  else:
+    wp.launch(
+      update_constraint_init_qfrc_constraint_dense,
+      dim=(d.nworld, m.nv),
+      inputs=[d.nefc, d.efc.J, d.efc.force, d.efc.done, d.njmax],
+      outputs=[d.qfrc_constraint],
+    )
 
   # if we are only using 1 thread, it makes sense to do more dofs and skip the atomics.
   # For more than 1 thread, dofs_per_thread is lower for better load balancing.
@@ -1450,7 +1523,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
 
 @cache_kernel
-def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int):
+def update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
   if njmax < tile_size:
     tile_size = njmax
 
@@ -1475,7 +1548,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
     nefc = nefc_in[worldid]
 
-    sum_val = wp.tile_load(qM_in[worldid], shape=(nv_padded, nv_padded), bounds_check=True)
+    sum_val = wp.tile_load(qM_in[worldid], shape=(nv_pad, nv_pad), bounds_check=True)
 
     # Each tile processes one output tile by looping over all constraints
     for k in range(0, njmax, TILE_SIZE_K):
@@ -1485,7 +1558,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
       # AD: leaving bounds-check disabled here because I'm not entirely sure that
       # everything always hits the fast path. The padding takes care of any
       #  potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_padded), offset=(k, 0), bounds_check=False)
+      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False)
       J_kj = J_ki
 
       # state check
@@ -1501,7 +1574,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
       active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv_padded, TILE_SIZE_K)))
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
@@ -1512,7 +1585,175 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
 # TODO(thowell): combine with JTDAJ ?
 @wp.kernel
-def update_gradient_JTCJ(
+def update_gradient_JTCJ_sparse(
+  # Model:
+  opt_impratio_invsqrt: wp.array(dtype=float),
+  dof_tri_row: wp.array(dtype=int),
+  dof_tri_col: wp.array(dtype=int),
+  # Data in:
+  contact_dist_in: wp.array(dtype=float),
+  contact_includemargin_in: wp.array(dtype=float),
+  contact_friction_in: wp.array(dtype=types.vec5),
+  contact_dim_in: wp.array(dtype=int),
+  contact_efc_address_in: wp.array2d(dtype=int),
+  contact_worldid_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array2d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_Jaref_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  efc_done_in: wp.array(dtype=bool),
+  naconmax_in: int,
+  nacon_in: wp.array(dtype=int),
+  # In:
+  nblocks_perblock: int,
+  dim_block: int,
+  # Out:
+  h_out: wp.array3d(dtype=float),
+):
+  conid_start, elementid = wp.tid()
+
+  dof1id = dof_tri_row[elementid]
+  dof2id = dof_tri_col[elementid]
+
+  for i in range(nblocks_perblock):
+    conid = conid_start + i * dim_block
+
+    if conid >= min(nacon_in[0], naconmax_in):
+      return
+
+    worldid = contact_worldid_in[conid]
+    if efc_done_in[worldid]:
+      return
+
+    condim = contact_dim_in[conid]
+
+    if condim == 1:
+      return
+
+    # check contact status
+    if contact_dist_in[conid] - contact_includemargin_in[conid] >= 0.0:
+      return
+
+    efcid0 = contact_efc_address_in[conid, 0]
+    if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
+      return
+
+    fri = contact_friction_in[conid]
+    mu = fri[0] * opt_impratio_invsqrt[worldid]
+
+    mu2 = mu * mu
+    dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+
+    if dm == 0.0:
+      return
+
+    n = efc_Jaref_in[worldid, efcid0] * mu
+    u = types.vec6(n, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    tt = float(0.0)
+    for j in range(1, condim):
+      efcidj = contact_efc_address_in[conid, j]
+      uj = efc_Jaref_in[worldid, efcidj] * fri[j - 1]
+      tt += uj * uj
+      u[j] = uj
+
+    if tt <= 0.0:
+      t = 0.0
+    else:
+      t = wp.sqrt(tt)
+    t = wp.max(t, types.MJ_MINVAL)
+    ttt = wp.max(t * t * t, types.MJ_MINVAL)
+
+    h = float(0.0)
+
+    for dim1id in range(condim):
+      if dim1id == 0:
+        efcid1 = efcid0
+      else:
+        efcid1 = contact_efc_address_in[conid, dim1id]
+
+      # TODO(team): more efficient sparsity
+      rownnz1 = efc_J_rownnz_in[worldid, efcid1]
+      rowadr1 = efc_J_rowadr_in[worldid, efcid1]
+
+      efc_J11 = float(0.0)
+      efc_J12 = float(0.0)
+      for i1 in range(rownnz1):
+        sparseid1 = rowadr1 + i1
+        colind1 = efc_J_colind_in[worldid, sparseid1]
+        if dof1id == colind1:
+          efc_J11 = efc_J_in[worldid, 0, sparseid1]
+        if dof2id == colind1:
+          efc_J12 = efc_J_in[worldid, 0, sparseid1]
+        if efc_J11 != 0.0 and efc_J12 != 0.0:
+          break
+
+      ui = u[dim1id]
+
+      for dim2id in range(0, dim1id + 1):
+        if dim2id == 0:
+          efcid2 = efcid0
+        else:
+          efcid2 = contact_efc_address_in[conid, dim2id]
+
+        rownnz2 = efc_J_rownnz_in[worldid, efcid2]
+        rowadr2 = efc_J_rowadr_in[worldid, efcid2]
+
+        efc_J21 = float(0.0)
+        efc_J22 = float(0.0)
+        for i2 in range(rownnz2):
+          sparseid2 = rowadr2 + i2
+          colind2 = efc_J_colind_in[worldid, sparseid2]
+          if dof1id == colind2:
+            efc_J21 = efc_J_in[worldid, 0, sparseid2]
+          if dof2id == colind2:
+            efc_J22 = efc_J_in[worldid, 0, sparseid2]
+          if efc_J21 != 0.0 and efc_J22 != 0.0:
+            break
+
+        uj = u[dim2id]
+
+        # set first row/column: (1, -mu/t * u)
+        if dim1id == 0 and dim2id == 0:
+          hcone = 1.0
+        elif dim1id == 0:
+          hcone = -math.safe_div(mu, t) * uj
+        elif dim2id == 0:
+          hcone = -math.safe_div(mu, t) * ui
+        else:
+          hcone = mu * math.safe_div(n, ttt) * ui * uj
+
+          # add to diagonal: mu^2 - mu * n / t
+          if dim1id == dim2id:
+            hcone += mu2 - mu * math.safe_div(n, t)
+
+        # pre and post multiply by diag(mu, friction) scale by dm
+        if dim1id == 0:
+          fri1 = mu
+        else:
+          fri1 = fri[dim1id - 1]
+
+        if dim2id == 0:
+          fri2 = mu
+        else:
+          fri2 = fri[dim2id - 1]
+
+        hcone *= dm * fri1 * fri2
+
+        if hcone != 0.0:
+          h += hcone * efc_J11 * efc_J22
+
+          if dim1id != dim2id:
+            h += hcone * efc_J12 * efc_J21
+
+    h_out[worldid, dof1id, dof2id] += h
+
+
+@wp.kernel
+def update_gradient_JTCJ_dense(
   # Model:
   opt_impratio_invsqrt: wp.array(dtype=float),
   dof_tri_row: wp.array(dtype=int),
@@ -1735,20 +1976,63 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
-      num_blocks_ceil = ceil(m.nv / types.TILE_SIZE_JTDAJ_SPARSE)
-      lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
-      wp.launch_tiled(
-        update_gradient_JTDAJ_sparse_tiled(types.TILE_SIZE_JTDAJ_SPARSE, d.njmax),
-        dim=(d.nworld, lower_triangle_dim),
-        inputs=[
-          d.nefc,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          d.efc.done,
-        ],
+      # TODO(team): optimize
+      @nested_kernel(module="unique", enable_backward=False)
+      def _JTDAJ_sparse(
+        # Data in:
+        nefc_in: wp.array(dtype=int),
+        efc_J_rownnz_in: wp.array2d(dtype=int),
+        efc_J_rowadr_in: wp.array2d(dtype=int),
+        efc_J_colind_in: wp.array2d(dtype=int),
+        efc_J_in: wp.array3d(dtype=float),
+        efc_D_in: wp.array2d(dtype=float),
+        efc_state_in: wp.array2d(dtype=int),
+        efc_done_in: wp.array(dtype=bool),
+        # Out:
+        h_out: wp.array3d(dtype=float),
+      ):
+        worldid, efcid = wp.tid()
+
+        if efc_done_in[worldid]:
+          return
+
+        if efcid >= nefc_in[0]:
+          return
+
+        efc_D = efc_D_in[worldid, efcid]
+        efc_state = efc_state_in[worldid, efcid]
+
+        if state_check(efc_D, efc_state) == 0.0:
+          return
+
+        rownnz = efc_J_rownnz_in[worldid, efcid]
+        rowadr = efc_J_rowadr_in[worldid, efcid]
+
+        for i in range(rownnz):
+          sparseidi = rowadr + i
+          Ji = efc_J_in[worldid, 0, sparseidi]
+          colindi = efc_J_colind_in[worldid, sparseidi]
+          for j in range(i, rownnz):
+            if j == i:
+              sparseidj = sparseidi
+              Jj = Ji
+              colindj = colindi
+            else:
+              sparseidj = rowadr + j
+              Jj = efc_J_in[worldid, 0, sparseidj]
+              colindj = efc_J_colind_in[worldid, sparseidj]
+
+            h = Ji * Jj * efc_D
+            wp.atomic_add(h_out[worldid, colindi], colindj, h)
+
+            if i != j:
+              wp.atomic_add(h_out[worldid, colindj], colindi, h)
+
+      wp.launch(
+        _JTDAJ_sparse,
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, d.efc.done],
         outputs=[h],
-        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
 
       wp.launch(
@@ -1758,18 +2042,10 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
         outputs=[h],
       )
     else:
-      nv_padded = d.efc.J.shape[2]
       wp.launch_tiled(
-        update_gradient_JTDAJ_dense_tiled(nv_padded, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+        update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
         dim=d.nworld,
-        inputs=[
-          d.nefc,
-          d.qM,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          d.efc.done,
-        ],
+        inputs=[d.nefc, d.qM, d.efc.J, d.efc.D, d.efc.state, d.efc.done],
         outputs=[h],
         block_dim=m.block_dim.update_gradient_JTDAJ_dense,
       )
@@ -1798,31 +2074,61 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
 
       nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
 
-      wp.launch(
-        update_gradient_JTCJ,
-        dim=(dim_block, m.dof_tri_row.size),
-        inputs=[
-          m.opt.impratio_invsqrt,
-          m.dof_tri_row,
-          m.dof_tri_col,
-          d.contact.dist,
-          d.contact.includemargin,
-          d.contact.friction,
-          d.contact.dim,
-          d.contact.efc_address,
-          d.contact.worldid,
-          d.efc.J,
-          d.efc.D,
-          d.efc.Jaref,
-          d.efc.state,
-          d.efc.done,
-          d.naconmax,
-          d.nacon,
-          nblocks_perblock,
-          dim_block,
-        ],
-        outputs=[h],
-      )
+      if m.opt.is_sparse:
+        wp.launch(
+          update_gradient_JTCJ_sparse,
+          dim=(d.naconmax, m.dof_tri_row.size),
+          inputs=[
+            m.opt.impratio_invsqrt,
+            m.dof_tri_row,
+            m.dof_tri_col,
+            d.contact.dist,
+            d.contact.includemargin,
+            d.contact.friction,
+            d.contact.dim,
+            d.contact.efc_address,
+            d.contact.worldid,
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
+            d.efc.J_colind,
+            d.efc.J,
+            d.efc.D,
+            d.efc.Jaref,
+            d.efc.state,
+            d.efc.done,
+            d.naconmax,
+            d.nacon,
+            nblocks_perblock,
+            dim_block,
+          ],
+          outputs=[h],
+        )
+      else:
+        wp.launch(
+          update_gradient_JTCJ_dense,
+          dim=(dim_block, m.dof_tri_row.size),
+          inputs=[
+            m.opt.impratio_invsqrt,
+            m.dof_tri_row,
+            m.dof_tri_col,
+            d.contact.dist,
+            d.contact.includemargin,
+            d.contact.friction,
+            d.contact.dim,
+            d.contact.efc_address,
+            d.contact.worldid,
+            d.efc.J,
+            d.efc.D,
+            d.efc.Jaref,
+            d.efc.state,
+            d.efc.done,
+            d.naconmax,
+            d.nacon,
+            nblocks_perblock,
+            dim_block,
+          ],
+          outputs=[h],
+        )
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
     if m.nv <= _BLOCK_CHOLESKY_DIM:
@@ -2044,9 +2350,9 @@ def create_context(
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
   wp.launch(
-    solve_init_jaref,
+    solve_init_jaref(m.opt.is_sparse, m.nv),
     dim=(d.nworld, d.njmax),
-    inputs=[m.nv, d.nefc, d.qacc, d.efc.J, d.efc.aref],
+    inputs=[d.nefc, d.qacc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.aref],
     outputs=[d.efc.Jaref],
   )
 
