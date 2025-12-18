@@ -702,7 +702,6 @@ def ccd_hfield_kernel_builder(
   return ccd_hfield_kernel
 
 
-
 @cache_kernel
 def ccd_kernel_builder(
   geomtype1: int,
