@@ -702,34 +702,6 @@ def ccd_hfield_kernel_builder(
   return ccd_hfield_kernel
 
 
-# Heightfield collision pairs handled by ccd_hfield_kernel_builder
-_HFIELD_COLLISION_PAIRS = [
-  (GeomType.HFIELD, GeomType.SPHERE),
-  (GeomType.HFIELD, GeomType.CAPSULE),
-  (GeomType.HFIELD, GeomType.ELLIPSOID),
-  (GeomType.HFIELD, GeomType.CYLINDER),
-  (GeomType.HFIELD, GeomType.BOX),
-  (GeomType.HFIELD, GeomType.MESH),
-]
-
-# Non-heightfield collision pairs handled by ccd_kernel_builder
-_NON_HFIELD_COLLISION_PAIRS = [
-  (GeomType.SPHERE, GeomType.ELLIPSOID),
-  (GeomType.SPHERE, GeomType.MESH),
-  (GeomType.CAPSULE, GeomType.ELLIPSOID),
-  (GeomType.CAPSULE, GeomType.CYLINDER),
-  (GeomType.CAPSULE, GeomType.MESH),
-  (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
-  (GeomType.ELLIPSOID, GeomType.CYLINDER),
-  (GeomType.ELLIPSOID, GeomType.BOX),
-  (GeomType.ELLIPSOID, GeomType.MESH),
-  (GeomType.CYLINDER, GeomType.CYLINDER),
-  (GeomType.CYLINDER, GeomType.BOX),
-  (GeomType.CYLINDER, GeomType.MESH),
-  (GeomType.BOX, GeomType.MESH),
-  (GeomType.MESH, GeomType.MESH),
-]
-
 
 @cache_kernel
 def ccd_kernel_builder(
@@ -1124,6 +1096,35 @@ def ccd_kernel_builder(
     )
 
   return ccd_kernel
+
+
+# Heightfield collision pairs handled by ccd_hfield_kernel_builder
+_HFIELD_COLLISION_PAIRS = [
+  (GeomType.HFIELD, GeomType.SPHERE),
+  (GeomType.HFIELD, GeomType.CAPSULE),
+  (GeomType.HFIELD, GeomType.ELLIPSOID),
+  (GeomType.HFIELD, GeomType.CYLINDER),
+  (GeomType.HFIELD, GeomType.BOX),
+  (GeomType.HFIELD, GeomType.MESH),
+]
+
+# Non-heightfield collision pairs handled by ccd_kernel_builder
+_NON_HFIELD_COLLISION_PAIRS = [
+  (GeomType.SPHERE, GeomType.ELLIPSOID),
+  (GeomType.SPHERE, GeomType.MESH),
+  (GeomType.CAPSULE, GeomType.ELLIPSOID),
+  (GeomType.CAPSULE, GeomType.CYLINDER),
+  (GeomType.CAPSULE, GeomType.MESH),
+  (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
+  (GeomType.ELLIPSOID, GeomType.CYLINDER),
+  (GeomType.ELLIPSOID, GeomType.BOX),
+  (GeomType.ELLIPSOID, GeomType.MESH),
+  (GeomType.CYLINDER, GeomType.CYLINDER),
+  (GeomType.CYLINDER, GeomType.BOX),
+  (GeomType.CYLINDER, GeomType.MESH),
+  (GeomType.BOX, GeomType.MESH),
+  (GeomType.MESH, GeomType.MESH),
+]
 
 
 @event_scope
