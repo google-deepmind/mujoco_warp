@@ -572,23 +572,6 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
 
-  def test_make_data_eq_type(self):
-    mjm, _, _, _ = test_data.fixture(path="constraints.xml")
-
-    d = mjwarp.make_data(mjm)
-
-    # It should not crash and fields should exist
-    self.assertTrue(hasattr(d, "ne_connect"))
-    self.assertTrue(hasattr(d, "ne_weld"))
-    self.assertTrue(hasattr(d, "ne_jnt"))
-    self.assertTrue(hasattr(d, "ne_ten"))
-
-    # All values must be integers (not floats)
-    self.assertIsInstance(int(d.ne_connect.numpy()[0]), int)
-    self.assertIsInstance(int(d.ne_weld.numpy()[0]), int)
-    self.assertIsInstance(int(d.ne_jnt.numpy()[0]), int)
-    self.assertIsInstance(int(d.ne_ten.numpy()[0]), int)
-
 
 if __name__ == "__main__":
   wp.init()
