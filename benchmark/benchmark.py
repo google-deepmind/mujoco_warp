@@ -107,6 +107,17 @@ class Humanoid(benchmark.BenchmarkSuite):
   njmax = 64
 
 
+class MyoArm(benchmark.BenchmarkSuite):
+  """MyoArm."""
+
+  path = "myo_sim/arm/myoarm.xml"
+  params = benchmark.BenchmarkSuite.params + ("step.euler",)
+  batch_size = 8192
+  nconmax = 16
+  njmax = 48
+  overrides = {"opt.ccd_iterations": 50}  # default 35 is too low
+
+
 class ThreeHumanoids(benchmark.BenchmarkSuite):
   """Three MuJoCo humanoids on an infinite plane.
 
@@ -130,4 +141,5 @@ ApptronikApolloTerrain.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_ca
 Cloth.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 FrankaEmikaPanda.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 Humanoid.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
+MyoArm.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 ThreeHumanoids.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
