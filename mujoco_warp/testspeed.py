@@ -210,7 +210,7 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
         nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
         idx += size
 
-      _print_table(ncon_matrix, ("mean", "std", "min", "max"), "ncon alloc")
+      _print_table(ncon_matrix, ("mean", "std", "min", "max"), "nacon alloc")
       _print_table(nefc_matrix, ("mean", "std", "min", "max"), "nefc alloc")
 
     if solver_niter:
