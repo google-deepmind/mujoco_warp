@@ -124,7 +124,9 @@ def _ray_quad(a: float, b: float, c: float) -> Tuple[float, wp.vec2]:
 
 
 @wp.func
-def _ray_triangle(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, pnt: wp.vec3, vec: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> Tuple[float, wp.vec3]:
+def _ray_triangle(
+  v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, pnt: wp.vec3, vec: wp.vec3, b0: wp.vec3, b1: wp.vec3
+) -> Tuple[float, wp.vec3]:
   """Returns the distance at which a ray intersects with a triangle."""
   dif0 = v0 - pnt
   dif1 = v1 - pnt
@@ -244,7 +246,7 @@ def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
 
   # solve a * x^2 + 2 * b * x + c = 0
   sol, xx = _ray_quad(a, b, c)
-  part = 0 # -1: bottom, 0: cylinder, 1: top
+  part = 0  # -1: bottom, 0: cylinder, 1: top
 
   # make sure round solution is between flat sides
   if sol >= 0.0 and wp.abs(lpnt[2] + sol * vec[2]) <= size[1]:
@@ -339,7 +341,7 @@ def _ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec:
 
   # init solution
   x = wp.inf
-  part = 0 # -1: bottom, 0: cylinder, 1: top
+  part = 0  # -1: bottom, 0: cylinder, 1: top
 
   # flat sides
   if wp.abs(lvec[2]) > MJ_MINVAL:
@@ -883,6 +885,7 @@ def _ray(
     dist_out[worldid, rayid] = min_dist
   geomid_out[worldid, rayid] = min_geomid
   normal_out[worldid, rayid] = min_normal
+
 
 def ray(
   m: Model,
