@@ -2068,13 +2068,13 @@ def _sensor_touch(
 
     # add if ray-zone intersection (always true when contact.pos inside zone)
     dist, normal = ray.ray_geom(
-        site_xpos_in[worldid, objid],
-        site_xmat_in[worldid, objid],
-        site_size[objid],
-        contact_pos_in[conid],
-        conray,
-        site_type[objid],
-      )
+      site_xpos_in[worldid, objid],
+      site_xmat_in[worldid, objid],
+      site_size[objid],
+      contact_pos_in[conid],
+      conray,
+      site_type[objid],
+    )
     if dist >= 0.0:
       adr = sensor_adr[sensorid]
       wp.atomic_add(sensordata_out[worldid], adr, normalforce)
