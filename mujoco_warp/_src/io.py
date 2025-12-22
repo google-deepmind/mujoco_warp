@@ -59,11 +59,12 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
     return bool(mujoco.mj_isSparse(mjm))
 
 
-def put_model(mjm: mujoco.MjModel) -> types.Model:
+def put_model(mjm: mujoco.MjModel, recompute_const: bool = False) -> types.Model:
   """Creates a model on device.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
+    recompute_const: If True, recompute model-constant fields using set_const.
 
   Returns:
     The model containing kinematic and dynamic information (device).
@@ -542,6 +543,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   for f in dataclasses.fields(types.Model):
     if isinstance(f.type, wp.array):
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes))
+
+  if recompute_const:
+    from . import setconst
+    # Create temporary data for computation
+    # We need a data object to run kinematics.
+    # Note: make_data creates device arrays.
+    d = make_data(mjm, nworld=1)
+    m = setconst.set_const(m, d, mjm)
 
   return m
 

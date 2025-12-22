@@ -88,3 +88,5 @@ from ._src.types import SolverType as SolverType
 from ._src.types import State as State
 from ._src.types import Statistic as Statistic
 from ._src.types import TrnType as TrnType
+from ._src.setconst import set_const as set_const
+
