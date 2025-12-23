@@ -15,9 +15,6 @@
 
 """Tests for io functions."""
 
-import sys
-sys.path.insert(0, ".")
-
 import mujoco
 import numpy as np
 import warp as wp
@@ -26,8 +23,6 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
-
-print(f"DEBUG: mjwarp location: {mjwarp.__file__}")
 
 
 def _assert_eq(a, b, name):
