@@ -39,9 +39,9 @@ from etils import epath
 import mujoco_warp as mjw
 
 # mjwarp-viewer has priviledged access to a few internal methods
-from mujoco_warp._src.io import find_keys
-from mujoco_warp._src.io import make_trajectory
-from mujoco_warp._src.io import override_model
+from ._src.io import find_keys
+from ._src.io import make_trajectory
+from ._src.io import override_model
 
 
 class EngineOptions(enum.IntEnum):
