@@ -103,9 +103,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if field & ~np.bitwise_or.reduce(field_type):
       raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
 
-  if mjm.nflex > 1:
-    raise NotImplementedError("Only one flex is unsupported.")
-
   if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
     raise NotImplementedError("Flex collisions are not implemented.")
 
@@ -199,6 +196,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.opt = opt
   m.stat = stat
 
+  m.nv_pad = _get_padded_sizes(
+    mjm.nv, 0, is_sparse(mjm), types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  )[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
   m.nsensorcontact = (mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT).sum()
@@ -560,6 +560,32 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   return njmax_padded, nv_padded
 
 
+def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
+  """Returns a default guess for an ideal nconmax given a Model and optional Data.
+
+  This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
+  reports ncon overflow, or lowered in order to get the very best performance.
+  """
+  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  has_flex = mjm.nflex > 0
+  nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon if mjd else 0)
+  return int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
+
+
+def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
+  """Returns a default guess for an ideal njmax given a Model and optional Data.
+
+  This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
+  reports ncon overflow, or lowered in order to get the very best performance.
+  """
+  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  has_flex = mjm.nflex > 0
+  njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, 512 * has_flex, 256 * has_sdf, mjd.nefc if mjd else 0)
+  return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -582,9 +608,11 @@ def make_data(
     The data object containing the current state and output arrays (device).
   """
   # TODO(team): move nconmax, njmax to Model?
-  # TODO(team): improve heuristic for nconmax and njmax
-  nconmax = nconmax or 20
-  njmax = njmax or nconmax * 6
+  if nconmax is None:
+    nconmax = _default_nconmax(mjm)
+
+  if njmax is None:
+    njmax = _default_njmax(mjm)
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -592,7 +620,7 @@ def make_data(
   if naconmax is None:
     if nconmax < 0:
       raise ValueError("nconmax must be >= 0")
-    naconmax = max(512, nworld * nconmax)
+    naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
@@ -611,7 +639,18 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
+  # world body and static geom (attached to the world) poses are precomputed
+  # this speeds up scenes with many static geoms (e.g. terrains)
+  # TODO(team): remove this when we introduce dof islands + sleeping
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_kinematics(mjm, mjd)
+
+  # mocap
+  mocap_body = np.nonzero(mjm.body_mocapid >= 0)[0]
+  mocap_id = mjm.body_mocapid[mocap_body]
+
   d_kwargs = {
+    "qpos": wp.array(np.tile(mjm.qpos0, nworld), shape=(nworld, mjm.nq), dtype=float),
     "contact": contact,
     "efc": efc,
     "nworld": nworld,
@@ -619,8 +658,20 @@ def make_data(
     "njmax": njmax,
     "qM": None,
     "qLD": None,
-    "geom_xpos": None,
-    "geom_xmat": None,
+    # world body
+    "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
+    "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    "ximat": wp.array(np.tile(mjd.ximat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    # static geoms
+    "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
+    "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
+    # mocap
+    "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
+    "mocap_quat": wp.array(
+      np.tile(mjm.body_quat[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.quat
+    ),
+    # equality constraints
+    "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -635,14 +686,6 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  # static geoms (attached to the world) have their poses calculated once during make_data instead
-  # of during each physics step.  this speeds up scenes with many static geoms (e.g. terrains)
-  # TODO(team): remove this when we introduce dof islands + sleeping
-  mjd = mujoco.MjData(mjm)
-  mujoco.mj_kinematics(mjm, mjd)
-  d.geom_xpos = wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3)
-  d.geom_xmat = wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33)
 
   return d
 
@@ -674,9 +717,11 @@ def put_data(
   # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
 
-  # TODO(team): better heuristic for nconmax and njmax
-  nconmax = nconmax or max(5, 4 * mjd.ncon)
-  njmax = njmax or max(5, 4 * mjd.nefc)
+  if nconmax is None:
+    nconmax = _default_nconmax(mjm, mjd)
+
+  if njmax is None:
+    njmax = _default_njmax(mjm, mjd)
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -684,11 +729,9 @@ def put_data(
   if naconmax is None:
     if nconmax < 0:
       raise ValueError("nconmax must be >= 0")
-
     if mjd.ncon > nconmax:
       raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
-
-    naconmax = max(512, nworld * nconmax)
+    naconmax = nworld * nconmax
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
@@ -1310,6 +1353,7 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
   }
   mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
   mj_only_fields = {"opt.jacobian"}
+  readonly_fields = {"opt.is_sparse"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}
@@ -1326,6 +1370,9 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
       continue
     if key in mj_only_fields and isinstance(model, types.Model):
       continue
+
+    if key in readonly_fields and isinstance(model, types.Model):
+      raise ValueError(f"Cannot override {key} on mjw.Model: field affects model initialization and has side effects")
 
     obj, attrs = model, key.split(".")
     for i, attr in enumerate(attrs):
