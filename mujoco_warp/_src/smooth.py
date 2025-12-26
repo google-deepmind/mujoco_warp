@@ -105,15 +105,16 @@ def _kinematics_level(
 
     # mocap bodies have world body as parent
     mocapid = body_mocapid[bodyid]
-    if pid == 0 and mocapid != -1:
-      body_pos_ = mocap_pos_in[worldid, mocapid]
-      body_quat_ = mocap_quat_in[worldid, mocapid]
+    if mocapid >= 0:
+      xpos = mocap_pos_in[worldid, mocapid]
+      xquat = mocap_quat_in[worldid, mocapid]
     else:
-      body_pos_ = body_pos[body_pos_id, bodyid]
-      body_quat_ = body_quat[body_quat_id, bodyid]
+      xpos = body_pos[body_pos_id, bodyid]
+      xquat = body_quat[body_quat_id, bodyid]
 
-    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
+    if pid >= 0:
+      xpos = xmat_in[worldid, pid] @ xpos + xpos_in[worldid, pid]
+      xquat = math.mul_quat(xquat_in[worldid, pid], xquat)
 
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
@@ -142,7 +143,8 @@ def _kinematics_level(
       jntadr += 1
 
   xpos_out[worldid, bodyid] = xpos
-  xquat_out[worldid, bodyid] = wp.normalize(xquat)
+  xquat = wp.normalize(xquat)
+  xquat_out[worldid, bodyid] = xquat
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
@@ -216,11 +218,14 @@ def _flex_vertices(
 def _flex_edges(
   # Model:
   nv: int,
+  nflex: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
+  flex_edgeadr: wp.array(dtype=int),
+  flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   # Data in:
@@ -234,7 +239,11 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
   worldid, edgeid = wp.tid()
-  f = 0  # TODO(quaglino): get f from edgeid
+  for i in range(nflex):
+    locid = edgeid - flex_edgeadr[i]
+    if locid >= 0 and locid < flex_edgenum[i]:
+      f = i
+      break
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
   pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
@@ -320,11 +329,14 @@ def flex(m: Model, d: Data):
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.nv,
+      m.nflex,
       m.body_parentid,
       m.body_rootid,
       m.body_dofadr,
       m.dof_bodyid,
       m.flex_vertadr,
+      m.flex_edgeadr,
+      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
       d.qvel,

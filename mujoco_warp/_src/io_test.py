@@ -45,7 +45,7 @@ class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml")
-    md = mjwarp.make_data(mjm, nconmax=512, njmax=512)
+    md = mjwarp.make_data(mjm)
 
     # same number of fields
     self.assertEqual(len(d.__dict__), len(md.__dict__))
@@ -54,6 +54,21 @@ class IOTest(parameterized.TestCase):
     for attr, val in md.__dict__.items():
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
+
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_put_data_sizes(self, xml):
+    EXPECTED_SIZES = {
+      "pendula.xml": (48, 64),
+      "collision_sdf/tactile.xml": (64, 256),
+      "flex/floppy.xml": (256, 512),
+      "actuation/tendon_force_limit.xml": (48, 64),
+      "actuation/tendon_force_limit.xml": (48, 64),
+      "hfield/hfield.xml": (96, 384),
+    }
+    _, _, _, d = test_data.fixture(xml)
+    nconmax_expected, njmax_expected = EXPECTED_SIZES[xml]
+    self.assertEqual(d.naconmax, nconmax_expected)
+    self.assertEqual(d.njmax, njmax_expected)
 
   def test_get_data_into_m(self):
     mjm = mujoco.MjModel.from_xml_string("""
@@ -566,6 +581,32 @@ class IOTest(parameterized.TestCase):
     )
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
+
+  @parameterized.product(active=["true", "false"], make_data=[True, False])
+  def test_eq_active(self, active, make_data):
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <body name="body1">
+          <joint/>
+          <geom size=".1"/>
+        </body>
+        <body name="body2">
+          <joint/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="body1" body2="body2" active="{active}"/>
+      </equality>
+    </mujoco>
+    """
+    )
+    if make_data:
+      d = mjwarp.make_data(mjm)
+
+    _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
 
 
 if __name__ == "__main__":

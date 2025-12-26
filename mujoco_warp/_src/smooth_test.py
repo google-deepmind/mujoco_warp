@@ -111,39 +111,49 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "updated xpos")
     _assert_eq(d.site_xpos.numpy()[0], mjd.site_xpos, "updated site_xpos")
 
-  def test_kinematics(self):
+  @parameterized.parameters(True, False)
+  def test_kinematics(self, make_data):
     """Tests kinematics."""
-    _, mjd, m, d = test_data.fixture("pendula.xml")
+    # TODO(team): improve batched Model field testing (eg, body_pos, body_quat, jnt_axis)
+    nworld = 2
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=nworld, keyframe=0)
+    if make_data:
+      mjd = mujoco.MjData(mjm)
+      d = mjw.make_data(mjm, nworld=nworld)
 
-    for arr in (
-      d.xanchor,
-      d.xaxis,
-      d.xpos,
-      d.xipos,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.site_xpos,
-      d.site_xmat,
-    ):
-      arr.zero_()
+    for arr in (d.xpos, d.xipos, d.xquat, d.xmat, d.ximat, d.xanchor, d.xaxis, d.site_xpos, d.site_xmat):
+      arr_view = arr[:, 1:]  # skip world body
+      arr_view.fill_(wp.inf)
 
-    for arr in (d.xquat, d.xmat, d.ximat):
-      arr_view = arr[:, 1:]
-      arr_view.zero_()
+    qpos = mjm.key_qpos[0]
+    mocap_pos = mjm.key_mpos[0]
+    mocap_quat = mjm.key_mquat[0]
 
+    mjd.qpos[:] = qpos
+    mjd.mocap_pos[:] = mocap_pos.reshape((mjm.nmocap, 3))
+    mjd.mocap_quat[:] = mocap_quat.reshape((mjm.nmocap, 4))
+
+    wp.copy(d.qpos, wp.array(np.tile(qpos, (nworld, 1)), shape=(nworld, mjm.nq), dtype=float))
+    wp.copy(d.mocap_pos, wp.array(np.tile(mocap_pos, (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3))
+    wp.copy(d.mocap_quat, wp.array(np.tile(mocap_quat, (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.quat))
+
+    mujoco.mj_kinematics(mjm, mjd)
     mjw.kinematics(m, d)
 
-    _assert_eq(d.xanchor.numpy()[0], mjd.xanchor, "xanchor")
-    _assert_eq(d.xaxis.numpy()[0], mjd.xaxis, "xaxis")
-    _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
-    _assert_eq(d.xquat.numpy()[0], mjd.xquat, "xquat")
-    _assert_eq(d.xmat.numpy()[0], mjd.xmat.reshape((-1, 3, 3)), "xmat")
-    _assert_eq(d.xipos.numpy()[0], mjd.xipos, "xipos")
-    _assert_eq(d.ximat.numpy()[0], mjd.ximat.reshape((-1, 3, 3)), "ximat")
-    _assert_eq(d.geom_xpos.numpy()[0], mjd.geom_xpos, "geom_xpos")
-    _assert_eq(d.geom_xmat.numpy()[0], mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
-    _assert_eq(d.site_xpos.numpy()[0], mjd.site_xpos, "site_xpos")
-    _assert_eq(d.site_xmat.numpy()[0], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
+    for i in range(nworld):
+      _assert_eq(d.xanchor.numpy()[i], mjd.xanchor, "xanchor")
+      _assert_eq(d.xaxis.numpy()[i], mjd.xaxis, "xaxis")
+      _assert_eq(d.xpos.numpy()[i], mjd.xpos, "xpos")
+      _assert_eq(d.xquat.numpy()[i], mjd.xquat, "xquat")
+      _assert_eq(d.xmat.numpy()[i], mjd.xmat.reshape((-1, 3, 3)), "xmat")
+      _assert_eq(d.xipos.numpy()[i], mjd.xipos, "xipos")
+      _assert_eq(d.ximat.numpy()[i], mjd.ximat.reshape((-1, 3, 3)), "ximat")
+      _assert_eq(d.geom_xpos.numpy()[i], mjd.geom_xpos, "geom_xpos")
+      _assert_eq(d.geom_xmat.numpy()[i], mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
+      _assert_eq(d.site_xpos.numpy()[i], mjd.site_xpos, "site_xpos")
+      _assert_eq(d.site_xmat.numpy()[i], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
+      _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
+      _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
   def test_com_pos(self):
     """Tests com_pos."""
