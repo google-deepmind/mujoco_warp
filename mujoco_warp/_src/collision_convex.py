@@ -25,8 +25,6 @@ from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
 from .math import upper_trid_index
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR
 from .types import MJ_MAXVAL
 from .types import Data
@@ -977,64 +975,16 @@ def convex_narrowphase(m: Model, d: Data):
   if not any(_pair_count(g[0].value, g[1].value) for g in _CONVEX_COLLISION_PAIRS):
     return
 
-  epa_iterations = m.opt.ccd_iterations
-
   # set to true to enable multiccd
   use_multiccd = False
-  nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
-  nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
-
-  # epa_vert: vertices in EPA polytope in Minkowski space
-  epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert1: vertices in EPA polytope in geom 1 space
-  epa_vert1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert2: vertices in EPA polytope in geom 2 space
-  epa_vert2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert_index1: vertex indices in EPA polytope for geom 1
-  epa_vert_index1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
-  # epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
-  epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
-  # epa_face: faces of polytope represented by three indices
-  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3i)
-  # epa_pr: projection of origin on polytope faces
-  epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
-  # epa_norm2: epa_pr * epa_pr
-  epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
-  # epa_index: index of face in polytope map
-  epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_map: status of faces in polytope
-  epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
-  # multiccd_polygon: clipped contact surface
-  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
-  # multiccd_clipped: clipped contact surface (intermediate)
-  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
-  # multiccd_pnormal: plane normal of clipping polygon
-  multiccd_pnormal = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-  # multiccd_pdist: plane distance of clipping polygon
-  multiccd_pdist = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=float)
-  # multiccd_idx1: list of normal index candidates for Geom 1
-  multiccd_idx1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
-  # multiccd_idx2: list of normal index candidates for Geom 2
-  multiccd_idx2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
-  # multiccd_n1: list of normal candidates for Geom 1
-  multiccd_n1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_n2: list of normal candidates for Geom 1
-  multiccd_n2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_endvert: list of edge vertices candidates
-  multiccd_endvert = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_face1: contact face
-  multiccd_face1 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-  # multiccd_face2: contact face
-  multiccd_face2 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
+  d.ccd.allocate(d.naconmax, m.nmaxpolygon if use_multiccd else 0, m.nmaxmeshdeg if use_multiccd else 0, m.opt.ccd_iterations)
 
   for geom_pair in _CONVEX_COLLISION_PAIRS:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
     if _pair_count(g1, g2):
       wp.launch(
-        ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, use_multiccd),
+        ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, m.opt.ccd_iterations, use_multiccd),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
@@ -1084,28 +1034,28 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
-          epa_vert1,
-          epa_vert2,
-          epa_vert_index1,
-          epa_vert_index2,
-          epa_face,
-          epa_pr,
-          epa_norm2,
-          epa_index,
-          epa_map,
-          epa_horizon,
-          multiccd_polygon,
-          multiccd_clipped,
-          multiccd_pnormal,
-          multiccd_pdist,
-          multiccd_idx1,
-          multiccd_idx2,
-          multiccd_n1,
-          multiccd_n2,
-          multiccd_endvert,
-          multiccd_face1,
-          multiccd_face2,
+          d.ccd.epa_vert,
+          d.ccd.epa_vert1,
+          d.ccd.epa_vert2,
+          d.ccd.epa_vert_index1,
+          d.ccd.epa_vert_index2,
+          d.ccd.epa_face,
+          d.ccd.epa_pr,
+          d.ccd.epa_norm2,
+          d.ccd.epa_index,
+          d.ccd.epa_map,
+          d.ccd.epa_horizon,
+          d.ccd.multi_polygon,
+          d.ccd.multi_clipped,
+          d.ccd.multi_pnormal,
+          d.ccd.multi_pdist,
+          d.ccd.multi_idx1,
+          d.ccd.multi_idx2,
+          d.ccd.multi_n1,
+          d.ccd.multi_n2,
+          d.ccd.multi_endvert,
+          d.ccd.multi_face1,
+          d.ccd.multi_face2,
         ],
         outputs=[
           d.nacon,
