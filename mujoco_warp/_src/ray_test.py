@@ -42,12 +42,14 @@ class RayTest(absltest.TestCase):
 
     pnt = wp.array([wp.vec3(12.146, 1.865, 3.895)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]  # Extract from [[-1]]
     dist_np = dist.numpy()[0, 0]  # Extract from [[-1.]]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
+    _assert_eq(normal_np, wp.vec3(0.0, 0.0, 0.0), "normal")
 
   def test_ray_plane(self):
     """Tests ray<>plane matches MuJoCo."""
@@ -56,7 +58,7 @@ class RayTest(absltest.TestCase):
     # looking down at a slight angle
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -68,7 +70,7 @@ class RayTest(absltest.TestCase):
 
     # looking on wrong side of plane
     pnt = wp.array([wp.vec3(0.0, 0.0, -0.5)], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -82,7 +84,7 @@ class RayTest(absltest.TestCase):
     # looking down at sphere at a slight angle
     pnt = wp.array([wp.vec3(0.0, 0.0, 1.6)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -99,7 +101,7 @@ class RayTest(absltest.TestCase):
     # looking down at capsule at a slight angle
     pnt = wp.array([wp.vec3(0.5, 1.0, 1.6)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -112,7 +114,7 @@ class RayTest(absltest.TestCase):
     # looking up at capsule from below
     pnt = wp.array([wp.vec3(-0.5, 1.0, 0.05)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -125,7 +127,7 @@ class RayTest(absltest.TestCase):
     # looking at cylinder of capsule from the side
     pnt = wp.array([wp.vec3(0.0, 1.0, 0.75)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(1.0, 0.0, 0.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -144,7 +146,7 @@ class RayTest(absltest.TestCase):
 
     mj_geomid = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
 
     _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "geomid")
     _assert_eq(dist.numpy()[0, 0], mj_dist, "dist")
@@ -156,7 +158,7 @@ class RayTest(absltest.TestCase):
     # looking down at box at a slight angle
     pnt = wp.array([wp.vec3(1.0, 0.0, 1.6)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -169,7 +171,7 @@ class RayTest(absltest.TestCase):
     # looking up at box from below
     pnt = wp.array([wp.vec3(1.0, 0.0, 0.05)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -186,7 +188,7 @@ class RayTest(absltest.TestCase):
     # look at the tetrahedron
     pnt = wp.array([wp.vec3(2.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(-1.0, -1.0, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -200,7 +202,7 @@ class RayTest(absltest.TestCase):
     # look away from the dodecahedron
     pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(2.0, 1.0, 1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
@@ -208,7 +210,7 @@ class RayTest(absltest.TestCase):
     # look at the dodecahedron
     pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(-2.0, -1.0, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -224,7 +226,7 @@ class RayTest(absltest.TestCase):
 
     pnt = wp.array([wp.vec3(0.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
 
     mj_geomid = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
@@ -240,7 +242,7 @@ class RayTest(absltest.TestCase):
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     geomgroup = vec6(1, 0, 0, 0, 0, 0)
-    dist, geomid = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -255,7 +257,7 @@ class RayTest(absltest.TestCase):
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
     geomgroup = vec6(0, 0, 0, 0, 0, 0)
-    dist, geomid = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -269,7 +271,7 @@ class RayTest(absltest.TestCase):
     # nothing hit with flg_static = False
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec, flg_static=False)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, flg_static=False)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
@@ -283,12 +285,14 @@ class RayTest(absltest.TestCase):
     # nothing hit with bodyexclude = 0 (world body)
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec, bodyexclude=0)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, bodyexclude=0)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
+    _assert_eq(normal_np, wp.vec3(0.0, 0.0, 0.0), "normal")
 
   def test_ray_invisible(self):
     """Tests ray doesn't hit transparent geoms."""
@@ -300,12 +304,14 @@ class RayTest(absltest.TestCase):
 
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
+    _assert_eq(normal_np, wp.vec3(0.0, 0.0, 0.0), "normal")
 
 
 if __name__ == "__main__":
