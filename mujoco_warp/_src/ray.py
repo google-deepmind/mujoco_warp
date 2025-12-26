@@ -17,6 +17,8 @@ from typing import Optional, Tuple
 
 import warp as wp
 
+from .math import quat_inv
+from .math import rot_vec_quat
 from .math import safe_div
 from .types import MJ_MINVAL
 from .types import Data
@@ -28,22 +30,21 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
+def _ray_map(pos: wp.vec3, quat: wp.quat, pnt: wp.vec3, vec: wp.vec3) -> Tuple[wp.vec3, wp.vec3]:
   """Maps ray to local geom frame coordinates.
 
   Args:
       pos: position of geom frame
-      mat: orientation of geom frame
+      quat: orientation of geom frame
       pnt: starting point of ray in world coordinates
       vec: direction of ray in world coordinates
 
   Returns:
       3D point and 3D direction in local geom frame
   """
-  matT = wp.transpose(mat)
-  lpnt = matT @ (pnt - pos)
-  lvec = matT @ vec
-
+  quat_inv = quat_inv(quat)
+  lpnt = rot_vec_quat(pnt - pos, quat_inv)
+  lvec = rot_vec_quat(vec, quat_inv)
   return lpnt, lvec
 
 
@@ -181,10 +182,10 @@ def _ray_triangle(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, pnt: wp.vec3, vec: wp.v
 
 
 @wp.func
-def _ray_plane(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+def _ray_plane(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a plane."""
   # map to local frame
-  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
   # z-vec not pointing towards front face: reject
   if lvec[2] > -MJ_MINVAL:
@@ -218,7 +219,7 @@ def _ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> fl
 
 
 @wp.func
-def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+def _ray_capsule(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a capsule."""
   # bounding sphere test
   ssz = size[0] + size[1]
@@ -226,7 +227,7 @@ def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
     return wp.inf
 
   # map to local frame
-  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
   # init solution
   x = -1.0
@@ -274,10 +275,10 @@ def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
 
 
 @wp.func
-def _ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+def _ray_ellipsoid(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with an ellipsoid."""
   # map to local frame
-  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
   # invert size^2
   s = wp.vec3(safe_div(1.0, size[0] * size[0]), safe_div(1.0, size[1] * size[1]), safe_div(1.0, size[2] * size[2]))
@@ -294,7 +295,7 @@ def _ray_ellipsoid(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec
 
 
 @wp.func
-def _ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
+def _ray_cylinder(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> float:
   """Returns the distance at which a ray intersects with a cylinder."""
   # bounding sphere test
   ssz = size[0] * size[0] + size[1] * size[1]
@@ -302,7 +303,7 @@ def _ray_cylinder(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec:
     return wp.inf
 
   # map to local frame
-  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
   # init solution
   x = wp.inf
@@ -343,7 +344,7 @@ _IFACE = wp.types.matrix((3, 2), dtype=int)(1, 2, 0, 2, 0, 1)
 
 
 @wp.func
-def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, vec6]:
+def _ray_box(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, vec6]:
   """Returns the distance at which a ray intersects with a box."""
   all = vec6(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
 
@@ -353,7 +354,7 @@ def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.v
     return wp.inf, all
 
   # map to local frame
-  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
   # init solution
   x = wp.inf
@@ -398,7 +399,7 @@ def _ray_hfield(
   hfield_data: wp.array(dtype=float),
   # In:
   pos: wp.vec3,
-  mat: wp.mat33,
+  quat: wp.quat,
   pnt: wp.vec3,
   vec: wp.vec3,
   id: int,
@@ -415,29 +416,29 @@ def _ray_hfield(
   size = hfield_size[hid]
   adr = hfield_adr[hid]
 
-  mat_col = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+  normal = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), quat)
 
   # compute size and pos of base box
   base_scale = size[3] * 0.5
   base_size = wp.vec3(size[0], size[1], base_scale)
-  base_pos = pos + mat_col * base_scale
+  base_pos = pos + normal * base_scale
 
   # compute size and pos of top box
   top_scale = size[2] * 0.5
   top_size = wp.vec3(size[0], size[1], top_scale)
-  top_pos = pos + mat_col * top_scale
+  top_pos = pos + normal * top_scale
 
   # init: intersection with base box
-  x, _ = _ray_box(base_pos, mat, base_size, pnt, vec)
+  x, _ = _ray_box(base_pos, quat, base_size, pnt, vec)
 
   # check top box: done if no intersection
-  top_intersect, all = _ray_box(top_pos, mat, top_size, pnt, vec)
+  top_intersect, all = _ray_box(top_pos, quat, top_size, pnt, vec)
 
   if top_intersect < 0.0:
     return x
 
   # map to local frame
-  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
   # construct basis vectors of normal plane
   b0 = wp.vec3(1.0, 1.0, 1.0)
@@ -542,12 +543,12 @@ def ray_mesh(
   # In:
   data_id: int,
   pos: wp.vec3,
-  mat: wp.mat33,
+  quat: wp.quat,
   pnt: wp.vec3,
   vec: wp.vec3,
 ) -> float:
   """Returns the distance and geomid for ray mesh intersections."""
-  pnt, vec = _ray_map(pos, mat, pnt, vec)
+  pnt, vec = _ray_map(pos, quat, pnt, vec)
 
   # compute orthogonal basis vectors
   if wp.abs(vec[0]) < wp.abs(vec[1]):
@@ -600,21 +601,21 @@ def ray_mesh(
 
 
 @wp.func
-def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> float:
+def ray_geom(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> float:
   """Returns distance along ray to intersection with geom, or infinity if none."""
   # TODO(team): static loop unrolling to remove unnecessary branching
   if geomtype == GeomType.PLANE:
-    return _ray_plane(pos, mat, size, pnt, vec)
+    return _ray_plane(pos, quat, size, pnt, vec)
   elif geomtype == GeomType.SPHERE:
     return _ray_sphere(pos, size[0] * size[0], pnt, vec)
   elif geomtype == GeomType.CAPSULE:
-    return _ray_capsule(pos, mat, size, pnt, vec)
+    return _ray_capsule(pos, quat, size, pnt, vec)
   elif geomtype == GeomType.ELLIPSOID:
-    return _ray_ellipsoid(pos, mat, size, pnt, vec)
+    return _ray_ellipsoid(pos, quat, size, pnt, vec)
   elif geomtype == GeomType.CYLINDER:
-    return _ray_cylinder(pos, mat, size, pnt, vec)
+    return _ray_cylinder(pos, quat, size, pnt, vec)
   elif geomtype == GeomType.BOX:
-    dist, _ = _ray_box(pos, mat, size, pnt, vec)
+    dist, _ = _ray_box(pos, quat, size, pnt, vec)
     return dist
   else:
     return wp.inf
@@ -644,7 +645,7 @@ def _ray_geom_mesh(
   mat_rgba: wp.array2d(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   worldid: int,
   pnt: wp.vec3,
@@ -667,7 +668,7 @@ def _ray_geom_mesh(
     bodyexclude,
   ):
     pos = geom_xpos_in[worldid, geomid]
-    mat = geom_xmat_in[worldid, geomid]
+    quat = geom_xquat_in[worldid, geomid]
     type = geom_type[geomid]
 
     if type == GeomType.MESH:
@@ -679,7 +680,7 @@ def _ray_geom_mesh(
         mesh_face,
         geom_dataid[geomid],
         pos,
-        mat,
+        quat,
         pnt,
         vec,
       )
@@ -693,13 +694,13 @@ def _ray_geom_mesh(
         hfield_adr,
         hfield_data,
         pos,
-        mat,
+        quat,
         pnt,
         vec,
         geomid,
       )
     else:
-      return ray_geom(pos, mat, geom_size[worldid % geom_size.shape[0], geomid], pnt, vec, type)
+      return ray_geom(pos, quat, geom_size[worldid % geom_size.shape[0], geomid], pnt, vec, type)
   else:
     return wp.inf
 
@@ -729,7 +730,7 @@ def _ray(
   mat_rgba: wp.array2d(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   pnt: wp.array2d(dtype=wp.vec3),
   vec: wp.array2d(dtype=wp.vec3),
@@ -771,7 +772,7 @@ def _ray(
         hfield_data,
         mat_rgba,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         worldid,
         pnt[worldid, rayid],
         vec[worldid, rayid],
@@ -875,7 +876,7 @@ def rays(
       m.hfield_data,
       m.mat_rgba,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       pnt,
       vec,
       geomgroup,

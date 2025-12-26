@@ -24,6 +24,9 @@ from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
+from .math import mul_quat
+from .math import quat_inv
+from .math import rot_vec_quat
 from .math import upper_trid_index
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
@@ -92,7 +95,7 @@ def _hfield_filter(
   hfield_size: wp.array(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   worldid: int,
   g1: int,
@@ -111,10 +114,9 @@ def _hfield_filter(
   margin_id = worldid % geom_margin.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
-  mat1 = geom_xmat_in[worldid, g1]
-  mat1T = wp.transpose(mat1)
   pos2 = geom_xpos_in[worldid, g2]
-  pos = mat1T @ (pos2 - pos1)
+  rot1_inv = quat_inv(geom_xquat_in[worldid, g1])
+  pos = rot_vec_quat(pos2 - pos1, rot1_inv)
   r2 = geom_rbound[rbound_id, g2]
 
   # TODO(team): margin?
@@ -132,9 +134,6 @@ def _hfield_filter(
   if -size1[3] > pos[2] + r2 + margin:  # down
     return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
 
-  mat2 = geom_xmat_in[worldid, g2]
-  mat = mat1T @ mat2
-
   # aabb for geom in height field frame
   xmax = -MJ_MAXVAL
   ymax = -MJ_MAXVAL
@@ -147,15 +146,18 @@ def _hfield_filter(
   center2 = geom_aabb[aabb_id, g2, 0]
   size2 = geom_aabb[aabb_id, g2, 1]
 
-  pos += mat1T @ center2
+  pos += rot_vec_quat(center2, rot1_inv)
 
   sign = wp.vec2(-1.0, 1.0)
+
+  rot2 = geom_xquat_in[worldid, g2]
+  rot12 = mul_quat(rot1_inv, rot2)
 
   for i in range(2):
     for j in range(2):
       for k in range(2):
         corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-        corner_hf = mat @ corner_local
+        corner_hf = rot_vec_quat(corner_local, rot12)
 
         if corner_hf[0] > xmax:
           xmax = corner_hf[0]
@@ -427,7 +429,7 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
@@ -487,7 +489,7 @@ def ccd_kernel_builder(
     # height field filter
     if wp.static(geomtype1 == GeomType.HFIELD.value):
       no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-        geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+        geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xquat_in, worldid, g1, g2
       )
       if no_hf_collision:
         return
@@ -533,7 +535,7 @@ def ccd_kernel_builder(
       mesh_polymapnum,
       mesh_polymap,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       geoms,
       worldid,
     )
@@ -641,7 +643,7 @@ def ccd_kernel_builder(
             x1_ = wp.vec3(0.0, 0.0, 0.0)
             for i in range(6):
               x1_ += prism[i]
-            x1 += geom1.rot @ (x1_ / 6.0)
+            x1 += rot_vec_quat(x1_ / 6.0, geom1.rot)
 
             dist, ncontact, w1, w2, idx = ccd(
               opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
@@ -1079,7 +1081,7 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_friction,
           d.naconmax,
           d.geom_xpos,
-          d.geom_xmat,
+          d.geom_xquat,
           d.collision_pair,
           d.collision_pairid,
           d.collision_worldid,

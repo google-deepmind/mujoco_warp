@@ -121,7 +121,7 @@ class SmoothTest(parameterized.TestCase):
       mjd = mujoco.MjData(mjm)
       d = mjw.make_data(mjm, nworld=nworld)
 
-    for arr in (d.xpos, d.xipos, d.xquat, d.xmat, d.ximat, d.xanchor, d.xaxis, d.site_xpos, d.site_xmat):
+    for arr in (d.xpos, d.xipos, d.xquat, d.xiquat, d.xanchor, d.xaxis, d.site_xpos, d.site_xquat):
       arr_view = arr[:, 1:]  # skip world body
       arr_view.fill_(wp.inf)
 
@@ -140,18 +140,32 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_kinematics(mjm, mjd)
     mjw.kinematics(m, d)
 
+    ximat = np.zeros((nworld, m.nbody, 9), dtype=np.float64)
+    for i in range(nworld):
+      for j in range(m.nbody):
+        mujoco.mju_quat2Mat(ximat[i, j], d.xiquat.numpy()[i, j])
+
+    geom_xmat = np.zeros((nworld, m.ngeom, 9), dtype=np.float64)
+    for i in range(nworld):
+      for j in range(m.ngeom):
+        mujoco.mju_quat2Mat(geom_xmat[i, j], d.geom_xquat.numpy()[i, j])
+
+    site_xmat = np.zeros((nworld, m.nsite, 9), dtype=np.float64)
+    for i in range(nworld):
+      for j in range(m.nsite):
+        mujoco.mju_quat2Mat(site_xmat[i, j], d.site_xquat.numpy()[i, j])
+
     for i in range(nworld):
       _assert_eq(d.xanchor.numpy()[i], mjd.xanchor, "xanchor")
       _assert_eq(d.xaxis.numpy()[i], mjd.xaxis, "xaxis")
       _assert_eq(d.xpos.numpy()[i], mjd.xpos, "xpos")
       _assert_eq(d.xquat.numpy()[i], mjd.xquat, "xquat")
-      _assert_eq(d.xmat.numpy()[i], mjd.xmat.reshape((-1, 3, 3)), "xmat")
       _assert_eq(d.xipos.numpy()[i], mjd.xipos, "xipos")
-      _assert_eq(d.ximat.numpy()[i], mjd.ximat.reshape((-1, 3, 3)), "ximat")
+      _assert_eq(ximat[i], mjd.ximat, "ximat")
       _assert_eq(d.geom_xpos.numpy()[i], mjd.geom_xpos, "geom_xpos")
-      _assert_eq(d.geom_xmat.numpy()[i], mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
+      _assert_eq(geom_xmat[i], mjd.geom_xmat, "geom_xmat")
       _assert_eq(d.site_xpos.numpy()[i], mjd.site_xpos, "site_xpos")
-      _assert_eq(d.site_xmat.numpy()[i], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
+      _assert_eq(site_xmat[i], mjd.site_xmat, "site_xmat")
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
