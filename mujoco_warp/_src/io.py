@@ -59,6 +59,30 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
     return bool(mujoco.mj_isSparse(mjm))
 
 
+def _moment_nnz_rowadr(mjm: mujoco.MjModel) -> np.ndarray:
+  nnzs = []
+  rowadr = [0]
+  for i in range(mjm.nu):
+    # see mujoco/src/user/user_model.cc mjCModel::CountNJmom
+    trntype = mjm.actuator_trntype[i]
+    if trntype in (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT):
+      trnid = mjm.actuator_trnid[i][0]
+      if mjm.jnt_type[trnid] in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+        nnz = 1
+      elif mjm.jnt_type[trnid] == mujoco.mjtJoint.mjJNT_BALL:
+        nnz = 3
+      else:  # mjJNT_FREE
+        nnz = 6
+    else:  # transmission: SLIDERCRANK, TENDON, SITE, BODY
+      nnz = mjm.nv
+
+    nnzs.append(nnz)
+    if i < mjm.nu - 1:
+      rowadr.append(rowadr[-1] + nnz)
+
+  return nnzs, rowadr
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -537,6 +561,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_j.append(j)
       m.qM_madr_ij.append(madr_ij)
 
+  m.moment_rowadr = _moment_nnz_rowadr(mjm)[1]
+
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
@@ -656,6 +682,9 @@ def make_data(
     "nworld": nworld,
     "naconmax": naconmax,
     "njmax": njmax,
+    "moment_rownnz": None,
+    "moment_colind": None,
+    "actuator_moment": None,
     "qM": None,
     "qLD": None,
     # world body
@@ -683,9 +712,19 @@ def make_data(
   if is_sparse(mjm):
     d.qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     d.qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
+
+    rownnz = _moment_nnz_rowadr(mjm)[0]
+    maxnnz = np.sum(rownnz)
+    d.moment_rownnz = wp.zeros((d.nworld, mjm.nu), dtype=int)
+    d.moment_colind = wp.zeros((d.nworld, 1, maxnnz), dtype=int)
+    d.actuator_moment = wp.zeros((d.nworld, 1, maxnnz), dtype=float)
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+    d.moment_rownnz = wp.zeros((nworld, 0), dtype=int)
+    d.moment_colind = wp.zeros((d.nworld, 0, 0), dtype=int)
+    d.actuator_moment = wp.zeros((d.nworld, mjm.nu, mjm.nv), dtype=float)
 
   return d
 
@@ -818,6 +857,8 @@ def put_data(
     "qM": None,
     "qLD": None,
     "ten_J": None,
+    "moment_rownnz": None,
+    "moment_colind": None,
     "actuator_moment": None,
     "flexedge_J": None,
     "nacon": None,
@@ -843,6 +884,31 @@ def put_data(
   if is_sparse(mjm):
     d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
+
+    nnz = _moment_nnz_rowadr(mjm)[0]
+    d.moment_rownnz = wp.array(np.tile(np.array(nnz) if mjm.nu else np.zeros(mjm.nu), (nworld, 1)), dtype=int)
+    if mjm.nu:
+      colind_row = []
+      moment_row = []
+      for i in range(mjm.nu):
+        rownnz = mjd.moment_rownnz[i]
+        rowadr = mjd.moment_rowadr[i]
+        nnzi = nnz[i]
+        assert rownnz <= nnzi
+        colind = np.zeros(nnzi, dtype=int)
+        moment = np.zeros(nnzi)
+        for j in range(rownnz):
+          sparseid = rowadr + j
+          colind[j] = mjd.moment_colind[sparseid]
+          moment[j] = mjd.actuator_moment[sparseid]
+        colind_row.append(colind)
+        moment_row.append(moment)
+
+      d.moment_colind = wp.array(np.tile(np.concatenate(colind_row), (d.nworld, 1)).reshape((d.nworld, 1, -1)), dtype=int)
+      d.actuator_moment = wp.array(np.tile(np.concatenate(moment_row), (d.nworld, 1)).reshape((d.nworld, 1, -1)), dtype=float)
+    else:
+      d.moment_colind = wp.zeros((nworld, 0, 0), dtype=int)
+      d.actuator_moment = wp.zeros((nworld, 0, 0), dtype=float)
   else:
     qM = np.zeros((mjm.nv, mjm.nv))
     mujoco.mj_fullM(mjm, qM, mjd.qM)
@@ -851,6 +917,13 @@ def put_data(
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
+
+    d.moment_rownnz = wp.zeros((nworld, 0), dtype=int)
+    d.moment_colind = wp.zeros((nworld, 0, 0), dtype=int)
+
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    d.actuator_moment = wp.array(np.tile(actuator_moment, (d.nworld, 1, 1)), dtype=float)
 
   if mujoco.mj_isSparse(mjm):
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -866,11 +939,6 @@ def put_data(
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
     flexedge_J = mjd.flexedge_J.reshape((mjm.nflexedge, mjm.nv))
     d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
-
-  # TODO(taylorhowell): sparse actuator_moment
-  actuator_moment = np.zeros((mjm.nu, mjm.nv))
-  mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
-  d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -984,13 +1052,19 @@ def get_data_into(
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
-  mujoco.mju_dense2sparse(
-    result.actuator_moment,
-    d.actuator_moment.numpy()[world_id],
-    result.moment_rownnz,
-    result.moment_rowadr,
-    result.moment_colind,
-  )
+  if is_sparse(mjm):
+    result.moment_rownnz[:] = d.moment_rownnz.numpy()[world_id]
+    result.moment_rowadr[:] = _moment_nnz_rowadr(mjm)[1]
+    result.moment_colind[:] = d.moment_colind.numpy()[world_id, 0]
+    result.actuator_moment[:] = d.actuator_moment.numpy()[world_id, 0]
+  else:
+    mujoco.mju_dense2sparse(
+      result.actuator_moment,
+      d.actuator_moment.numpy()[world_id],
+      result.moment_rownnz,
+      result.moment_rowadr,
+      result.moment_colind,
+    )
   result.crb[:] = d.crb.numpy()[world_id]
   result.qLDiagInv[:] = d.qLDiagInv.numpy()[world_id]
   result.ten_velocity[:] = d.ten_velocity.numpy()[world_id]

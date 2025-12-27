@@ -1086,6 +1086,8 @@ class Model:
     qM_mulm_i: sparse matmul addressing
     qM_mulm_j: sparse matmul addressing
     qM_madr_ij: sparse matmul addressing
+    moment_rowadr: row start address in actuator moment      (nu,)
+                   for max row fill in
   """
 
   nq: int
@@ -1423,6 +1425,7 @@ class Model:
   qM_mulm_i: wp.array(dtype=int)
   qM_mulm_j: wp.array(dtype=int)
   qM_madr_ij: wp.array(dtype=int)
+  moment_rowadr: wp.array(dtype=int)
 
 
 class ContactType(enum.IntFlag):
@@ -1597,7 +1600,12 @@ class Data:
     wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
     actuator_length: actuator lengths                           (nworld, nu)
-    actuator_moment: actuator moments                           (nworld, nu, nv)
+    moment_rownnz: number of non-zeros in actuator_moment row   (nworld, 0) if dense
+                                                                (nworld, nu) if sparse
+    moment_colind: column indices in sparse actuator_moment     (nworld, 0, 0) if dense
+                                                                (nworld, 1, sum(rownnz)) if sparse
+    actuator_moment: actuator moments                           (nworld, nu, nv) if dense
+                                                                (nworld, 1, sum(rownnz)) if sparse
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
     qM: total inertia                                           (nworld, nv, nv) if dense
                                                                 (nworld, 1, nM) if sparse
@@ -1697,7 +1705,9 @@ class Data:
   wrap_obj: array("nworld", "nwrap", wp.vec2i)
   wrap_xpos: array("nworld", "nwrap", wp.spatial_vector)
   actuator_length: array("nworld", "nu", float)
-  actuator_moment: array("nworld", "nu", "nv", float)
+  moment_rownnz: wp.array2d(dtype=int)
+  moment_colind: wp.array3d(dtype=int)
+  actuator_moment: wp.array3d(dtype=float)
   crb: array("nworld", "nbody", vec10)
   qM: wp.array3d(dtype=float)
   qLD: wp.array3d(dtype=float)

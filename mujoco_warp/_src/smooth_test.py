@@ -339,22 +339,36 @@ class SmoothTest(parameterized.TestCase):
     for arr in (d.actuator_length, d.actuator_moment):
       arr.zero_()
 
-    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(
-      actuator_moment,
+      mj_actuator_moment,
       mjd.actuator_moment,
       mjd.moment_rownnz,
       mjd.moment_rowadr,
       mjd.moment_colind,
     )
 
-    mjw._src.smooth.transmission(m, d)
+    mjw.transmission(m, d)
+
+    if m.opt.is_sparse:
+      actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        actuator_moment,
+        d.actuator_moment.numpy()[0, 0],
+        d.moment_rownnz.numpy()[0],
+        m.moment_rowadr.numpy(),
+        d.moment_colind.numpy()[0, 0],
+      )
+    else:
+      actuator_moment = d.actuator_moment.numpy()[0]
+
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+    _assert_eq(actuator_moment, mj_actuator_moment, "actuator_moment")
 
   @parameterized.product(keyframe=list(range(4)), cone=list(ConeType))
   def test_actuator_adhesion(self, keyframe, cone):
     """Tests adhesion actuator."""
+    # TODO(team): test sparse
     mjm, mjd, m, d = test_data.fixture("actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone})
 
     d.actuator_length.zero_()
