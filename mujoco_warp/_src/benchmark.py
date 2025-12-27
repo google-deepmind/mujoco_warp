@@ -210,6 +210,7 @@ class BenchmarkSuite:
   sample_time = 0
   repeat = 1
   replay = ""
+  overrides = {}
 
   def setup_cache(self):
     module = importlib.import_module(self.__module__)
@@ -237,6 +238,7 @@ class BenchmarkSuite:
 
     free_before = wp.get_device().free_memory
     m = io.put_model(mjm)
+    io.override_model(m, self.overrides)
     d = io.put_data(mjm, mjd, self.batch_size, self.nconmax, self.njmax)
     free_after = wp.get_device().free_memory
 

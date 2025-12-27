@@ -8,6 +8,7 @@ MUJOCO_LOG.TXT
 ## -------------------
 
 benchmark/mujoco_menagerie/
+benchmark/myo_sim
 
 
 ## Created directories
