@@ -179,6 +179,79 @@ def _main(argv: Sequence[str]):
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
+    # print impratio
+    if hasattr(mjm.opt, "impratio"):
+      print(f"  impratio: {mjm.opt.impratio}")
+
+    # print required collision routines
+    from mujoco_warp._src.math import upper_trid_index
+
+    collision_routines = []
+
+    # check primitive
+    primitive_collision_pairs = [
+      (mjw.GeomType.PLANE, mjw.GeomType.SPHERE),
+      (mjw.GeomType.PLANE, mjw.GeomType.CAPSULE),
+      (mjw.GeomType.PLANE, mjw.GeomType.CYLINDER),
+      (mjw.GeomType.PLANE, mjw.GeomType.ELLIPSOID),
+      (mjw.GeomType.PLANE, mjw.GeomType.BOX),
+      (mjw.GeomType.SPHERE, mjw.GeomType.SPHERE),
+      (mjw.GeomType.SPHERE, mjw.GeomType.CAPSULE),
+      (mjw.GeomType.SPHERE, mjw.GeomType.CYLINDER),
+      (mjw.GeomType.SPHERE, mjw.GeomType.BOX),
+      (mjw.GeomType.CAPSULE, mjw.GeomType.CAPSULE),
+      (mjw.GeomType.CAPSULE, mjw.GeomType.BOX),
+      (mjw.GeomType.BOX, mjw.GeomType.BOX),
+    ]
+
+    has_primitive = False
+    for p in primitive_collision_pairs:
+      idx = upper_trid_index(len(mjw.GeomType), p[0].value, p[1].value)
+      if m.geom_pair_type_count[idx] > 0:
+        has_primitive = True
+        break
+    if has_primitive:
+      collision_routines.append("primitive")
+
+    # check ccd
+    convex_collision_pairs = [
+      (mjw.GeomType.HFIELD, mjw.GeomType.SPHERE),
+      (mjw.GeomType.HFIELD, mjw.GeomType.CAPSULE),
+      (mjw.GeomType.HFIELD, mjw.GeomType.ELLIPSOID),
+      (mjw.GeomType.HFIELD, mjw.GeomType.CYLINDER),
+      (mjw.GeomType.HFIELD, mjw.GeomType.BOX),
+      (mjw.GeomType.HFIELD, mjw.GeomType.MESH),
+      (mjw.GeomType.SPHERE, mjw.GeomType.ELLIPSOID),
+      (mjw.GeomType.SPHERE, mjw.GeomType.MESH),
+      (mjw.GeomType.CAPSULE, mjw.GeomType.ELLIPSOID),
+      (mjw.GeomType.CAPSULE, mjw.GeomType.CYLINDER),
+      (mjw.GeomType.CAPSULE, mjw.GeomType.MESH),
+      (mjw.GeomType.ELLIPSOID, mjw.GeomType.ELLIPSOID),
+      (mjw.GeomType.ELLIPSOID, mjw.GeomType.CYLINDER),
+      (mjw.GeomType.ELLIPSOID, mjw.GeomType.BOX),
+      (mjw.GeomType.ELLIPSOID, mjw.GeomType.MESH),
+      (mjw.GeomType.CYLINDER, mjw.GeomType.CYLINDER),
+      (mjw.GeomType.CYLINDER, mjw.GeomType.BOX),
+      (mjw.GeomType.CYLINDER, mjw.GeomType.MESH),
+      (mjw.GeomType.BOX, mjw.GeomType.MESH),
+      (mjw.GeomType.MESH, mjw.GeomType.MESH),
+    ]
+
+    has_ccd = False
+    for p in convex_collision_pairs:
+      idx = upper_trid_index(len(mjw.GeomType), p[0].value, p[1].value)
+      if m.geom_pair_type_count[idx] > 0:
+        has_ccd = True
+        break
+    if has_ccd:
+      collision_routines.append("ccd")
+
+    # check sdf
+    if m.has_sdf_geom:
+      collision_routines.append("sdf")
+
+    print(f"  collision routines required: {', '.join(collision_routines)}\n")
+
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
