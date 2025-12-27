@@ -22,7 +22,9 @@ from .types import ConstraintType
 from .types import ContactType
 from .types import vec5
 from .types import vec11
+from .warp_util import cache_kernel
 from .warp_util import event_scope
+from .warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1207,346 +1209,481 @@ def _efc_limit_tendon(
     )
 
 
-@wp.kernel
-def _efc_contact_pyramidal(
-  # Model:
-  nv: int,
-  opt_timestep: wp.array(dtype=float),
-  opt_impratio_invsqrt: wp.array(dtype=float),
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=wp.vec2),
-  dof_bodyid: wp.array(dtype=int),
-  geom_bodyid: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
-  # In:
-  refsafe_in: int,
-  dist_in: wp.array(dtype=float),
-  condim_in: wp.array(dtype=int),
-  includemargin_in: wp.array(dtype=float),
-  worldid_in: wp.array(dtype=int),
-  geom_in: wp.array(dtype=wp.vec2i),
-  pos_in: wp.array(dtype=wp.vec3),
-  frame_in: wp.array(dtype=wp.mat33),
-  friction_in: wp.array(dtype=vec5),
-  solref_in: wp.array(dtype=wp.vec2),
-  solimp_in: wp.array(dtype=vec5),
-  type_in: wp.array(dtype=int),
-  # Data out:
-  nefc_out: wp.array(dtype=int),
-  contact_efc_address_out: wp.array2d(dtype=int),
-  efc_type_out: wp.array2d(dtype=int),
-  efc_id_out: wp.array2d(dtype=int),
-  efc_J_out: wp.array3d(dtype=float),
-  efc_pos_out: wp.array2d(dtype=float),
-  efc_margin_out: wp.array2d(dtype=float),
-  efc_D_out: wp.array2d(dtype=float),
-  efc_vel_out: wp.array2d(dtype=float),
-  efc_aref_out: wp.array2d(dtype=float),
-  efc_frictionloss_out: wp.array2d(dtype=float),
-):
-  conid, dimid = wp.tid()
+@cache_kernel
+def _efc_contact_pyramidal(opt_is_sparse: bool, nv: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def contact_pyramidal(
+    # Model:
+    opt_timestep: wp.array(dtype=float),
+    opt_impratio_invsqrt: wp.array(dtype=float),
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    body_dofnum: wp.array(dtype=int),
+    body_dofadr: wp.array(dtype=int),
+    body_invweight0: wp.array2d(dtype=wp.vec2),
+    dof_bodyid: wp.array(dtype=int),
+    dof_parentid: wp.array(dtype=int),
+    geom_bodyid: wp.array(dtype=int),
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cdof_in: wp.array2d(dtype=wp.spatial_vector),
+    njmax_in: int,
+    nacon_in: wp.array(dtype=int),
+    # In:
+    refsafe_in: int,
+    dist_in: wp.array(dtype=float),
+    condim_in: wp.array(dtype=int),
+    includemargin_in: wp.array(dtype=float),
+    worldid_in: wp.array(dtype=int),
+    geom_in: wp.array(dtype=wp.vec2i),
+    pos_in: wp.array(dtype=wp.vec3),
+    frame_in: wp.array(dtype=wp.mat33),
+    friction_in: wp.array(dtype=vec5),
+    solref_in: wp.array(dtype=wp.vec2),
+    solimp_in: wp.array(dtype=vec5),
+    type_in: wp.array(dtype=int),
+    # Data out:
+    nefc_out: wp.array(dtype=int),
+    contact_efc_address_out: wp.array2d(dtype=int),
+    efc_type_out: wp.array2d(dtype=int),
+    efc_id_out: wp.array2d(dtype=int),
+    efc_J_out: wp.array3d(dtype=float),
+    efc_pos_out: wp.array2d(dtype=float),
+    efc_margin_out: wp.array2d(dtype=float),
+    efc_D_out: wp.array2d(dtype=float),
+    efc_vel_out: wp.array2d(dtype=float),
+    efc_aref_out: wp.array2d(dtype=float),
+    efc_frictionloss_out: wp.array2d(dtype=float),
+  ):
+    conid, dimid = wp.tid()
 
-  if conid >= nacon_in[0]:
-    return
-
-  if not type_in[conid] & ContactType.CONSTRAINT:
-    return
-
-  condim = condim_in[conid]
-
-  if condim == 1 and dimid > 0:
-    return
-  elif condim > 1 and dimid >= 2 * (condim - 1):
-    return
-
-  includemargin = includemargin_in[conid]
-  pos = dist_in[conid] - includemargin
-  active = pos < 0
-
-  if active:
-    worldid = worldid_in[conid]
-
-    efcid = wp.atomic_add(nefc_out, worldid, 1)
-    if efcid >= njmax_in:
-      contact_efc_address_out[conid, dimid] = -1
+    if conid >= nacon_in[0]:
       return
 
-    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-    contact_efc_address_out[conid, dimid] = efcid
+    if not type_in[conid] & ContactType.CONSTRAINT:
+      return
 
-    geom = geom_in[conid]
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+    condim = condim_in[conid]
 
-    con_pos = pos_in[conid]
-    frame = frame_in[conid]
+    if condim == 1 and dimid > 0:
+      return
+    elif condim > 1 and dimid >= 2 * (condim - 1):
+      return
 
-    # pyramidal has common invweight across all edges
-    body_invweight0_id = worldid % body_invweight0.shape[0]
-    invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
+    includemargin = includemargin_in[conid]
+    pos = dist_in[conid] - includemargin
+    active = pos < 0
 
-    if condim > 1:
-      dimid2 = dimid / 2 + 1
+    if active:
+      worldid = worldid_in[conid]
 
-      friction = friction_in[conid]
-      fri0 = friction[0]
-      frii = friction[dimid2 - 1]
-      invweight = invweight + fri0 * fri0 * invweight
-      invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
+      efcid = wp.atomic_add(nefc_out, worldid, 1)
+      if efcid >= njmax_in:
+        contact_efc_address_out[conid, dimid] = -1
+        return
 
-    Jqvel = float(0.0)
-    for i in range(nv):
-      J = float(0.0)
-      Ji = float(0.0)
-      jac1p, jac1r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        con_pos,
-        body1,
-        i,
-        worldid,
-      )
-      jac2p, jac2r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        con_pos,
-        body2,
-        i,
-        worldid,
-      )
-      jacp_dif = jac2p - jac1p
-      for xyz in range(3):
-        J += frame[0, xyz] * jacp_dif[xyz]
+      timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+      impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      contact_efc_address_out[conid, dimid] = efcid
 
-        if condim > 1:
-          if dimid2 < 3:
-            Ji += frame[dimid2, xyz] * jacp_dif[xyz]
-          else:
-            Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+      geom = geom_in[conid]
+      body1 = geom_bodyid[geom[0]]
+      body2 = geom_bodyid[geom[1]]
+
+      con_pos = pos_in[conid]
+      frame = frame_in[conid]
+
+      # pyramidal has common invweight across all edges
+      body_invweight0_id = worldid % body_invweight0.shape[0]
+      invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
 
       if condim > 1:
-        if dimid % 2 == 0:
-          J += Ji * frii
-        else:
-          J -= Ji * frii
+        dimid2 = dimid / 2 + 1
 
-      efc_J_out[worldid, efcid, i] = J
-      Jqvel += J * qvel_in[worldid, i]
+        friction = friction_in[conid]
+        fri0 = friction[0]
+        frii = friction[dimid2 - 1]
+        invweight = invweight + fri0 * fri0 * invweight
+        invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
-    if condim == 1:
-      efc_type = ConstraintType.CONTACT_FRICTIONLESS
-    else:
-      efc_type = ConstraintType.CONTACT_PYRAMIDAL
+      Jqvel = float(0.0)
+      if wp.static(opt_is_sparse):
+        while body1 > 0 and body_dofnum[body1] == 0:
+          body1 = body_parentid[body1]
+        while body2 > 0 and body_dofnum[body2] == 0:
+          body2 = body_parentid[body2]
 
-    _update_efc_row(
-      worldid,
-      timestep,
-      refsafe_in,
-      efcid,
-      pos,
-      pos,
-      invweight,
-      solref_in[conid],
-      solimp_in[conid],
-      includemargin,
-      Jqvel,
-      0.0,
-      efc_type,
-      conid,
-      efc_type_out,
-      efc_id_out,
-      efc_pos_out,
-      efc_margin_out,
-      efc_D_out,
-      efc_vel_out,
-      efc_aref_out,
-      efc_frictionloss_out,
-    )
+        da1 = body_dofadr[body1] + body_dofnum[body1] - 1
+        da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+
+        while da1 >= 0 or da2 >= 0:
+          da = wp.max(da1, da2)
+          if da1 == da:
+            da1 = dof_parentid[da1]
+          if da2 == da:
+            da2 = dof_parentid[da2]
+
+          # TODO(team): contact_jacobian
+          jac1p, jac1r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body1,
+            da,
+            worldid,
+          )
+          jac2p, jac2r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body2,
+            da,
+            worldid,
+          )
+
+          J = float(0.0)
+          Ji = float(0.0)
+          if condim > 1:
+            dimid2 = dimid / 2 + 1
+
+          for xyz in range(3):
+            jacp_dif = jac2p[xyz] - jac1p[xyz]
+            J += frame[0, xyz] * jacp_dif
+
+            if condim > 1:
+              if dimid2 < 3:
+                Ji += frame[dimid2, xyz] * jacp_dif
+              else:
+                Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+
+          if condim > 1:
+            if dimid % 2 == 0:
+              J += Ji * frii
+            else:
+              J -= Ji * frii
+
+          # TODO(team): sparse representation
+          efc_J_out[worldid, efcid, da] = J
+          Jqvel += J * qvel_in[worldid, da]
+      else:
+        for i in range(wp.static(nv)):
+          # TODO(team): contact jacobian
+          jac1p, jac1r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body1,
+            i,
+            worldid,
+          )
+          jac2p, jac2r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body2,
+            i,
+            worldid,
+          )
+
+          J = float(0.0)
+          Ji = float(0.0)
+          if condim > 1:
+            dimid2 = dimid / 2 + 1
+
+          for xyz in range(3):
+            jacp_dif = jac2p[xyz] - jac1p[xyz]
+            J += frame[0, xyz] * jacp_dif
+
+            if condim > 1:
+              if dimid2 < 3:
+                Ji += frame[dimid2, xyz] * jacp_dif
+              else:
+                Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+
+          if condim > 1:
+            if dimid % 2 == 0:
+              J += Ji * frii
+            else:
+              J -= Ji * frii
+
+          efc_J_out[worldid, efcid, i] = J
+          Jqvel += J * qvel_in[worldid, i]
+
+      if condim == 1:
+        efc_type = ConstraintType.CONTACT_FRICTIONLESS
+      else:
+        efc_type = ConstraintType.CONTACT_PYRAMIDAL
+
+      _update_efc_row(
+        worldid,
+        timestep,
+        refsafe_in,
+        efcid,
+        pos,
+        pos,
+        invweight,
+        solref_in[conid],
+        solimp_in[conid],
+        includemargin,
+        Jqvel,
+        0.0,
+        efc_type,
+        conid,
+        efc_type_out,
+        efc_id_out,
+        efc_pos_out,
+        efc_margin_out,
+        efc_D_out,
+        efc_vel_out,
+        efc_aref_out,
+        efc_frictionloss_out,
+      )
+
+  return contact_pyramidal
 
 
-@wp.kernel
-def _efc_contact_elliptic(
-  # Model:
-  nv: int,
-  opt_timestep: wp.array(dtype=float),
-  opt_impratio_invsqrt: wp.array(dtype=float),
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=wp.vec2),
-  dof_bodyid: wp.array(dtype=int),
-  geom_bodyid: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
-  # In:
-  refsafe_in: int,
-  dist_in: wp.array(dtype=float),
-  condim_in: wp.array(dtype=int),
-  includemargin_in: wp.array(dtype=float),
-  worldid_in: wp.array(dtype=int),
-  geom_in: wp.array(dtype=wp.vec2i),
-  pos_in: wp.array(dtype=wp.vec3),
-  frame_in: wp.array(dtype=wp.mat33),
-  friction_in: wp.array(dtype=vec5),
-  solref_in: wp.array(dtype=wp.vec2),
-  solreffriction_in: wp.array(dtype=wp.vec2),
-  solimp_in: wp.array(dtype=vec5),
-  type_in: wp.array(dtype=int),
-  # Data out:
-  nefc_out: wp.array(dtype=int),
-  contact_efc_address_out: wp.array2d(dtype=int),
-  efc_type_out: wp.array2d(dtype=int),
-  efc_id_out: wp.array2d(dtype=int),
-  efc_J_out: wp.array3d(dtype=float),
-  efc_pos_out: wp.array2d(dtype=float),
-  efc_margin_out: wp.array2d(dtype=float),
-  efc_D_out: wp.array2d(dtype=float),
-  efc_vel_out: wp.array2d(dtype=float),
-  efc_aref_out: wp.array2d(dtype=float),
-  efc_frictionloss_out: wp.array2d(dtype=float),
-):
-  conid, dimid = wp.tid()
+@cache_kernel
+def _efc_contact_elliptic(opt_is_sparse: bool, nv: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def contact_elliptic(
+    # Model:
+    opt_timestep: wp.array(dtype=float),
+    opt_impratio_invsqrt: wp.array(dtype=float),
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    body_dofnum: wp.array(dtype=int),
+    body_dofadr: wp.array(dtype=int),
+    body_invweight0: wp.array2d(dtype=wp.vec2),
+    dof_bodyid: wp.array(dtype=int),
+    dof_parentid: wp.array(dtype=int),
+    geom_bodyid: wp.array(dtype=int),
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cdof_in: wp.array2d(dtype=wp.spatial_vector),
+    njmax_in: int,
+    nacon_in: wp.array(dtype=int),
+    # In:
+    refsafe_in: int,
+    dist_in: wp.array(dtype=float),
+    condim_in: wp.array(dtype=int),
+    includemargin_in: wp.array(dtype=float),
+    worldid_in: wp.array(dtype=int),
+    geom_in: wp.array(dtype=wp.vec2i),
+    pos_in: wp.array(dtype=wp.vec3),
+    frame_in: wp.array(dtype=wp.mat33),
+    friction_in: wp.array(dtype=vec5),
+    solref_in: wp.array(dtype=wp.vec2),
+    solreffriction_in: wp.array(dtype=wp.vec2),
+    solimp_in: wp.array(dtype=vec5),
+    type_in: wp.array(dtype=int),
+    # Data out:
+    nefc_out: wp.array(dtype=int),
+    contact_efc_address_out: wp.array2d(dtype=int),
+    efc_type_out: wp.array2d(dtype=int),
+    efc_id_out: wp.array2d(dtype=int),
+    efc_J_out: wp.array3d(dtype=float),
+    efc_pos_out: wp.array2d(dtype=float),
+    efc_margin_out: wp.array2d(dtype=float),
+    efc_D_out: wp.array2d(dtype=float),
+    efc_vel_out: wp.array2d(dtype=float),
+    efc_aref_out: wp.array2d(dtype=float),
+    efc_frictionloss_out: wp.array2d(dtype=float),
+  ):
+    conid, dimid = wp.tid()
 
-  if conid >= nacon_in[0]:
-    return
-
-  if not type_in[conid] & ContactType.CONSTRAINT:
-    return
-
-  condim = condim_in[conid]
-
-  if dimid > condim - 1:
-    return
-
-  includemargin = includemargin_in[conid]
-  pos = dist_in[conid] - includemargin
-  active = pos < 0.0
-
-  if active:
-    worldid = worldid_in[conid]
-
-    efcid = wp.atomic_add(nefc_out, worldid, 1)
-    if efcid >= njmax_in:
-      contact_efc_address_out[conid, dimid] = -1
+    if conid >= nacon_in[0]:
       return
 
-    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-    contact_efc_address_out[conid, dimid] = efcid
+    if not type_in[conid] & ContactType.CONSTRAINT:
+      return
 
-    geom = geom_in[conid]
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+    condim = condim_in[conid]
 
-    cpos = pos_in[conid]
-    frame = frame_in[conid]
+    if dimid > condim - 1:
+      return
 
-    # TODO(team): parallelize J and Jqvel computation?
-    Jqvel = float(0.0)
-    for i in range(nv):
-      J = float(0.0)
-      jac1p, jac1r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        cpos,
-        body1,
-        i,
+    includemargin = includemargin_in[conid]
+    pos = dist_in[conid] - includemargin
+    active = pos < 0.0
+
+    if active:
+      worldid = worldid_in[conid]
+
+      efcid = wp.atomic_add(nefc_out, worldid, 1)
+      if efcid >= njmax_in:
+        contact_efc_address_out[conid, dimid] = -1
+        return
+
+      timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+      impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      contact_efc_address_out[conid, dimid] = efcid
+
+      con_pos = pos_in[conid]
+      frame = frame_in[conid]
+
+      geom = geom_in[conid]
+      body1 = geom_bodyid[geom[0]]
+      body2 = geom_bodyid[geom[1]]
+
+      Jqvel = float(0.0)
+      if wp.static(opt_is_sparse):
+        while body1 > 0 and body_dofnum[body1] == 0:
+          body1 = body_parentid[body1]
+        while body2 > 0 and body_dofnum[body2] == 0:
+          body2 = body_parentid[body2]
+
+        da1 = body_dofadr[body1] + body_dofnum[body1] - 1
+        da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+
+        while da1 >= 0 or da2 >= 0:
+          da = wp.max(da1, da2)
+          if da1 == da:
+            da1 = dof_parentid[da1]
+          if da2 == da:
+            da2 = dof_parentid[da2]
+
+          # TODO(team): contact jacobian
+          jac1p, jac1r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body1,
+            da,
+            worldid,
+          )
+          jac2p, jac2r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body2,
+            da,
+            worldid,
+          )
+
+          J = float(0.0)
+          for xyz in range(3):
+            if dimid < 3:
+              jac_dif = jac2p[xyz] - jac1p[xyz]
+              J += frame[dimid, xyz] * jac_dif
+            else:
+              jac_dif = jac2r[xyz] - jac1r[xyz]
+              J += frame[dimid - 3, xyz] * jac_dif
+
+          # sparse representation
+          efc_J_out[worldid, efcid, da] = J
+          Jqvel += J * qvel_in[worldid, da]
+      else:
+        for i in range(wp.static(nv)):
+          jac1p, jac1r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body1,
+            i,
+            worldid,
+          )
+          jac2p, jac2r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body2,
+            i,
+            worldid,
+          )
+
+          J = float(0.0)
+          for xyz in range(3):
+            if dimid < 3:
+              jac_dif = jac2p[xyz] - jac1p[xyz]
+              J += frame[dimid, xyz] * jac_dif
+            else:
+              jac_dif = jac2r[xyz] - jac1r[xyz]
+              J += frame[dimid - 3, xyz] * jac_dif
+
+          efc_J_out[worldid, efcid, i] = J
+          Jqvel += J * qvel_in[worldid, i]
+
+      body_invweight0_id = worldid % body_invweight0.shape[0]
+      invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
+
+      ref = solref_in[conid]
+      pos_aref = pos
+
+      if dimid > 0:
+        solreffriction = solreffriction_in[conid]
+
+        # non-normal directions use solreffriction (if non-zero)
+        if solreffriction[0] or solreffriction[1]:
+          ref = solreffriction
+
+        invweight = invweight * impratio_invsqrt * impratio_invsqrt
+        friction = friction_in[conid]
+
+        if dimid > 1:
+          fri0 = friction[0]
+          frii = friction[dimid - 1]
+          fri = fri0 * fri0 / (frii * frii)
+          invweight *= fri
+
+        pos_aref = 0.0
+
+      if condim == 1:
+        efc_type = ConstraintType.CONTACT_FRICTIONLESS
+      else:
+        efc_type = ConstraintType.CONTACT_ELLIPTIC
+
+      _update_efc_row(
         worldid,
+        timestep,
+        refsafe_in,
+        efcid,
+        pos_aref,
+        pos,
+        invweight,
+        ref,
+        solimp_in[conid],
+        includemargin,
+        Jqvel,
+        0.0,
+        efc_type,
+        conid,
+        efc_type_out,
+        efc_id_out,
+        efc_pos_out,
+        efc_margin_out,
+        efc_D_out,
+        efc_vel_out,
+        efc_aref_out,
+        efc_frictionloss_out,
       )
-      jac2p, jac2r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        cpos,
-        body2,
-        i,
-        worldid,
-      )
-      for xyz in range(3):
-        if dimid < 3:
-          jac_dif = jac2p[xyz] - jac1p[xyz]
-          J += frame[dimid, xyz] * jac_dif
-        else:
-          jac_dif = jac2r[xyz] - jac1r[xyz]
-          J += frame[dimid - 3, xyz] * jac_dif
 
-      efc_J_out[worldid, efcid, i] = J
-      Jqvel += J * qvel_in[worldid, i]
-
-    body_invweight0_id = worldid % body_invweight0.shape[0]
-    invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
-
-    ref = solref_in[conid]
-    pos_aref = pos
-
-    if dimid > 0:
-      solreffriction = solreffriction_in[conid]
-
-      # non-normal directions use solreffriction (if non-zero)
-      if solreffriction[0] or solreffriction[1]:
-        ref = solreffriction
-
-      invweight = invweight * impratio_invsqrt * impratio_invsqrt
-      friction = friction_in[conid]
-
-      if dimid > 1:
-        fri0 = friction[0]
-        frii = friction[dimid - 1]
-        fri = fri0 * fri0 / (frii * frii)
-        invweight *= fri
-
-      pos_aref = 0.0
-
-    if condim == 1:
-      efc_type = ConstraintType.CONTACT_FRICTIONLESS
-    else:
-      efc_type = ConstraintType.CONTACT_ELLIPTIC
-
-    _update_efc_row(
-      worldid,
-      timestep,
-      refsafe_in,
-      efcid,
-      pos_aref,
-      pos,
-      invweight,
-      ref,
-      solimp_in[conid],
-      includemargin,
-      Jqvel,
-      0.0,
-      efc_type,
-      conid,
-      efc_type_out,
-      efc_id_out,
-      efc_pos_out,
-      efc_margin_out,
-      efc_D_out,
-      efc_vel_out,
-      efc_aref_out,
-      efc_frictionloss_out,
-    )
+  return contact_elliptic
 
 
 @wp.kernel
@@ -1576,6 +1713,10 @@ def make_constraint(m: types.Model, d: types.Data):
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     refsafe = m.opt.disableflags & types.DisableBit.REFSAFE
+
+    # TODO(team): remove once efc.J is sparse
+    if m.opt.is_sparse:
+      d.efc.J.zero_()
 
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
@@ -1949,16 +2090,18 @@ def make_constraint(m: types.Model, d: types.Data):
     if not (m.opt.disableflags & types.DisableBit.CONTACT):
       if m.opt.cone == types.ConeType.PYRAMIDAL:
         wp.launch(
-          _efc_contact_pyramidal,
+          _efc_contact_pyramidal(m.opt.is_sparse, m.nv),
           dim=(d.naconmax, m.nmaxpyramid),
           inputs=[
-            m.nv,
             m.opt.timestep,
             m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
+            m.body_dofnum,
+            m.body_dofadr,
             m.body_invweight0,
             m.dof_bodyid,
+            m.dof_parentid,
             m.geom_bodyid,
             d.qvel,
             d.subtree_com,
@@ -1994,16 +2137,18 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC:
         wp.launch(
-          _efc_contact_elliptic,
+          _efc_contact_elliptic(m.opt.is_sparse, m.nv),
           dim=(d.naconmax, m.nmaxcondim),
           inputs=[
-            m.nv,
             m.opt.timestep,
             m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
+            m.body_dofnum,
+            m.body_dofadr,
             m.body_invweight0,
             m.dof_bodyid,
+            m.dof_parentid,
             m.geom_bodyid,
             d.qvel,
             d.subtree_com,
