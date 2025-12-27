@@ -672,6 +672,8 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
+    # Newton solver
+    "newton": types.NewtonSolver(),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -813,6 +815,7 @@ def put_data(
     "nworld": nworld,
     "naconmax": naconmax,
     "njmax": njmax,
+    "newton": types.NewtonSolver(),
     # fields set after initialization:
     "solver_niter": None,
     "qM": None,

@@ -32,6 +32,9 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+# dof threshold for blocked cholesky
+BLOCK_CHOLESKY_DIM = 32
+
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -733,6 +736,31 @@ class TileSet:
 
   adr: wp.array(dtype=int)
   size: int
+
+
+@dataclasses.dataclass
+class NewtonSolver:
+  """Newton solver memory.
+
+  Attributes:
+    hessian: Hessian                       (nworld, nv_pad, nv_pad)
+    hessian_factor: Hessian factorization  (nworld, nv_pad, nv_pad)
+  """
+
+  hessian: wp.array3d(dtype=float)
+  hessian_factor: wp.array3d(dtype=float)
+
+  def __init__(self):
+    self.hessian = wp.empty((0, 0, 0), dtype=float)
+    self.hessian_factor = wp.empty((0, 0, 0), dtype=float)
+
+  def allocate(self, nworld, nv, nv_pad):
+    hessian_shape = (nworld, nv_pad, nv_pad)
+    # arrays are zeroed to ensure padding contains zeros
+    if self.hessian.shape != hessian_shape:
+      self.hessian = wp.zeros(hessian_shape, dtype=float)
+    if self.hessian_factor.shape != hessian_shape and nv > BLOCK_CHOLESKY_DIM:
+      self.hessian_factor = wp.zeros(hessian_shape, dtype=float)
 
 
 @dataclasses.dataclass
@@ -1647,6 +1675,7 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
+    newton: Newton solver
   """
 
   solver_niter: array("nworld", int)
@@ -1745,3 +1774,4 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+  newton: NewtonSolver
