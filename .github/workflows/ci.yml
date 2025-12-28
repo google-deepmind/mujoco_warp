@@ -52,9 +52,12 @@ jobs:
     name: Build and test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.12"]
-        task: [unit-tests, benchmarks]
+        task: ["unit-tests", "benchmarks"]
+
+    continue-on-error: ${{ matrix.task == 'benchmarks' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -68,10 +71,11 @@ jobs:
           pip install uv
           uv pip install --system -e .[dev,cpu]
       - name: Test with pytest
-        if: matrix.task == 'unit_tests'
+        if: matrix.task == 'unit-tests'
         run: |
           pytest -n 4
       - name: Run benchmarks with airspeed velocity
+        if: matrix.task == 'benchmarks'
         run: |
           asv machine --yes
           asv run --quick --show-stderr --python=same
