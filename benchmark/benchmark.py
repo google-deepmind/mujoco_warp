@@ -23,7 +23,8 @@ class AlohaCloth(benchmark.BenchmarkSuite):
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 256
   nconmax = 920
-  njmax = 3606
+  njmax = 6200
+  nstep = 100
 
 
 class AlohaPot(benchmark.BenchmarkSuite):
@@ -84,7 +85,8 @@ class Cloth(benchmark.BenchmarkSuite):
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
   batch_size = 256
   nconmax = 200
-  njmax = 600
+  njmax = 3000
+  nstep = 100
 
 
 class FrankaEmikaPanda(benchmark.BenchmarkSuite):
@@ -122,6 +124,7 @@ class ThreeHumanoids(benchmark.BenchmarkSuite):
 
 
 # attach a setup_cache to each test for one-time setup of benchmarks
+AlohaCloth.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 AlohaPot.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 AlohaSdf.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 ApptronikApolloFlat.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
