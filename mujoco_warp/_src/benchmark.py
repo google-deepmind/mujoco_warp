@@ -96,6 +96,7 @@ def benchmark(
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
+  graph_capture: bool = True,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 
@@ -108,6 +109,7 @@ def benchmark(
     event_trace: If True, time routines decorated with @event_scope.
     measure_alloc: If True, record number of contacts and constraints.
     measure_solver_niter: If True, record the number of solver iterations.
+    graph_capture: If true, utilize graph capture.
 
   Returns:
     - Time to JIT fn.
@@ -125,12 +127,11 @@ def benchmark(
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
     jit_beg = time.perf_counter()
-    with wp.ScopedCapture() as capture:
-      fn(m, d)
+    if graph_capture:
+      with wp.ScopedCapture() as capture:
+        fn(m, d)
     jit_end = time.perf_counter()
     jit_duration = jit_end - jit_beg
-
-    graph = capture.graph
 
     time_vec = np.zeros(nstep)
     for i in range(nstep):
@@ -146,7 +147,10 @@ def benchmark(
         wp.synchronize()
 
         run_beg = time.perf_counter()
-        wp.capture_launch(graph)
+        if graph_capture:
+          wp.capture_launch(capture.graph)
+        else:
+          fn(m, d)
         wp.synchronize()
         run_end = time.perf_counter()
 
@@ -234,13 +238,16 @@ class BenchmarkSuite:
     wp.init()
     if os.environ.get("ASV_CACHE_KERNELS", "false").lower() == "false":
       wp.clear_kernel_cache()
+    graph_capture = os.environ.get("ASV_GRAPH_CAPTURE", "true").lower()
 
     free_before = wp.get_device().free_memory
     m = io.put_model(mjm)
     d = io.put_data(mjm, mjd, self.batch_size, self.nconmax, self.njmax)
     free_after = wp.get_device().free_memory
 
-    jit_duration, _, trace, _, _, solver_niter, nsuccess = benchmark(forward.step, m, d, self.nstep, ctrls, True, False, True)
+    jit_duration, _, trace, _, _, solver_niter, nsuccess = benchmark(
+      forward.step, m, d, self.nstep, ctrls, True, False, True, graph_capture=graph_capture
+    )
     metrics = {
       "jit_duration": jit_duration,
       "solver_niter_mean": np.mean(solver_niter),
