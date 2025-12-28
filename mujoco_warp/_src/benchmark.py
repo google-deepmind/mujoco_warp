@@ -238,7 +238,7 @@ class BenchmarkSuite:
     wp.init()
     if os.environ.get("ASV_CACHE_KERNELS", "false").lower() == "false":
       wp.clear_kernel_cache()
-    graph_capture = os.environ.get("ASV_GRAPH_CAPTURE", "true").lower()
+    graph_capture = os.environ.get("ASV_GRAPH_CAPTURE", "true").lower() == "true"
 
     free_before = wp.get_device().free_memory
     m = io.put_model(mjm)
