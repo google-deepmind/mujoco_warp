@@ -73,6 +73,7 @@ jobs:
           pytest -n 4
       - name: Run benchmarks with airspeed velocity
         run: |
+          asv machine --yes
           asv run --quick --show-stderr --python=same
 
   kernel_analyzer:
