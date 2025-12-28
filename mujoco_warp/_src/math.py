@@ -59,9 +59,6 @@ def axis_angle_to_quat(axis: wp.vec3, angle: float) -> wp.quat:
 @wp.func
 def quat_to_mat(quat: wp.quat) -> wp.mat33:
   """Converts a quaternion into 3x3 rotation matrix."""
-  if quat[0] == 1.0 and quat[1] == 0.0 and quat[2] == 0.0 and quat[3] == 0.0:
-    return wp.identity(3, dtype=float)
-
   q00 = quat[0] * quat[0]
   q01 = quat[0] * quat[1]
   q02 = quat[0] * quat[2]
