@@ -240,12 +240,13 @@ class BenchmarkSuite:
     d = io.put_data(mjm, mjd, self.batch_size, self.nconmax, self.njmax)
     free_after = wp.get_device().free_memory
 
-    jit_duration, _, trace, _, _, solver_niter, _ = benchmark(forward.step, m, d, self.nstep, ctrls, True, False, True)
+    jit_duration, _, trace, _, _, solver_niter, nsuccess = benchmark(forward.step, m, d, self.nstep, ctrls, True, False, True)
     metrics = {
       "jit_duration": jit_duration,
       "solver_niter_mean": np.mean(solver_niter),
       "solver_niter_p95": np.quantile(solver_niter, 0.95),
       "device_memory_allocated": free_before - free_after,
+      "all_converged": nsuccess == d.nworld,
     }
 
     def tree_flatten(d, parent_k=""):
@@ -259,6 +260,9 @@ class BenchmarkSuite:
     metrics = metrics | tree_flatten(trace)
 
     return metrics
+
+  def setup(self, metrics, *args):
+    assert metrics["all_converged"]
 
   def track_metric(self, metrics, fn):
     return metrics[fn]
