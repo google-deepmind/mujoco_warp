@@ -58,6 +58,7 @@ _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to sum
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
+_GRAPH_CAPTURE = flags.DEFINE_bool("graph_capture", True, "utilize graph capture")
 
 
 def _print_table(matrix, headers, title):
@@ -182,7 +183,17 @@ def _main(argv: Sequence[str]):
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
     fn = _FUNCS[_FUNCTION.value]
-    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
+    res = benchmark(
+      fn,
+      m,
+      d,
+      _NSTEP.value,
+      ctrls,
+      _EVENT_TRACE.value,
+      _MEASURE_ALLOC.value,
+      _MEASURE_SOLVER.value,
+      graph_capture=_GRAPH_CAPTURE.value,
+    )
     jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
