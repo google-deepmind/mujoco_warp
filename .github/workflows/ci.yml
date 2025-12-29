@@ -78,7 +78,7 @@ jobs:
         if: matrix.task == 'benchmarks'
         run: |
           asv machine --yes
-          ASV_GRAPH_CAPTURE=false ASV_DEVICE=cpu asv run --quick --show-stderr --python=same
+          ASV_GRAPH_CAPTURE=false ASV_DEVICE=cpu ASV_EVENT_TRACE=false asv run --quick --show-stderr --python=same
 
   kernel_analyzer:
     name: Kernel analyzer

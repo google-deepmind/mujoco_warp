@@ -241,6 +241,7 @@ class BenchmarkSuite:
     wp.init()
     if os.environ.get("ASV_CACHE_KERNELS", "false").lower() == "false":
       wp.clear_kernel_cache()
+    event_trace = os.environ.get("ASV_EVENT_TRACE", "true").lower() == "true"
     graph_capture = os.environ.get("ASV_GRAPH_CAPTURE", "true").lower() == "true"
     device = "cpu" if os.environ.get("ASV_DEVICE", "").lower() == "cpu" else None
 
@@ -250,7 +251,16 @@ class BenchmarkSuite:
     free_after = wp.get_device().free_memory
 
     jit_duration, _, trace, _, _, solver_niter, nsuccess = benchmark(
-      forward.step, m, d, self.nstep, ctrls, True, False, True, device=device, graph_capture=graph_capture
+      forward.step,
+      m,
+      d,
+      self.nstep,
+      ctrls=ctrls,
+      event_trace=event_trace,
+      measure_alloc=False,
+      measure_solver_niter=True,
+      device=device,
+      graph_capture=graph_capture,
     )
     metrics = {
       "jit_duration": jit_duration,
@@ -276,4 +286,6 @@ class BenchmarkSuite:
     assert metrics["all_converged"]
 
   def track_metric(self, metrics, fn):
+    if os.environ.get("ASV_EVENT_TRACE", "true").lower() != "true":
+      return None
     return metrics[fn]
