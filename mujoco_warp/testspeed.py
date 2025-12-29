@@ -188,10 +188,11 @@ def _main(argv: Sequence[str]):
       m,
       d,
       _NSTEP.value,
-      ctrls,
-      _EVENT_TRACE.value,
-      _MEASURE_ALLOC.value,
-      _MEASURE_SOLVER.value,
+      ctrls=ctrls,
+      event_trace=_EVENT_TRACE.value,
+      measure_alloc=_MEASURE_ALLOC.value,
+      measure_solver_niter=_MEASURE_SOLVER.value,
+      device=_DEVICE.value,
       graph_capture=_GRAPH_CAPTURE.value,
     )
     jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res

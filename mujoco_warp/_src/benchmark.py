@@ -18,6 +18,7 @@
 import importlib
 import os
 import time
+from contextlib import nullcontext
 from typing import Callable, Optional, Tuple
 
 import mujoco
@@ -96,6 +97,7 @@ def benchmark(
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
+  device: Optional[str] = None,
   graph_capture: bool = True,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
@@ -109,6 +111,7 @@ def benchmark(
     event_trace: If True, time routines decorated with @event_scope.
     measure_alloc: If True, record number of contacts and constraints.
     measure_solver_niter: If True, record the number of solver iterations.
+    device: Device that runs computation (eg, cuda:0, cpu)
     graph_capture: If true, utilize graph capture.
 
   Returns:
@@ -135,7 +138,7 @@ def benchmark(
 
     time_vec = np.zeros(nstep)
     for i in range(nstep):
-      with wp.ScopedStream(wp.get_stream()):
+      with nullcontext() if device == "cpu" else wp.ScopedStream(wp.get_stream(device)):
         if ctrls is not None:
           center = wp.array(ctrls[i], dtype=wp.float32)
         wp.launch(
@@ -239,6 +242,7 @@ class BenchmarkSuite:
     if os.environ.get("ASV_CACHE_KERNELS", "false").lower() == "false":
       wp.clear_kernel_cache()
     graph_capture = os.environ.get("ASV_GRAPH_CAPTURE", "true").lower() == "true"
+    device = "cpu" if os.environ.get("ASV_DEVICE", "").lower() == "cpu" else None
 
     free_before = wp.get_device().free_memory
     m = io.put_model(mjm)
@@ -246,7 +250,7 @@ class BenchmarkSuite:
     free_after = wp.get_device().free_memory
 
     jit_duration, _, trace, _, _, solver_niter, nsuccess = benchmark(
-      forward.step, m, d, self.nstep, ctrls, True, False, True, graph_capture=graph_capture
+      forward.step, m, d, self.nstep, ctrls, True, False, True, device=device, graph_capture=graph_capture
     )
     metrics = {
       "jit_duration": jit_duration,
