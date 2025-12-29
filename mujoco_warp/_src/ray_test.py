@@ -220,7 +220,84 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist-dodecahedron")
 
   def test_ray_hfield(self):
-   
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    pnt_list = [
+        wp.vec3(0.0, 2.0, 2.0),   # original point
+        wp.vec3(0.2, 1.8, 2.0),
+        wp.vec3(-0.2, 1.8, 2.0),
+        wp.vec3(0.2, 2.2, 2.0),
+        wp.vec3(-0.2, 2.2, 2.0),
+    ]
+    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
+
+    mjw_dists = []
+    mjw_geomids = []
+    mj_dists = []
+    mj_geomids = []
+
+    for pnt_val in pnt_list:
+      # shape (1,1) for mjw.ray
+      pnt = wp.array([[pnt_val]], dtype=wp.vec3)
+
+      dist, geomid = mjw.ray(m, d, pnt, vec)
+      wp.synchronize()
+      mjw_dists.append(dist.numpy()[0, 0])
+      mjw_geomids.append(geomid.numpy()[0, 0])
+
+      mj_geomid = np.zeros(1, dtype=np.int32)
+      mj_dist = mujoco.mj_ray(
+          mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid
+      )
+      mj_dists.append(mj_dist)
+      mj_geomids.append(mj_geomid[0])
+
+    _assert_eq(np.array(mjw_dists), np.array(mj_dists), "dist")
+    _assert_eq(np.array(mjw_geomids), np.array(mj_geomids), "geomid")
+
+  def test_ray_geomgroup(self):
+    """Tests ray geomgroup filter."""
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    # hits plane with geom_group[0] = 1
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
+    geomgroup = vec6(1, 0, 0, 0, 0, 0)
+    dist, geomid = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup)
+    wp.synchronize()
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
+    _assert_eq(geomid_np, 0, "geom_id")
+
+    pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
+    unused = np.zeros(1, dtype=np.int32)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    _assert_eq(dist_np, mj_dist, "dist")
+
+    # nothing hit with geom_group[0] = 0
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
+    geomgroup = vec6(0, 0, 0, 0, 0, 0)
+    dist, geomid = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup)
+    wp.synchronize()
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
+    _assert_eq(geomid_np, -1, "geom_id")
+    _assert_eq(dist_np, -1, "dist")
+
+  def test_ray_flg_static(self):
+    """Tests ray flg_static filter."""
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    # nothing hit with flg_static = False
+    pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
+    dist, geomid = mjw.ray(m, d, pnt, vec, flg_static=False)
+    wp.synchronize()
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
+    _assert_eq(geomid_np, -1, "geom_id")
+    _assert_eq(dist_np, -1, "dist")
 
   def test_ray_bodyexclude(self):
     """Tests ray bodyexclude filter."""

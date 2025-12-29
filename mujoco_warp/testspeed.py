@@ -186,15 +186,18 @@ def _main(argv: Sequence[str]):
     jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res
     steps = _NWORLD.value * _NSTEP.value
 
+    device = wp.get_device()
+    gpu_mem = device.memory_usage()
     print(f"""
-Summary for {_NWORLD.value} parallel rollouts
+    Summary for {_NWORLD.value} parallel rollouts
+    GPU: {device.name} | Memory: {gpu_mem['used']/1e9:.1f}GB/{gpu_mem['total']/1e9:.1f}GB
 
-Total JIT time: {jit_time:.2f} s
-Total simulation time: {run_time:.2f} s
-Total steps per second: {steps / run_time:,.0f}
-Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
-Total time per step: {1e9 * run_time / steps:.2f} ns
-Total converged worlds: {nsuccess} / {d.nworld}""")
+    Total JIT time: {jit_time:.2f} s
+    Total simulation time: {run_time:.2f} s
+    Total steps per second: {steps / run_time:,.0f}
+    Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
+    Total time per step: {1e9 * run_time / steps:.2f} ns
+    Total converged worlds: {nsuccess} / {d.nworld}""")
 
     if trace:
       _print_trace(trace, 0, steps)
