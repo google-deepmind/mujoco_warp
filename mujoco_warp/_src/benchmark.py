@@ -111,7 +111,7 @@ def benchmark(
     event_trace: If True, time routines decorated with @event_scope.
     measure_alloc: If True, record number of contacts and constraints.
     measure_solver_niter: If True, record the number of solver iterations.
-    device: Device that runs computation (eg, cuda:0, cpu)
+    device: Device that runs computation (eg, cuda:0, cpu).
     graph_capture: If true, utilize graph capture.
 
   Returns:
