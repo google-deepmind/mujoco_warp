@@ -594,6 +594,11 @@ def ccd_kernel_builder(
       epa_horizon = epa_horizon_in[tid]
 
       collision_pairid = collision_pairid_in[tid]
+      
+      # Fix OOM #926: Preallocate contacts before heightfield loop
+      max_contacts = ncollision_in[0] * MJ_MAXCONPAIR * 2
+      if data.contacts.size < max_contacts:
+        data.contacts.allocate(max_contacts * 1.5)
 
       # process all prisms in subgrid
       count = int(0)
