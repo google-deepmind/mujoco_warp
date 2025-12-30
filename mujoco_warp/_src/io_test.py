@@ -60,7 +60,7 @@ class IOTest(parameterized.TestCase):
     EXPECTED_SIZES = {
       "pendula.xml": (48, 64),
       "collision_sdf/tactile.xml": (64, 256),
-      "flex/floppy.xml": (256, 512),
+      "flex/floppy.xml": (512, 1024),
       "actuation/tendon_force_limit.xml": (48, 64),
       "actuation/tendon_force_limit.xml": (48, 64),
       "hfield/hfield.xml": (96, 384),
