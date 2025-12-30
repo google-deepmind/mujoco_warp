@@ -534,13 +534,16 @@ def contact_params(
       condim = wp.max(condim1, condim2)
       max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
 
-    friction = vec5(
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[1]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
+    # Fix #942: Compute frictionLoss to prevent NaN in setFriction
+    frictionLoss = wp.vec5(
+      1.0 / (1.0 + friction[0] * friction[0]),
+      1.0 / (1.0 + friction[1] * friction[1]),
+      1.0 / (1.0 + friction[2] * friction[2]),
+      1.0 / (1.0 + friction[3] * friction[3]),
+      1.0 / (1.0 + friction[4] * friction[4])
     )
+    # Clamp to prevent NaN
+    frictionLoss = wp.where(wp.isnan(frictionLoss), 0.0, frictionLoss)
 
     if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
       solref = mix * geom_solref[solref_id, g1] + (1.0 - mix) * geom_solref[solref_id, g2]
