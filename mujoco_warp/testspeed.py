@@ -195,6 +195,10 @@ Total steps per second: {steps / run_time:,.0f}
 Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
 Total time per step: {1e9 * run_time / steps:.2f} ns
 Total converged worlds: {nsuccess} / {d.nworld}""")
+    
+    print(f"  Collision pairs: {d.ncollision[0]:,d}")
+    print(f"  Contacts: {d.ncontact[0]:,d}")
+    print(f"  Friction dim: {d.friction_dim:.1f}")
 
     if trace:
       _print_trace(trace, 0, steps)
