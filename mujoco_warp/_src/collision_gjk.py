@@ -63,7 +63,6 @@ class Polytope:
   # faces in polytope
   face: wp.array(dtype=wp.vec3i)
   face_pr: wp.array(dtype=wp.vec3)
-  face_norm2: wp.array(dtype=float)
   face_index: wp.array(dtype=int)
   nface: int
 
@@ -203,9 +202,8 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   pt.face[idx] = face
   pt.face_pr[idx] = r
 
-  pt.face_norm2[idx] = wp.dot(r, r)
   pt.face_index[idx] = -1
-  return pt.face_norm2[idx]
+  return wp.dot(r, r)
 
 
 @wp.func
@@ -944,7 +942,7 @@ def _epa_witness(
   x1[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
   x1[2] = v1[2] * l1 + v2[2] * l2 + v3[2] * l3
 
-  return x1, x2, -wp.sqrt(pt.face_norm2[face_idx])
+  return x1, x2, -wp.norm_l2(pt.face_pr[face_idx])
 
 
 @wp.func
@@ -1250,9 +1248,11 @@ def _epa(
     lower2 = float(FLOAT_MAX)
     for i in range(pt.nmap):
       face_idx = pt.face_map[i]
-      if pt.face_norm2[face_idx] < lower2:
+      pr = pt.face_pr[face_idx]
+      norm2 = wp.dot(pr, pr)
+      if norm2 < lower2:
         idx = int(face_idx)
-        lower2 = float(pt.face_norm2[face_idx])
+        lower2 = float(norm2)
 
     # face not valid, return previous face
     if lower2 > upper2 or idx < 0:
@@ -1303,7 +1303,9 @@ def _epa(
       if pt.face_index[i] == -2:
         continue
 
-      if wp.dot(pt.face_pr[i], pt.vert[wi]) - pt.face_norm2[i] > 1e-10:
+      pr = pt.face_pr[i]
+      norm2 = wp.dot(pr, pr)
+      if wp.dot(pr, pt.vert[wi]) - norm2 > 1e-10:
         pt.nmap = _delete_face(pt, i)
         pt.nhorizon = _add_edge(pt, pt.face[i][0], pt.face[i][1])
         pt.nhorizon = _add_edge(pt, pt.face[i][1], pt.face[i][2])
@@ -2236,7 +2238,6 @@ def ccd(
   vert_index2: wp.array(dtype=int),
   face: wp.array(dtype=wp.vec3i),
   face_pr: wp.array(dtype=wp.vec3),
-  face_norm2: wp.array(dtype=float),
   face_index: wp.array(dtype=int),
   face_map: wp.array(dtype=int),
   horizon: wp.array(dtype=int),
@@ -2299,7 +2300,6 @@ def ccd(
   pt.vert_index2 = vert_index2
   pt.face = face
   pt.face_pr = face_pr
-  pt.face_norm2 = face_norm2
   pt.face_index = face_index
   pt.face_map = face_map
   pt.horizon = horizon
