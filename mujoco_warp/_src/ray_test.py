@@ -35,6 +35,7 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+# TODO: Add tests comparing normal to engine implementation once available.
 class RayTest(absltest.TestCase):
   def test_ray_nothing(self):
     """Tests that ray returns -1 when nothing is hit."""
