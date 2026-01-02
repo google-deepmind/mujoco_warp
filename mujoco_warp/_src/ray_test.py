@@ -49,7 +49,7 @@ class RayTest(absltest.TestCase):
     normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
-    _assert_eq(normal_np, wp.vec3(), "normal")
+    _assert_eq(normal_np, 0, "normal")
 
   def test_ray_plane(self):
     """Tests ray<>plane matches MuJoCo."""
@@ -292,7 +292,7 @@ class RayTest(absltest.TestCase):
     normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
-    _assert_eq(normal_np, wp.vec3(), "normal")
+    _assert_eq(normal_np, 0, "normal")
 
   def test_ray_invisible(self):
     """Tests ray doesn't hit transparent geoms."""
@@ -311,7 +311,7 @@ class RayTest(absltest.TestCase):
     normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
-    _assert_eq(normal_np, wp.vec3(), "normal")
+    _assert_eq(normal_np, 0, "normal")
 
 
 if __name__ == "__main__":
