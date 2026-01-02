@@ -222,15 +222,38 @@ class RayTest(absltest.TestCase):
   def test_ray_hfield(self):
     mjm, mjd, m, d = test_data.fixture("ray.xml")
 
-    pnt = wp.array([wp.vec3(0.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
+    pnt_list = [
+        wp.vec3(0.0, 2.0, 2.0),   # original point
+        wp.vec3(0.2, 1.8, 2.0),
+        wp.vec3(-0.2, 1.8, 2.0),
+        wp.vec3(0.2, 2.2, 2.0),
+        wp.vec3(-0.2, 2.2, 2.0),
+    ]
     vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
-    dist, geomid = mjw.ray(m, d, pnt, vec)
 
-    mj_geomid = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
+    mjw_dists = []
+    mjw_geomids = []
+    mj_dists = []
+    mj_geomids = []
 
-    _assert_eq(dist.numpy()[0, 0], mj_dist, "dist")
-    _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "geomid")
+    for pnt_val in pnt_list:
+      # shape (1,1) for mjw.ray
+      pnt = wp.array([[pnt_val]], dtype=wp.vec3)
+
+      dist, geomid = mjw.ray(m, d, pnt, vec)
+      wp.synchronize()
+      mjw_dists.append(dist.numpy()[0, 0])
+      mjw_geomids.append(geomid.numpy()[0, 0])
+
+      mj_geomid = np.zeros(1, dtype=np.int32)
+      mj_dist = mujoco.mj_ray(
+          mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid
+      )
+      mj_dists.append(mj_dist)
+      mj_geomids.append(mj_geomid[0])
+
+    _assert_eq(np.array(mjw_dists), np.array(mj_dists), "dist")
+    _assert_eq(np.array(mjw_geomids), np.array(mj_geomids), "geomid")
 
   def test_ray_geomgroup(self):
     """Tests ray geomgroup filter."""
