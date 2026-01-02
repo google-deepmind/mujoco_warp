@@ -393,7 +393,10 @@ _IFACE = wp.types.matrix((3, 2), dtype=int)(1, 2, 0, 2, 0, 1)
 
 @wp.func
 def _ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, vec6, wp.vec3]:
-  """Returns the distance and normal at which a ray intersects with a box."""
+  """Returns the intersection information at which a ray intersects with a box.
+  
+  Returns distance, per side intersection information, and normal at the intersection point.
+  """
   all = vec6(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
 
   # bounding sphere test
@@ -812,9 +815,9 @@ def _ray(
   flg_static: bool,
   bodyexclude: wp.array(dtype=int),
   # Out:
-  dist_out: wp.array(dtype=float, ndim=2),
-  geomid_out: wp.array(dtype=int, ndim=2),
-  normal_out: wp.array(dtype=wp.vec3, ndim=2),
+  dist_out: wp.array2d(dtype=float),
+  geomid_out: wp.array2d(dtype=int),
+  normal_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, rayid, tid = wp.tid()
 
