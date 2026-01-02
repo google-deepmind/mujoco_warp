@@ -45,7 +45,7 @@ class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml")
-    md = mjwarp.make_data(mjm, nconmax=512, njmax=512)
+    md = mjwarp.make_data(mjm)
 
     # same number of fields
     self.assertEqual(len(d.__dict__), len(md.__dict__))
@@ -54,6 +54,21 @@ class IOTest(parameterized.TestCase):
     for attr, val in md.__dict__.items():
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
+
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_put_data_sizes(self, xml):
+    EXPECTED_SIZES = {
+      "pendula.xml": (48, 64),
+      "collision_sdf/tactile.xml": (64, 256),
+      "flex/floppy.xml": (256, 512),
+      "actuation/tendon_force_limit.xml": (48, 64),
+      "actuation/tendon_force_limit.xml": (48, 64),
+      "hfield/hfield.xml": (96, 384),
+    }
+    _, _, _, d = test_data.fixture(xml)
+    nconmax_expected, njmax_expected = EXPECTED_SIZES[xml]
+    self.assertEqual(d.naconmax, nconmax_expected)
+    self.assertEqual(d.njmax, njmax_expected)
 
   def test_get_data_into_m(self):
     mjm = mujoco.MjModel.from_xml_string("""
