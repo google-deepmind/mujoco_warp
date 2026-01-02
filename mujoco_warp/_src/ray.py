@@ -682,12 +682,12 @@ def ray_mesh_with_bvh(
   pnt: wp.vec3,
   vec: wp.vec3,
   max_t: float,
-) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int, int]:
+) -> Tuple[float, wp.vec3, float, float, int, int]:
   """Returns intersection information for ray mesh intersections.
 
   Requires wp.Mesh be constructed and their ids to be passed.
   """
-  t = float(wp.inf)
+  t = float(-1.0)
   u = float(0.0)
   v = float(0.0)
   sign = float(0.0)
@@ -701,9 +701,9 @@ def ray_mesh_with_bvh(
   if hit and wp.dot(lvec, n) < 0.0: # Backface culling in local space
     normal = mat @ n
     normal = wp.normalize(normal)
-    return True, t, normal, u, v, f, 0
+    return t, normal, u, v, f, 0
 
-  return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
+  return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
 
 
 @wp.func
@@ -714,12 +714,12 @@ def ray_flex_with_bvh(
   pnt: wp.vec3,
   vec: wp.vec3,
   max_t: float,
-) -> Tuple[bool, wp.float32, wp.vec3, wp.float32, wp.float32, int]:
+) -> Tuple[float, wp.vec3, float, float, int, int]:
   """Returns intersection information for flex intersections.
 
   Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space.
   """
-  t = float(wp.inf)
+  t = float(-1.0)
   u = float(0.0)
   v = float(0.0)
   sign = float(0.0)
@@ -730,9 +730,9 @@ def ray_flex_with_bvh(
     bvh_id, pnt, vec, max_t, t, u, v, sign, n, f, group_root)
 
   if hit:
-    return True, t, n, u, v, f
+    return t, n, u, v, f
 
-  return False, wp.inf, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1
+  return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
 
 
 @wp.func

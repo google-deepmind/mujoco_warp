@@ -20,19 +20,13 @@ import warp as wp
 from . import bvh
 from . import math
 from .ray import ray_box
-from .ray import ray_box_with_normal
 from .ray import ray_capsule
-from .ray import ray_capsule_with_normal
 from .ray import ray_cylinder
-from .ray import ray_cylinder_with_normal
 from .ray import ray_ellipsoid
-from .ray import ray_ellipsoid_with_normal
 from .ray import ray_flex_with_bvh
 from .ray import ray_mesh_with_bvh
 from .ray import ray_plane
-from .ray import ray_plane_with_normal
 from .ray import ray_sphere
-from .ray import ray_sphere_with_normal
 from .render_context import RenderContext
 from .types import Data
 from .types import GeomType
@@ -294,7 +288,7 @@ def cast_ray(
 
     # TODO: Investigate branch elimination with static loop unrolling
     if geom_type[gi] == GeomType.PLANE:
-      h, d, n = ray_plane_with_normal(
+      d, n = ray_plane(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -302,7 +296,7 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.HFIELD:
-      h, d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
+      d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
         hfield_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
@@ -312,14 +306,14 @@ def cast_ray(
         dist,
       )
     if geom_type[gi] == GeomType.SPHERE:
-      h, d, n = ray_sphere_with_normal(
+      d, n = ray_sphere(
         geom_xpos_in[world_id, gi],
         geom_size[world_id, gi][0] * geom_size[world_id, gi][0],
         ray_origin_world,
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.ELLIPSOID:
-      h, d, n = ray_ellipsoid_with_normal(
+      d, n = ray_ellipsoid(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -327,7 +321,7 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.CAPSULE:
-      h, d, n = ray_capsule_with_normal(
+      d, n = ray_capsule(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -335,7 +329,7 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.CYLINDER:
-      h, d, n = ray_cylinder_with_normal(
+      d, n = ray_cylinder(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -343,7 +337,7 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.BOX:
-      h, d, n = ray_box_with_normal(
+      d, all, n = ray_box(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -351,7 +345,7 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      h, d, n, u, v, f, geom_mesh_id = ray_mesh_with_bvh(
+      d, n, u, v, f, geom_mesh_id = ray_mesh_with_bvh(
         mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
@@ -361,7 +355,7 @@ def cast_ray(
         dist,
       )
 
-    if h and d < dist:
+    if d >= 0.0 and d < dist:
       dist = d
       normal = n
       geom_id = gi
@@ -404,7 +398,7 @@ def cast_ray_first_hit(
 
     # TODO: Investigate branch elimination with static loop unrolling
     if geom_type[gi] == GeomType.PLANE:
-      d = ray_plane(
+      d, n = ray_plane(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -412,7 +406,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.HFIELD:
-      h, d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
+      d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
         hfield_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
@@ -422,14 +416,14 @@ def cast_ray_first_hit(
         max_dist,
       )
     if geom_type[gi] == GeomType.SPHERE:
-      d = ray_sphere(
+      d, n = ray_sphere(
         geom_xpos_in[world_id, gi],
         geom_size[world_id, gi][0] * geom_size[world_id, gi][0],
         ray_origin_world,
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.ELLIPSOID:
-      d = ray_ellipsoid(
+      d, n = ray_ellipsoid(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -437,7 +431,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.CAPSULE:
-      d = ray_capsule(
+      d, n = ray_capsule(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -445,7 +439,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.CYLINDER:
-      d = ray_cylinder(
+      d, n = ray_cylinder(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -453,7 +447,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.BOX:
-      d, all = ray_box(
+      d, all, n = ray_box(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
         geom_size[world_id, gi],
@@ -461,7 +455,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      h, d, n, u, v, f, mesh_id = ray_mesh_with_bvh(
+      d, n, u, v, f, mesh_id = ray_mesh_with_bvh(
         mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
@@ -471,7 +465,7 @@ def cast_ray_first_hit(
         max_dist,
       )
 
-    if d < max_dist:
+    if d >= 0.0 and d < max_dist:
       return True
 
   return False
