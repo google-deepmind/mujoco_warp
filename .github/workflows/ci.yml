@@ -69,6 +69,11 @@ jobs:
       - name: Test with pytest
         run: |
           pytest -n 4
+      - name: Out-of-bounds check for batched model fields
+        # TODO(team): currently only works on GPU, enable on CPU?
+        # https://nvidia.github.io/warp/user_guide/debugging.html#debug-mode-compilation
+        run: |
+          pytest -k io_test --debug_mode --verify_cuda
 
   kernel_analyzer:
     name: Kernel analyzer

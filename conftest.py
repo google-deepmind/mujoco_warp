@@ -28,6 +28,7 @@ def pytest_addoption(parser):
   )
   parser.addoption("--lineinfo", action="store_true", default=False, help="add lineinfo to warp kernel")
   parser.addoption("--optimization_level", action="store", default=None, type=int, help="set wp.config.optimization_level")
+  parser.addoption("--debug_mode", action="store_true", default=False, help="debug mode compilation")
 
 
 def pytest_configure(config):
@@ -38,3 +39,5 @@ def pytest_configure(config):
   if config.getoption("--lineinfo"):
     wp.config.lineinfo = True
   wp.config.optimization_level = config.getoption("--optimization_level")
+  if config.getoption("--debug_mode"):
+    wp.config.mode = "debug"
