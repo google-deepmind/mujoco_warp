@@ -226,16 +226,16 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
 
     if nacon and nefc:
       idx = 0
-      ncon_matrix, nefc_matrix = [], []
+      nacon_matrix, nefc_matrix = [], []
       for i in range(_NUM_BUCKETS.value):
         size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
-        ncon_arr = np.array(nacon[idx : idx + size])
+        nacon_arr = np.array(nacon[idx : idx + size])
         nefc_arr = np.array(nefc[idx : idx + size])
-        ncon_matrix.append([np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)])
+        nacon_matrix.append([np.mean(nacon_arr), np.std(nacon_arr), np.min(nacon_arr), np.max(nacon_arr)])
         nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
         idx += size
 
-      _print_table(ncon_matrix, ("mean", "std", "min", "max"), "ncon alloc")
+      _print_table(nacon_matrix, ("mean", "std", "min", "max"), "nacon alloc")
       _print_table(nefc_matrix, ("mean", "std", "min", "max"), "nefc alloc")
 
     if solver_niter:
