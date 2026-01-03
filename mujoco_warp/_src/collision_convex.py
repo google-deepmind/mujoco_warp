@@ -45,6 +45,104 @@ wp.set_module_options({"enable_backward": False})
 vec_maxconpair = wp.types.vector(length=MJ_MAXCONPAIR, dtype=float)
 mat_maxconpair = wp.types.matrix(shape=(MJ_MAXCONPAIR, 3), dtype=float)
 
+
+def _arena_layout(epa_iterations: int, nmaxpolygon: int = 0, nmaxmeshdeg: int = 0):
+  """Compute arena array sizes and offsets for a single collision.
+
+  Returns dict with array names as keys and (offset, dim) tuples.
+  All sizes are in number of 4-byte elements (int/float are both 4 bytes).
+
+  Memory layout is optimized so multicontact arrays can overlap with EPA arrays
+  that are not used by multicontact (epa_vert, epa_pr, epa_norm2, epa_index,
+  epa_map, epa_horizon). The multicontact inputs are placed first:
+  epa_vert1, epa_vert2, epa_vert_index1, epa_vert_index2, epa_face.
+  """
+  epa_vert_dim = 5 + epa_iterations
+  epa_face_dim = 6 + MJ_MAX_EPAFACES * epa_iterations
+
+  layout = {}
+  offset = 0
+
+  # === EPA arrays used by multicontact (placed first, not overwritten) ===
+  # epa_vert1: vertices in EPA polytope in geom 1 space
+  layout["epa_vert1"] = (offset, epa_vert_dim)
+  offset += epa_vert_dim * 3
+  # epa_vert2: vertices in EPA polytope in geom 2 space
+  layout["epa_vert2"] = (offset, epa_vert_dim)
+  offset += epa_vert_dim * 3
+  # epa_vert_index1: vertex indices for geom 1
+  layout["epa_vert_index1"] = (offset, epa_vert_dim)
+  offset += epa_vert_dim
+  # epa_vert_index2: vertex indices for geom 2
+  layout["epa_vert_index2"] = (offset, epa_vert_dim)
+  offset += epa_vert_dim
+  # epa_face: faces of polytope (vec3i)
+  layout["epa_face"] = (offset, epa_face_dim)
+  offset += epa_face_dim * 3
+
+  # Record offset where multicontact arrays can begin (after epa_face)
+  multiccd_base_offset = offset
+
+  # === EPA arrays NOT used by multicontact (can be overwritten) ===
+  # epa_vert: vertices in Minkowski space
+  layout["epa_vert"] = (offset, epa_vert_dim)
+  offset += epa_vert_dim * 3
+  # epa_pr: projection of origin on polytope faces
+  layout["epa_pr"] = (offset, epa_face_dim)
+  offset += epa_face_dim * 3
+  # epa_norm2: epa_pr * epa_pr
+  layout["epa_norm2"] = (offset, epa_face_dim)
+  offset += epa_face_dim
+  # epa_index: index of face in polytope map
+  layout["epa_index"] = (offset, epa_face_dim)
+  offset += epa_face_dim
+  # epa_map: status of faces in polytope
+  layout["epa_map"] = (offset, epa_face_dim)
+  offset += epa_face_dim
+  # epa_horizon: index pair of edges on horizon
+  layout["epa_horizon"] = (offset, 2 * MJ_MAX_EPAHORIZON)
+  offset += 2 * MJ_MAX_EPAHORIZON
+
+  # Total EPA memory per collision
+  epa_total = offset
+
+  # === MultiCCD arrays (start at multiccd_base_offset, overlapping unused EPA) ===
+  # These overwrite epa_vert, epa_pr, epa_norm2, epa_index, epa_map, epa_horizon
+  mccd_offset = multiccd_base_offset
+
+  layout["multiccd_polygon"] = (mccd_offset, 2 * nmaxpolygon)
+  mccd_offset += 2 * nmaxpolygon * 3
+  layout["multiccd_clipped"] = (mccd_offset, 2 * nmaxpolygon)
+  mccd_offset += 2 * nmaxpolygon * 3
+  layout["multiccd_pnormal"] = (mccd_offset, nmaxpolygon)
+  mccd_offset += nmaxpolygon * 3
+  layout["multiccd_pdist"] = (mccd_offset, nmaxpolygon)
+  mccd_offset += nmaxpolygon
+  layout["multiccd_idx1"] = (mccd_offset, nmaxmeshdeg)
+  mccd_offset += nmaxmeshdeg
+  layout["multiccd_idx2"] = (mccd_offset, nmaxmeshdeg)
+  mccd_offset += nmaxmeshdeg
+  layout["multiccd_n1"] = (mccd_offset, nmaxmeshdeg)
+  mccd_offset += nmaxmeshdeg * 3
+  layout["multiccd_n2"] = (mccd_offset, nmaxmeshdeg)
+  mccd_offset += nmaxmeshdeg * 3
+  layout["multiccd_endvert"] = (mccd_offset, nmaxmeshdeg)
+  mccd_offset += nmaxmeshdeg * 3
+  layout["multiccd_face1"] = (mccd_offset, nmaxpolygon)
+  mccd_offset += nmaxpolygon * 3
+  layout["multiccd_face2"] = (mccd_offset, nmaxpolygon)
+  mccd_offset += nmaxpolygon * 3
+
+  # Total is max of EPA-only and EPA+multicontact (with overlap)
+  # Since multicontact overlaps with unused EPA, total = max(epa_total, mccd_offset)
+  layout["_total"] = max(epa_total, mccd_offset)
+  layout["_epa_vert_dim"] = epa_vert_dim
+  layout["_epa_face_dim"] = epa_face_dim
+  layout["_nmaxpolygon"] = nmaxpolygon
+  layout["_nmaxmeshdeg"] = nmaxmeshdeg
+  return layout
+
+
 _CONVEX_COLLISION_PAIRS = [
   (GeomType.HFIELD, GeomType.SPHERE),
   (GeomType.HFIELD, GeomType.CAPSULE),
@@ -197,8 +295,27 @@ def ccd_hfield_kernel_builder(
   geomtype2: int,
   gjk_iterations: int,
   epa_iterations: int,
+  geomgeomid: int,
 ):
   """Kernel builder for heightfield CCD collisions (no multiccd args)."""
+  # Compute arena layout at build time - these become compile-time constants
+  layout = _arena_layout(epa_iterations)
+  per_collision_size = layout["_total"]
+  epa_vert_dim = layout["_epa_vert_dim"]
+  epa_face_dim = layout["_epa_face_dim"]
+
+  # Extract offsets (will be embedded via wp.static)
+  epa_vert_offset = layout["epa_vert"][0]
+  epa_vert1_offset = layout["epa_vert1"][0]
+  epa_vert2_offset = layout["epa_vert2"][0]
+  epa_vert_index1_offset = layout["epa_vert_index1"][0]
+  epa_vert_index2_offset = layout["epa_vert_index2"][0]
+  epa_face_offset = layout["epa_face"][0]
+  epa_pr_offset = layout["epa_pr"][0]
+  epa_norm2_offset = layout["epa_norm2"][0]
+  epa_index_offset = layout["epa_index"][0]
+  epa_map_offset = layout["epa_map"][0]
+  epa_horizon_offset = layout["epa_horizon"][0]
 
   # runs convex collision on a set of geom pairs to recover contact info
   @nested_kernel(module="unique", enable_backward=False)
@@ -252,18 +369,9 @@ def ccd_hfield_kernel_builder(
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
-    # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
-    epa_vert1_in: wp.array2d(dtype=wp.vec3),
-    epa_vert2_in: wp.array2d(dtype=wp.vec3),
-    epa_vert_index1_in: wp.array2d(dtype=int),
-    epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
-    epa_pr_in: wp.array2d(dtype=wp.vec3),
-    epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
-    epa_horizon_in: wp.array2d(dtype=int),
+    naccdmax_in: int,
+    nccd_in: wp.array(dtype=int),
+    arena_in: wp.array(dtype=int),
     # Data out:
     nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
@@ -298,6 +406,12 @@ def ccd_hfield_kernel_builder(
       geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
     )
     if no_hf_collision:
+      return
+
+    # Allocate arena slot using atomic add with static geom pair index
+    arenaid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
+    if arenaid >= naccdmax_in:
+      wp.printf("CCD arena overflow - please increase naccdmax to %u\n", arenaid)
       return
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
@@ -387,18 +501,66 @@ def ccd_hfield_kernel_builder(
     geom1.margin = margin
     geom2.margin = margin
 
-    # EPA memory
-    epa_vert = epa_vert_in[tid]
-    epa_vert1 = epa_vert1_in[tid]
-    epa_vert2 = epa_vert2_in[tid]
-    epa_vert_index1 = epa_vert_index1_in[tid]
-    epa_vert_index2 = epa_vert_index2_in[tid]
-    epa_face = epa_face_in[tid]
-    epa_pr = epa_pr_in[tid]
-    epa_norm2 = epa_norm2_in[tid]
-    epa_index = epa_index_in[tid]
-    epa_map = epa_map_in[tid]
-    epa_horizon = epa_horizon_in[tid]
+    # Construct EPA arrays from arena memory
+    # multicontact inputs first (epa_vert1, epa_vert2, epa_vert_index1, epa_vert_index2, epa_face)
+    base_offset = arenaid * wp.static(per_collision_size)
+
+    epa_vert1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert1_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_vert2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert2_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_vert_index1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_index1_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_vert_index2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_index2_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_face = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_face_offset)) * 4),
+      dtype=wp.vec3i,
+      shape=(wp.static(epa_face_dim),),
+    )
+    # Remaining EPA arrays (not used by multicontact)
+    epa_vert = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_pr = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_pr_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_norm2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_norm2_offset)) * 4),
+      dtype=float,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_index = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_index_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_map = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_map_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_horizon = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_horizon_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(2 * MJ_MAX_EPAHORIZON),),
+    )
 
     collision_pairid = collision_pairid_in[tid]
 
@@ -708,9 +870,47 @@ def ccd_kernel_builder(
   geomtype2: int,
   gjk_iterations: int,
   epa_iterations: int,
+  geomgeomid: int,
   use_multiccd: bool,
+  nmaxpolygon: int = 0,
+  nmaxmeshdeg: int = 0,
 ):
   """Kernel builder for non-heightfield CCD collisions (no hfield args)."""
+  # Compute arena layout at build time - these become compile-time constants
+  layout = _arena_layout(epa_iterations, nmaxpolygon, nmaxmeshdeg)
+  per_collision_size = layout["_total"]
+  epa_vert_dim = layout["_epa_vert_dim"]
+  epa_face_dim = layout["_epa_face_dim"]
+
+  # Extract EPA offsets (will be embedded via wp.static)
+  epa_vert_offset = layout["epa_vert"][0]
+  epa_vert1_offset = layout["epa_vert1"][0]
+  epa_vert2_offset = layout["epa_vert2"][0]
+  epa_vert_index1_offset = layout["epa_vert_index1"][0]
+  epa_vert_index2_offset = layout["epa_vert_index2"][0]
+  epa_face_offset = layout["epa_face"][0]
+  epa_pr_offset = layout["epa_pr"][0]
+  epa_norm2_offset = layout["epa_norm2"][0]
+  epa_index_offset = layout["epa_index"][0]
+  epa_map_offset = layout["epa_map"][0]
+  epa_horizon_offset = layout["epa_horizon"][0]
+
+  # Extract multicontact offsets
+  multiccd_polygon_offset = layout["multiccd_polygon"][0]
+  multiccd_polygon_dim = layout["multiccd_polygon"][1]
+  multiccd_clipped_offset = layout["multiccd_clipped"][0]
+  multiccd_pnormal_offset = layout["multiccd_pnormal"][0]
+  multiccd_pnormal_dim = layout["multiccd_pnormal"][1]
+  multiccd_pdist_offset = layout["multiccd_pdist"][0]
+  multiccd_idx1_offset = layout["multiccd_idx1"][0]
+  multiccd_idx1_dim = layout["multiccd_idx1"][1]
+  multiccd_idx2_offset = layout["multiccd_idx2"][0]
+  multiccd_n1_offset = layout["multiccd_n1"][0]
+  multiccd_n2_offset = layout["multiccd_n2"][0]
+  multiccd_endvert_offset = layout["multiccd_endvert"][0]
+  multiccd_face1_offset = layout["multiccd_face1"][0]
+  multiccd_face1_dim = layout["multiccd_face1"][1]
+  multiccd_face2_offset = layout["multiccd_face2"][0]
 
   @wp.func
   def eval_ccd_write_contact(
@@ -720,28 +920,28 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
-    epa_vert1_in: wp.array2d(dtype=wp.vec3),
-    epa_vert2_in: wp.array2d(dtype=wp.vec3),
-    epa_vert_index1_in: wp.array2d(dtype=int),
-    epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
-    epa_pr_in: wp.array2d(dtype=wp.vec3),
-    epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
-    epa_horizon_in: wp.array2d(dtype=int),
-    multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
-    multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
-    multiccd_pnormal_in: wp.array2d(dtype=wp.vec3),
-    multiccd_pdist_in: wp.array2d(dtype=float),
-    multiccd_idx1_in: wp.array2d(dtype=int),
-    multiccd_idx2_in: wp.array2d(dtype=int),
-    multiccd_n1_in: wp.array2d(dtype=wp.vec3),
-    multiccd_n2_in: wp.array2d(dtype=wp.vec3),
-    multiccd_endvert_in: wp.array2d(dtype=wp.vec3),
-    multiccd_face1_in: wp.array2d(dtype=wp.vec3),
-    multiccd_face2_in: wp.array2d(dtype=wp.vec3),
+    epa_vert_in: wp.array(dtype=wp.vec3),
+    epa_vert1_in: wp.array(dtype=wp.vec3),
+    epa_vert2_in: wp.array(dtype=wp.vec3),
+    epa_vert_index1_in: wp.array(dtype=int),
+    epa_vert_index2_in: wp.array(dtype=int),
+    epa_face_in: wp.array(dtype=wp.vec3i),
+    epa_pr_in: wp.array(dtype=wp.vec3),
+    epa_norm2_in: wp.array(dtype=float),
+    epa_index_in: wp.array(dtype=int),
+    epa_map_in: wp.array(dtype=int),
+    epa_horizon_in: wp.array(dtype=int),
+    multiccd_polygon_in: wp.array(dtype=wp.vec3),
+    multiccd_clipped_in: wp.array(dtype=wp.vec3),
+    multiccd_pnormal_in: wp.array(dtype=wp.vec3),
+    multiccd_pdist_in: wp.array(dtype=float),
+    multiccd_idx1_in: wp.array(dtype=int),
+    multiccd_idx2_in: wp.array(dtype=int),
+    multiccd_n1_in: wp.array(dtype=wp.vec3),
+    multiccd_n2_in: wp.array(dtype=wp.vec3),
+    multiccd_endvert_in: wp.array(dtype=wp.vec3),
+    multiccd_face1_in: wp.array(dtype=wp.vec3),
+    multiccd_face2_in: wp.array(dtype=wp.vec3),
     geom1: Geom,
     geom2: Geom,
     geoms: wp.vec2i,
@@ -795,17 +995,17 @@ def ccd_kernel_builder(
       geomtype2,
       x1,
       x2,
-      epa_vert_in[tid],
-      epa_vert1_in[tid],
-      epa_vert2_in[tid],
-      epa_vert_index1_in[tid],
-      epa_vert_index2_in[tid],
-      epa_face_in[tid],
-      epa_pr_in[tid],
-      epa_norm2_in[tid],
-      epa_index_in[tid],
-      epa_map_in[tid],
-      epa_horizon_in[tid],
+      epa_vert_in,
+      epa_vert1_in,
+      epa_vert2_in,
+      epa_vert_index1_in,
+      epa_vert_index2_in,
+      epa_face_in,
+      epa_pr_in,
+      epa_norm2_in,
+      epa_index_in,
+      epa_map_in,
+      epa_horizon_in,
     )
 
     if dist >= 0.0 and pairid[1] == -1:
@@ -822,22 +1022,22 @@ def ccd_kernel_builder(
         and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
       ):
         ncontact, witness1, witness2 = multicontact(
-          multiccd_polygon_in[tid],
-          multiccd_clipped_in[tid],
-          multiccd_pnormal_in[tid],
-          multiccd_pdist_in[tid],
-          multiccd_idx1_in[tid],
-          multiccd_idx2_in[tid],
-          multiccd_n1_in[tid],
-          multiccd_n2_in[tid],
-          multiccd_endvert_in[tid],
-          multiccd_face1_in[tid],
-          multiccd_face2_in[tid],
-          epa_vert1_in[tid],
-          epa_vert2_in[tid],
-          epa_vert_index1_in[tid],
-          epa_vert_index2_in[tid],
-          epa_face_in[tid, idx],
+          multiccd_polygon_in,
+          multiccd_clipped_in,
+          multiccd_pnormal_in,
+          multiccd_pdist_in,
+          multiccd_idx1_in,
+          multiccd_idx2_in,
+          multiccd_n1_in,
+          multiccd_n2_in,
+          multiccd_endvert_in,
+          multiccd_face1_in,
+          multiccd_face2_in,
+          epa_vert1_in,
+          epa_vert2_in,
+          epa_vert_index1_in,
+          epa_vert_index2_in,
+          epa_face_in[idx],
           w1,
           w2,
           geom1,
@@ -938,29 +1138,9 @@ def ccd_kernel_builder(
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
-    # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
-    epa_vert1_in: wp.array2d(dtype=wp.vec3),
-    epa_vert2_in: wp.array2d(dtype=wp.vec3),
-    epa_vert_index1_in: wp.array2d(dtype=int),
-    epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
-    epa_pr_in: wp.array2d(dtype=wp.vec3),
-    epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
-    epa_horizon_in: wp.array2d(dtype=int),
-    multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
-    multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
-    multiccd_pnormal_in: wp.array2d(dtype=wp.vec3),
-    multiccd_pdist_in: wp.array2d(dtype=float),
-    multiccd_idx1_in: wp.array2d(dtype=int),
-    multiccd_idx2_in: wp.array2d(dtype=int),
-    multiccd_n1_in: wp.array2d(dtype=wp.vec3),
-    multiccd_n2_in: wp.array2d(dtype=wp.vec3),
-    multiccd_endvert_in: wp.array2d(dtype=wp.vec3),
-    multiccd_face1_in: wp.array2d(dtype=wp.vec3),
-    multiccd_face2_in: wp.array2d(dtype=wp.vec3),
+    naccdmax_in: int,
+    nccd_in: wp.array(dtype=int),
+    arena_in: wp.array(dtype=int),
     # Data out:
     nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
@@ -986,6 +1166,12 @@ def ccd_kernel_builder(
     g2 = geoms[1]
 
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
+      return
+
+    # Allocate arena slot using atomic add with static kernel index
+    arenaid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
+    if arenaid >= naccdmax_in:
+      wp.printf("CCD arena overflow - please increase naccdmax to %u\n", arenaid)
       return
 
     worldid = collision_worldid_in[tid]
@@ -1036,32 +1222,150 @@ def ccd_kernel_builder(
       worldid,
     )
 
+    # Construct EPA arrays from arena using arenaid-based offset
+    # multicontact inputs first (epa_vert1, epa_vert2, epa_vert_index1, epa_vert_index2, epa_face)
+    base_offset = arenaid * wp.static(per_collision_size)
+
+    epa_vert1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert1_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_vert2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert2_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_vert_index1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_index1_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_vert_index2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_index2_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_face = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_face_offset)) * 4),
+      dtype=wp.vec3i,
+      shape=(wp.static(epa_face_dim),),
+    )
+    # Remaining EPA arrays (not used by multicontact - can be overwritten)
+    epa_vert = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_vert_dim),),
+    )
+    epa_pr = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_pr_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_norm2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_norm2_offset)) * 4),
+      dtype=float,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_index = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_index_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_map = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_map_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(epa_face_dim),),
+    )
+    epa_horizon = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_horizon_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(2 * MJ_MAX_EPAHORIZON),),
+    )
+
+    # Construct multicontact arrays from arena
+    multiccd_polygon = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_polygon_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_polygon_dim),),
+    )
+    multiccd_clipped = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_clipped_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_polygon_dim),),
+    )
+    multiccd_pnormal = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_pnormal_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_pnormal_dim),),
+    )
+    multiccd_pdist = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_pdist_offset)) * 4),
+      dtype=float,
+      shape=(wp.static(multiccd_pnormal_dim),),
+    )
+    multiccd_idx1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_idx1_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(multiccd_idx1_dim),),
+    )
+    multiccd_idx2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_idx2_offset)) * 4),
+      dtype=int,
+      shape=(wp.static(multiccd_idx1_dim),),
+    )
+    multiccd_n1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_n1_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_idx1_dim),),
+    )
+    multiccd_n2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_n2_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_idx1_dim),),
+    )
+    multiccd_endvert = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_endvert_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_idx1_dim),),
+    )
+    multiccd_face1 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_face1_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_face1_dim),),
+    )
+    multiccd_face2 = wp.array(
+      ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_face2_offset)) * 4),
+      dtype=wp.vec3,
+      shape=(wp.static(multiccd_face1_dim),),
+    )
+
     eval_ccd_write_contact(
       opt_ccd_tolerance,
       geom_type,
       naconmax_in,
-      epa_vert_in,
-      epa_vert1_in,
-      epa_vert2_in,
-      epa_vert_index1_in,
-      epa_vert_index2_in,
-      epa_face_in,
-      epa_pr_in,
-      epa_norm2_in,
-      epa_index_in,
-      epa_map_in,
-      epa_horizon_in,
-      multiccd_polygon_in,
-      multiccd_clipped_in,
-      multiccd_pnormal_in,
-      multiccd_pdist_in,
-      multiccd_idx1_in,
-      multiccd_idx2_in,
-      multiccd_n1_in,
-      multiccd_n2_in,
-      multiccd_endvert_in,
-      multiccd_face1_in,
-      multiccd_face2_in,
+      epa_vert,
+      epa_vert1,
+      epa_vert2,
+      epa_vert_index1,
+      epa_vert_index2,
+      epa_face,
+      epa_pr,
+      epa_norm2,
+      epa_index,
+      epa_map,
+      epa_horizon,
+      multiccd_polygon,
+      multiccd_clipped,
+      multiccd_pnormal,
+      multiccd_pdist,
+      multiccd_idx1,
+      multiccd_idx2,
+      multiccd_n1,
+      multiccd_n2,
+      multiccd_endvert,
+      multiccd_face1,
+      multiccd_face2,
       geom1,
       geom2,
       geoms,
@@ -1144,10 +1448,11 @@ def convex_narrowphase(m: Model, d: Data):
   """
 
   def _pair_count(p1: int, p2: int) -> int:
-    return m.geom_pair_type_count[upper_trid_index(len(GeomType), p1, p2)]
+    idx = upper_trid_index(len(GeomType), p1, p2)
+    return m.geom_pair_type_count[idx], idx
 
   # no convex collisions, early return
-  if not any(_pair_count(g[0].value, g[1].value) for g in _CONVEX_COLLISION_PAIRS):
+  if not any(_pair_count(g[0].value, g[1].value)[0] for g in _CONVEX_COLLISION_PAIRS):
     return
 
   epa_iterations = m.opt.ccd_iterations
@@ -1157,28 +1462,10 @@ def convex_narrowphase(m: Model, d: Data):
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
   nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
-  # epa_vert: vertices in EPA polytope in Minkowski space
-  epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert1: vertices in EPA polytope in geom 1 space
-  epa_vert1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert2: vertices in EPA polytope in geom 2 space
-  epa_vert2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert_index1: vertex indices in EPA polytope for geom 1
-  epa_vert_index1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
-  # epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
-  epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
-  # epa_face: faces of polytope represented by three indices
-  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3i)
-  # epa_pr: projection of origin on polytope faces
-  epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
-  # epa_norm2: epa_pr * epa_pr
-  epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
-  # epa_index: index of face in polytope map
-  epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_map: status of faces in polytope
-  epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+  # Reset CCD arena counter
+  d.nccd.zero_()
+
+  # EPA and multiccd arrays are now constructed from d.arena inside kernels
 
   # Contact outputs
   contact_outputs = [
@@ -1198,13 +1485,14 @@ def convex_narrowphase(m: Model, d: Data):
     d.contact.geomcollisionid,
   ]
 
-  # Launch heightfield collision kernels (no multiccd args, 72 args total)
+  # Launch heightfield collision kernels (no multiccd args)
   for geom_pair in _HFIELD_COLLISION_PAIRS:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
-    if _pair_count(g1, g2):
+    count, idx = _pair_count(g1, g2)
+    if count:
       wp.launch(
-        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations),
+        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, idx),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
@@ -1254,52 +1542,21 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
-          epa_vert1,
-          epa_vert2,
-          epa_vert_index1,
-          epa_vert_index2,
-          epa_face,
-          epa_pr,
-          epa_norm2,
-          epa_index,
-          epa_map,
-          epa_horizon,
+          d.naccdmax,
+          d.nccd,
+          d.arena,
         ],
         outputs=contact_outputs,
       )
 
-  # Allocate multiccd arrays only for non-heightfield collisions
-  # multiccd_polygon: clipped contact surface
-  multiccd_polygon = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
-  # multiccd_clipped: clipped contact surface (intermediate)
-  multiccd_clipped = wp.empty(shape=(d.naconmax, 2 * nmaxpolygon), dtype=wp.vec3)
-  # multiccd_pnormal: plane normal of clipping polygon
-  multiccd_pnormal = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-  # multiccd_pdist: plane distance of clipping polygon
-  multiccd_pdist = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=float)
-  # multiccd_idx1: list of normal index candidates for Geom 1
-  multiccd_idx1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
-  # multiccd_idx2: list of normal index candidates for Geom 2
-  multiccd_idx2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=int)
-  # multiccd_n1: list of normal candidates for Geom 1
-  multiccd_n1 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_n2: list of normal candidates for Geom 1
-  multiccd_n2 = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_endvert: list of edge vertices candidates
-  multiccd_endvert = wp.empty(shape=(d.naconmax, nmaxmeshdeg), dtype=wp.vec3)
-  # multiccd_face1: contact face
-  multiccd_face1 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-  # multiccd_face2: contact face
-  multiccd_face2 = wp.empty(shape=(d.naconmax, nmaxpolygon), dtype=wp.vec3)
-
-  # Launch non-heightfield collision kernels (no hfield args, 78 args total)
+  # Non-heightfield kernels now use arena memory for EPA/multiccd arrays
   for geom_pair in _NON_HFIELD_COLLISION_PAIRS:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
-    if _pair_count(g1, g2):
+    count, idx = _pair_count(g1, g2)
+    if count:
       wp.launch(
-        ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, use_multiccd),
+        ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, idx, use_multiccd, nmaxpolygon, nmaxmeshdeg),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
@@ -1342,28 +1599,9 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
-          epa_vert1,
-          epa_vert2,
-          epa_vert_index1,
-          epa_vert_index2,
-          epa_face,
-          epa_pr,
-          epa_norm2,
-          epa_index,
-          epa_map,
-          epa_horizon,
-          multiccd_polygon,
-          multiccd_clipped,
-          multiccd_pnormal,
-          multiccd_pdist,
-          multiccd_idx1,
-          multiccd_idx2,
-          multiccd_n1,
-          multiccd_n2,
-          multiccd_endvert,
-          multiccd_face1,
-          multiccd_face2,
+          d.naccdmax,
+          d.nccd,
+          d.arena,
         ],
         outputs=contact_outputs,
       )

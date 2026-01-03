@@ -586,12 +586,80 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
+def _compute_arena_size(
+  naccdmax: int,
+  ccd_iterations: int,
+  nmaxpolygon: int,
+  nmaxmeshdeg: int,
+  use_multiccd: bool,
+) -> int:
+  """Compute total element count for collision arena (4 bytes per element).
+
+  The arena stores scratch arrays for EPA and MultiCCD algorithms.
+  Memory layout is optimized so multicontact arrays overlap with EPA arrays
+  that are not used by multicontact (epa_vert, epa_pr, epa_norm2, epa_index,
+  epa_map, epa_horizon). The multicontact inputs are placed first:
+  epa_vert1, epa_vert2, epa_vert_index1, epa_vert_index2, epa_face.
+  """
+  MJ_MAX_EPAFACES = 5
+  MJ_MAX_EPAHORIZON = 12
+
+  epa_vert_dim = 5 + ccd_iterations
+  epa_face_dim = 6 + MJ_MAX_EPAFACES * ccd_iterations
+
+  # === EPA arrays used by multicontact (placed first, not overwritten) ===
+  # epa_vert1, epa_vert2: vec3 arrays
+  multicontact_preserved = 2 * epa_vert_dim * 3
+  # epa_vert_index1, epa_vert_index2: int arrays
+  multicontact_preserved += 2 * epa_vert_dim
+  # epa_face: vec3i array
+  multicontact_preserved += epa_face_dim * 3
+
+  # === EPA arrays NOT used by multicontact (can be overwritten) ===
+  # epa_vert: vec3 array
+  epa_unused = epa_vert_dim * 3
+  # epa_pr: vec3 array
+  epa_unused += epa_face_dim * 3
+  # epa_norm2, epa_index, epa_map: scalar arrays
+  epa_unused += epa_face_dim * 3
+  # epa_horizon: 2 * MJ_MAX_EPAHORIZON ints
+  epa_unused += 2 * MJ_MAX_EPAHORIZON
+
+  epa_total_per_collision = multicontact_preserved + epa_unused
+
+  if not use_multiccd or nmaxpolygon == 0:
+    return naccdmax * epa_total_per_collision
+
+  # === MultiCCD arrays (start after epa_face, overlapping unused EPA) ===
+  # polygon, clipped: 2 * nmaxpolygon vec3s each
+  multiccd_floats = 2 * nmaxpolygon * 3 * 2
+  # pnormal: nmaxpolygon vec3s
+  multiccd_floats += nmaxpolygon * 3
+  # pdist: nmaxpolygon floats
+  multiccd_floats += nmaxpolygon
+  # idx1, idx2: nmaxmeshdeg ints each
+  multiccd_floats += nmaxmeshdeg * 2
+  # n1, n2, endvert: nmaxmeshdeg vec3s each
+  multiccd_floats += nmaxmeshdeg * 3 * 3
+  # face1, face2: nmaxpolygon vec3s each
+  multiccd_floats += nmaxpolygon * 3 * 2
+
+  # Total per collision = max(epa_total, preserved + multiccd)
+  # Since multiccd overlaps with epa_unused, we just take max
+  multiccd_region = multicontact_preserved + multiccd_floats
+  per_collision = max(epa_total_per_collision, multiccd_region)
+
+  return naccdmax * per_collision
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
   nconmax: Optional[int] = None,
+  nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  naccdmax: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -600,9 +668,11 @@ def make_data(
     nworld: Number of worlds.
     nconmax: Number of contacts to allocate per world. Contacts exist in large
              heterogeneous arrays: one world may have more than nconmax contacts.
+    nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -610,6 +680,9 @@ def make_data(
   # TODO(team): move nconmax, njmax to Model?
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
+
+  if nccdmax is None:
+    nccdmax = nconmax
 
   if njmax is None:
     njmax = _default_njmax(mjm)
@@ -623,6 +696,13 @@ def make_data(
     naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
+
+  if naccdmax is None:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    naccdmax = nworld * nccdmax
+  elif naccdmax < 0:
+    raise ValueError("naccdmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -672,6 +752,8 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
+    # ccd
+    "naccdmax": naccdmax,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -687,6 +769,18 @@ def make_data(
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
+  # Allocate arena for convex collision scratch memory
+  # Currently use_multiccd is disabled, so we only allocate EPA memory
+  use_multiccd = False
+  arena_size = _compute_arena_size(
+    naccdmax=naccdmax,
+    ccd_iterations=mjm.opt.ccd_iterations,
+    nmaxpolygon=0,  # TODO(team): pass from model when multiccd is enabled
+    nmaxmeshdeg=0,
+    use_multiccd=use_multiccd,
+  )
+  d.arena = wp.empty(arena_size, dtype=int)
+
   return d
 
 
@@ -695,8 +789,10 @@ def put_data(
   mjd: mujoco.MjData,
   nworld: int = 1,
   nconmax: Optional[int] = None,
+  nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  naccdmax: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -706,9 +802,11 @@ def put_data(
     nworld: The number of worlds.
     nconmax: Number of contacts to allocate per world.  Contacts exist in large
              heterogenous arrays: one world may have more than nconmax contacts.
+    nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -719,6 +817,9 @@ def put_data(
 
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
+
+  if nccdmax is None:
+    nccdmax = nconmax
 
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
@@ -734,6 +835,13 @@ def put_data(
     naconmax = nworld * nconmax
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
+
+  if naccdmax is None:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    naccdmax = nworld * nccdmax
+  elif naccdmax < 0:
+    raise ValueError("naccdmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -827,6 +935,8 @@ def put_data(
     "ne_ten": None,
     "ne_flex": None,
     "nsolving": None,
+    # ccd
+    "naccdmax": naccdmax,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -880,6 +990,17 @@ def put_data(
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
   d.nsolving = wp.array([nworld], dtype=int)
+
+  # Allocate arena for convex collision scratch memory
+  use_multiccd = False
+  arena_size = _compute_arena_size(
+    naccdmax=naccdmax,
+    ccd_iterations=mjm.opt.ccd_iterations,
+    nmaxpolygon=0,
+    nmaxmeshdeg=0,
+    use_multiccd=use_multiccd,
+  )
+  d.arena = wp.empty(arena_size, dtype=int)
 
   return d
 

@@ -1647,6 +1647,9 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
+    naccdmax: Maximum number of CCD contacts
+    nccd: geom-geom pair counter for arena slots                (len(GeomType)*(len(GeomType)+1)/2,)
+    arena: Arena memory for CCD                                 (narena,)
   """
 
   solver_niter: array("nworld", int)
@@ -1745,3 +1748,8 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+  # warp only: preallocated arena for convex collision scratch memory
+  naccdmax: int  # max number of CCD contacts
+  nccd: array(len(GeomType) * (len(GeomType) + 1) // 2, int)  # counter for arena slots per geom-geom pair
+  arena: wp.array(dtype=int)  # int has 4 bytes
