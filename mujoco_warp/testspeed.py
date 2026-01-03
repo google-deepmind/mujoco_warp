@@ -46,7 +46,7 @@ _FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspec
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
-_NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts for all worlds")
+_NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts per world")
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
