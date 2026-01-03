@@ -607,7 +607,7 @@ def _compute_arena_size(
   epa_vert_dim = 5 + ccd_iterations
   epa_face_dim = 6 + MJ_MAX_EPAFACES * ccd_iterations
 
-  # === EPA arrays used by multicontact (placed first, not overwritten) ===
+  # epa arrays used by multicontact
   # epa_vert1, epa_vert2: vec3 arrays
   multicontact_preserved = 2 * epa_vert_dim * 3
   # epa_vert_index1, epa_vert_index2: int arrays
@@ -615,7 +615,7 @@ def _compute_arena_size(
   # epa_face: vec3i array
   multicontact_preserved += epa_face_dim * 3
 
-  # === EPA arrays NOT used by multicontact (can be overwritten) ===
+  # epa arrays not used by multicontact
   # epa_vert: vec3 array
   epa_unused = epa_vert_dim * 3
   # epa_pr: vec3 array
@@ -630,7 +630,7 @@ def _compute_arena_size(
   if not use_multiccd or nmaxpolygon == 0:
     return naccdmax * epa_total_per_collision
 
-  # === MultiCCD arrays (start after epa_face, overlapping unused EPA) ===
+  # multiccd arrays
   # polygon, clipped: 2 * nmaxpolygon vec3s each
   multiccd_floats = 2 * nmaxpolygon * 3 * 2
   # pnormal: nmaxpolygon vec3s
@@ -644,8 +644,8 @@ def _compute_arena_size(
   # face1, face2: nmaxpolygon vec3s each
   multiccd_floats += nmaxpolygon * 3 * 2
 
-  # Total per collision = max(epa_total, preserved + multiccd)
-  # Since multiccd overlaps with epa_unused, we just take max
+  # total per collision = max(epa_total, preserved + multiccd)
+  # since multiccd overlaps with epa_unused, we just take max
   multiccd_region = multicontact_preserved + multiccd_floats
   per_collision = max(epa_total_per_collision, multiccd_region)
 
@@ -769,8 +769,8 @@ def make_data(
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  # Allocate arena for convex collision scratch memory
-  # Currently use_multiccd is disabled, so we only allocate EPA memory
+  # allocate arena for convex collision scratch memory
+  # currently use_multiccd is disabled, so we only allocate epa memory
   use_multiccd = False
   arena_size = _compute_arena_size(
     naccdmax=naccdmax,
@@ -991,7 +991,7 @@ def put_data(
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
   d.nsolving = wp.array([nworld], dtype=int)
 
-  # Allocate arena for convex collision scratch memory
+  # allocate arena for convex collision scratch memory
   use_multiccd = False
   arena_size = _compute_arena_size(
     naccdmax=naccdmax,

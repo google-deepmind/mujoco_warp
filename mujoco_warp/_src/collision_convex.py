@@ -63,7 +63,8 @@ def _arena_layout(epa_iterations: int, nmaxpolygon: int = 0, nmaxmeshdeg: int = 
   layout = {}
   offset = 0
 
-  # === EPA arrays used by multicontact (placed first, not overwritten) ===
+  # epa arrays used by multicontact
+
   # epa_vert1: vertices in EPA polytope in geom 1 space
   layout["epa_vert1"] = (offset, epa_vert_dim)
   offset += epa_vert_dim * 3
@@ -80,10 +81,10 @@ def _arena_layout(epa_iterations: int, nmaxpolygon: int = 0, nmaxmeshdeg: int = 
   layout["epa_face"] = (offset, epa_face_dim)
   offset += epa_face_dim * 3
 
-  # Record offset where multicontact arrays can begin (after epa_face)
+  # offset where multicontact arrays can begin
   multiccd_base_offset = offset
 
-  # === EPA arrays NOT used by multicontact (can be overwritten) ===
+  # epa arrays not used by multicontact
   # epa_vert: vertices in Minkowski space
   layout["epa_vert"] = (offset, epa_vert_dim)
   offset += epa_vert_dim * 3
@@ -103,11 +104,11 @@ def _arena_layout(epa_iterations: int, nmaxpolygon: int = 0, nmaxmeshdeg: int = 
   layout["epa_horizon"] = (offset, 2 * MJ_MAX_EPAHORIZON)
   offset += 2 * MJ_MAX_EPAHORIZON
 
-  # Total EPA memory per collision
+  # total epa memory per collision
   epa_total = offset
 
-  # === MultiCCD arrays (start at multiccd_base_offset, overlapping unused EPA) ===
-  # These overwrite epa_vert, epa_pr, epa_norm2, epa_index, epa_map, epa_horizon
+  # multiccd arrays
+  # these overwrite epa_vert, epa_pr, epa_norm2, epa_index, epa_map, epa_horizon
   mccd_offset = multiccd_base_offset
 
   layout["multiccd_polygon"] = (mccd_offset, 2 * nmaxpolygon)
@@ -408,7 +409,7 @@ def ccd_hfield_kernel_builder(
     if no_hf_collision:
       return
 
-    # Allocate arena slot using atomic add with static geom pair index
+    # allocate arena slot
     arenaid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
     if arenaid >= naccdmax_in:
       wp.printf("CCD arena overflow - please increase naccdmax to %u\n", arenaid)
@@ -501,7 +502,7 @@ def ccd_hfield_kernel_builder(
     geom1.margin = margin
     geom2.margin = margin
 
-    # Construct EPA arrays from arena memory
+    # construct epa arrays from arena
     # multicontact inputs first (epa_vert1, epa_vert2, epa_vert_index1, epa_vert_index2, epa_face)
     base_offset = arenaid * wp.static(per_collision_size)
 
@@ -530,7 +531,7 @@ def ccd_hfield_kernel_builder(
       dtype=wp.vec3i,
       shape=(wp.static(epa_face_dim),),
     )
-    # Remaining EPA arrays (not used by multicontact)
+    # remaining epa arrays
     epa_vert = wp.array(
       ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_offset)) * 4),
       dtype=wp.vec3,
@@ -1168,7 +1169,7 @@ def ccd_kernel_builder(
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
 
-    # Allocate arena slot using atomic add with static kernel index
+    # allocate arena slot
     arenaid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
     if arenaid >= naccdmax_in:
       wp.printf("CCD arena overflow - please increase naccdmax to %u\n", arenaid)
@@ -1222,7 +1223,7 @@ def ccd_kernel_builder(
       worldid,
     )
 
-    # Construct EPA arrays from arena using arenaid-based offset
+    # construct epa arrays from arena
     # multicontact inputs first (epa_vert1, epa_vert2, epa_vert_index1, epa_vert_index2, epa_face)
     base_offset = arenaid * wp.static(per_collision_size)
 
@@ -1251,7 +1252,7 @@ def ccd_kernel_builder(
       dtype=wp.vec3i,
       shape=(wp.static(epa_face_dim),),
     )
-    # Remaining EPA arrays (not used by multicontact - can be overwritten)
+    # remaining epa arrays
     epa_vert = wp.array(
       ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(epa_vert_offset)) * 4),
       dtype=wp.vec3,
@@ -1283,7 +1284,7 @@ def ccd_kernel_builder(
       shape=(wp.static(2 * MJ_MAX_EPAHORIZON),),
     )
 
-    # Construct multicontact arrays from arena
+    # construct multicontact arrays from arena
     multiccd_polygon = wp.array(
       ptr=arena_in.ptr + wp.uint64((base_offset + wp.static(multiccd_polygon_offset)) * 4),
       dtype=wp.vec3,
@@ -1462,7 +1463,7 @@ def convex_narrowphase(m: Model, d: Data):
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
   nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
-  # Reset CCD arena counter
+  # reset ccd arena counter
   d.nccd.zero_()
 
   # EPA and multiccd arrays are now constructed from d.arena inside kernels
