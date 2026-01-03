@@ -22,6 +22,8 @@ Example:
 """
 
 import inspect
+import os
+import re
 import sys
 from dataclasses import fields
 from typing import Sequence
@@ -161,7 +163,8 @@ def _main(argv: Sequence[str]):
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
 
-  with wp.ScopedDevice(_DEVICE.value):
+  device = wp.get_device(_DEVICE.value) if _DEVICE.value else wp.get_device()
+  with wp.ScopedDevice(device):
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
 
@@ -245,6 +248,29 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
 
 
 def main():
+  # Parse --device flag early to set CUDA_VISIBLE_DEVICES before warp import.
+  for i, arg in enumerate(sys.argv):
+    if arg == "--device" and i + 1 < len(sys.argv):
+      device = sys.argv[i + 1]
+      break
+    elif arg.startswith("--device="):
+      device = arg.split("=", 1)[1]
+      break
+  else:
+    device = None
+
+  # Ensure the requested CUDA device is visible to Warp.
+  if device and device.startswith("cuda:"):
+    match = re.match(r"cuda:(\d+)", device)
+    if match:
+      requested_idx = int(match.group(1))
+      current = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+      if current:
+        visible = [int(x.strip()) for x in current.split(",") if x.strip().isdigit()]
+        if requested_idx not in visible:
+          visible.append(requested_idx)
+          os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in sorted(visible))
+
   # absl flags assumes __main__ is the main running module for printing usage documentation
   # pyproject bin scripts break this assumption, so manually set argv and docstring
   sys.argv[0] = "mujoco_warp.testspeed"
