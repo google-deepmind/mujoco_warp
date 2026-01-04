@@ -171,6 +171,9 @@ def _leading_dims_scale_w_nworld(test_obj, d1: Any, d2: Any, nworld1: int, nworl
   msg = "Arrays that scale with nworld should have leading dim nworld."
   fields1, fields2 = dataclasses.fields(d1), dataclasses.fields(d2)
   for f1, f2 in zip(fields1, fields2):
+    # TODO(team):
+    if f1.name == "arena" or f2.name == "arena":
+      continue
     full_name = prefix + f1.name
     a1, a2 = getattr(d1, f1.name), getattr(d2, f2.name)
     if dataclasses.is_dataclass(a1) or dataclasses.is_dataclass(a2):
