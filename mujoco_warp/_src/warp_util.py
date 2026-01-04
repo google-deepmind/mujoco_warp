@@ -164,7 +164,7 @@ def nested_kernel(
   Args:
       f: The function to be registered as a kernel.
       enable_backward: If False, the backward pass will not be generated.
-      module: The :class:`warp.context.Module` to which the kernel belongs. Alternatively,
+      module: The :class:`warp.Module` to which the kernel belongs. Alternatively,
               if a string `"unique"` is provided, the kernel is assigned to a new module
               named after the kernel name and hash. If None, the module is inferred from
               the function's module.
