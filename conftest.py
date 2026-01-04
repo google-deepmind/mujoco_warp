@@ -29,6 +29,7 @@ def pytest_addoption(parser):
     help="run tests with cuda error checking",
   )
   parser.addoption("--lineinfo", action="store_true", default=False, help="add lineinfo to warp kernel")
+  parser.addoption("--optimization_level", action="store", default=None, type=int, help="set wp.config.optimization_level")
   parser.addoption(
     "--kernel_cache_dir",
     action="store",
@@ -47,3 +48,4 @@ def pytest_configure(config):
     wp.config.verify_cuda = True
   if config.getoption("--lineinfo"):
     wp.config.lineinfo = True
+  wp.config.optimization_level = config.getoption("--optimization_level")
