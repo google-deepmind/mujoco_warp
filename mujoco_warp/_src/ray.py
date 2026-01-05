@@ -185,7 +185,7 @@ def _ray_triangle(
 
 @wp.func
 def _ray_plane(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, wp.vec3]:
-  """Returns the distance at which a ray intersects with a plane."""
+  """Returns the distance and normal at which a ray intersects with a plane."""
   # map to local frame
   lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
@@ -202,7 +202,7 @@ def _ray_plane(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp
 
   # accept only within rendered rectangle
   if (size[0] <= 0.0 or wp.abs(p[0]) <= size[0]) and (size[1] <= 0.0 or wp.abs(p[1]) <= size[1]):
-    return x, wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+    return x, rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), quat)
   else:
     return -1.0, wp.vec3()
 
@@ -226,7 +226,7 @@ def _ray_sphere(pos: wp.vec3, dist_sqr: float, pnt: wp.vec3, vec: wp.vec3) -> Tu
 
 @wp.func
 def _ray_capsule(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, wp.vec3]:
-  """Returns the distance at which a ray intersects with a capsule."""
+  """Returns the distance and normal at which a ray intersects with a capsule."""
   # bounding sphere test
   ssz = size[0] + size[1]
   dist_sphere, normal_sphere = _ray_sphere(pos, ssz * ssz, pnt, vec)
@@ -292,14 +292,14 @@ def _ray_capsule(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: 
 
     # normalize, rotate into global frame
     normal = wp.normalize(normal)
-    normal = mat @ normal
+    normal = rot_vec_quat(normal, quat)
 
   return x, normal
 
 
 @wp.func
 def _ray_ellipsoid(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, wp.vec3]:
-  """Returns the distance at which a ray intersects with an ellipsoid."""
+  """Returns the distance and normal at which a ray intersects with an ellipsoid."""
   # map to local frame
   lpnt, lvec = _ray_map(pos, quat, pnt, vec)
 
@@ -323,14 +323,14 @@ def _ray_ellipsoid(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec
     # gradient of ellipsoid function
     normal = wp.cw_mul(s, l)
     normal = wp.normalize(normal)
-    normal = mat @ normal
+    normal = rot_vec_quat(normal, quat)
 
   return sol, normal
 
 
 @wp.func
 def _ray_cylinder(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, wp.vec3]:
-  """Returns the distance at which a ray intersects with a cylinder."""
+  """Returns the distance and normal at which a ray intersects with a cylinder."""
   # bounding sphere test
   ssz = size[0] * size[0] + size[1] * size[1]
   dist_sphere, normal_sphere = _ray_sphere(pos, ssz, pnt, vec)
@@ -384,7 +384,7 @@ def _ray_cylinder(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec:
     else:
       normal = wp.vec3(0.0, 0.0, float(part))
 
-    normal = mat @ normal
+    normal = rot_vec_quat(normal, quat)
 
   return x, normal
 
@@ -394,7 +394,7 @@ _IFACE = wp.types.matrix((3, 2), dtype=int)(1, 2, 0, 2, 0, 1)
 
 @wp.func
 def _ray_box(pos: wp.vec3, quat: wp.quat, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3) -> Tuple[float, vec6, wp.vec3]:
-  """Returns the distance at which a ray intersects with a box."""
+  """Returns the distance, per side information, and normal at which a ray intersects with a box."""
   all = vec6(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
 
   # bounding sphere test
@@ -631,7 +631,7 @@ def ray_mesh(
   pnt: wp.vec3,
   vec: wp.vec3,
 ) -> Tuple[float, wp.vec3]:
-  """Returns the distance and geomid for ray mesh intersections."""
+  """Returns the distance and normal for ray mesh intersections."""
   pnt, vec = _ray_map(pos, quat, pnt, vec)
 
   # compute orthogonal basis vectors
@@ -683,7 +683,7 @@ def ray_mesh(
       x = dist
       normal = normal_tri
 
-  normal = mat @ normal
+  normal = rot_vec_quat(normal, quat)
 
   return x, normal
 
