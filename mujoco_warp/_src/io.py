@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import dataclasses
+import warnings
 from typing import Any, Optional, Sequence, Union
 
 import mujoco
@@ -152,6 +153,21 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   ):
     if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
       raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
+
+  def _check_friction(name: str, id_: int, condim: int, friction, checks):
+    for min_condim, indices in checks:
+      if condim >= min_condim:
+        for idx in indices:
+          if friction[idx] < types.MJ_MINMU:
+            warnings.warn(
+              f"{name} {id_}: friction[{idx}] ({friction[idx]}) < MJ_MINMU ({types.MJ_MINMU}) with condim={condim} may cause NaN"
+            )
+
+  for geomid in range(mjm.ngeom):
+    _check_friction("geom", geomid, mjm.geom_condim[geomid], mjm.geom_friction[geomid], [(3, [0]), (4, [1]), (6, [2])])
+
+  for pairid in range(mjm.npair):
+    _check_friction("pair", pairid, mjm.pair_dim[pairid], mjm.pair_friction[pairid], [(3, [0]), (4, [1, 2]), (6, [3, 4])])
 
   # create opt
   opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}

@@ -882,26 +882,27 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
 
   def test_min_friction(self):
-    _, _, _, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body>
-          <geom type="sphere" size=".1" friction="0 0 0"/>
-          <joint type="slide"/>
-        </body>
-        <body>
-          <geom type="sphere" size=".1" friction="0 0 0"/>
-          <joint type="slide"/>
-        </body>
-      </worldbody>
-      <keyframe>
-        <key qpos="0 .1"/>
-      </keyframe>
-    </mujoco>
-    """,
-      keyframe=0,
-    )
+    with self.assertWarns(UserWarning):
+      _, _, _, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1" friction="0 0 0"/>
+            <joint type="slide"/>
+          </body>
+          <body>
+            <geom type="sphere" size=".1" friction="0 0 0"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 .1"/>
+        </keyframe>
+      </mujoco>
+      """,
+        keyframe=0,
+      )
 
     self.assertEqual(d.nacon.numpy()[0], 1)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)
