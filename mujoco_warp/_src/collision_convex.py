@@ -249,7 +249,7 @@ def ccd_hfield_kernel_builder(
     # Data in:
     naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xquat_in: wp.array2d(dtype=wp.quat),
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
