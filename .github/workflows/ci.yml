@@ -65,10 +65,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install uv
-          uv pip install --system -e .[dev,cpu]
+          uv sync --extra dev --extra cpu
       - name: Test with pytest
         run: |
-          pytest -n 4
+          uv run pytest -n 4
 
   kernel_analyzer:
     name: Kernel analyzer
