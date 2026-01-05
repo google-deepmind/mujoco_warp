@@ -297,7 +297,7 @@ def ccd_hfield_kernel_builder(
 
     # height field filter
     no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-      geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+      geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xquat_in, worldid, g1, g2
     )
     if no_hf_collision:
       return
@@ -343,7 +343,7 @@ def ccd_hfield_kernel_builder(
       mesh_polymapnum,
       mesh_polymap,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       geoms,
       worldid,
     )
@@ -1339,7 +1339,7 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_friction,
           d.naconmax,
           d.geom_xpos,
-          d.geom_xmat,
+          d.geom_xquat,
           d.collision_pair,
           d.collision_pairid,
           d.collision_worldid,
