@@ -15,7 +15,7 @@
 
 import warp as wp
 
-collect_ignore = ["benchmark/mujoco_menagerie"]
+collect_ignore = ["../benchmark/mujoco_menagerie"]
 
 
 def pytest_addoption(parser):
