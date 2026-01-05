@@ -569,10 +569,10 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_qpos0_modification(self):
     """Test set_const recomputes fields after qpos0 modification."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="link1" pos="0 0 0">
+        <body name="link1">
           <joint name="j1" type="hinge" axis="0 0 1"/>
           <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
           <site name="s1" pos="0.1 0 0"/>
@@ -591,11 +591,6 @@ class IOTest(parameterized.TestCase):
       </tendon>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     mjm.qpos0[:] = [0.3, 0.5]
     m.qpos0.numpy()[0, :] = [0.3, 0.5]
@@ -603,16 +598,16 @@ class IOTest(parameterized.TestCase):
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
-    np.testing.assert_allclose(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, rtol=1e-3)
-    np.testing.assert_allclose(m.tendon_length0.numpy()[0], mjm.tendon_length0, rtol=1e-4)
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+    _assert_eq(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, "tendon_invweight0")
+    _assert_eq(m.tendon_length0.numpy()[0], mjm.tendon_length0, "tendon_length0")
 
   def test_set_const_body_mass_modification(self):
     """Test set_const recomputes fields after body_mass modification."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="link1" pos="0 0 0">
+        <body name="link1">
           <joint name="j1" type="hinge" axis="0 0 1"/>
           <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
           <body name="link2" pos="0.5 0 0">
@@ -627,11 +622,6 @@ class IOTest(parameterized.TestCase):
       </actuator>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     new_mass = 3.0
     mjm.body_mass[1] = new_mass
@@ -645,11 +635,11 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
     _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
-    np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], rtol=1e-4)
+    _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
 
   def test_set_const_freejoint(self):
     """Test set_const with freejoint (6 DOFs with special averaging)."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
         <body name="floating" pos="0 0 1">
@@ -659,11 +649,6 @@ class IOTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     new_mass = 5.0
     mjm.body_mass[1] = new_mass
@@ -674,26 +659,21 @@ class IOTest(parameterized.TestCase):
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
-    np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], rtol=1e-3)
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+    _assert_eq(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], "body_invweight0")
 
   def test_set_const_balljoint(self):
     """Test set_const with ball joint (3 DOFs with averaging)."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="arm" pos="0 0 0">
+        <body name="arm">
           <joint name="ball" type="ball"/>
           <geom name="box" type="box" size="0.1 0.2 0.3" mass="2.0"/>
         </body>
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     new_inertia = np.array([0.1, 0.2, 0.3])
     mjm.body_inertia[1] = new_inertia
@@ -704,54 +684,48 @@ class IOTest(parameterized.TestCase):
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
 
   def test_set_const_static_body(self):
     """Test set_const with static body (welded to world)."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
         <body name="static_body" pos="1 0 0">
           <geom name="static_geom" type="box" size="0.1 0.1 0.1" mass="1.0"/>
         </body>
-        <body name="dynamic_body" pos="0 0 0">
+        <body name="dynamic_body">
           <joint name="slide" type="slide" axis="1 0 0"/>
           <geom name="dynamic_geom" type="sphere" size="0.1" mass="2.0"/>
         </body>
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    np.testing.assert_allclose(m.body_invweight0.numpy()[0, 1], [0.0, 0.0], atol=1e-6)
+    _assert_eq(m.body_invweight0.numpy()[0, 1], [0.0, 0.0], "body_invweight0")
     self.assertGreater(m.body_invweight0.numpy()[0, 2, 0], 0.0)
-    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
 
   def test_set_const_preserves_qpos(self):
     """Test that qpos is restored after set_const."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="mass" pos="0 0 0">
+        <body name="mass">
           <joint name="slide" type="slide" axis="1 0 0"/>
           <geom name="mass_geom" type="sphere" size="0.1" mass="1.0"/>
         </body>
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
+
+    # Set qpos to a specific value
     mjd.qpos[0] = 0.5
     mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
+    d.qpos.numpy()[0, 0] = 0.5
 
     qpos_before = d.qpos.numpy().copy()
     mjwarp.set_const(m, d)
@@ -760,10 +734,10 @@ class IOTest(parameterized.TestCase):
 
   def test_set_fixed_body_subtreemass(self):
     """Test body_subtreemass accumulation for multi-level tree."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="root" pos="0 0 0">
+        <body name="root">
           <joint name="j1" type="hinge" axis="0 0 1"/>
           <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
           <body name="child1" pos="0.5 0 0">
@@ -782,11 +756,6 @@ class IOTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     # Modify body masses and recompute
     mjm.body_mass[1] = 10.0  # root
@@ -814,10 +783,10 @@ class IOTest(parameterized.TestCase):
 
   def test_set_fixed_ngravcomp(self):
     """Test ngravcomp counting with gravcomp bodies."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="body1" pos="0 0 0" gravcomp="1">
+        <body name="body1" gravcomp="1">
           <joint name="j1" type="hinge" axis="0 0 1"/>
           <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
         </body>
@@ -832,11 +801,6 @@ class IOTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
@@ -846,7 +810,7 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_camera_light_positions(self):
     """Test camera and light reference position computations."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
         <body name="body1" pos="1 2 3">
@@ -862,28 +826,23 @@ class IOTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    np.testing.assert_allclose(m.cam_pos0.numpy()[0, 0], mjm.cam_pos0[0], rtol=1e-5)
-    np.testing.assert_allclose(m.cam_poscom0.numpy()[0, 0], mjm.cam_poscom0[0], rtol=1e-5)
-    np.testing.assert_allclose(m.cam_mat0.numpy()[0, 0].flatten(), mjm.cam_mat0[0], rtol=1e-5)
-    np.testing.assert_allclose(m.light_pos0.numpy()[0, 0], mjm.light_pos0[0], rtol=1e-5)
-    np.testing.assert_allclose(m.light_poscom0.numpy()[0, 0], mjm.light_poscom0[0], rtol=1e-5)
-    np.testing.assert_allclose(m.light_dir0.numpy()[0, 0], mjm.light_dir0[0], rtol=1e-5)
+    _assert_eq(m.cam_pos0.numpy()[0, 0], mjm.cam_pos0[0], "cam_pos0")
+    _assert_eq(m.cam_poscom0.numpy()[0, 0], mjm.cam_poscom0[0], "cam_poscom0")
+    _assert_eq(m.cam_mat0.numpy()[0, 0].flatten(), mjm.cam_mat0[0], "cam_mat0")
+    _assert_eq(m.light_pos0.numpy()[0, 0], mjm.light_pos0[0], "light_pos0")
+    _assert_eq(m.light_poscom0.numpy()[0, 0], mjm.light_poscom0[0], "light_poscom0")
+    _assert_eq(m.light_dir0.numpy()[0, 0], mjm.light_dir0[0], "light_dir0")
 
   def test_set_const_idempotent(self):
     """Test calling set_const twice gives same results."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    _, _, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
-        <body name="link1" pos="0 0 0">
+        <body name="link1">
           <joint name="j1" type="hinge" axis="0 0 1"/>
           <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
           <body name="link2" pos="0.5 0 0">
@@ -897,11 +856,6 @@ class IOTest(parameterized.TestCase):
       </actuator>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     mjwarp.set_const(m, d)
     dof_invweight0_1 = m.dof_invweight0.numpy().copy()
@@ -917,7 +871,7 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_full_pipeline(self):
     """Test complete set_const matches MuJoCo for complex model."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, d = test_data.fixture(xml="""
     <mujoco>
       <worldbody>
         <body name="torso" pos="0 0 1">
@@ -951,11 +905,6 @@ class IOTest(parameterized.TestCase):
       </actuator>
     </mujoco>
     """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd)
 
     mjm.qpos0[7:11] = [0.9, 0.1, 0.1, 0.1]
     mjm.qpos0[11] = 0.5
@@ -971,15 +920,24 @@ class IOTest(parameterized.TestCase):
     mjwarp.set_const(m, d)
 
     _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
-    np.testing.assert_allclose(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, rtol=1e-3)
-    np.testing.assert_allclose(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, rtol=1e-3, atol=1e-10)
-    np.testing.assert_allclose(m.tendon_length0.numpy()[0], mjm.tendon_length0, rtol=1e-4)
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+    _assert_eq(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, "tendon_invweight0")
+    _assert_eq(m.tendon_length0.numpy()[0], mjm.tendon_length0, "tendon_length0")
     _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
 
     for i in range(mjm.nbody):
-      np.testing.assert_allclose(
-        m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], rtol=1e-3, err_msg=f"body_invweight0 mismatch for body {i}"
-      )
+      _assert_eq(m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], f"body_invweight0[{i}]")
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  def test_set_const_graph_capture(self):
+    """Test that set_const_0 is compatible with CUDA graph capture."""
+    _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+
+    with wp.ScopedCapture() as capture:
+      mjwarp.set_const_0(m, d)
+      # TODO(team): set_const_fixed
+
+    wp.capture_launch(capture.graph)
 
 
 if __name__ == "__main__":

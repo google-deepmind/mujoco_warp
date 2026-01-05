@@ -1328,19 +1328,27 @@ def set_const_fixed(m: types.Model, d: types.Data):
 
   @nested_kernel(module="unique", enable_backward=False)
   def accumulate_subtreemass(
-    bodyid: int,
     body_parentid: wp.array(dtype=int),
     body_subtreemass_io: wp.array2d(dtype=float),
+    body_tree_: wp.array(dtype=int),
   ):
-    worldid = wp.tid()
+    worldid, nodeid = wp.tid()
     body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
+    bodyid = body_tree_[nodeid]
     parentid = body_parentid[bodyid]
-    body_subtreemass_io[body_subtreemass_id, parentid] += body_subtreemass_io[body_subtreemass_id, bodyid]
+    if bodyid != 0:
+      wp.atomic_add(body_subtreemass_io, body_subtreemass_id, parentid, body_subtreemass_io[body_subtreemass_id, bodyid])
 
   wp.launch(init_subtreemass, dim=(d.nworld, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
-  for bodyid in range(m.nbody - 1, 0, -1):
-    wp.launch(accumulate_subtreemass, dim=d.nworld, inputs=[bodyid, m.body_parentid], outputs=[m.body_subtreemass])
+  for i in reversed(range(len(m.body_tree))):
+    body_tree = m.body_tree[i]
+    wp.launch(
+      accumulate_subtreemass,
+      dim=(d.nworld, body_tree.size),
+      inputs=[m.body_parentid, m.body_subtreemass, body_tree],
+    )
 
+  # TODO(team): refactor for graph capture compatibility
   body_gravcomp_np = m.body_gravcomp.numpy()
   m.ngravcomp = int((body_gravcomp_np > 0.0).any(axis=0).sum())
 
@@ -1353,8 +1361,8 @@ def set_const_0(m: types.Model, d: types.Data):
     - dof_invweight0: inverse inertia for DOFs
     - body_invweight0: inverse spatial inertia for bodies
     - tendon_invweight0: inverse weight for tendons
-    - cam_pos0, cam_poscom0, cam_mat0: camera reference positions
-    - light_pos0, light_poscom0, light_dir0: light reference positions
+    - cam_pos0, cam_poscom0, cam_mat0: camera references
+    - light_pos0, light_poscom0, light_dir0: light references
     - actuator_acc0: acceleration from unit actuator force
 
   Args:
@@ -1365,16 +1373,14 @@ def set_const_0(m: types.Model, d: types.Data):
 
   @nested_kernel(module="unique", enable_backward=False)
   def copy_qpos0_to_qpos(
-    nq: int,
     qpos0: wp.array2d(dtype=float),
     qpos_out: wp.array2d(dtype=float),
   ):
-    worldid = wp.tid()
+    worldid, i = wp.tid()
     qpos0_id = worldid % qpos0.shape[0]
-    for i in range(nq):
-      qpos_out[worldid, i] = qpos0[qpos0_id, i]
+    qpos_out[worldid, i] = qpos0[qpos0_id, i]
 
-  wp.launch(copy_qpos0_to_qpos, dim=d.nworld, inputs=[m.nq, m.qpos0], outputs=[d.qpos])
+  wp.launch(copy_qpos0_to_qpos, dim=(d.nworld, m.nq), inputs=[m.qpos0], outputs=[d.qpos])
 
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
@@ -1388,15 +1394,14 @@ def set_const_0(m: types.Model, d: types.Data):
 
   @nested_kernel(module="unique", enable_backward=False)
   def copy_tendon_length0(
-    tendon_length0_out: wp.array2d(dtype=float),
     ten_length_in: wp.array2d(dtype=float),
+    tendon_length0_out: wp.array2d(dtype=float),
   ):
     worldid, tenid = wp.tid()
     tendon_length0_id = worldid % tendon_length0_out.shape[0]
     tendon_length0_out[tendon_length0_id, tenid] = ten_length_in[worldid, tenid]
 
-  if m.ntendon > 0:
-    wp.launch(copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[], outputs=[m.tendon_length0, d.ten_length])
+  wp.launch(copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
   # dof_invweight0: computed per joint with averaging for multi-DOF joints
   # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])
@@ -1449,30 +1454,31 @@ def set_const_0(m: types.Model, d: types.Data):
       if jtype == int(types.JointType.FREE.value):
         # FREE joint: 6 DOFs, average first 3 (trans) and last 3 (rot) separately
         if dofid < dofadr + 3:
-          avg = (
+          avg = wp.static(1.0 / 3.0) * (
             dof_A_diag_in[dof_A_diag_id, dofadr + 0]
             + dof_A_diag_in[dof_A_diag_id, dofadr + 1]
             + dof_A_diag_in[dof_A_diag_id, dofadr + 2]
-          ) / 3.0
+          )
         else:
-          avg = (
+          avg = wp.static(1.0 / 3.0) * (
             dof_A_diag_in[dof_A_diag_id, dofadr + 3]
             + dof_A_diag_in[dof_A_diag_id, dofadr + 4]
             + dof_A_diag_in[dof_A_diag_id, dofadr + 5]
-          ) / 3.0
+          )
         dof_invweight0_out[dof_invweight0_id, dofid] = avg
       elif jtype == int(types.JointType.BALL.value):
         # BALL joint: 3 DOFs, average all
-        avg = (
+        avg = wp.static(1.0 / 3.0) * (
           dof_A_diag_in[dof_A_diag_id, dofadr + 0]
           + dof_A_diag_in[dof_A_diag_id, dofadr + 1]
           + dof_A_diag_in[dof_A_diag_id, dofadr + 2]
-        ) / 3.0
+        )
         dof_invweight0_out[dof_invweight0_id, dofid] = avg
       else:
         # HINGE/SLIDE: 1 DOF, no averaging
         dof_invweight0_out[dof_invweight0_id, dofid] = dof_A_diag_in[dof_A_diag_id, dofid]
 
+    # TODO(team): more efficient approach instead of looping over nv?
     for dofid in range(m.nv):
       wp.launch(set_unit_vector, dim=d.nworld, inputs=[dofid], outputs=[unit_vec])
       smooth.solve_m(m, d, result_vec, unit_vec)
@@ -1583,19 +1589,20 @@ def set_const_0(m: types.Model, d: types.Data):
         return
 
       # Average diagonal: trans = (A[0,0]+A[1,1]+A[2,2])/3, rot = (A[3,3]+A[4,4]+A[5,5])/3
-      inv_trans = (
+      inv_trans = wp.static(1.0 / 3.0) * (
         body_A_diag_in[body_A_diag_id, bodyid, 0]
         + body_A_diag_in[body_A_diag_id, bodyid, 1]
         + body_A_diag_in[body_A_diag_id, bodyid, 2]
-      ) / 3.0
-      inv_rot = (
+      )
+      inv_rot = wp.static(1.0 / 3.0) * (
         body_A_diag_in[body_A_diag_id, bodyid, 3]
         + body_A_diag_in[body_A_diag_id, bodyid, 4]
         + body_A_diag_in[body_A_diag_id, bodyid, 5]
-      ) / 3.0
+      )
 
       body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
 
+    # TODO(team): more efficient approach instead of nested iterations?
     for bodyid in range(1, m.nbody):
       for row_idx in range(6):
         wp.launch(
@@ -1631,21 +1638,7 @@ def set_const_0(m: types.Model, d: types.Data):
       outputs=[m.body_invweight0],
     )
   else:
-
-    @nested_kernel(module="unique", enable_backward=False)
-    def zero_body_invweight0(
-      body_invweight0_out: wp.array2d(dtype=wp.vec2),
-    ):
-      worldid, bodyid = wp.tid()
-      body_invweight0_id = worldid % body_invweight0_out.shape[0]
-      body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(0.0, 0.0)
-
-    wp.launch(
-      zero_body_invweight0,
-      dim=(d.nworld, m.nbody),
-      inputs=[],
-      outputs=[m.body_invweight0],
-    )
+    m.body_invweight0.zero_()
 
   # tendon_invweight0[t] = J_t * inv(M) * J_t'
   if m.ntendon > 0:
@@ -1713,13 +1706,12 @@ def set_const_0(m: types.Model, d: types.Data):
       cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, bodyid]
     cam_mat0_out[cam_pos0_id, camid] = cam_xmat_in[worldid, camid]
 
-  if m.ncam > 0:
-    wp.launch(
-      compute_cam_pos0,
-      dim=(d.nworld, m.ncam),
-      inputs=[m.cam_bodyid, m.cam_targetbodyid, d.cam_xpos, d.cam_xmat, d.xpos, d.subtree_com],
-      outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
-    )
+  wp.launch(
+    compute_cam_pos0,
+    dim=(d.nworld, m.ncam),
+    inputs=[m.cam_bodyid, m.cam_targetbodyid, d.cam_xpos, d.cam_xmat, d.xpos, d.subtree_com],
+    outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
+  )
 
   @nested_kernel(module="unique", enable_backward=False)
   def compute_light_pos0(
@@ -1746,13 +1738,12 @@ def set_const_0(m: types.Model, d: types.Data):
       light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, bodyid]
     light_dir0_out[light_pos0_id, lightid] = light_xdir_in[worldid, lightid]
 
-  if m.nlight > 0:
-    wp.launch(
-      compute_light_pos0,
-      dim=(d.nworld, m.nlight),
-      inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
-      outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
-    )
+  wp.launch(
+    compute_light_pos0,
+    dim=(d.nworld, m.nlight),
+    inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
+    outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
+  )
 
   # actuator_acc0[i] = ||inv(M) * actuator_moment[i]|| - acceleration from unit actuator force
   if m.nu > 0 and m.nv > 0:
@@ -1815,12 +1806,12 @@ def set_const(m: types.Model, d: types.Data):
 
   For selective updates, use the sub-functions directly based on what changed:
 
-    Modified Field    | Call
-    ------------------|------------------
-    body_mass         | set_const (both)
-    body_gravcomp     | set_const_fixed
-    body_inertia      | set_const_0
-    qpos0             | set_const_0
+    Modified Field  | Call
+    ----------------|------------------
+    body_mass       | set_const
+    body_gravcomp   | set_const_fixed
+    body_inertia    | set_const_0
+    qpos0           | set_const_0
 
   Computes:
     - Fixed quantities (via set_const_fixed):
@@ -1831,8 +1822,8 @@ def set_const(m: types.Model, d: types.Data):
       - dof_invweight0: inverse inertia for DOFs
       - body_invweight0: inverse spatial inertia for bodies
       - tendon_invweight0: inverse weight for tendons
-      - cam_pos0, cam_poscom0, cam_mat0: camera reference positions
-      - light_pos0, light_poscom0, light_dir0: light reference positions
+      - cam_pos0, cam_poscom0, cam_mat0: camera references
+      - light_pos0, light_poscom0, light_dir0: light references
       - actuator_acc0: acceleration from unit actuator force
 
   Skips: dof_M0, actuator_length0 (not in mjwarp).
