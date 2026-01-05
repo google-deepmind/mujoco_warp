@@ -618,8 +618,7 @@ def gjk(
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      vv = wp.dot(x_k, x_k)
-      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / vv) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / xnorm) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
