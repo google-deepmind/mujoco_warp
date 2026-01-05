@@ -1003,14 +1003,9 @@ def solve_init_efc(
 
 
 @wp.kernel
-def solve_init_jaref(
-  # Model:
-  nv: int,
+def solve_zero_jaref(
   # Data in:
   nefc_in: wp.array(dtype=int),
-  qacc_in: wp.array2d(dtype=float),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_aref_in: wp.array2d(dtype=float),
   # Data out:
   efc_Jaref_out: wp.array2d(dtype=float),
 ):
@@ -1019,11 +1014,45 @@ def solve_init_jaref(
   if efcid >= nefc_in[worldid]:
     return
 
-  jaref = float(0.0)
-  for i in range(nv):
-    jaref += efc_J_in[worldid, efcid, i] * qacc_in[worldid, i]
+  efc_Jaref_out[worldid, efcid] = 0.0
 
-  efc_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
+
+@cache_kernel
+def solve_init_jaref(nv: int, dofs_per_thread: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    qacc_in: wp.array2d(dtype=float),
+    efc_J_in: wp.array3d(dtype=float),
+    efc_aref_in: wp.array2d(dtype=float),
+    # Data out:
+    efc_Jaref_out: wp.array2d(dtype=float),
+  ):
+    worldid, efcid, dofstart = wp.tid()
+
+    if efcid >= nefc_in[worldid]:
+      return
+
+    jaref = float(0.0)
+
+    if wp.static(dofs_per_thread >= nv):
+      for i in range(wp.static(min(dofs_per_thread, nv))):
+        jaref += efc_J_in[worldid, efcid, i] * qacc_in[worldid, i]
+      efc_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
+
+    else:
+      for i in range(wp.static(dofs_per_thread)):
+        ii = dofstart * wp.static(dofs_per_thread) + i
+        if ii < nv:
+          jaref += efc_J_in[worldid, efcid, ii] * qacc_in[worldid, ii]
+
+      if dofstart == 0:
+        wp.atomic_add(efc_Jaref_out, worldid, efcid, jaref - efc_aref_in[worldid, efcid])
+      else:
+        wp.atomic_add(efc_Jaref_out, worldid, efcid, jaref)
+
+  return kernel
 
 
 @wp.kernel
@@ -2043,10 +2072,29 @@ def create_context(
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
+
+  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
+  # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
+
+  if m.nv > 50:
+    dofs_per_thread = 20
+  else:
+    dofs_per_thread = 50
+
+  threads_per_efc = ceil(m.nv / dofs_per_thread)
+  # we need to clear the jv array if we're doing atomic adds.
+  if threads_per_efc > 1:
+    wp.launch(
+      solve_zero_jaref,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc],
+      outputs=[d.efc.Jaref],
+    )
+
   wp.launch(
-    solve_init_jaref,
-    dim=(d.nworld, d.njmax),
-    inputs=[m.nv, d.nefc, d.qacc, d.efc.J, d.efc.aref],
+    solve_init_jaref(m.nv, dofs_per_thread),
+    dim=(d.nworld, d.njmax, threads_per_efc),
+    inputs=[d.nefc, d.qacc, d.efc.J, d.efc.aref],
     outputs=[d.efc.Jaref],
   )
 
