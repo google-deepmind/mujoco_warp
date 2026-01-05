@@ -898,9 +898,9 @@ def _epa_witness(
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), geom1.rot)
-    a = geom1.hfprism[3]
-    b = geom1.hfprism[4]
-    c = geom1.hfprism[5]
+    a = geom1.pos + rot_vec_quat(geom1.hfprism[3], geom1.rot)
+    b = geom1.pos + rot_vec_quat(geom1.hfprism[4], geom1.rot)
+    c = geom1.pos + rot_vec_quat(geom1.hfprism[5], geom1.rot)
 
     # TODO(kbayes): Support cases where geom2 is larger than the height field
     if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
@@ -908,7 +908,7 @@ def _epa_witness(
       margin = geom2.margin
       geom2.margin = 0.0
       geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-      sp = _support(geom2, geomtype1, x2)
+      sp = _support(geom2, geomtype2, x2)
       x2 = sp.point - (0.5 * margin + radius) * n
       geom2.size[0] = radius
       geom2.margin = margin

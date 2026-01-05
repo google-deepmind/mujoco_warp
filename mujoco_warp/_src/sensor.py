@@ -778,6 +778,7 @@ def sensor_pos(m: Model, d: Data):
     rangefinder_pnt = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
     rangefinder_vec = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
     rangefinder_geomid = wp.empty((d.nworld, m.nrangefinder), dtype=int)
+    rangefinder_normal = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
 
     # get position and direction
     wp.launch(
@@ -798,6 +799,7 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_rangefinder_bodyid,
       rangefinder_dist,
       rangefinder_geomid,
+      rangefinder_normal,
     )
 
   if m.sensor_e_potential:
@@ -2081,17 +2083,15 @@ def _sensor_touch(
       conray = -conray
 
     # add if ray-zone intersection (always true when contact.pos inside zone)
-    if (
-      ray.ray_geom(
-        site_xpos_in[worldid, objid],
-        site_xquat_in[worldid, objid],
-        site_size[objid],
-        contact_pos_in[conid],
-        conray,
-        site_type[objid],
-      )
-      >= 0.0
-    ):
+    dist, normal = ray.ray_geom(
+      site_xpos_in[worldid, objid],
+      site_xquat_in[worldid, objid],
+      site_size[objid],
+      contact_pos_in[conid],
+      conray,
+      site_type[objid],
+    )
+    if dist >= 0.0:
       adr = sensor_adr[sensorid]
       wp.atomic_add(sensordata_out[worldid], adr, normalforce)
 
