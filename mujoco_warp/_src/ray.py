@@ -475,20 +475,20 @@ def _ray_hfield(
   size = hfield_size[hid]
   adr = hfield_adr[hid]
 
-  normal_base = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), quat)
+  mat_col = rot_vec_quat(wp.vec3(0.0, 0.0, 1.0), quat)
 
   # compute size and pos of base box
   base_scale = size[3] * 0.5
   base_size = wp.vec3(size[0], size[1], base_scale)
-  base_pos = pos + normal_base * base_scale
+  base_pos = pos + mat_col * base_scale
 
   # compute size and pos of top box
   top_scale = size[2] * 0.5
   top_size = wp.vec3(size[0], size[1], top_scale)
-  top_pos = pos + normal_base * top_scale
+  top_pos = pos + mat_col * top_scale
 
   # init: intersection with base box
-  x, _ = _ray_box(base_pos, quat, base_size, pnt, vec)
+  x, _, normal_base = _ray_box(base_pos, quat, base_size, pnt, vec)
 
   # check top box: done if no intersection
   top_intersect, all, normal_top = _ray_box(top_pos, quat, top_size, pnt, vec)
