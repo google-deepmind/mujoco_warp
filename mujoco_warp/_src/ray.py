@@ -480,7 +480,7 @@ def ray_hfield(
   # compute size and pos of base box
   base_scale = size[3] * 0.5
   base_size = wp.vec3(size[0], size[1], base_scale)
-  base_pos = pos + mat_col * base_scale
+  base_pos = pos - mat_col * base_scale
 
   # compute size and pos of top box
   top_scale = size[2] * 0.5
@@ -493,7 +493,7 @@ def ray_hfield(
   # check top box: done if no intersection
   top_intersect, all, normal_top = ray_box(top_pos, mat, top_size, pnt, vec)
 
-  if top_intersect >= 0:
+  if top_intersect < 0.0:
     return x, normal_base
 
   # map to local frame
@@ -511,8 +511,8 @@ def ray_hfield(
   b1 = b0 + lvec * -safe_div(wp.dot(lvec, b0), wp.dot(lvec, lvec))
   b1 = wp.normalize(b1)
 
-  b2 = wp.cross(b1, lvec)
-  b2 = wp.normalize(b2)
+  b0 = wp.cross(b1, lvec)
+  b0 = wp.normalize(b0)
 
   # find ray segment intersecting top box
   seg = wp.vec2(0.0, top_intersect)
@@ -524,8 +524,14 @@ def ray_hfield(
   # project segment endpoints in horizontal plane, discretize
   dx = safe_div(2.0 * size[0], float(ncol - 1))
   dy = safe_div(2.0 * size[1], float(nrow - 1))
-  SX = wp.vec2(safe_div(lpnt[0] * seg[0] * lvec[0] + size[0], dx), safe_div(lpnt[0] * seg[1] * lvec[0] + size[0], dx))
-  SY = wp.vec2(safe_div(lpnt[1] + seg[0] * lvec[1] + size[1], dy), safe_div(lpnt[1] + seg[1] * lvec[1] + size[1], dy))
+  SX = wp.vec2(
+    safe_div(lpnt[0] + seg[0] * lvec[0] + size[0], dx),
+    safe_div(lpnt[0] + seg[1] * lvec[0] + size[0], dx),
+  )
+  SY = wp.vec2(
+    safe_div(lpnt[1] + seg[0] * lvec[1] + size[1], dy),
+    safe_div(lpnt[1] + seg[1] * lvec[1] + size[1], dy),
+  )
 
   # compute ranges, with +1 padding
   cmin = wp.max(0, int(wp.floor(wp.min(SX[0], SX[1])) - 1.0))
@@ -541,12 +547,22 @@ def ray_hfield(
   for r in range(rmin, rmax):
     for c in range(cmin, cmax):
       # first triangle
-      v0 = wp.vec3(dx * float(c) - size[0], dy * float(r) - size[1], hfield_data[adr + r * ncol + c] * size[2])
-      v1 = wp.vec3(
-        dx * float(c + 1) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2]
+      v0 = wp.vec3(
+        dx * float(c) - size[0],
+        dy * float(r) - size[1],
+        hfield_data[adr + r * ncol + c] * size[2],
       )
-      v2 = wp.vec3(dx * float(c + 1) - size[0], dy * float(r) - size[1], hfield_data[adr + r * ncol + (c + 1)] * size[2])
-      sol, normal_tri = _ray_triangle(v0, v1, v2, pnt, vec, b0, b1)
+      v1 = wp.vec3(
+        dx * float(c + 1) - size[0],
+        dy * float(r) - size[1],
+        hfield_data[adr + r * ncol + (c + 1)] * size[2],
+      )
+      v2 = wp.vec3(
+        dx * float(c + 1) - size[0],
+        dy * float(r + 1) - size[1],
+        hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2],
+      )
+      sol, normal_tri = _ray_triangle(v0, v1, v2, lpnt, lvec, b0, b1)
       if sol >= 0.0 and (x < 0.0 or sol < x):
         x = sol
         normal_local = normal_tri
@@ -557,7 +573,7 @@ def ray_hfield(
         dx * float(c + 1) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2]
       )
       v2 = wp.vec3(dx * float(c) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + c] * size[2])
-      sol, normal_tri = _ray_triangle(v0, v1, v2, pnt, vec, b0, b1)
+      sol, normal_tri = _ray_triangle(v0, v1, v2, lpnt, lvec, b0, b1)
       if sol >= 0.0 and (x < 0.0 or sol < x):
         x = sol
         normal_local = normal_tri
