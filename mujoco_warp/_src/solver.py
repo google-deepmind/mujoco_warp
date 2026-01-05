@@ -739,32 +739,65 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
 
 @wp.kernel
-def linesearch_prepare_gauss(
-  # Model:
-  nv: int,
+def linesearch_zero_quad_gauss(
   # Data in:
-  qfrc_smooth_in: wp.array2d(dtype=float),
-  efc_Ma_in: wp.array2d(dtype=float),
-  efc_search_in: wp.array2d(dtype=float),
-  efc_gauss_in: wp.array(dtype=float),
-  efc_mv_in: wp.array2d(dtype=float),
   efc_done_in: wp.array(dtype=bool),
   # Data out:
   efc_quad_gauss_out: wp.array(dtype=wp.vec3),
 ):
+  """Zero quad_gauss array before atomic adds."""
   worldid = wp.tid()
   if efc_done_in[worldid]:
     return
+  efc_quad_gauss_out[worldid] = wp.vec3(0.0, 0.0, 0.0)
 
-  quad_gauss_0 = efc_gauss_in[worldid]
-  quad_gauss_1 = float(0.0)
-  quad_gauss_2 = float(0.0)
-  for i in range(nv):
-    search = efc_search_in[worldid, i]
-    quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
-    quad_gauss_2 += 0.5 * search * efc_mv_in[worldid, i]
 
-  efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
+@cache_kernel
+def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
+  @nested_kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    qfrc_smooth_in: wp.array2d(dtype=float),
+    efc_Ma_in: wp.array2d(dtype=float),
+    efc_search_in: wp.array2d(dtype=float),
+    efc_gauss_in: wp.array(dtype=float),
+    efc_mv_in: wp.array2d(dtype=float),
+    efc_done_in: wp.array(dtype=bool),
+    # Data out:
+    efc_quad_gauss_out: wp.array(dtype=wp.vec3),
+  ):
+    worldid, dofstart = wp.tid()
+
+    if efc_done_in[worldid]:
+      return
+
+    quad_gauss_1 = float(0.0)
+    quad_gauss_2 = float(0.0)
+
+    if wp.static(dofs_per_thread >= nv):
+      for i in range(wp.static(nv)):
+        search = efc_search_in[worldid, i]
+        quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
+        quad_gauss_2 += 0.5 * search * efc_mv_in[worldid, i]
+
+      quad_gauss_0 = efc_gauss_in[worldid]
+      efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
+
+    else:
+      for i in range(wp.static(dofs_per_thread)):
+        ii = dofstart * wp.static(dofs_per_thread) + i
+        if ii < nv:
+          search = efc_search_in[worldid, ii]
+          quad_gauss_1 += search * (efc_Ma_in[worldid, ii] - qfrc_smooth_in[worldid, ii])
+          quad_gauss_2 += 0.5 * search * efc_mv_in[worldid, ii]
+
+      if dofstart == 0:
+        quad_gauss_0 = efc_gauss_in[worldid]
+        efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
+      else:
+        wp.atomic_add(efc_quad_gauss_out, worldid, wp.vec3(0.0, quad_gauss_1, quad_gauss_2))
+
+  return kernel
 
 
 @wp.kernel
@@ -939,10 +972,18 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+  if threads_per_efc > 1:
+    wp.launch(
+      linesearch_zero_quad_gauss,
+      dim=(d.nworld),
+      inputs=[d.efc.done],
+      outputs=[d.efc.quad_gauss],
+    )
+
   wp.launch(
-    linesearch_prepare_gauss,
-    dim=(d.nworld),
-    inputs=[m.nv, d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
+    linesearch_prepare_gauss(m.nv, dofs_per_thread),
+    dim=(d.nworld, threads_per_efc),
+    inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
     outputs=[d.efc.quad_gauss],
   )
 
