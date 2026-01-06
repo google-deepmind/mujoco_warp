@@ -793,7 +793,7 @@ def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
 
       if dofstart == 0:
         quad_gauss_0 = efc_gauss_in[worldid]
-        efc_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
+        wp.atomic_add(efc_quad_gauss_out, worldid, wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2))
       else:
         wp.atomic_add(efc_quad_gauss_out, worldid, wp.vec3(0.0, quad_gauss_1, quad_gauss_2))
 
