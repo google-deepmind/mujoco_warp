@@ -738,20 +738,6 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
   return kernel
 
 
-@wp.kernel
-def linesearch_zero_quad_gauss(
-  # Data in:
-  efc_done_in: wp.array(dtype=bool),
-  # Data out:
-  efc_quad_gauss_out: wp.array(dtype=wp.vec3),
-):
-  """Zero quad_gauss array before atomic adds."""
-  worldid = wp.tid()
-  if efc_done_in[worldid]:
-    return
-  efc_quad_gauss_out[worldid] = wp.vec3(0.0, 0.0, 0.0)
-
-
 @cache_kernel
 def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
   @nested_kernel(module="unique", enable_backward=False)
