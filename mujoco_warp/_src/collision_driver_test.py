@@ -278,6 +278,20 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "capsule_capsule_parallel_axes": """
+        <mujoco>
+          <worldbody>
+            <body pos="-0.09 0 0">
+              <joint type="free"/>
+              <geom size="0.1 1" type="capsule"/>
+            </body>
+            <body pos="0.09 0 0">
+              <joint type="free"/>
+              <geom size="0.1 1" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "sphere_sphere": """
         <mujoco>
           <worldbody>
