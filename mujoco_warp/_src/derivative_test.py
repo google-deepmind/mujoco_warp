@@ -100,6 +100,9 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
 
+    # necessary to compute actuator_moment sparsity because moment_rowadr is static
+    if m.opt.is_sparse:
+      mjw.transmission(m, d)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
