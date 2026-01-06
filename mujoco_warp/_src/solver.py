@@ -1002,21 +1002,6 @@ def solve_init_efc(
   efc_search_dot_out[worldid] = 0.0
 
 
-@wp.kernel
-def solve_zero_jaref(
-  # Data in:
-  nefc_in: wp.array(dtype=int),
-  # Data out:
-  efc_Jaref_out: wp.array2d(dtype=float),
-):
-  worldid, efcid = wp.tid()
-
-  if efcid >= nefc_in[worldid]:
-    return
-
-  efc_Jaref_out[worldid, efcid] = 0.0
-
-
 @cache_kernel
 def solve_init_jaref(nv: int, dofs_per_thread: int):
   @nested_kernel(module="unique", enable_backward=False)
@@ -2082,14 +2067,9 @@ def create_context(
     dofs_per_thread = 50
 
   threads_per_efc = ceil(m.nv / dofs_per_thread)
-  # we need to clear the jv array if we're doing atomic adds.
+  # we need to clear the jaref array if we're doing atomic adds.
   if threads_per_efc > 1:
-    wp.launch(
-      solve_zero_jaref,
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc],
-      outputs=[d.efc.Jaref],
-    )
+    d.efc.Jaref.zero_()
 
   wp.launch(
     solve_init_jaref(m.nv, dofs_per_thread),
