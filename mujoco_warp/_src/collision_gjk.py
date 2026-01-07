@@ -106,7 +106,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   if geomtype == GeomType.BOX:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
-    sp.point = quat_to_mat(geom.rot) @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
     sp.vertex_index = wp.where(tmp[0] > 0, 1, 0)
     sp.vertex_index += wp.where(tmp[1] > 0, 2, 0)
     sp.vertex_index += wp.where(tmp[2] > 0, 4, 0)

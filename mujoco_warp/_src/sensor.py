@@ -2175,7 +2175,7 @@ def _sensor_tactile(
 
   # position in other geom frame
   tmp = xpos - geom_xpos_in[worldid, geom]
-  lpos = wp.transpose(math.quat_to_mat(quat)) @ tmp
+  lpos = math.rot_vec_quat(tmp, math.quat_inv(quat))
 
   plugin_id = geom_plugin_index[geom]
 
