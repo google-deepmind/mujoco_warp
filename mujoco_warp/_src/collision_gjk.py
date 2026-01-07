@@ -30,6 +30,9 @@ FLOAT_MAX = 1e30
 MINVAL = 1e-15
 MIN_DIST = 1e-10
 
+INVALID_FACE = 1e29
+DELETED_FACE = 1e30
+
 # TODO(kbayes): write out formulas to derive these constants
 FACE_TOL = 0.99999872
 EDGE_TOL = 0.00159999931
@@ -66,10 +69,6 @@ class Polytope:
   face_norm2: wp.array(dtype=float)
   face_index: wp.array(dtype=int)
   nface: int
-
-  # TODO(kbayes): look into if a linear map actually improves performance
-  face_map: wp.array(dtype=int)
-  nmap: int
 
   # edges that make up the horizon when adding new vertices to polytope
   horizon: wp.array(dtype=int)
@@ -204,7 +203,6 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   pt.face_pr[idx] = r
 
   pt.face_norm2[idx] = wp.dot(r, r)
-  pt.face_index[idx] = -1
   return pt.face_norm2[idx]
 
 
@@ -860,20 +858,6 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
 
 
 @wp.func
-def _delete_face(pt: Polytope, face_id: int) -> int:
-  index = pt.face_index[face_id]
-  # delete from map
-  if index >= 0:
-    last_face = pt.face_map[pt.nmap - 1]
-    pt.face_map[index] = last_face
-    pt.face_index[last_face] = index
-    pt.nmap -= 1
-  # mark face as deleted from polytope
-  pt.face_index[face_id] = -2
-  return pt.nmap
-
-
-@wp.func
 def _epa_witness(
   pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
 ) -> Tuple[wp.vec3, wp.vec3, float]:
@@ -1034,15 +1018,9 @@ def _polytope2(
     pt.status = 1
     return pt, GJKResult()
 
-  # populate face map
-  for i in range(6):
-    pt.face_map[i] = i
-    pt.face_index[i] = i
-
   # set polytope counts
   pt.nvert = 5
   pt.nface = 6
-  pt.nmap = 6
   pt.status = 0
   return pt, GJKResult()
 
@@ -1134,15 +1112,9 @@ def _polytope3(
     pt.status = 11
     return pt
 
-  # populate face map
-  for i in range(6):
-    pt.face_map[i] = i
-    pt.face_index[i] = i
-
   # set polytope counts
   pt.nvert = 5
   pt.nface = 6
-  pt.nmap = 6
   pt.status = 0
   return pt
 
@@ -1209,15 +1181,9 @@ def _polytope4(
     pt.status = 12
     return pt, GJKResult()
 
-  # populate face map
-  for i in range(4):
-    pt.face_map[i] = i
-    pt.face_index[i] = i
-
   # set polytope counts
   pt.nvert = 4
   pt.nface = 4
-  pt.nmap = 4
   pt.status = 0
   return pt, GJKResult()
 
@@ -1238,22 +1204,23 @@ def _epa(
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
   upper2 = FLOAT_MAX
+  lower2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
   epsilon = wp.where(is_discrete, 1e-15, tolerance)
   cnt = int(1)
+  nvalid = pt.nface # number of potential faces for expanding the polytope
 
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
+    lower2 = float(1e28)
 
     # find the face closest to the origin (lower bound for penetration depth)
-    lower2 = float(FLOAT_MAX)
-    for i in range(pt.nmap):
-      face_idx = pt.face_map[i]
-      if pt.face_norm2[face_idx] < lower2:
-        idx = int(face_idx)
-        lower2 = float(pt.face_norm2[face_idx])
+    for i in range(pt.nface):
+      if pt.face_norm2[i] < lower2:
+        idx = i
+        lower2 = pt.face_norm2[i]
 
     # face not valid, return previous face
     if lower2 > upper2 or idx < 0:
@@ -1292,7 +1259,8 @@ def _epa(
       if found_repeated:
         break
 
-    pt.nmap = _delete_face(pt, idx)
+    nvalid -= 1
+    pt.face_norm2[idx] = DELETED_FACE
     pt.nhorizon = _add_edge(pt, pt.face[idx][0], pt.face[idx][1])
     pt.nhorizon = _add_edge(pt, pt.face[idx][1], pt.face[idx][2])
     pt.nhorizon = _add_edge(pt, pt.face[idx][2], pt.face[idx][0])
@@ -1302,11 +1270,15 @@ def _epa(
 
     # compute horizon for w
     for i in range(pt.nface):
-      if pt.face_index[i] == -2:
+      if pt.face_norm2[i] == DELETED_FACE:
         continue
 
-      if wp.dot(pt.face_pr[i], pt.vert[wi]) - pt.face_norm2[i] > 1e-10:
-        pt.nmap = _delete_face(pt, i)
+      face_pr = pt.face_pr[i]
+      invalid_face = pt.face_norm2[i] == INVALID_FACE
+      face_norm2 =  wp.where(invalid_face, wp.dot(face_pr, face_pr), pt.face_norm2[i])
+      if wp.dot(face_pr, pt.vert[wi]) - face_norm2 > 1e-10:
+        pt.face_norm2[i] = DELETED_FACE
+        nvalid = wp.where(invalid_face, nvalid, nvalid - 1)
         pt.nhorizon = _add_edge(pt, pt.face[i][0], pt.face[i][1])
         pt.nhorizon = _add_edge(pt, pt.face[i][1], pt.face[i][2])
         pt.nhorizon = _add_edge(pt, pt.face[i][2], pt.face[i][0])
@@ -1323,14 +1295,13 @@ def _epa(
 
       pt.nface += 1
 
-      # store face in map
       if dist2 >= lower2 and dist2 <= upper2:
-        pt.face_map[pt.nmap] = pt.nface - 1
-        pt.face_index[pt.nface - 1] = pt.nmap
-        pt.nmap += 1
+        nvalid += 1
+      else:
+        pt.face_norm2[pt.nface - 1] = INVALID_FACE
 
     # no face candidates left
-    if pt.nmap == 0 or idx == -1:
+    if nvalid == 0 or idx == -1:
       break
 
     # clear horizon
@@ -1342,6 +1313,7 @@ def _epa(
 
   # return from valid face
   if idx > -1:
+    pt.face_norm2[idx] = lower2
     x1, x2, dist = _epa_witness(pt, geom1, geom2, geomtype1, geomtype2, idx)
     return dist, x1, x2, idx
   return 0.0, wp.vec3(), wp.vec3(), -1
@@ -2239,8 +2211,6 @@ def ccd(
   face: wp.array(dtype=wp.vec3i),
   face_pr: wp.array(dtype=wp.vec3),
   face_norm2: wp.array(dtype=float),
-  face_index: wp.array(dtype=int),
-  face_map: wp.array(dtype=int),
   horizon: wp.array(dtype=int),
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """General convex collision detection via GJK/EPA."""
@@ -2291,7 +2261,6 @@ def ccd(
 
   pt = Polytope()
   pt.nface = 0
-  pt.nmap = 0
   pt.nvert = 0
   pt.nhorizon = 0
   pt.vert = vert
@@ -2302,8 +2271,6 @@ def ccd(
   pt.face = face
   pt.face_pr = face_pr
   pt.face_norm2 = face_norm2
-  pt.face_index = face_index
-  pt.face_map = face_map
   pt.horizon = horizon
 
   if result.dim == 2:

@@ -261,8 +261,6 @@ def ccd_hfield_kernel_builder(
     epa_face_in: wp.array2d(dtype=wp.vec3i),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
     # Data out:
     nacon_out: wp.array(dtype=int),
@@ -396,8 +394,6 @@ def ccd_hfield_kernel_builder(
     epa_face = epa_face_in[tid]
     epa_pr = epa_pr_in[tid]
     epa_norm2 = epa_norm2_in[tid]
-    epa_index = epa_index_in[tid]
-    epa_map = epa_map_in[tid]
     epa_horizon = epa_horizon_in[tid]
 
     collision_pairid = collision_pairid_in[tid]
@@ -469,8 +465,6 @@ def ccd_hfield_kernel_builder(
             epa_face,
             epa_pr,
             epa_norm2,
-            epa_index,
-            epa_map,
             epa_horizon,
           )
 
@@ -728,8 +722,6 @@ def ccd_kernel_builder(
     epa_face_in: wp.array2d(dtype=wp.vec3i),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
     multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
     multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
@@ -803,8 +795,6 @@ def ccd_kernel_builder(
       epa_face_in[tid],
       epa_pr_in[tid],
       epa_norm2_in[tid],
-      epa_index_in[tid],
-      epa_map_in[tid],
       epa_horizon_in[tid],
     )
 
@@ -947,8 +937,6 @@ def ccd_kernel_builder(
     epa_face_in: wp.array2d(dtype=wp.vec3i),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
     multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
     multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
@@ -1048,8 +1036,6 @@ def ccd_kernel_builder(
       epa_face_in,
       epa_pr_in,
       epa_norm2_in,
-      epa_index_in,
-      epa_map_in,
       epa_horizon_in,
       multiccd_polygon_in,
       multiccd_clipped_in,
@@ -1173,10 +1159,6 @@ def convex_narrowphase(m: Model, d: Data):
   epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
   # epa_norm2: epa_pr * epa_pr
   epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
-  # epa_index: index of face in polytope map
-  epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_map: status of faces in polytope
-  epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
   # epa_horizon: index pair (i j) of edges on horizon
   epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
 
@@ -1262,8 +1244,6 @@ def convex_narrowphase(m: Model, d: Data):
           epa_face,
           epa_pr,
           epa_norm2,
-          epa_index,
-          epa_map,
           epa_horizon,
         ],
         outputs=contact_outputs,
@@ -1350,8 +1330,6 @@ def convex_narrowphase(m: Model, d: Data):
           epa_face,
           epa_pr,
           epa_norm2,
-          epa_index,
-          epa_map,
           epa_horizon,
           multiccd_polygon,
           multiccd_clipped,
