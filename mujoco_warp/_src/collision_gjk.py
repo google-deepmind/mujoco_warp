@@ -1204,7 +1204,6 @@ def _epa(
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
   upper2 = FLOAT_MAX
-  lower2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
   epsilon = wp.where(is_discrete, 1e-15, tolerance)
@@ -1313,7 +1312,7 @@ def _epa(
 
   # return from valid face
   if idx > -1:
-    pt.face_norm2[idx] = lower2
+    pt.face_norm2[idx] = wp.dot(pt.face_pr[idx], pt.face_pr[idx])
     x1, x2, dist = _epa_witness(pt, geom1, geom2, geomtype1, geomtype2, idx)
     return dist, x1, x2, idx
   return 0.0, wp.vec3(), wp.vec3(), -1
