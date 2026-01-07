@@ -19,11 +19,13 @@ from mujoco_warp._src import benchmark
 class AlohaCloth(benchmark.BenchmarkSuite):
   """Aloha robot with a towel on the workbench."""
 
+  # TODO(team): update batch_size and nstep after sparsity lands
   path = "aloha_cloth/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
-  batch_size = 256
+  batch_size = 32
   nconmax = 920
-  njmax = 3606
+  njmax = 6200
+  nstep = 100
 
 
 class AlohaPot(benchmark.BenchmarkSuite):
@@ -80,11 +82,13 @@ class ApptronikApolloTerrain(benchmark.BenchmarkSuite):
 class Cloth(benchmark.BenchmarkSuite):
   """Draping of a cloth over the MuJoCo humanoid."""
 
+  # TODO(team): update batch_size and nstep after sparsity lands
   path = "cloth/scene.xml"
   params = benchmark.BenchmarkSuite.params + ("step.euler",)
-  batch_size = 256
+  batch_size = 32
   nconmax = 200
-  njmax = 600
+  njmax = 3000
+  nstep = 100
 
 
 class FrankaEmikaPanda(benchmark.BenchmarkSuite):
@@ -122,6 +126,7 @@ class ThreeHumanoids(benchmark.BenchmarkSuite):
 
 
 # attach a setup_cache to each test for one-time setup of benchmarks
+AlohaCloth.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 AlohaPot.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 AlohaSdf.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
 ApptronikApolloFlat.setup_cache = lambda s: benchmark.BenchmarkSuite.setup_cache(s)
