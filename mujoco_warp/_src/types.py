@@ -1643,9 +1643,9 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
-    xiquat: Cartesian orientation of body inertia                (nworld, nbody, 4)
-    geom_xquat: Cartesian orientation of geom                    (nworld, ngeom, 4)
-    site_xquat: Cartesian orientation of site                    (nworld, nsite, 4)
+    xiquat: Cartesian orientation of body inertia               (nworld, nbody, 4)
+    geom_xquat: Cartesian orientation of geom                   (nworld, ngeom, 4)
+    site_xquat: Cartesian orientation of site                   (nworld, nsite, 4)
   """
 
   solver_niter: array("nworld", int)
