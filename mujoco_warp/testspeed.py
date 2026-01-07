@@ -58,6 +58,7 @@ _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to sum
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
+_LOAD_MODULE_MAX_WORKERS = flags.DEFINE_integer("load_module_max_workers", None, "set wp.config.load_module_max_workers")
 
 
 def _print_table(matrix, headers, title):
@@ -157,6 +158,7 @@ def _main(argv: Sequence[str]):
   mujoco.mj_forward(mjm, mjd)
 
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+  wp.config.load_module_max_workers = _LOAD_MODULE_MAX_WORKERS.value
   wp.init()
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()

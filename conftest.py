@@ -36,6 +36,9 @@ def pytest_addoption(parser):
     default=None,
     help="directory path for storing compiled warp kernel cache",
   )
+  parser.addoption(
+    "--load_module_max_workers", action="store", default=None, type=int, help="set wp.config.load_module_max_workers"
+  )
 
 
 def pytest_configure(config):
@@ -49,3 +52,4 @@ def pytest_configure(config):
   if config.getoption("--lineinfo"):
     wp.config.lineinfo = True
   wp.config.optimization_level = config.getoption("--optimization_level")
+  wp.config.load_module_max_workers = config.getoption("--load_module_max_workers")
