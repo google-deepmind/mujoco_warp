@@ -126,6 +126,34 @@ class PassiveTest(parameterized.TestCase):
 
     self.assertLess(max_err, 5e-4)
 
+  def test_fluid_zero_mass_body(self):
+    """Tests fluid forces for zero mass body."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option density="1.2" viscosity="0.1"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="10 10 0.1"/>
+          <!-- empty body with freejoint but child has the mass -->
+          <body name="empty_root" pos="0 0 0.5">
+            <freejoint/>
+            <body name="child" pos="0.1 0 0">
+              <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+    """,
+    )
+
+    for arr in (d.qfrc_fluid, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
+    _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
+
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE), gravity=(0, DisableBit.GRAVITY)
   )
