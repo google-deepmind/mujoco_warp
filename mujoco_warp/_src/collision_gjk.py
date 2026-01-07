@@ -19,7 +19,6 @@ import warp as wp
 
 from .collision_primitive import Geom
 from .math import quat_inv
-from .math import quat_to_mat
 from .math import rot_vec_quat
 from .types import GeomType
 from .types import mat43
