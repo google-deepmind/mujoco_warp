@@ -696,6 +696,7 @@ class Option:
   enableflags: int
   sdf_initpoints: int
   sdf_iterations: int
+  impratio: float
   # warp only fields:
   impratio_invsqrt: array("*", float)
   is_sparse: bool
