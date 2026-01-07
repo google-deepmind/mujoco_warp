@@ -1208,7 +1208,7 @@ def _epa(
   pidx = int(-1)
   epsilon = wp.where(is_discrete, 1e-15, tolerance)
   cnt = int(1)
-  nvalid = pt.nface # number of potential faces for expanding the polytope
+  nvalid = pt.nface  # number of potential faces for expanding the polytope
 
   for _ in range(epa_iterations):
     pidx = idx
@@ -1274,7 +1274,7 @@ def _epa(
 
       face_pr = pt.face_pr[i]
       invalid_face = pt.face_norm2[i] == INVALID_FACE
-      face_norm2 =  wp.where(invalid_face, wp.dot(face_pr, face_pr), pt.face_norm2[i])
+      face_norm2 = wp.where(invalid_face, wp.dot(face_pr, face_pr), pt.face_norm2[i])
       if wp.dot(face_pr, pt.vert[wi]) - face_norm2 > 1e-10:
         pt.face_norm2[i] = DELETED_FACE
         nvalid = wp.where(invalid_face, nvalid, nvalid - 1)
