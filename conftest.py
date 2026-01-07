@@ -13,6 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
+import os
+
 import warp as wp
 
 collect_ignore = ["benchmark/mujoco_menagerie"]
@@ -28,9 +30,18 @@ def pytest_addoption(parser):
   )
   parser.addoption("--lineinfo", action="store_true", default=False, help="add lineinfo to warp kernel")
   parser.addoption("--optimization_level", action="store", default=None, type=int, help="set wp.config.optimization_level")
+  parser.addoption(
+    "--kernel_cache_dir",
+    action="store",
+    default=None,
+    help="directory path for storing compiled warp kernel cache",
+  )
 
 
 def pytest_configure(config):
+  kernel_cache_dir = config.getoption("--kernel_cache_dir")
+  if kernel_cache_dir:
+    wp.config.kernel_cache_dir = os.path.expanduser(kernel_cache_dir)
   if config.getoption("--cpu"):
     wp.set_device("cpu")
   if config.getoption("--verify_cuda"):

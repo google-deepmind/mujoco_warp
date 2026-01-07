@@ -618,8 +618,7 @@ def gjk(
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      vv = wp.dot(x_k, x_k)
-      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / vv) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / xnorm) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
@@ -906,9 +905,11 @@ def _epa_witness(
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = geom1.rot[:, 2]
-    a = geom1.hfprism[3]
-    b = geom1.hfprism[4]
-    c = geom1.hfprism[5]
+
+    # height field prism vertices in global frame
+    a = geom1.pos + geom1.rot @ geom1.hfprism[3]
+    b = geom1.pos + geom1.rot @ geom1.hfprism[4]
+    c = geom1.pos + geom1.rot @ geom1.hfprism[5]
 
     # TODO(kbayes): Support cases where geom2 is larger than the height field
     if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
@@ -916,7 +917,7 @@ def _epa_witness(
       margin = geom2.margin
       geom2.margin = 0.0
       geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-      sp = _support(geom2, geomtype1, x2)
+      sp = _support(geom2, geomtype2, x2)
       x2 = sp.point - (0.5 * margin + radius) * n
       geom2.size[0] = radius
       geom2.margin = margin
@@ -1266,13 +1267,14 @@ def _epa(
     # compute support point w from the closest face's normal
     lower = wp.sqrt(lower2)
     wi = pt.nvert
-    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, pt.face_pr[idx] / lower)
+    face_pr_normalized = pt.face_pr[idx] / lower
+    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr_normalized)
     geom1.index = i1
     geom2.index = i2
     pt.nvert += 1
 
     # upper bound for kth iteration
-    upper_k = wp.dot(pt.face_pr[idx], pt.vert[wi]) / lower
+    upper_k = wp.dot(face_pr_normalized, pt.vert[wi])
     if upper_k < upper:
       upper = upper_k
       upper2 = upper * upper

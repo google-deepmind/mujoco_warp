@@ -46,7 +46,7 @@ _FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspec
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
-_NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts for all worlds")
+_NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts per world")
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
@@ -274,16 +274,16 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
 
     if nacon and nefc:
       idx = 0
-      ncon_matrix, nefc_matrix = [], []
+      nacon_matrix, nefc_matrix = [], []
       for i in range(_NUM_BUCKETS.value):
         size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
-        ncon_arr = np.array(nacon[idx : idx + size])
+        nacon_arr = np.array(nacon[idx : idx + size])
         nefc_arr = np.array(nefc[idx : idx + size])
-        ncon_matrix.append([np.mean(ncon_arr), np.std(ncon_arr), np.min(ncon_arr), np.max(ncon_arr)])
+        nacon_matrix.append([np.mean(nacon_arr), np.std(nacon_arr), np.min(nacon_arr), np.max(nacon_arr)])
         nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
         idx += size
 
-      _print_table(ncon_matrix, ("mean", "std", "min", "max"), "ncon alloc")
+      _print_table(nacon_matrix, ("mean", "std", "min", "max"), "nacon alloc")
       _print_table(nefc_matrix, ("mean", "std", "min", "max"), "nefc alloc")
 
     if solver_niter:
