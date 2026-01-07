@@ -19,6 +19,7 @@ import warp as wp
 
 from .collision_gjk import ccd
 from .collision_gjk import multicontact
+from .collision_gjk import support
 from .collision_primitive import Geom
 from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
@@ -28,7 +29,6 @@ from .math import upper_trid_index
 from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR
-from .types import MJ_MAXVAL
 from .types import Data
 from .types import GeomType
 from .types import Model
@@ -85,8 +85,9 @@ assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid o
 @wp.func
 def _hfield_filter(
   # Model:
+  geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_aabb: wp.array3d(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   hfield_size: wp.array(dtype=wp.vec4),
@@ -109,6 +110,7 @@ def _hfield_filter(
   # geom info
   rbound_id = worldid % geom_rbound.shape[0]
   margin_id = worldid % geom_margin.shape[0]
+  size_id = worldid % geom_size.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
   mat1 = geom_xmat_in[worldid, g1]
@@ -135,47 +137,23 @@ def _hfield_filter(
   mat2 = geom_xmat_in[worldid, g2]
   mat = mat1T @ mat2
 
-  # aabb for geom in height field frame
-  xmax = -MJ_MAXVAL
-  ymax = -MJ_MAXVAL
-  zmax = -MJ_MAXVAL
-  xmin = MJ_MAXVAL
-  ymin = MJ_MAXVAL
-  zmin = MJ_MAXVAL
+  # create geom in height field frame for support function queries
+  geom2 = Geom()
+  geom2.pos = pos
+  geom2.rot = mat
+  geom2.size = geom_size[size_id, g2]
+  geom2.margin = 0.0  # margin handled separately
+  geom2.index = -1
 
-  aabb_id = worldid % geom_aabb.shape[0]
-  center2 = geom_aabb[aabb_id, g2, 0]
-  size2 = geom_aabb[aabb_id, g2, 1]
+  geomtype2 = geom_type[g2]
 
-  pos += mat1T @ center2
-
-  sign = wp.vec2(-1.0, 1.0)
-
-  for i in range(2):
-    for j in range(2):
-      for k in range(2):
-        corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-        corner_hf = mat @ corner_local
-
-        if corner_hf[0] > xmax:
-          xmax = corner_hf[0]
-        if corner_hf[1] > ymax:
-          ymax = corner_hf[1]
-        if corner_hf[2] > zmax:
-          zmax = corner_hf[2]
-        if corner_hf[0] < xmin:
-          xmin = corner_hf[0]
-        if corner_hf[1] < ymin:
-          ymin = corner_hf[1]
-        if corner_hf[2] < zmin:
-          zmin = corner_hf[2]
-
-  xmax += pos[0]
-  xmin += pos[0]
-  ymax += pos[1]
-  ymin += pos[1]
-  zmax += pos[2]
-  zmin += pos[2]
+  # use support functions for tight AABB bounds
+  xmax = support(geom2, geomtype2, wp.vec3(1.0, 0.0, 0.0)).point[0]
+  xmin = support(geom2, geomtype2, wp.vec3(-1.0, 0.0, 0.0)).point[0]
+  ymax = support(geom2, geomtype2, wp.vec3(0.0, 1.0, 0.0)).point[1]
+  ymin = support(geom2, geomtype2, wp.vec3(0.0, -1.0, 0.0)).point[1]
+  zmax = support(geom2, geomtype2, wp.vec3(0.0, 0.0, 1.0)).point[2]
+  zmin = support(geom2, geomtype2, wp.vec3(0.0, 0.0, -1.0)).point[2]
 
   # box-box test
   if (
@@ -213,7 +191,6 @@ def ccd_hfield_kernel_builder(
     geom_solref: wp.array2d(dtype=wp.vec2),
     geom_solimp: wp.array2d(dtype=vec5),
     geom_size: wp.array2d(dtype=wp.vec3),
-    geom_aabb: wp.array3d(dtype=wp.vec3),
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
@@ -295,7 +272,7 @@ def ccd_hfield_kernel_builder(
 
     # height field filter
     no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-      geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+      geom_type, geom_dataid, geom_size, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
     )
     if no_hf_collision:
       return
@@ -405,8 +382,24 @@ def ccd_hfield_kernel_builder(
     # process all prisms in subgrid
     count = int(0)
     for r in range(rmin, rmax):
-      nvert = int(0)
-      for c in range(cmin, cmax + 1):
+      # pre-initialize first 2 vertices
+      for init_i in range(2):
+        x = dx * float(cmin) - size[0]
+        y = dy * float(r + dr[init_i]) - size[1]
+        z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
+
+        prism[0] = prism[1]
+        prism[1] = prism[2]
+        prism[3] = prism[4]
+        prism[4] = prism[5]
+
+        prism[2, 0] = x
+        prism[5, 0] = x
+        prism[2, 1] = y
+        prism[5, 1] = y
+        prism[5, 2] = z
+
+      for c in range(cmin + 1, cmax + 1):
         # add both triangles from this cell
         for i in range(2):
           if count >= MJ_MAXCONPAIR:
@@ -431,11 +424,6 @@ def ccd_hfield_kernel_builder(
           prism[2, 1] = y
           prism[5, 1] = y
           prism[5, 2] = z
-
-          nvert += 1
-
-          if nvert <= 2:
-            continue
 
           # prism height test
           if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
@@ -1216,7 +1204,6 @@ def convex_narrowphase(m: Model, d: Data):
           m.geom_solref,
           m.geom_solimp,
           m.geom_size,
-          m.geom_aabb,
           m.geom_rbound,
           m.geom_friction,
           m.geom_margin,

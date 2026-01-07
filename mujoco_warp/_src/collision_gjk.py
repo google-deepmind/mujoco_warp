@@ -91,7 +91,7 @@ def _discrete_geoms(g1: int, g2: int) -> bool:
 
 
 @wp.func
-def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
+def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp = SupportPoint()
   sp.cached_index = -1
   sp.vertex_index = -1
@@ -212,12 +212,12 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
 def _epa_support(
   pt: Polytope, idx: int, geom1: Geom, geom2: Geom, geom1_type: int, geom2_type: int, dir: wp.vec3
 ) -> Tuple[int, int]:
-  sp = _support(geom1, geom1_type, dir)
+  sp = support(geom1, geom1_type, dir)
   pt.vert1[idx] = sp.point
   pt.vert_index1[idx] = sp.vertex_index
   index1 = sp.cached_index
 
-  sp = _support(geom2, geom2_type, -dir)
+  sp = support(geom2, geom2_type, -dir)
   pt.vert2[idx] = sp.point
   pt.vert_index2[idx] = sp.vertex_index
   index2 = sp.cached_index
@@ -596,13 +596,13 @@ def gjk(
     dir_neg = x_k / wp.sqrt(xnorm)
 
     # compute kth support point in geom1
-    sp = _support(geom1, geomtype1, -dir_neg)
+    sp = support(geom1, geomtype1, -dir_neg)
     simplex1[n] = sp.point
     geom1.index = sp.cached_index
     simplex_index1[n] = sp.vertex_index
 
     # compute kth support point in geom2
-    sp = _support(geom2, geomtype2, dir_neg)
+    sp = support(geom2, geomtype2, dir_neg)
     simplex2[n] = sp.point
     geom2.index = sp.cached_index
     simplex_index2[n] = sp.vertex_index
@@ -917,13 +917,13 @@ def _epa_witness(
       margin = geom2.margin
       geom2.margin = 0.0
       geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-      sp = _support(geom2, geomtype2, x2)
+      sp = support(geom2, geomtype2, x2)
       x2 = sp.point - (0.5 * margin + radius) * n
       geom2.size[0] = radius
       geom2.margin = margin
     else:
       x2 = wp.normalize(x2)
-      sp = _support(geom2, geomtype2, x2)
+      sp = support(geom2, geomtype2, x2)
       x2 = sp.point
 
     coordinates2 = _tri_affine_coord(a, b, c, x2)
@@ -2191,7 +2191,7 @@ def _inflate(
 
     if is_side:
       n = geom1.rot[:, 2]
-      sp = _support(geom2, geomtype2, x2)
+      sp = support(geom2, geomtype2, x2)
       x2 = sp.point - margin2 * n
 
       a = geom1.hfprism[3]
