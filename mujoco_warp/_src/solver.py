@@ -743,6 +743,85 @@ def _compute_efc_eval_pt_tiled(
   return wp.vec3(0.0)
 
 
+@wp.func
+def _compute_efc_eval_pt_3alphas(
+  efcid: int,
+  lo_alpha: float,
+  hi_alpha: float,
+  mid_alpha: float,
+  ne: int,
+  nf: int,
+  nacon: int,
+  impratio_invsqrt: float,
+  # Per-row data:
+  efc_type: int,
+  efc_id: int,
+  efc_D: float,
+  efc_frictionloss: float,
+  efc_Jaref: float,
+  efc_jv: float,
+  efc_quad: wp.vec3,
+  # Contact data (for elliptic):
+  contact_friction: types.vec5,
+  efc_address0: int,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
+):
+  """Compute (cost, gradient, hessian) for 3 alphas at once. Returns (lo, hi, mid) vec3 results."""
+  # Equality constraint - same quad for all alphas
+  if efcid < ne:
+    return (
+      _eval_pt(efc_quad, lo_alpha),
+      _eval_pt(efc_quad, hi_alpha),
+      _eval_pt(efc_quad, mid_alpha),
+    )
+
+  # Friction constraint - need to compute quad_f for each alpha
+  if efcid < ne + nf:
+    f = efc_frictionloss
+    rf = math.safe_div(f, efc_D)
+
+    x_lo = efc_Jaref + lo_alpha * efc_jv
+    quad_f_lo = _eval_frictionloss(x_lo, f, rf, efc_Jaref, efc_jv, efc_quad)
+
+    x_hi = efc_Jaref + hi_alpha * efc_jv
+    quad_f_hi = _eval_frictionloss(x_hi, f, rf, efc_Jaref, efc_jv, efc_quad)
+
+    x_mid = efc_Jaref + mid_alpha * efc_jv
+    quad_f_mid = _eval_frictionloss(x_mid, f, rf, efc_Jaref, efc_jv, efc_quad)
+
+    return (
+      _eval_pt(quad_f_lo, lo_alpha),
+      _eval_pt(quad_f_hi, hi_alpha),
+      _eval_pt(quad_f_mid, mid_alpha),
+    )
+
+  # Contact elliptic - need to call _eval_elliptic for each alpha
+  if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+    conid = efc_id
+    if conid >= nacon:
+      return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
+    if efcid != efc_address0:  # Not primary row
+      return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
+
+    return (
+      _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, lo_alpha),
+      _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, hi_alpha),
+      _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, mid_alpha),
+    )
+
+  # Limit/other constraint - same quad, check x < 0 for each alpha
+  x_lo = efc_Jaref + lo_alpha * efc_jv
+  x_hi = efc_Jaref + hi_alpha * efc_jv
+  x_mid = efc_Jaref + mid_alpha * efc_jv
+
+  r_lo = wp.where(x_lo < 0.0, _eval_pt(efc_quad, lo_alpha), wp.vec3(0.0))
+  r_hi = wp.where(x_hi < 0.0, _eval_pt(efc_quad, hi_alpha), wp.vec3(0.0))
+  r_mid = wp.where(x_mid < 0.0, _eval_pt(efc_quad, mid_alpha), wp.vec3(0.0))
+
+  return (r_lo, r_hi, r_mid)
+
+
 def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
   """Factory for tiled iterative linesearch kernel.
 
@@ -1018,24 +1097,17 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
                 quad1 = efc_quad_in[worldid, efc_addr1]
                 quad2 = efc_quad_in[worldid, efc_addr2]
 
-              local_lo += _compute_efc_eval_pt_tiled(
-                efcid, lo_next_alpha, ne, nf, nacon, impratio_invsqrt,
+              # Compute all 3 alphas at once, sharing constraint type checking
+              r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
+                efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
+                ne, nf, nacon, impratio_invsqrt,
                 efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
                 Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
                 contact_friction, efc_addr0, quad1, quad2,
               )
-              local_hi += _compute_efc_eval_pt_tiled(
-                efcid, hi_next_alpha, ne, nf, nacon, impratio_invsqrt,
-                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
-                contact_friction, efc_addr0, quad1, quad2,
-              )
-              local_mid += _compute_efc_eval_pt_tiled(
-                efcid, mid_alpha, ne, nf, nacon, impratio_invsqrt,
-                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
-                contact_friction, efc_addr0, quad1, quad2,
-              )
+              local_lo += r_lo
+              local_hi += r_hi
+              local_mid += r_mid
 
         # Reduce vec3 directly
         lo_tile = wp.tile(local_lo, preserve_type=True)
