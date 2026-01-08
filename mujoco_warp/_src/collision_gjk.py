@@ -1234,7 +1234,7 @@ def _epa(
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
-    lower2 = float(1e28)
+    lower2 = float(FLOAT_MAX)
 
     # find the face closest to the origin (lower bound for penetration depth)
     for i in range(pt.nface):
