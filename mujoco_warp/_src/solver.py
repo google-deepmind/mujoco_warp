@@ -2779,7 +2779,7 @@ def _solver_iteration(
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=32, block_dim=32)
+  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=64, block_dim=32)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
