@@ -2194,9 +2194,11 @@ def _inflate(
       sp = _support(geom2, geomtype2, x2)
       x2 = sp.point - margin2 * n
 
-      a = geom1.hfprism[3]
-      b = geom1.hfprism[4]
-      c = geom1.hfprism[5]
+      # height field prism vertices in global frame
+      a = geom1.pos + geom1.rot @ geom1.hfprism[3]
+      b = geom1.pos + geom1.rot @ geom1.hfprism[4]
+      c = geom1.pos + geom1.rot @ geom1.hfprism[5]
+
       coordinates = _tri_affine_coord(a, b, c, x2)
       if coordinates[0] > 0 and coordinates[1] > 0 and coordinates[2] > 0:
         x1 = coordinates[0] * a + coordinates[1] * b + coordinates[2] * c
