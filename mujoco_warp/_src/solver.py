@@ -781,6 +781,8 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
   TILE_SIZE = tile_size
   BLOCK_DIM = block_dim
   LS_ITERATIONS = ls_iterations
+  # Upper bound for alpha loop - ensures all threads do same number of iterations
+  ALPHA_UPPER = ((ls_iterations + block_dim - 1) // block_dim) * block_dim
 
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
@@ -819,8 +821,8 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
     nacon = nacon_in[0]
     efc_quad_gauss = efc_quad_gauss_in[worldid]
 
-    # Shared tile for all alpha costs - threads access via strided alphaid
-    alpha_costs = wp.tile_zeros(dtype=float, shape=LS_ITERATIONS, storage="shared")
+    # Shared tile for all alpha costs - sized to ALPHA_UPPER for uniform thread access
+    alpha_costs = wp.tile_zeros(dtype=float, shape=ALPHA_UPPER, storage="shared")
 
     # Process efc rows in tiles
     for tile_start in range(0, njmax, TILE_SIZE):
@@ -878,7 +880,8 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
             quad2 = efc_quad_in[worldid, efc_addr2]
 
           # Compute cost for each alpha this thread handles (strided by BLOCK_DIM)
-          for alphaid in range(tid, LS_ITERATIONS, BLOCK_DIM):
+          # Upper bound ensures all threads do same number of iterations
+          for alphaid in range(tid, ALPHA_UPPER, BLOCK_DIM):
             if alphaid < LS_ITERATIONS:
               alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
               cost = _compute_efc_cost_tiled(
@@ -889,7 +892,7 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
               alpha_costs[alphaid] = alpha_costs[alphaid] + cost
 
     # Write results for all alphas this thread handles
-    for alphaid in range(tid, LS_ITERATIONS, BLOCK_DIM):
+    for alphaid in range(tid, ALPHA_UPPER, BLOCK_DIM):
       if alphaid < LS_ITERATIONS:
         alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
         base_cost = _eval_cost(efc_quad_gauss, alpha)
