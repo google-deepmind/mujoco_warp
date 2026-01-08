@@ -774,15 +774,21 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
 
   Structure:
   1. All threads cooperatively load TILE_SIZE efc rows into shared memory
-  2. Shared tile stores costs for all LS_ITERATIONS alphas
-  3. Each thread handles ceil(ls_iterations / block_dim) alphas via strided access
+  2. Each thread handles up to 4 alphas (strided by block_dim) in registers
+  3. No inner loop - explicit unrolled computation for each alpha slot
   4. No reduction needed - each thread writes its own results
+
+  Constraint: block_dim >= ls_iterations / 4 (i.e., at most 4 alphas per thread)
   """
   TILE_SIZE = tile_size
   BLOCK_DIM = block_dim
   LS_ITERATIONS = ls_iterations
-  # Upper bound for alpha loop - ensures all threads do same number of iterations
-  ALPHA_UPPER = ((ls_iterations + block_dim - 1) // block_dim) * block_dim
+
+  # Compile-time flags: is each alpha slot ever possible?
+  SLOT0_POSSIBLE = True  # Always possible (tid < block_dim <= ls_iterations or partial)
+  SLOT1_POSSIBLE = BLOCK_DIM < LS_ITERATIONS
+  SLOT2_POSSIBLE = 2 * BLOCK_DIM < LS_ITERATIONS
+  SLOT3_POSSIBLE = 3 * BLOCK_DIM < LS_ITERATIONS
 
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
@@ -821,8 +827,35 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
     nacon = nacon_in[0]
     efc_quad_gauss = efc_quad_gauss_in[worldid]
 
-    # Shared tile for all alpha costs - sized to ALPHA_UPPER for uniform thread access
-    alpha_costs = wp.tile_zeros(dtype=float, shape=ALPHA_UPPER, storage="shared")
+    # Each thread handles up to 4 alphas (strided by BLOCK_DIM)
+    # Use wp.static to eliminate code for impossible slots at compile time
+
+    # Slot 0: always possible
+    alphaid0 = tid
+    valid0 = alphaid0 < LS_ITERATIONS
+    alpha0 = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid0) if valid0 else 0.0
+    cost0 = float(0.0)
+
+    # Slot 1: only if BLOCK_DIM < LS_ITERATIONS
+    if wp.static(SLOT1_POSSIBLE):
+      alphaid1 = tid + BLOCK_DIM
+      valid1 = alphaid1 < LS_ITERATIONS
+      alpha1 = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid1) if valid1 else 0.0
+      cost1 = float(0.0)
+
+    # Slot 2: only if 2*BLOCK_DIM < LS_ITERATIONS
+    if wp.static(SLOT2_POSSIBLE):
+      alphaid2 = tid + 2 * BLOCK_DIM
+      valid2 = alphaid2 < LS_ITERATIONS
+      alpha2 = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid2) if valid2 else 0.0
+      cost2 = float(0.0)
+
+    # Slot 3: only if 3*BLOCK_DIM < LS_ITERATIONS
+    if wp.static(SLOT3_POSSIBLE):
+      alphaid3 = tid + 3 * BLOCK_DIM
+      valid3 = alphaid3 < LS_ITERATIONS
+      alpha3 = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid3) if valid3 else 0.0
+      cost3 = float(0.0)
 
     # Process efc rows in tiles
     for tile_start in range(0, njmax, TILE_SIZE):
@@ -831,25 +864,25 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
 
       # ALL threads cooperatively load data into shared memory (coalesced)
       type_tile = wp.tile_load(
-        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       id_tile = wp.tile_load(
-        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       D_tile = wp.tile_load(
-        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       frictionloss_tile = wp.tile_load(
-        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       Jaref_tile = wp.tile_load(
-        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       jv_tile = wp.tile_load(
-        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       quad_tile = wp.tile_load(
-        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
+        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
 
       # Loop over all efc rows in this tile
@@ -879,26 +912,51 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
             quad1 = efc_quad_in[worldid, efc_addr1]
             quad2 = efc_quad_in[worldid, efc_addr2]
 
-          # Compute cost for each alpha this thread handles (strided by BLOCK_DIM)
-          # Upper bound ensures all threads do same number of iterations
-          for alphaid in range(tid, ALPHA_UPPER, BLOCK_DIM):
-            if alphaid < LS_ITERATIONS:
-              alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-              cost = _compute_efc_cost_tiled(
-                efcid, alpha, ne, nf, nacon, impratio_invsqrt,
+          # Compute cost for each alpha slot (unrolled, compile-time elimination)
+          if valid0:
+            cost0 += _compute_efc_cost_tiled(
+              efcid, alpha0, ne, nf, nacon, impratio_invsqrt,
+              efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
+              contact_friction, efc_addr0, quad1, quad2,
+            )
+          if wp.static(SLOT1_POSSIBLE):
+            if valid1:
+              cost1 += _compute_efc_cost_tiled(
+                efcid, alpha1, ne, nf, nacon, impratio_invsqrt,
                 efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
                 contact_friction, efc_addr0, quad1, quad2,
               )
-            else:
-              cost = 0.0
-            alpha_costs[alphaid] = alpha_costs[alphaid] + cost
+          if wp.static(SLOT2_POSSIBLE):
+            if valid2:
+              cost2 += _compute_efc_cost_tiled(
+                efcid, alpha2, ne, nf, nacon, impratio_invsqrt,
+                efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
+                contact_friction, efc_addr0, quad1, quad2,
+              )
+          if wp.static(SLOT3_POSSIBLE):
+            if valid3:
+              cost3 += _compute_efc_cost_tiled(
+                efcid, alpha3, ne, nf, nacon, impratio_invsqrt,
+                efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
+                contact_friction, efc_addr0, quad1, quad2,
+              )
 
-    # Write results for all alphas this thread handles
-    for alphaid in range(tid, ALPHA_UPPER, BLOCK_DIM):
-      if alphaid < LS_ITERATIONS:
-        alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-        base_cost = _eval_cost(efc_quad_gauss, alpha)
-        cost_out[worldid, alphaid] = base_cost + alpha_costs[alphaid]
+    # Write results for each valid alpha (compile-time elimination for impossible slots)
+    if valid0:
+      base_cost0 = _eval_cost(efc_quad_gauss, alpha0)
+      cost_out[worldid, alphaid0] = base_cost0 + cost0
+    if wp.static(SLOT1_POSSIBLE):
+      if valid1:
+        base_cost1 = _eval_cost(efc_quad_gauss, alpha1)
+        cost_out[worldid, alphaid1] = base_cost1 + cost1
+    if wp.static(SLOT2_POSSIBLE):
+      if valid2:
+        base_cost2 = _eval_cost(efc_quad_gauss, alpha2)
+        cost_out[worldid, alphaid2] = base_cost2 + cost2
+    if wp.static(SLOT3_POSSIBLE):
+      if valid3:
+        base_cost3 = _eval_cost(efc_quad_gauss, alpha3)
+        cost_out[worldid, alphaid3] = base_cost3 + cost3
 
   return kernel
 
