@@ -30,9 +30,6 @@ FLOAT_MAX = 1e30
 MINVAL = 1e-15
 MIN_DIST = 1e-10
 
-INVALID_FACE = 1e29
-DELETED_FACE = 1e30
-
 # TODO(kbayes): write out formulas to derive these constants
 FACE_TOL = 0.99999872
 EDGE_TOL = 0.00159999931
@@ -1119,11 +1116,6 @@ def _polytope3(
 
 
 @wp.func
-def _get_face_verts(face: int) -> wp.vec3i:
-  return wp.vec3i(face & 0x3FF, face >> 10 & 0x3FF, face >> 20 & 0x3FF)
-
-
-@wp.func
 def _polytope4(
   # In:
   pt: Polytope,
@@ -1193,6 +1185,31 @@ def _polytope4(
 
 
 @wp.func
+def _get_face_verts(face: int) -> wp.vec3i:
+  return wp.vec3i(face & 0x3FF, face >> 10 & 0x3FF, face >> 20 & 0x3FF)
+
+
+@wp.func
+def _delete_face(face: int) -> int:
+  return face | 0x80000000
+
+
+@wp.func
+def _is_face_deleted(face: int) -> bool:
+  return bool(face & 0x80000000)
+
+
+@wp.func
+def _invalidate_face(face: int) -> int:
+  return face | 0x40000000
+
+
+@wp.func
+def _is_invalid_face(face: int) -> bool:
+  return bool(face & 0xC0000000)
+
+
+@wp.func
 def _epa(
   # In:
   tolerance: float,
@@ -1221,7 +1238,7 @@ def _epa(
 
     # find the face closest to the origin (lower bound for penetration depth)
     for i in range(pt.nface):
-      if pt.face_norm2[i] < lower2:
+      if not _is_invalid_face(pt.face[i]) and pt.face_norm2[i] < lower2:
         idx = i
         lower2 = pt.face_norm2[i]
 
@@ -1263,7 +1280,7 @@ def _epa(
         break
 
     nvalid -= 1
-    pt.face_norm2[idx] = DELETED_FACE
+    pt.face[idx] = _delete_face(pt.face[idx])
     face = _get_face_verts(pt.face[idx])
     pt.nhorizon = _add_edge(pt, face[0], face[1])
     pt.nhorizon = _add_edge(pt, face[1], face[2])
@@ -1274,15 +1291,12 @@ def _epa(
 
     # compute horizon for w
     for i in range(pt.nface):
-      if pt.face_norm2[i] == DELETED_FACE:
+      if _is_face_deleted(pt.face[i]):
         continue
 
-      face_pr = pt.face_pr[i]
-      invalid_face = pt.face_norm2[i] == INVALID_FACE
-      face_norm2 = wp.where(invalid_face, wp.dot(face_pr, face_pr), pt.face_norm2[i])
-      if wp.dot(face_pr, pt.vert[wi]) - face_norm2 > 1e-10:
-        pt.face_norm2[i] = DELETED_FACE
-        nvalid = wp.where(invalid_face, nvalid, nvalid - 1)
+      if wp.dot(pt.face_pr[i], pt.vert[wi]) - pt.face_norm2[i] > 1e-10:
+        nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
+        pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
         pt.nhorizon = _add_edge(pt, face[0], face[1])
         pt.nhorizon = _add_edge(pt, face[1], face[2])
@@ -1303,7 +1317,7 @@ def _epa(
       if dist2 >= lower2 and dist2 <= upper2:
         nvalid += 1
       else:
-        pt.face_norm2[pt.nface - 1] = INVALID_FACE
+        pt.face[pt.nface - 1] = _invalidate_face(pt.face[pt.nface - 1])
 
     # no face candidates left
     if nvalid == 0 or idx == -1:
@@ -1318,7 +1332,6 @@ def _epa(
 
   # return from valid face
   if idx > -1:
-    pt.face_norm2[idx] = wp.dot(pt.face_pr[idx], pt.face_pr[idx])
     x1, x2, dist = _epa_witness(pt, geom1, geom2, geomtype1, geomtype2, idx)
     return dist, x1, x2, idx
   return 0.0, wp.vec3(), wp.vec3(), -1
