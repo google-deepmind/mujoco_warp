@@ -660,16 +660,15 @@ def make_data(
   if is_sparse(mjm):
     d.qM = wp.zeros((nworld, 1, mjm.nM), dtype=float)
     d.qLD = wp.zeros((nworld, 1, mjm.nC), dtype=float)
-  else:
-    d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
-    d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  if mujoco.mj_isSparse(mjm):
     d.flexedge_J_rownnz = wp.zeros((nworld, mjm.nflexedge), dtype=int)
     d.flexedge_J_rowadr = wp.zeros((nworld, mjm.nflexedge), dtype=int)
     d.flexedge_J_colind = wp.zeros((nworld, mjm.nflexedge * 6), dtype=int)
     d.flexedge_J = wp.zeros((nworld, 1, mjm.nflexedge * 6), dtype=float)
   else:
+    d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
+    d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
     d.flexedge_J_rownnz = wp.zeros((0, 0), dtype=int)
     d.flexedge_J_rowadr = wp.zeros((0, 0), dtype=int)
     d.flexedge_J_colind = wp.zeros((0, 0), dtype=int)
@@ -834,19 +833,6 @@ def put_data(
   if is_sparse(mjm):
     d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
-  else:
-    qM = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mj_fullM(mjm, qM, mjd.qM)
-    qLD = np.linalg.cholesky(qM) if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
-    padding = sizes["nv_pad"] - mjm.nv
-    qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
-    d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
-    d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
-
-  if mujoco.mj_isSparse(mjm):
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
-    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
 
     d.flexedge_J_rownnz = wp.array(np.tile(mjd.flexedge_J_rownnz, (nworld, 1)), dtype=int)
     d.flexedge_J_rowadr = wp.array(np.tile(mjd.flexedge_J_rowadr, (nworld, 1)), dtype=int)
@@ -865,8 +851,13 @@ def put_data(
     d.flexedge_J_colind = wp.array(np.tile(J_colind, (nworld, 1)), dtype=int)
     d.flexedge_J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
   else:
-    ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+    qM = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mj_fullM(mjm, qM, mjd.qM)
+    qLD = np.linalg.cholesky(qM) if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+    padding = sizes["nv_pad"] - mjm.nv
+    qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
+    d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
+    d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
     d.flexedge_J_rownnz = wp.zeros((0, 0), dtype=int)
     d.flexedge_J_rowadr = wp.zeros((0, 0), dtype=int)
@@ -874,6 +865,14 @@ def put_data(
 
     flexedge_J = mjd.flexedge_J.reshape((mjm.nflexedge, mjm.nv))
     d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
+
+  if mujoco.mj_isSparse(mjm):
+    ten_J = np.zeros((mjm.ntendon, mjm.nv))
+    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+  else:
+    ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))

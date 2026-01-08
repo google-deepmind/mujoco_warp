@@ -481,6 +481,8 @@ class SmoothTest(parameterized.TestCase):
 
   def test_flex(self):
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
+    assert m.opt.is_sparse
+
     d.flexvert_xpos.fill_(wp.inf)
     d.flexedge_length.fill_(wp.inf)
     d.flexedge_velocity.fill_(wp.inf)
@@ -502,17 +504,14 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
     _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
 
-    if m.opt.is_sparse:
-      flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-      mujoco.mju_sparse2dense(
-        flexedge_J,
-        d.flexedge_J.numpy()[0, 0].reshape(-1),
-        d.flexedge_J_rownnz.numpy()[0],
-        d.flexedge_J_rowadr.numpy()[0],
-        d.flexedge_J_colind.numpy()[0],
-      )
-    else:
-      flexedge_J = d.flexedge_J.numpy()[0]
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+    mujoco.mju_sparse2dense(
+      flexedge_J,
+      d.flexedge_J.numpy()[0, 0].reshape(-1),
+      d.flexedge_J_rownnz.numpy()[0],
+      d.flexedge_J_rowadr.numpy()[0],
+      d.flexedge_J_colind.numpy()[0],
+    )
 
     _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
 
