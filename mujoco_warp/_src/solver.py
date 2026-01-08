@@ -691,7 +691,6 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
 def _compute_efc_cost_tiled(
   efcid: int,
   alpha: float,
-  nefc: int,
   ne: int,
   nf: int,
   nacon: int,
@@ -710,11 +709,7 @@ def _compute_efc_cost_tiled(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> float:
-  """Compute cost contribution for a single efc row."""
-  # Out of bounds
-  if efcid >= nefc:
-    return 0.0
-
+  """Compute cost contribution for a single efc row. Caller ensures efcid < nefc."""
   # Equality constraint
   if efcid < ne:
     return _eval_cost(efc_quad, alpha)
@@ -883,7 +878,7 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
               quad2 = efc_quad_in[worldid, efc_addr2]
 
             total_cost += _compute_efc_cost_tiled(
-              efcid, alpha, nefc, ne, nf, nacon, impratio_invsqrt,
+              efcid, alpha, ne, nf, nacon, impratio_invsqrt,
               efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
               contact_friction, efc_addr0, quad1, quad2,
             )
@@ -945,7 +940,6 @@ def _linesearch_parallel_tiled(
 def _compute_efc_eval_pt_tiled(
   efcid: int,
   alpha: float,
-  nefc: int,
   ne: int,
   nf: int,
   nacon: int,
@@ -964,11 +958,7 @@ def _compute_efc_eval_pt_tiled(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> wp.vec3:
-  """Compute (cost, gradient, hessian) contribution for a single efc row."""
-  # Out of bounds
-  if efcid >= nefc:
-    return wp.vec3(0.0)
-
+  """Compute (cost, gradient, hessian) contribution for a single efc row. Caller ensures efcid < nefc."""
   # Equality constraint
   if efcid < ne:
     return _eval_pt(efc_quad, alpha)
@@ -1106,7 +1096,7 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
           quad2 = efc_quad_in[worldid, efc_addr2]
 
         local_vec = _compute_efc_eval_pt_tiled(
-          efcid, 0.0, nefc, ne, nf, nacon, impratio_invsqrt,
+          efcid, 0.0, ne, nf, nacon, impratio_invsqrt,
           efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
           Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
           contact_friction, efc_addr0, quad1, quad2,
@@ -1175,7 +1165,7 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
           quad2 = efc_quad_in[worldid, efc_addr2]
 
         local_vec = _compute_efc_eval_pt_tiled(
-          efcid, lo_alpha_in, nefc, ne, nf, nacon, impratio_invsqrt,
+          efcid, lo_alpha_in, ne, nf, nacon, impratio_invsqrt,
           efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
           Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
           contact_friction, efc_addr0, quad1, quad2,
@@ -1261,19 +1251,19 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
             quad2 = efc_quad_in[worldid, efc_addr2]
 
           local_lo = _compute_efc_eval_pt_tiled(
-            efcid, lo_next_alpha, nefc, ne, nf, nacon, impratio_invsqrt,
+            efcid, lo_next_alpha, ne, nf, nacon, impratio_invsqrt,
             efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
             Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
             contact_friction, efc_addr0, quad1, quad2,
           )
           local_hi = _compute_efc_eval_pt_tiled(
-            efcid, hi_next_alpha, nefc, ne, nf, nacon, impratio_invsqrt,
+            efcid, hi_next_alpha, ne, nf, nacon, impratio_invsqrt,
             efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
             Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
             contact_friction, efc_addr0, quad1, quad2,
           )
           local_mid = _compute_efc_eval_pt_tiled(
-            efcid, mid_alpha, nefc, ne, nf, nacon, impratio_invsqrt,
+            efcid, mid_alpha, ne, nf, nacon, impratio_invsqrt,
             efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
             Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
             contact_friction, efc_addr0, quad1, quad2,
