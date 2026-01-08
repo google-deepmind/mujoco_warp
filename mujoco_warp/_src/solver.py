@@ -829,25 +829,25 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
 
       # ALL threads cooperatively load data into shared memory (coalesced)
       type_tile = wp.tile_load(
-        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
       id_tile = wp.tile_load(
-        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
       D_tile = wp.tile_load(
-        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
       frictionloss_tile = wp.tile_load(
-        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
       Jaref_tile = wp.tile_load(
-        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
       jv_tile = wp.tile_load(
-        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
       quad_tile = wp.tile_load(
-        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
+        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=True
       )
 
       # Loop over all efc rows in this tile
@@ -879,19 +879,21 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
 
           # Compute cost for each alpha this thread handles (strided by BLOCK_DIM)
           for alphaid in range(tid, LS_ITERATIONS, BLOCK_DIM):
-            alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-            cost = _compute_efc_cost_tiled(
-              efcid, alpha, ne, nf, nacon, impratio_invsqrt,
-              efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
-              contact_friction, efc_addr0, quad1, quad2,
-            )
-            alpha_costs[alphaid] = alpha_costs[alphaid] + cost
+            if alphaid < LS_ITERATIONS:
+              alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
+              cost = _compute_efc_cost_tiled(
+                efcid, alpha, ne, nf, nacon, impratio_invsqrt,
+                efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
+                contact_friction, efc_addr0, quad1, quad2,
+              )
+              alpha_costs[alphaid] = alpha_costs[alphaid] + cost
 
     # Write results for all alphas this thread handles
     for alphaid in range(tid, LS_ITERATIONS, BLOCK_DIM):
-      alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-      base_cost = _eval_cost(efc_quad_gauss, alpha)
-      cost_out[worldid, alphaid] = base_cost + alpha_costs[alphaid]
+      if alphaid < LS_ITERATIONS:
+        alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
+        base_cost = _eval_cost(efc_quad_gauss, alpha)
+        cost_out[worldid, alphaid] = base_cost + alpha_costs[alphaid]
 
   return kernel
 
@@ -2772,7 +2774,7 @@ def _solver_iteration(
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=64, block_dim=32)
+  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=32, block_dim=32)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
