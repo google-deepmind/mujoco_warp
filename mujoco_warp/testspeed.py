@@ -21,9 +21,9 @@ Example:
   mjwarp-testspeed benchmark/humanoid/humanoid.xml --nworld 4096 -o "opt.solver=cg"
 """
 
+import dataclasses
 import inspect
 import sys
-from dataclasses import fields
 from typing import Sequence
 
 import mujoco
@@ -109,27 +109,15 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
   return spec.compile()
 
 
-def _dataclass_memory(dataclass, total_bytes, conversion, unit):
-  total_memory = 0
-  out = ""
-  for field in fields(dataclass):
+def _dataclass_memory(dataclass, prefix: str = "") -> list[tuple[str, int]]:
+  ret = []
+  for field in dataclasses.fields(dataclass):
     value = getattr(dataclass, field.name)
-    fieldinfo = []
-    if isinstance(value, mjw.Contact) or isinstance(value, mjw.Constraint):
-      for vfield in fields(value):
-        vvalue = getattr(value, vfield.name)
-        if type(vvalue) is wp.array:
-          fieldinfo.append((f"{field.name}.{vfield.name}", vvalue.capacity))
-    elif type(value) is wp.array:
-      fieldinfo.append((field.name, value.capacity))
-    for array in fieldinfo:
-      total_memory += array[1]
-      field_percentage = 100 * (array[1] / total_bytes)
-      # only print if field contributes at least 1% of total memory usage
-      if field_percentage >= 1:
-        out += f" {array[0]}: {(array[1] / conversion):.2f} {unit} ({field_percentage:.2f}%)\n"
-  out = out or " (no field >= 1% of utilized memory)\n"
-  return out, total_memory
+    if dataclasses.is_dataclass(value):
+      ret.extend(_dataclass_memory(value, prefix=f"{prefix}{field.name}."))
+    elif isinstance(value, wp.array):
+      ret.append((f"{prefix}{field.name}", value.capacity))
+  return ret
 
 
 def _main(argv: Sequence[str]):
@@ -158,6 +146,7 @@ def _main(argv: Sequence[str]):
 
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
+  free_mem_at_init = wp.get_device(_DEVICE.value).free_memory
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
 
@@ -165,16 +154,13 @@ def _main(argv: Sequence[str]):
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
 
-    broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
-    solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
-    integrator = mjw.IntegratorType(m.opt.integrator).name
-    iterations, ls_iterations = m.opt.iterations, m.opt.ls_iterations
-    ls_str = f"{'parallel' if m.opt.ls_parallel else 'iterative'} linesearch iterations: {ls_iterations}"
     print(
-      f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
-      f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
-      f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
-      f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
+      f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}"
+      f" graph_conditional: {m.opt.graph_conditional}\n"
+      f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
+      f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations}"
+      f" linesearch: {'parallel' if m.opt.ls_parallel else 'iterative'} ls_iterations: {m.opt.ls_iterations}\n"
+      f"  cone: {mjw.ConeType(m.opt.cone).name} integrator: {mjw.IntegratorType(m.opt.integrator).name}"
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
@@ -225,23 +211,21 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       _print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
 
     if _MEMORY.value:
-      memory_unit = "MB"
-      memory_conversion = 1024 * 1024
-      total_bytes = wp.get_device(_DEVICE.value).total_memory
-      utilized_bytes = wp.get_mempool_used_mem_current(_DEVICE.value)
-      utilized_mb = utilized_bytes / memory_conversion
-      total_mb = total_bytes / memory_conversion
-      utilized_percentage = 100 * (utilized_bytes / total_bytes)
-      memory_str = (
-        f"\nTotal memory: {utilized_mb:.2f} {memory_unit} / {total_mb:.2f} {memory_unit} ({utilized_percentage:.2f}%)\n"
-      )
-      model_field_str, model_bytes = _dataclass_memory(m, utilized_bytes, memory_conversion, memory_unit)
-      memory_str += f"Model memory ({100 * model_bytes / utilized_bytes:.2f}%):\n"
-      memory_str += model_field_str
-      data_field_str, data_bytes = _dataclass_memory(d, utilized_bytes, memory_conversion, memory_unit)
-      memory_str += f"Data memory ({100 * data_bytes / utilized_bytes:.2f}%):\n"
-      memory_str += data_field_str
-      print(memory_str)
+      total_mem = wp.get_device(_DEVICE.value).total_memory
+      used_mem = free_mem_at_init - wp.get_device(_DEVICE.value).free_memory
+      other_mem = used_mem
+      for dataclass, name in [(m, "\nModel"), (d, "Data")]:
+        mem = _dataclass_memory(dataclass)
+        other_mem -= sum(c for _, c in mem)
+        other_mem_total = sum(c for _, c in mem)
+        print(f"{name} memory {other_mem_total / 1024**2:.2f} MB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
+        fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
+        for field, capacity in fields:
+          print(f" {field}: {capacity / 1024**2:.2f} MB ({100 * capacity / used_mem:.2f}%)")
+        if not fields:
+          print(" (no field >= 1% of used memory)")
+      print(f"Other memory: {other_mem / 1024**2:.2f} MB ({100 * other_mem / used_mem:.2f}% of used memory)")
+      print(f"Total memory: {used_mem / 1024**2:.2f} MB ({100 * used_mem / total_mem:.2f}% of total device memory)")
 
 
 def main():
