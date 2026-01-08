@@ -1188,7 +1188,7 @@ def _polytope4(
 
 @wp.func
 def _get_face_verts(face: int) -> wp.vec3i:
-  """ "Return the three vertices of the face given by indices into the polytope vertex array."""
+  """Return the three vertices of the face given by indices into the polytope vertex array."""
   return wp.vec3i(face & 0x3FF, face >> 10 & 0x3FF, face >> 20 & 0x3FF)
 
 
