@@ -26,6 +26,7 @@ from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat66
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
 
@@ -363,7 +364,7 @@ def _ellipsoid_max_moment_deriv(size: wp.vec3, dir: int) -> float:
 
 
 @wp.func
-def _add_to_quadrant(B: wp.mat66, D: wp.mat33, col_quad: int, row_quad: int) -> wp.mat66:
+def _add_to_quadrant(B: mat66, D: wp.mat33, col_quad: int, row_quad: int) -> mat66:
   r = 3 * row_quad
   c = 3 * col_quad
   for i in range(3):
@@ -387,14 +388,14 @@ def _cross_deriv(a: wp.vec3, b: wp.vec3) -> tuple[wp.mat33, wp.mat33]:
 @wp.func
 def _added_mass_forces_deriv(
   local_vels: wp.spatial_vector, fluid_density: float, virtual_mass: wp.vec3, virtual_inertia: wp.vec3
-) -> wp.mat66:
+) -> mat66:
   lin_vel = wp.spatial_bottom(local_vels)
   ang_vel = wp.spatial_top(local_vels)
 
   virtual_lin_mom = fluid_density * wp.cw_mul(virtual_mass, lin_vel)
   virtual_ang_mom = fluid_density * wp.cw_mul(virtual_inertia, ang_vel)
 
-  B = wp.mat66(0.0)
+  B = mat66(0.0)
 
   Da, Db = _cross_deriv(virtual_ang_mom, ang_vel)
   B = _add_to_quadrant(B, Db, 0, 0)
@@ -607,7 +608,7 @@ def _kutta_lift_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.ve
 
 
 @wp.func
-def _magnus_force_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.vec3, magnus_lift_coef: float) -> wp.mat66:
+def _magnus_force_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.vec3, magnus_lift_coef: float) -> mat66:
   volume = wp.static(4.0 / 3.0 * wp.pi) * size[0] * size[1] * size[2]
   magnus_coef = magnus_lift_coef * fluid_density * volume
 
@@ -620,7 +621,7 @@ def _magnus_force_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.
   D_ang, _ = _cross_deriv(ang_vel_scaled, lin_vel_scaled)
   _, D_lin = _cross_deriv(ang_vel_scaled, lin_vel_scaled)
 
-  B = wp.mat66(0.0)
+  B = mat66(0.0)
   B = _add_to_quadrant(B, D_ang, 1, 0)
   B = _add_to_quadrant(B, D_lin, 1, 1)
 
@@ -712,7 +713,7 @@ def _deriv_ellipsoid_fluid(
 
     lvel = wp.spatial_vector(l_ang, l_lin)
 
-    B = wp.mat66(0.0)
+    B = mat66(0.0)
 
     magnus_coef = geom_fluid[geomid, 5]
     kutta_coef = geom_fluid[geomid, 4]
@@ -754,18 +755,46 @@ def _deriv_ellipsoid_fluid(
     cdof_j_local = wp.spatial_vector(geom_rotT @ wp.spatial_top(cdof_j), geom_rotT @ wp.spatial_bottom(cdof_j))
 
     B_cdof_j = wp.spatial_vector(
-      B[0, 0] * wp.spatial_top(cdof_j_local)[0]
-      + B[0, 1] * wp.spatial_top(cdof_j_local)[1]
-      + B[0, 2] * wp.spatial_top(cdof_j_local)[2]
-      + B[0, 3] * wp.spatial_bottom(cdof_j_local)[0]
-      + B[0, 4] * wp.spatial_bottom(cdof_j_local)[1]
-      + B[0, 5] * wp.spatial_bottom(cdof_j_local)[2],
-      B[3, 0] * wp.spatial_top(cdof_j_local)[0]
-      + B[3, 1] * wp.spatial_top(cdof_j_local)[1]
-      + B[3, 2] * wp.spatial_top(cdof_j_local)[2]
-      + B[3, 3] * wp.spatial_bottom(cdof_j_local)[0]
-      + B[3, 4] * wp.spatial_bottom(cdof_j_local)[1]
-      + B[3, 5] * wp.spatial_bottom(cdof_j_local)[2],
+      wp.vec3(
+        B[0, 0] * wp.spatial_top(cdof_j_local)[0]
+        + B[0, 1] * wp.spatial_top(cdof_j_local)[1]
+        + B[0, 2] * wp.spatial_top(cdof_j_local)[2]
+        + B[0, 3] * wp.spatial_bottom(cdof_j_local)[0]
+        + B[0, 4] * wp.spatial_bottom(cdof_j_local)[1]
+        + B[0, 5] * wp.spatial_bottom(cdof_j_local)[2],
+        B[1, 0] * wp.spatial_top(cdof_j_local)[0]
+        + B[1, 1] * wp.spatial_top(cdof_j_local)[1]
+        + B[1, 2] * wp.spatial_top(cdof_j_local)[2]
+        + B[1, 3] * wp.spatial_bottom(cdof_j_local)[0]
+        + B[1, 4] * wp.spatial_bottom(cdof_j_local)[1]
+        + B[1, 5] * wp.spatial_bottom(cdof_j_local)[2],
+        B[2, 0] * wp.spatial_top(cdof_j_local)[0]
+        + B[2, 1] * wp.spatial_top(cdof_j_local)[1]
+        + B[2, 2] * wp.spatial_top(cdof_j_local)[2]
+        + B[2, 3] * wp.spatial_bottom(cdof_j_local)[0]
+        + B[2, 4] * wp.spatial_bottom(cdof_j_local)[1]
+        + B[2, 5] * wp.spatial_bottom(cdof_j_local)[2],
+      ),
+      wp.vec3(
+        B[3, 0] * wp.spatial_top(cdof_j_local)[0]
+        + B[3, 1] * wp.spatial_top(cdof_j_local)[1]
+        + B[3, 2] * wp.spatial_top(cdof_j_local)[2]
+        + B[3, 3] * wp.spatial_bottom(cdof_j_local)[0]
+        + B[3, 4] * wp.spatial_bottom(cdof_j_local)[1]
+        + B[3, 5] * wp.spatial_bottom(cdof_j_local)[2],
+        B[4, 0] * wp.spatial_top(cdof_j_local)[0]
+        + B[4, 1] * wp.spatial_top(cdof_j_local)[1]
+        + B[4, 2] * wp.spatial_top(cdof_j_local)[2]
+        + B[4, 3] * wp.spatial_bottom(cdof_j_local)[0]
+        + B[4, 4] * wp.spatial_bottom(cdof_j_local)[1]
+        + B[4, 5] * wp.spatial_bottom(cdof_j_local)[2],
+        B[5, 0] * wp.spatial_top(cdof_j_local)[0]
+        + B[5, 1] * wp.spatial_top(cdof_j_local)[1]
+        + B[5, 2] * wp.spatial_top(cdof_j_local)[2]
+        + B[5, 3] * wp.spatial_bottom(cdof_j_local)[0]
+        + B[5, 4] * wp.spatial_bottom(cdof_j_local)[1]
+        + B[5, 5] * wp.spatial_bottom(cdof_j_local)[2],
+      ),
     )
 
     for k in range(6):

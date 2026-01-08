@@ -47,7 +47,7 @@ def main(argv):
     err = {"console": err_console, "github": err_github}[_OUTPUT.value]
 
     if not filepath.is_file() or filepath.suffix != ".py":
-      err("Skipping non-Python file")
+      logging.warning(f"Skipping non-Python file: {filepath}")
       continue
 
     if _TYPES_PATH.value:

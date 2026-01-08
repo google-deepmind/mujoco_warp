@@ -690,6 +690,10 @@ class mat63f(wp.types.matrix(shape=(6, 3), dtype=float)):
   pass
 
 
+class mat66f(wp.types.matrix(shape=(6, 6), dtype=float)):
+  pass
+
+
 vec5 = vec5f
 vec6 = vec6f
 vec8 = vec8f
@@ -699,6 +703,7 @@ vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
 mat63 = mat63f
+mat66 = mat66f
 
 
 def array(*args) -> wp.array:
