@@ -61,6 +61,8 @@ class Polytope:
   nvert: int
 
   # faces in polytope
+  # 10 bits per each vertex index, while the last significant bits are for
+  # invalid and deleted face
   face: wp.array(dtype=int)
   face_pr: wp.array(dtype=wp.vec3)
   face_norm2: wp.array(dtype=float)
@@ -1186,26 +1188,31 @@ def _polytope4(
 
 @wp.func
 def _get_face_verts(face: int) -> wp.vec3i:
+  """ "Return the three vertices of the face given by indices into the polytope vertex array."""
   return wp.vec3i(face & 0x3FF, face >> 10 & 0x3FF, face >> 20 & 0x3FF)
 
 
 @wp.func
 def _delete_face(face: int) -> int:
+  """Return the face with the deleted bit enabled."""
   return face | 0x80000000
 
 
 @wp.func
 def _is_face_deleted(face: int) -> bool:
+  """Return true if face is deleted."""
   return bool(face & 0x80000000)
 
 
 @wp.func
 def _invalidate_face(face: int) -> int:
+  """Return the face with the invalid bit enabled."""
   return face | 0x40000000
 
 
 @wp.func
 def _is_invalid_face(face: int) -> bool:
+  """Return true if face is invalid or deleted."""
   return bool(face & 0xC0000000)
 
 
@@ -1231,6 +1238,10 @@ def _epa(
   cnt = int(1)
   nvalid = pt.nface  # number of potential faces for expanding the polytope
 
+  # the face vertices are encoded in 10-bits that index the vertex array,
+  # so iterations must be cap to limit the number of generated vertices
+  # (one new vertex per iteration)
+  epa_iterations = wp.max(epa_iterations, 1000)
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
