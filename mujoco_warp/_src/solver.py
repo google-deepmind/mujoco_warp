@@ -769,10 +769,13 @@ def _compute_efc_cost_tiled(
 
 
 def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
-  """Factory for tiled linesearch kernel - loads data once, evaluates all alphas.
+  """Factory for tiled linesearch kernel - parallel load, parallel alpha eval.
 
-  This version fuses the alpha loop with the efc loop: for each tile of efc rows,
-  we load data once and compute costs for ALL alphas, then reduce.
+  Structure:
+  1. All threads cooperatively load TILE_SIZE efc rows into shared memory
+  2. Each thread handles one alpha (threads 0..ls_iterations-1)
+  3. Each thread loops over loaded efc rows, accumulating its alpha's cost
+  4. No reduction needed - each thread writes its own result
   """
   TILE_SIZE = tile_size
   LS_ITERATIONS = ls_iterations
@@ -814,92 +817,81 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
     nacon = nacon_in[0]
     efc_quad_gauss = efc_quad_gauss_in[worldid]
 
-    # Accumulator for each alpha - use array for compile-time known size
-    total_costs = wp.vector(dtype=float, length=LS_ITERATIONS)
-    for i in range(LS_ITERATIONS):
-      total_costs[i] = float(0.0)
+    # Each thread handles one alpha (if tid < LS_ITERATIONS)
+    alphaid = tid
+    has_alpha = tid < LS_ITERATIONS
+    alpha = float(0.0)
+    if has_alpha:
+      alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
 
-    # Process efc rows in tiles - load data ONCE, evaluate ALL alphas
+    total_cost = float(0.0)
+
+    # Process efc rows in tiles
     for tile_start in range(0, njmax, TILE_SIZE):
       if tile_start >= nefc:
         break
 
-      # Coalesced tile loads - data loaded once for all alphas
+      # ALL threads cooperatively load data into shared memory (coalesced)
       type_tile = wp.tile_load(
-        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       id_tile = wp.tile_load(
-        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       D_tile = wp.tile_load(
-        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       frictionloss_tile = wp.tile_load(
-        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       Jaref_tile = wp.tile_load(
-        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       jv_tile = wp.tile_load(
-        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
       quad_tile = wp.tile_load(
-        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
+        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
 
-      efcid = tile_start + tid
+      # Each alpha-thread loops over ALL loaded efc rows
+      if has_alpha:
+        for i in range(TILE_SIZE):
+          efcid = tile_start + i
+          if efcid < nefc:
+            # Read from shared tiles
+            efc_type = type_tile[i]
+            efc_id = id_tile[i]
+            efc_D = D_tile[i]
+            efc_frictionloss = frictionloss_tile[i]
+            efc_Jaref = Jaref_tile[i]
+            efc_jv = jv_tile[i]
+            efc_quad = quad_tile[i]
 
-      # Get per-row data (loaded once, reused for all alphas)
-      efc_type = type_tile[tid]
-      efc_id = id_tile[tid]
-      efc_D = D_tile[tid]
-      efc_frictionloss = frictionloss_tile[tid]
-      efc_Jaref = Jaref_tile[tid]
-      efc_jv = jv_tile[tid]
-      efc_quad = quad_tile[tid]
+            # Get contact data if needed
+            contact_friction = types.vec5(0.0)
+            efc_addr0 = int(0)
+            quad1 = wp.vec3(0.0)
+            quad2 = wp.vec3(0.0)
 
-      # Get contact data if needed (loaded once)
-      contact_friction = types.vec5(0.0)
-      efc_addr0 = int(0)
-      quad1 = wp.vec3(0.0)
-      quad2 = wp.vec3(0.0)
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr0 = contact_efc_address_in[efc_id, 0]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              quad1 = efc_quad_in[worldid, efc_addr1]
+              quad2 = efc_quad_in[worldid, efc_addr2]
 
-      if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
-        contact_friction = contact_friction_in[efc_id]
-        efc_addr0 = contact_efc_address_in[efc_id, 0]
-        efc_addr1 = contact_efc_address_in[efc_id, 1]
-        efc_addr2 = contact_efc_address_in[efc_id, 2]
-        quad1 = efc_quad_in[worldid, efc_addr1]
-        quad2 = efc_quad_in[worldid, efc_addr2]
+            total_cost += _compute_efc_cost_tiled(
+              efcid, alpha, nefc, ne, nf, nacon, impratio_invsqrt,
+              efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
+              contact_friction, efc_addr0, quad1, quad2,
+            )
 
-      # Compute cost for ALL alphas using the same loaded data
-      for alphaid in range(LS_ITERATIONS):
-        alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-
-        local_cost = float(0.0)
-        if efcid < nefc:
-          local_cost = _compute_efc_cost_tiled(
-            efcid, alpha, nefc, ne, nf, nacon, impratio_invsqrt,
-            efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
-            contact_friction, efc_addr0, quad1, quad2,
-          )
-
-        # Reduce across threads for this alpha
-        cost_tile = wp.tile(local_cost)
-        tile_sum = wp.tile_reduce(wp.add, cost_tile)
-        total_costs[alphaid] = total_costs[alphaid] + tile_sum[0]
-
-    # Write results - thread 0 writes all alpha costs
-    #if tid == 0:
-    #  for alphaid in range(LS_ITERATIONS):
-    #    alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-    #    base_cost = _eval_cost(efc_quad_gauss, alpha)
-    #    cost_out[worldid, alphaid] = base_cost + total_costs[alphaid]
-
-    if tid < LS_ITERATIONS:
-      alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, tid)
+    # Each alpha-thread writes its result (no reduction needed!)
+    if has_alpha:
       base_cost = _eval_cost(efc_quad_gauss, alpha)
-      cost_out[worldid, tid] = base_cost + total_costs[tid]
+      cost_out[worldid, alphaid] = base_cost + total_cost
 
   return kernel
 
@@ -907,7 +899,8 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
 def _linesearch_parallel_tiled(
   m: types.Model, d: types.Data, cost: wp.array2d(dtype=float), tile_size: int = 64
 ):
-  """Tiled parallel linesearch - loads data once, evaluates all alphas."""
+  """Tiled parallel linesearch - parallel load, parallel alpha eval."""
+  # tile_size should be >= ls_iterations for best utilization
   wp.launch_tiled(
     linesearch_parallel_tiled(tile_size, d.njmax, m.opt.ls_iterations),
     dim=d.nworld,
