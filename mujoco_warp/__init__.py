@@ -18,9 +18,9 @@
 from importlib import metadata
 
 try:
-    __version__ = metadata.version("mujoco_warp")
+  __version__ = metadata.version("mujoco_warp")
 except metadata.PackageNotFoundError:
-    __version__ = "unknown"
+  __version__ = "unknown"
 
 # isort: off
 from ._src.forward import step as step
