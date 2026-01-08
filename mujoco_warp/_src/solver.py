@@ -1617,7 +1617,26 @@ def linesearch_jaref(
 
 
 @event_scope
-def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
+def _linesearch(
+  m: types.Model,
+  d: types.Data,
+  cost: wp.array2d(dtype=float),
+  use_tiled: bool = False,
+  tile_size: int = 64,
+):
+  """Linesearch for constraint solver.
+
+  Args:
+    m: Model
+    d: Data
+    cost: Scratch array for storing costs per (world, alpha) - used for parallel mode
+    use_tiled: If True, use tiled kernels with parallel reduction over efc rows
+    tile_size: Tile size for tiled kernels (default 64)
+  """
+  # =========================================================================
+  # Setup: mv, jv, quad_gauss, quad
+  # =========================================================================
+
   # mv = qM @ search
   support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
 
@@ -1682,106 +1701,24 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
     outputs=[d.efc.quad],
   )
 
-  if m.opt.ls_parallel:
-    _linesearch_parallel(m, d, cost)
+  # =========================================================================
+  # Core linesearch: parallel or iterative, original or tiled
+  # =========================================================================
+
+  if use_tiled:
+    if m.opt.ls_parallel:
+      _linesearch_parallel_tiled(m, d, cost, tile_size)
+    else:
+      _linesearch_iterative_tiled(m, d, tile_size)
   else:
-    _linesearch_iterative(m, d)
+    if m.opt.ls_parallel:
+      _linesearch_parallel(m, d, cost)
+    else:
+      _linesearch_iterative(m, d)
 
-  wp.launch(
-    linesearch_qacc_ma,
-    dim=(d.nworld, m.nv),
-    inputs=[d.efc.search, d.efc.mv, d.efc.alpha, d.efc.done],
-    outputs=[d.qacc, d.efc.Ma],
-  )
-
-  wp.launch(
-    linesearch_jaref,
-    dim=(d.nworld, d.njmax),
-    inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
-    outputs=[d.efc.Jaref],
-  )
-
-
-@event_scope
-def _linesearch_tiled(
-  m: types.Model, d: types.Data, cost: wp.array2d(dtype=float), tile_size: int = 64
-):
-  """Tiled linesearch - parallelizes over efc rows with tile reduction.
-
-  Drop-in replacement for _linesearch that uses tiled parallel reduction
-  for the cost computation. Use for benchmarking against the standard version.
-
-  Respects m.opt.ls_parallel:
-    - True: uses tiled parallel linesearch (samples multiple alphas)
-    - False: uses tiled iterative linesearch (bracket search)
-
-  Args:
-    m: Model
-    d: Data
-    cost: Scratch array for storing costs per (world, alpha) - only used for parallel mode
-    tile_size: Tile size for parallelization (default 64)
-  """
-  # mv = qM @ search
-  support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
-
-  # jv = efc_J @ search
-  if m.nv > 50:
-    dofs_per_thread = 20
-  else:
-    dofs_per_thread = 50
-
-  threads_per_efc = ceil(m.nv / dofs_per_thread)
-  if threads_per_efc > 1:
-    wp.launch(
-      linesearch_zero_jv,
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.efc.done],
-      outputs=[d.efc.jv],
-    )
-
-  wp.launch(
-    linesearch_jv_fused(m.nv, dofs_per_thread),
-    dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
-    outputs=[d.efc.jv],
-  )
-
-  # prepare quadratics
-  if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
-
-  wp.launch(
-    linesearch_prepare_gauss(m.nv, dofs_per_thread),
-    dim=(d.nworld, threads_per_efc),
-    inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
-    outputs=[d.efc.quad_gauss],
-  )
-
-  wp.launch(
-    linesearch_prepare_quad,
-    dim=(d.nworld, d.njmax),
-    inputs=[
-      m.opt.impratio_invsqrt,
-      d.nefc,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.efc_address,
-      d.efc.type,
-      d.efc.id,
-      d.efc.D,
-      d.efc.Jaref,
-      d.efc.jv,
-      d.efc.done,
-      d.nacon,
-    ],
-    outputs=[d.efc.quad],
-  )
-
-  # Use tiled linesearch (parallel or iterative based on option)
-  if m.opt.ls_parallel:
-    _linesearch_parallel_tiled(m, d, cost, tile_size)
-  else:
-    _linesearch_iterative_tiled(m, d, tile_size)
+  # =========================================================================
+  # Teardown: update qacc, Ma, Jaref
+  # =========================================================================
 
   wp.launch(
     linesearch_qacc_ma,
@@ -2809,10 +2746,7 @@ def _solver_iteration(
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
-  if True:
-    _linesearch_tiled(m, d, step_size_cost, tile_size=64)
-  else:
-    _linesearch(m, d, step_size_cost)
+  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=64)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
