@@ -768,14 +768,18 @@ def _compute_efc_cost_tiled(
   return 0.0
 
 
-def linesearch_parallel_tiled(tile_size: int, njmax: int):
-  """Factory for tiled linesearch kernel with coalesced memory access."""
+def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
+  """Factory for tiled linesearch kernel - loads data once, evaluates all alphas.
+
+  This version fuses the alpha loop with the efc loop: for each tile of efc rows,
+  we load data once and compute costs for ALL alphas, then reduce.
+  """
   TILE_SIZE = tile_size
+  LS_ITERATIONS = ls_iterations
 
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    opt_ls_iterations: int,
     opt_impratio_invsqrt: wp.array(dtype=float),
     opt_ls_parallel_min_step: float,
     # Data in:
@@ -798,27 +802,29 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int):
     # Out:
     cost_out: wp.array2d(dtype=float),
   ):
-    worldid, alphaid, tid = wp.tid()
+    worldid, tid = wp.tid()
 
     if efc_done_in[worldid]:
       return
 
-    alpha = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, alphaid)
     impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-
     ne = ne_in[worldid]
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
     nacon = nacon_in[0]
+    efc_quad_gauss = efc_quad_gauss_in[worldid]
 
-    total_cost = float(0.0)
+    # Accumulator for each alpha - use array for compile-time known size
+    total_costs = wp.vector(dtype=float, length=LS_ITERATIONS)
+    for i in range(LS_ITERATIONS):
+      total_costs[i] = float(0.0)
 
-    # Process efc rows in tiles with coalesced loads
+    # Process efc rows in tiles - load data ONCE, evaluate ALL alphas
     for tile_start in range(0, njmax, TILE_SIZE):
       if tile_start >= nefc:
         break
 
-      # Coalesced tile loads - all threads load cooperatively
+      # Coalesced tile loads - data loaded once for all alphas
       type_tile = wp.tile_load(
         efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
       )
@@ -841,58 +847,59 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int):
         efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
       )
 
-      # Each thread computes cost for its row
       efcid = tile_start + tid
-      local_cost = float(0.0)
 
-      if efcid < nefc:
-        efc_type = type_tile[tid]
-        efc_id = id_tile[tid]
+      # Get per-row data (loaded once, reused for all alphas)
+      efc_type = type_tile[tid]
+      efc_id = id_tile[tid]
+      efc_D = D_tile[tid]
+      efc_frictionloss = frictionloss_tile[tid]
+      efc_Jaref = Jaref_tile[tid]
+      efc_jv = jv_tile[tid]
+      efc_quad = quad_tile[tid]
 
-        # Get contact data if needed (only elliptic uses)
-        contact_friction = types.vec5(0.0)
-        efc_addr0 = int(0)
-        quad1 = wp.vec3(0.0)
-        quad2 = wp.vec3(0.0)
+      # Get contact data if needed (loaded once)
+      contact_friction = types.vec5(0.0)
+      efc_addr0 = int(0)
+      quad1 = wp.vec3(0.0)
+      quad2 = wp.vec3(0.0)
 
-        if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
-          contact_friction = contact_friction_in[efc_id]
-          efc_addr0 = contact_efc_address_in[efc_id, 0]
-          efc_addr1 = contact_efc_address_in[efc_id, 1]
-          efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_in[worldid, efc_addr1]
-          quad2 = efc_quad_in[worldid, efc_addr2]
+      if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+        contact_friction = contact_friction_in[efc_id]
+        efc_addr0 = contact_efc_address_in[efc_id, 0]
+        efc_addr1 = contact_efc_address_in[efc_id, 1]
+        efc_addr2 = contact_efc_address_in[efc_id, 2]
+        quad1 = efc_quad_in[worldid, efc_addr1]
+        quad2 = efc_quad_in[worldid, efc_addr2]
 
-        local_cost = _compute_efc_cost_tiled(
-          efcid,
-          alpha,
-          nefc,
-          ne,
-          nf,
-          nacon,
-          impratio_invsqrt,
-          efc_type,
-          efc_id,
-          D_tile[tid],
-          frictionloss_tile[tid],
-          Jaref_tile[tid],
-          jv_tile[tid],
-          quad_tile[tid],
-          contact_friction,
-          efc_addr0,
-          quad1,
-          quad2,
-        )
+      # Compute cost for ALL alphas using the same loaded data
+      for alphaid in range(LS_ITERATIONS):
+        alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
 
-      # Tile reduction
-      cost_tile = wp.tile(local_cost)
-      tile_sum = wp.tile_reduce(wp.add, cost_tile)
-      total_cost += tile_sum[0]
+        local_cost = float(0.0)
+        if efcid < nefc:
+          local_cost = _compute_efc_cost_tiled(
+            efcid, alpha, nefc, ne, nf, nacon, impratio_invsqrt,
+            efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
+            contact_friction, efc_addr0, quad1, quad2,
+          )
 
-    # First thread writes result
-    if tid == 0:
-      base_cost = _eval_cost(efc_quad_gauss_in[worldid], alpha)
-      cost_out[worldid, alphaid] = base_cost + total_cost
+        # Reduce across threads for this alpha
+        cost_tile = wp.tile(local_cost)
+        tile_sum = wp.tile_reduce(wp.add, cost_tile)
+        total_costs[alphaid] = total_costs[alphaid] + tile_sum[0]
+
+    # Write results - thread 0 writes all alpha costs
+    #if tid == 0:
+    #  for alphaid in range(LS_ITERATIONS):
+    #    alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
+    #    base_cost = _eval_cost(efc_quad_gauss, alpha)
+    #    cost_out[worldid, alphaid] = base_cost + total_costs[alphaid]
+
+    if tid < LS_ITERATIONS:
+      alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, tid)
+      base_cost = _eval_cost(efc_quad_gauss, alpha)
+      cost_out[worldid, tid] = base_cost + total_costs[tid]
 
   return kernel
 
@@ -900,12 +907,11 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int):
 def _linesearch_parallel_tiled(
   m: types.Model, d: types.Data, cost: wp.array2d(dtype=float), tile_size: int = 64
 ):
-  """Tiled parallel linesearch with coalesced memory access."""
+  """Tiled parallel linesearch - loads data once, evaluates all alphas."""
   wp.launch_tiled(
-    linesearch_parallel_tiled(tile_size, d.njmax),
-    dim=(d.nworld, m.opt.ls_iterations),
+    linesearch_parallel_tiled(tile_size, d.njmax, m.opt.ls_iterations),
+    dim=d.nworld,
     inputs=[
-      m.opt.ls_iterations,
       m.opt.impratio_invsqrt,
       m.opt.ls_parallel_min_step,
       d.ne,
@@ -2811,7 +2817,7 @@ def _solver_iteration(
   step_size_cost: wp.array2d(dtype=float),
 ):
   if True:
-    _linesearch_tiled(m, d, step_size_cost, tile_size=32)
+    _linesearch_tiled(m, d, step_size_cost, tile_size=64)
   else:
     _linesearch(m, d, step_size_cost)
 
