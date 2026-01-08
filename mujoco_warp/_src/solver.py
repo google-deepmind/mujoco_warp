@@ -763,16 +763,23 @@ def _compute_efc_cost_tiled(
   return 0.0
 
 
-def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
+def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_iterations: int):
   """Factory for tiled linesearch kernel - parallel load, parallel alpha eval.
+
+  Args:
+    tile_size: Number of EFC rows to load per tile iteration.
+    block_dim: Number of threads per block.
+    njmax: Maximum number of EFC rows.
+    ls_iterations: Number of alpha values to evaluate.
 
   Structure:
   1. All threads cooperatively load TILE_SIZE efc rows into shared memory
-  2. Each thread handles one alpha (threads 0..ls_iterations-1)
-  3. Each thread loops over loaded efc rows, accumulating its alpha's cost
-  4. No reduction needed - each thread writes its own result
+  2. Shared tile stores costs for all LS_ITERATIONS alphas
+  3. Each thread handles ceil(ls_iterations / block_dim) alphas via strided access
+  4. No reduction needed - each thread writes its own results
   """
   TILE_SIZE = tile_size
+  BLOCK_DIM = block_dim
   LS_ITERATIONS = ls_iterations
 
   @nested_kernel(module="unique", enable_backward=False)
@@ -812,14 +819,8 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
     nacon = nacon_in[0]
     efc_quad_gauss = efc_quad_gauss_in[worldid]
 
-    # Each thread handles one alpha (if tid < LS_ITERATIONS)
-    alphaid = tid
-    has_alpha = tid < LS_ITERATIONS
-    alpha = float(0.0)
-    if has_alpha:
-      alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
-
-    total_cost = float(0.0)
+    # Shared tile for all alpha costs - threads access via strided alphaid
+    alpha_costs = wp.tile_zeros(dtype=float, shape=LS_ITERATIONS, storage="shared")
 
     # Process efc rows in tiles
     for tile_start in range(0, njmax, TILE_SIZE):
@@ -849,55 +850,67 @@ def linesearch_parallel_tiled(tile_size: int, njmax: int, ls_iterations: int):
         efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, storage="shared", bounds_check=False
       )
 
-      # Each alpha-thread loops over ALL loaded efc rows
-      if has_alpha:
-        for i in range(TILE_SIZE):
-          efcid = tile_start + i
-          if efcid < nefc:
-            # Read from shared tiles
-            efc_type = type_tile[i]
-            efc_id = id_tile[i]
-            efc_D = D_tile[i]
-            efc_frictionloss = frictionloss_tile[i]
-            efc_Jaref = Jaref_tile[i]
-            efc_jv = jv_tile[i]
-            efc_quad = quad_tile[i]
+      # Loop over all efc rows in this tile
+      for i in range(TILE_SIZE):
+        efcid = tile_start + i
+        if efcid < nefc:
+          # Read efc data from shared tiles (once per row)
+          efc_type = type_tile[i]
+          efc_id = id_tile[i]
+          efc_D = D_tile[i]
+          efc_frictionloss = frictionloss_tile[i]
+          efc_Jaref = Jaref_tile[i]
+          efc_jv = jv_tile[i]
+          efc_quad = quad_tile[i]
 
-            # Get contact data if needed
-            contact_friction = types.vec5(0.0)
-            efc_addr0 = int(0)
-            quad1 = wp.vec3(0.0)
-            quad2 = wp.vec3(0.0)
+          # Get contact data if needed (once per row)
+          contact_friction = types.vec5(0.0)
+          efc_addr0 = int(0)
+          quad1 = wp.vec3(0.0)
+          quad2 = wp.vec3(0.0)
 
-            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
-              contact_friction = contact_friction_in[efc_id]
-              efc_addr0 = contact_efc_address_in[efc_id, 0]
-              efc_addr1 = contact_efc_address_in[efc_id, 1]
-              efc_addr2 = contact_efc_address_in[efc_id, 2]
-              quad1 = efc_quad_in[worldid, efc_addr1]
-              quad2 = efc_quad_in[worldid, efc_addr2]
+          if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+            contact_friction = contact_friction_in[efc_id]
+            efc_addr0 = contact_efc_address_in[efc_id, 0]
+            efc_addr1 = contact_efc_address_in[efc_id, 1]
+            efc_addr2 = contact_efc_address_in[efc_id, 2]
+            quad1 = efc_quad_in[worldid, efc_addr1]
+            quad2 = efc_quad_in[worldid, efc_addr2]
 
-            total_cost += _compute_efc_cost_tiled(
+          # Compute cost for each alpha this thread handles (strided by BLOCK_DIM)
+          for alphaid in range(tid, LS_ITERATIONS, BLOCK_DIM):
+            alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
+            cost = _compute_efc_cost_tiled(
               efcid, alpha, ne, nf, nacon, impratio_invsqrt,
               efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
               contact_friction, efc_addr0, quad1, quad2,
             )
+            alpha_costs[alphaid] = alpha_costs[alphaid] + cost
 
-    # Each alpha-thread writes its result (no reduction needed!)
-    if has_alpha:
+    # Write results for all alphas this thread handles
+    for alphaid in range(tid, LS_ITERATIONS, BLOCK_DIM):
+      alpha = _log_scale(opt_ls_parallel_min_step, 1.0, LS_ITERATIONS, alphaid)
       base_cost = _eval_cost(efc_quad_gauss, alpha)
-      cost_out[worldid, alphaid] = base_cost + total_cost
+      cost_out[worldid, alphaid] = base_cost + alpha_costs[alphaid]
 
   return kernel
 
 
 def _linesearch_parallel_tiled(
-  m: types.Model, d: types.Data, cost: wp.array2d(dtype=float), tile_size: int = 64
+  m: types.Model, d: types.Data, cost: wp.array2d(dtype=float),
+  tile_size: int = 64, block_dim: int = 64
 ):
-  """Tiled parallel linesearch - parallel load, parallel alpha eval."""
-  # tile_size should be >= ls_iterations for best utilization
+  """Tiled parallel linesearch - parallel load, parallel alpha eval.
+
+  Args:
+    m: Model.
+    d: Data.
+    cost: Scratch array for storing costs per (world, alpha).
+    tile_size: Number of EFC rows to load per tile iteration.
+    block_dim: Number of threads per block.
+  """
   wp.launch_tiled(
-    linesearch_parallel_tiled(tile_size, d.njmax, m.opt.ls_iterations),
+    linesearch_parallel_tiled(tile_size, block_dim, d.njmax, m.opt.ls_iterations),
     dim=d.nworld,
     inputs=[
       m.opt.impratio_invsqrt,
@@ -920,7 +933,7 @@ def _linesearch_parallel_tiled(
       d.nacon,
     ],
     outputs=[cost],
-    block_dim=tile_size,
+    block_dim=block_dim,
   )
 
   wp.launch(
@@ -988,9 +1001,16 @@ def _compute_efc_eval_pt_tiled(
   return wp.vec3(0.0)
 
 
-def linesearch_iterative_tiled(tile_size: int, njmax: int):
-  """Factory for tiled iterative linesearch kernel."""
+def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
+  """Factory for tiled iterative linesearch kernel.
+
+  Args:
+    tile_size: Number of EFC rows to load per tile iteration.
+    block_dim: Number of threads per block.
+    njmax: Maximum number of EFC rows.
+  """
   TILE_SIZE = tile_size
+  BLOCK_DIM = block_dim
 
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1075,40 +1095,42 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
         efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
       )
 
-      efcid = tile_start + tid
+      # Each thread processes multiple elements if TILE_SIZE > BLOCK_DIM
       local_vec = wp.vec3(0.0)
+      for i in range(0, TILE_SIZE, BLOCK_DIM):
+        idx = i + tid
+        if idx < TILE_SIZE:
+          efcid = tile_start + idx
+          if efcid < nefc:
+            efc_type = type_tile[idx]
+            efc_id = id_tile[idx]
 
-      if efcid < nefc:
-        efc_type = type_tile[tid]
-        efc_id = id_tile[tid]
+            contact_friction = types.vec5(0.0)
+            efc_addr0 = int(0)
+            quad1 = wp.vec3(0.0)
+            quad2 = wp.vec3(0.0)
 
-        contact_friction = types.vec5(0.0)
-        efc_addr0 = int(0)
-        quad1 = wp.vec3(0.0)
-        quad2 = wp.vec3(0.0)
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr0 = contact_efc_address_in[efc_id, 0]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              quad1 = efc_quad_in[worldid, efc_addr1]
+              quad2 = efc_quad_in[worldid, efc_addr2]
 
-        if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
-          contact_friction = contact_friction_in[efc_id]
-          efc_addr0 = contact_efc_address_in[efc_id, 0]
-          efc_addr1 = contact_efc_address_in[efc_id, 1]
-          efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_in[worldid, efc_addr1]
-          quad2 = efc_quad_in[worldid, efc_addr2]
-
-        local_vec = _compute_efc_eval_pt_tiled(
-          efcid, 0.0, ne, nf, nacon, impratio_invsqrt,
-          efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
-          Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
-          contact_friction, efc_addr0, quad1, quad2,
-        )
+            local_vec += _compute_efc_eval_pt_tiled(
+              efcid, 0.0, ne, nf, nacon, impratio_invsqrt,
+              efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+              Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+              contact_friction, efc_addr0, quad1, quad2,
+            )
 
       # Reduce vec3 directly
       vec_tile = wp.tile(local_vec, preserve_type=True)
       vec_sum = wp.tile_reduce(wp.add, vec_tile)
       p0 += vec_sum[0]
 
-    # Add quad_gauss contribution (only thread 0)
-    #if tid == 0:
+    # Add quad_gauss contribution
     p0 += wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2])
 
     # =========================================================================
@@ -1144,32 +1166,34 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
         efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
       )
 
-      efcid = tile_start + tid
       local_vec = wp.vec3(0.0)
+      for i in range(0, TILE_SIZE, BLOCK_DIM):
+        idx = i + tid
+        if idx < TILE_SIZE:
+          efcid = tile_start + idx
+          if efcid < nefc:
+            efc_type = type_tile[idx]
+            efc_id = id_tile[idx]
 
-      if efcid < nefc:
-        efc_type = type_tile[tid]
-        efc_id = id_tile[tid]
+            contact_friction = types.vec5(0.0)
+            efc_addr0 = int(0)
+            quad1 = wp.vec3(0.0)
+            quad2 = wp.vec3(0.0)
 
-        contact_friction = types.vec5(0.0)
-        efc_addr0 = int(0)
-        quad1 = wp.vec3(0.0)
-        quad2 = wp.vec3(0.0)
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr0 = contact_efc_address_in[efc_id, 0]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              quad1 = efc_quad_in[worldid, efc_addr1]
+              quad2 = efc_quad_in[worldid, efc_addr2]
 
-        if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
-          contact_friction = contact_friction_in[efc_id]
-          efc_addr0 = contact_efc_address_in[efc_id, 0]
-          efc_addr1 = contact_efc_address_in[efc_id, 1]
-          efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_in[worldid, efc_addr1]
-          quad2 = efc_quad_in[worldid, efc_addr2]
-
-        local_vec = _compute_efc_eval_pt_tiled(
-          efcid, lo_alpha_in, ne, nf, nacon, impratio_invsqrt,
-          efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
-          Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
-          contact_friction, efc_addr0, quad1, quad2,
-        )
+            local_vec += _compute_efc_eval_pt_tiled(
+              efcid, lo_alpha_in, ne, nf, nacon, impratio_invsqrt,
+              efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+              Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+              contact_friction, efc_addr0, quad1, quad2,
+            )
 
       # Reduce vec3 directly
       vec_tile = wp.tile(local_vec, preserve_type=True)
@@ -1177,7 +1201,6 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
       lo_in += vec_sum[0]
 
     # Add quad_gauss contribution
-    #if tid == 0:
     lo_in += _eval_pt(efc_quad_gauss, lo_alpha_in)
 
     # Initialize bounds
@@ -1228,46 +1251,49 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
           efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
         )
 
-        efcid = tile_start + tid
         local_lo = wp.vec3(0.0)
         local_hi = wp.vec3(0.0)
         local_mid = wp.vec3(0.0)
 
-        if efcid < nefc:
-          efc_type = type_tile[tid]
-          efc_id = id_tile[tid]
+        for i in range(0, TILE_SIZE, BLOCK_DIM):
+          idx = i + tid
+          if idx < TILE_SIZE:
+            efcid = tile_start + idx
+            if efcid < nefc:
+              efc_type = type_tile[idx]
+              efc_id = id_tile[idx]
 
-          contact_friction = types.vec5(0.0)
-          efc_addr0 = int(0)
-          quad1 = wp.vec3(0.0)
-          quad2 = wp.vec3(0.0)
+              contact_friction = types.vec5(0.0)
+              efc_addr0 = int(0)
+              quad1 = wp.vec3(0.0)
+              quad2 = wp.vec3(0.0)
 
-          if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
-            contact_friction = contact_friction_in[efc_id]
-            efc_addr0 = contact_efc_address_in[efc_id, 0]
-            efc_addr1 = contact_efc_address_in[efc_id, 1]
-            efc_addr2 = contact_efc_address_in[efc_id, 2]
-            quad1 = efc_quad_in[worldid, efc_addr1]
-            quad2 = efc_quad_in[worldid, efc_addr2]
+              if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+                contact_friction = contact_friction_in[efc_id]
+                efc_addr0 = contact_efc_address_in[efc_id, 0]
+                efc_addr1 = contact_efc_address_in[efc_id, 1]
+                efc_addr2 = contact_efc_address_in[efc_id, 2]
+                quad1 = efc_quad_in[worldid, efc_addr1]
+                quad2 = efc_quad_in[worldid, efc_addr2]
 
-          local_lo = _compute_efc_eval_pt_tiled(
-            efcid, lo_next_alpha, ne, nf, nacon, impratio_invsqrt,
-            efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
-            Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
-            contact_friction, efc_addr0, quad1, quad2,
-          )
-          local_hi = _compute_efc_eval_pt_tiled(
-            efcid, hi_next_alpha, ne, nf, nacon, impratio_invsqrt,
-            efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
-            Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
-            contact_friction, efc_addr0, quad1, quad2,
-          )
-          local_mid = _compute_efc_eval_pt_tiled(
-            efcid, mid_alpha, ne, nf, nacon, impratio_invsqrt,
-            efc_type, efc_id, D_tile[tid], frictionloss_tile[tid],
-            Jaref_tile[tid], jv_tile[tid], quad_tile[tid],
-            contact_friction, efc_addr0, quad1, quad2,
-          )
+              local_lo += _compute_efc_eval_pt_tiled(
+                efcid, lo_next_alpha, ne, nf, nacon, impratio_invsqrt,
+                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                contact_friction, efc_addr0, quad1, quad2,
+              )
+              local_hi += _compute_efc_eval_pt_tiled(
+                efcid, hi_next_alpha, ne, nf, nacon, impratio_invsqrt,
+                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                contact_friction, efc_addr0, quad1, quad2,
+              )
+              local_mid += _compute_efc_eval_pt_tiled(
+                efcid, mid_alpha, ne, nf, nacon, impratio_invsqrt,
+                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                contact_friction, efc_addr0, quad1, quad2,
+              )
 
         # Reduce vec3 directly
         lo_tile = wp.tile(local_lo, preserve_type=True)
@@ -1281,7 +1307,6 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
         mid += mid_sum[0]
 
       # Add quad_gauss contributions
-      #if tid == 0:
       lo_next += _eval_pt(efc_quad_gauss, lo_next_alpha)
       hi_next += _eval_pt(efc_quad_gauss, hi_next_alpha)
       mid += _eval_pt(efc_quad_gauss, mid_alpha)
@@ -1330,10 +1355,19 @@ def linesearch_iterative_tiled(tile_size: int, njmax: int):
   return kernel
 
 
-def _linesearch_iterative_tiled(m: types.Model, d: types.Data, tile_size: int = 64):
-  """Tiled iterative linesearch with parallel reductions over efc rows."""
+def _linesearch_iterative_tiled(
+  m: types.Model, d: types.Data, tile_size: int = 64, block_dim: int = 64
+):
+  """Tiled iterative linesearch with parallel reductions over efc rows.
+
+  Args:
+    m: Model.
+    d: Data.
+    tile_size: Number of EFC rows to load per tile iteration.
+    block_dim: Number of threads per block.
+  """
   wp.launch_tiled(
-    linesearch_iterative_tiled(tile_size, d.njmax),
+    linesearch_iterative_tiled(tile_size, block_dim, d.njmax),
     dim=d.nworld,
     inputs=[
       m.nv,
@@ -1361,7 +1395,7 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, tile_size: int = 
       d.nacon,
     ],
     outputs=[d.efc.alpha],
-    block_dim=tile_size,
+    block_dim=block_dim,
   )
 
 
@@ -1613,6 +1647,7 @@ def _linesearch(
   cost: wp.array2d(dtype=float),
   use_tiled: bool = False,
   tile_size: int = 64,
+  block_dim: int = 64,
 ):
   """Linesearch for constraint solver.
 
@@ -1622,6 +1657,7 @@ def _linesearch(
     cost: Scratch array for storing costs per (world, alpha) - used for parallel mode
     use_tiled: If True, use tiled kernels with parallel reduction over efc rows
     tile_size: Tile size for tiled kernels (default 64)
+    block_dim: Block dimension for tiled kernels (default 64)
   """
   # =========================================================================
   # Setup: mv, jv, quad_gauss, quad
@@ -1697,9 +1733,9 @@ def _linesearch(
 
   if use_tiled:
     if m.opt.ls_parallel:
-      _linesearch_parallel_tiled(m, d, cost, tile_size)
+      _linesearch_parallel_tiled(m, d, cost, tile_size, block_dim)
     else:
-      _linesearch_iterative_tiled(m, d, tile_size)
+      _linesearch_iterative_tiled(m, d, tile_size, block_dim)
   else:
     if m.opt.ls_parallel:
       _linesearch_parallel(m, d, cost)
@@ -2736,7 +2772,7 @@ def _solver_iteration(
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=64)
+  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=64, block_dim=32)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
