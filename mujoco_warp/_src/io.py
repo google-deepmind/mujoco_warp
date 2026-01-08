@@ -550,11 +550,13 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
   #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.
   # if sparse - we pad to the next multiple of tile_size for njmax, and nv.
+  # njmax also needs to be padded for linesearch tile size.
 
   def round_up(x, multiple):
     return ((x + multiple - 1) // multiple) * multiple
 
-  njmax_padded = round_up(njmax, tile_size)
+  njmax_tile_size = max(tile_size, types.TILE_SIZE_LINESEARCH)
+  njmax_padded = round_up(njmax, njmax_tile_size)
   nv_padded = round_up(nv, tile_size) if (is_sparse or nv > 32) else round_up(nv, 4)
 
   return njmax_padded, nv_padded
