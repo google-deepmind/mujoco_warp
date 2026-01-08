@@ -174,14 +174,13 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     # TODO(kbayes): Support edge prisms
-    sp.vertex_index = wp.where(local_dir[2] < 0, -2, -3)
+    sp.vertex_index = wp.where(dir[2] < 0, -2, -3)
     for i in range(6):
       vert = geom.hfprism[i]
-      dist = wp.dot(vert, local_dir)
+      dist = wp.dot(vert, dir)
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
-    sp.point = geom.rot @ sp.point + geom.pos
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
@@ -904,12 +903,12 @@ def _epa_witness(
   i3 = pt.vert_index1[face[2]]
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
-    n = geom1.rot[:, 2]
+    n = wp.vec3(0.0, 0.0, 1.0)
 
-    # height field prism vertices in global frame
-    a = geom1.pos + geom1.rot @ geom1.hfprism[3]
-    b = geom1.pos + geom1.rot @ geom1.hfprism[4]
-    c = geom1.pos + geom1.rot @ geom1.hfprism[5]
+    # height field prism vertices
+    a = geom1.hfprism[3]
+    b = geom1.hfprism[4]
+    c = geom1.hfprism[5]
 
     # TODO(kbayes): Support cases where geom2 is larger than the height field
     if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
@@ -2190,14 +2189,14 @@ def _inflate(
         break
 
     if is_side:
-      n = geom1.rot[:, 2]
+      n = wp.vec3(0.0, 0.0, 1.0)
       sp = _support(geom2, geomtype2, x2)
       x2 = sp.point - margin2 * n
 
-      # height field prism vertices in global frame
-      a = geom1.pos + geom1.rot @ geom1.hfprism[3]
-      b = geom1.pos + geom1.rot @ geom1.hfprism[4]
-      c = geom1.pos + geom1.rot @ geom1.hfprism[5]
+      # height field prism vertices
+      a = geom1.hfprism[3]
+      b = geom1.hfprism[4]
+      c = geom1.hfprism[5]
 
       coordinates = _tri_affine_coord(a, b, c, x2)
       if coordinates[0] > 0 and coordinates[1] > 0 and coordinates[2] > 0:
