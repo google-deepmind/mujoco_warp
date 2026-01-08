@@ -889,7 +889,9 @@ def linesearch_parallel_tiled(tile_size: int, block_dim: int, njmax: int, ls_ite
                 efc_type, efc_id, efc_D, efc_frictionloss, efc_Jaref, efc_jv, efc_quad,
                 contact_friction, efc_addr0, quad1, quad2,
               )
-              alpha_costs[alphaid] = alpha_costs[alphaid] + cost
+            else:
+              cost = 0.0
+            alpha_costs[alphaid] = alpha_costs[alphaid] + cost
 
     # Write results for all alphas this thread handles
     for alphaid in range(tid, ALPHA_UPPER, BLOCK_DIM):
