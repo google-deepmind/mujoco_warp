@@ -64,7 +64,7 @@ class Polytope:
   nvert: int
 
   # faces in polytope
-  face: wp.array(dtype=wp.vec3i)
+  face: wp.array(dtype=int)
   face_pr: wp.array(dtype=wp.vec3)
   face_norm2: wp.array(dtype=float)
   face_index: wp.array(dtype=int)
@@ -198,7 +198,7 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   if ret:
     return 0.0
 
-  face = wp.vec3i(v1, v2, v3)
+  face = v1 + (v2 << 10) + (v3 << 20)
   pt.face[idx] = face
   pt.face_pr[idx] = r
 
@@ -861,8 +861,7 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
 def _epa_witness(
   pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
 ) -> Tuple[wp.vec3, wp.vec3, float]:
-  face = pt.face[face_idx]
-
+  face = _get_face_verts(pt.face[face_idx])
   # compute affine coordinates for witness points on plane defined by face
   v1 = pt.vert[face[0]]
   v2 = pt.vert[face[1]]
@@ -1120,6 +1119,11 @@ def _polytope3(
 
 
 @wp.func
+def _get_face_verts(face: int) -> wp.vec3i:
+  return wp.vec3i(face & 0x3FF, face >> 10 & 0x3FF, face >> 20 & 0x3FF)
+
+
+@wp.func
 def _polytope4(
   # In:
   pt: Polytope,
@@ -1260,9 +1264,10 @@ def _epa(
 
     nvalid -= 1
     pt.face_norm2[idx] = DELETED_FACE
-    pt.nhorizon = _add_edge(pt, pt.face[idx][0], pt.face[idx][1])
-    pt.nhorizon = _add_edge(pt, pt.face[idx][1], pt.face[idx][2])
-    pt.nhorizon = _add_edge(pt, pt.face[idx][2], pt.face[idx][0])
+    face = _get_face_verts(pt.face[idx])
+    pt.nhorizon = _add_edge(pt, face[0], face[1])
+    pt.nhorizon = _add_edge(pt, face[1], face[2])
+    pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
       idx = -1
       break
@@ -1278,9 +1283,10 @@ def _epa(
       if wp.dot(face_pr, pt.vert[wi]) - face_norm2 > 1e-10:
         pt.face_norm2[i] = DELETED_FACE
         nvalid = wp.where(invalid_face, nvalid, nvalid - 1)
-        pt.nhorizon = _add_edge(pt, pt.face[i][0], pt.face[i][1])
-        pt.nhorizon = _add_edge(pt, pt.face[i][1], pt.face[i][2])
-        pt.nhorizon = _add_edge(pt, pt.face[i][2], pt.face[i][0])
+        face = _get_face_verts(pt.face[i])
+        pt.nhorizon = _add_edge(pt, face[0], face[1])
+        pt.nhorizon = _add_edge(pt, face[1], face[2])
+        pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
           idx = -1
           break
@@ -1939,7 +1945,7 @@ def multicontact(
   epa_vert2: wp.array(dtype=wp.vec3),
   epa_vert_index1: wp.array(dtype=int),
   epa_vert_index2: wp.array(dtype=int),
-  face: wp.vec3i,
+  epa_face: int,
   x1: wp.vec3,
   x2: wp.vec3,
   geom1: Geom,
@@ -1970,6 +1976,8 @@ def multicontact(
     polymapadr = geom2.mesh_polymapadr
     polymapnum = geom2.mesh_polymapnum
     polymap = geom2.mesh_polymap
+
+  face = _get_face_verts(epa_face)
 
   # get dimensions of features of geoms 1 and 2
   nface1, feature_index1, feature_vertex1 = _feature_dim(face, epa_vert_index1, epa_vert1)
@@ -2207,7 +2215,7 @@ def ccd(
   vert2: wp.array(dtype=wp.vec3),
   vert_index1: wp.array(dtype=int),
   vert_index2: wp.array(dtype=int),
-  face: wp.array(dtype=wp.vec3i),
+  face: wp.array(dtype=int),
   face_pr: wp.array(dtype=wp.vec3),
   face_norm2: wp.array(dtype=float),
   horizon: wp.array(dtype=int),

@@ -258,7 +258,7 @@ def ccd_hfield_kernel_builder(
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
+    epa_face_in: wp.array2d(dtype=int),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
     epa_horizon_in: wp.array2d(dtype=int),
@@ -719,7 +719,7 @@ def ccd_kernel_builder(
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
+    epa_face_in: wp.array2d(dtype=int),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
     epa_horizon_in: wp.array2d(dtype=int),
@@ -934,7 +934,7 @@ def ccd_kernel_builder(
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
+    epa_face_in: wp.array2d(dtype=int),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
     epa_horizon_in: wp.array2d(dtype=int),
@@ -1154,7 +1154,7 @@ def convex_narrowphase(m: Model, d: Data):
   # epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
   epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
   # epa_face: faces of polytope represented by three indices
-  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3i)
+  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
   # epa_pr: projection of origin on polytope faces
   epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
   # epa_norm2: epa_pr * epa_pr
