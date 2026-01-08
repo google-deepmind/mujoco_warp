@@ -183,7 +183,8 @@ def _main(argv: Sequence[str]):
     # print impratio
 
     if _EXTRA_INFO.value:
-      print(f"  impratio: {m.opt.impratio}")
+      val = m.opt.impratio_invsqrt.numpy()[0]
+      print(f"  impratio: {1.0 / (val * val)}")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 

@@ -124,25 +124,17 @@ def benchmark(
 
   with warp_util.EventTracer(enabled=event_trace) as tracer:
     # capture the whole function as a CUDA graph
-    is_cuda = wp.get_device().is_cuda
     jit_beg = time.perf_counter()
-    if is_cuda:
-      with wp.ScopedCapture() as capture:
-        fn(m, d)
-    else:
+    with wp.ScopedCapture() as capture:
       fn(m, d)
     jit_end = time.perf_counter()
     jit_duration = jit_end - jit_beg
 
-    if is_cuda:
-      graph = capture.graph
-
-    from contextlib import nullcontext
+    graph = capture.graph
 
     time_vec = np.zeros(nstep)
     for i in range(nstep):
-      ctx = wp.ScopedStream(wp.get_stream()) if is_cuda else nullcontext()
-      with ctx:
+      with wp.ScopedStream(wp.get_stream()):
         if ctrls is not None:
           center = wp.array(ctrls[i], dtype=wp.float32)
         wp.launch(
@@ -154,10 +146,7 @@ def benchmark(
         wp.synchronize()
 
         run_beg = time.perf_counter()
-        if is_cuda:
-          wp.capture_launch(graph)
-        else:
-          fn(m, d)
+        wp.capture_launch(graph)
         wp.synchronize()
         run_end = time.perf_counter()
 
