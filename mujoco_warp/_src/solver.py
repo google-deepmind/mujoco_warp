@@ -791,14 +791,12 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
 
   # Friction constraint
   if efcid < ne + nf:
-    x = efc_Jaref
     rf = math.safe_div(efc_frictionloss, efc_D)
-    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
 
   # Limit/other constraint
-  x = efc_Jaref
-  if x < 0.0:
+  if efc_Jaref < 0.0:
     return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
   return wp.vec3(0.0)
 
@@ -830,9 +828,8 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
 
   # Friction constraint
   if efcid < ne + nf:
-    x = efc_Jaref
     rf = math.safe_div(efc_frictionloss, efc_D)
-    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
 
   # Contact elliptic
@@ -843,8 +840,7 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
     return _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, 0.0)
 
   # Limit/other constraint
-  x = efc_Jaref
-  if x < 0.0:
+  if efc_Jaref < 0.0:
     return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
   return wp.vec3(0.0)
 
@@ -874,17 +870,15 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
       _eval_pt(efc_quad, mid_alpha),
     )
 
+  x_lo = efc_Jaref + lo_alpha * efc_jv
+  x_hi = efc_Jaref + hi_alpha * efc_jv
+  x_mid = efc_Jaref + mid_alpha * efc_jv
+
   # Friction constraint - need to compute quad_f for each alpha
   if efcid < ne + nf:
     rf = math.safe_div(efc_frictionloss, efc_D)
-
-    x_lo = efc_Jaref + lo_alpha * efc_jv
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-
-    x_hi = efc_Jaref + hi_alpha * efc_jv
     quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-
-    x_mid = efc_Jaref + mid_alpha * efc_jv
     quad_f_mid = _eval_frictionloss(x_mid, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
 
     return (
@@ -894,10 +888,6 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     )
 
   # Limit/other constraint - same quad, check x < 0 for each alpha
-  x_lo = efc_Jaref + lo_alpha * efc_jv
-  x_hi = efc_Jaref + hi_alpha * efc_jv
-  x_mid = efc_Jaref + mid_alpha * efc_jv
-
   r_lo = wp.where(x_lo < 0.0, _eval_pt(efc_quad, lo_alpha), wp.vec3(0.0))
   r_hi = wp.where(x_hi < 0.0, _eval_pt(efc_quad, hi_alpha), wp.vec3(0.0))
   r_mid = wp.where(x_mid < 0.0, _eval_pt(efc_quad, mid_alpha), wp.vec3(0.0))
@@ -937,17 +927,16 @@ def _compute_efc_eval_pt_3alphas_elliptic(
       _eval_pt(efc_quad, mid_alpha),
     )
 
+  x_lo = efc_Jaref + lo_alpha * efc_jv
+  x_hi = efc_Jaref + hi_alpha * efc_jv
+  x_mid = efc_Jaref + mid_alpha * efc_jv
+
   # Friction constraint - need to compute quad_f for each alpha
   if efcid < ne + nf:
     rf = math.safe_div(efc_frictionloss, efc_D)
 
-    x_lo = efc_Jaref + lo_alpha * efc_jv
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-
-    x_hi = efc_Jaref + hi_alpha * efc_jv
     quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-
-    x_mid = efc_Jaref + mid_alpha * efc_jv
     quad_f_mid = _eval_frictionloss(x_mid, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
 
     return (
@@ -968,10 +957,6 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     )
 
   # Limit/other constraint - same quad, check x < 0 for each alpha
-  x_lo = efc_Jaref + lo_alpha * efc_jv
-  x_hi = efc_Jaref + hi_alpha * efc_jv
-  x_mid = efc_Jaref + mid_alpha * efc_jv
-
   r_lo = wp.where(x_lo < 0.0, _eval_pt(efc_quad, lo_alpha), wp.vec3(0.0))
   r_hi = wp.where(x_hi < 0.0, _eval_pt(efc_quad, hi_alpha), wp.vec3(0.0))
   r_mid = wp.where(x_mid < 0.0, _eval_pt(efc_quad, mid_alpha), wp.vec3(0.0))
