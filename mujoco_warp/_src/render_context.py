@@ -36,7 +36,7 @@ def _camera_frustum_bounds(
   znear: float,
 ) -> tuple[float, float, float, float, bool]:
   """Replicate MuJoCo's frustum computation to derive near-plane bounds."""
-  orthographic = bool(mjm.cam_orthographic[cam_id])
+  orthographic = mjm.cam_projection[cam_id] == mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
   if orthographic:
     half_height = mjm.cam_fovy[cam_id] * 0.5
     aspect = img_w / img_h
@@ -48,6 +48,15 @@ def _camera_frustum_bounds(
   if has_intrinsics:
     fx, fy, cx, cy = mjm.cam_intrinsic[cam_id]
     sensor_w, sensor_h = sensorsize
+
+    # Clip sensor size to match desired aspect ratio
+    target_aspect = img_w / img_h
+    sensor_aspect = sensor_w / sensor_h
+    if target_aspect > sensor_aspect:
+      sensor_h = sensor_w / target_aspect
+    elif target_aspect < sensor_aspect:
+      sensor_w = sensor_h * target_aspect
+
     left = -znear / fx * (sensor_w * 0.5 - cx)
     right = znear / fx * (sensor_w * 0.5 + cx)
     top = znear / fy * (sensor_h * 0.5 - cy)
