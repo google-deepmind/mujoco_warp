@@ -180,7 +180,7 @@ def _main(argv: Sequence[str]):
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
-    # print impratio
+    # TODO(team): https://github.com/google-deepmind/mujoco_warp/issues/944
 
     if _EXTRA_INFO.value:
       val = m.opt.impratio_invsqrt.numpy()[0]
