@@ -47,13 +47,20 @@ def _camera_frustum_bounds(
   has_intrinsics = sensorsize[1] != 0.0
   if has_intrinsics:
     fx, fy, cx, cy = mjm.cam_intrinsic[cam_id]
-    # Use the actual render dimensions (img_w, img_h) instead of sensor dimensions.
-    # When rendering at a different resolution than the calibrated sensor size,
-    # this effectively computes a center crop of the original FOV.
-    left = -znear / fx * (img_w * 0.5 - cx)
-    right = znear / fx * (img_w * 0.5 + cx)
-    top = znear / fy * (img_h * 0.5 - cy)
-    bottom = -znear / fy * (img_h * 0.5 + cy)
+    sensor_w, sensor_h = sensorsize
+
+    # Clip sensor size to match desired aspect ratio
+    target_aspect = img_w / img_h
+    sensor_aspect = sensor_w / sensor_h
+    if target_aspect > sensor_aspect:
+      sensor_h = sensor_w / target_aspect
+    elif target_aspect < sensor_aspect:
+      sensor_w = sensor_h * target_aspect
+
+    left = -znear / fx * (sensor_w * 0.5 - cx)
+    right = znear / fx * (sensor_w * 0.5 + cx)
+    top = znear / fy * (sensor_h * 0.5 - cy)
+    bottom = -znear / fy * (sensor_h * 0.5 + cy)
     return (float(left), float(right), float(top), float(bottom), False)
 
   fovy_rad = np.deg2rad(float(mjm.cam_fovy[cam_id]))
