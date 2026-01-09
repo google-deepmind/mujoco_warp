@@ -1218,10 +1218,10 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
       hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
       mid_alpha = 0.5 * (lo_alpha + hi_alpha)
 
-      # Compute lo_next, hi_next, mid via tiled reduction
-      lo_next = wp.vec3(0.0)
-      hi_next = wp.vec3(0.0)
-      mid = wp.vec3(0.0)
+      # Initialize with quad_gauss contributions
+      lo_next = _eval_pt(efc_quad_gauss, lo_next_alpha)
+      hi_next = _eval_pt(efc_quad_gauss, hi_next_alpha)
+      mid = _eval_pt(efc_quad_gauss, mid_alpha)
 
       for tile_start in range(0, njmax, TILE_SIZE):
         if tile_start >= nefc:
@@ -1305,11 +1305,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
         lo_next += lo_sum[0]
         hi_next += hi_sum[0]
         mid += mid_sum[0]
-
-      # Add quad_gauss contributions
-      lo_next += _eval_pt(efc_quad_gauss, lo_next_alpha)
-      hi_next += _eval_pt(efc_quad_gauss, hi_next_alpha)
-      mid += _eval_pt(efc_quad_gauss, mid_alpha)
 
       # Bracket swapping logic (same as original)
       # swap lo:
