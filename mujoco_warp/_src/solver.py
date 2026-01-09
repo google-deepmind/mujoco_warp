@@ -1054,7 +1054,8 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
     # =========================================================================
     # Calculate p0 via tiled reduction
     # =========================================================================
-    p0 = wp.vec3(0.0)
+    # Initialize with quad_gauss contribution
+    p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2])
 
     for tile_start in range(0, njmax, TILE_SIZE):
       if tile_start >= nefc:
@@ -1125,15 +1126,13 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
       vec_sum = wp.tile_reduce(wp.add, vec_tile)
       p0 += vec_sum[0]
 
-    # Add quad_gauss contribution
-    p0 += wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2])
-
     # =========================================================================
     # Calculate lo_in at lo_alpha_in = -p0[1] / p0[2]
     # =========================================================================
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
 
-    lo_in = wp.vec3(0.0)
+    # Initialize with quad_gauss contribution
+    lo_in = _eval_pt(efc_quad_gauss, lo_alpha_in)
 
     for tile_start in range(0, njmax, TILE_SIZE):
       if tile_start >= nefc:
@@ -1201,9 +1200,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
       vec_tile = wp.tile(local_vec, preserve_type=True)
       vec_sum = wp.tile_reduce(wp.add, vec_tile)
       lo_in += vec_sum[0]
-
-    # Add quad_gauss contribution
-    lo_in += _eval_pt(efc_quad_gauss, lo_alpha_in)
 
     # Initialize bounds
     lo_less = lo_in[1] < p0[1]
