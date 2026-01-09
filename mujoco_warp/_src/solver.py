@@ -1092,13 +1092,14 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
           if efcid < nefc:
             if wp.static(IS_ELLIPTIC):
               efc_type = type_tile[idx]
-              efc_id = id_tile[idx]
+              efc_id = 0
               contact_friction = types.vec5(0.0)
               efc_addr0 = int(0)
               quad1 = wp.vec3(0.0)
               quad2 = wp.vec3(0.0)
 
               if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+                efc_id = id_tile[idx]
                 contact_friction = contact_friction_in[efc_id]
                 efc_addr0 = contact_efc_address_in[efc_id, 0]
                 efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1168,13 +1169,14 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
           if efcid < nefc:
             if wp.static(IS_ELLIPTIC):
               efc_type = type_tile[idx]
-              efc_id = id_tile[idx]
+              efc_id = 0
               contact_friction = types.vec5(0.0)
               efc_addr0 = int(0)
               quad1 = wp.vec3(0.0)
               quad2 = wp.vec3(0.0)
 
               if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+                efc_id = id_tile[idx]
                 contact_friction = contact_friction_in[efc_id]
                 efc_addr0 = contact_efc_address_in[efc_id, 0]
                 efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1262,13 +1264,14 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
             if efcid < nefc:
               if wp.static(IS_ELLIPTIC):
                 efc_type = type_tile[idx]
-                efc_id = id_tile[idx]
+                efc_id = 0
                 contact_friction = types.vec5(0.0)
                 efc_addr0 = int(0)
                 quad1 = wp.vec3(0.0)
                 quad2 = wp.vec3(0.0)
 
                 if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+                  efc_id = id_tile[idx]
                   contact_friction = contact_friction_in[efc_id]
                   efc_addr0 = contact_efc_address_in[efc_id, 0]
                   efc_addr1 = contact_efc_address_in[efc_id, 1]
