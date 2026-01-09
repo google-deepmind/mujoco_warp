@@ -697,7 +697,6 @@ def _compute_efc_eval_pt_tiled(
   alpha: float,
   ne: int,
   nf: int,
-  nacon: int,
   impratio_invsqrt: float,
   # Per-row data:
   efc_type: int,
@@ -729,8 +728,6 @@ def _compute_efc_eval_pt_tiled(
   # Contact elliptic
   if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
     conid = efc_id
-    if conid >= nacon:
-      return wp.vec3(0.0)
     if efcid != efc_address0:  # Not primary row
       return wp.vec3(0.0)
 
@@ -751,7 +748,6 @@ def _compute_efc_eval_pt_3alphas(
   mid_alpha: float,
   ne: int,
   nf: int,
-  nacon: int,
   impratio_invsqrt: float,
   # Per-row data:
   efc_type: int,
@@ -799,8 +795,6 @@ def _compute_efc_eval_pt_3alphas(
   # Contact elliptic - need to call _eval_elliptic for each alpha
   if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
     conid = efc_id
-    if conid >= nacon:
-      return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
     if efcid != efc_address0:  # Not primary row
       return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
 
@@ -859,7 +853,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
     efc_quad_gauss_in: wp.array(dtype=wp.vec3),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
-    nacon_in: wp.array(dtype=int),
     # Data out:
     efc_alpha_out: wp.array(dtype=float),
   ):
@@ -875,7 +868,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
     ne = ne_in[worldid]
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
-    nacon = nacon_in[0]
 
     efc_quad_gauss = efc_quad_gauss_in[worldid]
 
@@ -931,7 +923,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
             quad1 = wp.vec3(0.0)
             quad2 = wp.vec3(0.0)
 
-            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
               contact_friction = contact_friction_in[efc_id]
               efc_addr0 = contact_efc_address_in[efc_id, 0]
               efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -940,7 +932,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
               quad2 = efc_quad_in[worldid, efc_addr2]
 
             local_vec += _compute_efc_eval_pt_tiled(
-              efcid, 0.0, ne, nf, nacon, impratio_invsqrt,
+              efcid, 0.0, ne, nf, impratio_invsqrt,
               efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
               Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
               contact_friction, efc_addr0, quad1, quad2,
@@ -1001,7 +993,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
             quad1 = wp.vec3(0.0)
             quad2 = wp.vec3(0.0)
 
-            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
               contact_friction = contact_friction_in[efc_id]
               efc_addr0 = contact_efc_address_in[efc_id, 0]
               efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1010,7 +1002,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
               quad2 = efc_quad_in[worldid, efc_addr2]
 
             local_vec += _compute_efc_eval_pt_tiled(
-              efcid, lo_alpha_in, ne, nf, nacon, impratio_invsqrt,
+              efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
               efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
               Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
               contact_friction, efc_addr0, quad1, quad2,
@@ -1089,7 +1081,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
               quad1 = wp.vec3(0.0)
               quad2 = wp.vec3(0.0)
 
-              if efc_type == types.ConstraintType.CONTACT_ELLIPTIC and efc_id < nacon:
+              if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
                 contact_friction = contact_friction_in[efc_id]
                 efc_addr0 = contact_efc_address_in[efc_id, 0]
                 efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1100,7 +1092,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
               # Compute all 3 alphas at once, sharing constraint type checking
               r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
                 efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
-                ne, nf, nacon, impratio_invsqrt,
+                ne, nf, impratio_invsqrt,
                 efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
                 Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
                 contact_friction, efc_addr0, quad1, quad2,
@@ -1206,7 +1198,6 @@ def _linesearch_iterative_tiled(
       d.efc.quad_gauss,
       d.efc.done,
       d.njmax,
-      d.nacon,
     ],
     outputs=[d.efc.alpha],
     block_dim=block_dim,
