@@ -692,7 +692,40 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
 
 
 @wp.func
-def _compute_efc_eval_pt_tiled(
+def _compute_efc_eval_pt_pyramidal(
+  efcid: int,
+  alpha: float,
+  ne: int,
+  nf: int,
+  # Per-row data:
+  efc_type: int,
+  efc_D: float,
+  efc_frictionloss: float,
+  efc_Jaref: float,
+  efc_jv: float,
+  efc_quad: wp.vec3,
+) -> wp.vec3:
+  """Compute for pyramidal cones (no elliptic contact data needed)."""
+  # Equality constraint
+  if efcid < ne:
+    return _eval_pt(efc_quad, alpha)
+
+  # Friction constraint
+  if efcid < ne + nf:
+    x = efc_Jaref + alpha * efc_jv
+    rf = math.safe_div(efc_frictionloss, efc_D)
+    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    return _eval_pt(quad_f, alpha)
+
+  # Limit/other constraint
+  x = efc_Jaref + alpha * efc_jv
+  if x < 0.0:
+    return _eval_pt(efc_quad, alpha)
+  return wp.vec3(0.0)
+
+
+@wp.func
+def _compute_efc_eval_pt_elliptic(
   efcid: int,
   alpha: float,
   ne: int,
@@ -712,7 +745,7 @@ def _compute_efc_eval_pt_tiled(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> wp.vec3:
-  """Compute (cost, gradient, hessian) contribution for a single efc row. Caller ensures efcid < nefc."""
+  """Compute for elliptic cones (includes elliptic contact data)."""
   # Equality constraint
   if efcid < ne:
     return _eval_pt(efc_quad, alpha)
@@ -739,7 +772,39 @@ def _compute_efc_eval_pt_tiled(
 
 
 @wp.func
-def _compute_efc_eval_pt_tiled_alpha_zero(
+def _compute_efc_eval_pt_alpha_zero_pyramidal(
+  efcid: int,
+  ne: int,
+  nf: int,
+  # Per-row data:
+  efc_type: int,
+  efc_D: float,
+  efc_frictionloss: float,
+  efc_Jaref: float,
+  efc_jv: float,
+  efc_quad: wp.vec3,
+) -> wp.vec3:
+  """Optimized version for alpha=0.0, pyramidal cones."""
+  # Equality constraint
+  if efcid < ne:
+    return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
+
+  # Friction constraint
+  if efcid < ne + nf:
+    x = efc_Jaref
+    rf = math.safe_div(efc_frictionloss, efc_D)
+    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
+
+  # Limit/other constraint
+  x = efc_Jaref
+  if x < 0.0:
+    return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
+  return wp.vec3(0.0)
+
+
+@wp.func
+def _compute_efc_eval_pt_alpha_zero_elliptic(
   efcid: int,
   ne: int,
   nf: int,
@@ -758,7 +823,7 @@ def _compute_efc_eval_pt_tiled_alpha_zero(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> wp.vec3:
-  """Optimized version for alpha=0.0 (p0 calculation)."""
+  """Optimized version for alpha=0.0, elliptic cones."""
   # Equality constraint
   if efcid < ne:
     return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
@@ -785,7 +850,63 @@ def _compute_efc_eval_pt_tiled_alpha_zero(
 
 
 @wp.func
-def _compute_efc_eval_pt_3alphas(
+def _compute_efc_eval_pt_3alphas_pyramidal(
+  efcid: int,
+  lo_alpha: float,
+  hi_alpha: float,
+  mid_alpha: float,
+  ne: int,
+  nf: int,
+  # Per-row data:
+  efc_type: int,
+  efc_D: float,
+  efc_frictionloss: float,
+  efc_Jaref: float,
+  efc_jv: float,
+  efc_quad: wp.vec3,
+):
+  """Compute for 3 alphas, pyramidal cones."""
+  # Equality constraint - same quad for all alphas
+  if efcid < ne:
+    return (
+      _eval_pt(efc_quad, lo_alpha),
+      _eval_pt(efc_quad, hi_alpha),
+      _eval_pt(efc_quad, mid_alpha),
+    )
+
+  # Friction constraint - need to compute quad_f for each alpha
+  if efcid < ne + nf:
+    rf = math.safe_div(efc_frictionloss, efc_D)
+
+    x_lo = efc_Jaref + lo_alpha * efc_jv
+    quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+
+    x_hi = efc_Jaref + hi_alpha * efc_jv
+    quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+
+    x_mid = efc_Jaref + mid_alpha * efc_jv
+    quad_f_mid = _eval_frictionloss(x_mid, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+
+    return (
+      _eval_pt(quad_f_lo, lo_alpha),
+      _eval_pt(quad_f_hi, hi_alpha),
+      _eval_pt(quad_f_mid, mid_alpha),
+    )
+
+  # Limit/other constraint - same quad, check x < 0 for each alpha
+  x_lo = efc_Jaref + lo_alpha * efc_jv
+  x_hi = efc_Jaref + hi_alpha * efc_jv
+  x_mid = efc_Jaref + mid_alpha * efc_jv
+
+  r_lo = wp.where(x_lo < 0.0, _eval_pt(efc_quad, lo_alpha), wp.vec3(0.0))
+  r_hi = wp.where(x_hi < 0.0, _eval_pt(efc_quad, hi_alpha), wp.vec3(0.0))
+  r_mid = wp.where(x_mid < 0.0, _eval_pt(efc_quad, mid_alpha), wp.vec3(0.0))
+
+  return (r_lo, r_hi, r_mid)
+
+
+@wp.func
+def _compute_efc_eval_pt_3alphas_elliptic(
   efcid: int,
   lo_alpha: float,
   hi_alpha: float,
@@ -807,7 +928,7 @@ def _compute_efc_eval_pt_3alphas(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ):
-  """Compute (cost, gradient, hessian) for 3 alphas at once. Returns (lo, hi, mid) vec3 results."""
+  """Compute for 3 alphas, elliptic cones."""
   # Equality constraint - same quad for all alphas
   if efcid < ne:
     return (
@@ -837,7 +958,6 @@ def _compute_efc_eval_pt_3alphas(
 
   # Contact elliptic - need to call _eval_elliptic for each alpha
   if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-    conid = efc_id
     if efcid != efc_address0:  # Not primary row
       return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
 
@@ -859,16 +979,28 @@ def _compute_efc_eval_pt_3alphas(
   return (r_lo, r_hi, r_mid)
 
 
-def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
+def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_type: types.ConeType):
   """Factory for tiled iterative linesearch kernel.
 
   Args:
     tile_size: Number of EFC rows to load per tile iteration.
     block_dim: Number of threads per block.
     njmax: Maximum number of EFC rows.
+    cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
   """
   TILE_SIZE = tile_size
   BLOCK_DIM = block_dim
+  IS_ELLIPTIC = (cone_type == types.ConeType.ELLIPTIC)
+  
+  # Select specialized helper functions based on cone type
+  if IS_ELLIPTIC:
+    _compute_efc_eval_pt = _compute_efc_eval_pt_elliptic
+    _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_elliptic
+    _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_elliptic
+  else:
+    _compute_efc_eval_pt = _compute_efc_eval_pt_pyramidal
+    _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
+    _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
   @nested_kernel(module="unique", enable_backward=False)
   def kernel(
@@ -958,28 +1090,34 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
         if idx < TILE_SIZE:
           efcid = tile_start + idx
           if efcid < nefc:
-            efc_type = type_tile[idx]
-            efc_id = id_tile[idx]
+            if wp.static(IS_ELLIPTIC):
+              efc_type = type_tile[idx]
+              efc_id = id_tile[idx]
+              contact_friction = types.vec5(0.0)
+              efc_addr0 = int(0)
+              quad1 = wp.vec3(0.0)
+              quad2 = wp.vec3(0.0)
 
-            contact_friction = types.vec5(0.0)
-            efc_addr0 = int(0)
-            quad1 = wp.vec3(0.0)
-            quad2 = wp.vec3(0.0)
+              if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+                contact_friction = contact_friction_in[efc_id]
+                efc_addr0 = contact_efc_address_in[efc_id, 0]
+                efc_addr1 = contact_efc_address_in[efc_id, 1]
+                efc_addr2 = contact_efc_address_in[efc_id, 2]
+                quad1 = efc_quad_in[worldid, efc_addr1]
+                quad2 = efc_quad_in[worldid, efc_addr2]
 
-            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-              contact_friction = contact_friction_in[efc_id]
-              efc_addr0 = contact_efc_address_in[efc_id, 0]
-              efc_addr1 = contact_efc_address_in[efc_id, 1]
-              efc_addr2 = contact_efc_address_in[efc_id, 2]
-              quad1 = efc_quad_in[worldid, efc_addr1]
-              quad2 = efc_quad_in[worldid, efc_addr2]
-
-            local_vec += _compute_efc_eval_pt_tiled_alpha_zero(
-              efcid, ne, nf, impratio_invsqrt,
-              efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-              Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
-              contact_friction, efc_addr0, quad1, quad2,
-            )
+              local_vec += _compute_efc_eval_pt_alpha_zero(
+                efcid, ne, nf, impratio_invsqrt,
+                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                contact_friction, efc_addr0, quad1, quad2,
+              )
+            else:
+              local_vec += _compute_efc_eval_pt_alpha_zero(
+                efcid, ne, nf,
+                type_tile[idx], D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+              )
 
       # Reduce vec3 directly
       vec_tile = wp.tile(local_vec, preserve_type=True)
@@ -1028,28 +1166,34 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
         if idx < TILE_SIZE:
           efcid = tile_start + idx
           if efcid < nefc:
-            efc_type = type_tile[idx]
-            efc_id = id_tile[idx]
+            if wp.static(IS_ELLIPTIC):
+              efc_type = type_tile[idx]
+              efc_id = id_tile[idx]
+              contact_friction = types.vec5(0.0)
+              efc_addr0 = int(0)
+              quad1 = wp.vec3(0.0)
+              quad2 = wp.vec3(0.0)
 
-            contact_friction = types.vec5(0.0)
-            efc_addr0 = int(0)
-            quad1 = wp.vec3(0.0)
-            quad2 = wp.vec3(0.0)
+              if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+                contact_friction = contact_friction_in[efc_id]
+                efc_addr0 = contact_efc_address_in[efc_id, 0]
+                efc_addr1 = contact_efc_address_in[efc_id, 1]
+                efc_addr2 = contact_efc_address_in[efc_id, 2]
+                quad1 = efc_quad_in[worldid, efc_addr1]
+                quad2 = efc_quad_in[worldid, efc_addr2]
 
-            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-              contact_friction = contact_friction_in[efc_id]
-              efc_addr0 = contact_efc_address_in[efc_id, 0]
-              efc_addr1 = contact_efc_address_in[efc_id, 1]
-              efc_addr2 = contact_efc_address_in[efc_id, 2]
-              quad1 = efc_quad_in[worldid, efc_addr1]
-              quad2 = efc_quad_in[worldid, efc_addr2]
-
-            local_vec += _compute_efc_eval_pt_tiled(
-              efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
-              efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-              Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
-              contact_friction, efc_addr0, quad1, quad2,
-            )
+              local_vec += _compute_efc_eval_pt(
+                efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
+                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                contact_friction, efc_addr0, quad1, quad2,
+              )
+            else:
+              local_vec += _compute_efc_eval_pt(
+                efcid, lo_alpha_in, ne, nf,
+                type_tile[idx], D_tile[idx], frictionloss_tile[idx],
+                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+              )
 
       # Reduce vec3 directly
       vec_tile = wp.tile(local_vec, preserve_type=True)
@@ -1116,30 +1260,38 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
           if idx < TILE_SIZE:
             efcid = tile_start + idx
             if efcid < nefc:
-              efc_type = type_tile[idx]
-              efc_id = id_tile[idx]
+              if wp.static(IS_ELLIPTIC):
+                efc_type = type_tile[idx]
+                efc_id = id_tile[idx]
+                contact_friction = types.vec5(0.0)
+                efc_addr0 = int(0)
+                quad1 = wp.vec3(0.0)
+                quad2 = wp.vec3(0.0)
 
-              contact_friction = types.vec5(0.0)
-              efc_addr0 = int(0)
-              quad1 = wp.vec3(0.0)
-              quad2 = wp.vec3(0.0)
+                if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+                  contact_friction = contact_friction_in[efc_id]
+                  efc_addr0 = contact_efc_address_in[efc_id, 0]
+                  efc_addr1 = contact_efc_address_in[efc_id, 1]
+                  efc_addr2 = contact_efc_address_in[efc_id, 2]
+                  quad1 = efc_quad_in[worldid, efc_addr1]
+                  quad2 = efc_quad_in[worldid, efc_addr2]
 
-              if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-                contact_friction = contact_friction_in[efc_id]
-                efc_addr0 = contact_efc_address_in[efc_id, 0]
-                efc_addr1 = contact_efc_address_in[efc_id, 1]
-                efc_addr2 = contact_efc_address_in[efc_id, 2]
-                quad1 = efc_quad_in[worldid, efc_addr1]
-                quad2 = efc_quad_in[worldid, efc_addr2]
-
-              # Compute all 3 alphas at once, sharing constraint type checking
-              r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
-                efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
-                ne, nf, impratio_invsqrt,
-                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
-                contact_friction, efc_addr0, quad1, quad2,
-              )
+                # Compute all 3 alphas at once, sharing constraint type checking
+                r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
+                  efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
+                  ne, nf, impratio_invsqrt,
+                  efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
+                  Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                  contact_friction, efc_addr0, quad1, quad2,
+                )
+              else:
+                # Compute all 3 alphas at once, sharing constraint type checking
+                r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
+                  efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
+                  ne, nf,
+                  type_tile[idx], D_tile[idx], frictionloss_tile[idx],
+                  Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                )
               local_lo += r_lo
               local_hi += r_hi
               local_mid += r_mid
@@ -1216,7 +1368,7 @@ def _linesearch_iterative_tiled(
     block_dim: Number of threads per block.
   """
   wp.launch_tiled(
-    linesearch_iterative_tiled(tile_size, block_dim, d.njmax),
+    linesearch_iterative_tiled(tile_size, block_dim, d.njmax, m.opt.cone),
     dim=d.nworld,
     inputs=[
       m.nv,
