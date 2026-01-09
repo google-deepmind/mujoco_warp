@@ -726,7 +726,6 @@ def _compute_efc_eval_pt_tiled(
 
   # Contact elliptic
   if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-    conid = efc_id
     if efcid != efc_address0:  # Not primary row
       return wp.vec3(0.0)
 
@@ -736,6 +735,52 @@ def _compute_efc_eval_pt_tiled(
   x = efc_Jaref + alpha * efc_jv
   if x < 0.0:
     return _eval_pt(efc_quad, alpha)
+  return wp.vec3(0.0)
+
+
+@wp.func
+def _compute_efc_eval_pt_tiled_alpha_zero(
+  efcid: int,
+  ne: int,
+  nf: int,
+  impratio_invsqrt: float,
+  # Per-row data:
+  efc_type: int,
+  efc_id: int,
+  efc_D: float,
+  efc_frictionloss: float,
+  efc_Jaref: float,
+  efc_jv: float,
+  efc_quad: wp.vec3,
+  # Contact data (for elliptic):
+  contact_friction: types.vec5,
+  efc_address0: int,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
+) -> wp.vec3:
+  """Optimized version for alpha=0.0 (p0 calculation)."""
+  # Equality constraint
+  if efcid < ne:
+    return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
+
+  # Friction constraint
+  if efcid < ne + nf:
+    x = efc_Jaref
+    rf = math.safe_div(efc_frictionloss, efc_D)
+    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
+
+  # Contact elliptic
+  if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+    if efcid != efc_address0:  # Not primary row
+      return wp.vec3(0.0)
+
+    return _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, 0.0)
+
+  # Limit/other constraint
+  x = efc_Jaref
+  if x < 0.0:
+    return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
   return wp.vec3(0.0)
 
 
@@ -929,8 +974,8 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int):
               quad1 = efc_quad_in[worldid, efc_addr1]
               quad2 = efc_quad_in[worldid, efc_addr2]
 
-            local_vec += _compute_efc_eval_pt_tiled(
-              efcid, 0.0, ne, nf, impratio_invsqrt,
+            local_vec += _compute_efc_eval_pt_tiled_alpha_zero(
+              efcid, ne, nf, impratio_invsqrt,
               efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
               Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
               contact_friction, efc_addr0, quad1, quad2,
