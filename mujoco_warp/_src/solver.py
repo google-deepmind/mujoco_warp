@@ -1042,6 +1042,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     efc_alpha_out: wp.array(dtype=float),
     qacc_out: wp.array2d(dtype=float),
     efc_Ma_out: wp.array2d(dtype=float),
+    efc_Jaref_out: wp.array2d(dtype=float),
   ):
     worldid, tid = wp.tid()
 
@@ -1262,6 +1263,10 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
       qacc_out[worldid, dofid] += alpha * efc_search_in[worldid, dofid]
       efc_Ma_out[worldid, dofid] += alpha * efc_mv_in[worldid, dofid]
 
+    # Fused Jaref update (all threads cooperate)
+    for efcid in range(tid, nefc, BLOCK_DIM):
+      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_in[worldid, efcid]
+
   return kernel
 
 
@@ -1302,7 +1307,7 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.efc.search,
       d.efc.mv,
     ],
-    outputs=[d.efc.alpha, d.qacc, d.efc.Ma],
+    outputs=[d.efc.alpha, d.qacc, d.efc.Ma, d.efc.Jaref],
     block_dim=block_dim,
   )
 
@@ -1650,7 +1655,7 @@ def _linesearch(
   # Teardown: update qacc, Ma, Jaref
   # =========================================================================
 
-  # qacc and Ma update is fused into the tiled kernel
+  # qacc, Ma, and Jaref updates are fused into the tiled kernel
   if not use_tiled:
     wp.launch(
       linesearch_qacc_ma,
@@ -1659,12 +1664,12 @@ def _linesearch(
       outputs=[d.qacc, d.efc.Ma],
     )
 
-  wp.launch(
-    linesearch_jaref,
-    dim=(d.nworld, d.njmax),
-    inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
-    outputs=[d.efc.Jaref],
-  )
+    wp.launch(
+      linesearch_jaref,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
+      outputs=[d.efc.Jaref],
+    )
 
 
 @wp.kernel
