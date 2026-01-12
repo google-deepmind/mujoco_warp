@@ -51,6 +51,41 @@ def _compute_quad(Jaref: float, jv: float, efc_D: float) -> wp.vec3:
 
 
 @wp.func
+def _eval_pt_direct(Jaref: float, jv: float, efc_D: float, alpha: float) -> wp.vec3:
+  """Compute (cost, gradient, hessian) directly without intermediate quad.
+  
+  Equivalent to _eval_pt(_compute_quad(Jaref, jv, efc_D), alpha) but more efficient.
+  """
+  x = Jaref + alpha * jv
+  jvD = jv * efc_D
+  return wp.vec3(0.5 * efc_D * x * x, jvD * x, jv * jvD)
+
+
+@wp.func
+def _eval_pt_direct_alpha_zero(Jaref: float, jv: float, efc_D: float) -> wp.vec3:
+  """Optimized _eval_pt_direct for alpha=0."""
+  jvD = jv * efc_D
+  return wp.vec3(0.5 * efc_D * Jaref * Jaref, jvD * Jaref, jv * jvD)
+
+
+@wp.func
+def _eval_pt_direct_3alphas(Jaref: float, jv: float, efc_D: float,
+                            lo_alpha: float, hi_alpha: float, mid_alpha: float):
+  """Compute _eval_pt_direct for 3 alphas, sharing common subexpressions."""
+  x_lo = Jaref + lo_alpha * jv
+  x_hi = Jaref + hi_alpha * jv
+  x_mid = Jaref + mid_alpha * jv
+  jvD = jv * efc_D
+  hessian = jv * jvD
+  half_D = 0.5 * efc_D
+  return (
+    wp.vec3(half_D * x_lo * x_lo, jvD * x_lo, hessian),
+    wp.vec3(half_D * x_hi * x_hi, jvD * x_hi, hessian),
+    wp.vec3(half_D * x_mid * x_mid, jvD * x_mid, hessian),
+  )
+
+
+@wp.func
 def _eval_cost(quad: wp.vec3, alpha: float) -> float:
   aq2 = alpha * quad[2]
   return alpha * aq2 + alpha * quad[1] + quad[0]
@@ -724,32 +759,31 @@ def _compute_efc_eval_pt_pyramidal(
   alpha: float,
   ne: int,
   nf: int,
-  # Per-row data (arrays for deferred load):
-  efc_D_in: wp.array(dtype=float),
+  # Per-row data:
+  efc_D: float,
   efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
-  efc_quad: wp.vec3,
 ) -> wp.vec3:
   """Compute for pyramidal cones (no elliptic contact data needed)."""
   # Limit/other constraint
   if efcid >= ne + nf:
     x = efc_Jaref + alpha * efc_jv
     if x < 0.0:
-      return _eval_pt(efc_quad, alpha)
+      return _eval_pt_direct(efc_Jaref, efc_jv, efc_D, alpha)
     return wp.vec3(0.0)
 
-  # Friction constraint - load D and frictionloss only here
+  # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
-    efc_D = efc_D_in[efcid]
     efc_frictionloss = efc_frictionloss_in[efcid]
     x = efc_Jaref + alpha * efc_jv
     rf = math.safe_div(efc_frictionloss, efc_D)
+    efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
     quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     return _eval_pt(quad_f, alpha)
 
   # Equality constraint
-  return _eval_pt(efc_quad, alpha)
+  return _eval_pt_direct(efc_Jaref, efc_jv, efc_D, alpha)
 
 
 @wp.func
@@ -805,30 +839,29 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   efcid: int,
   ne: int,
   nf: int,
-  # Per-row data (arrays for deferred load):
-  efc_D_in: wp.array(dtype=float),
+  # Per-row data:
+  efc_D: float,
   efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
-  efc_quad: wp.vec3,
 ) -> wp.vec3:
   """Optimized version for alpha=0.0, pyramidal cones."""
   # Limit/other constraint
   if efcid >= ne + nf:
     if efc_Jaref < 0.0:
-      return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
+      return _eval_pt_direct_alpha_zero(efc_Jaref, efc_jv, efc_D)
     return wp.vec3(0.0)
 
-  # Friction constraint - load D and frictionloss only here
+  # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
-    efc_D = efc_D_in[efcid]
     efc_frictionloss = efc_frictionloss_in[efcid]
     rf = math.safe_div(efc_frictionloss, efc_D)
+    efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
     quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
 
   # Equality constraint
-  return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
+  return _eval_pt_direct_alpha_zero(efc_Jaref, efc_jv, efc_D)
 
 
 @wp.func
@@ -884,36 +917,36 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   mid_alpha: float,
   ne: int,
   nf: int,
-  # Per-row data (arrays for deferred load):
-  efc_D_in: wp.array(dtype=float),
+  # Per-row data:
+  efc_D: float,
   efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
-  efc_quad: wp.vec3,
 ):
   """Compute (cost, gradient, hessian) for 3 alphas, pyramidal cones.
 
   Returns a tuple of 3 vec3s for (lo_alpha, hi_alpha, mid_alpha).
   Constraint types checked in order: limit/other -> friction -> equality.
   """
-  # x = search point, needed for friction and limit constraints
-  x_lo = efc_Jaref + lo_alpha * efc_jv
-  x_hi = efc_Jaref + hi_alpha * efc_jv
-  x_mid = efc_Jaref + mid_alpha * efc_jv
-
   # Limit/other constraints: active only when x < 0
   if efcid >= ne + nf:
-    pt_lo, pt_hi, pt_mid = _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
+    x_lo = efc_Jaref + lo_alpha * efc_jv
+    x_hi = efc_Jaref + hi_alpha * efc_jv
+    x_mid = efc_Jaref + mid_alpha * efc_jv
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_3alphas(efc_Jaref, efc_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
     r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
     r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
     r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
     return (r_lo, r_hi, r_mid)
 
-  # Friction constraint - load D and frictionloss only here
+  # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
-    efc_D = efc_D_in[efcid]
+    x_lo = efc_Jaref + lo_alpha * efc_jv
+    x_hi = efc_Jaref + hi_alpha * efc_jv
+    x_mid = efc_Jaref + mid_alpha * efc_jv
     efc_frictionloss = efc_frictionloss_in[efcid]
     rf = math.safe_div(efc_frictionloss, efc_D)
+    efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     quad_f_mid = _eval_frictionloss(x_mid, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -924,7 +957,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     )
 
   # Equality constraint: always active
-  return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
+  return _eval_pt_direct_3alphas(efc_Jaref, efc_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
 
 
 @wp.func
@@ -1099,15 +1132,11 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
-        # Compute quad inline for pyramidal cones (fused prepare_quad)
-        efc_Jaref = efc_Jaref_in[worldid, efcid]
-        efc_jv = efc_jv_in[worldid, efcid]
-        efc_D = efc_D_in[worldid, efcid]
-        efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
+        # Direct evaluation for pyramidal cones (no intermediate quad)
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf,
-          efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref, efc_jv, efc_quad,
+          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
+          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
         )
 
     # Reduce across all threads and add quad_gauss contribution
@@ -1146,15 +1175,11 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
-        # Compute quad inline for pyramidal cones (fused prepare_quad)
-        efc_Jaref = efc_Jaref_in[worldid, efcid]
-        efc_jv = efc_jv_in[worldid, efcid]
-        efc_D = efc_D_in[worldid, efcid]
-        efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
+        # Direct evaluation for pyramidal cones (no intermediate quad)
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf,
-          efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref, efc_jv, efc_quad,
+          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
+          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
         )
 
     # Reduce across all threads and add quad_gauss contribution
@@ -1210,17 +1235,12 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
             contact_friction, efc_addr0, quad1, quad2,
           )
         else:
-          # Compute quad inline for pyramidal cones (fused prepare_quad)
-          efc_Jaref = efc_Jaref_in[worldid, efcid]
-          efc_jv = efc_jv_in[worldid, efcid]
-          efc_D = efc_D_in[worldid, efcid]
-          efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-          # Compute all 3 alphas at once, sharing constraint type checking
+          # Direct evaluation for pyramidal cones (no intermediate quad)
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf,
-            efc_D_in[worldid], efc_frictionloss_in[worldid],
-            efc_Jaref, efc_jv, efc_quad,
+            efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
+            efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
           )
         local_lo += r_lo
         local_hi += r_hi
