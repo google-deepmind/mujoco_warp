@@ -61,15 +61,13 @@ class Polytope:
   nvert: int
 
   # faces in polytope
-  face: wp.array(dtype=wp.vec3i)
+  # 10 bits per each vertex index, while the last significant bits are for
+  # invalid and deleted face
+  face: wp.array(dtype=int)
   face_pr: wp.array(dtype=wp.vec3)
   face_norm2: wp.array(dtype=float)
   face_index: wp.array(dtype=int)
   nface: int
-
-  # TODO(kbayes): look into if a linear map actually improves performance
-  face_map: wp.array(dtype=int)
-  nmap: int
 
   # edges that make up the horizon when adding new vertices to polytope
   horizon: wp.array(dtype=int)
@@ -91,7 +89,7 @@ def _discrete_geoms(g1: int, g2: int) -> bool:
 
 
 @wp.func
-def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
+def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp = SupportPoint()
   sp.cached_index = -1
   sp.vertex_index = -1
@@ -174,14 +172,13 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     # TODO(kbayes): Support edge prisms
-    sp.vertex_index = wp.where(local_dir[2] < 0, -2, -3)
+    sp.vertex_index = wp.where(dir[2] < 0, -2, -3)
     for i in range(6):
       vert = geom.hfprism[i]
-      dist = wp.dot(vert, local_dir)
+      dist = wp.dot(vert, dir)
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
-    sp.point = geom.rot @ sp.point + geom.pos
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
@@ -199,12 +196,11 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   if ret:
     return 0.0
 
-  face = wp.vec3i(v1, v2, v3)
+  face = v1 + (v2 << 10) + (v3 << 20)
   pt.face[idx] = face
   pt.face_pr[idx] = r
 
   pt.face_norm2[idx] = wp.dot(r, r)
-  pt.face_index[idx] = -1
   return pt.face_norm2[idx]
 
 
@@ -212,12 +208,12 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
 def _epa_support(
   pt: Polytope, idx: int, geom1: Geom, geom2: Geom, geom1_type: int, geom2_type: int, dir: wp.vec3
 ) -> Tuple[int, int]:
-  sp = _support(geom1, geom1_type, dir)
+  sp = support(geom1, geom1_type, dir)
   pt.vert1[idx] = sp.point
   pt.vert_index1[idx] = sp.vertex_index
   index1 = sp.cached_index
 
-  sp = _support(geom2, geom2_type, -dir)
+  sp = support(geom2, geom2_type, -dir)
   pt.vert2[idx] = sp.point
   pt.vert_index2[idx] = sp.vertex_index
   index2 = sp.cached_index
@@ -596,13 +592,13 @@ def gjk(
     dir_neg = x_k / wp.sqrt(xnorm)
 
     # compute kth support point in geom1
-    sp = _support(geom1, geomtype1, -dir_neg)
+    sp = support(geom1, geomtype1, -dir_neg)
     simplex1[n] = sp.point
     geom1.index = sp.cached_index
     simplex_index1[n] = sp.vertex_index
 
     # compute kth support point in geom2
-    sp = _support(geom2, geomtype2, dir_neg)
+    sp = support(geom2, geomtype2, dir_neg)
     simplex2[n] = sp.point
     geom2.index = sp.cached_index
     simplex_index2[n] = sp.vertex_index
@@ -860,25 +856,10 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
 
 
 @wp.func
-def _delete_face(pt: Polytope, face_id: int) -> int:
-  index = pt.face_index[face_id]
-  # delete from map
-  if index >= 0:
-    last_face = pt.face_map[pt.nmap - 1]
-    pt.face_map[index] = last_face
-    pt.face_index[last_face] = index
-    pt.nmap -= 1
-  # mark face as deleted from polytope
-  pt.face_index[face_id] = -2
-  return pt.nmap
-
-
-@wp.func
 def _epa_witness(
   pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
 ) -> Tuple[wp.vec3, wp.vec3, float]:
-  face = pt.face[face_idx]
-
+  face = _get_face_verts(pt.face[face_idx])
   # compute affine coordinates for witness points on plane defined by face
   v1 = pt.vert[face[0]]
   v2 = pt.vert[face[1]]
@@ -904,12 +885,12 @@ def _epa_witness(
   i3 = pt.vert_index1[face[2]]
   if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
-    n = geom1.rot[:, 2]
+    n = wp.vec3(0.0, 0.0, 1.0)
 
-    # height field prism vertices in global frame
-    a = geom1.pos + geom1.rot @ geom1.hfprism[3]
-    b = geom1.pos + geom1.rot @ geom1.hfprism[4]
-    c = geom1.pos + geom1.rot @ geom1.hfprism[5]
+    # height field prism vertices
+    a = geom1.hfprism[3]
+    b = geom1.hfprism[4]
+    c = geom1.hfprism[5]
 
     # TODO(kbayes): Support cases where geom2 is larger than the height field
     if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
@@ -917,13 +898,13 @@ def _epa_witness(
       margin = geom2.margin
       geom2.margin = 0.0
       geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-      sp = _support(geom2, geomtype2, x2)
+      sp = support(geom2, geomtype2, x2)
       x2 = sp.point - (0.5 * margin + radius) * n
       geom2.size[0] = radius
       geom2.margin = margin
     else:
       x2 = wp.normalize(x2)
-      sp = _support(geom2, geomtype2, x2)
+      sp = support(geom2, geomtype2, x2)
       x2 = sp.point
 
     coordinates2 = _tri_affine_coord(a, b, c, x2)
@@ -1034,15 +1015,9 @@ def _polytope2(
     pt.status = 1
     return pt, GJKResult()
 
-  # populate face map
-  for i in range(6):
-    pt.face_map[i] = i
-    pt.face_index[i] = i
-
   # set polytope counts
   pt.nvert = 5
   pt.nface = 6
-  pt.nmap = 6
   pt.status = 0
   return pt, GJKResult()
 
@@ -1134,15 +1109,9 @@ def _polytope3(
     pt.status = 11
     return pt
 
-  # populate face map
-  for i in range(6):
-    pt.face_map[i] = i
-    pt.face_index[i] = i
-
   # set polytope counts
   pt.nvert = 5
   pt.nface = 6
-  pt.nmap = 6
   pt.status = 0
   return pt
 
@@ -1209,17 +1178,41 @@ def _polytope4(
     pt.status = 12
     return pt, GJKResult()
 
-  # populate face map
-  for i in range(4):
-    pt.face_map[i] = i
-    pt.face_index[i] = i
-
   # set polytope counts
   pt.nvert = 4
   pt.nface = 4
-  pt.nmap = 4
   pt.status = 0
   return pt, GJKResult()
+
+
+@wp.func
+def _get_face_verts(face: int) -> wp.vec3i:
+  """Return the three vertices of the face given by indices into the polytope vertex array."""
+  return wp.vec3i(face & 0x3FF, face >> 10 & 0x3FF, face >> 20 & 0x3FF)
+
+
+@wp.func
+def _delete_face(face: int) -> int:
+  """Return the face with the deleted bit enabled."""
+  return face | 0x80000000
+
+
+@wp.func
+def _is_face_deleted(face: int) -> bool:
+  """Return true if face is deleted."""
+  return bool(face & 0x80000000)
+
+
+@wp.func
+def _invalidate_face(face: int) -> int:
+  """Return the face with the invalid bit enabled."""
+  return face | 0x40000000
+
+
+@wp.func
+def _is_invalid_face(face: int) -> bool:
+  """Return true if face is invalid or deleted."""
+  return bool(face & 0xC0000000)
 
 
 @wp.func
@@ -1242,18 +1235,22 @@ def _epa(
   pidx = int(-1)
   epsilon = wp.where(is_discrete, 1e-15, tolerance)
   cnt = int(1)
+  nvalid = pt.nface  # number of potential faces for expanding the polytope
 
+  # the face vertices are encoded in 10-bits that index the vertex array,
+  # so iterations must be cap to limit the number of generated vertices
+  # (one new vertex per iteration)
+  epa_iterations = wp.max(epa_iterations, 1000)
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
+    lower2 = float(FLOAT_MAX)
 
     # find the face closest to the origin (lower bound for penetration depth)
-    lower2 = float(FLOAT_MAX)
-    for i in range(pt.nmap):
-      face_idx = pt.face_map[i]
-      if pt.face_norm2[face_idx] < lower2:
-        idx = int(face_idx)
-        lower2 = float(pt.face_norm2[face_idx])
+    for i in range(pt.nface):
+      if not _is_invalid_face(pt.face[i]) and pt.face_norm2[i] < lower2:
+        idx = i
+        lower2 = pt.face_norm2[i]
 
     # face not valid, return previous face
     if lower2 > upper2 or idx < 0:
@@ -1292,24 +1289,28 @@ def _epa(
       if found_repeated:
         break
 
-    pt.nmap = _delete_face(pt, idx)
-    pt.nhorizon = _add_edge(pt, pt.face[idx][0], pt.face[idx][1])
-    pt.nhorizon = _add_edge(pt, pt.face[idx][1], pt.face[idx][2])
-    pt.nhorizon = _add_edge(pt, pt.face[idx][2], pt.face[idx][0])
+    nvalid -= 1
+    pt.face[idx] = _delete_face(pt.face[idx])
+    face = _get_face_verts(pt.face[idx])
+    pt.nhorizon = _add_edge(pt, face[0], face[1])
+    pt.nhorizon = _add_edge(pt, face[1], face[2])
+    pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
       idx = -1
       break
 
     # compute horizon for w
     for i in range(pt.nface):
-      if pt.face_index[i] == -2:
+      if _is_face_deleted(pt.face[i]):
         continue
 
       if wp.dot(pt.face_pr[i], pt.vert[wi]) - pt.face_norm2[i] > 1e-10:
-        pt.nmap = _delete_face(pt, i)
-        pt.nhorizon = _add_edge(pt, pt.face[i][0], pt.face[i][1])
-        pt.nhorizon = _add_edge(pt, pt.face[i][1], pt.face[i][2])
-        pt.nhorizon = _add_edge(pt, pt.face[i][2], pt.face[i][0])
+        nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
+        pt.face[i] = _delete_face(pt.face[i])
+        face = _get_face_verts(pt.face[i])
+        pt.nhorizon = _add_edge(pt, face[0], face[1])
+        pt.nhorizon = _add_edge(pt, face[1], face[2])
+        pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
           idx = -1
           break
@@ -1323,14 +1324,13 @@ def _epa(
 
       pt.nface += 1
 
-      # store face in map
       if dist2 >= lower2 and dist2 <= upper2:
-        pt.face_map[pt.nmap] = pt.nface - 1
-        pt.face_index[pt.nface - 1] = pt.nmap
-        pt.nmap += 1
+        nvalid += 1
+      else:
+        pt.face[pt.nface - 1] = _invalidate_face(pt.face[pt.nface - 1])
 
     # no face candidates left
-    if pt.nmap == 0 or idx == -1:
+    if nvalid == 0 or idx == -1:
       break
 
     # clear horizon
@@ -1968,7 +1968,7 @@ def multicontact(
   epa_vert2: wp.array(dtype=wp.vec3),
   epa_vert_index1: wp.array(dtype=int),
   epa_vert_index2: wp.array(dtype=int),
-  face: wp.vec3i,
+  epa_face: int,
   x1: wp.vec3,
   x2: wp.vec3,
   geom1: Geom,
@@ -1999,6 +1999,8 @@ def multicontact(
     polymapadr = geom2.mesh_polymapadr
     polymapnum = geom2.mesh_polymapnum
     polymap = geom2.mesh_polymap
+
+  face = _get_face_verts(epa_face)
 
   # get dimensions of features of geoms 1 and 2
   nface1, feature_index1, feature_vertex1 = _feature_dim(face, epa_vert_index1, epa_vert1)
@@ -2190,13 +2192,15 @@ def _inflate(
         break
 
     if is_side:
-      n = geom1.rot[:, 2]
-      sp = _support(geom2, geomtype2, x2)
+      n = wp.vec3(0.0, 0.0, 1.0)
+      sp = support(geom2, geomtype2, x2)
       x2 = sp.point - margin2 * n
 
+      # height field prism vertices
       a = geom1.hfprism[3]
       b = geom1.hfprism[4]
       c = geom1.hfprism[5]
+
       coordinates = _tri_affine_coord(a, b, c, x2)
       if coordinates[0] > 0 and coordinates[1] > 0 and coordinates[2] > 0:
         x1 = coordinates[0] * a + coordinates[1] * b + coordinates[2] * c
@@ -2236,11 +2240,9 @@ def ccd(
   vert2: wp.array(dtype=wp.vec3),
   vert_index1: wp.array(dtype=int),
   vert_index2: wp.array(dtype=int),
-  face: wp.array(dtype=wp.vec3i),
+  face: wp.array(dtype=int),
   face_pr: wp.array(dtype=wp.vec3),
   face_norm2: wp.array(dtype=float),
-  face_index: wp.array(dtype=int),
-  face_map: wp.array(dtype=int),
   horizon: wp.array(dtype=int),
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """General convex collision detection via GJK/EPA."""
@@ -2291,7 +2293,6 @@ def ccd(
 
   pt = Polytope()
   pt.nface = 0
-  pt.nmap = 0
   pt.nvert = 0
   pt.nhorizon = 0
   pt.vert = vert
@@ -2302,8 +2303,6 @@ def ccd(
   pt.face = face
   pt.face_pr = face_pr
   pt.face_norm2 = face_norm2
-  pt.face_index = face_index
-  pt.face_map = face_map
   pt.horizon = horizon
 
   if result.dim == 2:
