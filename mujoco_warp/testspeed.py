@@ -161,6 +161,9 @@ def _main(argv: Sequence[str]):
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
 
+  if "cpu" in (_DEVICE.value or "", str(wp.get_device())):
+    raise ValueError("testspeed available for gpu only")
+
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
