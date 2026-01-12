@@ -860,20 +860,13 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   efc_quad: wp.vec3,
 ):
   """Compute for 3 alphas, pyramidal cones."""
-  # Equality constraint - same quad for all alphas
-  if efcid < ne:
-    return (
-      _eval_pt(efc_quad, lo_alpha),
-      _eval_pt(efc_quad, hi_alpha),
-      _eval_pt(efc_quad, mid_alpha),
-    )
-
+  # Precompute x values (needed for friction and limit)
   x_lo = efc_Jaref + lo_alpha * efc_jv
   x_hi = efc_Jaref + hi_alpha * efc_jv
   x_mid = efc_Jaref + mid_alpha * efc_jv
 
-  # Friction constraint - need to compute quad_f for each alpha
-  if efcid < ne + nf:
+  # Friction constraint (ne <= efcid < ne + nf)
+  if efcid >= ne and efcid < ne + nf:
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -885,12 +878,20 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
       _eval_pt(quad_f_mid, mid_alpha),
     )
 
-  # Limit/other constraint - same quad, check x < 0 for each alpha
-  r_lo = wp.where(x_lo < 0.0, _eval_pt(efc_quad, lo_alpha), wp.vec3(0.0))
-  r_hi = wp.where(x_hi < 0.0, _eval_pt(efc_quad, hi_alpha), wp.vec3(0.0))
-  r_mid = wp.where(x_mid < 0.0, _eval_pt(efc_quad, mid_alpha), wp.vec3(0.0))
+  # Precompute _eval_pt for efc_quad (used by equality and limit)
+  pt_lo = _eval_pt(efc_quad, lo_alpha)
+  pt_hi = _eval_pt(efc_quad, hi_alpha)
+  pt_mid = _eval_pt(efc_quad, mid_alpha)
 
-  return (r_lo, r_hi, r_mid)
+  # Limit/other constraint (efcid >= ne + nf)
+  if efcid >= ne + nf:
+    r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
+    r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
+    r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
+    return (r_lo, r_hi, r_mid)
+
+  # Equality constraint (efcid < ne)
+  return (pt_lo, pt_hi, pt_mid)
 
 
 @wp.func
@@ -917,20 +918,13 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   quad2: wp.vec3,
 ):
   """Compute for 3 alphas, elliptic cones."""
-  # Equality constraint - same quad for all alphas
-  if efcid < ne:
-    return (
-      _eval_pt(efc_quad, lo_alpha),
-      _eval_pt(efc_quad, hi_alpha),
-      _eval_pt(efc_quad, mid_alpha),
-    )
-
+  # Precompute x values (needed for friction and limit)
   x_lo = efc_Jaref + lo_alpha * efc_jv
   x_hi = efc_Jaref + hi_alpha * efc_jv
   x_mid = efc_Jaref + mid_alpha * efc_jv
 
-  # Friction constraint - need to compute quad_f for each alpha
-  if efcid < ne + nf:
+  # Friction constraint (ne <= efcid < ne + nf)
+  if efcid >= ne and efcid < ne + nf:
     rf = math.safe_div(efc_frictionloss, efc_D)
 
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -943,23 +937,33 @@ def _compute_efc_eval_pt_3alphas_elliptic(
       _eval_pt(quad_f_mid, mid_alpha),
     )
 
-  # Contact elliptic - need to call _eval_elliptic for each alpha
-  if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-    if efcid != efc_address0:  # Not primary row
-      return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
+  # Contact/limit constraints (efcid >= ne + nf)
+  if efcid >= ne + nf:
+    # Contact elliptic
+    if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+      if efcid != efc_address0:  # Not primary row
+        return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
 
-    return (
-      _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, lo_alpha),
-      _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, hi_alpha),
-      _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, mid_alpha),
-    )
+      return (
+        _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, lo_alpha),
+        _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, hi_alpha),
+        _eval_elliptic(impratio_invsqrt, contact_friction, efc_quad, quad1, quad2, mid_alpha),
+      )
 
-  # Limit/other constraint - same quad, check x < 0 for each alpha
-  r_lo = wp.where(x_lo < 0.0, _eval_pt(efc_quad, lo_alpha), wp.vec3(0.0))
-  r_hi = wp.where(x_hi < 0.0, _eval_pt(efc_quad, hi_alpha), wp.vec3(0.0))
-  r_mid = wp.where(x_mid < 0.0, _eval_pt(efc_quad, mid_alpha), wp.vec3(0.0))
+    # Limit/other constraint - compute pt values here (only needed for limit)
+    pt_lo = _eval_pt(efc_quad, lo_alpha)
+    pt_hi = _eval_pt(efc_quad, hi_alpha)
+    pt_mid = _eval_pt(efc_quad, mid_alpha)
+    r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
+    r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
+    r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
+    return (r_lo, r_hi, r_mid)
 
-  return (r_lo, r_hi, r_mid)
+  # Equality constraint (efcid < ne)
+  pt_lo = _eval_pt(efc_quad, lo_alpha)
+  pt_hi = _eval_pt(efc_quad, hi_alpha)
+  pt_mid = _eval_pt(efc_quad, mid_alpha)
+  return (pt_lo, pt_hi, pt_mid)
 
 
 def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
