@@ -64,6 +64,7 @@ _CONVEX_COLLISION_PAIRS = [
   (GeomType.CYLINDER, GeomType.CYLINDER),
   (GeomType.CYLINDER, GeomType.BOX),
   (GeomType.CYLINDER, GeomType.MESH),
+  (GeomType.BOX, GeomType.BOX),
   (GeomType.BOX, GeomType.MESH),
   (GeomType.MESH, GeomType.MESH),
 ]
@@ -807,7 +808,7 @@ def ccd_kernel_builder(
     witness1[0] = w1
     witness2[0] = w2
 
-    if wp.static(use_multiccd):
+    if wp.static(use_multiccd or (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)):
       if (
         geom1.margin == 0.0
         and geom2.margin == 0.0
@@ -1110,6 +1111,7 @@ _NON_HFIELD_COLLISION_PAIRS = [
   (GeomType.CYLINDER, GeomType.CYLINDER),
   (GeomType.CYLINDER, GeomType.BOX),
   (GeomType.CYLINDER, GeomType.MESH),
+  (GeomType.BOX, GeomType.BOX),
   (GeomType.BOX, GeomType.MESH),
   (GeomType.MESH, GeomType.MESH),
 ]
@@ -1135,16 +1137,30 @@ def convex_narrowphase(m: Model, d: Data):
   def _pair_count(p1: int, p2: int) -> int:
     return m.geom_pair_type_count[upper_trid_index(len(GeomType), p1, p2)]
 
+  ncollision = sum(_pair_count(g[0].value, g[1].value) for g in _CONVEX_COLLISION_PAIRS)
   # no convex collisions, early return
-  if not any(_pair_count(g[0].value, g[1].value) for g in _CONVEX_COLLISION_PAIRS):
+
+  if ncollision == 0:
     return
 
-  epa_iterations = m.opt.ccd_iterations
+  # compute nmaxpolygon and nmaxmeshdeg given the geom pairs for the model
+  nboxbox = _pair_count(GeomType.BOX.value, GeomType.BOX.value)
+  nboxmesh = _pair_count(GeomType.BOX.value, GeomType.MESH.value)
+  nmeshmesh = _pair_count(GeomType.MESH.value, GeomType.MESH.value)
+
+  epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
 
   # set to true to enable multiccd
   use_multiccd = False
-  nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
-  nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
+  
+  # need at least 4 (square sides) if there's a box collision needing multiccd
+  nmaxpolygon = 4 * (nboxbox > 0)
+  nmaxmeshdeg = 3 * (nboxbox > 0)
+
+  # need to allocate more memory if there's meshes
+  if use_multiccd and nmeshmesh + nboxmesh > 0:
+    nmaxpolygon = m.mesh_polyvertnum.max()
+    nmaxmeshdeg = m.nmaxmeshdeg.max()
 
   # epa_vert: vertices in EPA polytope in Minkowski space
   epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)

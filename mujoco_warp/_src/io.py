@@ -327,19 +327,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
   )
 
-  # compute nmaxpolygon and nmaxmeshdeg given the geom pairs for the model
-  nboxbox = m.geom_pair_type_count[geom_trid_index(types.GeomType.BOX, types.GeomType.BOX)]
-  nboxmesh = m.geom_pair_type_count[geom_trid_index(types.GeomType.BOX, types.GeomType.MESH)]
-  nmeshmesh = m.geom_pair_type_count[geom_trid_index(types.GeomType.MESH, types.GeomType.MESH)]
-  # need at least 4 (square sides) if there's a box collision needing multiccd
-  m.nmaxpolygon = 4 * (nboxbox + nboxmesh > 0)
-  m.nmaxmeshdeg = 3 * (nboxbox + nboxmesh > 0)
-  # possibly need to allocate more memory if there's meshes
-  if nmeshmesh + nboxmesh > 0:
-    # TODO(kbayes): remove nboxbox or enable ccd for box-box collisions
-    m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, m.nmaxpolygon).max()
-    m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, m.nmaxmeshdeg).max()
-
   # filter plugins for only geom plugins, drop the rest
   m.plugin, m.plugin_attr = [], []
   m.geom_plugin_index = np.full_like(mjm.geom_type, -1)

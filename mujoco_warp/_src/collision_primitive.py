@@ -1551,7 +1551,6 @@ _PRIMITIVE_COLLISIONS = {
   (GeomType.SPHERE, GeomType.BOX): sphere_box_wrapper,
   (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule_wrapper,
   (GeomType.CAPSULE, GeomType.BOX): capsule_box_wrapper,
-  (GeomType.BOX, GeomType.BOX): box_box_wrapper,
 }
 
 

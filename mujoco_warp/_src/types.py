@@ -1015,8 +1015,6 @@ class Model:
     nrangefinder: number of rangefinder sensors
     nmaxcondim: maximum condim for geoms
     nmaxpyramid: maximum number of pyramid directions
-    nmaxpolygon: maximum number of verts per polygon
-    nmaxmeshdeg: maximum number of polygons per vert
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1361,8 +1359,6 @@ class Model:
   nrangefinder: int
   nmaxcondim: int
   nmaxpyramid: int
-  nmaxpolygon: int
-  nmaxmeshdeg: int
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
