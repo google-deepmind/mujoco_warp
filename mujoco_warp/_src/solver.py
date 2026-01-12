@@ -1038,6 +1038,11 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
   """
   BLOCK_DIM = block_dim
   IS_ELLIPTIC = (cone_type == types.ConeType.ELLIPTIC)
+
+  # Native snippet for CUDA __syncthreads()
+  @wp.func_native(snippet="__syncthreads();")
+  def _syncthreads():
+    pass
   
   # Select specialized helper functions based on cone type
   if IS_ELLIPTIC:
@@ -1063,6 +1068,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     nf_in: wp.array(dtype=int),
     nefc_in: wp.array(dtype=int),
     contact_friction_in: wp.array(dtype=types.vec5),
+    contact_dim_in: wp.array(dtype=int),
     contact_efc_address_in: wp.array2d(dtype=int),
     efc_type_in: wp.array2d(dtype=int),
     efc_id_in: wp.array2d(dtype=int),
@@ -1071,12 +1077,14 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     efc_Jaref_in: wp.array2d(dtype=float),
     efc_search_dot_in: wp.array(dtype=float),
     efc_jv_in: wp.array2d(dtype=float),
-    efc_quad_in: wp.array2d(dtype=wp.vec3),
     efc_quad_gauss_in: wp.array(dtype=wp.vec3),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
+    nacon_in: wp.array(dtype=int),
     efc_search_in: wp.array2d(dtype=float),
     efc_mv_in: wp.array2d(dtype=float),
+    # Data in/out:
+    efc_quad_inout: wp.array2d(dtype=wp.vec3),
     # Data out:
     efc_alpha_out: wp.array(dtype=float),
     qacc_out: wp.array2d(dtype=float),
@@ -1097,6 +1105,73 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     nefc = wp.min(njmax_in, nefc_in[worldid])
 
     efc_quad_gauss = efc_quad_gauss_in[worldid]
+
+    # =========================================================================
+    # Prepare quad phase (elliptic only) - fused from linesearch_prepare_quad
+    # =========================================================================
+    if wp.static(IS_ELLIPTIC):
+      for efcid in range(tid, nefc, BLOCK_DIM):
+        Jaref = efc_Jaref_in[worldid, efcid]
+        jv = efc_jv_in[worldid, efcid]
+        efc_D = efc_D_in[worldid, efcid]
+
+        # init with scalar quadratic
+        quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
+
+        # elliptic cone: extra processing for primary contact row
+        if efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
+          conid = efc_id_in[worldid, efcid]
+
+          if conid < nacon_in[0]:
+            efcid0 = contact_efc_address_in[conid, 0]
+
+            if efcid == efcid0:
+              dim = contact_dim_in[conid]
+              friction = contact_friction_in[conid]
+              mu = friction[0] * impratio_invsqrt
+
+              u0 = Jaref * mu
+              v0 = jv * mu
+
+              uu = float(0.0)
+              uv = float(0.0)
+              vv = float(0.0)
+              for j in range(1, dim):
+                efcidj = contact_efc_address_in[conid, j]
+                if efcidj >= 0:
+                  jvj = efc_jv_in[worldid, efcidj]
+                  jarefj = efc_Jaref_in[worldid, efcidj]
+                  dj = efc_D_in[worldid, efcidj]
+                  DJj = dj * jarefj
+
+                  quad += wp.vec3(
+                    0.5 * jarefj * DJj,
+                    jvj * DJj,
+                    0.5 * jvj * dj * jvj,
+                  )
+
+                  # rescale to make primal cone circular
+                  frictionj = friction[j - 1]
+                  uj = jarefj * frictionj
+                  vj = jvj * frictionj
+
+                  uu += uj * uj
+                  uv += uj * vj
+                  vv += vj * vj
+
+              quad1 = wp.vec3(u0, v0, uu)
+              efcid1 = contact_efc_address_in[conid, 1]
+              efc_quad_inout[worldid, efcid1] = quad1
+
+              mu2 = mu * mu
+              quad2 = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
+              efcid2 = contact_efc_address_in[conid, 2]
+              efc_quad_inout[worldid, efcid2] = quad2
+
+        efc_quad_inout[worldid, efcid] = quad
+
+      # Synchronize to ensure all quads are written before reading
+      _syncthreads()
 
     # Calculate gtol
     snorm = wp.sqrt(efc_search_dot_in[worldid])
@@ -1122,13 +1197,13 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_in[worldid, efc_addr1]
-          quad2 = efc_quad_in[worldid, efc_addr2]
+          quad1 = efc_quad_inout[worldid, efc_addr1]
+          quad2 = efc_quad_inout[worldid, efc_addr2]
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf, impratio_invsqrt,
           efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
+          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_inout[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
@@ -1165,13 +1240,13 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_in[worldid, efc_addr1]
-          quad2 = efc_quad_in[worldid, efc_addr2]
+          quad1 = efc_quad_inout[worldid, efc_addr1]
+          quad2 = efc_quad_inout[worldid, efc_addr2]
 
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
           efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
+          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_inout[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
@@ -1223,15 +1298,15 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
             efc_addr0 = contact_efc_address_in[efc_id, 0]
             efc_addr1 = contact_efc_address_in[efc_id, 1]
             efc_addr2 = contact_efc_address_in[efc_id, 2]
-            quad1 = efc_quad_in[worldid, efc_addr1]
-            quad2 = efc_quad_in[worldid, efc_addr2]
+            quad1 = efc_quad_inout[worldid, efc_addr1]
+            quad2 = efc_quad_inout[worldid, efc_addr2]
 
           # Compute all 3 alphas at once, sharing constraint type checking
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf, impratio_invsqrt,
             efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-            efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
+            efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_inout[worldid, efcid],
             contact_friction, efc_addr0, quad1, quad2,
           )
         else:
@@ -1333,6 +1408,7 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.nf,
       d.nefc,
       d.contact.friction,
+      d.contact.dim,
       d.contact.efc_address,
       d.efc.type,
       d.efc.id,
@@ -1341,14 +1417,14 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.efc.Jaref,
       d.efc.search_dot,
       d.efc.jv,
-      d.efc.quad,
       d.efc.quad_gauss,
       d.efc.done,
       d.njmax,
+      d.nacon,
       d.efc.search,
       d.efc.mv,
     ],
-    outputs=[d.efc.alpha, d.qacc, d.efc.Ma, d.efc.Jaref],
+    outputs=[d.efc.quad, d.efc.alpha, d.qacc, d.efc.Ma, d.efc.Jaref],
     block_dim=block_dim,
   )
 
@@ -1659,9 +1735,8 @@ def _linesearch(
   )
 
   # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
-  # For tiled + pyramidal, quad is computed inline in the kernel
-  is_pyramidal = m.opt.cone == types.ConeType.PYRAMIDAL
-  if not (use_tiled and is_pyramidal):
+  # For tiled version, quad is computed/fused in the kernel
+  if not use_tiled:
     wp.launch(
       linesearch_prepare_quad,
       dim=(d.nworld, d.njmax),
