@@ -219,9 +219,11 @@ class SolverTest(parameterized.TestCase):
     alpha_parallel_50 = d.efc.alpha.numpy().copy()
 
     # Checking that iterative and parallel linesearch lead to similar results
-    # and that increasing ls_iterations leads to better results
+    # and that increasing ls_iterations leads to better results (with tolerance for FP noise)
     _assert_eq(alpha_iterative, alpha_parallel_50, name="linesearch alpha")
-    self.assertLessEqual(abs(alpha_iterative - alpha_parallel_50), abs(alpha_iterative - alpha_parallel_10))
+    diff_50 = abs(alpha_iterative - alpha_parallel_50)
+    diff_10 = abs(alpha_iterative - alpha_parallel_10)
+    self.assertTrue(np.all(diff_50 <= diff_10 + 1e-6))
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
