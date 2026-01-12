@@ -31,7 +31,6 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
-TILE_SIZE_LINESEARCH = 64
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
@@ -1481,17 +1480,17 @@ class Constraint:
   """Constraint data.
 
   Attributes:
-    type: constraint type (ConstraintType)            (nworld, njmax_pad)
-    id: id of object of specific type                 (nworld, njmax_pad)
+    type: constraint type (ConstraintType)            (nworld, njmax)
+    id: id of object of specific type                 (nworld, njmax)
     J: constraint Jacobian                            (nworld, njmax_pad, nv_pad)
     pos: constraint position (equality, contact)      (nworld, njmax)
     margin: inclusion margin (contact)                (nworld, njmax)
     D: constraint mass                                (nworld, njmax_pad)
     vel: velocity in constraint space: J*qvel         (nworld, njmax)
     aref: reference pseudo-acceleration               (nworld, njmax)
-    frictionloss: frictionloss (friction)             (nworld, njmax_pad)
+    frictionloss: frictionloss (friction)             (nworld, njmax)
     force: constraint force in constraint space       (nworld, njmax)
-    Jaref: Jac*qacc - aref                            (nworld, njmax_pad)
+    Jaref: Jac*qacc - aref                            (nworld, njmax)
     Ma: M*qacc                                        (nworld, nv)
     grad: gradient of master cost                     (nworld, nv_pad)
     grad_dot: dot(grad, grad)                         (nworld,)
@@ -1503,8 +1502,8 @@ class Constraint:
     prev_cost: cost from previous iter                (nworld,)
     state: constraint state                           (nworld, njmax_pad)
     mv: qM @ search                                   (nworld, nv)
-    jv: efc_J @ search                                (nworld, njmax_pad)
-    quad: quadratic cost coefficients                 (nworld, njmax_pad, 3)
+    jv: efc_J @ search                                (nworld, njmax)
+    quad: quadratic cost coefficients                 (nworld, njmax, 3)
     quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)
     alpha: line search step size                      (nworld,)
     prev_grad: previous grad                          (nworld, nv)
@@ -1513,17 +1512,17 @@ class Constraint:
     done: solver done                                 (nworld,)
   """
 
-  type: array("nworld", "njmax_pad", int)
-  id: array("nworld", "njmax_pad", int)
+  type: array("nworld", "njmax", int)
+  id: array("nworld", "njmax", int)
   J: array("nworld", "njmax_pad", "nv_pad", float)
   pos: array("nworld", "njmax", float)
   margin: array("nworld", "njmax", float)
   D: array("nworld", "njmax_pad", float)
   vel: array("nworld", "njmax", float)
   aref: array("nworld", "njmax", float)
-  frictionloss: array("nworld", "njmax_pad", float)
+  frictionloss: array("nworld", "njmax", float)
   force: array("nworld", "njmax", float)
-  Jaref: array("nworld", "njmax_pad", float)
+  Jaref: array("nworld", "njmax", float)
   Ma: array("nworld", "nv", float)
   grad: array("nworld", "nv_pad", float)
   grad_dot: array("nworld", float)
@@ -1535,8 +1534,8 @@ class Constraint:
   prev_cost: array("nworld", float)
   state: array("nworld", "njmax_pad", int)
   mv: array("nworld", "nv", float)
-  jv: array("nworld", "njmax_pad", float)
-  quad: array("nworld", "njmax_pad", wp.vec3)
+  jv: array("nworld", "njmax", float)
+  quad: array("nworld", "njmax", wp.vec3)
   quad_gauss: array("nworld", wp.vec3)
   alpha: array("nworld", float)
   prev_grad: array("nworld", "nv", float)
