@@ -345,6 +345,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
   )
 
+  m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, 0).max()
+  m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, 0).max()
+
   # filter plugins for only geom plugins, drop the rest
   m.plugin, m.plugin_attr = [], []
   m.geom_plugin_index = np.full_like(mjm.geom_type, -1)

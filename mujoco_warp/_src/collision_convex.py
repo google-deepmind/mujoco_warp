@@ -1155,13 +1155,13 @@ def convex_narrowphase(m: Model, d: Data):
   use_multiccd = m.opt.enableflags & EnableBit.MULTICCD
 
   # need at least 4 (square sides) if there's a box collision needing multiccd
-  nmaxpolygon = 4 * (nboxbox > 0)
-  nmaxmeshdeg = 3 * (nboxbox > 0)
+  nmaxpolygon = 4 if nboxbox > 0 else 0
+  nmaxmeshdeg = 3 if nboxbox > 0 else 0
 
   # need to allocate more memory if there's meshes
   if use_multiccd and nmeshmesh + nboxmesh > 0:
-    nmaxpolygon = m.mesh_polyvertnum.max()
-    nmaxmeshdeg = m.nmaxmeshdeg.max()
+    nmaxpolygon = max(m.nmaxpolygon, 4)
+    nmaxmeshdeg = max(m.nmaxmeshdeg, 3)
 
   # epa_vert: vertices in EPA polytope in Minkowski space
   epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
