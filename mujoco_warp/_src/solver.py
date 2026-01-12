@@ -1036,8 +1036,12 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     efc_quad_gauss_in: wp.array(dtype=wp.vec3),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
+    efc_search_in: wp.array2d(dtype=float),
+    efc_mv_in: wp.array2d(dtype=float),
     # Data out:
     efc_alpha_out: wp.array(dtype=float),
+    qacc_out: wp.array2d(dtype=float),
+    efc_Ma_out: wp.array2d(dtype=float),
   ):
     worldid, tid = wp.tid()
 
@@ -1249,9 +1253,14 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
       if ls_done:
         break
 
-    # Only thread 0 writes result
+    # Only thread 0 writes alpha result
     if tid == 0:
       efc_alpha_out[worldid] = alpha
+
+    # Fused qacc and Ma update (all threads cooperate)
+    for dofid in range(tid, nv, BLOCK_DIM):
+      qacc_out[worldid, dofid] += alpha * efc_search_in[worldid, dofid]
+      efc_Ma_out[worldid, dofid] += alpha * efc_mv_in[worldid, dofid]
 
   return kernel
 
@@ -1290,8 +1299,10 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.efc.quad_gauss,
       d.efc.done,
       d.njmax,
+      d.efc.search,
+      d.efc.mv,
     ],
-    outputs=[d.efc.alpha],
+    outputs=[d.efc.alpha, d.qacc, d.efc.Ma],
     block_dim=block_dim,
   )
 
@@ -1639,12 +1650,14 @@ def _linesearch(
   # Teardown: update qacc, Ma, Jaref
   # =========================================================================
 
-  wp.launch(
-    linesearch_qacc_ma,
-    dim=(d.nworld, m.nv),
-    inputs=[d.efc.search, d.efc.mv, d.efc.alpha, d.efc.done],
-    outputs=[d.qacc, d.efc.Ma],
-  )
+  # qacc and Ma update is fused into the tiled kernel
+  if not use_tiled:
+    wp.launch(
+      linesearch_qacc_ma,
+      dim=(d.nworld, m.nv),
+      inputs=[d.efc.search, d.efc.mv, d.efc.alpha, d.efc.done],
+      outputs=[d.qacc, d.efc.Ma],
+    )
 
   wp.launch(
     linesearch_jaref,
