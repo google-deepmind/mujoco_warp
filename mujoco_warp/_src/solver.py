@@ -61,6 +61,25 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 
 @wp.func
+def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha: float):
+  """Compute _eval_pt for 3 alphas, sharing the constant hessian."""
+  q0 = quad[0]
+  q1 = quad[1]
+  q2 = quad[2]
+  hessian = 2.0 * q2
+
+  lo_aq2 = lo_alpha * q2
+  hi_aq2 = hi_alpha * q2
+  mid_aq2 = mid_alpha * q2
+
+  return (
+    wp.vec3(lo_alpha * lo_aq2 + lo_alpha * q1 + q0, 2.0 * lo_aq2 + q1, hessian),
+    wp.vec3(hi_alpha * hi_aq2 + hi_alpha * q1 + q0, 2.0 * hi_aq2 + q1, hessian),
+    wp.vec3(mid_alpha * mid_aq2 + mid_alpha * q1 + q0, 2.0 * mid_aq2 + q1, hessian),
+  )
+
+
+@wp.func
 def _eval_frictionloss(
   # In:
   x: float,
@@ -891,10 +910,8 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
       _eval_pt(quad_f_mid, mid_alpha),
     )
 
-  # Compute _eval_pt(efc_quad) - shared by limit and equality
-  pt_lo = _eval_pt(efc_quad, lo_alpha)
-  pt_hi = _eval_pt(efc_quad, hi_alpha)
-  pt_mid = _eval_pt(efc_quad, mid_alpha)
+  # Compute _eval_pt(efc_quad) for all 3 alphas - shared hessian
+  pt_lo, pt_hi, pt_mid = _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
   # Limit/other constraints: active only when x < 0
   if efcid >= ne + nf:
@@ -967,19 +984,14 @@ def _compute_efc_eval_pt_3alphas_elliptic(
       )
 
     # Limit/other constraints: active only when x < 0
-    pt_lo = _eval_pt(efc_quad, lo_alpha)
-    pt_hi = _eval_pt(efc_quad, hi_alpha)
-    pt_mid = _eval_pt(efc_quad, mid_alpha)
+    pt_lo, pt_hi, pt_mid = _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
     r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
     r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
     r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
     return (r_lo, r_hi, r_mid)
 
   # Equality constraint: always active
-  pt_lo = _eval_pt(efc_quad, lo_alpha)
-  pt_hi = _eval_pt(efc_quad, hi_alpha)
-  pt_mid = _eval_pt(efc_quad, mid_alpha)
-  return (pt_lo, pt_hi, pt_mid)
+  return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
 
 def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
@@ -1199,9 +1211,10 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
       lo_sum = wp.tile_reduce(wp.add, lo_tile)
       hi_sum = wp.tile_reduce(wp.add, hi_tile)
       mid_sum = wp.tile_reduce(wp.add, mid_tile)
-      lo_next = _eval_pt(efc_quad_gauss, lo_next_alpha) + lo_sum[0]
-      hi_next = _eval_pt(efc_quad_gauss, hi_next_alpha) + hi_sum[0]
-      mid = _eval_pt(efc_quad_gauss, mid_alpha) + mid_sum[0]
+      gauss_lo, gauss_hi, gauss_mid = _eval_pt_3alphas(efc_quad_gauss, lo_next_alpha, hi_next_alpha, mid_alpha)
+      lo_next = gauss_lo + lo_sum[0]
+      hi_next = gauss_hi + hi_sum[0]
+      mid = gauss_mid + mid_sum[0]
 
       # Bracket swapping logic (same as original)
       # swap lo:
