@@ -673,7 +673,7 @@ class SensorTest(parameterized.TestCase):
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
   @parameterized.parameters(
-    # TODO(team): box in type0
+    ("box", "box", "box", "box"),
     ("sphere", "capsule", "ellipsoid", "cylinder"),
     ("capsule", "box", "cylinder", "sphere"),
     ("capsule", "cylinder", "box", "ellipsoid"),

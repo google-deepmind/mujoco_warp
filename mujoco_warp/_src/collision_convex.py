@@ -45,13 +45,18 @@ wp.set_module_options({"enable_backward": False})
 vec_maxconpair = wp.types.vector(length=MJ_MAXCONPAIR, dtype=float)
 mat_maxconpair = wp.types.matrix(shape=(MJ_MAXCONPAIR, 3), dtype=float)
 
-_CONVEX_COLLISION_PAIRS = [
+# heightfield collision pairs handled by ccd_hfield_kernel_builder
+_HFIELD_COLLISION_PAIRS = [
   (GeomType.HFIELD, GeomType.SPHERE),
   (GeomType.HFIELD, GeomType.CAPSULE),
   (GeomType.HFIELD, GeomType.ELLIPSOID),
   (GeomType.HFIELD, GeomType.CYLINDER),
   (GeomType.HFIELD, GeomType.BOX),
   (GeomType.HFIELD, GeomType.MESH),
+]
+
+# non-heightfield collision pairs handled by ccd_kernel_builder
+_NON_HFIELD_COLLISION_PAIRS = [
   (GeomType.SPHERE, GeomType.ELLIPSOID),
   (GeomType.SPHERE, GeomType.MESH),
   (GeomType.CAPSULE, GeomType.ELLIPSOID),
@@ -64,9 +69,12 @@ _CONVEX_COLLISION_PAIRS = [
   (GeomType.CYLINDER, GeomType.CYLINDER),
   (GeomType.CYLINDER, GeomType.BOX),
   (GeomType.CYLINDER, GeomType.MESH),
+  (GeomType.BOX, GeomType.BOX),
   (GeomType.BOX, GeomType.MESH),
   (GeomType.MESH, GeomType.MESH),
 ]
+
+_CONVEX_COLLISION_PAIRS = _HFIELD_COLLISION_PAIRS + _NON_HFIELD_COLLISION_PAIRS
 
 
 def _check_convex_collision_pairs():
@@ -751,7 +759,6 @@ def ccd_kernel_builder(
     solimp: vec5,
     x1: wp.vec3,
     x2: wp.vec3,
-    count: int,
     pairid: wp.vec2i,
     # Data out:
     contact_dist_out: wp.array(dtype=float),
@@ -774,12 +781,12 @@ def ccd_kernel_builder(
     witness2 = mat43()
     geom1.margin = margin
     geom2.margin = margin
-    if pairid[1] >= 0:
-      # if collision sensor, set large cutoff to work with various sensor cutoff values
+    is_collision_sensor = pairid[1] >= 0
+    if is_collision_sensor:
       cutoff = 1.0e32
     else:
       cutoff = 0.0
-    dist, ncontact, w1, w2, idx = ccd(
+    dist, ncollision, w1, w2, idx = ccd(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
@@ -814,7 +821,7 @@ def ccd_kernel_builder(
         and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
         and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
       ):
-        ncontact, witness1, witness2 = multicontact(
+        ncollision, witness1, witness2 = multicontact(
           multiccd_polygon_in[tid],
           multiccd_clipped_in[tid],
           multiccd_pnormal_in[tid],
@@ -839,7 +846,11 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-    for i in range(ncontact):
+    # collision sensors always evaluate all collisions
+    if is_collision_sensor:
+      ncollision = 4
+
+    for i in range(ncollision):
       points[i] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]
     frame = make_frame(normal)
@@ -849,8 +860,9 @@ def ccd_kernel_builder(
       frame *= -1.0
       geoms = wp.vec2i(geoms[1], geoms[0])
 
-    for i in range(ncontact):
-      write_contact(
+    nactive = int(0)  # number of contacts contributing to the physics
+    for i in range(ncollision):
+      active = write_contact(
         naconmax_in,
         i,
         dist,
@@ -881,10 +893,9 @@ def ccd_kernel_builder(
         contact_geomcollisionid_out,
         nacon_out,
       )
-      if count + (i + 1) >= MJ_MAXCONPAIR:
-        return i + 1
+      nactive += active
 
-    return ncontact
+    return nactive
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
   @nested_kernel(module="unique", enable_backward=False)
@@ -1065,7 +1076,6 @@ def ccd_kernel_builder(
       solimp,
       geom1.pos,
       geom2.pos,
-      0,
       collision_pairid_in[tid],
       contact_dist_out,
       contact_pos_out,
@@ -1084,35 +1094,6 @@ def ccd_kernel_builder(
     )
 
   return ccd_kernel
-
-
-# Heightfield collision pairs handled by ccd_hfield_kernel_builder
-_HFIELD_COLLISION_PAIRS = [
-  (GeomType.HFIELD, GeomType.SPHERE),
-  (GeomType.HFIELD, GeomType.CAPSULE),
-  (GeomType.HFIELD, GeomType.ELLIPSOID),
-  (GeomType.HFIELD, GeomType.CYLINDER),
-  (GeomType.HFIELD, GeomType.BOX),
-  (GeomType.HFIELD, GeomType.MESH),
-]
-
-# Non-heightfield collision pairs handled by ccd_kernel_builder
-_NON_HFIELD_COLLISION_PAIRS = [
-  (GeomType.SPHERE, GeomType.ELLIPSOID),
-  (GeomType.SPHERE, GeomType.MESH),
-  (GeomType.CAPSULE, GeomType.ELLIPSOID),
-  (GeomType.CAPSULE, GeomType.CYLINDER),
-  (GeomType.CAPSULE, GeomType.MESH),
-  (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
-  (GeomType.ELLIPSOID, GeomType.CYLINDER),
-  (GeomType.ELLIPSOID, GeomType.BOX),
-  (GeomType.ELLIPSOID, GeomType.MESH),
-  (GeomType.CYLINDER, GeomType.CYLINDER),
-  (GeomType.CYLINDER, GeomType.BOX),
-  (GeomType.CYLINDER, GeomType.MESH),
-  (GeomType.BOX, GeomType.MESH),
-  (GeomType.MESH, GeomType.MESH),
-]
 
 
 @event_scope
@@ -1142,7 +1123,8 @@ def convex_narrowphase(m: Model, d: Data):
   epa_iterations = m.opt.ccd_iterations
 
   # set to true to enable multiccd
-  use_multiccd = False
+  is_box_box = bool(_pair_count(int(GeomType.BOX), int(GeomType.BOX)) > 0)
+  use_multiccd = is_box_box  # TODO(team): if not box<>box: multiccd based on flag m.opt.enableflags & EnableBit.MULTICCD
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
   nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
