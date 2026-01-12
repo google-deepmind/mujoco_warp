@@ -1240,7 +1240,7 @@ def _epa(
   # the face vertices are encoded in 10-bits that index the vertex array,
   # so iterations must be cap to limit the number of generated vertices
   # (one new vertex per iteration)
-  epa_iterations = wp.max(epa_iterations, 1000)
+  epa_iterations = wp.min(epa_iterations, 1000)
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
@@ -1394,7 +1394,7 @@ def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int) -> wp.vec4i:
       if c == b:
         c = _next(npolygon, c)
         if d == c:
-          d == _next(npolygon, d)
+          d = _next(npolygon, d)
   return res
 
 
