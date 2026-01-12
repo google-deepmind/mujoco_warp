@@ -326,15 +326,15 @@ def ccd_hfield_kernel_builder(
 
     # transform geom2 into heightfield frame
     hf_pos = geom_xpos_in[worldid, g1]
-    hf_mat = geom_xmat_in[worldid, g1]
-    hf_matT = wp.transpose(hf_mat)
+    hf_quat = geom_xquat_in[worldid, g1]
+    hf_quat_inv = quat_inv(hf_quat)
 
-    geom2.pos = hf_matT @ (geom2.pos - hf_pos)
-    geom2.rot = hf_matT @ geom2.rot
+    geom2.pos = rot_vec_quat(geom2.pos - hf_pos, hf_quat_inv)
+    geom2.rot = mul_quat(hf_quat_inv, geom2.rot)
 
     # geom1 has identity pose
     geom1.pos = wp.vec3(0.0, 0.0, 0.0)
-    geom1.rot = wp.identity(n=3, dtype=float)
+    geom1.rot = wp.quat(1.0, 0.0, 0.0, 0.0)
 
     # see MuJoCo mjc_ConvexHField
     geom1_dataid = geom_dataid[g1]
@@ -479,14 +479,14 @@ def ccd_hfield_kernel_builder(
 
           # transform contact to global frame
           pos_local = 0.5 * (w1 + w2)
-          pos = hf_mat @ pos_local + hf_pos
+          pos = rot_vec_quat(pos_local, hf_quat) + hf_pos
           hfield_contact_pos[count, 0] = pos[0]
           hfield_contact_pos[count, 1] = pos[1]
           hfield_contact_pos[count, 2] = pos[2]
 
           frame_local = make_frame(w1 - w2)
           normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
-          normal = hf_mat @ normal_local
+          normal = rot_vec_quat(normal_local, hf_quat)
           hfield_contact_normal[count, 0] = normal[0]
           hfield_contact_normal[count, 1] = normal[1]
           hfield_contact_normal[count, 2] = normal[2]
