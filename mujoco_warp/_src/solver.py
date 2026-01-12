@@ -46,14 +46,16 @@ def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
 
 @wp.func
 def _eval_cost(quad: wp.vec3, alpha: float) -> float:
-  return alpha * alpha * quad[2] + alpha * quad[1] + quad[0]
+  aq2 = alpha * quad[2]
+  return alpha * aq2 + alpha * quad[1] + quad[0]
 
 
 @wp.func
 def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
+  aq2 = alpha * quad[2]
   return wp.vec3(
-    _eval_cost(quad, alpha),
-    2.0 * alpha * quad[2] + quad[1],
+    alpha * aq2 + alpha * quad[1] + quad[0],
+    2.0 * aq2 + quad[1],
     2.0 * quad[2],
   )
 
