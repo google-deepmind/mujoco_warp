@@ -755,7 +755,6 @@ def _compute_efc_eval_pt_elliptic(
   impratio_invsqrt: float,
   # Per-row data (arrays for deferred load):
   efc_type: int,
-  efc_id: int,
   efc_D_in: wp.array(dtype=float),
   efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
@@ -933,7 +932,6 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   impratio_invsqrt: float,
   # Per-row data (arrays for deferred load):
   efc_type: int,
-  efc_id: int,
   efc_D_in: wp.array(dtype=float),
   efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
@@ -1127,7 +1125,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
 
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
-          efc_type, efc_id, efc_D_in[worldid], efc_frictionloss_in[worldid],
+          efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
@@ -1186,7 +1184,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf, impratio_invsqrt,
-            efc_type, efc_id, efc_D_in[worldid], efc_frictionloss_in[worldid],
+            efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
             contact_friction, efc_addr0, quad1, quad2,
           )
