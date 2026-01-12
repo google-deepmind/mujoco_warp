@@ -1046,29 +1046,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
       if tile_start >= nefc:
         break
 
-      # Coalesced tile loads
-      type_tile = wp.tile_load(
-        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      id_tile = wp.tile_load(
-        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      D_tile = wp.tile_load(
-        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      frictionloss_tile = wp.tile_load(
-        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      Jaref_tile = wp.tile_load(
-        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      jv_tile = wp.tile_load(
-        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      quad_tile = wp.tile_load(
-        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-
       # Each thread processes multiple elements if TILE_SIZE > BLOCK_DIM
       local_vec = wp.vec3(0.0)
       for i in range(0, TILE_SIZE, BLOCK_DIM):
@@ -1077,7 +1054,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
           efcid = tile_start + idx
           if efcid < nefc:
             if wp.static(IS_ELLIPTIC):
-              efc_type = type_tile[idx]
+              efc_type = efc_type_in[worldid, efcid]
               efc_id = 0
               contact_friction = types.vec5(0.0)
               efc_addr0 = int(0)
@@ -1085,7 +1062,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
               quad2 = wp.vec3(0.0)
 
               if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-                efc_id = id_tile[idx]
+                efc_id = efc_id_in[worldid, efcid]
                 contact_friction = contact_friction_in[efc_id]
                 efc_addr0 = contact_efc_address_in[efc_id, 0]
                 efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1095,15 +1072,15 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
 
               local_vec += _compute_efc_eval_pt_alpha_zero(
                 efcid, ne, nf, impratio_invsqrt,
-                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                efc_type, efc_id, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+                efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
                 contact_friction, efc_addr0, quad1, quad2,
               )
             else:
               local_vec += _compute_efc_eval_pt_alpha_zero(
                 efcid, ne, nf,
-                type_tile[idx], D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                efc_type_in[worldid, efcid], efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+                efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
               )
 
       # Reduce vec3 directly
@@ -1123,28 +1100,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
       if tile_start >= nefc:
         break
 
-      type_tile = wp.tile_load(
-        efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      id_tile = wp.tile_load(
-        efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      D_tile = wp.tile_load(
-        efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      frictionloss_tile = wp.tile_load(
-        efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      Jaref_tile = wp.tile_load(
-        efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      jv_tile = wp.tile_load(
-        efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-      quad_tile = wp.tile_load(
-        efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-      )
-
       local_vec = wp.vec3(0.0)
       for i in range(0, TILE_SIZE, BLOCK_DIM):
         idx = i + tid
@@ -1152,7 +1107,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
           efcid = tile_start + idx
           if efcid < nefc:
             if wp.static(IS_ELLIPTIC):
-              efc_type = type_tile[idx]
+              efc_type = efc_type_in[worldid, efcid]
               efc_id = 0
               contact_friction = types.vec5(0.0)
               efc_addr0 = int(0)
@@ -1160,7 +1115,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
               quad2 = wp.vec3(0.0)
 
               if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-                efc_id = id_tile[idx]
+                efc_id = efc_id_in[worldid, efcid]
                 contact_friction = contact_friction_in[efc_id]
                 efc_addr0 = contact_efc_address_in[efc_id, 0]
                 efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1170,15 +1125,15 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
 
               local_vec += _compute_efc_eval_pt(
                 efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
-                efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                efc_type, efc_id, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+                efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
                 contact_friction, efc_addr0, quad1, quad2,
               )
             else:
               local_vec += _compute_efc_eval_pt(
                 efcid, lo_alpha_in, ne, nf,
-                type_tile[idx], D_tile[idx], frictionloss_tile[idx],
-                Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                efc_type_in[worldid, efcid], efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+                efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
               )
 
       # Reduce vec3 directly
@@ -1212,28 +1167,6 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
         if tile_start >= nefc:
           break
 
-        type_tile = wp.tile_load(
-          efc_type_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-        id_tile = wp.tile_load(
-          efc_id_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-        D_tile = wp.tile_load(
-          efc_D_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-        frictionloss_tile = wp.tile_load(
-          efc_frictionloss_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-        Jaref_tile = wp.tile_load(
-          efc_Jaref_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-        jv_tile = wp.tile_load(
-          efc_jv_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-        quad_tile = wp.tile_load(
-          efc_quad_in[worldid], shape=TILE_SIZE, offset=tile_start, bounds_check=False
-        )
-
         local_lo = wp.vec3(0.0)
         local_hi = wp.vec3(0.0)
         local_mid = wp.vec3(0.0)
@@ -1244,7 +1177,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
             efcid = tile_start + idx
             if efcid < nefc:
               if wp.static(IS_ELLIPTIC):
-                efc_type = type_tile[idx]
+                efc_type = efc_type_in[worldid, efcid]
                 efc_id = 0
                 contact_friction = types.vec5(0.0)
                 efc_addr0 = int(0)
@@ -1252,7 +1185,7 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
                 quad2 = wp.vec3(0.0)
 
                 if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-                  efc_id = id_tile[idx]
+                  efc_id = efc_id_in[worldid, efcid]
                   contact_friction = contact_friction_in[efc_id]
                   efc_addr0 = contact_efc_address_in[efc_id, 0]
                   efc_addr1 = contact_efc_address_in[efc_id, 1]
@@ -1264,8 +1197,8 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
                 r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
                   efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
                   ne, nf, impratio_invsqrt,
-                  efc_type, efc_id, D_tile[idx], frictionloss_tile[idx],
-                  Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                  efc_type, efc_id, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+                  efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
                   contact_friction, efc_addr0, quad1, quad2,
                 )
               else:
@@ -1273,8 +1206,8 @@ def linesearch_iterative_tiled(tile_size: int, block_dim: int, njmax: int, cone_
                 r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
                   efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
                   ne, nf,
-                  type_tile[idx], D_tile[idx], frictionloss_tile[idx],
-                  Jaref_tile[idx], jv_tile[idx], quad_tile[idx],
+                  efc_type_in[worldid, efcid], efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+                  efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
                 )
               local_lo += r_lo
               local_hi += r_hi
@@ -2749,7 +2682,7 @@ def _solver_iteration(
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=types.TILE_SIZE_LINESEARCH, block_dim=32)
+  _linesearch(m, d, step_size_cost, use_tiled=True, tile_size=types.TILE_SIZE_LINESEARCH, block_dim=64)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
