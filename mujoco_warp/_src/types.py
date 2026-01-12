@@ -173,11 +173,13 @@ class EnableBit(enum.IntFlag):
   Attributes:
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
+    MULTICCD: multiple contacts with CCD
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
-  # unsupported: OVERRIDE, FWDINV, ISLAND, MULTICCD
+  MULTICCD = mujoco.mjtEnableBit.mjENBL_MULTICCD
+  # unsupported: OVERRIDE, FWDINV, ISLAND
 
 
 class TrnType(enum.IntEnum):

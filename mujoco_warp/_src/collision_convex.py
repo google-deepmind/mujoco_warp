@@ -30,6 +30,7 @@ from .types import MJ_MAX_EPAFACES
 from .types import MJ_MAX_EPAHORIZON
 from .types import MJ_MAXCONPAIR
 from .types import Data
+from .types import EnableBit
 from .types import GeomType
 from .types import Model
 from .types import mat43
@@ -1151,7 +1152,7 @@ def convex_narrowphase(m: Model, d: Data):
   epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
 
   # set to true to enable multiccd
-  use_multiccd = False
+  use_multiccd = m.opt.enableflags & EnableBit.MULTICCD
 
   # need at least 4 (square sides) if there's a box collision needing multiccd
   nmaxpolygon = 4 * (nboxbox > 0)
