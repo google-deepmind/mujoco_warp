@@ -231,7 +231,6 @@ def ccd_hfield_kernel_builder(
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -376,7 +375,6 @@ def ccd_hfield_kernel_builder(
     geom2.margin = margin
 
     # EPA memory
-    epa_vert = epa_vert_in[tid]
     epa_vert1 = epa_vert1_in[tid]
     epa_vert2 = epa_vert2_in[tid]
     epa_vert_index1 = epa_vert_index1_in[tid]
@@ -458,7 +456,6 @@ def ccd_hfield_kernel_builder(
             geomtype2,
             x1,
             geom2.pos,
-            epa_vert,
             epa_vert1,
             epa_vert2,
             epa_vert_index1,
@@ -718,7 +715,6 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -791,7 +787,6 @@ def ccd_kernel_builder(
       geomtype2,
       x1,
       x2,
-      epa_vert_in[tid],
       epa_vert1_in[tid],
       epa_vert2_in[tid],
       epa_vert_index1_in[tid],
@@ -933,7 +928,6 @@ def ccd_kernel_builder(
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -1032,7 +1026,6 @@ def ccd_kernel_builder(
       opt_ccd_tolerance,
       geom_type,
       naconmax_in,
-      epa_vert_in,
       epa_vert1_in,
       epa_vert2_in,
       epa_vert_index1_in,
@@ -1147,8 +1140,6 @@ def convex_narrowphase(m: Model, d: Data):
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
   nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
-  # epa_vert: vertices in EPA polytope in Minkowski space
-  epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
   # epa_vert1: vertices in EPA polytope in geom 1 space
   epa_vert1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
   # epa_vert2: vertices in EPA polytope in geom 2 space
@@ -1239,7 +1230,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
@@ -1325,7 +1315,6 @@ def convex_narrowphase(m: Model, d: Data):
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
