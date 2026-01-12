@@ -1160,7 +1160,8 @@ def convex_narrowphase(m: Model, d: Data):
 
   # need to allocate more memory if there's meshes
   if use_multiccd and nmeshmesh + nboxmesh > 0:
-    nmaxpolygon = max(m.nmaxpolygon, 4)
+    minval = 4 if nboxmesh else nmaxpolygon
+    nmaxpolygon = max(m.nmaxpolygon, minval)
     nmaxmeshdeg = max(m.nmaxmeshdeg, 3)
 
   # epa_vert: vertices in EPA polytope in Minkowski space
