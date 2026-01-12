@@ -699,9 +699,9 @@ def _compute_efc_eval_pt_pyramidal(
   alpha: float,
   ne: int,
   nf: int,
-  # Per-row data:
-  efc_D: float,
-  efc_frictionloss: float,
+  # Per-row data (arrays for deferred load):
+  efc_D_in: wp.array(dtype=float),
+  efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -711,8 +711,10 @@ def _compute_efc_eval_pt_pyramidal(
   if efcid < ne:
     return _eval_pt(efc_quad, alpha)
 
-  # Friction constraint
+  # Friction constraint - load D and frictionloss only here
   if efcid < ne + nf:
+    efc_D = efc_D_in[efcid]
+    efc_frictionloss = efc_frictionloss_in[efcid]
     x = efc_Jaref + alpha * efc_jv
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -732,11 +734,11 @@ def _compute_efc_eval_pt_elliptic(
   ne: int,
   nf: int,
   impratio_invsqrt: float,
-  # Per-row data:
+  # Per-row data (arrays for deferred load):
   efc_type: int,
   efc_id: int,
-  efc_D: float,
-  efc_frictionloss: float,
+  efc_D_in: wp.array(dtype=float),
+  efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -751,8 +753,10 @@ def _compute_efc_eval_pt_elliptic(
   if efcid < ne:
     return _eval_pt(efc_quad, alpha)
 
-  # Friction constraint
+  # Friction constraint - load D and frictionloss only here
   if efcid < ne + nf:
+    efc_D = efc_D_in[efcid]
+    efc_frictionloss = efc_frictionloss_in[efcid]
     x = efc_Jaref + alpha * efc_jv
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -777,9 +781,9 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   efcid: int,
   ne: int,
   nf: int,
-  # Per-row data:
-  efc_D: float,
-  efc_frictionloss: float,
+  # Per-row data (arrays for deferred load):
+  efc_D_in: wp.array(dtype=float),
+  efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -789,8 +793,10 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   if efcid < ne:
     return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
 
-  # Friction constraint
+  # Friction constraint - load D and frictionloss only here
   if efcid < ne + nf:
+    efc_D = efc_D_in[efcid]
+    efc_frictionloss = efc_frictionloss_in[efcid]
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
@@ -807,10 +813,10 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
   ne: int,
   nf: int,
   impratio_invsqrt: float,
-  # Per-row data:
+  # Per-row data (arrays for deferred load):
   efc_type: int,
-  efc_D: float,
-  efc_frictionloss: float,
+  efc_D_in: wp.array(dtype=float),
+  efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -825,8 +831,10 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
   if efcid < ne:
     return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
 
-  # Friction constraint
+  # Friction constraint - load D and frictionloss only here
   if efcid < ne + nf:
+    efc_D = efc_D_in[efcid]
+    efc_frictionloss = efc_frictionloss_in[efcid]
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
@@ -852,9 +860,9 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   mid_alpha: float,
   ne: int,
   nf: int,
-  # Per-row data:
-  efc_D: float,
-  efc_frictionloss: float,
+  # Per-row data (arrays for deferred load):
+  efc_D_in: wp.array(dtype=float),
+  efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -869,8 +877,10 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   x_hi = efc_Jaref + hi_alpha * efc_jv
   x_mid = efc_Jaref + mid_alpha * efc_jv
 
-  # Friction constraint: uses modified quad from frictionloss
+  # Friction constraint - load D and frictionloss only here
   if efcid >= ne and efcid < ne + nf:
+    efc_D = efc_D_in[efcid]
+    efc_frictionloss = efc_frictionloss_in[efcid]
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -906,11 +916,11 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   ne: int,
   nf: int,
   impratio_invsqrt: float,
-  # Per-row data:
+  # Per-row data (arrays for deferred load):
   efc_type: int,
   efc_id: int,
-  efc_D: float,
-  efc_frictionloss: float,
+  efc_D_in: wp.array(dtype=float),
+  efc_frictionloss_in: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -930,8 +940,10 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   x_hi = efc_Jaref + hi_alpha * efc_jv
   x_mid = efc_Jaref + mid_alpha * efc_jv
 
-  # Friction constraint: uses modified quad from frictionloss
+  # Friction constraint - load D and frictionloss only here
   if efcid >= ne and efcid < ne + nf:
+    efc_D = efc_D_in[efcid]
+    efc_frictionloss = efc_frictionloss_in[efcid]
     rf = math.safe_div(efc_frictionloss, efc_D)
     quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
     quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
@@ -1063,14 +1075,14 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf, impratio_invsqrt,
-          efc_type, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf,
-          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_D_in[worldid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
         )
 
@@ -1105,14 +1117,14 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
 
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
-          efc_type, efc_id, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_type, efc_id, efc_D_in[worldid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf,
-          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_D_in[worldid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
         )
 
@@ -1164,7 +1176,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf, impratio_invsqrt,
-            efc_type, efc_id, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+            efc_type, efc_id, efc_D_in[worldid], efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
             contact_friction, efc_addr0, quad1, quad2,
           )
@@ -1173,7 +1185,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf,
-            efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+            efc_D_in[worldid], efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
           )
         local_lo += r_lo
