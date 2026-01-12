@@ -1077,7 +1077,8 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     efc_Jaref_in: wp.array2d(dtype=float),
     efc_search_dot_in: wp.array(dtype=float),
     efc_jv_in: wp.array2d(dtype=float),
-    efc_quad_gauss_in: wp.array(dtype=wp.vec3),
+    efc_gauss_in: wp.array(dtype=float),
+    qfrc_smooth_in: wp.array2d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
     nacon_in: wp.array(dtype=int),
@@ -1103,8 +1104,6 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     ne = ne_in[worldid]
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
-
-    efc_quad_gauss = efc_quad_gauss_in[worldid]
 
     # =========================================================================
     # Prepare quad phase (elliptic only) - fused from linesearch_prepare_quad
@@ -1214,9 +1213,26 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
         )
 
-    # Reduce across all threads and add quad_gauss contribution
+    # Reduce across all threads
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
+
+    # Compute quad_gauss via parallel reduction over DOFs
+    # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+    local_gauss = wp.vec3(0.0)
+    for dofid in range(tid, nv, BLOCK_DIM):
+      search = efc_search_in[worldid, dofid]
+      local_gauss += wp.vec3(
+        0.0,
+        search * (efc_Ma_out[worldid, dofid] - qfrc_smooth_in[worldid, dofid]),
+        0.5 * search * efc_mv_in[worldid, dofid],
+      )
+
+    gauss_tile = wp.tile(local_gauss, preserve_type=True)
+    gauss_sum = wp.tile_reduce(wp.add, gauss_tile)
+    efc_quad_gauss = wp.vec3(efc_gauss_in[worldid], 0.0, 0.0) + gauss_sum[0]
+
+    # Add quad_gauss contribution to p0
     p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2]) + p0_sum[0]
 
     # =========================================================================
@@ -1417,7 +1433,8 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.efc.Jaref,
       d.efc.search_dot,
       d.efc.jv,
-      d.efc.quad_gauss,
+      d.efc.gauss,
+      d.qfrc_smooth,
       d.efc.done,
       d.njmax,
       d.nacon,
@@ -1723,20 +1740,20 @@ def _linesearch(
   )
 
   # prepare quadratics
-  # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-  if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
-
-  wp.launch(
-    linesearch_prepare_gauss(m.nv, dofs_per_thread),
-    dim=(d.nworld, threads_per_efc),
-    inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
-    outputs=[d.efc.quad_gauss],
-  )
-
-  # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
-  # For tiled version, quad is computed/fused in the kernel
+  # For tiled version, quad and quad_gauss are computed/fused in the kernel
   if not use_tiled:
+    # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+    if threads_per_efc > 1:
+      d.efc.quad_gauss.zero_()
+
+    wp.launch(
+      linesearch_prepare_gauss(m.nv, dofs_per_thread),
+      dim=(d.nworld, threads_per_efc),
+      inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
+      outputs=[d.efc.quad_gauss],
+    )
+
+    # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
     wp.launch(
       linesearch_prepare_quad,
       dim=(d.nworld, d.njmax),
