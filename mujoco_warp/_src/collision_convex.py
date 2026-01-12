@@ -1152,7 +1152,7 @@ def convex_narrowphase(m: Model, d: Data):
 
   # set to true to enable multiccd
   use_multiccd = False
-  
+
   # need at least 4 (square sides) if there's a box collision needing multiccd
   nmaxpolygon = 4 * (nboxbox > 0)
   nmaxmeshdeg = 3 * (nboxbox > 0)
