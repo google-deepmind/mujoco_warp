@@ -619,16 +619,18 @@ def _ray_hfield(
 def ray_mesh(
   # Model:
   nmeshface: int,
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_face: wp.array(dtype=wp.vec3i),
+  mesh_vertadr: wp.array2d(dtype=int),
+  mesh_faceadr: wp.array2d(dtype=int),
+  mesh_vert: wp.array2d(dtype=wp.vec3),
+  mesh_face: wp.array2d(dtype=wp.vec3i),
+  mesh_vertadr_offset: wp.array(dtype=int),
   # In:
   data_id: int,
   pos: wp.vec3,
   mat: wp.mat33,
   pnt: wp.vec3,
   vec: wp.vec3,
+  worldid: int,
 ) -> Tuple[float, wp.vec3]:
   """Returns the distance and normal for ray mesh intersections."""
   pnt, vec = _ray_map(pos, mat, pnt, vec)
@@ -655,26 +657,30 @@ def ray_mesh(
   x = float(-1.0)
   normal = wp.vec3()
 
-  # get mesh vertex data range
-  vert_start = mesh_vertadr[data_id]
+  # world index for batched mesh arrays
+  mesh_setid = worldid % mesh_vertadr.shape[0]
+  world_vert_offset = mesh_vertadr_offset[mesh_setid]
+
+  # get mesh vertex data range (local address + world offset)
+  vert_start = mesh_vertadr[mesh_setid, data_id] + world_vert_offset
 
   # get mesh face and vertex data
-  face_start = mesh_faceadr[data_id]
+  face_start = mesh_faceadr[mesh_setid, data_id]
 
-  if data_id + 1 < mesh_faceadr.shape[0]:
-    face_end = mesh_faceadr[data_id + 1]
+  if data_id + 1 < mesh_faceadr.shape[1]:
+    face_end = mesh_faceadr[mesh_setid, data_id + 1]
   else:
-    face_end = nmeshface
+    face_end = mesh_face.shape[1]
 
   # iterate through all faces
   for i in range(face_start, face_end):
     # get vertices for this face
-    v_idx = mesh_face[i]
+    v_idx = mesh_face[mesh_setid, i]
 
     # create triangle struct
-    v0 = mesh_vert[vert_start + v_idx.x]
-    v1 = mesh_vert[vert_start + v_idx.y]
-    v2 = mesh_vert[vert_start + v_idx.z]
+    v0 = mesh_vert[mesh_setid, vert_start + v_idx.x]
+    v1 = mesh_vert[mesh_setid, vert_start + v_idx.y]
+    v2 = mesh_vert[mesh_setid, vert_start + v_idx.z]
 
     # calculate intersection
     dist, normal_tri = _ray_triangle(v0, v1, v2, pnt, vec, b0, b1)
@@ -723,16 +729,17 @@ def _ray_geom_mesh(
   geom_group: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rgba: wp.array2d(dtype=wp.vec4),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_face: wp.array(dtype=wp.vec3i),
+  mesh_vertadr: wp.array2d(dtype=int),
+  mesh_faceadr: wp.array2d(dtype=int),
+  mesh_vert: wp.array2d(dtype=wp.vec3),
+  mesh_face: wp.array2d(dtype=wp.vec3i),
   hfield_size: wp.array(dtype=wp.vec4),
   hfield_nrow: wp.array(dtype=int),
   hfield_ncol: wp.array(dtype=int),
   hfield_adr: wp.array(dtype=int),
   hfield_data: wp.array(dtype=float),
   mat_rgba: wp.array2d(dtype=wp.vec4),
+  mesh_vertadr_offset: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -768,11 +775,13 @@ def _ray_geom_mesh(
         mesh_faceadr,
         mesh_vert,
         mesh_face,
+        mesh_vertadr_offset,
         geom_dataid[geomid],
         pos,
         mat,
         pnt,
         vec,
+        worldid,
       )
     elif type == GeomType.HFIELD:
       return _ray_hfield(
@@ -808,16 +817,17 @@ def _ray(
   geom_group: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rgba: wp.array2d(dtype=wp.vec4),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_face: wp.array(dtype=wp.vec3i),
+  mesh_vertadr: wp.array2d(dtype=int),
+  mesh_faceadr: wp.array2d(dtype=int),
+  mesh_vert: wp.array2d(dtype=wp.vec3),
+  mesh_face: wp.array2d(dtype=wp.vec3i),
   hfield_size: wp.array(dtype=wp.vec4),
   hfield_nrow: wp.array(dtype=int),
   hfield_ncol: wp.array(dtype=int),
   hfield_adr: wp.array(dtype=int),
   hfield_data: wp.array(dtype=float),
   mat_rgba: wp.array2d(dtype=wp.vec4),
+  mesh_vertadr_offset: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -863,6 +873,7 @@ def _ray(
         hfield_adr,
         hfield_data,
         mat_rgba,
+        mesh_vertadr_offset,
         geom_xpos_in,
         geom_xmat_in,
         worldid,
@@ -976,6 +987,7 @@ def rays(
       m.hfield_adr,
       m.hfield_data,
       m.mat_rgba,
+      m.mesh_vertadr_offset,
       d.geom_xpos,
       d.geom_xmat,
       pnt,

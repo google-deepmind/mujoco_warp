@@ -41,6 +41,7 @@ from ._src.forward import step2 as step2
 from ._src.inverse import inverse as inverse
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
+from ._src.io import mesh_batch as mesh_batch
 from ._src.io import put_data as put_data
 from ._src.io import put_model as put_model
 from ._src.io import reset_data as reset_data

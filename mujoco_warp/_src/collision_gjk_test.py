@@ -74,18 +74,22 @@ def _geom_dist(
     geom_type: wp.array(dtype=int),
     geom_dataid: wp.array(dtype=int),
     geom_size: wp.array2d(dtype=wp.vec3),
-    mesh_vertadr: wp.array(dtype=int),
-    mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
-    mesh_polynum: wp.array(dtype=int),
-    mesh_polyadr: wp.array(dtype=int),
-    mesh_polynormal: wp.array(dtype=wp.vec3),
-    mesh_polyvertadr: wp.array(dtype=int),
-    mesh_polyvertnum: wp.array(dtype=int),
-    mesh_polyvert: wp.array(dtype=int),
-    mesh_polymapadr: wp.array(dtype=int),
-    mesh_polymapnum: wp.array(dtype=int),
-    mesh_polymap: wp.array(dtype=int),
+    mesh_vertadr_offset: wp.array(dtype=int),
+    mesh_polyadr_offset: wp.array(dtype=int),
+    mesh_polyvertadr_offset: wp.array(dtype=int),
+    mesh_polymapadr_offset: wp.array(dtype=int),
+    mesh_vertadr: wp.array2d(dtype=int),
+    mesh_vertnum: wp.array2d(dtype=int),
+    mesh_vert: wp.array2d(dtype=wp.vec3),
+    mesh_polynum: wp.array2d(dtype=int),
+    mesh_polyadr: wp.array2d(dtype=int),
+    mesh_polynormal: wp.array2d(dtype=wp.vec3),
+    mesh_polyvertadr: wp.array2d(dtype=int),
+    mesh_polyvertnum: wp.array2d(dtype=int),
+    mesh_polyvert: wp.array2d(dtype=int),
+    mesh_polymapadr: wp.array2d(dtype=int),
+    mesh_polymapnum: wp.array2d(dtype=int),
+    mesh_polymap: wp.array2d(dtype=int),
     # Data in:
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -139,18 +143,20 @@ def _geom_dist(
 
     if geom_dataid[gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
       dataid = geom_dataid[gid1]
-      geom1.vertadr = mesh_vertadr[dataid]
-      geom1.vertnum = mesh_vertnum[dataid]
-      geom1.mesh_polynum = mesh_polynum[dataid]
-      geom1.mesh_polyadr = mesh_polyadr[dataid]
-      geom1.vert = mesh_vert
-      geom1.mesh_polynormal = mesh_polynormal
-      geom1.mesh_polyvertadr = mesh_polyvertadr
-      geom1.mesh_polyvertnum = mesh_polyvertnum
-      geom1.mesh_polyvert = mesh_polyvert
-      geom1.mesh_polymapadr = mesh_polymapadr
-      geom1.mesh_polymapnum = mesh_polymapnum
-      geom1.mesh_polymap = mesh_polymap
+      world_vert_offset = mesh_vertadr_offset[0]
+      world_poly_offset = mesh_polyadr_offset[0]
+      geom1.vertadr = mesh_vertadr[0, dataid] + world_vert_offset
+      geom1.vertnum = mesh_vertnum[0, dataid]
+      geom1.mesh_polynum = mesh_polynum[0, dataid]
+      geom1.mesh_polyadr = mesh_polyadr[0, dataid] + world_poly_offset
+      geom1.vert = mesh_vert[0]
+      geom1.mesh_polynormal = mesh_polynormal[0]
+      geom1.mesh_polyvertadr = mesh_polyvertadr[0]
+      geom1.mesh_polyvertnum = mesh_polyvertnum[0]
+      geom1.mesh_polyvert = mesh_polyvert[0]
+      geom1.mesh_polymapadr = mesh_polymapadr[0]
+      geom1.mesh_polymapnum = mesh_polymapnum[0]
+      geom1.mesh_polymap = mesh_polymap[0]
 
     geom2 = Geom()
     geom2.index = -1
@@ -170,18 +176,20 @@ def _geom_dist(
 
     if geom_dataid[gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
       dataid = geom_dataid[gid2]
-      geom2.vertadr = mesh_vertadr[dataid]
-      geom2.vertnum = mesh_vertnum[dataid]
-      geom2.mesh_polynum = mesh_polynum[dataid]
-      geom2.mesh_polyadr = mesh_polyadr[dataid]
-      geom2.vert = mesh_vert
-      geom2.mesh_polynormal = mesh_polynormal
-      geom2.mesh_polyvertadr = mesh_polyvertadr
-      geom2.mesh_polyvertnum = mesh_polyvertnum
-      geom2.mesh_polyvert = mesh_polyvert
-      geom2.mesh_polymapadr = mesh_polymapadr
-      geom2.mesh_polymapnum = mesh_polymapnum
-      geom2.mesh_polymap = mesh_polymap
+      world_vert_offset = mesh_vertadr_offset[0]
+      world_poly_offset = mesh_polyadr_offset[0]
+      geom2.vertadr = mesh_vertadr[0, dataid] + world_vert_offset
+      geom2.vertnum = mesh_vertnum[0, dataid]
+      geom2.mesh_polynum = mesh_polynum[0, dataid]
+      geom2.mesh_polyadr = mesh_polyadr[0, dataid] + world_poly_offset
+      geom2.vert = mesh_vert[0]
+      geom2.mesh_polynormal = mesh_polynormal[0]
+      geom2.mesh_polyvertadr = mesh_polyvertadr[0]
+      geom2.mesh_polyvertnum = mesh_polyvertnum[0]
+      geom2.mesh_polyvert = mesh_polyvert[0]
+      geom2.mesh_polymapadr = mesh_polymapadr[0]
+      geom2.mesh_polymapnum = mesh_polymapnum[0]
+      geom2.mesh_polymap = mesh_polymap[0]
 
     (
       dist,
@@ -254,6 +262,10 @@ def _geom_dist(
       m.geom_type,
       m.geom_dataid,
       m.geom_size,
+      m.mesh_vertadr_offset,
+      m.mesh_polyadr_offset,
+      m.mesh_polyvertadr_offset,
+      m.mesh_polymapadr_offset,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_vert,
