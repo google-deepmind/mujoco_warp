@@ -698,7 +698,6 @@ def _compute_efc_eval_pt_pyramidal(
   ne: int,
   nf: int,
   # Per-row data:
-  efc_type: int,
   efc_D: float,
   efc_frictionloss: float,
   efc_Jaref: float,
@@ -777,7 +776,6 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   ne: int,
   nf: int,
   # Per-row data:
-  efc_type: int,
   efc_D: float,
   efc_frictionloss: float,
   efc_Jaref: float,
@@ -809,7 +807,6 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
   impratio_invsqrt: float,
   # Per-row data:
   efc_type: int,
-  efc_id: int,
   efc_D: float,
   efc_frictionloss: float,
   efc_Jaref: float,
@@ -854,7 +851,6 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   ne: int,
   nf: int,
   # Per-row data:
-  efc_type: int,
   efc_D: float,
   efc_frictionloss: float,
   efc_Jaref: float,
@@ -1057,14 +1053,14 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf, impratio_invsqrt,
-          efc_type, efc_id, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_type, efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf,
-          efc_type_in[worldid, efcid], efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
         )
 
@@ -1106,7 +1102,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
       else:
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf,
-          efc_type_in[worldid, efcid], efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
           efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
         )
 
@@ -1167,7 +1163,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf,
-            efc_type_in[worldid, efcid], efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
+            efc_D_in[worldid, efcid], efc_frictionloss_in[worldid, efcid],
             efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
           )
         local_lo += r_lo
