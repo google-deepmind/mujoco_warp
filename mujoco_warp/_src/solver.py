@@ -45,6 +45,12 @@ def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
 
 
 @wp.func
+def _compute_quad(Jaref: float, jv: float, efc_D: float) -> wp.vec3:
+  """Compute quad coefficients from Jaref, jv, and efc_D (for pyramidal cones)."""
+  return wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
+
+
+@wp.func
 def _eval_cost(quad: wp.vec3, alpha: float) -> float:
   aq2 = alpha * quad[2]
   return alpha * aq2 + alpha * quad[1] + quad[0]
@@ -1093,10 +1099,15 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
+        # Compute quad inline for pyramidal cones (fused prepare_quad)
+        efc_Jaref = efc_Jaref_in[worldid, efcid]
+        efc_jv = efc_jv_in[worldid, efcid]
+        efc_D = efc_D_in[worldid, efcid]
+        efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf,
           efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
+          efc_Jaref, efc_jv, efc_quad,
         )
 
     # Reduce across all threads and add quad_gauss contribution
@@ -1135,10 +1146,15 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
+        # Compute quad inline for pyramidal cones (fused prepare_quad)
+        efc_Jaref = efc_Jaref_in[worldid, efcid]
+        efc_jv = efc_jv_in[worldid, efcid]
+        efc_D = efc_D_in[worldid, efcid]
+        efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf,
           efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
+          efc_Jaref, efc_jv, efc_quad,
         )
 
     # Reduce across all threads and add quad_gauss contribution
@@ -1194,12 +1210,17 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
             contact_friction, efc_addr0, quad1, quad2,
           )
         else:
+          # Compute quad inline for pyramidal cones (fused prepare_quad)
+          efc_Jaref = efc_Jaref_in[worldid, efcid]
+          efc_jv = efc_jv_in[worldid, efcid]
+          efc_D = efc_D_in[worldid, efcid]
+          efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
           # Compute all 3 alphas at once, sharing constraint type checking
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf,
             efc_D_in[worldid], efc_frictionloss_in[worldid],
-            efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_in[worldid, efcid],
+            efc_Jaref, efc_jv, efc_quad,
           )
         local_lo += r_lo
         local_hi += r_hi
@@ -1618,25 +1639,28 @@ def _linesearch(
   )
 
   # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
-  wp.launch(
-    linesearch_prepare_quad,
-    dim=(d.nworld, d.njmax),
-    inputs=[
-      m.opt.impratio_invsqrt,
-      d.nefc,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.efc_address,
-      d.efc.type,
-      d.efc.id,
-      d.efc.D,
-      d.efc.Jaref,
-      d.efc.jv,
-      d.efc.done,
-      d.nacon,
-    ],
-    outputs=[d.efc.quad],
-  )
+  # For tiled + pyramidal, quad is computed inline in the kernel
+  is_pyramidal = m.opt.cone == types.ConeType.PYRAMIDAL
+  if not (use_tiled and is_pyramidal):
+    wp.launch(
+      linesearch_prepare_quad,
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        m.opt.impratio_invsqrt,
+        d.nefc,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.efc_address,
+        d.efc.type,
+        d.efc.id,
+        d.efc.D,
+        d.efc.Jaref,
+        d.efc.jv,
+        d.efc.done,
+        d.nacon,
+      ],
+      outputs=[d.efc.quad],
+    )
 
   # =========================================================================
   # Core linesearch: parallel or iterative, original or tiled
