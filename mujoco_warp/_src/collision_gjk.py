@@ -1252,6 +1252,7 @@ def _epa(
     # compute support point w from the closest face's normal
     lower = wp.sqrt(lower2)
     wi = pt.nvert
+    w = pt.vert1[wi] - pt.vert2[wi]
     face_pr_normalized = pt.face_pr[idx] / lower
     i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr_normalized)
     geom1.index = i1
@@ -1259,7 +1260,7 @@ def _epa(
     pt.nvert += 1
 
     # upper bound for kth iteration
-    upper_k = wp.dot(face_pr_normalized, pt.vert1[wi] - pt.vert2[wi])
+    upper_k = wp.dot(face_pr_normalized, w)
     if upper_k < upper:
       upper = upper_k
       upper2 = upper * upper
@@ -1292,7 +1293,7 @@ def _epa(
       if _is_face_deleted(pt.face[i]):
         continue
 
-      if wp.dot(pt.face_pr[i], pt.vert1[wi] - pt.vert2[wi]) - pt.face_norm2[i] > 1e-10:
+      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > 1e-10:
         nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
         pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
