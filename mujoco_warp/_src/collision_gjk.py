@@ -929,7 +929,6 @@ def _epa_witness(
 def _polytope2(
   # In:
   pt: Polytope,
-  dist: float,
   simplex: mat43,
   simplex1: mat43,
   simplex2: mat43,
@@ -1112,19 +1111,13 @@ def _polytope3(
 def _polytope4(
   # In:
   pt: Polytope,
-  dist: float,
   simplex: mat43,
   simplex1: mat43,
   simplex2: mat43,
   simplex_index1: wp.vec4i,
   simplex_index2: wp.vec4i,
-  geom1: Geom,
-  geom2: Geom,
-  geomtype1: int,
-  geomtype2: int,
 ) -> Tuple[Polytope, GJKResult]:
   """Create polytope for EPA given a 3-simplex from GJK."""
-
   pt.vert1[0] = simplex1[0]
   pt.vert1[1] = simplex1[1]
   pt.vert1[2] = simplex1[2]
@@ -2295,7 +2288,6 @@ def ccd(
   if result.dim == 2:
     pt, new_result = _polytope2(
       pt,
-      result.dist,
       result.simplex,
       result.simplex1,
       result.simplex2,
@@ -2316,16 +2308,11 @@ def ccd(
   elif result.dim == 4:
     pt, new_result = _polytope4(
       pt,
-      result.dist,
       result.simplex,
       result.simplex1,
       result.simplex2,
       result.simplex_index1,
       result.simplex_index2,
-      geom1,
-      geom2,
-      geomtype1,
-      geomtype2,
     )
     if pt.status == -1:
       result.simplex = new_result.simplex
