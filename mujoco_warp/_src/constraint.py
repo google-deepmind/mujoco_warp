@@ -147,7 +147,7 @@ def _efc_equality_connect(
   qvel_in: wp.array2d(dtype=float),
   eq_active_in: wp.array2d(dtype=bool),
   xpos_in: wp.array2d(dtype=wp.vec3),
-  xmat_in: wp.array2d(dtype=wp.mat33),
+  xquat_in: wp.array2d(dtype=wp.quat),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
@@ -196,8 +196,8 @@ def _efc_equality_connect(
   else:
     body1id = obj1id
     body2id = obj2id
-    pos1 = xpos_in[worldid, body1id] + xmat_in[worldid, body1id] @ anchor1
-    pos2 = xpos_in[worldid, body2id] + xmat_in[worldid, body2id] @ anchor2
+    pos1 = xpos_in[worldid, body1id] + math.rot_vec_quat(anchor1, xquat_in[worldid, body1id])
+    pos2 = xpos_in[worldid, body2id] + math.rot_vec_quat(anchor2, xquat_in[worldid, body2id])
 
   # error is difference in global positions
   pos = pos1 - pos2
@@ -740,7 +740,6 @@ def _efc_equality_weld(
   eq_active_in: wp.array2d(dtype=bool),
   xpos_in: wp.array2d(dtype=wp.vec3),
   xquat_in: wp.array2d(dtype=wp.quat),
-  xmat_in: wp.array2d(dtype=wp.mat33),
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
@@ -797,8 +796,8 @@ def _efc_equality_weld(
   else:
     body1id = obj1id
     body2id = obj2id
-    pos1 = xpos_in[worldid, body1id] + xmat_in[worldid, body1id] @ anchor2
-    pos2 = xpos_in[worldid, body2id] + xmat_in[worldid, body2id] @ anchor1
+    pos1 = xpos_in[worldid, body1id] + math.rot_vec_quat(anchor2, xquat_in[worldid, body1id])
+    pos2 = xpos_in[worldid, body2id] + math.rot_vec_quat(anchor1, xquat_in[worldid, body2id])
 
     quat = math.mul_quat(xquat_in[worldid, body1id], relpose)
     quat1 = math.quat_inv(xquat_in[worldid, body2id])
@@ -1600,7 +1599,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.eq_active,
           d.xpos,
-          d.xmat,
+          d.xquat,
           d.site_xpos,
           d.subtree_com,
           d.cdof,
@@ -1645,7 +1644,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.eq_active,
           d.xpos,
           d.xquat,
-          d.xmat,
           d.site_xpos,
           d.subtree_com,
           d.cdof,

@@ -324,7 +324,7 @@ def wrap_inside(
 
 @wp.func
 def wrap(
-  x0: wp.vec3, x1: wp.vec3, pos: wp.vec3, mat: wp.mat33, radius: float, geomtype: int, side: wp.vec3
+  x0: wp.vec3, x1: wp.vec3, pos: wp.vec3, quat: wp.quat, radius: float, geomtype: int, side: wp.vec3
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   """Wrap tendons around spheres and cylinders.
 
@@ -332,7 +332,7 @@ def wrap(
     x0: 3D endpoint.
     x1: 3D endpoint.
     pos: Position of geom.
-    mat: Orientation of geom.
+    quat: Orientation of geom.
     radius: Geom radius.
     geomtype: Wrap type (mjtWrap).
     side: 3D position for sidesite, no side point: wp.vec3(wp.inf).
@@ -345,9 +345,9 @@ def wrap(
     return wp.inf, wp.vec3(wp.inf), wp.vec3(wp.inf)
 
   # map sites to wrap object's local frame
-  matT = wp.transpose(mat)
-  p0 = matT @ (x0 - pos)
-  p1 = matT @ (x1 - pos)
+  matT = math.quat_inv(quat)
+  p0 = math.rot_vec_quat(x0 - pos, matT)
+  p1 = math.rot_vec_quat(x1 - pos, matT)
 
   # too close to origin: return
   if (wp.norm_l2(p0) < MJ_MINVAL) or (wp.norm_l2(p1) < MJ_MINVAL):
@@ -403,7 +403,7 @@ def wrap(
 
   if valid_side:
     # side point: apply same projection as x0, x1
-    sidepnt = matT @ (side - pos)
+    sidepnt = math.rot_vec_quat(side - pos, matT)
 
     # side point: project and rescale
     sidepnt_proj = wp.vec2(
@@ -443,8 +443,8 @@ def wrap(
     wlen = wp.sqrt(wlen * wlen + height * height)
 
   # map back to global frame: wpnt
-  wpnt0 = mat @ res0 + pos
-  wpnt1 = mat @ res1 + pos
+  wpnt0 = math.rot_vec_quat(res0, quat) + pos
+  wpnt1 = math.rot_vec_quat(res1, quat) + pos
 
   return wlen, wpnt0, wpnt1
 
@@ -599,7 +599,7 @@ def muscle_dynamics(control: float, activation: float, prm: vec10) -> float:
 
 
 @wp.func
-def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point: wp.vec3) -> bool:
+def inside_geom(pos: wp.vec3, quat: wp.quat, size: wp.vec3, geomtype: int, point: wp.vec3) -> bool:
   """Return True if point is inside primitive geom, False otherwise."""
   # vector from geom to point
   vec = point - pos
@@ -609,6 +609,7 @@ def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point
     return wp.dot(vec, vec) < size[0] * size[0]
 
   # rotate into local frame
+  mat = math.quat_to_mat(quat)
   plocal = wp.transpose(mat) @ vec
 
   # handle other geom types

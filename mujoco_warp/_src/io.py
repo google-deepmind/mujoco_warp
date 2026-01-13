@@ -667,6 +667,14 @@ def make_data(
   mocap_body = np.nonzero(mjm.body_mocapid >= 0)[0]
   mocap_id = mjm.body_mocapid[mocap_body]
 
+  xiquat = np.zeros((mjm.nbody, 4))
+  for i in range(mjm.nbody):
+    mujoco.mju_mat2Quat(xiquat[i], mjd.ximat[i])
+
+  geom_xquat = np.zeros((mjm.ngeom, 4))
+  for i in range(mjm.ngeom):
+    mujoco.mju_mat2Quat(geom_xquat[i], mjd.geom_xmat[i])
+
   d_kwargs = {
     "qpos": wp.array(np.tile(mjm.qpos0, nworld), shape=(nworld, mjm.nq), dtype=float),
     "contact": contact,
@@ -678,11 +686,10 @@ def make_data(
     "qLD": None,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
-    "ximat": wp.array(np.tile(mjd.ximat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    "xiquat": wp.array(np.tile(xiquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
+    "geom_xquat": wp.array(np.tile(geom_xquat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(
@@ -845,6 +852,9 @@ def put_data(
     "ne_ten": None,
     "ne_flex": None,
     "nsolving": None,
+    "xiquat": None,
+    "geom_xquat": None,
+    "site_xquat": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -889,6 +899,17 @@ def put_data(
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
   mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
+
+  # convert xmat fields to xquat
+  for xmat, attr, n in [
+    (mjd.ximat, "xiquat", mjm.nbody),
+    (mjd.geom_xmat, "geom_xquat", mjm.ngeom),
+    (mjd.site_xmat, "site_xquat", mjm.nsite),
+  ]:
+    xquat = np.zeros((n, 4))
+    for i in range(n):
+      mujoco.mju_mat2Quat(xquat[i], xmat[i])
+    setattr(d, attr, wp.array(np.full((nworld, n, 4), xquat), dtype=wp.quat))
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -960,6 +981,18 @@ def get_data_into(
 
   efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
 
+  # convert quaternions to rotation matrices
+  for n, quat, xmat in [
+    (mjm.nbody, d.xquat, result.xmat),
+    (mjm.nbody, d.xiquat, result.ximat),
+    (mjm.ngeom, d.geom_xquat, result.geom_xmat),
+    (mjm.nsite, d.site_xquat, result.site_xmat),
+  ]:
+    mat = np.zeros((n, 9))
+    for i in range(n):
+      mujoco.mju_quat2Mat(mat[i], quat.numpy()[world_id, i])
+    xmat[:] = mat
+
   result.solver_niter[0] = d.solver_niter.numpy()[world_id]
   result.ncon = ncon
   result.ne = ne
@@ -981,15 +1014,11 @@ def get_data_into(
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
   result.xquat[:] = d.xquat.numpy()[world_id]
-  result.xmat[:] = d.xmat.numpy()[world_id].reshape((-1, 9))
   result.xipos[:] = d.xipos.numpy()[world_id]
-  result.ximat[:] = d.ximat.numpy()[world_id].reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
-  result.geom_xmat[:] = d.geom_xmat.numpy()[world_id].reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
-  result.site_xmat[:] = d.site_xmat.numpy()[world_id].reshape((-1, 9))
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]
   result.cam_xmat[:] = d.cam_xmat.numpy()[world_id].reshape((-1, 9))
   result.light_xpos[:] = d.light_xpos.numpy()[world_id]

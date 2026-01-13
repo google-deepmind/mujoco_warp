@@ -629,7 +629,7 @@ class CollisionTest(parameterized.TestCase):
     # tetrahedron, separated in z by 0.1
     convex = Geom()
     convex.pos = wp.vec3(0.0)
-    convex.rot = wp.mat33(np.eye(3))
+    convex.rot = wp.quat(1.0, 0.0, 0.0, 0.0)
     convex.graphadr = -1
     convex.vertnum = 4
     convex.vertadr = 0

@@ -21,6 +21,9 @@ from .collision_primitive import contact_params
 from .collision_primitive import geom_collision_pair
 from .collision_primitive import write_contact
 from .math import make_frame
+from .math import mul_quat
+from .math import quat_inv
+from .math import rot_vec_quat
 from .ray import ray_mesh
 from .types import Data
 from .types import GeomType
@@ -36,7 +39,7 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.struct
 class OptimizationParams:
-  rel_mat: wp.mat33
+  rel_mat: wp.quat
   rel_pos: wp.vec3
   attr1: wp.vec3
   attr2: wp.vec3
@@ -68,7 +71,7 @@ class MeshData:
   data_id: int
   data_id: int
   pos: wp.vec3
-  mat: wp.mat33
+  quat: wp.quat
   pnt: wp.vec3
   vec: wp.vec3
   valid: bool = False
@@ -108,7 +111,7 @@ def get_sdf_params(
 
 
 @wp.func
-def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.mat33) -> AABB:
+def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.quat) -> AABB:
   aabb = AABB()
   aabb.max = wp.vec3(-1000000000.0, -1000000000.0, -1000000000.0)
   aabb.min = wp.vec3(1000000000.0, 1000000000.0, 1000000000.0)
@@ -118,7 +121,7 @@ def transform_aabb(aabb_pos: wp.vec3, aabb_size: wp.vec3, pos: wp.vec3, ori: wp.
       aabb_size.y * (1.0 if (i & 2) else -1.0),
       aabb_size.z * (1.0 if (i & 4) else -1.0),
     )
-    frame_vec = ori * (vec + aabb_pos) + pos
+    frame_vec = rot_vec_quat(vec + aabb_pos, ori) + pos
     aabb.min = wp.min(aabb.min, frame_vec)
     aabb.max = wp.max(aabb.max, frame_vec)
   return aabb
@@ -375,7 +378,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
       mesh_data.mesh_face,
       mesh_data.data_id,
       mesh_data.pos,
-      mesh_data.mat,
+      mesh_data.quat,
       mesh_data.pnt,
       mesh_data.vec,
     )
@@ -388,7 +391,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
         mesh_data.mesh_face,
         mesh_data.data_id,
         mesh_data.pos,
-        mesh_data.mat,
+        mesh_data.quat,
         mesh_data.pnt,
         -mesh_data.vec,
       )
@@ -425,7 +428,7 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
       mesh_data.mesh_face,
       mesh_data.data_id,
       mesh_data.pos,
-      mesh_data.mat,
+      mesh_data.quat,
       mesh_data.pnt,
       mesh_data.vec,
     )
@@ -486,7 +489,7 @@ def compute_grad(
   B = sdf(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad1 = sdf_grad(type1, p1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   grad2 = sdf_grad(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
-  grad1_transformed = wp.transpose(params.rel_mat) * grad1
+  grad1_transformed = rot_vec_quat(grad1, quat_inv(params.rel_mat))
   if sfd_intersection:
     if A > B:
       return grad1_transformed
@@ -526,7 +529,7 @@ def gradient_step(
   for i in range(niter):
     alpha = float(2.0)
     x2 = wp.vec3(x[0], x[1], x[2])
-    x1 = params.rel_mat * x2 + params.rel_pos
+    x1 = rot_vec_quat(x2, params.rel_mat) + params.rel_pos
     grad = compute_grad(
       type1, x1, x2, params, sdf_type1, sdf_type2, sfd_intersection, volume_data1, volume_data2, mesh_data1, mesh_data2
     )
@@ -552,7 +555,7 @@ def gradient_step(
       alpha *= rho
       wolfe *= rho
       x = x2 - grad * alpha
-      x1 = params.rel_mat * x + params.rel_pos
+      x1 = rot_vec_quat(x, params.rel_mat) + params.rel_pos
       dist = clearance(
         type1,
         x1,
@@ -582,9 +585,9 @@ def gradient_descent(
   attr1: wp.vec3,
   attr2: wp.vec3,
   pos1: wp.vec3,
-  rot1: wp.mat33,
+  rot1: wp.quat,
   pos2: wp.vec3,
-  rot2: wp.mat33,
+  rot2: wp.quat,
   sdf_type1: int,
   sdf_type2: int,
   sdf_iterations: int,
@@ -594,24 +597,24 @@ def gradient_descent(
   mesh_data2: MeshData,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   params = OptimizationParams()
-  params.rel_mat = wp.transpose(rot1) * rot2
-  params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
+  params.rel_mat = mul_quat(quat_inv(rot1), rot2)
+  params.rel_pos = rot_vec_quat(pos2 - pos1, quat_inv(rot1))
   params.attr1 = attr1
   params.attr2 = attr2
   dist, x = gradient_step(
     type1, x0_initial, params, sdf_type1, sdf_type2, sdf_iterations, False, volume_data1, volume_data2, mesh_data1, mesh_data2
   )
   dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True, volume_data1, volume_data2, mesh_data1, mesh_data2)
-  x_1 = params.rel_mat * x + params.rel_pos
+  x_1 = rot_vec_quat(x, params.rel_mat) + params.rel_pos
   grad1 = sdf_grad(type1, x_1, params.attr1, sdf_type1, volume_data1, mesh_data1)
-  grad1 = wp.transpose(params.rel_mat) * grad1
+  grad1 = rot_vec_quat(grad1, quat_inv(params.rel_mat))
   grad1 = wp.normalize(grad1)
   grad2 = sdf_grad(GeomType.SDF, x, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad2 = wp.normalize(grad2)
   n = grad1 - grad2
   n = wp.normalize(n)
-  pos = rot2 * x + pos2
-  n = rot2 * n
+  pos = rot_vec_quat(x, rot2) + pos2
+  n = rot_vec_quat(n, rot2)
   pos3 = pos - n * dist / 2.0
   return dist, pos3, n
 
@@ -663,12 +666,12 @@ def _sdf_narrowphase(
   geom_plugin_index: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
   naconmax_in: int,
   collision_pair_in: wp.array(dtype=wp.vec2i),
   collision_pairid_in: wp.array(dtype=wp.vec2i),
   collision_worldid_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
+  geom_xquat_in: wp.array2d(dtype=wp.quat),
   # In:
   sdf_initpoints: int,
   sdf_iterations: int,
@@ -740,7 +743,7 @@ def _sdf_narrowphase(
     mesh_polymapnum,
     mesh_polymap,
     geom_xpos_in,
-    geom_xmat_in,
+    geom_xquat_in,
     geoms,
     worldid,
   )
@@ -752,15 +755,13 @@ def _sdf_narrowphase(
   g1_plugin = geom_plugin_index[g1]
   g2_plugin = geom_plugin_index[g2]
 
-  g1_to_g2_rot = wp.transpose(geom1.rot) * geom2.rot
-  g1_to_g2_pos = wp.transpose(geom1.rot) * (geom2.pos - geom1.pos)
+  g1_to_g2_pos = rot_vec_quat(geom2.pos - geom1.pos, quat_inv(geom1.rot))
   aabb_pos = geom_aabb[aabb_id, g1, 0]
   aabb_size = geom_aabb[aabb_id, g1, 1]
-  identity = wp.identity(3, dtype=float)
-  aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), identity)
+  aabb1 = transform_aabb(aabb_pos, aabb_size, wp.vec3(0.0), wp.quat(1.0, 0.0, 0.0, 0.0))
   aabb_pos = geom_aabb[aabb_id, g2, 0]
   aabb_size = geom_aabb[aabb_id, g2, 1]
-  aabb2 = transform_aabb(aabb_pos, aabb_size, g1_to_g2_pos, g1_to_g2_rot)
+  aabb2 = transform_aabb(aabb_pos, aabb_size, g1_to_g2_pos, mul_quat(quat_inv(geom1.rot), geom2.rot))
   aabb_intersection = AABB()
   aabb_intersection.min = wp.max(aabb1.min, aabb2.min)
   aabb_intersection.max = wp.min(aabb1.max, aabb2.max)
@@ -785,7 +786,7 @@ def _sdf_narrowphase(
   mesh_data1.mesh_face = mesh_face
   mesh_data1.data_id = geom_dataid[g1]
   mesh_data1.pos = geom1.pos
-  mesh_data1.mat = geom1.rot
+  mesh_data1.quat = geom1.rot
   mesh_data1.pnt = wp.vec3(-1.0)
   mesh_data1.vec = wp.vec3(0.0)
   mesh_data1.valid = True
@@ -797,7 +798,7 @@ def _sdf_narrowphase(
   mesh_data2.mesh_face = mesh_face
   mesh_data2.data_id = geom_dataid[g2]
   mesh_data2.pos = geom2.pos
-  mesh_data2.mat = geom2.rot
+  mesh_data2.quat = geom2.rot
   mesh_data2.pnt = wp.vec3(-1.0)
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
@@ -807,8 +808,8 @@ def _sdf_narrowphase(
     aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
     aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
   )
-  x = geom1.rot * x_g2 + geom1.pos
-  x0_initial = wp.transpose(rot2) * (x - pos2)
+  x = rot_vec_quat(x_g2, geom1.rot) + geom1.pos
+  x0_initial = rot_vec_quat(x - pos2, quat_inv(rot2))
   dist, pos, n = gradient_descent(
     type1,
     x0_initial,
@@ -908,12 +909,12 @@ def sdf_narrowphase(m: Model, d: Data):
       m.plugin_attr,
       m.geom_plugin_index,
       d.geom_xpos,
-      d.geom_xmat,
       d.naconmax,
       d.collision_pair,
       d.collision_pairid,
       d.collision_worldid,
       d.ncollision,
+      d.geom_xquat,
       m.opt.sdf_initpoints,
       m.opt.sdf_iterations,
     ],

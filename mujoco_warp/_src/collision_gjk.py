@@ -18,6 +18,8 @@ from typing import Tuple
 import warp as wp
 
 from .collision_primitive import Geom
+from .math import quat_inv
+from .math import rot_vec_quat
 from .types import GeomType
 from .types import mat43
 from .types import mat63
@@ -95,11 +97,11 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
     return sp
 
-  local_dir = wp.transpose(geom.rot) @ dir
+  local_dir = rot_vec_quat(dir, quat_inv(geom.rot))
   if geomtype == GeomType.BOX:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
     sp.vertex_index = wp.where(tmp[0] > 0, 1, 0)
     sp.vertex_index += wp.where(tmp[1] > 0, 2, 0)
     sp.vertex_index += wp.where(tmp[2] > 0, 4, 0)
@@ -107,13 +109,13 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     res = local_dir * geom.size[0]
     # add cylinder contribution
     res[2] += wp.sign(local_dir[2]) * geom.size[1]
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
   elif geomtype == GeomType.ELLIPSOID:
     res = wp.cw_mul(local_dir, geom.size)
     res = wp.normalize(res)
     # transform to ellipsoid
     res = wp.cw_mul(res, geom.size)
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
   elif geomtype == GeomType.CYLINDER:
     res = wp.vec3(0.0, 0.0, 0.0)
     # set result in XY plane: support on circle
@@ -124,7 +126,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       res[1] = local_dir[1] * scl
     # set result in Z direction
     res[2] = wp.sign(local_dir[2]) * geom.size[1]
-    sp.point = geom.rot @ res + geom.pos
+    sp.point = rot_vec_quat(res, geom.rot) + geom.pos
   elif geomtype == GeomType.MESH:
     max_dist = float(FLOAT_MIN)
     if geom.graphadr == -1 or geom.vertnum < 10:
@@ -166,7 +168,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       sp.vertex_index = geom.graph[vert_globalid + imax]
       sp.point = geom.vert[geom.vertadr + sp.vertex_index]
 
-    sp.point = geom.rot @ sp.point + geom.pos
+    sp.point = rot_vec_quat(sp.point, geom.rot) + geom.pos
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     # TODO(kbayes): Support edge prisms
@@ -793,25 +795,14 @@ def _replace_simplex3(pt: Polytope, v1: int, v2: int, v3: int) -> GJKResult:
 
 
 @wp.func
-def _rotmat(axis: wp.vec3) -> wp.mat33:
-  n = wp.norm_l2(axis)
-  u1 = axis[0] / n
-  u2 = axis[1] / n
-  u3 = axis[2] / n
-
-  sin = 0.86602540378  # sin(120 deg)
-  cos = -0.5  # cos(120 deg)
-  R = wp.mat33()
-  R[0, 0] = cos + u1 * u1 * (1.0 - cos)
-  R[0, 1] = u1 * u2 * (1.0 - cos) - u3 * sin
-  R[0, 2] = u1 * u3 * (1.0 - cos) + u2 * sin
-  R[1, 0] = u2 * u1 * (1.0 - cos) + u3 * sin
-  R[1, 1] = cos + u2 * u2 * (1.0 - cos)
-  R[1, 2] = u2 * u3 * (1.0 - cos) - u1 * sin
-  R[2, 0] = u1 * u3 * (1.0 - cos) - u2 * sin
-  R[2, 1] = u2 * u3 * (1.0 - cos) + u1 * sin
-  R[2, 2] = cos + u3 * u3 * (1.0 - cos)
-  return R
+def _rotquat(axis: wp.vec3) -> wp.quat:
+  """Returns quaternion for 120 degree rotation around axis."""
+  u = wp.normalize(axis)
+  # θ = 120°, so θ/2 = 60°
+  # cos(60°) = 0.5, sin(60°) = √3/2
+  half_sin = 0.86602540378  # sin(60°)
+  half_cos = 0.5  # cos(60°)
+  return wp.quat(half_cos, half_sin * u[0], half_sin * u[1], half_sin * u[2])
 
 
 @wp.func
@@ -956,9 +947,9 @@ def _polytope2(
   d1 = wp.cross(e, diff)
 
   # rotate around the line segment to get three more points spaced 120 degrees apart
-  R = _rotmat(diff)
-  d2 = R @ d1
-  d3 = R @ d2
+  rot_qaut = _rotquat(diff)
+  d2 = rot_vec_quat(d1, rot_qaut)
+  d3 = rot_vec_quat(d2, rot_qaut)
 
   # save vertices and get indices for each one
   pt.vert1[0] = simplex1[0]
@@ -1474,7 +1465,7 @@ def _mesh_normals(
   # In:
   feature_dim: int,
   feature_index: wp.vec3i,
-  mat: wp.mat33,
+  rot: wp.quat,
   vertadr: int,
   polyadr: int,
   polynormal: wp.array(dtype=wp.vec3),
@@ -1507,7 +1498,7 @@ def _mesh_normals(
       return 0
 
     # three vertices on mesh define a unique face
-    normals_out[0] = mat @ polynormal[polyadr + faceset[0]]
+    normals_out[0] = rot_vec_quat(polynormal[polyadr + faceset[0]], rot)
     indices_out[0] = faceset[0]
     return 1
 
@@ -1523,7 +1514,7 @@ def _mesh_normals(
     if n == 0:
       return 0
     for i in range(n):
-      normals_out[i] = mat @ polynormal[polyadr + edgeset[i]]
+      normals_out[i] = rot_vec_quat(polynormal[polyadr + edgeset[i]], rot)
       indices_out[i] = edgeset[i]
     return n
 
@@ -1532,7 +1523,7 @@ def _mesh_normals(
     v1_num = polymapnum[vertadr + v1]
     for i in range(v1_num):
       index = polymap[v1_adr + i]
-      normals_out[i] = mat @ polynormal[polyadr + index]
+      normals_out[i] = rot_vec_quat(polynormal[polyadr + index], rot)
       indices_out[i] = index
     return v1_num
   return 0
@@ -1543,7 +1534,7 @@ def _mesh_normals(
 def _mesh_edge_normals(
   # In:
   dim: int,
-  mat: wp.mat33,
+  quat: wp.quat,
   pos: wp.vec3,
   vertadr: int,
   polyadr: int,
@@ -1580,7 +1571,7 @@ def _mesh_edge_normals(
       for j in range(nvert):
         if polyvert[adr + j] == v1i:
           k = wp.where(j == 0, nvert - 1, j - 1)
-          endverts_out[i] = mat @ vert[vertadr + polyvert[adr + k]] + pos
+          endverts_out[i] = rot_vec_quat(vert[vertadr + polyvert[adr + k]], quat) + pos
           normals_out[i] = wp.normalize(endverts_out[i] - v1)
     return v1_num
   return 0
@@ -1590,7 +1581,7 @@ def _mesh_edge_normals(
 @wp.func
 def _box_normals2(
   # In:
-  mat: wp.mat33,
+  quat: wp.quat,
   n: wp.vec3,
   # Out:
   normal_out: wp.array(dtype=wp.vec3),
@@ -1600,19 +1591,12 @@ def _box_normals2(
   face_normals = mat63(1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0)
 
   # get local coordinates of the normal
-
-  local_n = wp.normalize(
-    wp.vec3(
-      mat[0][0] * n[0] + mat[1][0] * n[1] + mat[2][0] * n[2],
-      mat[0][1] * n[0] + mat[1][1] * n[1] + mat[2][1] * n[2],
-      mat[0][2] * n[0] + mat[1][2] * n[1] + mat[2][2] * n[2],
-    )
-  )
+  local_n = wp.normalize(rot_vec_quat(n, quat_inv(quat)))
 
   # determine if there is a side close to the normal
   for i in range(6):
     if wp.dot(local_n, face_normals[i]) > FACE_TOL:
-      normal_out[0] = mat @ face_normals[i]
+      normal_out[0] = rot_vec_quat(face_normals[i], quat)
       index_out[0] = i
       return 1
 
@@ -1625,7 +1609,7 @@ def _box_normals(
   # In:
   feature_dim: int,
   feature_index: wp.vec3i,
-  mat: wp.mat33,
+  quat: wp.quat,
   dir: wp.vec3,
   # Out:
   normal_out: wp.array(dtype=wp.vec3),
@@ -1640,7 +1624,7 @@ def _box_normals(
     x = float((v1 & 1) and (v2 & 1) and (v3 & 1)) - float(not (v1 & 1) and not (v2 & 1) and not (v3 & 1))
     y = float((v1 & 2) and (v2 & 2) and (v3 & 2)) - float(not (v1 & 2) and not (v2 & 2) and not (v3 & 2))
     z = float((v1 & 4) and (v2 & 4) and (v3 & 4)) - float(not (v1 & 4) and not (v2 & 4) and not (v3 & 4))
-    normal_out[0] = mat @ wp.vec3(x, y, z)
+    normal_out[0] = rot_vec_quat(wp.vec3(x, y, z), quat)
     sgn = x + y + z
     if x != 0.0:
       index_out[c] = 0
@@ -1655,35 +1639,35 @@ def _box_normals(
       index_out[0] = index_out[0] + 1
     if c == 1:
       return 1
-    return _box_normals2(mat, dir, normal_out, index_out)
+    return _box_normals2(quat, dir, normal_out, index_out)
   if feature_dim == 2:
     c = 0
     x = float((v1 & 1) and (v2 & 1)) - float(not (v1 & 1) and not (v2 & 1))
     y = float((v1 & 2) and (v2 & 2)) - float(not (v1 & 2) and not (v2 & 2))
     z = float((v1 & 4) and (v2 & 4)) - float(not (v1 & 4) and not (v2 & 4))
     if x != 0.0:
-      normal_out[c] = mat @ wp.vec3(float(x), 0.0, 0.0)
+      normal_out[c] = rot_vec_quat(wp.vec3(float(x), 0.0, 0.0), quat)
       index_out[c] = wp.where(x > 0.0, 0, 1)
       c += 1
     if y != 0.0:
-      normal_out[c] = mat @ wp.vec3(0.0, y, 0.0)
+      normal_out[c] = rot_vec_quat(wp.vec3(0.0, y, 0.0), quat)
       index_out[c] = wp.where(y > 0.0, 2, 3)
       c += 1
     if z != 0.0:
-      normal_out[c] = mat @ wp.vec3(0.0, 0.0, z)
+      normal_out[c] = rot_vec_quat(wp.vec3(0.0, 0.0, z), quat)
       index_out[c] = wp.where(z > 0.0, 4, 5)
       c += 1
     if c == 2:
       return 2
-    return _box_normals2(mat, dir, normal_out, index_out)
+    return _box_normals2(quat, dir, normal_out, index_out)
 
   if feature_dim == 1:
     x = wp.where(v1 & 1, 1.0, -1.0)
     y = wp.where(v1 & 2, 1.0, -1.0)
     z = wp.where(v1 & 4, 1.0, -1.0)
-    normal_out[0] = mat @ wp.vec3(x, 0.0, 0.0)
-    normal_out[1] = mat @ wp.vec3(0.0, y, 0.0)
-    normal_out[2] = mat @ wp.vec3(0.0, 0.0, z)
+    normal_out[0] = rot_vec_quat(wp.vec3(x, 0.0, 0.0), quat)
+    normal_out[1] = rot_vec_quat(wp.vec3(0.0, y, 0.0), quat)
+    normal_out[2] = rot_vec_quat(wp.vec3(0.0, 0.0, z), quat)
     index_out[0] = wp.where(x > 0.0, 0, 1)
     index_out[1] = wp.where(y > 0.0, 2, 3)
     index_out[2] = wp.where(z > 0.0, 4, 5)
@@ -1696,7 +1680,7 @@ def _box_normals(
 def _box_edge_normals(
   # In:
   dim: int,
-  mat: wp.mat33,
+  quat: wp.quat,
   pos: wp.vec3,
   size: wp.vec3,
   v1: wp.vec3,
@@ -1717,13 +1701,13 @@ def _box_edge_normals(
     y = wp.where(v1i & 2, size[1], -size[1])
     z = wp.where(v1i & 4, size[2], -size[2])
 
-    endvert_out[0] = mat @ wp.vec3(-x, y, z) + pos
+    endvert_out[0] = rot_vec_quat(wp.vec3(-x, y, z), quat) + pos
     normal_out[0] = wp.normalize(endvert_out[0] - v1)
 
-    endvert_out[1] = mat @ wp.vec3(x, -y, z) + pos
+    endvert_out[1] = rot_vec_quat(wp.vec3(x, -y, z), quat) + pos
     normal_out[1] = wp.normalize(endvert_out[1] - v1)
 
-    endvert_out[2] = mat @ wp.vec3(x, y, -z) + pos
+    endvert_out[2] = rot_vec_quat(wp.vec3(x, y, -z), quat) + pos
     normal_out[2] = wp.normalize(endvert_out[2] - v1)
     return 3
   return 0
@@ -1731,43 +1715,43 @@ def _box_edge_normals(
 
 # recover face of a box from its index
 @wp.func
-def _box_face(mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp.array(dtype=wp.vec3)) -> int:
+def _box_face(quat: wp.quat, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp.array(dtype=wp.vec3)) -> int:
   # compute global coordinates of the box face and face normal
   if idx == 0:  # right
-    face_out[0] = mat @ wp.vec3(size[0], size[1], size[2]) + pos
-    face_out[1] = mat @ wp.vec3(size[0], size[1], -size[2]) + pos
-    face_out[2] = mat @ wp.vec3(size[0], -size[1], -size[2]) + pos
-    face_out[3] = mat @ wp.vec3(size[0], -size[1], size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(size[0], size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(size[0], -size[1], size[2]), quat) + pos
     return 4
   if idx == 1:  # left
-    face_out[0] = mat @ wp.vec3(-size[0], size[1], -size[2]) + pos
-    face_out[1] = mat @ wp.vec3(-size[0], size[1], size[2]) + pos
-    face_out[2] = mat @ wp.vec3(-size[0], -size[1], size[2]) + pos
-    face_out[3] = mat @ wp.vec3(-size[0], -size[1], -size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(-size[0], size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(-size[0], -size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], -size[1], -size[2]), quat) + pos
     return 4
   if idx == 2:  # top
-    face_out[0] = mat @ wp.vec3(-size[0], size[1], -size[2]) + pos
-    face_out[1] = mat @ wp.vec3(size[0], size[1], -size[2]) + pos
-    face_out[2] = mat @ wp.vec3(size[0], size[1], size[2]) + pos
-    face_out[3] = mat @ wp.vec3(-size[0], size[1], size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], size[1], size[2]), quat) + pos
     return 4
   if idx == 3:  # bottom
-    face_out[0] = mat @ wp.vec3(-size[0], -size[1], size[2]) + pos
-    face_out[1] = mat @ wp.vec3(size[0], -size[1], size[2]) + pos
-    face_out[2] = mat @ wp.vec3(size[0], -size[1], -size[2]) + pos
-    face_out[3] = mat @ wp.vec3(-size[0], -size[1], -size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], -size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], -size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], -size[1], -size[2]), quat) + pos
     return 4
   if idx == 4:  # front
-    face_out[0] = mat @ wp.vec3(-size[0], size[1], size[2]) + pos
-    face_out[1] = mat @ wp.vec3(size[0], size[1], size[2]) + pos
-    face_out[2] = mat @ wp.vec3(size[0], -size[1], size[2]) + pos
-    face_out[3] = mat @ wp.vec3(-size[0], -size[1], size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(-size[0], size[1], size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(size[0], size[1], size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(size[0], -size[1], size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(-size[0], -size[1], size[2]), quat) + pos
     return 4
   if idx == 5:  # back
-    face_out[0] = mat @ wp.vec3(size[0], size[1], -size[2]) + pos
-    face_out[1] = mat @ wp.vec3(-size[0], size[1], -size[2]) + pos
-    face_out[2] = mat @ wp.vec3(-size[0], -size[1], -size[2]) + pos
-    face_out[3] = mat @ wp.vec3(size[0], -size[1], -size[2]) + pos
+    face_out[0] = rot_vec_quat(wp.vec3(size[0], size[1], -size[2]), quat) + pos
+    face_out[1] = rot_vec_quat(wp.vec3(-size[0], size[1], -size[2]), quat) + pos
+    face_out[2] = rot_vec_quat(wp.vec3(-size[0], -size[1], -size[2]), quat) + pos
+    face_out[3] = rot_vec_quat(wp.vec3(size[0], -size[1], -size[2]), quat) + pos
     return 4
   return 0
 
@@ -1776,7 +1760,7 @@ def _box_face(mat: wp.mat33, pos: wp.vec3, size: wp.vec3, idx: int, face_out: wp
 @wp.func
 def _mesh_face(
   # In:
-  mat: wp.mat33,
+  quat: wp.quat,
   pos: wp.vec3,
   vertadr: int,
   polyadr: int,
@@ -1793,7 +1777,7 @@ def _mesh_face(
   nvert = polyvertnum[polyadr + idx]
   for i in range(nvert - 1, -1, -1):
     v = vert[vertadr + polyvert[adr + i]]
-    face_out[j] = mat @ v + pos
+    face_out[j] = rot_vec_quat(v, quat) + pos
     j += 1
   return nvert
 
@@ -1807,7 +1791,7 @@ def _plane_normal(v1: wp.vec3, v2: wp.vec3, n: wp.vec3) -> Tuple[float, wp.vec3]
 
 @wp.func
 def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
-  return wp.dot(p - a, n) > -1e-10
+  return wp.dot(p - a, n) > -1e-6
 
 
 @wp.func
