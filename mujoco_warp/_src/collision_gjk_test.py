@@ -45,7 +45,6 @@ def _geom_dist(
   # we run multiccd on static scenes so these need to be initialized
   nmaxpolygon = 10 if multiccd else 0
   nmaxmeshdeg = 10 if multiccd else 0
-  epa_vert = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert1 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert2 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert_index1 = wp.empty(5 + m.opt.ccd_iterations, dtype=int)
@@ -92,7 +91,6 @@ def _geom_dist(
     gid2: int,
     iterations: int,
     tolerance: wp.array(dtype=float),
-    vert: wp.array(dtype=wp.vec3),
     vert1: wp.array(dtype=wp.vec3),
     vert2: wp.array(dtype=wp.vec3),
     vert_index1: wp.array(dtype=int),
@@ -196,7 +194,6 @@ def _geom_dist(
       geomtype2,
       geom1.pos,
       geom2.pos,
-      vert,
       vert1,
       vert2,
       vert_index1,
@@ -266,7 +263,6 @@ def _geom_dist(
       gid2,
       m.opt.ccd_iterations,
       m.opt.ccd_tolerance,
-      epa_vert,
       epa_vert1,
       epa_vert2,
       epa_vert_index1,
