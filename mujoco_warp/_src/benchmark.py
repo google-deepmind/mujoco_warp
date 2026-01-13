@@ -15,17 +15,12 @@
 
 """Utilities for benchmarking MuJoCo Warp."""
 
-import importlib
-import os
 import time
 from typing import Callable, Optional, Tuple
 
-import mujoco
 import numpy as np
 import warp as wp
 
-from . import forward
-from . import io
 from . import warp_util
 from .types import Data
 from .types import Model
