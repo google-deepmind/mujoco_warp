@@ -7,7 +7,9 @@ MJWarp includes a collection of benchmarks for measuring performance across diff
 Make sure you have MuJoCo Warp installed for development:
 
 ```bash
-pip install -e .[dev]
+uv venv
+source .venv/bin/activate
+uv pip install -e .[dev]
 ```
 
 ## Running Benchmarks
