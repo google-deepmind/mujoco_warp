@@ -15,6 +15,13 @@
 
 """Public API for MJWarp."""
 
+from importlib import metadata
+
+try:
+  __version__ = metadata.version("mujoco_warp")
+except metadata.PackageNotFoundError:
+  __version__ = "unknown"
+
 # isort: off
 from ._src.forward import step as step
 from ._src.types import Model as Model
@@ -46,6 +53,7 @@ from ._src.io import put_model as put_model
 from ._src.io import reset_data as reset_data
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
+from ._src.ray import rays as rays
 from ._src.sensor import energy_pos as energy_pos
 from ._src.sensor import energy_vel as energy_vel
 from ._src.sensor import sensor_acc as sensor_acc

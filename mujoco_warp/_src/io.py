@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import dataclasses
+import warnings
 from typing import Any, Optional, Sequence, Union
 
 import mujoco
@@ -72,36 +73,38 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   warp_util.check_toolkit_driver()
 
   # model: check supported features in array types
-  for field, field_type in (
-    (mjm.actuator_trntype, types.TrnType),
-    (mjm.actuator_dyntype, types.DynType),
-    (mjm.actuator_gaintype, types.GainType),
-    (mjm.actuator_biastype, types.BiasType),
-    (mjm.eq_type, types.EqType),
-    (mjm.geom_type, types.GeomType),
-    (mjm.sensor_type, types.SensorType),
-    (mjm.wrap_type, types.WrapType),
+  for field, field_type, mj_type in (
+    (mjm.actuator_trntype, types.TrnType, mujoco.mjtTrn),
+    (mjm.actuator_dyntype, types.DynType, mujoco.mjtDyn),
+    (mjm.actuator_gaintype, types.GainType, mujoco.mjtGain),
+    (mjm.actuator_biastype, types.BiasType, mujoco.mjtBias),
+    (mjm.eq_type, types.EqType, mujoco.mjtEq),
+    (mjm.geom_type, types.GeomType, mujoco.mjtGeom),
+    (mjm.sensor_type, types.SensorType, mujoco.mjtSensor),
+    (mjm.wrap_type, types.WrapType, mujoco.mjtWrap),
   ):
     missing = ~np.isin(field, field_type)
     if missing.any():
-      raise NotImplementedError(f"{field_type.__name__}: {field[missing]} not supported.")
+      names = [mj_type(v).name for v in field[missing]]
+      raise NotImplementedError(f"{names} not supported.")
 
   # opt: check supported features in scalar types
-  for field, field_type in (
-    (mjm.opt.integrator, types.IntegratorType),
-    (mjm.opt.cone, types.ConeType),
-    (mjm.opt.solver, types.SolverType),
+  for field, field_type, mj_type in (
+    (mjm.opt.integrator, types.IntegratorType, mujoco.mjtIntegrator),
+    (mjm.opt.cone, types.ConeType, mujoco.mjtCone),
+    (mjm.opt.solver, types.SolverType, mujoco.mjtSolver),
   ):
     if field not in set(field_type):
-      raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
+      raise NotImplementedError(f"{mj_type(field).name} is unsupported.")
 
   # opt: check supported features in scalar flag types
-  for field, field_type in (
-    (mjm.opt.disableflags, types.DisableBit),
-    (mjm.opt.enableflags, types.EnableBit),
+  for field, field_type, mj_type in (
+    (mjm.opt.disableflags, types.DisableBit, mujoco.mjtDisableBit),
+    (mjm.opt.enableflags, types.EnableBit, mujoco.mjtEnableBit),
   ):
-    if field & ~np.bitwise_or.reduce(field_type):
-      raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
+    unsupported = field & ~np.bitwise_or.reduce(field_type)
+    if unsupported:
+      raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
   if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
     raise NotImplementedError("Flex collisions are not implemented.")
@@ -152,6 +155,21 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   ):
     if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
       raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
+
+  def _check_friction(name: str, id_: int, condim: int, friction, checks):
+    for min_condim, indices in checks:
+      if condim >= min_condim:
+        for idx in indices:
+          if friction[idx] < types.MJ_MINMU:
+            warnings.warn(
+              f"{name} {id_}: friction[{idx}] ({friction[idx]}) < MJ_MINMU ({types.MJ_MINMU}) with condim={condim} may cause NaN"
+            )
+
+  for geomid in range(mjm.ngeom):
+    _check_friction("geom", geomid, mjm.geom_condim[geomid], mjm.geom_friction[geomid], [(3, [0]), (4, [1]), (6, [2])])
+
+  for pairid in range(mjm.npair):
+    _check_friction("pair", pairid, mjm.pair_dim[pairid], mjm.pair_friction[pairid], [(3, [0]), (4, [1, 2]), (6, [3, 4])])
 
   # create opt
   opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}
@@ -560,6 +578,32 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   return njmax_padded, nv_padded
 
 
+def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
+  """Returns a default guess for an ideal nconmax given a Model and optional Data.
+
+  This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
+  reports ncon overflow, or lowered in order to get the very best performance.
+  """
+  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  has_flex = mjm.nflex > 0
+  nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon if mjd else 0)
+  return int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
+
+
+def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
+  """Returns a default guess for an ideal njmax given a Model and optional Data.
+
+  This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
+  reports ncon overflow, or lowered in order to get the very best performance.
+  """
+  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  has_flex = mjm.nflex > 0
+  njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, 512 * has_flex, 256 * has_sdf, mjd.nefc if mjd else 0)
+  return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -582,9 +626,11 @@ def make_data(
     The data object containing the current state and output arrays (device).
   """
   # TODO(team): move nconmax, njmax to Model?
-  # TODO(team): improve heuristic for nconmax and njmax
-  nconmax = nconmax or 20
-  njmax = njmax or nconmax * 6
+  if nconmax is None:
+    nconmax = _default_nconmax(mjm)
+
+  if njmax is None:
+    njmax = _default_njmax(mjm)
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -592,7 +638,7 @@ def make_data(
   if naconmax is None:
     if nconmax < 0:
       raise ValueError("nconmax must be >= 0")
-    naconmax = max(512, nworld * nconmax)
+    naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
@@ -689,9 +735,11 @@ def put_data(
   # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
 
-  # TODO(team): better heuristic for nconmax and njmax
-  nconmax = nconmax or max(5, 4 * mjd.ncon)
-  njmax = njmax or max(5, 4 * mjd.nefc)
+  if nconmax is None:
+    nconmax = _default_nconmax(mjm, mjd)
+
+  if njmax is None:
+    njmax = _default_njmax(mjm, mjd)
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -699,11 +747,9 @@ def put_data(
   if naconmax is None:
     if nconmax < 0:
       raise ValueError("nconmax must be >= 0")
-
     if mjd.ncon > nconmax:
       raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
-
-    naconmax = max(512, nworld * nconmax)
+    naconmax = nworld * nconmax
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
@@ -830,7 +876,7 @@ def put_data(
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
     flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
     mujoco.mju_sparse2dense(
-      flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
+      flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
     )
     d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
   else:
@@ -845,8 +891,9 @@ def put_data(
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
-  d.ne_connect = wp.full(nworld, 3 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active), dtype=int)
-  d.ne_weld = wp.full(nworld, 6 * np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active), dtype=int)
+
+  d.ne_connect = wp.full(nworld, 3 * int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active)), dtype=int)
+  d.ne_weld = wp.full(nworld, 6 * int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active)), dtype=int)
   d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
@@ -1324,6 +1371,7 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
   }
   mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
   mj_only_fields = {"opt.jacobian"}
+  readonly_fields = {"opt.is_sparse"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}
@@ -1340,6 +1388,9 @@ def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[d
       continue
     if key in mj_only_fields and isinstance(model, types.Model):
       continue
+
+    if key in readonly_fields and isinstance(model, types.Model):
+      raise ValueError(f"Cannot override {key} on mjw.Model: field affects model initialization and has side effects")
 
     obj, attrs = model, key.split(".")
     for i, attr in enumerate(attrs):
