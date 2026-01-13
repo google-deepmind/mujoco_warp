@@ -30,7 +30,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-
 from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 

@@ -25,7 +25,6 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
-
 from mujoco_warp._src import inverse
 
 
