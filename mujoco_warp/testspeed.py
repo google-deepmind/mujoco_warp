@@ -58,7 +58,7 @@ _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to sum
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
-_EXTRA_INFO = flags.DEFINE_bool("extra_info", False, "print extra info (impratio, etc.)")
+
 
 
 def _print_table(matrix, headers, title):
@@ -175,16 +175,12 @@ def _main(argv: Sequence[str]):
       f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
       f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
       f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
-      f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
+      f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}\n"
+      f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}"
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
-    # TODO(team): https://github.com/google-deepmind/mujoco_warp/issues/944
-
-    if _EXTRA_INFO.value:
-      val = m.opt.impratio_invsqrt.numpy()[0]
-      print(f"  impratio: {1.0 / (val * val)}")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
