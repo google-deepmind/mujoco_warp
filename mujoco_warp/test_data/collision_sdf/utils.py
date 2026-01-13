@@ -20,6 +20,8 @@ from typing import Dict
 import mujoco
 import warp as wp
 
+from mujoco_warp._src.types import vec_pluginattr
+
 from .bolt import bolt
 from .bolt import bolt_sdf_grad
 from .gear import gear
@@ -81,7 +83,7 @@ def register_sdf_plugins(mjwarp) -> Dict[str, int]:
       sdf_types[SDFType.GEAR] = int(m.plugin[i])
 
   @wp.func
-  def user_sdf(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
+  def user_sdf(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> float:
     result = 0.0
     if sdf_type == wp.static(sdf_types[SDFType.NUT]):
       result = nut(p, attr)
@@ -94,7 +96,7 @@ def register_sdf_plugins(mjwarp) -> Dict[str, int]:
     return result
 
   @wp.func
-  def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
+  def user_sdf_grad(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> wp.vec3:
     if sdf_type == wp.static(sdf_types[SDFType.NUT]):
       return nut_sdf_grad(p, attr)
     elif sdf_type == wp.static(sdf_types[SDFType.BOLT]):

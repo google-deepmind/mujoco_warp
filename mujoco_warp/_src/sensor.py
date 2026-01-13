@@ -39,6 +39,7 @@ from .types import vec5
 from .types import vec6
 from .types import vec8
 from .types import vec8i
+from .types import vec_pluginattr
 from .util_misc import inside_geom
 from .warp_util import cache_kernel
 from .warp_util import event_scope
@@ -2106,7 +2107,7 @@ def _sensor_tactile(
   sensor_dim: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
   plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
+  plugin_attr: wp.array(dtype=vec_pluginattr),
   geom_plugin_index: wp.array(dtype=int),
   taxel_vertadr: wp.array(dtype=int),
   taxel_sensorid: wp.array(dtype=int),
