@@ -1100,14 +1100,9 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
     if efc_done_in[worldid]:
       return
 
-    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-    tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
-    ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
-
     ne = ne_in[worldid]
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
-    nacon = nacon_in[0]
 
     # =========================================================================
     # Prepare jv phase (small nv only) - fused from linesearch_jv_fused
@@ -1127,6 +1122,10 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
     # Prepare quad phase (elliptic only) - fused from linesearch_prepare_quad
     # =========================================================================
     if wp.static(IS_ELLIPTIC):
+      # Load elliptic-only config values
+      impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      nacon = nacon_in[0]
+
       for efcid in range(tid, nefc, BLOCK_DIM):
         Jaref = efc_Jaref_in[worldid, efcid]
         jv = efc_jv_inout[worldid, efcid]
@@ -1190,7 +1189,9 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
       # Synchronize to ensure all quads are written before reading
       _syncthreads()
 
-    # Calculate gtol
+    # Calculate gtol - load tolerance values here (deferred from kernel start)
+    tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+    ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
     snorm = wp.sqrt(efc_search_dot_in[worldid])
     scale = stat_meaninertia * wp.float(nv)
     gtol = tolerance * ls_tolerance * snorm * scale
