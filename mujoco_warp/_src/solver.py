@@ -1029,15 +1029,17 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
 
-def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_jv: bool):
+def linesearch_iterative_tiled(block_dim: int, ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
   """Factory for tiled iterative linesearch kernel.
 
   Args:
     block_dim: Number of threads per block.
+    ls_iterations: Max linesearch iterations (compile-time constant for loop optimization).
     cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
     fuse_jv: Whether to compute jv = J @ search in-kernel (efficient for small nv).
   """
   BLOCK_DIM = block_dim
+  LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = (cone_type == types.ConeType.ELLIPTIC)
   FUSE_JV = fuse_jv
 
@@ -1062,7 +1064,6 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
     nv: int,
     opt_tolerance: wp.array(dtype=float),
     opt_ls_tolerance: wp.array(dtype=float),
-    opt_ls_iterations: int,
     opt_impratio_invsqrt: wp.array(dtype=float),
     stat_meaninertia: float,
     # Data in:
@@ -1309,7 +1310,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
     # =========================================================================
     alpha = float(0.0)
 
-    for _ in range(opt_ls_iterations):
+    for _ in range(wp.static(LS_ITERATIONS)):
       lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
       hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
       mid_alpha = 0.5 * (lo_alpha + hi_alpha)
@@ -1450,13 +1451,12 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
     )
 
   wp.launch_tiled(
-    linesearch_iterative_tiled(block_dim, m.opt.cone, fuse_jv),
+    linesearch_iterative_tiled(block_dim, m.opt.ls_iterations, m.opt.cone, fuse_jv),
     dim=d.nworld,
     inputs=[
       m.nv,
       m.opt.tolerance,
       m.opt.ls_tolerance,
-      m.opt.ls_iterations,
       m.opt.impratio_invsqrt,
       m.stat.meaninertia,
       d.ne,
