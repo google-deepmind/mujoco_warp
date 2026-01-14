@@ -25,8 +25,7 @@ from mujoco_warp import BroadphaseFilter
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
-
-from . import collision_driver
+from mujoco_warp._src import collision_driver
 
 
 def broadphase_caller(m, d):
