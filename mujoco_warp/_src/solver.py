@@ -351,206 +351,6 @@ def _eval(
   return lo, hi, mid
 
 
-@wp.kernel
-def linesearch_iterative(
-  # Model:
-  nv: int,
-  opt_tolerance: wp.array(dtype=float),
-  opt_ls_tolerance: wp.array(dtype=float),
-  opt_ls_iterations: int,
-  opt_impratio_invsqrt: wp.array(dtype=float),
-  stat_meaninertia: float,
-  # Data in:
-  ne_in: wp.array(dtype=int),
-  nf_in: wp.array(dtype=int),
-  nefc_in: wp.array(dtype=int),
-  contact_friction_in: wp.array(dtype=types.vec5),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  efc_type_in: wp.array2d(dtype=int),
-  efc_id_in: wp.array2d(dtype=int),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_frictionloss_in: wp.array2d(dtype=float),
-  efc_Jaref_in: wp.array2d(dtype=float),
-  efc_search_dot_in: wp.array(dtype=float),
-  efc_jv_in: wp.array2d(dtype=float),
-  efc_quad_in: wp.array2d(dtype=wp.vec3),
-  efc_quad_gauss_in: wp.array(dtype=wp.vec3),
-  efc_done_in: wp.array(dtype=bool),
-  njmax_in: int,
-  # Data out:
-  efc_alpha_out: wp.array(dtype=float),
-):
-  worldid = wp.tid()
-
-  if efc_done_in[worldid]:
-    return
-
-  impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-  efc_type = efc_type_in[worldid]
-  efc_id = efc_id_in[worldid]
-  efc_D = efc_D_in[worldid]
-  efc_frictionloss = efc_frictionloss_in[worldid]
-  efc_Jaref = efc_Jaref_in[worldid]
-  efc_jv = efc_jv_in[worldid]
-  efc_quad = efc_quad_in[worldid]
-  efc_quad_gauss = efc_quad_gauss_in[worldid]
-  tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
-  ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
-  ne_clip = min(njmax_in, ne_in[worldid])
-  nef_clip = min(njmax_in, ne_clip + nf_in[worldid])
-  nefc_clip = min(njmax_in, nefc_in[worldid])
-
-  # Calculate p0
-  snorm = wp.sqrt(efc_search_dot_in[worldid])
-  scale = stat_meaninertia * wp.float(nv)
-  gtol = tolerance * ls_tolerance * snorm * scale
-  p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2])
-  p0 += _eval_init(
-    contact_friction_in,
-    contact_efc_address_in,
-    ne_clip,
-    nef_clip,
-    nefc_clip,
-    impratio_invsqrt,
-    efc_type,
-    efc_id,
-    efc_D,
-    efc_frictionloss,
-    efc_Jaref,
-    efc_jv,
-    efc_quad,
-    0.0,
-  )
-
-  # Calculate lo bound
-  lo_alpha_in = -math.safe_div(p0[1], p0[2])
-  lo_in = _eval_pt(efc_quad_gauss, lo_alpha_in)
-  lo_in += _eval_init(
-    contact_friction_in,
-    contact_efc_address_in,
-    ne_clip,
-    nef_clip,
-    nefc_clip,
-    impratio_invsqrt,
-    efc_type,
-    efc_id,
-    efc_D,
-    efc_frictionloss,
-    efc_Jaref,
-    efc_jv,
-    efc_quad,
-    lo_alpha_in,
-  )
-
-  # Initialize bounds
-  lo_less = lo_in[1] < p0[1]
-  lo = wp.where(lo_less, lo_in, p0)
-  lo_alpha = wp.where(lo_less, lo_alpha_in, 0.0)
-  hi = wp.where(lo_less, p0, lo_in)
-  hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
-
-  # Launch main linesearch iterative loop
-  alpha = float(0.0)
-  for _ in range(opt_ls_iterations):
-    lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
-    hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
-    mid_alpha = 0.5 * (lo_alpha + hi_alpha)
-
-    lo_next, hi_next, mid = _eval(
-      contact_friction_in,
-      contact_efc_address_in,
-      ne_clip,
-      nef_clip,
-      nefc_clip,
-      impratio_invsqrt,
-      efc_type,
-      efc_id,
-      efc_D,
-      efc_frictionloss,
-      efc_Jaref,
-      efc_jv,
-      efc_quad,
-      lo_next_alpha,
-      hi_next_alpha,
-      mid_alpha,
-    )
-    lo_next += _eval_pt(efc_quad_gauss, lo_next_alpha)
-    hi_next += _eval_pt(efc_quad_gauss, hi_next_alpha)
-    mid += _eval_pt(efc_quad_gauss, mid_alpha)
-
-    # swap lo:
-    swap_lo_lo_next = _in_bracket(lo, lo_next)
-    lo = wp.where(swap_lo_lo_next, lo_next, lo)
-    lo_alpha = wp.where(swap_lo_lo_next, lo_next_alpha, lo_alpha)
-    swap_lo_mid = _in_bracket(lo, mid)
-    lo = wp.where(swap_lo_mid, mid, lo)
-    lo_alpha = wp.where(swap_lo_mid, mid_alpha, lo_alpha)
-    swap_lo_hi_next = _in_bracket(lo, hi_next)
-    lo = wp.where(swap_lo_hi_next, hi_next, lo)
-    lo_alpha = wp.where(swap_lo_hi_next, hi_next_alpha, lo_alpha)
-    swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
-
-    # swap hi:
-    swap_hi_hi_next = _in_bracket(hi, hi_next)
-    hi = wp.where(swap_hi_hi_next, hi_next, hi)
-    hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
-    swap_hi_mid = _in_bracket(hi, mid)
-    hi = wp.where(swap_hi_mid, mid, hi)
-    hi_alpha = wp.where(swap_hi_mid, mid_alpha, hi_alpha)
-    swap_hi_lo_next = _in_bracket(hi, lo_next)
-    hi = wp.where(swap_hi_lo_next, lo_next, hi)
-    hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
-    swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
-
-    # if we did not adjust the interval, we are done
-    # also done if either low or hi slope is nearly flat
-    ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0 and lo[1] > -gtol) or (hi[1] > 0 and hi[1] < gtol)
-
-    # update alpha if we have an improvement
-    improved = lo[0] < p0[0] or hi[0] < p0[0]
-    lo_better = lo[0] < hi[0]
-    alpha = wp.where(improved and lo_better, lo_alpha, alpha)
-    alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
-    if ls_done:
-      break
-
-  efc_alpha_out[worldid] = alpha
-
-
-def _linesearch_iterative(m: types.Model, d: types.Data):
-  """Iterative linesearch."""
-  wp.launch(
-    linesearch_iterative,
-    dim=d.nworld,
-    inputs=[
-      m.nv,
-      m.opt.tolerance,
-      m.opt.ls_tolerance,
-      m.opt.ls_iterations,
-      m.opt.impratio_invsqrt,
-      m.stat.meaninertia,
-      d.ne,
-      d.nf,
-      d.nefc,
-      d.contact.friction,
-      d.contact.efc_address,
-      d.efc.type,
-      d.efc.id,
-      d.efc.D,
-      d.efc.frictionloss,
-      d.efc.Jaref,
-      d.efc.search_dot,
-      d.efc.jv,
-      d.efc.quad,
-      d.efc.quad_gauss,
-      d.efc.done,
-      d.njmax,
-    ],
-    outputs=[d.efc.alpha],
-    block_dim=m.block_dim.linesearch_iterative,
-  )
-
-
 @wp.func
 def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> float:
   step = (wp.log(max_value) - wp.log(min_value)) / wp.max(1.0, float(num_values - 1))
@@ -1030,13 +830,13 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
 
 # =============================================================================
-# Tiled Iterative Linesearch
+# Iterative Linesearch
 # =============================================================================
 #
-# This is an optimized version of the iterative linesearch that uses Warp's
-# tiled execution model with parallel reductions over constraint (EFC) rows.
+# Iterative linesearch implementation using Warp's tiled execution model with
+# parallel reductions over constraint (EFC) rows.
 #
-# Key optimizations vs. baseline (linesearch_iterative):
+# Key optimizations:
 #
 # 1. KERNEL FUSION - Reduces kernel launch overhead by combining:
 #    - linesearch_jv_fused: jv = J @ search (for small nv <= 50)
@@ -1087,8 +887,8 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
-def linesearch_iterative_tiled(block_dim: int, ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
-  """Factory for tiled iterative linesearch kernel.
+def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
+  """Factory for iterative linesearch kernel.
 
   Args:
     block_dim: Number of threads per block for tile reductions.
@@ -1481,15 +1281,17 @@ def linesearch_iterative_tiled(block_dim: int, ls_iterations: int, cone_type: ty
   return kernel
 
 
-def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 64, fuse_jv: bool = True):
-  """Tiled iterative linesearch with parallel reductions over efc rows.
+def _linesearch_iterative(m: types.Model, d: types.Data, block_dim: int = 32):
+  """Iterative linesearch with parallel reductions over efc rows.
 
   Args:
     m: Model.
     d: Data.
     block_dim: Number of threads per block.
-    fuse_jv: Whether to compute jv in-kernel (efficient for small nv).
   """
+  # Fuse jv computation in-kernel for small nv (single thread can handle all DOFs)
+  fuse_jv = m.nv <= 50
+
   # If not fusing jv, run the separate jv kernels first
   if not fuse_jv:
     dofs_per_thread = 20 if m.nv > 50 else 50
@@ -1509,7 +1311,7 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
     )
 
   wp.launch_tiled(
-    linesearch_iterative_tiled(block_dim, m.opt.ls_iterations, m.opt.cone, fuse_jv),
+    linesearch_iterative(block_dim, m.opt.ls_iterations, m.opt.cone, fuse_jv),
     dim=d.nworld,
     inputs=[
       m.nv,
@@ -1785,47 +1587,27 @@ def linesearch_jaref(
 
 
 @event_scope
-def _linesearch(
-  m: types.Model,
-  d: types.Data,
-  cost: wp.array2d(dtype=float),
-  use_tiled: bool = False,
-  block_dim: int = 64,
-):
+def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   """Linesearch for constraint solver.
 
   Args:
     m: Model
     d: Data
     cost: Scratch array for storing costs per (world, alpha) - used for parallel mode
-    use_tiled: If True, use tiled kernels with parallel reduction over efc rows
-    block_dim: Block dimension for tiled kernels (default 64)
   """
-  # =========================================================================
-  # Setup: mv, jv, quad_gauss, quad
-  # =========================================================================
-
-  # mv = qM @ search
+  # mv = qM @ search (common to both parallel and iterative)
   support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
 
-  # jv = efc_J @ search
-  # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
+  if m.opt.ls_parallel:
+    # Parallel linesearch requires separate setup kernels
+    if m.nv > 50:
+      dofs_per_thread = 20
+    else:
+      dofs_per_thread = 50
 
-  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
-  # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
 
-  if m.nv > 50:
-    dofs_per_thread = 20
-  else:
-    dofs_per_thread = 50
-
-  threads_per_efc = ceil(m.nv / dofs_per_thread)
-
-  # prepare quadratics
-  # For tiled version, jv, quad and quad_gauss are computed/fused in the kernel
-  if not use_tiled:
     # jv = J @ search
-    # we need to clear the jv array if we're doing atomic adds.
     if threads_per_efc > 1:
       wp.launch(
         linesearch_zero_jv,
@@ -1840,6 +1622,7 @@ def _linesearch(
       inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
       outputs=[d.efc.jv],
     )
+
     # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     if threads_per_efc > 1:
       d.efc.quad_gauss.zero_()
@@ -1872,27 +1655,9 @@ def _linesearch(
       outputs=[d.efc.quad],
     )
 
-  # =========================================================================
-  # Core linesearch: parallel or iterative, original or tiled
-  # =========================================================================
+    _linesearch_parallel(m, d, cost)
 
-  if use_tiled:
-    # Tiled version only supports iterative (ignores ls_parallel)
-    # Fuse jv computation in-kernel for small nv (single thread can handle all DOFs)
-    fuse_jv = m.nv <= 50
-    _linesearch_iterative_tiled(m, d, block_dim, fuse_jv)
-  else:
-    if m.opt.ls_parallel:
-      _linesearch_parallel(m, d, cost)
-    else:
-      _linesearch_iterative(m, d)
-
-  # =========================================================================
-  # Teardown: update qacc, Ma, Jaref
-  # =========================================================================
-
-  # qacc, Ma, and Jaref updates are fused into the tiled kernel
-  if not use_tiled:
+    # Teardown: update qacc, Ma, Jaref
     wp.launch(
       linesearch_qacc_ma,
       dim=(d.nworld, m.nv),
@@ -1906,6 +1671,9 @@ def _linesearch(
       inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
       outputs=[d.efc.Jaref],
     )
+  else:
+    # Iterative linesearch fuses jv, quad_gauss, quad, and teardown kernels
+    _linesearch_iterative(m, d)
 
 
 @wp.kernel
@@ -2919,7 +2687,7 @@ def _solver_iteration(
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d, step_size_cost, use_tiled=True, block_dim=32)
+  _linesearch(m, d, step_size_cost)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
