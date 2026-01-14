@@ -441,8 +441,8 @@ def ccd_hfield_kernel_builder(
           # prism center
           x1 = geom1.pos
           x1_ = wp.vec3(0.0, 0.0, 0.0)
-          for i in range(6):
-            x1_ += prism[i]
+          for j in range(6):
+            x1_ += prism[j]
           x1 += geom1.rot @ (x1_ / 6.0)
 
           dist, ncontact, w1, w2, idx = ccd(
