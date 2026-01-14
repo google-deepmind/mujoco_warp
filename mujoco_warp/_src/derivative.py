@@ -282,6 +282,7 @@ def _added_mass_forces_deriv(
 
 @wp.func
 def _viscous_torque_deriv(
+  # In:
   lvel: wp.spatial_vector,
   fluid_density: float,
   fluid_viscosity: float,
@@ -336,6 +337,7 @@ def _viscous_torque_deriv(
 
 @wp.func
 def _viscous_drag_deriv(
+  # In:
   lvel: wp.spatial_vector,
   fluid_density: float,
   fluid_viscosity: float,
@@ -490,27 +492,27 @@ def _magnus_force_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.
 @wp.kernel
 def _deriv_ellipsoid_fluid(
   # Model:
+  opt_timestep: wp.array(dtype=float),
   opt_density: wp.array(dtype=float),
   opt_viscosity: wp.array(dtype=float),
   opt_wind: wp.array(dtype=wp.vec3),
-  opt_timestep: wp.array(dtype=float),
   opt_is_sparse: bool,
   body_rootid: wp.array(dtype=int),
   body_geomnum: wp.array(dtype=int),
   body_geomadr: wp.array(dtype=int),
-  body_fluid_ellipsoid: wp.array(dtype=bool),
+  dof_bodyid: wp.array(dtype=int),
   geom_type: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_fluid: wp.array2d(dtype=float),
-  dof_bodyid: wp.array(dtype=int),
+  body_fluid_ellipsoid: wp.array(dtype=bool),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   ximat_in: wp.array2d(dtype=wp.mat33),
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
@@ -762,26 +764,26 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
       _deriv_ellipsoid_fluid,
       dim=(d.nworld, qMi.size),
       inputs=[
+        m.opt.timestep,
         m.opt.density,
         m.opt.viscosity,
         m.opt.wind,
-        m.opt.timestep,
         m.opt.is_sparse,
         m.body_rootid,
         m.body_geomnum,
         m.body_geomadr,
-        m.body_fluid_ellipsoid,
+        m.dof_bodyid,
         m.geom_type,
         m.geom_size,
         m.geom_fluid,
-        m.dof_bodyid,
+        m.body_fluid_ellipsoid,
         d.xipos,
         d.ximat,
         d.geom_xpos,
         d.geom_xmat,
         d.subtree_com,
-        d.cvel,
         d.cdof,
+        d.cvel,
         qMi,
         qMj,
       ],

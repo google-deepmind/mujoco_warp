@@ -112,11 +112,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
-  if (mjm.opt.viscosity > 0 or mjm.opt.density > 0) and mjm.opt.integrator in (
-    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-    mujoco.mjtIntegrator.mjINT_IMPLICIT,
-  ):
-    raise NotImplementedError(f"Implicit integrators and fluid model not implemented.")
+  # Removed check: Implicit integrators and fluid model are now supported
+  # if (mjm.opt.viscosity > 0 or mjm.opt.density > 0) and mjm.opt.integrator in (
+  #   mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+  #   mujoco.mjtIntegrator.mjINT_IMPLICIT,
+  # ):
+  #   raise NotImplementedError(f"Implicit integrators and fluid model not implemented.")
 
   if (mjm.body_plugin != -1).any():
     raise NotImplementedError("Body plugins not supported.")
