@@ -676,7 +676,7 @@ def _qderiv_fluid(
         B = _fluid_added_mass_forces(B, lvel, density, vm, vi)
         if is_implicit:
           B = 0.5 * (B + wp.transpose(B))
-        # Get Jacobian columns (already rotated to local frame by _get_jac_column_local if passed g_mat)
+        # Get Jacobian columns
         J_i = _get_jac_column_local(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, g_pos, b, dofi, worldid, g_mat)
         J_j = _get_jac_column_local(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, g_pos, b, dofj, worldid, g_mat)
 
