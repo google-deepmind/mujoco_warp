@@ -593,7 +593,6 @@ def com_pos(m: Model, d: Data):
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
-  # Segment-based traversal: Branch-based traversal + Depth-level traversal
   for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
     if is_chain:
       wp.launch(
@@ -1250,7 +1249,6 @@ def _cfrc_backward_segment_chain(
 
 def _rne_cfrc_backward(m: Model, d: Data):
   for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-    # Segment-based traversal: Branch-based traversal + Depth-level traversal
     if is_chain:
       wp.launch(
         _cfrc_backward_segment_chain,
