@@ -509,6 +509,42 @@ def linesearch_parallel_best_alpha(
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
+  """Parallel linesearch with setup and teardown kernels."""
+  dofs_per_thread = 20 if m.nv > 50 else 50
+  threads_per_efc = ceil(m.nv / dofs_per_thread)
+
+  # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+  if threads_per_efc > 1:
+    d.efc.quad_gauss.zero_()
+
+  wp.launch(
+    linesearch_prepare_gauss(m.nv, dofs_per_thread),
+    dim=(d.nworld, threads_per_efc),
+    inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
+    outputs=[d.efc.quad_gauss],
+  )
+
+  # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
+  wp.launch(
+    linesearch_prepare_quad,
+    dim=(d.nworld, d.njmax),
+    inputs=[
+      m.opt.impratio_invsqrt,
+      d.nefc,
+      d.contact.friction,
+      d.contact.dim,
+      d.contact.efc_address,
+      d.efc.type,
+      d.efc.id,
+      d.efc.D,
+      d.efc.Jaref,
+      d.efc.jv,
+      d.efc.done,
+      d.nacon,
+    ],
+    outputs=[d.efc.quad],
+  )
+
   wp.launch(
     linesearch_parallel_fused,
     dim=(d.nworld, m.opt.ls_iterations),
@@ -541,6 +577,21 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
     dim=(d.nworld),
     inputs=[m.opt.ls_iterations, m.opt.ls_parallel_min_step, d.efc.done, cost],
     outputs=[d.efc.alpha],
+  )
+
+  # Teardown: update qacc, Ma, Jaref
+  wp.launch(
+    linesearch_qacc_ma,
+    dim=(d.nworld, m.nv),
+    inputs=[d.efc.search, d.efc.mv, d.efc.alpha, d.efc.done],
+    outputs=[d.qacc, d.efc.Ma],
+  )
+
+  wp.launch(
+    linesearch_jaref,
+    dim=(d.nworld, d.njmax),
+    inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
+    outputs=[d.efc.Jaref],
   )
 
 
@@ -1603,60 +1654,8 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
     )
 
   if m.opt.ls_parallel:
-    # Parallel linesearch requires additional setup kernels
-    dofs_per_thread = 20 if m.nv > 50 else 50
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
-
-    # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-    if threads_per_efc > 1:
-      d.efc.quad_gauss.zero_()
-
-    wp.launch(
-      linesearch_prepare_gauss(m.nv, dofs_per_thread),
-      dim=(d.nworld, threads_per_efc),
-      inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
-      outputs=[d.efc.quad_gauss],
-    )
-
-    # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
-    wp.launch(
-      linesearch_prepare_quad,
-      dim=(d.nworld, d.njmax),
-      inputs=[
-        m.opt.impratio_invsqrt,
-        d.nefc,
-        d.contact.friction,
-        d.contact.dim,
-        d.contact.efc_address,
-        d.efc.type,
-        d.efc.id,
-        d.efc.D,
-        d.efc.Jaref,
-        d.efc.jv,
-        d.efc.done,
-        d.nacon,
-      ],
-      outputs=[d.efc.quad],
-    )
-
     _linesearch_parallel(m, d, cost)
-
-    # Teardown: update qacc, Ma, Jaref
-    wp.launch(
-      linesearch_qacc_ma,
-      dim=(d.nworld, m.nv),
-      inputs=[d.efc.search, d.efc.mv, d.efc.alpha, d.efc.done],
-      outputs=[d.qacc, d.efc.Ma],
-    )
-
-    wp.launch(
-      linesearch_jaref,
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
-      outputs=[d.efc.Jaref],
-    )
   else:
-    # Iterative linesearch fuses quad_gauss, quad, and teardown kernels
     _linesearch_iterative(m, d, fuse_jv)
 
 
