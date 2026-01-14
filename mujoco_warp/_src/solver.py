@@ -880,14 +880,22 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
         # init with scalar quadratic
         quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
 
+        # track whether this row should write its quad
+        # CONTACT_ELLIPTIC rows skip writing when: inactive (conid >= nacon) or secondary row
+        write_quad = True
+
         # elliptic cone: extra processing for primary contact row
         if efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
           conid = efc_id_in[worldid, efcid]
 
-          if conid < nacon:
+          if conid >= nacon:
+            # inactive contact: skip writing (matches main's early return)
+            write_quad = False
+          else:
             efcid0 = contact_efc_address_in[conid, 0]
 
             if efcid == efcid0:
+              # primary row: compute and write quad1, quad2 for secondary rows
               dim = contact_dim_in[conid]
               friction = contact_friction_in[conid]
               mu = friction[0] * impratio_invsqrt
@@ -929,8 +937,12 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
               quad2 = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
               efcid2 = contact_efc_address_in[conid, 2]
               efc_quad_inout[worldid, efcid2] = quad2
+            else:
+              # secondary row: don't write quad (primary row writes quad1/quad2 here)
+              write_quad = False
 
-        efc_quad_inout[worldid, efcid] = quad
+        if write_quad:
+          efc_quad_inout[worldid, efcid] = quad
 
       _syncthreads()  # ensure all quads are written before reading
 
