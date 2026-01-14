@@ -843,7 +843,7 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
       return n - 1
 
   # out of memory, force EPA to return early without contact
-  if n > pt.horizon.shape[0] - 2:
+  if n >= pt.horizon.shape[0] // 2:
     return -1
 
   pt.horizon[2 * n + 0] = e1
