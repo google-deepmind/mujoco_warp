@@ -1458,3 +1458,277 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
     prev_time = time
 
   return np.array(ctrls)
+
+
+def mesh_batch(m: types.Model, mjms: Sequence[mujoco.MjModel]) -> types.Model:
+  """Constructs batched arrays from multiple MuJoCo models for mesh-dependent fields.
+
+  This function takes mesh data and mesh-dependent properties from each MuJoCo
+  model and creates batched warp arrays, enabling unique mesh geometries and
+  corresponding physical properties per world.
+
+  Fields updated:
+    Mesh data:
+      mesh_vertadr, mesh_vertnum, mesh_faceadr, mesh_normaladr, mesh_graphadr,
+      mesh_vert, mesh_normal, mesh_face, mesh_graph,
+      mesh_quat, mesh_polynum, mesh_polyadr, mesh_polynormal, mesh_polyvertadr,
+      mesh_polyvertnum, mesh_polyvert, mesh_polymapadr, mesh_polymapnum, mesh_polymap
+
+    Geom bounds (computed from mesh vertices):
+      geom_size, geom_aabb, geom_rbound
+
+    Body mass/inertia (computed from mesh volume and density):
+      body_mass, body_subtreemass, body_inertia, body_invweight0, body_ipos, body_iquat
+
+    DOF inertia (derived from body inertia):
+      dof_invweight0
+
+  Args:
+    m: The warp Model to update with batched arrays.
+    mjms: A sequence of MuJoCo models, one per world. All models must have
+      the same number of meshes (nmesh), bodies (nbody), geoms (ngeom), and
+      degrees of freedom (nv).
+
+  Returns:
+    The updated warp Model with batched arrays.
+
+  Raises:
+    ValueError: If meshes are incompatible across models.
+  """
+  if not mjms:
+    return m
+
+  nmjm = len(mjms)
+  mjm0 = mjms[0]
+
+  # Validate that all models have the same structure
+  for i, mjm in enumerate(mjms):
+    if mjm.nmesh != mjm0.nmesh:
+      raise ValueError(f"Model {i} has {mjm.nmesh} meshes, expected {mjm0.nmesh}")
+    if mjm.nbody != mjm0.nbody:
+      raise ValueError(f"Model {i} has {mjm.nbody} bodies, expected {mjm0.nbody}")
+    if mjm.ngeom != mjm0.ngeom:
+      raise ValueError(f"Model {i} has {mjm.ngeom} geoms, expected {mjm0.ngeom}")
+    if mjm.nv != mjm0.nv:
+      raise ValueError(f"Model {i} has {mjm.nv} DOFs, expected {mjm0.nv}")
+
+  nmesh = mjm0.nmesh
+
+  # Helper function to get polygon data size
+  def get_poly_size(mjm, attr):
+    if hasattr(mjm, attr):
+      arr = getattr(mjm, attr)
+      return len(arr) if arr is not None else 0
+    return 0
+
+  # Compute max sizes across all worlds for allocation
+  max_nmeshvert = max(mjm.nmeshvert for mjm in mjms)
+  max_nmeshnormal = max(mjm.nmeshnormal for mjm in mjms)
+  max_nmeshface = max(mjm.nmeshface for mjm in mjms)
+  max_nmeshgraph = max(mjm.nmeshgraph for mjm in mjms)
+  max_nmeshpoly = max(get_poly_size(mjm, "mesh_polynormal") for mjm in mjms)
+  max_nmeshpolyvert = max(get_poly_size(mjm, "mesh_polyvert") for mjm in mjms)
+  max_nmeshpolymap = max(get_poly_size(mjm, "mesh_polymap") for mjm in mjms)
+
+  # Skip if no meshes
+  if nmesh == 0:
+    return m
+
+  # Create batched arrays for mesh address fields (per-mesh data)
+  mesh_vertadr_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+  mesh_vertnum_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+  mesh_faceadr_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+  mesh_normaladr_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+  mesh_graphadr_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+  mesh_quat_batch = np.zeros((nmjm, nmesh, 4), dtype=np.float32)
+  mesh_polynum_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+  mesh_polyadr_batch = np.zeros((nmjm, nmesh), dtype=np.int32)
+
+  # Create batched arrays for mesh vertex/element data using max sizes
+  mesh_vert_batch = np.zeros((nmjm, max_nmeshvert, 3), dtype=np.float32)
+  mesh_normal_batch = np.zeros((nmjm, max_nmeshnormal, 3), dtype=np.float32)
+  mesh_face_batch = np.zeros((nmjm, max_nmeshface, 3), dtype=np.int32)
+  mesh_graph_batch = np.zeros((nmjm, max_nmeshgraph), dtype=np.int32) if max_nmeshgraph > 0 else None
+
+  # Polygon data arrays (if they exist) using max sizes
+  mesh_polynormal_batch = np.zeros((nmjm, max_nmeshpoly, 3), dtype=np.float32) if max_nmeshpoly > 0 else None
+  mesh_polyvertadr_batch = np.zeros((nmjm, max_nmeshpoly), dtype=np.int32) if max_nmeshpoly > 0 else None
+  mesh_polyvertnum_batch = np.zeros((nmjm, max_nmeshpoly), dtype=np.int32) if max_nmeshpoly > 0 else None
+  mesh_polyvert_batch = np.zeros((nmjm, max_nmeshpolyvert), dtype=np.int32) if max_nmeshpolyvert > 0 else None
+  mesh_polymapadr_batch = np.zeros((nmjm, max_nmeshvert), dtype=np.int32)
+  mesh_polymapnum_batch = np.zeros((nmjm, max_nmeshvert), dtype=np.int32)
+  mesh_polymap_batch = np.zeros((nmjm, max_nmeshpolymap), dtype=np.int32) if max_nmeshpolymap > 0 else None
+
+  # Populate batched arrays from each model
+  for worldid, mjm in enumerate(mjms):
+    # Address and count fields - per-world local addresses and vertex counts
+    mesh_vertadr_batch[worldid] = mjm.mesh_vertadr
+    mesh_vertnum_batch[worldid] = mjm.mesh_vertnum
+    mesh_faceadr_batch[worldid] = mjm.mesh_faceadr
+    mesh_normaladr_batch[worldid] = mjm.mesh_normaladr
+    mesh_graphadr_batch[worldid] = mjm.mesh_graphadr if mjm.nmeshgraph > 0 else np.zeros(nmesh, dtype=np.int32)
+    mesh_quat_batch[worldid] = mjm.mesh_quat
+    mesh_polynum_batch[worldid] = (
+      mjm.mesh_polynum if hasattr(mjm, "mesh_polynum") and len(mjm.mesh_polynum) > 0 else np.zeros(nmesh, dtype=np.int32)
+    )
+    mesh_polyadr_batch[worldid] = (
+      mjm.mesh_polyadr if hasattr(mjm, "mesh_polyadr") and len(mjm.mesh_polyadr) > 0 else np.zeros(nmesh, dtype=np.int32)
+    )
+
+    # Vertex data - copy each world's data to start of its slice
+    n_vert = mjm.nmeshvert
+    n_normal = mjm.nmeshnormal
+    n_face = mjm.nmeshface
+    n_graph = mjm.nmeshgraph
+
+    mesh_vert_batch[worldid, :n_vert] = mjm.mesh_vert.reshape(-1, 3)
+    mesh_normal_batch[worldid, :n_normal] = mjm.mesh_normal.reshape(-1, 3)
+    mesh_face_batch[worldid, :n_face] = mjm.mesh_face.reshape(-1, 3)
+    if max_nmeshgraph > 0 and n_graph > 0:
+      mesh_graph_batch[worldid, :n_graph] = mjm.mesh_graph
+
+    # Polygon data - copy each world's variable-length data
+    n_poly = get_poly_size(mjm, "mesh_polynormal")
+    n_polyvert = get_poly_size(mjm, "mesh_polyvert")
+    n_polymap = get_poly_size(mjm, "mesh_polymap")
+
+    if max_nmeshpoly > 0 and n_poly > 0 and hasattr(mjm, "mesh_polynormal") and len(mjm.mesh_polynormal) > 0:
+      mesh_polynormal_batch[worldid, :n_poly] = mjm.mesh_polynormal.reshape(-1, 3)
+    if max_nmeshpoly > 0 and n_poly > 0 and hasattr(mjm, "mesh_polyvertadr") and len(mjm.mesh_polyvertadr) > 0:
+      mesh_polyvertadr_batch[worldid, :n_poly] = mjm.mesh_polyvertadr
+    if max_nmeshpoly > 0 and n_poly > 0 and hasattr(mjm, "mesh_polyvertnum") and len(mjm.mesh_polyvertnum) > 0:
+      mesh_polyvertnum_batch[worldid, :n_poly] = mjm.mesh_polyvertnum
+    if max_nmeshpolyvert > 0 and n_polyvert > 0 and hasattr(mjm, "mesh_polyvert") and len(mjm.mesh_polyvert) > 0:
+      mesh_polyvert_batch[worldid, :n_polyvert] = mjm.mesh_polyvert
+    if hasattr(mjm, "mesh_polymapadr") and len(mjm.mesh_polymapadr) > 0:
+      mesh_polymapadr_batch[worldid, :n_vert] = mjm.mesh_polymapadr
+    if hasattr(mjm, "mesh_polymapnum") and len(mjm.mesh_polymapnum) > 0:
+      mesh_polymapnum_batch[worldid, :n_vert] = mjm.mesh_polymapnum
+    if max_nmeshpolymap > 0 and n_polymap > 0 and hasattr(mjm, "mesh_polymap") and len(mjm.mesh_polymap) > 0:
+      mesh_polymap_batch[worldid, :n_polymap] = mjm.mesh_polymap
+
+  # Create warp arrays and assign to model
+  # Note: Do NOT set strides to (0,...) for these arrays - mesh_batch needs distinct data per world
+  m.mesh_vertadr = wp.array(mesh_vertadr_batch, dtype=int)
+  m.mesh_vertadr._is_batched = True
+
+  m.mesh_vertnum = wp.array(mesh_vertnum_batch, dtype=int)
+  m.mesh_vertnum._is_batched = True
+
+  m.mesh_faceadr = wp.array(mesh_faceadr_batch, dtype=int)
+  m.mesh_faceadr._is_batched = True
+
+  m.mesh_normaladr = wp.array(mesh_normaladr_batch, dtype=int)
+  m.mesh_normaladr._is_batched = True
+
+  m.mesh_graphadr = wp.array(mesh_graphadr_batch, dtype=int)
+  m.mesh_graphadr._is_batched = True
+
+  m.mesh_quat = wp.array(mesh_quat_batch, dtype=wp.quat)
+  m.mesh_quat._is_batched = True
+
+  m.mesh_polynum = wp.array(mesh_polynum_batch, dtype=int)
+  m.mesh_polynum._is_batched = True
+
+  m.mesh_polyadr = wp.array(mesh_polyadr_batch, dtype=int)
+  m.mesh_polyadr._is_batched = True
+
+  m.mesh_vert = wp.array(mesh_vert_batch, dtype=wp.vec3)
+  m.mesh_vert._is_batched = True
+
+  m.mesh_normal = wp.array(mesh_normal_batch, dtype=wp.vec3)
+  m.mesh_normal._is_batched = True
+
+  m.mesh_face = wp.array(mesh_face_batch, dtype=wp.vec3i)
+  m.mesh_face._is_batched = True
+
+  if mesh_graph_batch is not None:
+    m.mesh_graph = wp.array(mesh_graph_batch, dtype=int)
+    m.mesh_graph._is_batched = True
+
+  if mesh_polynormal_batch is not None:
+    m.mesh_polynormal = wp.array(mesh_polynormal_batch, dtype=wp.vec3)
+    m.mesh_polynormal._is_batched = True
+
+  if mesh_polyvertadr_batch is not None:
+    m.mesh_polyvertadr = wp.array(mesh_polyvertadr_batch, dtype=int)
+    m.mesh_polyvertadr._is_batched = True
+
+  if mesh_polyvertnum_batch is not None:
+    m.mesh_polyvertnum = wp.array(mesh_polyvertnum_batch, dtype=int)
+    m.mesh_polyvertnum._is_batched = True
+
+  if mesh_polyvert_batch is not None:
+    m.mesh_polyvert = wp.array(mesh_polyvert_batch, dtype=int)
+    m.mesh_polyvert._is_batched = True
+
+  m.mesh_polymapadr = wp.array(mesh_polymapadr_batch, dtype=int)
+  m.mesh_polymapadr._is_batched = True
+
+  m.mesh_polymapnum = wp.array(mesh_polymapnum_batch, dtype=int)
+  m.mesh_polymapnum._is_batched = True
+
+  if mesh_polymap_batch is not None:
+    m.mesh_polymap = wp.array(mesh_polymap_batch, dtype=int)
+    m.mesh_polymap._is_batched = True
+
+  # World offset arrays - all zeros since mesh structure is the same across all worlds
+  # The kernel uses worldid % nmesh_batch to select the mesh set, and these offsets
+  # adjust addresses within that set (all zero for identical mesh structures)
+  m.mesh_vertadr_offset = wp.array(np.zeros(nmjm, dtype=np.int32), dtype=int)
+  m.mesh_vertadr_offset._is_batched = True
+  m.mesh_vertadr_offset.strides = (0,)
+
+  m.mesh_graphadr_offset = wp.array(np.zeros(nmjm, dtype=np.int32), dtype=int)
+  m.mesh_graphadr_offset._is_batched = True
+  m.mesh_graphadr_offset.strides = (0,)
+
+  m.mesh_polyadr_offset = wp.array(np.zeros(nmjm, dtype=np.int32), dtype=int)
+  m.mesh_polyadr_offset._is_batched = True
+  m.mesh_polyadr_offset.strides = (0,)
+
+  m.mesh_polyvertadr_offset = wp.array(np.zeros(nmjm, dtype=np.int32), dtype=int)
+  m.mesh_polyvertadr_offset._is_batched = True
+  m.mesh_polyvertadr_offset.strides = (0,)
+
+  m.mesh_polymapadr_offset = wp.array(np.zeros(nmjm, dtype=np.int32), dtype=int)
+  m.mesh_polymapadr_offset._is_batched = True
+  m.mesh_polymapadr_offset.strides = (0,)
+
+  # Batch mesh-dependent fields (geom bounds, body mass/inertia, etc.)
+  # These fields depend on mesh geometry and need per-world values
+
+  # Geom fields - derived from mesh vertex bounds
+  m.geom_size = wp.array(np.stack([mjm.geom_size for mjm in mjms]), dtype=wp.vec3)
+  m.geom_size._is_batched = True
+
+  m.geom_aabb = wp.array(np.stack([mjm.geom_aabb for mjm in mjms]), dtype=wp.vec3)
+  m.geom_aabb._is_batched = True
+
+  m.geom_rbound = wp.array(np.stack([mjm.geom_rbound for mjm in mjms]), dtype=float)
+  m.geom_rbound._is_batched = True
+
+  # Body fields - mass/inertia computed from mesh geometry
+  m.body_mass = wp.array(np.stack([mjm.body_mass for mjm in mjms]), dtype=float)
+  m.body_mass._is_batched = True
+
+  m.body_subtreemass = wp.array(np.stack([mjm.body_subtreemass for mjm in mjms]), dtype=float)
+  m.body_subtreemass._is_batched = True
+
+  m.body_inertia = wp.array(np.stack([mjm.body_inertia for mjm in mjms]), dtype=wp.vec3)
+  m.body_inertia._is_batched = True
+
+  m.body_invweight0 = wp.array(np.stack([mjm.body_invweight0 for mjm in mjms]), dtype=wp.vec2)
+  m.body_invweight0._is_batched = True
+
+  m.body_ipos = wp.array(np.stack([mjm.body_ipos for mjm in mjms]), dtype=wp.vec3)
+  m.body_ipos._is_batched = True
+
+  m.body_iquat = wp.array(np.stack([mjm.body_iquat for mjm in mjms]), dtype=wp.quat)
+  m.body_iquat._is_batched = True
+
+  # DOF field - derived from body inertia
+  m.dof_invweight0 = wp.array(np.stack([mjm.dof_invweight0 for mjm in mjms]), dtype=float)
+  m.dof_invweight0._is_batched = True
+
+  return m

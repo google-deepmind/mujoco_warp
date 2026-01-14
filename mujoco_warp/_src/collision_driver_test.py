@@ -30,8 +30,6 @@ from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 from . import types
 
-_TOLERANCE = 5e-5
-
 
 @wp.kernel
 def plane_convex_test(convex_in: Geom, dist_out: wp.array(dtype=wp.vec4)):
@@ -39,10 +37,9 @@ def plane_convex_test(convex_in: Geom, dist_out: wp.array(dtype=wp.vec4)):
   dist_out[0] = dist
 
 
-def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10
+def _assert_eq(a, b, name, tolerance=5e-4):
   err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tolerance, rtol=tolerance)
 
 
 class CollisionTest(parameterized.TestCase):
@@ -988,6 +985,135 @@ class CollisionTest(parameterized.TestCase):
         places=2,
         msg=f"Contact {i}: Expected penetration {expected_penetration:.4f}, got {mjw_dist:.4f}",
       )
+
+  def test_batch_mesh(self):
+    """Test batched meshes."""
+    _XML = """
+    <mujoco>
+      <option gravity="0 0 0"/>
+      <asset>
+        <mesh name="mesh1" builtin="sphere" params="{subdiv1}"/>
+        <mesh name="mesh2" builtin="sphere" params="{subdiv2}"/>
+      </asset>
+      <worldbody>
+        <body name="body1">
+          <freejoint/>
+          <geom type="mesh" mesh="mesh1" size="0.1"/>
+        </body>
+        <body name="body2" pos="0 0 {z_offset}">
+          <freejoint/>
+          <geom type="mesh" mesh="mesh2" size="0.1"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="contact" qpos="0 0 0          1 0 0 0
+                                  0 0 {z_offset} 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """
+
+    # different subdivisions give different vertex counts
+    # use same z_offset so mesh geometry is the only variable
+    configs = [
+      {"subdiv1": "0", "subdiv2": "0", "z_offset": "0.15"},
+      {"subdiv1": "1", "subdiv2": "1", "z_offset": "0.15"},
+      {"subdiv1": "2", "subdiv2": "2", "z_offset": "0.15"},
+    ]
+
+    mjms = []
+    mjds = []
+    for config in configs:
+      xml = _XML.format(**config)
+      mjm = mujoco.MjModel.from_xml_string(xml)
+      mjd = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      mjms.append(mjm)
+      mjds.append(mjd)
+
+    # verify different vertex counts
+    vertnums = [mjm.nmeshvert for mjm in mjms]
+    assert vertnums[0] != vertnums[1] != vertnums[2], f"Expected different vertnums: {vertnums}"
+
+    # test 1: same mesh for all worlds - verify contacts match mujoco
+    for i, (config, mjd) in enumerate(zip(configs, mjds)):
+      xml = _XML.format(**config)
+
+      _, _, m, d = test_data.fixture(xml=xml, keyframe=0, nworld=3)
+      mjw.collision(m, d)
+
+      # verify contact count and distance for each world
+      nacon = d.nacon.numpy()[0]
+      worldids = d.contact.worldid.numpy()[:nacon]
+      dist = d.contact.dist.numpy()[:nacon]
+      for worldid in range(3):
+        warp_idx = np.where(worldids == worldid)[0]
+        self.assertEqual(len(warp_idx), mjd.ncon, f"Model {i} world {worldid}: ncon")
+        _assert_eq(dist[warp_idx[0]], mjd.contact.dist[0], f"Model {i} world {worldid}: dist", 5e-3)
+
+    # test 2: different mesh per world via mesh_batch
+    xml0 = _XML.format(**configs[0])
+    _, _, m0, d0 = test_data.fixture(xml=xml0, keyframe=0, nworld=3)
+
+    # create batched mesh arrays
+    m0 = mjw.mesh_batch(m0, mjms)
+
+    # verify mesh data fields are correctly batched
+    for worldid, mjm in enumerate(mjms):
+      _assert_eq(m0.mesh_vertnum.numpy()[worldid], mjm.mesh_vertnum, f"world {worldid}: mesh_vertnum")
+      _assert_eq(m0.mesh_vertadr.numpy()[worldid], mjm.mesh_vertadr, f"world {worldid}: mesh_vertadr")
+      _assert_eq(m0.mesh_faceadr.numpy()[worldid], mjm.mesh_faceadr, f"world {worldid}: mesh_faceadr")
+      _assert_eq(m0.mesh_quat.numpy()[worldid], mjm.mesh_quat, f"world {worldid}: mesh_quat")
+      _assert_eq(m0.mesh_polynum.numpy()[worldid], mjm.mesh_polynum, f"world {worldid}: mesh_polynum")
+
+    # verify geom bounds are correctly batched
+    for worldid, mjm in enumerate(mjms):
+      _assert_eq(m0.geom_size.numpy()[worldid], mjm.geom_size, f"world {worldid}: geom_size")
+      _assert_eq(m0.geom_aabb.numpy()[worldid].reshape(mjm.geom_aabb.shape), mjm.geom_aabb, f"world {worldid}: geom_aabb")
+      _assert_eq(m0.geom_rbound.numpy()[worldid], mjm.geom_rbound, f"world {worldid}: geom_rbound")
+
+    # verify body mass/inertia are correctly batched
+    for worldid, mjm in enumerate(mjms):
+      _assert_eq(m0.body_mass.numpy()[worldid], mjm.body_mass, f"world {worldid}: body_mass")
+      _assert_eq(m0.body_inertia.numpy()[worldid], mjm.body_inertia, f"world {worldid}: body_inertia")
+      _assert_eq(m0.body_ipos.numpy()[worldid], mjm.body_ipos, f"world {worldid}: body_ipos")
+      _assert_eq(m0.dof_invweight0.numpy()[worldid], mjm.dof_invweight0, f"world {worldid}: dof_invweight0")
+
+    mjw.collision(m0, d0)
+
+    # verify contact distances for each world
+    nacon = d0.nacon.numpy()[0]
+    worldids = d0.contact.worldid.numpy()[:nacon]
+    dist = d0.contact.dist.numpy()[:nacon]
+    for worldid in range(3):
+      mjd = mjds[worldid]
+      warp_idx = np.where(worldids == worldid)[0]
+      self.assertGreater(len(warp_idx), 0, f"world {worldid} has no contacts")
+      _assert_eq(dist[warp_idx[0]], mjd.contact.dist[0], f"world {worldid}: contact.dist", 5e-3)
+
+    # test 3: 4 worlds with 2 unique mesh configs (configs repeat)
+    nworld = 4
+    _, _, m1, d1 = test_data.fixture(xml=_XML.format(**configs[0]), keyframe=0, nworld=nworld)
+    m1 = mjw.mesh_batch(m1, mjms[:2])  # construct with 2 unique mjModel instances
+
+    # verify fields match corresponding config
+    for worldid in range(nworld):
+      _assert_eq(m1.mesh_vertnum.numpy()[worldid % 2], mjms[worldid % 2].mesh_vertnum, f"world {worldid}: mesh_vertnum")
+      _assert_eq(m1.geom_size.numpy()[worldid % 2], mjms[worldid % 2].geom_size, f"world {worldid}: geom_size")
+      _assert_eq(m1.body_mass.numpy()[worldid % 2], mjms[worldid % 2].body_mass, f"world {worldid}: body_mass")
+
+    mjw.collision(m1, d1)
+
+    # verify contact distances for each world
+    nacon = d1.nacon.numpy()[0]
+    worldids = d1.contact.worldid.numpy()[:nacon]
+    dist = d1.contact.dist.numpy()[:nacon]
+    for worldid in range(nworld):
+      mjd = mjds[worldid % 2]
+      warp_idx = np.where(worldids == worldid)[0]
+      self.assertGreater(len(warp_idx), 0, f"world {worldid} has no contacts")
+      _assert_eq(dist[warp_idx[0]], mjd.contact.dist[0], f"world {worldid}: contact.dist", 5e-3)
 
 
 if __name__ == "__main__":

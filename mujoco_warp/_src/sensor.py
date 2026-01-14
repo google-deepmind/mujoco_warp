@@ -2096,11 +2096,11 @@ def _sensor_tactile(
   geom_type: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_normaladr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_normal: wp.array(dtype=wp.vec3),
-  mesh_quat: wp.array(dtype=wp.quat),
+  mesh_vertadr: wp.array2d(dtype=int),
+  mesh_normaladr: wp.array2d(dtype=int),
+  mesh_vert: wp.array2d(dtype=wp.vec3),
+  mesh_normal: wp.array2d(dtype=wp.vec3),
+  mesh_quat: wp.array2d(dtype=wp.quat),
   sensor_objid: wp.array(dtype=int),
   sensor_refid: wp.array(dtype=int),
   sensor_dim: wp.array(dtype=int),
@@ -2149,8 +2149,9 @@ def _sensor_tactile(
   body = geom_bodyid[geom]
 
   # vertex local position
-  vertid = taxel_vertadr[taxelid] - mesh_vertadr[mesh_id]
-  pos = mesh_vert[vertid + mesh_vertadr[mesh_id]]
+  mesh_worldid = worldid % mesh_vertadr.shape[0]
+  vertid = taxel_vertadr[taxelid] - mesh_vertadr[mesh_worldid, mesh_id]
+  pos = mesh_vert[mesh_worldid, vertid + mesh_vertadr[mesh_worldid, mesh_id]]
 
   # position in global frame
   xpos = geom_xmat_in[worldid, geom_id] @ pos
@@ -2180,10 +2181,10 @@ def _sensor_tactile(
   vel_rel = vel_sensor - vel_other
 
   # get contact force/torque, rotate into node frame
-  offset = mesh_normaladr[mesh_id] + 3 * vertid
-  normal = math.rot_vec_quat(mesh_normal[offset], mesh_quat[mesh_id])
-  tang1 = math.rot_vec_quat(mesh_normal[offset + 1], mesh_quat[mesh_id])
-  tang2 = math.rot_vec_quat(mesh_normal[offset + 2], mesh_quat[mesh_id])
+  offset = mesh_normaladr[mesh_worldid, mesh_id] + 3 * vertid
+  normal = math.rot_vec_quat(mesh_normal[mesh_worldid, offset], mesh_quat[mesh_worldid, mesh_id])
+  tang1 = math.rot_vec_quat(mesh_normal[mesh_worldid, offset + 1], mesh_quat[mesh_worldid, mesh_id])
+  tang2 = math.rot_vec_quat(mesh_normal[mesh_worldid, offset + 2], mesh_quat[mesh_worldid, mesh_id])
   kMaxDepth = 0.05
   pressure = depth / wp.max(kMaxDepth - depth, MJ_MINVAL)
   force = wp.mul(normal, pressure)

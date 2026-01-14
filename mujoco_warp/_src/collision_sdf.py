@@ -61,12 +61,13 @@ class VolumeData:
 @wp.struct
 class MeshData:
   nmeshface: int
-  mesh_vertadr: wp.array(dtype=int)
-  mesh_vert: wp.array(dtype=wp.vec3)
-  mesh_faceadr: wp.array(dtype=int)
-  mesh_face: wp.array(dtype=wp.vec3i)
+  mesh_vertadr_offset: wp.array(dtype=int)
+  mesh_vertadr: wp.array2d(dtype=int)
+  mesh_vert: wp.array2d(dtype=wp.vec3)
+  mesh_faceadr: wp.array2d(dtype=int)
+  mesh_face: wp.array2d(dtype=wp.vec3i)
   data_id: int
-  data_id: int
+  worldid: int
   pos: wp.vec3
   mat: wp.mat33
   pnt: wp.vec3
@@ -373,11 +374,13 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
       mesh_data.mesh_faceadr,
       mesh_data.mesh_vert,
       mesh_data.mesh_face,
+      mesh_data.mesh_vertadr_offset,
       mesh_data.data_id,
       mesh_data.pos,
       mesh_data.mat,
       mesh_data.pnt,
       mesh_data.vec,
+      mesh_data.worldid,
     )
     if dist > wp.norm_l2(p):
       dist, normal = ray_mesh(
@@ -386,11 +389,13 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
         mesh_data.mesh_faceadr,
         mesh_data.mesh_vert,
         mesh_data.mesh_face,
+        mesh_data.mesh_vertadr_offset,
         mesh_data.data_id,
         mesh_data.pos,
         mesh_data.mat,
         mesh_data.pnt,
         -mesh_data.vec,
+        mesh_data.worldid,
       )
       return -dist
     return dist
@@ -423,11 +428,13 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
       mesh_data.mesh_faceadr,
       mesh_data.mesh_vert,
       mesh_data.mesh_face,
+      mesh_data.mesh_vertadr_offset,
       mesh_data.data_id,
       mesh_data.pos,
       mesh_data.mat,
       mesh_data.pnt,
       mesh_data.vec,
+      mesh_data.worldid,
     )
     if dist > wp.norm_l2(p):
       return wp.vec3(1.0)
@@ -635,22 +642,22 @@ def _sdf_narrowphase(
   geom_friction: wp.array2d(dtype=wp.vec3),
   geom_margin: wp.array2d(dtype=float),
   geom_gap: wp.array2d(dtype=float),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_graphadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_face: wp.array(dtype=wp.vec3i),
-  mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
-  mesh_polynormal: wp.array(dtype=wp.vec3),
-  mesh_polyvertadr: wp.array(dtype=int),
-  mesh_polyvertnum: wp.array(dtype=int),
-  mesh_polyvert: wp.array(dtype=int),
-  mesh_polymapadr: wp.array(dtype=int),
-  mesh_polymapnum: wp.array(dtype=int),
-  mesh_polymap: wp.array(dtype=int),
+  mesh_vertadr: wp.array2d(dtype=int),
+  mesh_vertnum: wp.array2d(dtype=int),
+  mesh_faceadr: wp.array2d(dtype=int),
+  mesh_graphadr: wp.array2d(dtype=int),
+  mesh_vert: wp.array2d(dtype=wp.vec3),
+  mesh_face: wp.array2d(dtype=wp.vec3i),
+  mesh_graph: wp.array2d(dtype=int),
+  mesh_polynum: wp.array2d(dtype=int),
+  mesh_polyadr: wp.array2d(dtype=int),
+  mesh_polynormal: wp.array2d(dtype=wp.vec3),
+  mesh_polyvertadr: wp.array2d(dtype=int),
+  mesh_polyvertnum: wp.array2d(dtype=int),
+  mesh_polyvert: wp.array2d(dtype=int),
+  mesh_polymapadr: wp.array2d(dtype=int),
+  mesh_polymapnum: wp.array2d(dtype=int),
+  mesh_polymap: wp.array2d(dtype=int),
   pair_dim: wp.array(dtype=int),
   pair_solref: wp.array2d(dtype=wp.vec2),
   pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -661,6 +668,11 @@ def _sdf_narrowphase(
   plugin: wp.array(dtype=int),
   plugin_attr: wp.array(dtype=wp.vec3f),
   geom_plugin_index: wp.array(dtype=int),
+  mesh_vertadr_offset: wp.array(dtype=int),
+  mesh_graphadr_offset: wp.array(dtype=int),
+  mesh_polyadr_offset: wp.array(dtype=int),
+  mesh_polyvertadr_offset: wp.array(dtype=int),
+  mesh_polymapadr_offset: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -739,6 +751,11 @@ def _sdf_narrowphase(
     mesh_polymapadr,
     mesh_polymapnum,
     mesh_polymap,
+    mesh_vertadr_offset,
+    mesh_graphadr_offset,
+    mesh_polyadr_offset,
+    mesh_polyvertadr_offset,
+    mesh_polymapadr_offset,
     geom_xpos_in,
     geom_xmat_in,
     geoms,
@@ -784,6 +801,7 @@ def _sdf_narrowphase(
   mesh_data1.mesh_faceadr = mesh_faceadr
   mesh_data1.mesh_face = mesh_face
   mesh_data1.data_id = geom_dataid[g1]
+  mesh_data1.worldid = worldid
   mesh_data1.pos = geom1.pos
   mesh_data1.mat = geom1.rot
   mesh_data1.pnt = wp.vec3(-1.0)
@@ -796,6 +814,7 @@ def _sdf_narrowphase(
   mesh_data2.mesh_faceadr = mesh_faceadr
   mesh_data2.mesh_face = mesh_face
   mesh_data2.data_id = geom_dataid[g2]
+  mesh_data2.worldid = worldid
   mesh_data2.pos = geom2.pos
   mesh_data2.mat = geom2.rot
   mesh_data2.pnt = wp.vec3(-1.0)
@@ -907,6 +926,11 @@ def sdf_narrowphase(m: Model, d: Data):
       m.plugin,
       m.plugin_attr,
       m.geom_plugin_index,
+      m.mesh_vertadr_offset,
+      m.mesh_graphadr_offset,
+      m.mesh_polyadr_offset,
+      m.mesh_polyvertadr_offset,
+      m.mesh_polymapadr_offset,
       d.geom_xpos,
       d.geom_xmat,
       d.naconmax,

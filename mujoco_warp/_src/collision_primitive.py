@@ -65,10 +65,10 @@ class Geom:
   mesh_polyadr: int
   mesh_polynormal: wp.array(dtype=wp.vec3)
   mesh_polyvertadr: wp.array(dtype=int)
-  mesh_polyvertnum: wp.array(dtype=int)
+  mesh_polyvertnum: wp.array2d(dtype=int)
   mesh_polyvert: wp.array(dtype=int)
   mesh_polymapadr: wp.array(dtype=int)
-  mesh_polymapnum: wp.array(dtype=int)
+  mesh_polymapnum: wp.array2d(dtype=int)
   mesh_polymap: wp.array(dtype=int)
   index: int
 
@@ -79,20 +79,25 @@ def geom_collision_pair(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
-  mesh_graphadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
-  mesh_polynormal: wp.array(dtype=wp.vec3),
-  mesh_polyvertadr: wp.array(dtype=int),
-  mesh_polyvertnum: wp.array(dtype=int),
-  mesh_polyvert: wp.array(dtype=int),
-  mesh_polymapadr: wp.array(dtype=int),
-  mesh_polymapnum: wp.array(dtype=int),
-  mesh_polymap: wp.array(dtype=int),
+  mesh_vertadr: wp.array2d(dtype=int),
+  mesh_vertnum: wp.array2d(dtype=int),
+  mesh_graphadr: wp.array2d(dtype=int),
+  mesh_vert: wp.array2d(dtype=wp.vec3),
+  mesh_graph: wp.array2d(dtype=int),
+  mesh_polynum: wp.array2d(dtype=int),
+  mesh_polyadr: wp.array2d(dtype=int),
+  mesh_polynormal: wp.array2d(dtype=wp.vec3),
+  mesh_polyvertadr: wp.array2d(dtype=int),
+  mesh_polyvertnum: wp.array2d(dtype=int),
+  mesh_polyvert: wp.array2d(dtype=int),
+  mesh_polymapadr: wp.array2d(dtype=int),
+  mesh_polymapnum: wp.array2d(dtype=int),
+  mesh_polymap: wp.array2d(dtype=int),
+  mesh_vertadr_offset: wp.array(dtype=int),
+  mesh_graphadr_offset: wp.array(dtype=int),
+  mesh_polyadr_offset: wp.array(dtype=int),
+  mesh_polyvertadr_offset: wp.array(dtype=int),
+  mesh_polymapadr_offset: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -118,41 +123,49 @@ def geom_collision_pair(
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
   geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])  # plane
 
+  # world index for batched mesh arrays
+  mesh_setid = worldid % mesh_vertadr.shape[0]
+  world_vert_offset = mesh_vertadr_offset[mesh_setid]
+  world_graph_offset = mesh_graphadr_offset[mesh_setid]
+  world_poly_offset = mesh_polyadr_offset[mesh_setid]
+  world_polyvert_offset = mesh_polyvertadr_offset[mesh_setid]
+  world_polymap_offset = mesh_polymapadr_offset[mesh_setid]
+
   if geom_type1 == GeomType.MESH:
     dataid = geom_dataid[g1]
-    geom1.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
-    geom1.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
-    geom1.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
-    geom1.mesh_polynum = wp.where(dataid >= 0, mesh_polynum[dataid], -1)
-    geom1.mesh_polyadr = wp.where(dataid >= 0, mesh_polyadr[dataid], -1)
+    geom1.vertadr = wp.where(dataid >= 0, mesh_vertadr[mesh_setid, dataid] + world_vert_offset, -1)
+    geom1.vertnum = wp.where(dataid >= 0, mesh_vertnum[mesh_setid, dataid], -1)
+    geom1.graphadr = wp.where(dataid >= 0, mesh_graphadr[mesh_setid, dataid] + world_graph_offset, -1)
+    geom1.mesh_polynum = wp.where(dataid >= 0, mesh_polynum[mesh_setid, dataid], -1)
+    geom1.mesh_polyadr = wp.where(dataid >= 0, mesh_polyadr[mesh_setid, dataid] + world_poly_offset, -1)
 
-    geom1.vert = mesh_vert
-    geom1.graph = mesh_graph
-    geom1.mesh_polynormal = mesh_polynormal
-    geom1.mesh_polyvertadr = mesh_polyvertadr
-    geom1.mesh_polyvertnum = mesh_polyvertnum
-    geom1.mesh_polyvert = mesh_polyvert
-    geom1.mesh_polymapadr = mesh_polymapadr
-    geom1.mesh_polymapnum = mesh_polymapnum
-    geom1.mesh_polymap = mesh_polymap
+    geom1.vert = mesh_vert[mesh_setid]
+    geom1.graph = mesh_graph[mesh_setid]
+    geom1.mesh_polynormal = mesh_polynormal[mesh_setid]
+    geom1.mesh_polyvertadr = mesh_polyvertadr[mesh_setid]
+    geom1.mesh_polyvertnum = mesh_polyvertnum[mesh_setid]
+    geom1.mesh_polyvert = mesh_polyvert[mesh_setid]
+    geom1.mesh_polymapadr = mesh_polymapadr[mesh_setid]
+    geom1.mesh_polymapnum = mesh_polymapnum[mesh_setid]
+    geom1.mesh_polymap = mesh_polymap[mesh_setid]
 
   if geom_type2 == GeomType.MESH:
     dataid = geom_dataid[g2]
-    geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
-    geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
-    geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
-    geom2.mesh_polynum = wp.where(dataid >= 0, mesh_polynum[dataid], -1)
-    geom2.mesh_polyadr = wp.where(dataid >= 0, mesh_polyadr[dataid], -1)
+    geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[mesh_setid, dataid] + world_vert_offset, -1)
+    geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[mesh_setid, dataid], -1)
+    geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[mesh_setid, dataid] + world_graph_offset, -1)
+    geom2.mesh_polynum = wp.where(dataid >= 0, mesh_polynum[mesh_setid, dataid], -1)
+    geom2.mesh_polyadr = wp.where(dataid >= 0, mesh_polyadr[mesh_setid, dataid] + world_poly_offset, -1)
 
-    geom2.vert = mesh_vert
-    geom2.graph = mesh_graph
-    geom2.mesh_polynormal = mesh_polynormal
-    geom2.mesh_polyvertadr = mesh_polyvertadr
-    geom2.mesh_polyvertnum = mesh_polyvertnum
-    geom2.mesh_polyvert = mesh_polyvert
-    geom2.mesh_polymapadr = mesh_polymapadr
-    geom2.mesh_polymapnum = mesh_polymapnum
-    geom2.mesh_polymap = mesh_polymap
+    geom2.vert = mesh_vert[mesh_setid]
+    geom2.graph = mesh_graph[mesh_setid]
+    geom2.mesh_polynormal = mesh_polynormal[mesh_setid]
+    geom2.mesh_polyvertadr = mesh_polyvertadr[mesh_setid]
+    geom2.mesh_polyvertnum = mesh_polyvertnum[mesh_setid]
+    geom2.mesh_polyvert = mesh_polyvert[mesh_setid]
+    geom2.mesh_polymapadr = mesh_polymapadr[mesh_setid]
+    geom2.mesh_polymapnum = mesh_polymapnum[mesh_setid]
+    geom2.mesh_polymap = mesh_polymap[mesh_setid]
 
   geom1.index = -1
   geom1.margin = 0.0
@@ -1585,20 +1598,25 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
-    mesh_vertadr: wp.array(dtype=int),
-    mesh_vertnum: wp.array(dtype=int),
-    mesh_graphadr: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
-    mesh_graph: wp.array(dtype=int),
-    mesh_polynum: wp.array(dtype=int),
-    mesh_polyadr: wp.array(dtype=int),
-    mesh_polynormal: wp.array(dtype=wp.vec3),
-    mesh_polyvertadr: wp.array(dtype=int),
-    mesh_polyvertnum: wp.array(dtype=int),
-    mesh_polyvert: wp.array(dtype=int),
-    mesh_polymapadr: wp.array(dtype=int),
-    mesh_polymapnum: wp.array(dtype=int),
-    mesh_polymap: wp.array(dtype=int),
+    mesh_vertadr_offset: wp.array(dtype=int),
+    mesh_graphadr_offset: wp.array(dtype=int),
+    mesh_polyadr_offset: wp.array(dtype=int),
+    mesh_polyvertadr_offset: wp.array(dtype=int),
+    mesh_polymapadr_offset: wp.array(dtype=int),
+    mesh_vertadr: wp.array2d(dtype=int),
+    mesh_vertnum: wp.array2d(dtype=int),
+    mesh_graphadr: wp.array2d(dtype=int),
+    mesh_vert: wp.array2d(dtype=wp.vec3),
+    mesh_graph: wp.array2d(dtype=int),
+    mesh_polynum: wp.array2d(dtype=int),
+    mesh_polyadr: wp.array2d(dtype=int),
+    mesh_polynormal: wp.array2d(dtype=wp.vec3),
+    mesh_polyvertadr: wp.array2d(dtype=int),
+    mesh_polyvertnum: wp.array2d(dtype=int),
+    mesh_polyvert: wp.array2d(dtype=int),
+    mesh_polymapadr: wp.array2d(dtype=int),
+    mesh_polymapnum: wp.array2d(dtype=int),
+    mesh_polymap: wp.array2d(dtype=int),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array2d(dtype=wp.vec2),
     pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -1678,6 +1696,11 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
       mesh_polymapadr,
       mesh_polymapnum,
       mesh_polymap,
+      mesh_vertadr_offset,
+      mesh_graphadr_offset,
+      mesh_polyadr_offset,
+      mesh_polyvertadr_offset,
+      mesh_polymapadr_offset,
       geom_xpos_in,
       geom_xmat_in,
       geoms,
@@ -1767,6 +1790,11 @@ def primitive_narrowphase(m: Model, d: Data):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
+      m.mesh_vertadr_offset,
+      m.mesh_graphadr_offset,
+      m.mesh_polyadr_offset,
+      m.mesh_polyvertadr_offset,
+      m.mesh_polymapadr_offset,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_graphadr,
