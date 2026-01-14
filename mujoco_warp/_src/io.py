@@ -1453,7 +1453,7 @@ def create_render_context(
   use_textures: bool = True,
   use_shadows: bool = False,
   enabled_geom_groups: list[int] = [0, 1, 2],
-  cam_active: list[bool] = None,
+  cam_active: Optional[list[bool]] = None,
   flex_render_smooth: bool = True,
 ) -> render_context.RenderContext:
   """Creates a render context on device.
