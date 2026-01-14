@@ -1354,17 +1354,22 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
         local_hi += r_hi
         local_mid += r_mid
 
-      # Reduce across all threads and add quad_gauss contributions
-      lo_tile = wp.tile(local_lo, preserve_type=True)
-      hi_tile = wp.tile(local_hi, preserve_type=True)
-      mid_tile = wp.tile(local_mid, preserve_type=True)
-      lo_sum = wp.tile_reduce(wp.add, lo_tile)
-      hi_sum = wp.tile_reduce(wp.add, hi_tile)
-      mid_sum = wp.tile_reduce(wp.add, mid_tile)
+      # Reduce across all threads using packed mat33 (1 reduction instead of 3)
+      # Pack 3 vec3s into columns: col0=lo, col1=hi, col2=mid
+      local_combined = wp.mat33(
+        local_lo[0], local_hi[0], local_mid[0],
+        local_lo[1], local_hi[1], local_mid[1],
+        local_lo[2], local_hi[2], local_mid[2],
+      )
+      combined_tile = wp.tile(local_combined, preserve_type=True)
+      combined_sum = wp.tile_reduce(wp.add, combined_tile)
+      result = combined_sum[0]
+
+      # Extract columns back to vec3s and add quad_gauss contributions
       gauss_lo, gauss_hi, gauss_mid = _eval_pt_3alphas(efc_quad_gauss, lo_next_alpha, hi_next_alpha, mid_alpha)
-      lo_next = gauss_lo + lo_sum[0]
-      hi_next = gauss_hi + hi_sum[0]
-      mid = gauss_mid + mid_sum[0]
+      lo_next = gauss_lo + wp.vec3(result[0, 0], result[1, 0], result[2, 0])
+      hi_next = gauss_hi + wp.vec3(result[0, 1], result[1, 1], result[2, 1])
+      mid = gauss_mid + wp.vec3(result[0, 2], result[1, 2], result[2, 2])
 
       # Bracket swapping logic (same as original)
       # swap lo:
