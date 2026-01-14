@@ -1281,35 +1281,15 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
   return kernel
 
 
-def _linesearch_iterative(m: types.Model, d: types.Data, block_dim: int = 32):
+def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool, block_dim: int = 32):
   """Iterative linesearch with parallel reductions over efc rows.
 
   Args:
     m: Model.
     d: Data.
+    fuse_jv: Whether jv is computed in-kernel (True) or pre-computed (False).
     block_dim: Number of threads per block.
   """
-  # Fuse jv computation in-kernel for small nv (single thread can handle all DOFs)
-  fuse_jv = m.nv <= 50
-
-  # If not fusing jv, run the separate jv kernels first
-  if not fuse_jv:
-    dofs_per_thread = 20 if m.nv > 50 else 50
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
-    if threads_per_efc > 1:
-      wp.launch(
-        linesearch_zero_jv,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, d.efc.done],
-        outputs=[d.efc.jv],
-      )
-    wp.launch(
-      linesearch_jv_fused(m.nv, dofs_per_thread),
-      dim=(d.nworld, d.njmax, threads_per_efc),
-      inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
-      outputs=[d.efc.jv],
-    )
-
   wp.launch_tiled(
     linesearch_iterative(block_dim, m.opt.ls_iterations, m.opt.cone, fuse_jv),
     dim=d.nworld,
@@ -1598,16 +1578,15 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
   # mv = qM @ search (common to both parallel and iterative)
   support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
 
-  if m.opt.ls_parallel:
-    # Parallel linesearch requires separate setup kernels
-    if m.nv > 50:
-      dofs_per_thread = 20
-    else:
-      dofs_per_thread = 50
+  # Fuse jv computation in-kernel for small nv (iterative only)
+  # Parallel linesearch always requires jv pre-computed
+  fuse_jv = m.nv <= 50 and not m.opt.ls_parallel
 
+  # jv = J @ search (when not fused into iterative kernel)
+  if not fuse_jv:
+    dofs_per_thread = 20 if m.nv > 50 else 50
     threads_per_efc = ceil(m.nv / dofs_per_thread)
 
-    # jv = J @ search
     if threads_per_efc > 1:
       wp.launch(
         linesearch_zero_jv,
@@ -1622,6 +1601,11 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
       inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
       outputs=[d.efc.jv],
     )
+
+  if m.opt.ls_parallel:
+    # Parallel linesearch requires additional setup kernels
+    dofs_per_thread = 20 if m.nv > 50 else 50
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
 
     # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     if threads_per_efc > 1:
@@ -1672,8 +1656,8 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
       outputs=[d.efc.Jaref],
     )
   else:
-    # Iterative linesearch fuses jv, quad_gauss, quad, and teardown kernels
-    _linesearch_iterative(m, d)
+    # Iterative linesearch fuses quad_gauss, quad, and teardown kernels
+    _linesearch_iterative(m, d, fuse_jv)
 
 
 @wp.kernel
