@@ -60,7 +60,6 @@ _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyf
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 
 
-
 def _print_table(matrix, headers, title):
   num_cols = len(headers)
   col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
@@ -180,7 +179,6 @@ def _main(argv: Sequence[str]):
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
-
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
