@@ -26,11 +26,11 @@ from mujoco_warp import test_data
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
-_TOLERANCE = 5e-5
+_TOLERANCE = 1e-6
 
 
 def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
+  tol = _TOLERANCE
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
@@ -106,6 +106,62 @@ class DerivativeTest(parameterized.TestCase):
       mjw_out = np.zeros((m.nv, m.nv))
       for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
         mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    fluidshape=("none", "ellipsoid"),
+  )
+  def test_smooth_vel_fluid(self, jacobian, fluidshape):
+    """Tests fluid forces qDeriv."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <option density="1.225" viscosity="1.8e-5" wind="0 0 0" integrator="implicitfast"/>
+      <worldbody>
+        <body name="main_sphere" pos="0 0 1">
+          <freejoint name="root"/> <geom name="big_ball" type="sphere" size="0.2" rgba="0.8 0.2 0.2 1" mass="1" fluidshape="{fluidshape}"/>
+          <body name="small_sphere_1" pos="-0.3 0 0">
+            <geom name="ball_1" type="sphere" size="0.1" rgba="0.2 0.8 0.2 1" mass="0.2" fluidshape="{fluidshape}"/>
+          </body>
+          <body name="small_sphere_2" pos="0.4 0 0">
+            <geom name="ball_2" type="sphere" size="0.2" rgba="0.2 0.2 0.8 1" mass="0.2" fluidshape="{fluidshape}"/>
+          </body>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qvel="100 -100 10 50 -40 100"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)  # step w/ implicitfast calls mjd_smooth_vel to compute qDeriv
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+      mjw_out = mjw_out + mjw_out.T - np.diag(np.diag(mjw_out))
     else:
       mjw_out = out_smooth_vel.numpy()[0]
 
