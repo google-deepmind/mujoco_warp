@@ -812,10 +812,7 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
   wp.launch(
     kernel=bvh.accumulate_flex_vertex_normals,
     dim=(d.nworld, m.nflexelem),
-    inputs=[
-      m.flex_elem,
-      d.flexvert_xpos,
-    ],
+    inputs=[m.flex_elem, d.flexvert_xpos],
     outputs=[flexvert_norm],
   )
 

@@ -188,7 +188,7 @@ def _main(argv: Sequence[str]):
       f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-    print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
+    print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}")
 
     rc = None
     if _FUNCTION.value == "render":

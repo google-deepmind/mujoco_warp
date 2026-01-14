@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,10 +19,8 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+import mujoco_warp as mjw
 from mujoco_warp import test_data
-
-from . import render
-from . import render_context
 
 
 class RenderTest(parameterized.TestCase):
@@ -30,7 +28,7 @@ class RenderTest(parameterized.TestCase):
   def test_render(self, nworld: int):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
 
-    rc = render_context.create_render_context(
+    rc = mjw.create_render_context(
       mjm,
       m,
       d,
@@ -39,7 +37,7 @@ class RenderTest(parameterized.TestCase):
       render_depth=True,
     )
 
-    render.render(m, d, rc)
+    mjw.render(m, d, rc)
 
     rgb = rc.rgb_data.numpy()
     depth = rc.depth_data.numpy()
@@ -52,7 +50,7 @@ class RenderTest(parameterized.TestCase):
 
   def test_render_humanoid(self):
     mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
-    rc = render_context.create_render_context(
+    rc = mjw.create_render_context(
       mjm,
       m,
       d,
@@ -60,10 +58,32 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       render_depth=True,
     )
-    render.render(m, d, rc)
-    rgb = rc.rgb_data.numpy().copy()
+    mjw.render(m, d, rc)
+    rgb = rc.rgb_data.numpy()
 
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires CUDA.")
+  def test_render_graph_capture(self):
+    mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
+    rc = mjw.create_render_context(
+      mjm,
+      m,
+      d,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_depth=True,
+    )
+
+    mjw.render(m, d, rc)
+    rgb_np = rc.rgb_data.numpy()
+
+    with wp.ScopedCapture() as capture:
+      mjw.render(m, d, rc)
+
+    wp.capture_launch(capture.graph)
+
+    np.testing.assert_array_equal(rgb_np, rc.rgb_data.numpy())
 
 
 if __name__ == "__main__":
