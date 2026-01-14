@@ -45,7 +45,7 @@ class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml")
-    md = mjwarp.make_data(mjm, nconmax=512, njmax=512)
+    md = mjwarp.make_data(mjm)
 
     # same number of fields
     self.assertEqual(len(d.__dict__), len(md.__dict__))
@@ -54,6 +54,21 @@ class IOTest(parameterized.TestCase):
     for attr, val in md.__dict__.items():
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
+
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_put_data_sizes(self, xml):
+    EXPECTED_SIZES = {
+      "pendula.xml": (48, 64),
+      "collision_sdf/tactile.xml": (64, 256),
+      "flex/floppy.xml": (256, 512),
+      "actuation/tendon_force_limit.xml": (48, 64),
+      "actuation/tendon_force_limit.xml": (48, 64),
+      "hfield/hfield.xml": (96, 384),
+    }
+    _, _, _, d = test_data.fixture(xml)
+    nconmax_expected, njmax_expected = EXPECTED_SIZES[xml]
+    self.assertEqual(d.naconmax, nconmax_expected)
+    self.assertEqual(d.njmax, njmax_expected)
 
   def test_get_data_into_m(self):
     mjm = mujoco.MjModel.from_xml_string("""
@@ -566,6 +581,43 @@ class IOTest(parameterized.TestCase):
     )
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
+
+  @parameterized.parameters(
+    '<worldbody><geom type="sphere" size=".1" condim="3" friction="0 0.1 0.1"/></worldbody>',
+    '<worldbody><geom type="sphere" size=".1" condim="4" friction="1 0 0.1"/></worldbody>',
+    '<worldbody><geom type="sphere" size=".1" condim="6" friction="1 1 0"/></worldbody>',
+    """
+      <worldbody>
+        <geom name="g1" type="sphere" size=".1"/>
+        <geom name="g2" type="sphere" size=".1" pos="0.5 0 0"/>
+      </worldbody>
+      <contact>
+        <pair geom1="g1" geom2="g2" condim="3" friction="0 1 1 1 1"/>
+      </contact>
+    """,
+    """
+      <worldbody>
+        <geom name="g1" type="sphere" size=".1"/>
+        <geom name="g2" type="sphere" size=".1" pos="0.5 0 0"/>
+      </worldbody>
+      <contact>
+        <pair geom1="g1" geom2="g2" condim="4" friction="1 0 0 1 1"/>
+      </contact>
+    """,
+    """
+      <worldbody>
+        <geom name="g1" type="sphere" size=".1"/>
+        <geom name="g2" type="sphere" size=".1" pos="0.5 0 0"/>
+      </worldbody>
+      <contact>
+        <pair geom1="g1" geom2="g2" condim="6" friction="1 1 1 0 0"/>
+      </contact>
+    """,
+  )
+  def test_small_friction_warning(self, xml):
+    """Tests that a warning is raised for small friction values."""
+    with self.assertWarns(UserWarning):
+      mjwarp.put_model(mujoco.MjModel.from_xml_string(f"<mujoco>{xml}</mujoco>"))
 
   @parameterized.product(active=["true", "false"], make_data=[True, False])
   def test_eq_active(self, active, make_data):
