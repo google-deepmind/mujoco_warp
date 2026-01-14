@@ -1107,6 +1107,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
     ne = ne_in[worldid]
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
+    nacon = nacon_in[0]
 
     # =========================================================================
     # Prepare jv phase (small nv only) - fused from linesearch_jv_fused
@@ -1138,7 +1139,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
         if efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
           conid = efc_id_in[worldid, efcid]
 
-          if conid < nacon_in[0]:
+          if conid < nacon:
             efcid0 = contact_efc_address_in[conid, 0]
 
             if efcid == efcid0:
