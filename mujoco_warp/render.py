@@ -55,41 +55,42 @@ _ROLLOUT = flags.DEFINE_bool("rollout", False, "render a rollout video instead o
 _NSTEPS = flags.DEFINE_integer("nstep", 128, "number of simulation steps in the rollout")
 _ROLLOUT_OUTPUT = flags.DEFINE_string("output_video", "rollout.gif", "output path for rollout video")
 
+
 def _load_model(path: epath.Path) -> mujoco.MjModel:
-    if not path.exists():
-        resource_path = epath.resource_path("mujoco_warp") / path
-        if not resource_path.exists():
-            raise FileNotFoundError(f"file not found: {path}\nalso tried: {resource_path}")
-        path = resource_path
+  if not path.exists():
+    resource_path = epath.resource_path("mujoco_warp") / path
+    if not resource_path.exists():
+      raise FileNotFoundError(f"file not found: {path}\nalso tried: {resource_path}")
+    path = resource_path
 
-    print(f"Loading model from: {path}...")
-    if path.suffix == ".mjb":
-        return mujoco.MjModel.from_binary_path(path.as_posix())
+  print(f"Loading model from: {path}...")
+  if path.suffix == ".mjb":
+    return mujoco.MjModel.from_binary_path(path.as_posix())
 
-    spec = mujoco.MjSpec.from_file(path.as_posix())
-    # register SDF test plugins if present
-    if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
-        from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+  spec = mujoco.MjSpec.from_file(path.as_posix())
+  # register SDF test plugins if present
+  if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+    from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
 
-        register_sdf_plugins(mjw)
+    register_sdf_plugins(mjw)
 
-    return spec.compile()
+  return spec.compile()
 
 
 def _save_rgb_from_packed(packed_row: np.ndarray, width: int, height: int, out_path: str):
-    packed = packed_row.reshape(height, width).astype(np.uint32)
-    b = (packed & 0xFF).astype(np.uint8)
-    g = ((packed >> 8) & 0xFF).astype(np.uint8)
-    r = ((packed >> 16) & 0xFF).astype(np.uint8)
-    img = Image.fromarray(np.dstack([r, g, b]))
-    img.save(out_path)
+  packed = packed_row.reshape(height, width).astype(np.uint32)
+  b = (packed & 0xFF).astype(np.uint8)
+  g = ((packed >> 8) & 0xFF).astype(np.uint8)
+  r = ((packed >> 16) & 0xFF).astype(np.uint8)
+  img = Image.fromarray(np.dstack([r, g, b]))
+  img.save(out_path)
 
 
 def _save_depth(depth_row: np.ndarray, width: int, height: int, scale: float, out_path: str):
-    arr = depth_row.reshape(height, width)
-    arr = np.clip(arr / max(scale, 1e-6), 0.0, 1.0)
-    img = Image.fromarray((arr * 255.0).astype(np.uint8))
-    img.save(out_path)
+  arr = depth_row.reshape(height, width)
+  arr = np.clip(arr / max(scale, 1e-6), 0.0, 1.0)
+  img = Image.fromarray((arr * 255.0).astype(np.uint8))
+  img.save(out_path)
 
 
 def _rgb_image_from_packed(packed_row: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -351,10 +352,10 @@ def _main(argv: Sequence[str]):
 
 
 def main():
-    sys.argv[0] = "mujoco_warp.render"
-    sys.modules["__main__"].__doc__ = __doc__
-    app.run(_main)
+  sys.argv[0] = "mujoco_warp.render"
+  sys.modules["__main__"].__doc__ = __doc__
+  app.run(_main)
 
 
 if __name__ == "__main__":
-    main()
+  main()

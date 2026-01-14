@@ -163,18 +163,15 @@ def _compute_bvh_bounds(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   nworld_in: int,
-
   # In:
   bvh_ngeom: int,
   enabled_geom_ids: wp.array(dtype=int),
   mesh_bounds_size: wp.array(dtype=wp.vec3),
   hfield_bounds_size: wp.array(dtype=wp.vec3),
-  
   # Out:
   lower_out: wp.array(dtype=wp.vec3),
   upper_out: wp.array(dtype=wp.vec3),
@@ -331,9 +328,9 @@ def normalize_vertex_normals(
 
 def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the flex BVH.
-  
+
   Refitting the flex BVH is required because flex meshes are not static.
-  The physics step will update the vertex positions, after which we need 
+  The physics step will update the vertex positions, after which we need
   to update the mesh BVH to reflect the new deformed state of the flex mesh.
   """
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
@@ -482,7 +479,6 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_point_out[base + 1] = v1
     face_point_out[base + 2] = v2
 
-
   for f in range(m.nflex):
     dim = rc.flex_dim[f]
     nelem = rc.flex_elemnum[f]
@@ -536,4 +532,3 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
       )
 
   rc.flex_registry[rc.flex_bvh_id].refit()
-

@@ -249,7 +249,7 @@ def ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: w
   part = 0  # -1: bottom, 0: cylinder, 1: top
 
   # make sure round solution is between flat sides (must use local z component)
-  #TODO: We should add a test to catch this case.
+  # TODO: We should add a test to catch this case.
   if sol >= 0.0 and wp.abs(lpnt[2] + sol * lvec[2]) <= size[1]:
     if x < 0.0 or sol < x:
       x = sol
@@ -711,10 +711,9 @@ def ray_mesh_with_bvh(
   f = int(-1)
 
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
-  hit = wp.mesh_query_ray(
-    mesh_bvh_id[mesh_geom_id], lpnt, lvec, max_t, t, u, v, sign, n, f)
+  hit = wp.mesh_query_ray(mesh_bvh_id[mesh_geom_id], lpnt, lvec, max_t, t, u, v, sign, n, f)
 
-  if hit and wp.dot(lvec, n) < 0.0: # Backface culling in local space
+  if hit and wp.dot(lvec, n) < 0.0:  # Backface culling in local space
     normal = mat @ n
     normal = wp.normalize(normal)
     return t, normal, u, v, f, 0
@@ -742,8 +741,7 @@ def ray_flex_with_bvh(
   n = wp.vec3(0.0, 0.0, 0.0)
   f = int(-1)
 
-  hit = wp.mesh_query_ray(
-    bvh_id, pnt, vec, max_t, t, u, v, sign, n, f, group_root)
+  hit = wp.mesh_query_ray(bvh_id, pnt, vec, max_t, t, u, v, sign, n, f, group_root)
 
   if hit:
     return t, n, u, v, f
