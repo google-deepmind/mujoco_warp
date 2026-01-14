@@ -52,7 +52,7 @@ def _compute_quad(Jaref: float, jv: float, efc_D: float) -> wp.vec3:
 @wp.func
 def _eval_pt_direct(Jaref: float, jv: float, efc_D: float, alpha: float) -> wp.vec3:
   """Compute (cost, gradient, hessian) directly without intermediate quad.
-  
+
   Equivalent to _eval_pt(_compute_quad(Jaref, jv, efc_D), alpha) but more efficient.
   """
   x = Jaref + alpha * jv
@@ -780,6 +780,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
+@cache_kernel
 def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
   """Factory for iterative linesearch kernel.
 
@@ -798,7 +799,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
   @wp.func_native(snippet="__syncthreads();")
   def _syncthreads():
     pass
-  
+
   # Select specialized helper functions based on cone type
   if IS_ELLIPTIC:
     _compute_efc_eval_pt = _compute_efc_eval_pt_elliptic
@@ -855,10 +856,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
 
-    # =========================================================================
-    # Prepare jv phase (small nv only) - fused from linesearch_jv_fused
-    # jv[efcid] = J[efcid, :] @ search
-    # =========================================================================
+    # jv = J @ search (fused for small nv)
     if wp.static(FUSE_JV):
       for efcid in range(tid, nefc, BLOCK_DIM):
         jv = float(0.0)
@@ -866,14 +864,11 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
           jv += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
         efc_jv_inout[worldid, efcid] = jv
 
-      # Synchronize to ensure all jv values are written before reading
-      _syncthreads()
+      _syncthreads()  # ensure all jv values are written before reading
 
-    # =========================================================================
-    # Prepare quad phase (elliptic only) - fused from linesearch_prepare_quad
-    # =========================================================================
+    # quad coefficients (elliptic only, requires barrier sync)
     if wp.static(IS_ELLIPTIC):
-      # Load elliptic-only config values
+      # elliptic-only config values
       impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
       nacon = nacon_in[0]
 
@@ -937,19 +932,16 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
 
         efc_quad_inout[worldid, efcid] = quad
 
-      # Synchronize to ensure all quads are written before reading
-      _syncthreads()
+      _syncthreads()  # ensure all quads are written before reading
 
-    # Calculate gtol - load tolerance values here (deferred from kernel start)
+    # gtol (tolerance values loaded here, deferred from kernel start)
     tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
     ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
     snorm = wp.sqrt(efc_search_dot_in[worldid])
     scale = stat_meaninertia * wp.float(nv)
     gtol = tolerance * ls_tolerance * snorm * scale
 
-    # =========================================================================
-    # Calculate p0 via parallel reduction
-    # =========================================================================
+    # p0 via parallel reduction
     local_p0 = wp.vec3(0.0)
     for efcid in range(tid, nefc, BLOCK_DIM):
       if wp.static(IS_ELLIPTIC):
@@ -976,21 +968,18 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
-        # Direct evaluation for pyramidal cones (no intermediate quad)
+        # direct evaluation for pyramidal cones (no intermediate quad)
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf,
           efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
         )
 
-    # Reduce across all threads
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
 
-    # Compute quad_gauss via parallel reduction over DOFs
     # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-    # Use vec2 since component 0 is constant (efc_gauss_in)
-    local_gauss = wp.vec2(0.0)
+    local_gauss = wp.vec2(0.0)  # vec2 since component 0 is constant (efc_gauss_in)
     for dofid in range(tid, nv, BLOCK_DIM):
       search = efc_search_in[worldid, dofid]
       local_gauss += wp.vec2(
@@ -1003,12 +992,10 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
     gauss_reduced = gauss_sum[0]
     efc_quad_gauss = wp.vec3(efc_gauss_in[worldid], gauss_reduced[0], gauss_reduced[1])
 
-    # Add quad_gauss contribution to p0
+    # add quad_gauss contribution to p0
     p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2]) + p0_sum[0]
 
-    # =========================================================================
-    # Calculate lo_in at lo_alpha_in = -p0[1] / p0[2]
-    # =========================================================================
+    # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
 
     local_lo_in = wp.vec3(0.0)
@@ -1037,28 +1024,25 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
-        # Direct evaluation for pyramidal cones (no intermediate quad)
+        # direct evaluation for pyramidal cones (no intermediate quad)
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf,
           efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
         )
 
-    # Reduce across all threads and add quad_gauss contribution
     lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
     lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
     lo_in = _eval_pt(efc_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
-    # Initialize bounds
+    # initialize bounds
     lo_less = lo_in[1] < p0[1]
     lo = wp.where(lo_less, lo_in, p0)
     lo_alpha = wp.where(lo_less, lo_alpha_in, 0.0)
     hi = wp.where(lo_less, p0, lo_in)
     hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
 
-    # =========================================================================
-    # Main iterative loop
-    # =========================================================================
+    # main iterative loop
     alpha = float(0.0)
 
     for _ in range(wp.static(LS_ITERATIONS)):
@@ -1088,7 +1072,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
             quad1 = efc_quad_inout[worldid, efc_addr1]
             quad2 = efc_quad_inout[worldid, efc_addr2]
 
-          # Compute all 3 alphas at once, sharing constraint type checking
+          # compute all 3 alphas at once, sharing constraint type checking
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf, impratio_invsqrt,
@@ -1097,7 +1081,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
             contact_friction, efc_addr0, quad1, quad2,
           )
         else:
-          # Direct evaluation for pyramidal cones (no intermediate quad)
+          # direct evaluation for pyramidal cones (no intermediate quad)
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf,
@@ -1108,8 +1092,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
         local_hi += r_hi
         local_mid += r_mid
 
-      # Reduce across all threads using packed mat33 (1 reduction instead of 3)
-      # Pack 3 vec3s into columns: col0=lo, col1=hi, col2=mid
+      # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
       local_combined = wp.mat33(
         local_lo[0], local_hi[0], local_mid[0],
         local_lo[1], local_hi[1], local_mid[1],
@@ -1119,13 +1102,13 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
       combined_sum = wp.tile_reduce(wp.add, combined_tile)
       result = combined_sum[0]
 
-      # Extract columns back to vec3s and add quad_gauss contributions
+      # extract columns back to vec3s and add quad_gauss contributions
       gauss_lo, gauss_hi, gauss_mid = _eval_pt_3alphas(efc_quad_gauss, lo_next_alpha, hi_next_alpha, mid_alpha)
       lo_next = gauss_lo + wp.vec3(result[0, 0], result[1, 0], result[2, 0])
       hi_next = gauss_hi + wp.vec3(result[0, 1], result[1, 1], result[2, 1])
       mid = gauss_mid + wp.vec3(result[0, 2], result[1, 2], result[2, 2])
 
-      # Bracket swapping logic (same as original)
+      # bracket swapping
       # swap lo:
       swap_lo_lo_next = _in_bracket(lo, lo_next)
       lo = wp.where(swap_lo_lo_next, lo_next, lo)
@@ -1150,10 +1133,10 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
       hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
       swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
-      # Check for convergence
+      # check for convergence
       ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
 
-      # Update alpha if improved
+      # update alpha if improved
       improved = lo[0] < p0[0] or hi[0] < p0[0]
       lo_better = lo[0] < hi[0]
       alpha = wp.where(improved and lo_better, lo_alpha, alpha)
@@ -1162,12 +1145,12 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
       if ls_done:
         break
 
-    # Fused qacc and Ma update (all threads cooperate)
+    # qacc and Ma update
     for dofid in range(tid, nv, BLOCK_DIM):
       qacc_out[worldid, dofid] += alpha * efc_search_in[worldid, dofid]
       efc_Ma_out[worldid, dofid] += alpha * efc_mv_in[worldid, dofid]
 
-    # Fused Jaref update (all threads cooperate)
+    # Jaref update
     for efcid in range(tid, nefc, BLOCK_DIM):
       efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
 
