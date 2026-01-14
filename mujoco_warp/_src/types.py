@@ -1506,8 +1506,8 @@ class Constraint:
     mv: qM @ search                                   (nworld, nv)
     jv: efc_J @ search                                (nworld, njmax)
     quad: quadratic cost coefficients                 (nworld, njmax, 3)
-    quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)
-    alpha: line search step size                      (nworld,)
+    quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)  # parallel linesearch only
+    alpha: line search step size                      (nworld,)  # parallel linesearch only
     prev_grad: previous grad                          (nworld, nv)
     prev_Mgrad: previous Mgrad                        (nworld, nv)
     beta: Polak-Ribiere beta                          (nworld,)
@@ -1538,8 +1538,8 @@ class Constraint:
   mv: array("nworld", "nv", float)
   jv: array("nworld", "njmax", float)
   quad: array("nworld", "njmax", wp.vec3)
-  quad_gauss: array("nworld", wp.vec3)
-  alpha: array("nworld", float)
+  quad_gauss: array("nworld", wp.vec3)  # parallel linesearch only
+  alpha: array("nworld", float)  # parallel linesearch only
   prev_grad: array("nworld", "nv", float)
   prev_Mgrad: array("nworld", "nv", float)
   beta: array("nworld", float)
