@@ -602,6 +602,48 @@ class GJKTest(absltest.TestCase):
     self.assertEqual(ncon, 1)
     self.assertLess(dist, 0.0001)  # real depth is ~ 2E-6
 
+  def test_box_box_horizon(self):
+    """Test box-box with EPA horizon with 13 edges"""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos1 = wp.vec3(0.065118454396725, -0.125125020742416, 0.124963559210300)
+    rot1 = wp.mat33(
+      0.996357858181000,
+      0.085266821086407,
+      -0.000942531623878,
+      -0.085266284644604,
+      0.996358215808868,
+      0.000591202871874,
+      0.000989508931525,
+      -0.000508683384396,
+      0.999999582767487,
+    )
+
+    pos2 = wp.vec3(0.065104484558105, -0.124979749321938, 0.174992129206657)
+    rot2 = wp.mat33(
+      0.996556758880615,
+      -0.082913912832737,
+      -0.000453041866422,
+      0.082915119826794,
+      0.996536433696747,
+      0.006357696373016,
+      -0.000075668765930,
+      -0.006373368669301,
+      0.999979794025421,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -0.00011578822)  #  dist = -0.00011579410621457821 - MJC 64 bit precision
+
 
 if __name__ == "__main__":
   wp.init()
