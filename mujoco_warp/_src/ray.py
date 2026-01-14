@@ -249,7 +249,7 @@ def _ray_capsule(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: 
   part = 0  # -1: bottom, 0: cylinder, 1: top
 
   # make sure round solution is between flat sides
-  if sol >= 0.0 and wp.abs(lpnt[2] + sol * vec[2]) <= size[1]:
+  if sol >= 0.0 and wp.abs(lpnt[2] + sol * lvec[2]) <= size[1]:
     if x < 0.0 or sol < x:
       x = sol
 
