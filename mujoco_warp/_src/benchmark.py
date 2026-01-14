@@ -21,10 +21,10 @@ from typing import Callable, Optional, Tuple
 import numpy as np
 import warp as wp
 
-from . import warp_util
-from .types import Data
-from .types import Model
-from .util_misc import halton
+from mujoco_warp._src import warp_util
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.util_misc import halton
 
 
 def _sum(stack1, stack2):

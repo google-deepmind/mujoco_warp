@@ -17,10 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive import Geom
-from .types import GeomType
-from .types import mat43
-from .types import mat63
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
