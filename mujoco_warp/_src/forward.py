@@ -482,33 +482,16 @@ def rungekutta4(m: Model, d: Data):
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
   if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
-    qacc = wp.empty((d.nworld, m.nv), dtype=float)
-    qfrc = wp.empty((d.nworld, m.nv), dtype=float)
-    wp.launch(
-      _qfrc_total,
-      dim=(d.nworld, m.nv),
-      inputs=[d.qfrc_smooth, d.qfrc_constraint],
-      outputs=[qfrc],
-    )
-
     if m.opt.is_sparse:
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
-      derivative.deriv_smooth_vel(m, d, qDeriv)
+      qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
     else:
-      qDeriv_dense = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
-      derivative.deriv_smooth_vel(m, d, qDeriv_dense)
-      qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
-      wp.launch(
-        _dense_to_sparse_lower,
-        dim=(d.nworld, m.qM_fullm_i.size),
-        inputs=[m.qM_fullm_i, m.qM_fullm_j, qDeriv_dense],
-        outputs=[qDeriv],
-      )
-    qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
+      qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+      qLD = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
-    smooth._factor_i_sparse(m, d, qDeriv, qLD, qLDiagInv)
-    smooth._solve_LD_sparse(m, d, qLD, qLDiagInv, qacc, qfrc)
-
+    derivative.deriv_smooth_vel(m, d, qDeriv)
+    qacc = wp.empty((d.nworld, m.nv), dtype=float)
+    smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
@@ -895,33 +878,6 @@ def _qfrc_smooth(
     + qfrc_actuator_in[worldid, dofid]
     + qfrc_applied_in[worldid, dofid]
   )
-
-
-@wp.kernel
-def _qfrc_total(
-  # Data in:
-  qfrc_smooth_in: wp.array2d(dtype=float),
-  qfrc_constraint_in: wp.array2d(dtype=float),
-  # Out:
-  qfrc_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-  qfrc_out[worldid, dofid] = qfrc_smooth_in[worldid, dofid] + qfrc_constraint_in[worldid, dofid]
-
-
-@wp.kernel
-def _dense_to_sparse_lower(
-  # In:
-  qMi: wp.array(dtype=int),
-  qMj: wp.array(dtype=int),
-  dense_in: wp.array3d(dtype=float),
-  # Out:
-  sparse_out: wp.array3d(dtype=float),
-):
-  worldid, elemid = wp.tid()
-  i = qMi[elemid]
-  j = qMj[elemid]
-  sparse_out[worldid, 0, elemid] = dense_in[worldid, i, j]
 
 
 @event_scope
