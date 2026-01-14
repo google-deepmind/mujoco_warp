@@ -320,53 +320,6 @@ class RenderContext:
     bvh.build_warp_bvh(m, d, self)
 
 
-def create_render_context(
-  mjm: mujoco.MjModel,
-  m: Model,
-  d: Data,
-  cam_res: Union[list[Tuple[int, int]] | Tuple[int, int]],
-  render_rgb: Union[list[bool] | bool] = True,
-  render_depth: Union[list[bool] | bool] = False,
-  use_textures: bool = True,
-  use_shadows: bool = False,
-  enabled_geom_groups: list[int] = [0, 1, 2],
-  cam_active: list[bool] = None,
-  flex_render_smooth: bool = True,
-) -> RenderContext:
-  """Creates a render context on device.
-
-  Args:
-    mjm: The model containing kinematic and dynamic information on host.
-    m: The model on device.
-    d: The data on device.
-    cam_res: The width and height to render each camera image.
-    render_rgb: Whether to render RGB images.
-    render_depth: Whether to render depth images.
-    use_textures: Whether to use textures.
-    use_shadows: Whether to use shadows.
-    enabled_geom_groups: The geom groups to render.
-    cam_active: List of booleans indicating which cameras to include in rendering.
-                If None, all cameras are included.
-    flex_render_smooth: Whether to render flex meshes smoothly.
-
-  Returns:
-    The render context containing rendering fields and output arrays on device.
-  """
-  return RenderContext(
-    mjm,
-    m,
-    d,
-    cam_res,
-    render_rgb,
-    render_depth,
-    use_textures,
-    use_shadows,
-    enabled_geom_groups,
-    cam_active,
-    flex_render_smooth,
-  )
-
-
 @wp.kernel
 def build_primary_rays(
   # In:

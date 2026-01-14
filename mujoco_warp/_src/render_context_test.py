@@ -19,9 +19,9 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+import mujoco_warp as mjw
 from mujoco_warp import test_data
 
-from . import render_context
 
 _CAMERA_TEST_XML = """
 <mujoco>
@@ -43,7 +43,7 @@ class RenderContextTest(parameterized.TestCase):
   @parameterized.parameters(1, 4)
   def test_bvh_creation(self, nworld):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
-    rc = render_context.create_render_context(mjm, m, d, cam_res=(64, 64))
+    rc = mjw.create_render_context(mjm, m, d, cam_res=(64, 64))
 
     self.assertIsNotNone(rc)
     self.assertEqual(rc.ncam, mjm.ncam)
@@ -65,7 +65,7 @@ class RenderContextTest(parameterized.TestCase):
   def test_output_buffers(self):
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 24
-    rc = render_context.create_render_context(mjm, m, d, cam_res=(width, height), render_rgb=True, render_depth=True)
+    rc = mjw.create_render_context(mjm, m, d, cam_res=(width, height), render_rgb=True, render_depth=True)
 
     expected_total = 3 * width * height
 
@@ -84,7 +84,7 @@ class RenderContextTest(parameterized.TestCase):
     """Tests render context with different resolutions per camera."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     cam_res = [(64, 64), (32, 32), (16, 16)]
-    rc = render_context.create_render_context(mjm, m, d, cam_res=cam_res, render_rgb=True, render_depth=True)
+    rc = mjw.create_render_context(mjm, m, d, cam_res=cam_res, render_rgb=True, render_depth=True)
 
     self.assertEqual(rc.ncam, 3)
 
@@ -106,7 +106,7 @@ class RenderContextTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
 
-    rc = render_context.create_render_context(mjm, m, d, cam_res=(width, height), cam_active=[True, False, True])
+    rc = mjw.create_render_context(mjm, m, d, cam_res=(width, height), cam_active=[True, False, True])
 
     self.assertEqual(rc.ncam, 2)
 
@@ -118,7 +118,7 @@ class RenderContextTest(parameterized.TestCase):
     width, height = 32, 32
     pixels = width * height
 
-    rc = render_context.create_render_context(
+    rc = mjw.create_render_context(
       mjm,
       m,
       d,

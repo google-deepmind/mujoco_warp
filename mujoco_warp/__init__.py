@@ -45,10 +45,10 @@ from ._src.io import make_data as make_data
 from ._src.io import put_data as put_data
 from ._src.io import put_model as put_model
 from ._src.io import reset_data as reset_data
+from ._src.io import create_render_context as create_render_context
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
 from ._src.ray import rays as rays
-from ._src.render_context import create_render_context as create_render_context
 from ._src.sensor import energy_pos as energy_pos
 from ._src.sensor import energy_vel as energy_vel
 from ._src.sensor import sensor_acc as sensor_acc
