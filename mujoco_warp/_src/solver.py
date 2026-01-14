@@ -877,25 +877,19 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
         jv = efc_jv_inout[worldid, efcid]
         efc_D = efc_D_in[worldid, efcid]
 
-        # init with scalar quadratic
+        # scalar quadratic coefficients
         quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
 
-        # track whether this row should write its quad
-        # CONTACT_ELLIPTIC rows skip writing when: inactive (conid >= nacon) or secondary row
-        write_quad = True
-
-        # elliptic cone: extra processing for primary contact row
-        if efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
+        # non-contact constraints: write quad immediately
+        if efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
+          efc_quad_inout[worldid, efcid] = quad
+        else:
+          # CONTACT_ELLIPTIC: only primary row of active contacts writes
           conid = efc_id_in[worldid, efcid]
-
-          if conid >= nacon:
-            # inactive contact: skip writing (matches main's early return)
-            write_quad = False
-          else:
+          if conid < nacon:
             efcid0 = contact_efc_address_in[conid, 0]
-
             if efcid == efcid0:
-              # primary row: compute and write quad1, quad2 for secondary rows
+              # primary row: accumulate secondary rows and write quad, quad1, quad2
               dim = contact_dim_in[conid]
               friction = contact_friction_in[conid]
               mu = friction[0] * impratio_invsqrt
@@ -914,11 +908,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
                   dj = efc_D_in[worldid, efcidj]
                   DJj = dj * jarefj
 
-                  quad += wp.vec3(
-                    0.5 * jarefj * DJj,
-                    jvj * DJj,
-                    0.5 * jvj * dj * jvj,
-                  )
+                  quad += wp.vec3(0.5 * jarefj * DJj, jvj * DJj, 0.5 * jvj * dj * jvj)
 
                   # rescale to make primal cone circular
                   frictionj = friction[j - 1]
@@ -929,20 +919,14 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
                   uv += uj * vj
                   vv += vj * vj
 
-              quad1 = wp.vec3(u0, v0, uu)
+              efc_quad_inout[worldid, efcid] = quad
+
               efcid1 = contact_efc_address_in[conid, 1]
-              efc_quad_inout[worldid, efcid1] = quad1
+              efc_quad_inout[worldid, efcid1] = wp.vec3(u0, v0, uu)
 
               mu2 = mu * mu
-              quad2 = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
               efcid2 = contact_efc_address_in[conid, 2]
-              efc_quad_inout[worldid, efcid2] = quad2
-            else:
-              # secondary row: don't write quad (primary row writes quad1/quad2 here)
-              write_quad = False
-
-        if write_quad:
-          efc_quad_inout[worldid, efcid] = quad
+              efc_quad_inout[worldid, efcid2] = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
 
       _syncthreads()  # ensure all quads are written before reading
 
