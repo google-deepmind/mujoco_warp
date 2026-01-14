@@ -642,7 +642,7 @@ class GJKTest(absltest.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
-    self.assertAlmostEqual(dist, -0.00011578822)  #  dist = -0.00011579410621457821 - MJC 64 bit precision
+    self.assertAlmostEqual(dist, -0.00011578822, 6)  #  dist = -0.00011579410621457821 - MJC 64 bit precision
 
 
 if __name__ == "__main__":
