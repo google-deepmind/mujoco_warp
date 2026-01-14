@@ -21,13 +21,12 @@ from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
-
-from .collision_gjk import ccd
-from .collision_gjk import multicontact
-from .collision_primitive import Geom
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.types import MJ_MAX_EPAFACES
+from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.warp_util import nested_kernel
 
 
 def _geom_dist(

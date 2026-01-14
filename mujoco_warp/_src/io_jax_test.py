@@ -50,7 +50,7 @@ def _dims_match(test_obj, d1: Any, d2: Any, prefix: str = ""):
       _dims_match(test_obj, a1, a2, prefix + f1.name + ".")
       continue
 
-    if isinstance(f1.type, wp.types.array) or isinstance(f2.type, wp.types.array):
+    if isinstance(f1.type, wp.array) or isinstance(f2.type, wp.array):
       s1, s2 = a1.shape, a2.shape
       test_obj.assertEqual(len(s1), len(s2), f"{full_name} dims mismatch. Got {s1} and {s2}.")
       test_obj.assertEqual(s1, s2, f"{full_name} dims mismatch. Got {s1} and {s2}.")
@@ -85,8 +85,8 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
       test_obj.assertIsInstance(np_scalar_type(val), type_, msg.format(**locals()))
       continue
 
-    if isinstance(type_, wp.types.array):
-      test_obj.assertIsInstance(val, wp.types.array, msg.format(**locals()))
+    if isinstance(type_, wp.array):
+      test_obj.assertIsInstance(val, wp.array, msg.format(**locals()))
       continue
 
     origin_type = typing.get_origin(type_)
@@ -107,8 +107,8 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
           test_obj.assertIsInstance(np_scalar_type(val), type_, msg.format(**locals()))
           continue
 
-        if isinstance(type_, wp.types.array):
-          test_obj.assertIsInstance(val, wp.types.array, msg.format(**locals()))
+        if isinstance(type_, wp.array):
+          test_obj.assertIsInstance(val, wp.array, msg.format(**locals()))
           continue
 
         test_obj.assertEqual(type(val), type_, msg.format(**locals()))
@@ -128,10 +128,10 @@ def _check_annotation_compat(
     if v in (int, bool, float):
       continue
 
-    if isinstance(v, wp.types.array):
+    if isinstance(v, wp.array):
       continue
 
-    if v in wp.types.vector_types:
+    if wp.types.type_is_composite(v):
       raise AssertionError(f"Vector types are not allowed. {info}")
 
     if typing.get_origin(v) == tuple and (in_cls or in_tuple):
@@ -177,7 +177,7 @@ def _leading_dims_scale_w_nworld(test_obj, d1: Any, d2: Any, nworld1: int, nworl
       _leading_dims_scale_w_nworld(test_obj, a1, a2, nworld1, nworld2, prefix + f1.name + ".")
       continue
 
-    if isinstance(f1.type, wp.types.array) or isinstance(f2.type, wp.types.array):
+    if isinstance(f1.type, wp.array) or isinstance(f2.type, wp.array):
       s1, s2 = a1.shape[0], a2.shape[0]
       if s1 == s2:
         continue
