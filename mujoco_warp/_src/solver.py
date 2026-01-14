@@ -1237,18 +1237,19 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_j
 
     # Compute quad_gauss via parallel reduction over DOFs
     # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-    local_gauss = wp.vec3(0.0)
+    # Use vec2 since component 0 is constant (efc_gauss_in)
+    local_gauss = wp.vec2(0.0)
     for dofid in range(tid, nv, BLOCK_DIM):
       search = efc_search_in[worldid, dofid]
-      local_gauss += wp.vec3(
-        0.0,
+      local_gauss += wp.vec2(
         search * (efc_Ma_out[worldid, dofid] - qfrc_smooth_in[worldid, dofid]),
         0.5 * search * efc_mv_in[worldid, dofid],
       )
 
     gauss_tile = wp.tile(local_gauss, preserve_type=True)
     gauss_sum = wp.tile_reduce(wp.add, gauss_tile)
-    efc_quad_gauss = wp.vec3(efc_gauss_in[worldid], 0.0, 0.0) + gauss_sum[0]
+    gauss_reduced = gauss_sum[0]
+    efc_quad_gauss = wp.vec3(efc_gauss_in[worldid], gauss_reduced[0], gauss_reduced[1])
 
     # Add quad_gauss contribution to p0
     p0 = wp.vec3(efc_quad_gauss[0], efc_quad_gauss[1], 2.0 * efc_quad_gauss[2]) + p0_sum[0]
