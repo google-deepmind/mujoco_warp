@@ -242,6 +242,7 @@ def _derivative_cross(vec_a: wp.vec3, vec_b: wp.vec3):
 
 @wp.func
 def _fluid_added_mass_forces(
+  # In:
   B: wp.spatial_matrix,
   lvel: wp.spatial_vector,
   fluid_density: float,
@@ -295,6 +296,7 @@ def _fluid_added_mass_forces(
 
 @wp.func
 def _fluid_viscous_torque(
+  # In:
   B: wp.spatial_matrix,
   lvel: wp.spatial_vector,
   fluid_density: float,
@@ -333,6 +335,7 @@ def _fluid_viscous_torque(
 
 @wp.func
 def _fluid_viscous_drag(
+  # In:
   B: wp.spatial_matrix,
   lvel: wp.spatial_vector,
   fluid_density: float,
@@ -397,6 +400,7 @@ def _fluid_viscous_drag(
 
 @wp.func
 def _fluid_kutta_lift(
+  # In:
   B: wp.spatial_matrix,
   lvel: wp.spatial_vector,
   fluid_density: float,
@@ -452,6 +456,7 @@ def _fluid_kutta_lift(
 
 @wp.func
 def _fluid_magnus_force(
+  # In:
   B: wp.spatial_matrix,
   lvel: wp.spatial_vector,
   fluid_density: float,
@@ -475,6 +480,7 @@ def _fluid_magnus_force(
 
 @wp.func
 def _fluid_inertia_box_forces(
+  # In:
   B: wp.spatial_matrix,
   lvel: wp.spatial_vector,
   fluid_density: float,
@@ -539,7 +545,7 @@ def _get_geom_semiaxes(type: int, size: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def _is_ancestor(ancestor: int, child: int, body_parentid: wp.array(dtype=int)) -> bool:
+def _is_ancestor(body_parentid: wp.array(dtype=int), ancestor: int, child: int) -> bool:
   if child == ancestor:
     return True
 
@@ -554,18 +560,23 @@ def _is_ancestor(ancestor: int, child: int, body_parentid: wp.array(dtype=int)) 
 
 @wp.func
 def _get_jac_column_local(
+  # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
-  subtree_com: wp.array2d(dtype=wp.vec3),
-  cdof: wp.array2d(dtype=wp.spatial_vector),
+  # Data in:
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   point_global: wp.vec3,
   bodyid: int,
   dofid: int,
   worldid: int,
   b_imat: wp.mat33,
 ) -> wp.spatial_vector:
-  jacp, jacr = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, point_global, bodyid, dofid, worldid)
+  jacp, jacr = support.jac(
+    body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, point_global, bodyid, dofid, worldid
+  )
   jacp_loc = wp.transpose(b_imat) @ jacp
   jacr_loc = wp.transpose(b_imat) @ jacr
   return wp.spatial_vector(jacr_loc, jacp_loc)
@@ -588,22 +599,23 @@ def _qderiv_fluid(
   body_mass: wp.array2d(dtype=float),
   body_inertia: wp.array2d(dtype=wp.vec3),
   dof_bodyid: wp.array(dtype=int),
-  body_fluid_ellipsoid: wp.array(dtype=bool),
   geom_type: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_fluid: wp.array2d(dtype=float),
-  # Data:
+  body_fluid_ellipsoid: wp.array(dtype=bool),
+  # Data in:
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  ximat_in: wp.array2d(dtype=wp.mat33),
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
-  xipos: wp.array2d(dtype=wp.vec3),
-  ximat: wp.array2d(dtype=wp.mat33),
-  geom_xpos: wp.array2d(dtype=wp.vec3),
-  geom_xmat: wp.array2d(dtype=wp.mat33),
-  cvel: wp.array2d(dtype=wp.spatial_vector),
-  subtree_com: wp.array2d(dtype=wp.vec3),
-  cdof: wp.array2d(dtype=wp.spatial_vector),
-  # Config:
-  qDeriv_out: wp.array3d(dtype=float),  # sparse or dense
+  # Out:
+  qDeriv_out: wp.array3d(dtype=float),
 ):
   worldid, elemid = wp.tid()
   dofi = qMi[elemid]
@@ -623,7 +635,7 @@ def _qderiv_fluid(
   accum = float(0.0)
 
   for b in range(start_body, nbody):
-    if not _is_ancestor(start_body, b, body_parentid) or body_mass[worldid, b] < MJ_MINVAL:
+    if not _is_ancestor(body_parentid, start_body, b) or body_mass[worldid, b] < MJ_MINVAL:
       continue
 
     if body_fluid_ellipsoid[b]:
@@ -635,18 +647,18 @@ def _qderiv_fluid(
         if geom_fluid[g, 0] == 0.0:
           continue
 
-        subtree_root = subtree_com[worldid, body_rootid[b]]
-        xipos_b = xipos[worldid, b]
-        g_pos = geom_xpos[worldid, g]
+        subtree_root = subtree_com_in[worldid, body_rootid[b]]
+        xipos_b = xipos_in[worldid, b]
+        g_pos = geom_xpos_in[worldid, g]
 
-        vel_body = cvel[worldid, b]
+        vel_body = cvel_in[worldid, b]
         w_body = wp.vec3(vel_body[0], vel_body[1], vel_body[2])
         v_body_lin = wp.vec3(vel_body[3], vel_body[4], vel_body[5])
 
         lin_com = v_body_lin - wp.cross(xipos_b - subtree_root, w_body)
         v_geom_lin = lin_com + wp.cross(w_body, g_pos - xipos_b)
 
-        g_mat = geom_xmat[worldid, g]
+        g_mat = geom_xmat_in[worldid, g]
         w_local = wp.transpose(g_mat) @ w_body
         v_local_linear = wp.transpose(g_mat) @ v_geom_lin
         wind_local = wp.transpose(g_mat) @ wind
@@ -677,8 +689,12 @@ def _qderiv_fluid(
         if is_implicit:
           B = 0.5 * (B + wp.transpose(B))
         # Get Jacobian columns
-        J_i = _get_jac_column_local(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, g_pos, b, dofi, worldid, g_mat)
-        J_j = _get_jac_column_local(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, g_pos, b, dofj, worldid, g_mat)
+        J_i = _get_jac_column_local(
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, g_pos, b, dofi, worldid, g_mat
+        )
+        J_j = _get_jac_column_local(
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, g_pos, b, dofj, worldid, g_mat
+        )
 
         accum += wp.dot(J_i, B @ J_j)
     else:
@@ -686,17 +702,17 @@ def _qderiv_fluid(
       mass = body_mass[worldid, b]
       inertia = body_inertia[worldid, b]
 
-      subtree_root = subtree_com[worldid, body_rootid[b]]
-      b_ipos = xipos[worldid, b]
+      subtree_root = subtree_com_in[worldid, body_rootid[b]]
+      b_ipos = xipos_in[worldid, b]
 
       # Body velocity in local frame
-      vel_subtree = cvel[worldid, b]
+      vel_subtree = cvel_in[worldid, b]
       v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
       v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
 
       lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
 
-      b_imat = ximat[worldid, b]
+      b_imat = ximat_in[worldid, b]
       v_local_ang = wp.transpose(b_imat) @ v_subtree_ang
       v_local_lin = wp.transpose(b_imat) @ lin_com
 
@@ -711,8 +727,12 @@ def _qderiv_fluid(
         B = 0.5 * (B + wp.transpose(B))
 
       # Jacobian at body frame
-      J_i = _get_jac_column_local(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, b_ipos, b, dofi, worldid, b_imat)
-      J_j = _get_jac_column_local(body_parentid, body_rootid, dof_bodyid, subtree_com, cdof, b_ipos, b, dofj, worldid, b_imat)
+      J_i = _get_jac_column_local(
+        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, b, dofi, worldid, b_imat
+      )
+      J_j = _get_jac_column_local(
+        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, b, dofj, worldid, b_imat
+      )
 
       accum += wp.dot(J_i, B @ J_j)
 
@@ -823,19 +843,19 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         m.body_mass,
         m.body_inertia,
         m.dof_bodyid,
-        m.body_fluid_ellipsoid,
         m.geom_type,
         m.geom_size,
         m.geom_fluid,
-        m.qM_fullm_i,
-        m.qM_fullm_j,
+        m.body_fluid_ellipsoid,
         d.xipos,
         d.ximat,
         d.geom_xpos,
         d.geom_xmat,
-        d.cvel,
         d.subtree_com,
         d.cdof,
+        d.cvel,
+        m.qM_fullm_i,
+        m.qM_fullm_j,
       ],
       outputs=[out],
     )

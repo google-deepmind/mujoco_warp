@@ -899,8 +899,10 @@ def _qfrc_smooth(
 
 @wp.kernel
 def _qfrc_total(
+  # Data in:
   qfrc_smooth_in: wp.array2d(dtype=float),
   qfrc_constraint_in: wp.array2d(dtype=float),
+  # Out:
   qfrc_out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
@@ -909,9 +911,11 @@ def _qfrc_total(
 
 @wp.kernel
 def _dense_to_sparse_lower(
+  # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
   dense_in: wp.array3d(dtype=float),
+  # Out:
   sparse_out: wp.array3d(dtype=float),
 ):
   worldid, elemid = wp.tid()
