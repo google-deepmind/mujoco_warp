@@ -15,7 +15,6 @@
 
 from math import ceil
 from math import sqrt
-from typing import Tuple
 
 import warp as wp
 
@@ -201,154 +200,6 @@ def _eval_elliptic(
       return cost
 
   return wp.vec3(0.0, 0.0, 0.0)
-
-
-@wp.func
-def _eval_init(
-  # Data in:
-  contact_friction_in: wp.array(dtype=types.vec5),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  # In:
-  ne_clip: int,
-  nef_clip: int,
-  nefc_clip: int,
-  impratio_invsqrt: float,
-  type_in: wp.array(dtype=int),
-  id_in: wp.array(dtype=int),
-  D_in: wp.array(dtype=float),
-  frictionloss_in: wp.array(dtype=float),
-  Jaref_in: wp.array(dtype=float),
-  jv_in: wp.array(dtype=float),
-  quad_in: wp.array(dtype=wp.vec3),
-  alpha: float,
-) -> wp.vec3:
-  lo = wp.vec3(0.0, 0.0, 0.0)
-  for efcid in range(ne_clip):
-    quad = quad_in[efcid]
-    lo += _eval_pt(quad, alpha)
-
-  for efcid in range(ne_clip, nef_clip):
-    D = D_in[efcid]
-    f = frictionloss_in[efcid]
-    Jaref = Jaref_in[efcid]
-    jv = jv_in[efcid]
-
-    # search point, friction loss, bound (rf)
-    x = Jaref + alpha * jv
-    rf = math.safe_div(f, D)
-
-    quad_f = _eval_frictionloss(x, f, rf, Jaref, jv, quad_in[efcid])
-    lo += _eval_pt(quad_f, alpha)
-
-  for efcid in range(nef_clip, nefc_clip):
-    if type_in[efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
-      conid = id_in[efcid]
-
-      efcid0 = contact_efc_address_in[conid, 0]
-      if efcid != efcid0:
-        continue
-
-      efcid1 = contact_efc_address_in[conid, 1]
-      efcid2 = contact_efc_address_in[conid, 2]
-      efc_quad0 = quad_in[efcid0]
-      efc_quad1 = quad_in[efcid1]
-      efc_quad2 = quad_in[efcid2]
-      friction = contact_friction_in[conid]
-
-      lo += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, alpha)
-    else:
-      Jaref = Jaref_in[efcid]
-      jv = jv_in[efcid]
-      quad = quad_in[efcid]
-
-      x = Jaref + alpha * jv
-      res = _eval_pt(quad, alpha)
-      lo += res * float(x < 0.0)
-
-  return lo
-
-
-@wp.func
-def _eval(
-  # Data in:
-  contact_friction_in: wp.array(dtype=types.vec5),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  # In:
-  ne_clip: int,
-  nef_clip: int,
-  nefc_clip: int,
-  impratio_invsqrt: float,
-  type_in: wp.array(dtype=int),
-  id_in: wp.array(dtype=int),
-  D_in: wp.array(dtype=float),
-  frictionloss_in: wp.array(dtype=float),
-  Jaref_in: wp.array(dtype=float),
-  jv_in: wp.array(dtype=float),
-  quad_in: wp.array(dtype=wp.vec3),
-  lo_alpha: float,
-  hi_alpha: float,
-  mid_alpha: float,
-) -> Tuple[wp.vec3, wp.vec3, wp.vec3]:
-  lo = wp.vec3(0.0, 0.0, 0.0)
-  hi = wp.vec3(0.0, 0.0, 0.0)
-  mid = wp.vec3(0.0, 0.0, 0.0)
-  for efcid in range(ne_clip):
-    quad = quad_in[efcid]
-    lo += _eval_pt(quad, lo_alpha)
-    hi += _eval_pt(quad, hi_alpha)
-    mid += _eval_pt(quad, mid_alpha)
-
-  for efcid in range(ne_clip, nef_clip):
-    quad = quad_in[efcid]
-    D = D_in[efcid]
-    f = frictionloss_in[efcid]
-    Jaref = Jaref_in[efcid]
-    jv = jv_in[efcid]
-
-    # search point, friction loss, bound (rf)
-    rf = math.safe_div(f, D)
-    x_lo = Jaref + lo_alpha * jv
-    x_hi = Jaref + hi_alpha * jv
-    x_mid = Jaref + mid_alpha * jv
-
-    quad_f = _eval_frictionloss(x_lo, f, rf, Jaref, jv, quad)
-    lo += _eval_pt(quad_f, lo_alpha)
-    quad_f = _eval_frictionloss(x_hi, f, rf, Jaref, jv, quad)
-    hi += _eval_pt(quad_f, hi_alpha)
-    quad_f = _eval_frictionloss(x_mid, f, rf, Jaref, jv, quad)
-    mid += _eval_pt(quad_f, mid_alpha)
-
-  for efcid in range(nef_clip, nefc_clip):
-    if type_in[efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
-      conid = id_in[efcid]
-
-      efcid0 = contact_efc_address_in[conid, 0]
-      if efcid != efcid0:
-        continue
-
-      efcid1 = contact_efc_address_in[conid, 1]
-      efcid2 = contact_efc_address_in[conid, 2]
-      efc_quad0 = quad_in[efcid0]
-      efc_quad1 = quad_in[efcid1]
-      efc_quad2 = quad_in[efcid2]
-      friction = contact_friction_in[conid]
-
-      lo += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, lo_alpha)
-      hi += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, hi_alpha)
-      mid += _eval_elliptic(impratio_invsqrt, friction, efc_quad0, efc_quad1, efc_quad2, mid_alpha)
-    else:
-      Jaref = Jaref_in[efcid]
-      jv = jv_in[efcid]
-      quad = quad_in[efcid]
-
-      x_lo = Jaref + lo_alpha * jv
-      x_hi = Jaref + hi_alpha * jv
-      x_mid = Jaref + mid_alpha * jv
-      lo += _eval_pt(quad, lo_alpha) * float(x_lo < 0.0)
-      hi += _eval_pt(quad, hi_alpha) * float(x_hi < 0.0)
-      mid += _eval_pt(quad, mid_alpha) * float(x_mid < 0.0)
-
-  return lo, hi, mid
 
 
 @wp.func
@@ -593,15 +444,6 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
     inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
     outputs=[d.efc.Jaref],
   )
-
-
-# =============================================================================
-# Tiled linesearch implementation - parallelizes over efc rows with tile reduction
-# =============================================================================
-
-# =============================================================================
-# Tiled iterative linesearch - parallelizes efc row reductions within iterations
-# =============================================================================
 
 
 @wp.func
