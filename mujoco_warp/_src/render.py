@@ -38,12 +38,7 @@ wp.set_module_options({"enable_backward": False})
 
 MAX_NUM_VIEWS_PER_THREAD = 8
 
-BACKGROUND_COLOR = (
-  255 << 24 |
-  int(0.1 * 255.0) << 16 |
-  int(0.1 * 255.0) << 8 |
-  int(0.2 * 255.0)
-)
+BACKGROUND_COLOR = 255 << 24 | int(0.1 * 255.0) << 16 | int(0.1 * 255.0) << 8 | int(0.2 * 255.0)
 
 SPOT_INNER_COS = float(0.95)
 SPOT_OUTER_COS = float(0.85)
@@ -58,6 +53,7 @@ AMBIENT_INTENSITY = float(0.5)
 TILE_W: int = 16
 TILE_H: int = 16
 THREADS_PER_TILE: int = TILE_W * TILE_H
+
 
 @wp.func
 def _ceil_div(a: int, b: int):
@@ -477,11 +473,9 @@ def compute_lighting(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
-
   # In:
   use_shadows: bool,
   bvh_id: wp.uint64,
@@ -499,7 +493,6 @@ def compute_lighting(
   normal: wp.vec3,
   hitpoint: wp.vec3,
 ) -> float:
-
   light_contribution = float(0.0)
 
   # TODO: We should probably only be looping over active lights
@@ -511,12 +504,12 @@ def compute_lighting(
   dist_to_light = float(wp.inf)
   attenuation = float(1.0)
 
-  if lighttype == 1: # directional light
+  if lighttype == 1:  # directional light
     L = wp.normalize(-lightdir)
   else:
     L, dist_to_light = math.normalize_with_norm(lightpos - hitpoint)
     attenuation = 1.0 / (1.0 + 0.02 * dist_to_light * dist_to_light)
-    if lighttype == 0: # spot light
+    if lighttype == 0:  # spot light
       spot_dir = wp.normalize(lightdir)
       cos_theta = wp.dot(-L, spot_dir)
       inner = SPOT_INNER_COS
@@ -538,7 +531,7 @@ def compute_lighting(
     # Distance-limited shadows: cap by dist_to_light (for non-directional)
     max_t = float(dist_to_light - 1.0e-3)
     if lighttype == 1:  # directional light
-      max_t = float(1.0e+8)
+      max_t = float(1.0e8)
 
     shadow_hit = cast_ray_first_hit(
       geom_type,
@@ -587,7 +580,6 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     light_active: wp.array2d(dtype=bool),
     light_type: wp.array2d(dtype=int),
     light_castshadow: wp.array2d(dtype=bool),
-
     # Data in:
     cam_xpos: wp.array2d(dtype=wp.vec3),
     cam_xmat: wp.array2d(dtype=wp.mat33),
@@ -595,7 +587,6 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     light_xdir: wp.array2d(dtype=wp.vec3),
     geom_xpos: wp.array2d(dtype=wp.vec3),
     geom_xmat: wp.array2d(dtype=wp.mat33),
-
     # In:
     ncam: int,
     use_shadows: bool,
@@ -621,7 +612,6 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     tex_data: wp.array(dtype=wp.uint32),
     tex_height: wp.array(dtype=int),
     tex_width: wp.array(dtype=int),
-
     # Out:
     rgb_out: wp.array2d(dtype=wp.uint32),
     depth_out: wp.array2d(dtype=float),

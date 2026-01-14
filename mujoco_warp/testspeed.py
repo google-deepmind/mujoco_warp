@@ -70,6 +70,7 @@ _RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
 _USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
 _USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 
+
 def _print_table(matrix, headers, title):
   num_cols = len(headers)
   col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
@@ -187,7 +188,7 @@ def _main(argv: Sequence[str]):
       f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
     )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-    print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
+    print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}")
 
     rc = None
     if _FUNCTION.value == "render":
@@ -202,7 +203,9 @@ def _main(argv: Sequence[str]):
         _USE_SHADOWS.value,
       )
       cam_str = f"ncam: {rc.ncam} cam_res: {rc.cam_res.numpy()}"
-      print(f"Render Context\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} {cam_str}\n")
+      print(
+        f"Render Context\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} {cam_str}\n"
+      )
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
 

@@ -163,31 +163,22 @@ def _compute_bvh_bounds(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   nworld_in: int,
-
   # In:
   bvh_ngeom: int,
   enabled_geom_ids: wp.array(dtype=int),
   mesh_bounds_size: wp.array(dtype=wp.vec3),
   hfield_bounds_size: wp.array(dtype=wp.vec3),
-  
   # Out:
   lower_out: wp.array(dtype=wp.vec3),
   upper_out: wp.array(dtype=wp.vec3),
   group_out: wp.array(dtype=int),
 ):
-  tid = wp.tid()
-  world_id = tid // bvh_ngeom
-  bvh_geom_local = tid % bvh_ngeom
-
-  if bvh_geom_local >= bvh_ngeom or world_id >= nworld_in:
-    return
-
-  geom_id = enabled_geom_ids[bvh_geom_local]
+  world_id, geom_local_id = wp.tid()
+  geom_id = enabled_geom_ids[geom_local_id]
 
   pos = geom_xpos_in[world_id, geom_id]
   rot = geom_xmat_in[world_id, geom_id]
@@ -214,9 +205,9 @@ def _compute_bvh_bounds(
     size = hfield_bounds_size[geom_dataid[geom_id]]
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
 
-  lower_out[world_id * bvh_ngeom + bvh_geom_local] = lower_bound
-  upper_out[world_id * bvh_ngeom + bvh_geom_local] = upper_bound
-  group_out[world_id * bvh_ngeom + bvh_geom_local] = world_id
+  lower_out[world_id * bvh_ngeom + geom_local_id] = lower_bound
+  upper_out[world_id * bvh_ngeom + geom_local_id] = upper_bound
+  group_out[world_id * bvh_ngeom + geom_local_id] = world_id
 
 
 @wp.kernel
@@ -235,7 +226,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
   """Build a Warp BVH for all geometries in all worlds."""
   wp.launch(
     kernel=_compute_bvh_bounds,
-    dim=d.nworld * rc.bvh_ngeom,
+    dim=(d.nworld, rc.bvh_ngeom),
     inputs=[
       m.geom_type,
       m.geom_dataid,
@@ -270,7 +261,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
 def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
   wp.launch(
     kernel=_compute_bvh_bounds,
-    dim=d.nworld * rc.bvh_ngeom,
+    dim=(d.nworld, rc.bvh_ngeom),
     inputs=[
       m.geom_type,
       m.geom_dataid,
@@ -331,9 +322,9 @@ def normalize_vertex_normals(
 
 def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the flex BVH.
-  
+
   Refitting the flex BVH is required because flex meshes are not static.
-  The physics step will update the vertex positions, after which we need 
+  The physics step will update the vertex positions, after which we need
   to update the mesh BVH to reflect the new deformed state of the flex mesh.
   """
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
@@ -482,7 +473,6 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     face_point_out[base + 1] = v1
     face_point_out[base + 2] = v2
 
-
   for f in range(m.nflex):
     dim = rc.flex_dim[f]
     nelem = rc.flex_elemnum[f]
@@ -536,4 +526,3 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
       )
 
   rc.flex_registry[rc.flex_bvh_id].refit()
-

@@ -20,6 +20,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from . import render_context
 from . import types
 from . import warp_util
 from .warp_util import nested_kernel
@@ -1440,3 +1441,50 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
     prev_time = time
 
   return np.array(ctrls)
+
+
+def create_render_context(
+  mjm: mujoco.MjModel,
+  m: types.Model,
+  d: types.Data,
+  cam_res: Union[list[tuple[int, int]] | tuple[int, int]],
+  render_rgb: Union[list[bool] | bool] = True,
+  render_depth: Union[list[bool] | bool] = False,
+  use_textures: bool = True,
+  use_shadows: bool = False,
+  enabled_geom_groups: list[int] = [0, 1, 2],
+  cam_active: Optional[list[bool]] = None,
+  flex_render_smooth: bool = True,
+) -> render_context.RenderContext:
+  """Creates a render context on device.
+
+  Args:
+    mjm: The model containing kinematic and dynamic information on host.
+    m: The model on device.
+    d: The data on device.
+    cam_res: The width and height to render each camera image.
+    render_rgb: Whether to render RGB images.
+    render_depth: Whether to render depth images.
+    use_textures: Whether to use textures.
+    use_shadows: Whether to use shadows.
+    enabled_geom_groups: The geom groups to render.
+    cam_active: List of booleans indicating which cameras to include in rendering.
+                If None, all cameras are included.
+    flex_render_smooth: Whether to render flex meshes smoothly.
+
+  Returns:
+    The render context containing rendering fields and output arrays on device.
+  """
+  return render_context.RenderContext(
+    mjm,
+    m,
+    d,
+    cam_res,
+    render_rgb,
+    render_depth,
+    use_textures,
+    use_shadows,
+    enabled_geom_groups,
+    cam_active,
+    flex_render_smooth,
+  )

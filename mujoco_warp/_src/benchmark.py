@@ -110,6 +110,7 @@ def benchmark(
     event_trace: If True, time routines decorated with @event_scope.
     measure_alloc: If True, record number of contacts and constraints.
     measure_solver_niter: If True, record the number of solver iterations.
+    render_context: The render context to use for rendering.
 
   Returns:
     - Time to JIT fn.
