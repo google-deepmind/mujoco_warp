@@ -828,26 +828,29 @@ def _ray_triangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec
 
 
 @wp.func
+def _get_edge(edge: int) -> wp.vec2i:
+  return wp.vec2i(edge & 0x3FF, (edge >> 10) & 0x3FF)
+
+
+@wp.func
 def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
   n = pt.nhorizon
 
   if n < 0:
     return -1
 
+  edge = (wp.min(e1, e2) << 10) | wp.max(e1, e2)
+
   for i in range(n):
-    old_e1 = pt.horizon[2 * i + 0]
-    old_e2 = pt.horizon[2 * i + 1]
-    if (old_e1 == e1 and old_e2 == e2) or (old_e1 == e2 and old_e2 == e1):
-      pt.horizon[2 * i + 0] = pt.horizon[2 * (n - 1) + 0]
-      pt.horizon[2 * i + 1] = pt.horizon[2 * (n - 1) + 1]
+    if edge == pt.horizon[i]:
+      pt.horizon[i] = pt.horizon[n - 1]
       return n - 1
 
   # out of memory, force EPA to return early without contact
-  if n > pt.horizon.shape[0] - 2:
+  if n == pt.horizon.shape[0]:
     return -1
 
-  pt.horizon[2 * n + 0] = e1
-  pt.horizon[2 * n + 1] = e2
+  pt.horizon[n] = edge
   return n + 1
 
 
@@ -1278,6 +1281,7 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
+      wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
       idx = -1
       break
 
@@ -1294,12 +1298,14 @@ def _epa(
         pt.nhorizon = _add_edge(pt, face[1], face[2])
         pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
+          wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
           idx = -1
           break
 
     # insert w as new vertex and attach faces along the horizon
     for i in range(pt.nhorizon):
-      dist2 = _attach_face(pt, pt.nface, wi, pt.horizon[2 * i + 0], pt.horizon[2 * i + 1])
+      edge = _get_edge(pt.horizon[i])
+      dist2 = _attach_face(pt, pt.nface, wi, edge[0], edge[1])
       if dist2 == 0:
         idx = -1
         break

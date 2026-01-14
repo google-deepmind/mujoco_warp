@@ -51,7 +51,7 @@ def _geom_dist(
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
   epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
-  epa_horizon = wp.empty(2 * MJ_MAX_EPAHORIZON, dtype=int)
+  epa_horizon = wp.empty(MJ_MAX_EPAHORIZON, dtype=int)
   multiccd_polygon = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
   multiccd_clipped = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
   multiccd_pnormal = wp.empty(nmaxpolygon, dtype=wp.vec3)
