@@ -3,7 +3,7 @@
             texturedir="../../mujoco_warp/test_data/collision_sdf/asset" 
             meshdir="../aloha_pot"/>
   <option impratio="10" cone="elliptic" sdf_iterations="10" sdf_initpoints="20">
-    <!-- <flag multiccd="enable"/> --> TODO(team): enable multiccd
+    <flag multiccd="enable"/>
   </option>
   <visual>
     <global azimuth="90" elevation="-20" offwidth="848" offheight="480"/>

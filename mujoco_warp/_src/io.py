@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import dataclasses
+import warnings
 from typing import Any, Optional, Sequence, Union
 
 import mujoco
@@ -72,36 +73,38 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   warp_util.check_toolkit_driver()
 
   # model: check supported features in array types
-  for field, field_type in (
-    (mjm.actuator_trntype, types.TrnType),
-    (mjm.actuator_dyntype, types.DynType),
-    (mjm.actuator_gaintype, types.GainType),
-    (mjm.actuator_biastype, types.BiasType),
-    (mjm.eq_type, types.EqType),
-    (mjm.geom_type, types.GeomType),
-    (mjm.sensor_type, types.SensorType),
-    (mjm.wrap_type, types.WrapType),
+  for field, field_type, mj_type in (
+    (mjm.actuator_trntype, types.TrnType, mujoco.mjtTrn),
+    (mjm.actuator_dyntype, types.DynType, mujoco.mjtDyn),
+    (mjm.actuator_gaintype, types.GainType, mujoco.mjtGain),
+    (mjm.actuator_biastype, types.BiasType, mujoco.mjtBias),
+    (mjm.eq_type, types.EqType, mujoco.mjtEq),
+    (mjm.geom_type, types.GeomType, mujoco.mjtGeom),
+    (mjm.sensor_type, types.SensorType, mujoco.mjtSensor),
+    (mjm.wrap_type, types.WrapType, mujoco.mjtWrap),
   ):
     missing = ~np.isin(field, field_type)
     if missing.any():
-      raise NotImplementedError(f"{field_type.__name__}: {field[missing]} not supported.")
+      names = [mj_type(v).name for v in field[missing]]
+      raise NotImplementedError(f"{names} not supported.")
 
   # opt: check supported features in scalar types
-  for field, field_type in (
-    (mjm.opt.integrator, types.IntegratorType),
-    (mjm.opt.cone, types.ConeType),
-    (mjm.opt.solver, types.SolverType),
+  for field, field_type, mj_type in (
+    (mjm.opt.integrator, types.IntegratorType, mujoco.mjtIntegrator),
+    (mjm.opt.cone, types.ConeType, mujoco.mjtCone),
+    (mjm.opt.solver, types.SolverType, mujoco.mjtSolver),
   ):
     if field not in set(field_type):
-      raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
+      raise NotImplementedError(f"{mj_type(field).name} is unsupported.")
 
   # opt: check supported features in scalar flag types
-  for field, field_type in (
-    (mjm.opt.disableflags, types.DisableBit),
-    (mjm.opt.enableflags, types.EnableBit),
+  for field, field_type, mj_type in (
+    (mjm.opt.disableflags, types.DisableBit, mujoco.mjtDisableBit),
+    (mjm.opt.enableflags, types.EnableBit, mujoco.mjtEnableBit),
   ):
-    if field & ~np.bitwise_or.reduce(field_type):
-      raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
+    unsupported = field & ~np.bitwise_or.reduce(field_type)
+    if unsupported:
+      raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
   if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
     raise NotImplementedError("Flex collisions are not implemented.")
@@ -152,6 +155,21 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   ):
     if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
       raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
+
+  def _check_friction(name: str, id_: int, condim: int, friction, checks):
+    for min_condim, indices in checks:
+      if condim >= min_condim:
+        for idx in indices:
+          if friction[idx] < types.MJ_MINMU:
+            warnings.warn(
+              f"{name} {id_}: friction[{idx}] ({friction[idx]}) < MJ_MINMU ({types.MJ_MINMU}) with condim={condim} may cause NaN"
+            )
+
+  for geomid in range(mjm.ngeom):
+    _check_friction("geom", geomid, mjm.geom_condim[geomid], mjm.geom_friction[geomid], [(3, [0]), (4, [1]), (6, [2])])
+
+  for pairid in range(mjm.npair):
+    _check_friction("pair", pairid, mjm.pair_dim[pairid], mjm.pair_friction[pairid], [(3, [0]), (4, [1, 2]), (6, [3, 4])])
 
   # create opt
   opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}
@@ -858,7 +876,7 @@ def put_data(
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
     flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
     mujoco.mju_sparse2dense(
-      flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
+      flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
     )
     d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
   else:

@@ -786,24 +786,24 @@ def passive(m: Model, d: Data):
       ],
       outputs=[d.qfrc_spring],
     )
-  wp.launch(
-    _flex_bending,
-    dim=(d.nworld, m.nflexedge),
-    inputs=[
-      m.nflex,
-      m.body_dofadr,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_edgeadr,
-      m.flex_edgenum,
-      m.flex_vertbodyid,
-      m.flex_edge,
-      m.flex_edgeflap,
-      m.flex_bending,
-      d.flexvert_xpos,
-    ],
-    outputs=[d.qfrc_spring],
-  )
+    wp.launch(
+      _flex_bending,
+      dim=(d.nworld, m.nflexedge),
+      inputs=[
+        m.nflex,
+        m.body_dofadr,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_edgeadr,
+        m.flex_edgenum,
+        m.flex_vertbodyid,
+        m.flex_edge,
+        m.flex_edgeflap,
+        m.flex_bending,
+        d.flexvert_xpos,
+      ],
+      outputs=[d.qfrc_spring],
+    )
 
   gravcomp = m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY)
 

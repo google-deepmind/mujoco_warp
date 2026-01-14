@@ -956,6 +956,7 @@ def step1(m: Model, d: Data):
   # TODO(team): mj_checkPos
   # TODO(team): mj_checkVel
   fwd_position(m, d)
+  d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 
   if energy:

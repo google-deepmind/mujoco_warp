@@ -53,7 +53,6 @@ class Polytope:
   status: int
 
   # vertices in polytope
-  vert: wp.array(dtype=wp.vec3)
   vert1: wp.array(dtype=wp.vec3)
   vert2: wp.array(dtype=wp.vec3)
   vert_index1: wp.array(dtype=int)
@@ -66,7 +65,6 @@ class Polytope:
   face: wp.array(dtype=int)
   face_pr: wp.array(dtype=wp.vec3)
   face_norm2: wp.array(dtype=float)
-  face_index: wp.array(dtype=int)
   nface: int
 
   # edges that make up the horizon when adding new vertices to polytope
@@ -192,7 +190,7 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
     return 0.0
 
   # compute witness point v
-  r, ret = _project_origin_plane(pt.vert[v3], pt.vert[v2], pt.vert[v1])
+  r, ret = _project_origin_plane(pt.vert1[v3] - pt.vert2[v3], pt.vert1[v2] - pt.vert2[v2], pt.vert1[v1] - pt.vert2[v1])
   if ret:
     return 0.0
 
@@ -217,8 +215,6 @@ def _epa_support(
   pt.vert2[idx] = sp.point
   pt.vert_index2[idx] = sp.vertex_index
   index2 = sp.cached_index
-
-  pt.vert[idx] = pt.vert1[idx] - pt.vert2[idx]
 
   return index1, index2
 
@@ -762,11 +758,6 @@ def _replace_simplex3(pt: Polytope, v1: int, v2: int, v3: int) -> GJKResult:
   result = GJKResult()
 
   # reset GJK simplex
-  simplex = mat43()
-  simplex[0] = pt.vert[v1]
-  simplex[1] = pt.vert[v2]
-  simplex[2] = pt.vert[v3]
-
   simplex1 = mat43()
   simplex1[0] = pt.vert1[v1]
   simplex1[1] = pt.vert1[v2]
@@ -776,6 +767,11 @@ def _replace_simplex3(pt: Polytope, v1: int, v2: int, v3: int) -> GJKResult:
   simplex2[0] = pt.vert2[v1]
   simplex2[1] = pt.vert2[v2]
   simplex2[2] = pt.vert2[v3]
+
+  simplex = mat43()
+  simplex[0] = simplex1[0] - simplex2[0]
+  simplex[1] = simplex1[1] - simplex2[1]
+  simplex[2] = simplex1[2] - simplex2[2]
 
   simplex_index1 = wp.vec4i()
   simplex_index1[0] = pt.vert_index1[v1]
@@ -861,9 +857,9 @@ def _epa_witness(
 ) -> Tuple[wp.vec3, wp.vec3, float]:
   face = _get_face_verts(pt.face[face_idx])
   # compute affine coordinates for witness points on plane defined by face
-  v1 = pt.vert[face[0]]
-  v2 = pt.vert[face[1]]
-  v3 = pt.vert[face[2]]
+  v1 = pt.vert1[face[0]] - pt.vert2[face[0]]
+  v2 = pt.vert1[face[1]] - pt.vert2[face[1]]
+  v3 = pt.vert1[face[2]] - pt.vert2[face[2]]
 
   coordinates = _tri_affine_coord(v1, v2, v3, pt.face_pr[face_idx])
   l1 = coordinates[0]
@@ -933,7 +929,6 @@ def _epa_witness(
 def _polytope2(
   # In:
   pt: Polytope,
-  dist: float,
   simplex: mat43,
   simplex1: mat43,
   simplex2: mat43,
@@ -966,9 +961,6 @@ def _polytope2(
   d3 = R @ d2
 
   # save vertices and get indices for each one
-  pt.vert[0] = simplex[0]
-  pt.vert[1] = simplex[1]
-
   pt.vert1[0] = simplex1[0]
   pt.vert1[1] = simplex1[1]
 
@@ -1011,7 +1003,10 @@ def _polytope2(
     return pt, _replace_simplex3(pt, 1, 4, 3)
 
   # check hexahedron is convex
-  if not _ray_triangle(simplex[0], simplex[1], pt.vert[2], pt.vert[3], pt.vert[4]):
+  v2 = pt.vert1[2] - pt.vert2[2]
+  v3 = pt.vert1[3] - pt.vert2[3]
+  v4 = pt.vert1[4] - pt.vert2[4]
+  if not _ray_triangle(simplex[0], simplex[1], v2, v3, v4):
     pt.status = 1
     return pt, GJKResult()
 
@@ -1044,10 +1039,6 @@ def _polytope3(
     pt.status = 2
     return pt
 
-  pt.vert[0] = simplex[0]
-  pt.vert[1] = simplex[1]
-  pt.vert[2] = simplex[2]
-
   pt.vert1[0] = simplex1[0]
   pt.vert1[1] = simplex1[1]
   pt.vert1[2] = simplex1[2]
@@ -1070,8 +1061,8 @@ def _polytope3(
   v1 = simplex[0]
   v2 = simplex[1]
   v3 = simplex[2]
-  v4 = pt.vert[3]
-  v5 = pt.vert[4]
+  v4 = pt.vert1[3] - pt.vert2[3]
+  v5 = pt.vert1[4] - pt.vert2[4]
 
   # check that v4 is not contained in the 2-simplex
   if _tri_point_intersect(v1, v2, v3, v4):
@@ -1120,23 +1111,13 @@ def _polytope3(
 def _polytope4(
   # In:
   pt: Polytope,
-  dist: float,
   simplex: mat43,
   simplex1: mat43,
   simplex2: mat43,
   simplex_index1: wp.vec4i,
   simplex_index2: wp.vec4i,
-  geom1: Geom,
-  geom2: Geom,
-  geomtype1: int,
-  geomtype2: int,
 ) -> Tuple[Polytope, GJKResult]:
   """Create polytope for EPA given a 3-simplex from GJK."""
-  pt.vert[0] = simplex[0]
-  pt.vert[1] = simplex[1]
-  pt.vert[2] = simplex[2]
-  pt.vert[3] = simplex[3]
-
   pt.vert1[0] = simplex1[0]
   pt.vert1[1] = simplex1[1]
   pt.vert1[2] = simplex1[2]
@@ -1174,7 +1155,7 @@ def _polytope4(
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
 
-  if not _test_tetra(pt.vert[0], pt.vert[1], pt.vert[2], pt.vert[3]):
+  if not _test_tetra(simplex[0], simplex[1], simplex[2], simplex[3]):
     pt.status = 12
     return pt, GJKResult()
 
@@ -1240,7 +1221,7 @@ def _epa(
   # the face vertices are encoded in 10-bits that index the vertex array,
   # so iterations must be cap to limit the number of generated vertices
   # (one new vertex per iteration)
-  epa_iterations = wp.max(epa_iterations, 1000)
+  epa_iterations = wp.min(epa_iterations, 1000)
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
@@ -1266,12 +1247,13 @@ def _epa(
     wi = pt.nvert
     face_pr_normalized = pt.face_pr[idx] / lower
     i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr_normalized)
+    w = pt.vert1[wi] - pt.vert2[wi]
     geom1.index = i1
     geom2.index = i2
     pt.nvert += 1
 
     # upper bound for kth iteration
-    upper_k = wp.dot(face_pr_normalized, pt.vert[wi])
+    upper_k = wp.dot(face_pr_normalized, w)
     if upper_k < upper:
       upper = upper_k
       upper2 = upper * upper
@@ -1304,7 +1286,7 @@ def _epa(
       if _is_face_deleted(pt.face[i]):
         continue
 
-      if wp.dot(pt.face_pr[i], pt.vert[wi]) - pt.face_norm2[i] > 1e-10:
+      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > 1e-10:
         nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
         pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
@@ -1394,7 +1376,7 @@ def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int) -> wp.vec4i:
       if c == b:
         c = _next(npolygon, c)
         if d == c:
-          d == _next(npolygon, d)
+          d = _next(npolygon, d)
   return res
 
 
@@ -2235,7 +2217,6 @@ def ccd(
   geomtype2: int,
   x_1: wp.vec3,
   x_2: wp.vec3,
-  vert: wp.array(dtype=wp.vec3),
   vert1: wp.array(dtype=wp.vec3),
   vert2: wp.array(dtype=wp.vec3),
   vert_index1: wp.array(dtype=int),
@@ -2295,7 +2276,6 @@ def ccd(
   pt.nface = 0
   pt.nvert = 0
   pt.nhorizon = 0
-  pt.vert = vert
   pt.vert1 = vert1
   pt.vert2 = vert2
   pt.vert_index1 = vert_index1
@@ -2308,7 +2288,6 @@ def ccd(
   if result.dim == 2:
     pt, new_result = _polytope2(
       pt,
-      result.dist,
       result.simplex,
       result.simplex1,
       result.simplex2,
@@ -2329,16 +2308,11 @@ def ccd(
   elif result.dim == 4:
     pt, new_result = _polytope4(
       pt,
-      result.dist,
       result.simplex,
       result.simplex1,
       result.simplex2,
       result.simplex_index1,
       result.simplex_index2,
-      geom1,
-      geom2,
-      geomtype1,
-      geomtype2,
     )
     if pt.status == -1:
       result.simplex = new_result.simplex
