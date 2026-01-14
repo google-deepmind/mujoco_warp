@@ -20,9 +20,9 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from . import render_context
 from . import types
 from . import warp_util
-from . import render_context
 from .warp_util import nested_kernel
 
 

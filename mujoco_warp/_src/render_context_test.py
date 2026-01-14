@@ -22,7 +22,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 
-
 _CAMERA_TEST_XML = """
 <mujoco>
   <worldbody>

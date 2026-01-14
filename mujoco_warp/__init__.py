@@ -40,12 +40,12 @@ from ._src.forward import rungekutta4 as rungekutta4
 from ._src.forward import step1 as step1
 from ._src.forward import step2 as step2
 from ._src.inverse import inverse as inverse
+from ._src.io import create_render_context as create_render_context
 from ._src.io import get_data_into as get_data_into
 from ._src.io import make_data as make_data
 from ._src.io import put_data as put_data
 from ._src.io import put_model as put_model
 from ._src.io import reset_data as reset_data
-from ._src.io import create_render_context as create_render_context
 from ._src.passive import passive as passive
 from ._src.ray import ray as ray
 from ._src.ray import rays as rays

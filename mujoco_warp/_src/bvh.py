@@ -177,14 +177,8 @@ def _compute_bvh_bounds(
   upper_out: wp.array(dtype=wp.vec3),
   group_out: wp.array(dtype=int),
 ):
-  tid = wp.tid()
-  world_id = tid // bvh_ngeom
-  bvh_geom_local = tid % bvh_ngeom
-
-  if bvh_geom_local >= bvh_ngeom or world_id >= nworld_in:
-    return
-
-  geom_id = enabled_geom_ids[bvh_geom_local]
+  world_id, geom_local_id = wp.tid()
+  geom_id = enabled_geom_ids[geom_local_id]
 
   pos = geom_xpos_in[world_id, geom_id]
   rot = geom_xmat_in[world_id, geom_id]
@@ -211,9 +205,9 @@ def _compute_bvh_bounds(
     size = hfield_bounds_size[geom_dataid[geom_id]]
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
 
-  lower_out[world_id * bvh_ngeom + bvh_geom_local] = lower_bound
-  upper_out[world_id * bvh_ngeom + bvh_geom_local] = upper_bound
-  group_out[world_id * bvh_ngeom + bvh_geom_local] = world_id
+  lower_out[world_id * bvh_ngeom + geom_local_id] = lower_bound
+  upper_out[world_id * bvh_ngeom + geom_local_id] = upper_bound
+  group_out[world_id * bvh_ngeom + geom_local_id] = world_id
 
 
 @wp.kernel
@@ -232,7 +226,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
   """Build a Warp BVH for all geometries in all worlds."""
   wp.launch(
     kernel=_compute_bvh_bounds,
-    dim=d.nworld * rc.bvh_ngeom,
+    dim=(d.nworld, rc.bvh_ngeom),
     inputs=[
       m.geom_type,
       m.geom_dataid,
@@ -267,7 +261,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
 def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
   wp.launch(
     kernel=_compute_bvh_bounds,
-    dim=d.nworld * rc.bvh_ngeom,
+    dim=(d.nworld, rc.bvh_ngeom),
     inputs=[
       m.geom_type,
       m.geom_dataid,
