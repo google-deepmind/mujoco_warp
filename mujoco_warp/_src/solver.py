@@ -1029,15 +1029,17 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
 
-def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
+def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType, fuse_jv: bool):
   """Factory for tiled iterative linesearch kernel.
 
   Args:
     block_dim: Number of threads per block.
     cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
+    fuse_jv: Whether to compute jv = J @ search in-kernel (efficient for small nv).
   """
   BLOCK_DIM = block_dim
   IS_ELLIPTIC = (cone_type == types.ConeType.ELLIPTIC)
+  FUSE_JV = fuse_jv
 
   # Native snippet for CUDA __syncthreads()
   @wp.func_native(snippet="__syncthreads();")
@@ -1076,7 +1078,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     efc_frictionloss_in: wp.array2d(dtype=float),
     efc_Jaref_in: wp.array2d(dtype=float),
     efc_search_dot_in: wp.array(dtype=float),
-    efc_jv_in: wp.array2d(dtype=float),
+    efc_J_in: wp.array3d(dtype=float),
     efc_gauss_in: wp.array(dtype=float),
     qfrc_smooth_in: wp.array2d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
@@ -1086,6 +1088,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     efc_mv_in: wp.array2d(dtype=float),
     # Data in/out:
     efc_quad_inout: wp.array2d(dtype=wp.vec3),
+    efc_jv_inout: wp.array2d(dtype=float),
     # Data out:
     efc_alpha_out: wp.array(dtype=float),
     qacc_out: wp.array2d(dtype=float),
@@ -1106,12 +1109,26 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
     nefc = wp.min(njmax_in, nefc_in[worldid])
 
     # =========================================================================
+    # Prepare jv phase (small nv only) - fused from linesearch_jv_fused
+    # jv[efcid] = J[efcid, :] @ search
+    # =========================================================================
+    if wp.static(FUSE_JV):
+      for efcid in range(tid, nefc, BLOCK_DIM):
+        jv = float(0.0)
+        for i in range(nv):
+          jv += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
+        efc_jv_inout[worldid, efcid] = jv
+
+      # Synchronize to ensure all jv values are written before reading
+      _syncthreads()
+
+    # =========================================================================
     # Prepare quad phase (elliptic only) - fused from linesearch_prepare_quad
     # =========================================================================
     if wp.static(IS_ELLIPTIC):
       for efcid in range(tid, nefc, BLOCK_DIM):
         Jaref = efc_Jaref_in[worldid, efcid]
-        jv = efc_jv_in[worldid, efcid]
+        jv = efc_jv_inout[worldid, efcid]
         efc_D = efc_D_in[worldid, efcid]
 
         # init with scalar quadratic
@@ -1138,7 +1155,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
               for j in range(1, dim):
                 efcidj = contact_efc_address_in[conid, j]
                 if efcidj >= 0:
-                  jvj = efc_jv_in[worldid, efcidj]
+                  jvj = efc_jv_inout[worldid, efcidj]
                   jarefj = efc_Jaref_in[worldid, efcidj]
                   dj = efc_D_in[worldid, efcidj]
                   DJj = dj * jarefj
@@ -1202,7 +1219,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf, impratio_invsqrt,
           efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_inout[worldid, efcid],
+          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid], efc_quad_inout[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
@@ -1210,7 +1227,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid, ne, nf,
           efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
+          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
         )
 
     # Reduce across all threads
@@ -1262,7 +1279,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
           efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_inout[worldid, efcid],
+          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid], efc_quad_inout[worldid, efcid],
           contact_friction, efc_addr0, quad1, quad2,
         )
       else:
@@ -1270,7 +1287,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
         local_lo_in += _compute_efc_eval_pt(
           efcid, lo_alpha_in, ne, nf,
           efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
+          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
         )
 
     # Reduce across all threads and add quad_gauss contribution
@@ -1322,7 +1339,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf, impratio_invsqrt,
             efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-            efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid], efc_quad_inout[worldid, efcid],
+            efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid], efc_quad_inout[worldid, efcid],
             contact_friction, efc_addr0, quad1, quad2,
           )
         else:
@@ -1331,7 +1348,7 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
             efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
             ne, nf,
             efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
-            efc_Jaref_in[worldid, efcid], efc_jv_in[worldid, efcid],
+            efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
           )
         local_lo += r_lo
         local_hi += r_hi
@@ -1397,21 +1414,40 @@ def linesearch_iterative_tiled(block_dim: int, cone_type: types.ConeType):
 
     # Fused Jaref update (all threads cooperate)
     for efcid in range(tid, nefc, BLOCK_DIM):
-      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_in[worldid, efcid]
+      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
 
   return kernel
 
 
-def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 64):
+def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 64, fuse_jv: bool = True):
   """Tiled iterative linesearch with parallel reductions over efc rows.
 
   Args:
     m: Model.
     d: Data.
     block_dim: Number of threads per block.
+    fuse_jv: Whether to compute jv in-kernel (efficient for small nv).
   """
+  # If not fusing jv, run the separate jv kernels first
+  if not fuse_jv:
+    dofs_per_thread = 20 if m.nv > 50 else 50
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
+    if threads_per_efc > 1:
+      wp.launch(
+        linesearch_zero_jv,
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc, d.efc.done],
+        outputs=[d.efc.jv],
+      )
+    wp.launch(
+      linesearch_jv_fused(m.nv, dofs_per_thread),
+      dim=(d.nworld, d.njmax, threads_per_efc),
+      inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
+      outputs=[d.efc.jv],
+    )
+
   wp.launch_tiled(
-    linesearch_iterative_tiled(block_dim, m.opt.cone),
+    linesearch_iterative_tiled(block_dim, m.opt.cone, fuse_jv),
     dim=d.nworld,
     inputs=[
       m.nv,
@@ -1432,7 +1468,7 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.efc.frictionloss,
       d.efc.Jaref,
       d.efc.search_dot,
-      d.efc.jv,
+      d.efc.J,
       d.efc.gauss,
       d.qfrc_smooth,
       d.efc.done,
@@ -1441,7 +1477,7 @@ def _linesearch_iterative_tiled(m: types.Model, d: types.Data, block_dim: int = 
       d.efc.search,
       d.efc.mv,
     ],
-    outputs=[d.efc.quad, d.efc.alpha, d.qacc, d.efc.Ma, d.efc.Jaref],
+    outputs=[d.efc.quad, d.efc.jv, d.efc.alpha, d.qacc, d.efc.Ma, d.efc.Jaref],
     block_dim=block_dim,
   )
 
@@ -1723,25 +1759,26 @@ def _linesearch(
     dofs_per_thread = 50
 
   threads_per_efc = ceil(m.nv / dofs_per_thread)
-  # we need to clear the jv array if we're doing atomic adds.
-  if threads_per_efc > 1:
-    wp.launch(
-      linesearch_zero_jv,
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.efc.done],
-      outputs=[d.efc.jv],
-    )
-
-  wp.launch(
-    linesearch_jv_fused(m.nv, dofs_per_thread),
-    dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
-    outputs=[d.efc.jv],
-  )
 
   # prepare quadratics
-  # For tiled version, quad and quad_gauss are computed/fused in the kernel
+  # For tiled version, jv, quad and quad_gauss are computed/fused in the kernel
   if not use_tiled:
+    # jv = J @ search
+    # we need to clear the jv array if we're doing atomic adds.
+    if threads_per_efc > 1:
+      wp.launch(
+        linesearch_zero_jv,
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc, d.efc.done],
+        outputs=[d.efc.jv],
+      )
+
+    wp.launch(
+      linesearch_jv_fused(m.nv, dofs_per_thread),
+      dim=(d.nworld, d.njmax, threads_per_efc),
+      inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
+      outputs=[d.efc.jv],
+    )
     # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     if threads_per_efc > 1:
       d.efc.quad_gauss.zero_()
@@ -1780,7 +1817,9 @@ def _linesearch(
 
   if use_tiled:
     # Tiled version only supports iterative (ignores ls_parallel)
-    _linesearch_iterative_tiled(m, d, block_dim)
+    # Fuse jv computation in-kernel for small nv (single thread can handle all DOFs)
+    fuse_jv = m.nv <= 50
+    _linesearch_iterative_tiled(m, d, block_dim, fuse_jv)
   else:
     if m.opt.ls_parallel:
       _linesearch_parallel(m, d, cost)
