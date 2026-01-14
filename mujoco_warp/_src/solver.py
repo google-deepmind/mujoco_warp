@@ -1174,15 +1174,15 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
   return kernel
 
 
-def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool, block_dim: int = 32):
+def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
   """Iterative linesearch with parallel reductions over efc rows.
 
   Args:
     m: Model.
     d: Data.
     fuse_jv: Whether jv is computed in-kernel (True) or pre-computed (False).
-    block_dim: Number of threads per block.
   """
+  block_dim = m.block_dim.linesearch_iterative
   wp.launch_tiled(
     linesearch_iterative(block_dim, m.opt.ls_iterations, m.opt.cone, fuse_jv),
     dim=d.nworld,

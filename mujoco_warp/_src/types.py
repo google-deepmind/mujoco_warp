@@ -61,7 +61,7 @@ class BlockDim:
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
-  linesearch_iterative: int = 64
+  linesearch_iterative: int = 32
   # support
   mul_m_dense: int = 32
 
