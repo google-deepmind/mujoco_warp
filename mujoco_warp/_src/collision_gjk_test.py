@@ -603,7 +603,7 @@ class GJKTest(absltest.TestCase):
     self.assertLess(dist, 0.0001)  # real depth is ~ 2E-6
 
   def test_box_box_horizon(self):
-    """Test box-box with EPA horizon with 13 edges"""
+    """Test box-box with EPA horizon with 13 edges."""
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
