@@ -140,74 +140,6 @@ def _compute_body_kinematics(
 
 
 @wp.kernel
-def _kinematics_level(
-  # Model:
-  qpos0: wp.array2d(dtype=float),
-  body_parentid: wp.array(dtype=int),
-  body_mocapid: wp.array(dtype=int),
-  body_jntnum: wp.array(dtype=int),
-  body_jntadr: wp.array(dtype=int),
-  body_pos: wp.array2d(dtype=wp.vec3),
-  body_quat: wp.array2d(dtype=wp.quat),
-  body_ipos: wp.array2d(dtype=wp.vec3),
-  body_iquat: wp.array2d(dtype=wp.quat),
-  jnt_type: wp.array(dtype=int),
-  jnt_qposadr: wp.array(dtype=int),
-  jnt_pos: wp.array2d(dtype=wp.vec3),
-  jnt_axis: wp.array2d(dtype=wp.vec3),
-  # Data in:
-  qpos_in: wp.array2d(dtype=float),
-  mocap_pos_in: wp.array2d(dtype=wp.vec3),
-  mocap_quat_in: wp.array2d(dtype=wp.quat),
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  xmat_in: wp.array2d(dtype=wp.mat33),
-  # In:
-  body_tree_: wp.array(dtype=int),
-  # Data out:
-  xpos_out: wp.array2d(dtype=wp.vec3),
-  xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
-  xanchor_out: wp.array2d(dtype=wp.vec3),
-  xaxis_out: wp.array2d(dtype=wp.vec3),
-):
-  worldid, nodeid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  pid = body_parentid[bodyid]
-  xpos = xpos_in[worldid, pid]
-  xquat = xquat_in[worldid, pid]
-  xmat = xmat_in[worldid, pid]
-  _compute_body_kinematics(
-    qpos0,
-    body_parentid,
-    body_mocapid,
-    body_jntnum,
-    body_jntadr,
-    body_pos,
-    body_quat,
-    jnt_type,
-    jnt_qposadr,
-    jnt_pos,
-    jnt_axis,
-    qpos_in,
-    mocap_pos_in,
-    mocap_quat_in,
-    xpos,
-    xquat,
-    xmat,
-    worldid,
-    bodyid,
-    xpos_out,
-    xquat_out,
-    xanchor_out,
-    xaxis_out,
-  )
-  xpos = xpos_out[worldid, bodyid]
-  xquat = xquat_out[worldid, bodyid]
-  xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
-
-
-@wp.kernel
 def _kinematics_branch(
   # Model:
   qpos0: wp.array2d(dtype=float),
@@ -217,8 +149,6 @@ def _kinematics_branch(
   body_jntadr: wp.array(dtype=int),
   body_pos: wp.array2d(dtype=wp.vec3),
   body_quat: wp.array2d(dtype=wp.quat),
-  body_ipos: wp.array2d(dtype=wp.vec3),
-  body_iquat: wp.array2d(dtype=wp.quat),
   jnt_type: wp.array(dtype=int),
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array2d(dtype=wp.vec3),
@@ -230,9 +160,6 @@ def _kinematics_branch(
   qpos_in: wp.array2d(dtype=float),
   mocap_pos_in: wp.array2d(dtype=wp.vec3),
   mocap_quat_in: wp.array2d(dtype=wp.quat),
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  xquat_in: wp.array2d(dtype=wp.quat),
-  xmat_in: wp.array2d(dtype=wp.mat33),
   # Data out:
   xpos_out: wp.array2d(dtype=wp.vec3),
   xquat_out: wp.array2d(dtype=wp.quat),
@@ -426,70 +353,31 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  if m.opt.use_branch_traversal and m.num_branches > 0:
-    # Branch-based traversal
-    wp.launch(
-      _kinematics_branch,
-      dim=(d.nworld, m.num_branches),
-      inputs=[
-        m.qpos0,
-        m.body_parentid,
-        m.body_mocapid,
-        m.body_jntnum,
-        m.body_jntadr,
-        m.body_pos,
-        m.body_quat,
-        m.body_ipos,
-        m.body_iquat,
-        m.jnt_type,
-        m.jnt_qposadr,
-        m.jnt_pos,
-        m.jnt_axis,
-        m.branch_bodies,
-        m.branch_start,
-        m.branch_length,
-        d.qpos,
-        d.mocap_pos,
-        d.mocap_quat,
-        d.xpos,
-        d.xquat,
-        d.xmat,
-      ],
-      outputs=[d.xpos, d.xquat, d.xmat, d.xanchor, d.xaxis],
-    )
-  else:
-    # Depth-level traversal
-    for i in range(1, len(m.body_tree)):
-      body_tree = m.body_tree[i]
-      wp.launch(
-        _kinematics_level,
-        dim=(d.nworld, body_tree.size),
-        inputs=[
-          m.qpos0,
-          m.body_parentid,
-          m.body_mocapid,
-          m.body_jntnum,
-          m.body_jntadr,
-          m.body_pos,
-          m.body_quat,
-          m.body_ipos,
-          m.body_iquat,
-          m.jnt_type,
-          m.jnt_qposadr,
-          m.jnt_pos,
-          m.jnt_axis,
-          d.qpos,
-          d.mocap_pos,
-          d.mocap_quat,
-          d.xpos,
-          d.xquat,
-          d.xmat,
-          body_tree,
-        ],
-        outputs=[d.xpos, d.xquat, d.xmat, d.xanchor, d.xaxis],
-      )
+  wp.launch(
+    _kinematics_branch,
+    dim=(d.nworld, m.num_branches),
+    inputs=[
+      m.qpos0,
+      m.body_parentid,
+      m.body_mocapid,
+      m.body_jntnum,
+      m.body_jntadr,
+      m.body_pos,
+      m.body_quat,
+      m.jnt_type,
+      m.jnt_qposadr,
+      m.jnt_pos,
+      m.jnt_axis,
+      m.branch_bodies,
+      m.branch_start,
+      m.branch_length,
+      d.qpos,
+      d.mocap_pos,
+      d.mocap_quat,
+    ],
+    outputs=[d.xpos, d.xquat, d.xmat, d.xanchor, d.xaxis],
+  )
 
-  # Compute inertial frame transformations for all bodies
   wp.launch(
     _compute_body_inertial_frames,
     dim=(d.nworld, m.nbody),
@@ -705,31 +593,20 @@ def com_pos(m: Model, d: Data):
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
-  if m.opt.use_branch_traversal and len(m.bottom_up_segment_bodies) > 0:
-    # Segment-based traversal: Branch-based traversal + Depth-level traversal
-    for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-      if is_chain:
-        wp.launch(
-          _subtree_com_acc_segment_chain,
-          dim=(d.nworld,),
-          inputs=[m.body_parentid, segment_bodies],
-          outputs=[d.subtree_com],
-        )
-      else:
-        wp.launch(
-          _subtree_com_acc,
-          dim=(d.nworld, segment_bodies.size),
-          inputs=[m.body_parentid, d.subtree_com, segment_bodies],
-          outputs=[d.subtree_com],
-        )
-  else:
-    # Depth-level traversal
-    for i in reversed(range(len(m.body_tree))):
-      body_tree = m.body_tree[i]
+  # Segment-based traversal: Branch-based traversal + Depth-level traversal
+  for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
+    if is_chain:
+      wp.launch(
+        _subtree_com_acc_segment_chain,
+        dim=(d.nworld,),
+        inputs=[m.body_parentid, segment_bodies],
+        outputs=[d.subtree_com],
+      )
+    else:
       wp.launch(
         _subtree_com_acc,
-        dim=(d.nworld, body_tree.size),
-        inputs=[m.body_parentid, d.subtree_com, body_tree],
+        dim=(d.nworld, segment_bodies.size),
+        inputs=[m.body_parentid, d.subtree_com, segment_bodies],
         outputs=[d.subtree_com],
       )
 
@@ -1029,28 +906,21 @@ def crb(m: Model, d: Data):
   """
   wp.copy(d.crb, d.cinert)
 
-  if m.opt.use_branch_traversal and len(m.bottom_up_segment_bodies) > 0:
-    # Segment-based traversal: Branch-based traversal + Depth-level traversal
-    for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-      if is_chain:
-        wp.launch(
-          _crb_accumulate_segment_chain,
-          dim=(d.nworld,),
-          inputs=[m.body_parentid, segment_bodies],
-          outputs=[d.crb],
-        )
-      else:
-        wp.launch(
-          _crb_accumulate,
-          dim=(d.nworld, segment_bodies.size),
-          inputs=[m.body_parentid, d.crb, segment_bodies],
-          outputs=[d.crb],
-        )
-  else:
-    # Depth-level traversal
-    for i in reversed(range(len(m.body_tree))):
-      body_tree = m.body_tree[i]
-      wp.launch(_crb_accumulate, dim=(d.nworld, body_tree.size), inputs=[m.body_parentid, d.crb, body_tree], outputs=[d.crb])
+  for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
+    if is_chain:
+      wp.launch(
+        _crb_accumulate_segment_chain,
+        dim=(d.nworld,),
+        inputs=[m.body_parentid, segment_bodies],
+        outputs=[d.crb],
+      )
+    else:
+      wp.launch(
+        _crb_accumulate,
+        dim=(d.nworld, segment_bodies.size),
+        inputs=[m.body_parentid, d.crb, segment_bodies],
+        outputs=[d.crb],
+      )
 
   d.qM.zero_()
   if m.opt.is_sparse:
@@ -1253,37 +1123,6 @@ def _rne_cacc_world(m: Model, d: Data):
 
 
 @wp.kernel
-def _cacc(
-  # Model:
-  body_parentid: wp.array(dtype=int),
-  body_dofnum: wp.array(dtype=int),
-  body_dofadr: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  qacc_in: wp.array2d(dtype=float),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
-  cacc_in: wp.array2d(dtype=wp.spatial_vector),
-  # In:
-  body_tree_: wp.array(dtype=int),
-  flg_acc: bool,
-  # Data out:
-  cacc_out: wp.array2d(dtype=wp.spatial_vector),
-):
-  worldid, nodeid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  dofnum = body_dofnum[bodyid]
-  pid = body_parentid[bodyid]
-  dofadr = body_dofadr[bodyid]
-  local_cacc = cacc_in[worldid, pid]
-  for i in range(dofnum):
-    local_cacc += cdof_dot_in[worldid, dofadr + i] * qvel_in[worldid, dofadr + i]
-    if flg_acc:
-      local_cacc += cdof_in[worldid, dofadr + i] * qacc_in[worldid, dofadr + i]
-  cacc_out[worldid, bodyid] = local_cacc
-
-
-@wp.kernel
 def _cacc_branch(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -1322,35 +1161,24 @@ def _cacc_branch(
 
 
 def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
-  if m.opt.use_branch_traversal and m.num_branches > 0:
-    # Branch-based traversal
-    wp.launch(
-      _cacc_branch,
-      dim=(d.nworld, m.num_branches),
-      inputs=[
-        m.body_parentid,
-        m.body_dofnum,
-        m.body_dofadr,
-        m.branch_bodies,
-        m.branch_start,
-        m.branch_length,
-        d.qvel,
-        d.qacc,
-        d.cdof,
-        d.cdof_dot,
-        flg_acc,
-      ],
-      outputs=[d.cacc],
-    )
-  else:
-    # Depth-level traversal
-    for body_tree in m.body_tree:
-      wp.launch(
-        _cacc,
-        dim=(d.nworld, body_tree.size),
-        inputs=[m.body_parentid, m.body_dofnum, m.body_dofadr, d.qvel, d.qacc, d.cdof, d.cdof_dot, d.cacc, body_tree, flg_acc],
-        outputs=[d.cacc],
-      )
+  wp.launch(
+    _cacc_branch,
+    dim=(d.nworld, m.num_branches),
+    inputs=[
+      m.body_parentid,
+      m.body_dofnum,
+      m.body_dofadr,
+      m.branch_bodies,
+      m.branch_start,
+      m.branch_length,
+      d.qvel,
+      d.qacc,
+      d.cdof,
+      d.cdof_dot,
+      flg_acc,
+    ],
+    outputs=[d.cacc],
+  )
 
 
 @wp.kernel
@@ -1421,28 +1249,21 @@ def _cfrc_backward_segment_chain(
 
 
 def _rne_cfrc_backward(m: Model, d: Data):
-  if m.opt.use_branch_traversal and len(m.bottom_up_segment_bodies) > 0:
-    for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-      # Segment-based traversal: Branch-based traversal + Depth-level traversal
-      if is_chain:
-        wp.launch(
-          _cfrc_backward_segment_chain,
-          dim=(d.nworld,),
-          inputs=[m.body_parentid, segment_bodies],
-          outputs=[d.cfrc_int],
-        )
-      else:
-        wp.launch(
-          _cfrc_backward,
-          dim=(d.nworld, segment_bodies.size),
-          inputs=[m.body_parentid, d.cfrc_int, segment_bodies],
-          outputs=[d.cfrc_int],
-        )
-  else:
-    # Depth-level traversal
-    for body_tree in reversed(m.body_tree):
+  for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
+    # Segment-based traversal: Branch-based traversal + Depth-level traversal
+    if is_chain:
       wp.launch(
-        _cfrc_backward, dim=[d.nworld, body_tree.size], inputs=[m.body_parentid, d.cfrc_int, body_tree], outputs=[d.cfrc_int]
+        _cfrc_backward_segment_chain,
+        dim=(d.nworld,),
+        inputs=[m.body_parentid, segment_bodies],
+        outputs=[d.cfrc_int],
+      )
+    else:
+      wp.launch(
+        _cfrc_backward,
+        dim=(d.nworld, segment_bodies.size),
+        inputs=[m.body_parentid, d.cfrc_int, segment_bodies],
+        outputs=[d.cfrc_int],
       )
 
 
@@ -2091,43 +1912,6 @@ def _compute_body_comvel(
 
 
 @wp.kernel
-def _comvel_level(
-  # Model:
-  body_parentid: wp.array(dtype=int),
-  body_jntnum: wp.array(dtype=int),
-  body_jntadr: wp.array(dtype=int),
-  body_dofadr: wp.array(dtype=int),
-  jnt_type: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  # In:
-  body_tree_: wp.array(dtype=int),
-  # Data out:
-  cvel_out: wp.array2d(dtype=wp.spatial_vector),
-  cdof_dot_out: wp.array2d(dtype=wp.spatial_vector),
-):
-  worldid, nodeid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  pid = body_parentid[bodyid]
-
-  _compute_body_comvel(
-    body_jntnum,
-    body_jntadr,
-    body_dofadr,
-    jnt_type,
-    qvel_in,
-    cdof_in,
-    worldid,
-    bodyid,
-    cvel_in[worldid, pid],
-    cvel_out,
-    cdof_dot_out,
-  )
-
-
-@wp.kernel
 def _comvel_branch(
   # Model:
   body_parentid: wp.array(dtype=int),
@@ -2179,35 +1963,24 @@ def com_vel(m: Model, d: Data):
   """
   wp.launch(_comvel_root, dim=(d.nworld, 6), inputs=[], outputs=[d.cvel])
 
-  if m.opt.use_branch_traversal and m.num_branches > 0:
-    # Branch-based traversal
-    wp.launch(
-      _comvel_branch,
-      dim=(d.nworld, m.num_branches),
-      inputs=[
-        m.body_parentid,
-        m.body_jntnum,
-        m.body_jntadr,
-        m.body_dofadr,
-        m.jnt_type,
-        m.branch_bodies,
-        m.branch_start,
-        m.branch_length,
-        d.qvel,
-        d.cdof,
-        d.cvel,
-      ],
-      outputs=[d.cvel, d.cdof_dot],
-    )
-  else:
-    # Depth-level traversal
-    for body_tree in m.body_tree:
-      wp.launch(
-        _comvel_level,
-        dim=(d.nworld, body_tree.size),
-        inputs=[m.body_parentid, m.body_jntnum, m.body_jntadr, m.body_dofadr, m.jnt_type, d.qvel, d.cdof, d.cvel, body_tree],
-        outputs=[d.cvel, d.cdof_dot],
-      )
+  wp.launch(
+    _comvel_branch,
+    dim=(d.nworld, m.num_branches),
+    inputs=[
+      m.body_parentid,
+      m.body_jntnum,
+      m.body_jntadr,
+      m.body_dofadr,
+      m.jnt_type,
+      m.branch_bodies,
+      m.branch_start,
+      m.branch_length,
+      d.qvel,
+      d.cdof,
+      d.cvel,
+    ],
+    outputs=[d.cvel, d.cdof_dot],
+  )
 
 
 @wp.kernel

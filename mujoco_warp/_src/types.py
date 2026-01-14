@@ -677,7 +677,6 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
-    use_branch_traversal: use branch-based tree traversal
   """
 
   timestep: array("*", float)
@@ -710,7 +709,6 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
-  use_branch_traversal: bool
 
 
 @dataclasses.dataclass

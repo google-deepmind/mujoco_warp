@@ -283,27 +283,20 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   branches = _compute_branches(mjm)
   m.num_branches = len(branches)
 
-  opt.use_branch_traversal = m.num_branches < len(m.body_tree)
+  branch_bodies_flat = []
+  branch_start = []
+  branch_length = []
+  offset = 0
 
-  if opt.use_branch_traversal:
-    branch_bodies_flat = []
-    branch_start = []
-    branch_length = []
-    offset = 0
+  for branch in branches:
+    branch_start.append(offset)
+    branch_length.append(len(branch))
+    branch_bodies_flat.extend(branch)
+    offset += len(branch)
 
-    for branch in branches:
-      branch_start.append(offset)
-      branch_length.append(len(branch))
-      branch_bodies_flat.extend(branch)
-      offset += len(branch)
-
-    m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
-    m.branch_start = np.array(branch_start, dtype=int)
-    m.branch_length = np.array(branch_length, dtype=int)
-  else:
-    m.branch_bodies = np.array([], dtype=int)
-    m.branch_start = np.array([], dtype=int)
-    m.branch_length = np.array([], dtype=int)
+  m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
+  m.branch_start = np.array(branch_start, dtype=int)
+  m.branch_length = np.array(branch_length, dtype=int)
 
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
