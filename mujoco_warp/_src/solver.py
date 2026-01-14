@@ -1029,11 +1029,69 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
 
+# =============================================================================
+# Tiled Iterative Linesearch
+# =============================================================================
+#
+# This is an optimized version of the iterative linesearch that uses Warp's
+# tiled execution model with parallel reductions over constraint (EFC) rows.
+#
+# Key optimizations vs. baseline (linesearch_iterative):
+#
+# 1. KERNEL FUSION - Reduces kernel launch overhead by combining:
+#    - linesearch_jv_fused: jv = J @ search (for small nv <= 50)
+#    - linesearch_prepare_quad: quad coefficients (pyramidal: computed directly,
+#      elliptic: computed in a prepare phase with __syncthreads barrier)
+#    - linesearch_prepare_gauss: quad_gauss via tile reduction over DOFs
+#    - linesearch_qacc_ma: qacc and Ma updates at kernel end
+#    - linesearch_jaref: Jaref update at kernel end
+#
+# 2. PARALLEL REDUCTIONS - Uses wp.tile_reduce for summing cost/gradient/hessian
+#    contributions across EFC rows within each world. The main iteration loop
+#    packs 3 vec3 reductions into a single mat33 reduction for efficiency.
+#
+# 3. COMPILE-TIME SPECIALIZATION via factory parameters:
+#    - cone_type: Eliminates elliptic cone branches for pyramidal-only models
+#    - ls_iterations: Enables loop unrolling for the main bracket search
+#    - fuse_jv: Conditionally includes jv computation based on nv size
+#
+# 4. DIRECT EVALUATION (pyramidal only) - For equality and limit constraints,
+#    computes cost/gradient/hessian directly from (Jaref, jv, efc_D, alpha)
+#    without intermediate quad coefficients, using _eval_pt_direct functions.
+#
+# 5. BATCHED 3-ALPHA EVALUATION - The main iteration loop evaluates 3 alpha
+#    values per iteration (lo_next, hi_next, mid). Instead of calling
+#    _compute_efc_eval_pt 3 times per constraint row (which would repeat
+#    constraint type checks and data loads), we use _compute_efc_eval_pt_3alphas
+#    which:
+#    - Performs constraint type branching once per row
+#    - Loads efc_D, efc_frictionloss, contact data once
+#    - Computes x = Jaref + alpha * jv for all 3 alphas
+#    - For pyramidal direct evaluation: shares jvD = jv * efc_D, hessian = jv * jvD
+#    - For quad-based evaluation: uses _eval_pt_3alphas which computes the
+#      constant hessian (2.0 * quad[2]) once and reuses for all 3 alphas
+#
+# 6. DEFERRED DATA LOADING - efc_D and efc_frictionloss are only loaded
+#    inside the constraint branches where they're needed, reducing register
+#    pressure for other constraint types.
+#
+# Trade-offs:
+# - Requires block synchronization (__syncthreads) for elliptic quad preparation
+# - Separate kernel compilation for each (block_dim, ls_iterations, cone_type,
+#   fuse_jv) combination (cached by Warp)
+#
+# Optimizations attempted but not beneficial:
+# - Caching EFC data (Jaref, jv, quad, etc.) in shared memory tiles for reuse
+#   across the p0, lo_in, and main iteration loops.
+#
+# =============================================================================
+
+
 def linesearch_iterative_tiled(block_dim: int, ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
   """Factory for tiled iterative linesearch kernel.
 
   Args:
-    block_dim: Number of threads per block.
+    block_dim: Number of threads per block for tile reductions.
     ls_iterations: Max linesearch iterations (compile-time constant for loop optimization).
     cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
     fuse_jv: Whether to compute jv = J @ search in-kernel (efficient for small nv).
