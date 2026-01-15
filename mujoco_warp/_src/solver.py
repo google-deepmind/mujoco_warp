@@ -85,8 +85,7 @@ def _eval_pt_direct_3alphas(jaref: float, jv: float, d: float, lo_alpha: float, 
 
 @wp.func
 def _eval_cost(quad: wp.vec3, alpha: float) -> float:
-  aq2 = alpha * quad[2]
-  return alpha * aq2 + alpha * quad[1] + quad[0]
+  return alpha * alpha * quad[2] + alpha * quad[1] + quad[0]
 
 
 @wp.func
