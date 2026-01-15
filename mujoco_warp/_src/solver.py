@@ -44,42 +44,42 @@ def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
 
 
 @wp.func
-def _compute_quad(Jaref: float, jv: float, efc_D: float) -> wp.vec3:
+def _compute_quad(jaref: float, jv: float, d: float) -> wp.vec3:
   """Compute quad coefficients from Jaref, jv, and efc_D (for pyramidal cones)."""
-  return wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
+  return wp.vec3(0.5 * jaref * jaref * d, jv * jaref * d, 0.5 * jv * jv * d)
 
 
 @wp.func
-def _eval_pt_direct(Jaref: float, jv: float, efc_D: float, alpha: float) -> wp.vec3:
+def _eval_pt_direct(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
   """Compute (cost, gradient, hessian) directly without intermediate quad.
 
-  Equivalent to _eval_pt(_compute_quad(Jaref, jv, efc_D), alpha) but more efficient.
+  Equivalent to _eval_pt(_compute_quad(jaref, jv, d), alpha) but more efficient.
   """
-  x = Jaref + alpha * jv
-  jvD = jv * efc_D
-  return wp.vec3(0.5 * efc_D * x * x, jvD * x, jv * jvD)
+  x = jaref + alpha * jv
+  jvD = jv * d
+  return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
 
 
 @wp.func
-def _eval_pt_direct_alpha_zero(Jaref: float, jv: float, efc_D: float) -> wp.vec3:
+def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
   """Optimized _eval_pt_direct for alpha=0."""
-  jvD = jv * efc_D
-  return wp.vec3(0.5 * efc_D * Jaref * Jaref, jvD * Jaref, jv * jvD)
+  jvD = jv * d
+  return wp.vec3(0.5 * d * jaref * jaref, jvD * jaref, jv * jvD)
 
 
 @wp.func
-def _eval_pt_direct_3alphas(Jaref: float, jv: float, efc_D: float, lo_alpha: float, hi_alpha: float, mid_alpha: float):
+def _eval_pt_direct_3alphas(jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float):
   """Compute _eval_pt_direct for 3 alphas, sharing common subexpressions."""
-  x_lo = Jaref + lo_alpha * jv
-  x_hi = Jaref + hi_alpha * jv
-  x_mid = Jaref + mid_alpha * jv
-  jvD = jv * efc_D
+  x_lo = jaref + lo_alpha * jv
+  x_hi = jaref + hi_alpha * jv
+  x_mid = jaref + mid_alpha * jv
+  jvD = jv * d
   hessian = jv * jvD
-  half_D = 0.5 * efc_D
+  half_d = 0.5 * d
   return (
-    wp.vec3(half_D * x_lo * x_lo, jvD * x_lo, hessian),
-    wp.vec3(half_D * x_hi * x_hi, jvD * x_hi, hessian),
-    wp.vec3(half_D * x_mid * x_mid, jvD * x_mid, hessian),
+    wp.vec3(half_d * x_lo * x_lo, jvD * x_lo, hessian),
+    wp.vec3(half_d * x_hi * x_hi, jvD * x_hi, hessian),
+    wp.vec3(half_d * x_mid * x_mid, jvD * x_mid, hessian),
   )
 
 
