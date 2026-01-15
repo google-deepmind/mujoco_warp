@@ -7,13 +7,13 @@ MUJOCO_LOG.TXT
 ## Cloned repositories
 ## -------------------
 
-benchmark/mujoco_menagerie/
+benchmarks/mujoco_menagerie/
 
 
 ## Created directories
 ## --------------------
 
-benchmark/kitchen/combined_assets/
+benchmarks/kitchen/combined_assets/
 kitchen_robot.xml
 
 ## airspeed velocity working directories
