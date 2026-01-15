@@ -1505,7 +1505,7 @@ class Constraint:
     state: constraint state                           (nworld, njmax_pad)
     mv: qM @ search                                   (nworld, nv)
     jv: efc_J @ search                                (nworld, njmax)
-    quad: quadratic cost coefficients                 (nworld, njmax, 3)
+    quad: quadratic cost coefficients                 (nworld, njmax, 3)  # parallel, or iterative+elliptic
     quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)  # parallel linesearch only
     alpha: line search step size                      (nworld,)  # parallel linesearch only
     prev_grad: previous grad                          (nworld, nv)
@@ -1537,7 +1537,7 @@ class Constraint:
   state: array("nworld", "njmax_pad", int)
   mv: array("nworld", "nv", float)
   jv: array("nworld", "njmax", float)
-  quad: array("nworld", "njmax", wp.vec3)
+  quad: array("nworld", "njmax", wp.vec3)  # parallel, or iterative+elliptic
   quad_gauss: array("nworld", wp.vec3)  # parallel linesearch only
   alpha: array("nworld", float)  # parallel linesearch only
   prev_grad: array("nworld", "nv", float)
