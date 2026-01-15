@@ -782,7 +782,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
 
 @cache_kernel
-def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
+def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool):
   """Factory for iterative linesearch kernel.
 
   Args:
@@ -1215,9 +1215,8 @@ def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
     d: Data.
     fuse_jv: Whether jv is computed in-kernel (True) or pre-computed (False).
   """
-  block_dim = m.block_dim.linesearch_iterative
   wp.launch_tiled(
-    linesearch_iterative(block_dim, m.opt.ls_iterations, m.opt.cone, fuse_jv),
+    linesearch_iterative(m.opt.ls_iterations, m.opt.cone, fuse_jv),
     dim=d.nworld,
     inputs=[
       m.nv,
@@ -1247,7 +1246,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
       d.efc.mv,
     ],
     outputs=[d.efc.quad, d.efc.jv, d.qacc, d.efc.Ma, d.efc.Jaref],
-    block_dim=block_dim,
+    block_dim=m.block_dim.linesearch_iterative,
   )
 
 
