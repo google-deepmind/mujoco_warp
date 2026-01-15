@@ -25,6 +25,7 @@ from .ray import ray_cylinder
 from .ray import ray_ellipsoid
 from .ray import ray_flex_with_bvh
 from .ray import ray_mesh_with_bvh
+from .ray import ray_mesh_with_bvh_anyhit
 from .ray import ray_plane
 from .ray import ray_sphere
 from .render_context import RenderContext
@@ -451,7 +452,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      d, n, u, v, f, mesh_id = ray_mesh_with_bvh(
+      d = ray_mesh_with_bvh_anyhit(
         mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
