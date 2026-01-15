@@ -992,16 +992,14 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id]
+  flexedge_J = d.flexedge_J.numpy()[world_id]
+  mujoco.mju_dense2sparse(result.flexedge_J, flexedge_J, mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
+  actuator_moment = d.actuator_moment.numpy()[world_id]
   mujoco.mju_dense2sparse(
-    result.actuator_moment,
-    d.actuator_moment.numpy()[world_id],
-    result.moment_rownnz,
-    result.moment_rowadr,
-    result.moment_colind,
+    result.actuator_moment, actuator_moment, result.moment_rownnz, result.moment_rowadr, result.moment_colind
   )
   result.crb[:] = d.crb.numpy()[world_id]
   result.qLDiagInv[:] = d.qLDiagInv.numpy()[world_id]
