@@ -68,8 +68,7 @@ def _eval_pt_direct_alpha_zero(Jaref: float, jv: float, efc_D: float) -> wp.vec3
 
 
 @wp.func
-def _eval_pt_direct_3alphas(Jaref: float, jv: float, efc_D: float,
-                            lo_alpha: float, hi_alpha: float, mid_alpha: float):
+def _eval_pt_direct_3alphas(Jaref: float, jv: float, efc_D: float, lo_alpha: float, hi_alpha: float, mid_alpha: float):
   """Compute _eval_pt_direct for 3 alphas, sharing common subexpressions."""
   x_lo = Jaref + lo_alpha * jv
   x_hi = Jaref + hi_alpha * jv
@@ -792,7 +791,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
   """
   BLOCK_DIM = block_dim
   LS_ITERATIONS = ls_iterations
-  IS_ELLIPTIC = (cone_type == types.ConeType.ELLIPTIC)
+  IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
 
   # Native snippet for CUDA __syncthreads()
@@ -958,17 +957,31 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
           quad2 = efc_quad_inout[worldid, efc_addr2]
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
-          efcid, ne, nf, impratio_invsqrt,
-          efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid], efc_quad_inout[worldid, efcid],
-          contact_friction, efc_addr0, quad1, quad2,
+          efcid,
+          ne,
+          nf,
+          impratio_invsqrt,
+          efc_type,
+          efc_D_in[worldid],
+          efc_frictionloss_in[worldid],
+          efc_Jaref_in[worldid, efcid],
+          efc_jv_inout[worldid, efcid],
+          efc_quad_inout[worldid, efcid],
+          contact_friction,
+          efc_addr0,
+          quad1,
+          quad2,
         )
       else:
         # direct evaluation for pyramidal cones (no intermediate quad)
         local_p0 += _compute_efc_eval_pt_alpha_zero(
-          efcid, ne, nf,
-          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
+          efcid,
+          ne,
+          nf,
+          efc_D_in[worldid, efcid],
+          efc_frictionloss_in[worldid],
+          efc_Jaref_in[worldid, efcid],
+          efc_jv_inout[worldid, efcid],
         )
 
     p0_tile = wp.tile(local_p0, preserve_type=True)
@@ -1014,17 +1027,33 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
           quad2 = efc_quad_inout[worldid, efc_addr2]
 
         local_lo_in += _compute_efc_eval_pt(
-          efcid, lo_alpha_in, ne, nf, impratio_invsqrt,
-          efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid], efc_quad_inout[worldid, efcid],
-          contact_friction, efc_addr0, quad1, quad2,
+          efcid,
+          lo_alpha_in,
+          ne,
+          nf,
+          impratio_invsqrt,
+          efc_type,
+          efc_D_in[worldid],
+          efc_frictionloss_in[worldid],
+          efc_Jaref_in[worldid, efcid],
+          efc_jv_inout[worldid, efcid],
+          efc_quad_inout[worldid, efcid],
+          contact_friction,
+          efc_addr0,
+          quad1,
+          quad2,
         )
       else:
         # direct evaluation for pyramidal cones (no intermediate quad)
         local_lo_in += _compute_efc_eval_pt(
-          efcid, lo_alpha_in, ne, nf,
-          efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
-          efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
+          efcid,
+          lo_alpha_in,
+          ne,
+          nf,
+          efc_D_in[worldid, efcid],
+          efc_frictionloss_in[worldid],
+          efc_Jaref_in[worldid, efcid],
+          efc_jv_inout[worldid, efcid],
         )
 
     lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
@@ -1070,19 +1099,37 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
 
           # compute all 3 alphas at once, sharing constraint type checking
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
-            efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
-            ne, nf, impratio_invsqrt,
-            efc_type, efc_D_in[worldid], efc_frictionloss_in[worldid],
-            efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid], efc_quad_inout[worldid, efcid],
-            contact_friction, efc_addr0, quad1, quad2,
+            efcid,
+            lo_next_alpha,
+            hi_next_alpha,
+            mid_alpha,
+            ne,
+            nf,
+            impratio_invsqrt,
+            efc_type,
+            efc_D_in[worldid],
+            efc_frictionloss_in[worldid],
+            efc_Jaref_in[worldid, efcid],
+            efc_jv_inout[worldid, efcid],
+            efc_quad_inout[worldid, efcid],
+            contact_friction,
+            efc_addr0,
+            quad1,
+            quad2,
           )
         else:
           # direct evaluation for pyramidal cones (no intermediate quad)
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
-            efcid, lo_next_alpha, hi_next_alpha, mid_alpha,
-            ne, nf,
-            efc_D_in[worldid, efcid], efc_frictionloss_in[worldid],
-            efc_Jaref_in[worldid, efcid], efc_jv_inout[worldid, efcid],
+            efcid,
+            lo_next_alpha,
+            hi_next_alpha,
+            mid_alpha,
+            ne,
+            nf,
+            efc_D_in[worldid, efcid],
+            efc_frictionloss_in[worldid],
+            efc_Jaref_in[worldid, efcid],
+            efc_jv_inout[worldid, efcid],
           )
         local_lo += r_lo
         local_hi += r_hi
@@ -1090,9 +1137,15 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
 
       # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
       local_combined = wp.mat33(
-        local_lo[0], local_hi[0], local_mid[0],
-        local_lo[1], local_hi[1], local_mid[1],
-        local_lo[2], local_hi[2], local_mid[2],
+        local_lo[0],
+        local_hi[0],
+        local_mid[0],
+        local_lo[1],
+        local_hi[1],
+        local_mid[1],
+        local_lo[2],
+        local_hi[2],
+        local_mid[2],
       )
       combined_tile = wp.tile(local_combined, preserve_type=True)
       combined_sum = wp.tile_reduce(wp.add, combined_tile)
