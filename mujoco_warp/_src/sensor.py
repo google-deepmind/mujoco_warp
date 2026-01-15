@@ -17,32 +17,32 @@ from typing import Any, Tuple
 
 import warp as wp
 
-from . import math
-from . import ray
-from . import smooth
-from . import support
-from .collision_sdf import get_sdf_params
-from .collision_sdf import sdf
-from .types import MJ_MINVAL
-from .types import ConeType
-from .types import ConstraintType
-from .types import ContactType
-from .types import Data
-from .types import DataType
-from .types import DisableBit
-from .types import JointType
-from .types import Model
-from .types import ObjType
-from .types import SensorType
-from .types import TrnType
-from .types import vec5
-from .types import vec6
-from .types import vec8
-from .types import vec8i
-from .util_misc import inside_geom
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import ray
+from mujoco_warp._src import smooth
+from mujoco_warp._src import support
+from mujoco_warp._src.collision_sdf import get_sdf_params
+from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DataType
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import SensorType
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec6
+from mujoco_warp._src.types import vec8
+from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.util_misc import inside_geom
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 

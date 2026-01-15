@@ -21,9 +21,9 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from . import types
-from . import warp_util
-from .warp_util import nested_kernel
+from mujoco_warp._src import types
+from mujoco_warp._src import warp_util
+from mujoco_warp._src.warp_util import nested_kernel
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
