@@ -1447,9 +1447,9 @@ def create_render_context(
   mjm: mujoco.MjModel,
   m: types.Model,
   d: types.Data,
-  cam_res: Union[list[tuple[int, int]] | tuple[int, int]],
-  render_rgb: Union[list[bool] | bool] = True,
-  render_depth: Union[list[bool] | bool] = False,
+  cam_res: Optional[Union[list[tuple[int, int]] | tuple[int, int]]] = None,
+  render_rgb: Optional[Union[list[bool] | bool]] = None,
+  render_depth: Optional[Union[list[bool] | bool]] = None,
   use_textures: bool = True,
   use_shadows: bool = False,
   enabled_geom_groups: list[int] = [0, 1, 2],
@@ -1462,9 +1462,10 @@ def create_render_context(
     mjm: The model containing kinematic and dynamic information on host.
     m: The model on device.
     d: The data on device.
-    cam_res: The width and height to render each camera image.
-    render_rgb: Whether to render RGB images.
-    render_depth: Whether to render depth images.
+    cam_res: The width and height to render each camera image. If None, uses the
+             MuJoCo model values.
+    render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
+    render_depth: Whether to render depth images. If None, uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
     enabled_geom_groups: The geom groups to render.
