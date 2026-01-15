@@ -114,7 +114,7 @@ docstring-code-line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["mujoco_warp"]
-norecursedirs = ["benchmarks", "mujoco_menagerie", "contrib"]
+norecursedirs = ["benchmarks", "contrib"]
 
 [tool.setuptools]
 package-data = { "mujoco_warp" = ["test_data/**"] }
