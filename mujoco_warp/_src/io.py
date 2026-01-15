@@ -999,7 +999,8 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   flexedge_J = d.flexedge_J.numpy()[world_id]
-  mujoco.mju_dense2sparse(result.flexedge_J, flexedge_J, mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind)
+  if flexedge_J.size:
+    mujoco.mju_dense2sparse(result.flexedge_J, flexedge_J, mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
