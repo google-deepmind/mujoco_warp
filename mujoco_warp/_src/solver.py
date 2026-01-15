@@ -445,6 +445,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
   )
 
 
+# kernel_analyzer: off
 @wp.func
 def _compute_efc_eval_pt_pyramidal(
   efcid: int,
@@ -453,7 +454,7 @@ def _compute_efc_eval_pt_pyramidal(
   nf: int,
   # Per-row data:
   efc_D: float,
-  efc_frictionloss_in: wp.array(dtype=float),
+  efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
 ) -> wp.vec3:
@@ -467,11 +468,11 @@ def _compute_efc_eval_pt_pyramidal(
 
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
-    efc_frictionloss = efc_frictionloss_in[efcid]
+    f = efc_frictionloss[efcid]
     x = efc_Jaref + alpha * efc_jv
-    rf = math.safe_div(efc_frictionloss, efc_D)
+    rf = math.safe_div(f, efc_D)
     efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f = _eval_frictionloss(x, f, rf, efc_Jaref, efc_jv, efc_quad)
     return _eval_pt(quad_f, alpha)
 
   # Equality constraint
@@ -488,7 +489,7 @@ def _compute_efc_eval_pt_elliptic(
   # Per-row data (arrays for deferred load):
   efc_type: int,
   efc_D_in: wp.array(dtype=float),
-  efc_frictionloss_in: wp.array(dtype=float),
+  efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -516,10 +517,10 @@ def _compute_efc_eval_pt_elliptic(
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
     efc_D = efc_D_in[efcid]
-    efc_frictionloss = efc_frictionloss_in[efcid]
+    f = efc_frictionloss[efcid]
     x = efc_Jaref + alpha * efc_jv
-    rf = math.safe_div(efc_frictionloss, efc_D)
-    quad_f = _eval_frictionloss(x, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    rf = math.safe_div(f, efc_D)
+    quad_f = _eval_frictionloss(x, f, rf, efc_Jaref, efc_jv, efc_quad)
     return _eval_pt(quad_f, alpha)
 
   # Equality constraint
@@ -533,7 +534,7 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   nf: int,
   # Per-row data:
   efc_D: float,
-  efc_frictionloss_in: wp.array(dtype=float),
+  efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
 ) -> wp.vec3:
@@ -546,10 +547,10 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
 
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
-    efc_frictionloss = efc_frictionloss_in[efcid]
-    rf = math.safe_div(efc_frictionloss, efc_D)
+    f = efc_frictionloss[efcid]
+    rf = math.safe_div(f, efc_D)
     efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-    quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f = _eval_frictionloss(efc_Jaref, f, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
 
   # Equality constraint
@@ -565,7 +566,7 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
   # Per-row data (arrays for deferred load):
   efc_type: int,
   efc_D_in: wp.array(dtype=float),
-  efc_frictionloss_in: wp.array(dtype=float),
+  efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -592,9 +593,9 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
     efc_D = efc_D_in[efcid]
-    efc_frictionloss = efc_frictionloss_in[efcid]
-    rf = math.safe_div(efc_frictionloss, efc_D)
-    quad_f = _eval_frictionloss(efc_Jaref, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    f = efc_frictionloss[efcid]
+    rf = math.safe_div(f, efc_D)
+    quad_f = _eval_frictionloss(efc_Jaref, f, rf, efc_Jaref, efc_jv, efc_quad)
     return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
 
   # Equality constraint
@@ -611,7 +612,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   nf: int,
   # Per-row data:
   efc_D: float,
-  efc_frictionloss_in: wp.array(dtype=float),
+  efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
 ):
@@ -636,12 +637,12 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_lo = efc_Jaref + lo_alpha * efc_jv
     x_hi = efc_Jaref + hi_alpha * efc_jv
     x_mid = efc_Jaref + mid_alpha * efc_jv
-    efc_frictionloss = efc_frictionloss_in[efcid]
-    rf = math.safe_div(efc_frictionloss, efc_D)
+    f = efc_frictionloss[efcid]
+    rf = math.safe_div(f, efc_D)
     efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-    quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_mid = _eval_frictionloss(x_mid, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f_lo = _eval_frictionloss(x_lo, f, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f_hi = _eval_frictionloss(x_hi, f, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f_mid = _eval_frictionloss(x_mid, f, rf, efc_Jaref, efc_jv, efc_quad)
     return (
       _eval_pt(quad_f_lo, lo_alpha),
       _eval_pt(quad_f_hi, hi_alpha),
@@ -664,7 +665,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   # Per-row data (arrays for deferred load):
   efc_type: int,
   efc_D_in: wp.array(dtype=float),
-  efc_frictionloss_in: wp.array(dtype=float),
+  efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
   efc_quad: wp.vec3,
@@ -706,11 +707,11 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
     efc_D = efc_D_in[efcid]
-    efc_frictionloss = efc_frictionloss_in[efcid]
-    rf = math.safe_div(efc_frictionloss, efc_D)
-    quad_f_lo = _eval_frictionloss(x_lo, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_hi = _eval_frictionloss(x_hi, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_mid = _eval_frictionloss(x_mid, efc_frictionloss, rf, efc_Jaref, efc_jv, efc_quad)
+    f = efc_frictionloss[efcid]
+    rf = math.safe_div(f, efc_D)
+    quad_f_lo = _eval_frictionloss(x_lo, f, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f_hi = _eval_frictionloss(x_hi, f, rf, efc_Jaref, efc_jv, efc_quad)
+    quad_f_mid = _eval_frictionloss(x_mid, f, rf, efc_Jaref, efc_jv, efc_quad)
     return (
       _eval_pt(quad_f_lo, lo_alpha),
       _eval_pt(quad_f_hi, hi_alpha),
@@ -720,6 +721,8 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   # Equality constraint: always active
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
+
+# kernel_analyzer: on
 
 # =============================================================================
 # Iterative Linesearch
