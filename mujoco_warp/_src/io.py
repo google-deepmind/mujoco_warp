@@ -112,12 +112,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
-  # Removed check: Implicit integrators and fluid model are now supported
-  # if (mjm.opt.viscosity > 0 or mjm.opt.density > 0) and mjm.opt.integrator in (
-  #   mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-  #   mujoco.mjtIntegrator.mjINT_IMPLICIT,
-  # ):
-  #   raise NotImplementedError(f"Implicit integrators and fluid model not implemented.")
+  if (mjm.opt.viscosity > 0 or mjm.opt.density > 0) and mjm.opt.integrator in (
+    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    mujoco.mjtIntegrator.mjINT_IMPLICIT,
+  ):
+    raise NotImplementedError(f"Implicit integrators and fluid model not implemented.")
 
   if (mjm.body_plugin != -1).any():
     raise NotImplementedError("Body plugins not supported.")
@@ -937,7 +936,13 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id]
+  if mjm.nflexedge > 0:
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_dense2sparse(
+        result.flexedge_J, d.flexedge_J.numpy()[world_id], result.flexedge_J_rownnz, result.flexedge_J_rowadr, result.flexedge_J_colind
+      )
+    else:
+      result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].flatten()
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -1022,7 +1027,13 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if mjm.ntendon > 0:
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_dense2sparse(
+        result.ten_J, d.ten_J.numpy()[world_id], result.ten_J_rownnz, result.ten_J_rowadr, result.ten_J_colind
+      )
+    else:
+      result.ten_J[:] = d.ten_J.numpy()[world_id].flatten()
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]

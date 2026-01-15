@@ -464,27 +464,6 @@ class IOTest(parameterized.TestCase):
       """
       )
 
-  def test_implicit_integrator_fluid_model(self):
-    """Tests that implicit integrator with fluid model is now supported."""
-    # This should no longer raise NotImplementedError - fluid forces with implicit integrators are now implemented
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option viscosity="1" density="1" integrator="implicitfast"/>
-        <worldbody>
-          <body>
-            <geom type="sphere" size=".1"/>
-            <freejoint/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """
-    )
-    # Verify the model was created successfully
-    self.assertIsNotNone(m)
-    self.assertIsNotNone(d)
-    self.assertTrue(m.opt.has_fluid)
-
   def test_plugin(self):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
@@ -502,7 +481,8 @@ class IOTest(parameterized.TestCase):
             <geom type="sphere" size=".1"/>
             <site name="site"/>
           </body>
-          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
+          <composite type="cable" curve="s" count="41 1 1" size="1"
+                     offset="-.3 0 .6" initial="none">
             <plugin plugin="mujoco.elasticity.cable">
               <config key="twist" value="1e7"/>
               <config key="bend" value="4e6"/>

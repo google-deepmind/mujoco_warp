@@ -508,57 +508,6 @@ class ForwardTest(parameterized.TestCase):
     mjw.step(m, d)
     self.assertGreater(d.time.numpy()[0], 0.0)
 
-  @parameterized.product(
-    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
-    fluidshape=("ellipsoid",),
-  )
-  def test_implicit_fluid(self, jacobian, fluidshape):
-    """Tests implicitfast integration with ellipsoid fluid forces."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml=f"""
-    <mujoco>
-      <option density="1.225" viscosity="1.8e-5" wind="0 0 0"
-              integrator="implicitfast"/>
-      <worldbody>
-        <body name="main_sphere" pos="0 0 1">
-          <freejoint name="root"/>
-          <geom name="big_ball" type="sphere" size="0.2"
-                rgba="0.8 0.2 0.2 1" mass="1"
-                fluidshape="{fluidshape}"/>
-          <body name="small_sphere_1" pos="-0.3 0 0">
-            <geom name="ball_1" type="sphere" size="0.1"
-                  rgba="0.2 0.8 0.2 1" mass="0.2"
-                  fluidshape="{fluidshape}"/>
-          </body>
-          <body name="small_sphere_2" pos="0.4 0 0">
-            <geom name="ball_2" type="sphere" size="0.2"
-                  rgba="0.2 0.2 0.8 1" mass="0.2"
-                  fluidshape="{fluidshape}"/>
-          </body>
-        </body>
-      </worldbody>
-      <keyframe>
-        <key qvel="100 -100 10 50 -40 100"/>
-      </keyframe>
-    </mujoco>
-    """,
-      keyframe=0,
-      overrides={"opt.jacobian": jacobian},
-    )
-
-    mujoco.mj_implicit(mjm, mjd)
-
-    mjw.solve(m, d)
-    mjw.implicit(m, d)
-
-    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    # Use relaxed tolerance for fluid test due to additional numerical complexity
-    # from fluid force calculations (1.5% relative error is acceptable)
-    tol_fluid = _TOLERANCE * 300  # 0.015 = 1.5%
-    err_msg = "mismatch: qvel"
-    np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, err_msg=err_msg, atol=tol_fluid, rtol=tol_fluid)
-
-
 if __name__ == "__main__":
   wp.init()
   absltest.main()
