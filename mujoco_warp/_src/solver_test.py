@@ -215,17 +215,10 @@ class SolverTest(parameterized.TestCase):
     m.opt.ls_parallel = False
     step_size_cost = wp.empty((d.nworld, 0), dtype=float)
     solver._linesearch(m, d, step_size_cost)
-    alpha_iterative = d.efc.alpha.numpy().copy()
-
-    # Launching parallel linesearch with 10 testing points
-    m.opt.ls_parallel = True
-    m.opt.ls_iterations = 10
-    d.efc.Ma = wp.array2d(d_efc_Ma)
-    d.efc.Jaref = wp.array(d_efc_Jaref)
-    d.qacc = wp.array2d(d_qacc)
-    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
-    solver._linesearch(m, d, step_size_cost)
-    alpha_parallel_10 = d.efc.alpha.numpy().copy()
+    # Iterative computes alpha internally and directly updates outputs
+    qacc_iterative = d.qacc.numpy().copy()
+    Ma_iterative = d.efc.Ma.numpy().copy()
+    Jaref_iterative = d.efc.Jaref.numpy().copy()
 
     # Launching parallel linesearch with 50 testing points
     m.opt.ls_parallel = True
@@ -235,14 +228,14 @@ class SolverTest(parameterized.TestCase):
     d.qacc = wp.array2d(d_qacc)
     step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
     solver._linesearch(m, d, step_size_cost)
-    alpha_parallel_50 = d.efc.alpha.numpy().copy()
+    qacc_parallel = d.qacc.numpy().copy()
+    Ma_parallel = d.efc.Ma.numpy().copy()
+    Jaref_parallel = d.efc.Jaref.numpy().copy()
 
-    # Checking that iterative and parallel linesearch lead to similar results
-    # and that increasing ls_iterations leads to better results (with tolerance for FP noise)
-    _assert_eq(alpha_iterative, alpha_parallel_50, name="linesearch alpha")
-    diff_50 = abs(alpha_iterative - alpha_parallel_50)
-    diff_10 = abs(alpha_iterative - alpha_parallel_10)
-    self.assertTrue(np.all(diff_50 <= diff_10 + 1e-6))
+    # Check that iterative and parallel linesearch produce equivalent outputs
+    _assert_eq(qacc_iterative, qacc_parallel, name="qacc")
+    _assert_eq(Ma_iterative, Ma_parallel, name="Ma")
+    _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
