@@ -791,7 +791,6 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
     cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
     fuse_jv: Whether to compute jv = J @ search in-kernel (efficient for small nv).
   """
-  BLOCK_DIM = block_dim
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
@@ -859,7 +858,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
 
     # jv = J @ search (fused for small nv)
     if wp.static(FUSE_JV):
-      for efcid in range(tid, nefc, BLOCK_DIM):
+      for efcid in range(tid, nefc, wp.block_dim()):
         jv = float(0.0)
         for i in range(nv):
           jv += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
@@ -873,7 +872,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
       impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
       nacon = nacon_in[0]
 
-      for efcid in range(tid, nefc, BLOCK_DIM):
+      for efcid in range(tid, nefc, wp.block_dim()):
         Jaref = efc_Jaref_in[worldid, efcid]
         jv = efc_jv_inout[worldid, efcid]
         efc_D = efc_D_in[worldid, efcid]
@@ -940,7 +939,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
 
     # p0 via parallel reduction
     local_p0 = wp.vec3(0.0)
-    for efcid in range(tid, nefc, BLOCK_DIM):
+    for efcid in range(tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
         efc_id = 0
@@ -991,7 +990,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
 
     # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     local_gauss = wp.vec2(0.0)  # vec2 since component 0 is constant (efc_gauss_in)
-    for dofid in range(tid, nv, BLOCK_DIM):
+    for dofid in range(tid, nv, wp.block_dim()):
       search = efc_search_in[worldid, dofid]
       local_gauss += wp.vec2(
         search * (efc_Ma_out[worldid, dofid] - qfrc_smooth_in[worldid, dofid]),
@@ -1010,7 +1009,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
 
     local_lo_in = wp.vec3(0.0)
-    for efcid in range(tid, nefc, BLOCK_DIM):
+    for efcid in range(tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
         efc_id = 0
@@ -1081,7 +1080,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
       local_hi = wp.vec3(0.0)
       local_mid = wp.vec3(0.0)
 
-      for efcid in range(tid, nefc, BLOCK_DIM):
+      for efcid in range(tid, nefc, wp.block_dim()):
         if wp.static(IS_ELLIPTIC):
           efc_type = efc_type_in[worldid, efcid]
           efc_id = 0
@@ -1197,12 +1196,12 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
         break
 
     # qacc and Ma update
-    for dofid in range(tid, nv, BLOCK_DIM):
+    for dofid in range(tid, nv, wp.block_dim()):
       qacc_out[worldid, dofid] += alpha * efc_search_in[worldid, dofid]
       efc_Ma_out[worldid, dofid] += alpha * efc_mv_in[worldid, dofid]
 
     # Jaref update
-    for efcid in range(tid, nefc, BLOCK_DIM):
+    for efcid in range(tid, nefc, wp.block_dim()):
       efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
 
   return kernel
