@@ -225,10 +225,10 @@ class ForwardTest(parameterized.TestCase):
 
     m = mjw.put_model(mjm)
     d = mjw.put_data(mjm, mjd)
+    # compute efc.Ma - used by mjw.implicit
+    d.efc.Ma = wp.array(mjd.qfrc_constraint + mjd.qfrc_smooth, dtype=wp.float32, shape=(1, -1))
 
     mujoco.mj_implicit(mjm, mjd)
-
-    mjw.solve(m, d)  # compute efc.Ma
     mjw.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
@@ -377,6 +377,9 @@ class ForwardTest(parameterized.TestCase):
         # leave geom_xpos and geom_xmat untouched because they have static data
         continue
       attr, _ = _getattr(arr)
+      if arr in ("xquat", "xmat", "ximat"):
+        # xquat, xmat, ximat need to retain identity for world body
+        attr = attr[:, 1:]
       if attr.dtype == float:
         attr.fill_(wp.nan)
       elif attr.dtype == int:

@@ -15,18 +15,18 @@
 
 import warp as wp
 
-from . import derivative
-from . import forward
-from . import sensor
-from . import smooth
-from . import solver
-from . import support
-from .support import mul_m
-from .types import Data
-from .types import DisableBit
-from .types import EnableBit
-from .types import IntegratorType
-from .types import Model
+from mujoco_warp._src import derivative
+from mujoco_warp._src import forward
+from mujoco_warp._src import sensor
+from mujoco_warp._src import smooth
+from mujoco_warp._src import solver
+from mujoco_warp._src import support
+from mujoco_warp._src.support import mul_m
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import IntegratorType
+from mujoco_warp._src.types import Model
 
 wp.set_module_options({"enable_backward": False})
 
@@ -121,7 +121,9 @@ def inv_constraint(m: Model, d: Data):
     return
 
   # update
-  solver.create_context(m, d, grad=False)
+  h = wp.empty((d.nworld, 0, 0), dtype=float)  # not used
+  hfactor = wp.empty((d.nworld, 0, 0), dtype=float)  # not used
+  solver.create_context(m, d, h, hfactor, grad=False)
 
 
 def inverse(m: Model, d: Data):

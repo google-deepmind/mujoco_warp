@@ -14,9 +14,9 @@ jobs:
         python-version: ["3.12"]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -35,9 +35,9 @@ jobs:
         python-version: ["3.12"]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -54,29 +54,40 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
+        dep-version: ["release", "dev"]
+
+    continue-on-error: ${{ matrix.dep-version == 'release' }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
+      - name: Install pip and uv
         run: |
           python -m pip install --upgrade pip
           pip install uv
-          uv pip install --system -e .[dev,cpu]
+      - name: Install release
+        if: matrix.dep-version == 'release'
+        run: |
+          pip install pytest pytest-xdist
+          uv pip install --system -e .
+      - name: Install dev
+        if: matrix.dep-version == 'dev'
+        run: |
+          uv pip install --system -e .[dev]
       - name: Test with pytest
         run: |
-          pytest
+          pytest -n 4
 
   kernel_analyzer:
     name: Kernel analyzer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies

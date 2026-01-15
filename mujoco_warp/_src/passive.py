@@ -15,15 +15,15 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from .types import MJ_MINVAL
-from .types import Data
-from .types import DisableBit
-from .types import GeomType
-from .types import JointType
-from .types import Model
-from .warp_util import event_scope
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -296,6 +296,12 @@ def _fluid_force(
     fluid_applied_out[worldid, bodyid] = zero_force
     return
 
+  # skip bodies with negligible mass
+  mass = body_mass[worldid % body_mass.shape[0], bodyid]
+  if mass < MJ_MINVAL:
+    fluid_applied_out[worldid, bodyid] = zero_force
+    return
+
   wind = opt_wind[worldid % opt_wind.shape[0]]
   density = opt_density[worldid % opt_density.shape[0]]
   viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
@@ -551,11 +557,14 @@ def _qfrc_passive(
 @wp.kernel
 def _flex_elasticity(
   # Model:
+  nflex: int,
   opt_timestep: wp.array(dtype=float),
   body_dofadr: wp.array(dtype=int),
   flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_edgeadr: wp.array(dtype=int),
+  flex_elemadr: wp.array(dtype=int),
+  flex_elemnum: wp.array(dtype=int),
   flex_elemedgeadr: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
@@ -574,22 +583,27 @@ def _flex_elasticity(
 ):
   worldid, elemid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  f = 0  # TODO(quaglino): this should become a function of t
+
+  for i in range(nflex):
+    locid = elemid - flex_elemadr[i]
+    if locid >= 0 and locid < flex_elemnum[i]:
+      f = i
+      break
 
   dim = flex_dim[f]
   nvert = dim + 1
   nedge = nvert * (nvert - 1) / 2
   edges = wp.where(
     dim == 3,
-    wp.mat(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-    wp.mat(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+    wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
+    wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
   )
   if timestep > 0.0 and not dsbl_damper:
     kD = flex_damping[f] / timestep
   else:
     kD = 0.0
 
-  gradient = wp.mat(0.0, shape=(6, 6))
+  gradient = wp.matrix(0.0, shape=(6, 6))
   for e in range(nedge):
     vert0 = flex_elem[(dim + 1) * elemid + edges[e, 0]]
     vert1 = flex_elem[(dim + 1) * elemid + edges[e, 1]]
@@ -601,14 +615,14 @@ def _flex_elasticity(
 
   elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
-    idx = flex_elemedge[flex_elemedgeadr[f] + elemid * nedge + e]
+    idx = flex_elemedge[elemid * nedge + e]
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
     deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
     reference = flexedge_length0[flex_edgeadr[f] + idx]
     previous = deformed - vel * timestep
     elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
 
-  metric = wp.mat(0.0, shape=(6, 6))
+  metric = wp.matrix(0.0, shape=(6, 6))
   id = int(0)
   for ed1 in range(nedge):
     for ed2 in range(ed1, nedge):
@@ -616,7 +630,7 @@ def _flex_elasticity(
       metric[ed2, ed1] = flex_stiffness[elemid, id]
       id += 1
 
-  force = wp.mat(0.0, shape=(6, 3))
+  force = wp.matrix(0.0, shape=(6, 3))
   for ed1 in range(nedge):
     for ed2 in range(nedge):
       for i in range(2):
@@ -633,10 +647,12 @@ def _flex_elasticity(
 @wp.kernel
 def _flex_bending(
   # Model:
+  nflex: int,
   body_dofadr: wp.array(dtype=int),
   flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_edgeadr: wp.array(dtype=int),
+  flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   flex_edgeflap: wp.array(dtype=wp.vec2i),
@@ -648,22 +664,27 @@ def _flex_bending(
 ):
   worldid, edgeid = wp.tid()
   nvert = 4
-  f = 0  # TODO(quaglino): this should become a function of t
+
+  for i in range(nflex):
+    locid = edgeid - flex_edgeadr[i]
+    if locid >= 0 and locid < flex_edgenum[i]:
+      f = i
+      break
 
   if flex_dim[f] != 2:
     return
 
-  v = wp.vec4i(
-    flex_edge[edgeid + flex_edgeadr[f]][0],
-    flex_edge[edgeid + flex_edgeadr[f]][1],
-    flex_edgeflap[edgeid + flex_edgeadr[f]][0],
-    flex_edgeflap[edgeid + flex_edgeadr[f]][1],
-  )
-
-  if v[3] == -1:
+  if flex_edgeflap[edgeid][1] == -1:
     return
 
-  frc = wp.mat(0.0, shape=(4, 3))
+  v = wp.vec4i(
+    flex_vertadr[f] + flex_edge[edgeid][0],
+    flex_vertadr[f] + flex_edge[edgeid][1],
+    flex_vertadr[f] + flex_edgeflap[edgeid][0],
+    flex_vertadr[f] + flex_edgeflap[edgeid][1],
+  )
+
+  frc = wp.matrix(0.0, shape=(4, 3))
   if flex_bending[edgeid, 16]:
     v0 = flexvert_xpos_in[worldid, v[0]]
     v1 = flexvert_xpos_in[worldid, v[1]]
@@ -674,7 +695,7 @@ def _flex_bending(
     frc[3] = wp.cross(v1 - v0, v2 - v0)
     frc[0] = -(frc[1] + frc[2] + frc[3])
 
-  force = wp.mat(0.0, shape=(nvert, 3))
+  force = wp.matrix(0.0, shape=(nvert, 3))
   for i in range(nvert):
     for x in range(3):
       for j in range(nvert):
@@ -743,11 +764,14 @@ def passive(m: Model, d: Data):
       _flex_elasticity,
       dim=(d.nworld, m.nflexelem),
       inputs=[
+        m.nflex,
         m.opt.timestep,
         m.body_dofadr,
         m.flex_dim,
         m.flex_vertadr,
         m.flex_edgeadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
         m.flex_elemedgeadr,
         m.flex_vertbodyid,
         m.flex_elem,
@@ -762,22 +786,24 @@ def passive(m: Model, d: Data):
       ],
       outputs=[d.qfrc_spring],
     )
-  wp.launch(
-    _flex_bending,
-    dim=(d.nworld, m.nflexedge),
-    inputs=[
-      m.body_dofadr,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_edgeadr,
-      m.flex_vertbodyid,
-      m.flex_edge,
-      m.flex_edgeflap,
-      m.flex_bending,
-      d.flexvert_xpos,
-    ],
-    outputs=[d.qfrc_spring],
-  )
+    wp.launch(
+      _flex_bending,
+      dim=(d.nworld, m.nflexedge),
+      inputs=[
+        m.nflex,
+        m.body_dofadr,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_edgeadr,
+        m.flex_edgenum,
+        m.flex_vertbodyid,
+        m.flex_edge,
+        m.flex_edgeflap,
+        m.flex_bending,
+        d.flexvert_xpos,
+      ],
+      outputs=[d.qfrc_spring],
+    )
 
   gravcomp = m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY)
 

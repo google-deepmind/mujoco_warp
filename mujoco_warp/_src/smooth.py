@@ -16,45 +16,28 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from . import util_misc
-from .types import MJ_MINVAL
-from .types import CamLightType
-from .types import ConeType
-from .types import Data
-from .types import DisableBit
-from .types import JointType
-from .types import Model
-from .types import ObjType
-from .types import TileSet
-from .types import TrnType
-from .types import WrapType
-from .types import vec5
-from .types import vec10
-from .types import vec11
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import CamLightType
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import WrapType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec10
+from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
-
-
-@wp.kernel
-def _kinematics_root(
-  # Data out:
-  xpos_out: wp.array2d(dtype=wp.vec3),
-  xquat_out: wp.array2d(dtype=wp.quat),
-  xmat_out: wp.array2d(dtype=wp.mat33),
-  xipos_out: wp.array2d(dtype=wp.vec3),
-  ximat_out: wp.array2d(dtype=wp.mat33),
-):
-  worldid = wp.tid()
-  xpos_out[worldid, 0] = wp.vec3(0.0)
-  xquat_out[worldid, 0] = wp.quat(1.0, 0.0, 0.0, 0.0)
-  xipos_out[worldid, 0] = wp.vec3(0.0)
-  xmat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
-  ximat_out[worldid, 0] = wp.identity(n=3, dtype=wp.float32)
 
 
 @wp.kernel
@@ -122,15 +105,16 @@ def _kinematics_level(
 
     # mocap bodies have world body as parent
     mocapid = body_mocapid[bodyid]
-    if pid == 0 and mocapid != -1:
-      body_pos_ = mocap_pos_in[worldid, mocapid]
-      body_quat_ = mocap_quat_in[worldid, mocapid]
+    if mocapid >= 0:
+      xpos = mocap_pos_in[worldid, mocapid]
+      xquat = mocap_quat_in[worldid, mocapid]
     else:
-      body_pos_ = body_pos[body_pos_id, bodyid]
-      body_quat_ = body_quat[body_quat_id, bodyid]
+      xpos = body_pos[body_pos_id, bodyid]
+      xquat = body_quat[body_quat_id, bodyid]
 
-    xpos = (xmat_in[worldid, pid] * body_pos_) + xpos_in[worldid, pid]
-    xquat = math.mul_quat(xquat_in[worldid, pid], body_quat_)
+    if pid >= 0:
+      xpos = xmat_in[worldid, pid] @ xpos + xpos_in[worldid, pid]
+      xquat = math.mul_quat(xquat_in[worldid, pid], xquat)
 
     for _ in range(jntnum):
       qadr = jnt_qposadr[jntadr]
@@ -159,7 +143,8 @@ def _kinematics_level(
       jntadr += 1
 
   xpos_out[worldid, bodyid] = xpos
-  xquat_out[worldid, bodyid] = wp.normalize(xquat)
+  xquat = wp.normalize(xquat)
+  xquat_out[worldid, bodyid] = xquat
   xmat_out[worldid, bodyid] = math.quat_to_mat(xquat)
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
@@ -233,11 +218,14 @@ def _flex_vertices(
 def _flex_edges(
   # Model:
   nv: int,
+  nflex: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
+  flex_edgeadr: wp.array(dtype=int),
+  flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   # Data in:
@@ -251,7 +239,11 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
   worldid, edgeid = wp.tid()
-  f = 0  # TODO(quaglino): get f from edgeid
+  for i in range(nflex):
+    locid = edgeid - flex_edgeadr[i]
+    if locid >= 0 and locid < flex_edgenum[i]:
+      f = i
+      break
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
   pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
@@ -284,8 +276,6 @@ def kinematics(m: Model, d: Data):
   derived positions and orientations of geoms, sites, and flexible elements, based on the
   current joint positions and any attached mocap bodies.
   """
-  wp.launch(_kinematics_root, dim=(d.nworld), inputs=[], outputs=[d.xpos, d.xquat, d.xmat, d.xipos, d.ximat])
-
   for i in range(1, len(m.body_tree)):
     body_tree = m.body_tree[i]
     wp.launch(
@@ -339,11 +329,14 @@ def flex(m: Model, d: Data):
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.nv,
+      m.nflex,
       m.body_parentid,
       m.body_rootid,
       m.body_dofadr,
       m.dof_bodyid,
       m.flex_vertadr,
+      m.flex_edgeadr,
+      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
       d.qvel,
