@@ -797,7 +797,7 @@ def linesearch_iterative(block_dim: int, ls_iterations: int, cone_type: types.Co
   FUSE_JV = fuse_jv
 
   # Native snippet for CUDA __syncthreads()
-  @wp.func_native(snippet="__syncthreads();")
+  @wp.func_native(snippet="WP_TILE_SYNC();")
   def _syncthreads():
     pass
 
