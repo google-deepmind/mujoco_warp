@@ -32,6 +32,7 @@ from mujoco_warp._src.collision_primitive_core import sphere_sphere
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
@@ -173,13 +174,13 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     convex: Convex geometry object containing position, rotation, and mesh data.
 
   Returns:
-    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
   _HUGE_VAL = 1e6
 
-  contact_dist = wp.vec4(wp.inf)
+  contact_dist = wp.vec4(MJ_MAXVAL)
   contact_pos = mat43()
   contact_count = int(0)
 

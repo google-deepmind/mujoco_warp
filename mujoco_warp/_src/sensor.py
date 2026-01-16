@@ -23,6 +23,7 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
@@ -782,7 +783,7 @@ def sensor_pos(m: Model, d: Data):
       d,
       rangefinder_pnt,
       rangefinder_vec,
-      vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
+      vec6(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL),
       True,
       m.sensor_rangefinder_bodyid,
       rangefinder_dist,

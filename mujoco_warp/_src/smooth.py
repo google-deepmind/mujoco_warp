@@ -19,6 +19,7 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
@@ -2734,7 +2735,7 @@ def _spatial_geom_tendon(
   if sideid >= 0:
     side = site_xpos_in[worldid, sideid]
   else:
-    side = wp.vec3(wp.inf)
+    side = wp.vec3(MJ_MAXVAL)
 
   # compute geom wrap length and connect points (if wrap occurs)
   length_geomgeom, geom_pnt0, geom_pnt1 = util_misc.wrap(site_pnt0, site_pnt1, geom_xpos, geom_xmat, geomsize, geom_type, side)
@@ -2892,7 +2893,7 @@ def _spatial_tendon_wrap(
 
         wrapid = id1
         id1 = wrap_objid[adr + j + 2]
-        if wp.norm_l2(wpnt_geom0) < wp.inf:
+        if wp.norm_l2(wpnt_geom0) < MJ_MAXVAL:
           wpnt_geom1 = wp.spatial_bottom(wrap_geom_xpos)
           wpnt_site1 = site_xpos_in[worldid, id1]
 
