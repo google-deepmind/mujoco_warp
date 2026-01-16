@@ -875,9 +875,9 @@ def _ray(
         geomid,
       )
       if dist < 0:
-        dist = wp.inf
+        dist = MJ_MAXVAL
     else:
-      dist = wp.inf
+      dist = MJ_MAXVAL
       normal = wp.vec3()
 
     tile_dist = wp.tile(dist)
@@ -916,7 +916,7 @@ def ray(
     d: The data object containing the current state and output arrays (device).
     pnt: Ray origin points.
     vec: Ray directions.
-    geomgroup: Group inclusion/exclusion mask. If all are wp.inf, ignore.
+    geomgroup: Group inclusion/exclusion mask.
     flg_static: If True, allows rays to intersect with static geoms.
     bodyexclude: Ignore geoms on specified body id (-1 to disable).
 
