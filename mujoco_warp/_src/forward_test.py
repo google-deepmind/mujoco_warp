@@ -511,7 +511,6 @@ class ForwardTest(parameterized.TestCase):
     mjw.step(m, d)
     self.assertGreater(d.time.numpy()[0], 0.0)
 
-
 if __name__ == "__main__":
   wp.init()
   absltest.main()
