@@ -15,6 +15,8 @@
 
 from typing import Tuple
 
+import numpy as np
+import mujoco
 import warp as wp
 
 from .render_context import RenderContext
@@ -222,8 +224,8 @@ def compute_bvh_group_roots(
   group_root_out[tid] = root
 
 
-def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
-  """Build a Warp BVH for all geometries in all worlds."""
+def build_scene_bvh(m: Model, d: Data, rc: RenderContext):
+  """Build a global BVH for all geometries in all worlds."""
   wp.launch(
     kernel=_compute_bvh_bounds,
     dim=(d.nworld, rc.bvh_ngeom),
@@ -258,7 +260,7 @@ def build_warp_bvh(m: Model, d: Data, rc: RenderContext):
   )
 
 
-def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
+def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
   wp.launch(
     kernel=_compute_bvh_bounds,
     dim=(d.nworld, rc.bvh_ngeom),
@@ -280,6 +282,32 @@ def refit_warp_bvh(m: Model, d: Data, rc: RenderContext):
   )
 
   rc.bvh.refit()
+
+
+def build_mesh_bvh(
+  mjm: mujoco.MjModel,
+  meshid: int,
+  constructor: str = "sah",
+  leaf_size: int = 2,
+) -> tuple[wp.Mesh, wp.vec3]:
+  """Create a Warp mesh BVH from mjcf mesh data."""
+  v_start = mjm.mesh_vertadr[meshid]
+  v_end = v_start + mjm.mesh_vertnum[meshid]
+  points = mjm.mesh_vert[v_start:v_end]
+
+  f_start = mjm.mesh_faceadr[meshid]
+  f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
+  indices = mjm.mesh_face[f_start:f_end]
+  indices = indices.flatten()
+  pmin = np.min(points, axis=0)
+  pmax = np.max(points, axis=0)
+  half = 0.5 * (pmax - pmin)
+
+  points = wp.array(points, dtype=wp.vec3)
+  indices = wp.array(indices, dtype=wp.int32)
+  mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
+
+  return mesh, half
 
 
 @wp.kernel

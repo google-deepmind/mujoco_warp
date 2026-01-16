@@ -90,7 +90,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     d: The data on device.
     rc: The render context on device.
   """
-  bvh.refit_warp_bvh(m, d, rc)
+  bvh.refit_scene_bvh(m, d, rc)
   if m.nflex:
     bvh.refit_flex_bvh(m, d, rc)
   render_megakernel(m, d, rc)

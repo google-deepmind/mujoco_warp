@@ -117,32 +117,32 @@ class BvhTest(absltest.TestCase):
     self.assertEqual(rc.lower.shape[0], 4 * rc.bvh_ngeom, "lower")
     np.testing.assert_array_equal(rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), err_msg="group")
 
-  def test_build_warp_bvh(self):
-    """Tests that build_warp_bvh creates a valid BVH."""
+  def test_build_scene_bvh(self):
+    """Tests that build_scene_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
     rc = _create_minimal_context(mjm, d)
 
-    bvh.build_warp_bvh(m, d, rc)
+    bvh.build_scene_bvh(m, d, rc)
 
     self.assertIsNotNone(rc.bvh, "bvh")
     self.assertIsNotNone(rc.bvh_id, "bvh_id")
 
-  def test_build_warp_bvh_multiworld(self):
+  def test_build_scene_bvh_multiworld(self):
     """Tests BVH construction with multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=8)
     rc = _create_minimal_context(mjm, d)
 
-    bvh.build_warp_bvh(m, d, rc)
+    bvh.build_scene_bvh(m, d, rc)
 
     self.assertEqual(rc.lower.shape, (8 * rc.bvh_ngeom,), "lower")
     self.assertEqual(rc.group_root.shape, (8,), "group_root")
 
-  def test_refit_warp_bvh(self):
-    """Tests that refit_warp_bvh updates bounds correctly."""
+  def test_refit_scene_bvh(self):
+    """Tests that refit_scene_bvh updates bounds correctly."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
     rc = _create_minimal_context(mjm, d)
 
-    bvh.build_warp_bvh(m, d, rc)
+    bvh.build_scene_bvh(m, d, rc)
 
     lower_before = rc.lower.numpy()
 
@@ -150,17 +150,17 @@ class BvhTest(absltest.TestCase):
     geom_xpos[:, :, 2] += 1.0
     d.geom_xpos = wp.array(geom_xpos, dtype=wp.vec3)
 
-    bvh.refit_warp_bvh(m, d, rc)
+    bvh.refit_scene_bvh(m, d, rc)
 
     lower_after = rc.lower.numpy()
-    np.testing.assert_allclose(lower_before, lower_after, err_msg="lower < upper")
+    self.assertFalse(np.array_equal(lower_before, lower_after), "lower_before != lower_after")
 
   def test_compute_bvh_group_roots(self):
     """Tests that group roots are computed for each world."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
     rc = _create_minimal_context(mjm, d)
 
-    bvh.build_warp_bvh(m, d, rc)
+    bvh.build_scene_bvh(m, d, rc)
 
     group_root = rc.group_root.numpy()
     self.assertEqual(len(group_root), d.nworld, "group_root")
@@ -170,11 +170,20 @@ class BvhTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=16)
     rc = _create_minimal_context(mjm, d)
 
-    bvh.build_warp_bvh(m, d, rc)
+    bvh.build_scene_bvh(m, d, rc)
 
     group_root = rc.group_root.numpy()
     self.assertEqual(rc.group_root.shape[0], 16, "group_root")
     self.assertEqual(len(set(group_root)), 16, "group_root")
+  
+  def test_build_mesh_bvh(self):
+    """Tests that build_mesh_bvh creates a valid BVH."""
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    mesh, half = bvh.build_mesh_bvh(mjm, 0)
+
+    self.assertNotEqual(mesh.id, wp.uint64(0), "mesh id")
+    self.assertFalse(np.array_equal(np.array(half), np.array([0.0, 0.0, 0.0])), "mesh half size")
 
   def test_accumulate_flex_vertex_normals(self):
     """Tests flex vertex normal accumulation kernel."""

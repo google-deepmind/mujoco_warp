@@ -138,7 +138,7 @@ class RenderContext:
     for i in range(nmesh):
       if i not in used_mesh_id:
         continue
-      mesh, half = _build_mesh_bvh(mjm, i)
+      mesh, half = bvh.build_mesh_bvh(mjm, i)
       self.mesh_registry[mesh.id] = mesh
       mesh_bvh_id[i] = mesh.id
       mesh_bounds_size[i] = half
@@ -319,7 +319,7 @@ class RenderContext:
     self.group_root = wp.zeros(d.nworld, dtype=int)
     self.bvh = None
     self.bvh_id = None
-    bvh.build_warp_bvh(m, d, self)
+    bvh.build_scene_bvh(m, d, self)
 
 
 @wp.kernel
@@ -400,32 +400,6 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array
   )
 
   return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
-
-
-def _build_mesh_bvh(
-  mjm: mujoco.MjModel,
-  meshid: int,
-  constructor: str = "sah",
-  leaf_size: int = 1,
-) -> tuple[wp.Mesh, wp.vec3]:
-  """Create a Warp mesh BVH from mjcf mesh data."""
-  v_start = mjm.mesh_vertadr[meshid]
-  v_end = v_start + mjm.mesh_vertnum[meshid]
-  points = mjm.mesh_vert[v_start:v_end]
-
-  f_start = mjm.mesh_faceadr[meshid]
-  f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
-  indices = mjm.mesh_face[f_start:f_end]
-  indices = indices.flatten()
-  pmin = np.min(points, axis=0)
-  pmax = np.max(points, axis=0)
-  half = 0.5 * (pmax - pmin)
-
-  points = wp.array(points, dtype=wp.vec3)
-  indices = wp.array(indices, dtype=wp.int32)
-  mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
-
-  return mesh, half
 
 
 def _optimize_hfield_mesh(
@@ -560,7 +534,7 @@ def _build_hfield_mesh(
   mjm: mujoco.MjModel,
   hfieldid: int,
   constructor: str = "sah",
-  leaf_size: int = 1,
+  leaf_size: int = 2,
 ) -> tuple[wp.Mesh, wp.vec3]:
   """Create a Warp mesh BVH from mjcf heightfield data."""
   nr = mjm.hfield_nrow[hfieldid]
@@ -778,7 +752,13 @@ def _make_faces_3d_shells(
   group_out[face_id] = worldid
 
 
-def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
+def _make_flex_mesh(
+  mjm: mujoco.MjModel,
+  m: Model,
+  d: Data,
+  constructor: str = "sah",
+  leaf_size: int = 2
+  ) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, wp.array, wp.array, int]:
   """Create a Warp Mesh for flex meshes.
 
   We create a single Warp Mesh (single BVH) for all flex objects across all worlds
@@ -879,7 +859,8 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
     points=face_point,
     indices=face_index,
     groups=group,
-    bvh_constructor="sah",
+    bvh_constructor=constructor,
+    bvh_leaf_size=leaf_size
   )
 
   group_root = wp.zeros(d.nworld, dtype=int)
