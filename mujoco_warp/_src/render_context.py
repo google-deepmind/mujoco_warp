@@ -223,23 +223,19 @@ class RenderContext:
 
     self.cam_res = wp.array(active_cam_res, dtype=wp.vec2i)
 
-    if render_rgb is not None:
-      if isinstance(render_rgb, bool):
-        render_rgb = [render_rgb] * ncam
-      assert len(render_rgb) == ncam, (
-        f"Render RGB must be provided for all active cameras (got {len(render_rgb)}, expected {ncam})"
-      )
-    else:
+    if render_rgb and isinstance(render_rgb, bool):
+      render_rgb = [render_rgb] * ncam
+    elif render_rgb is None:
       render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
 
-    if render_depth is not None:
-      if isinstance(render_depth, bool):
-        render_depth = [render_depth] * ncam
-      assert len(render_depth) == ncam, (
-        f"Render depth must be provided for all active cameras (got {len(render_depth)}, expected {ncam})"
-      )
-    else:
+    if render_depth and isinstance(render_depth, bool):
+      render_depth = [render_depth] * ncam
+    elif render_depth is None:
       render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+
+    assert len(render_rgb) == ncam and len(render_depth) == ncam, (
+      f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
+    )
 
     rgb_adr = -1 * np.ones(ncam, dtype=int)
     depth_adr = -1 * np.ones(ncam, dtype=int)

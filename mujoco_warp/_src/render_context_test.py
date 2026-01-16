@@ -47,13 +47,13 @@ class RenderContextTest(parameterized.TestCase):
     self.assertIsNotNone(rc)
     self.assertEqual(rc.ncam, mjm.ncam)
 
-    self.assertEqual(rc.lower.shape, (nworld * rc.bvh_ngeom,), "render context lower shape")
-    self.assertEqual(rc.upper.shape, (nworld * rc.bvh_ngeom,), "render context upper shape")
-    self.assertEqual(rc.group.shape, (nworld * rc.bvh_ngeom,), "render context group shape")
-    self.assertEqual(rc.group_root.shape, (nworld,), "render context group root shape")
+    self.assertEqual(rc.lower.shape, (nworld * rc.bvh_ngeom,), "lower")
+    self.assertEqual(rc.upper.shape, (nworld * rc.bvh_ngeom,), "upper")
+    self.assertEqual(rc.group.shape, (nworld * rc.bvh_ngeom,), "group")
+    self.assertEqual(rc.group_root.shape, (nworld,), "group_root")
 
     self.assertIsNotNone(rc.bvh_id)
-    self.assertNotEqual(rc.bvh_id, 0, "render context bvh id not zero")
+    self.assertNotEqual(rc.bvh_id, 0, "bvh_id")
 
     group_np = rc.group.numpy()
     np.testing.assert_array_equal(group_np, np.repeat(np.arange(nworld), rc.bvh_ngeom), err_msg="render context group values")
@@ -65,41 +65,39 @@ class RenderContextTest(parameterized.TestCase):
 
     expected_total = 3 * width * height
 
-    self.assertEqual(rc.ncam, 3, "render context ncam")
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "render context rgb data shape")
-    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "render context depth data shape")
+    self.assertEqual(rc.ncam, 3, "ncam")
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
 
     rgb_adr = rc.rgb_adr.numpy()
     depth_adr = rc.depth_adr.numpy()
-    np.testing.assert_array_equal(rgb_adr, [0, width * height, 2 * width * height], err_msg="render context rgb adr values")
-    np.testing.assert_array_equal(depth_adr, [0, width * height, 2 * width * height], err_msg="render context depth adr values")
+    np.testing.assert_array_equal(rgb_adr, [0, width * height, 2 * width * height], err_msg="rgb_adr")
+    np.testing.assert_array_equal(depth_adr, [0, width * height, 2 * width * height], err_msg="depth_adr")
 
   def test_heterogeneous_camera(self):
-    """Tests render context with different resolutions and output ."""
+    """Tests render context with different resolutions and output."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     cam_res = [(64, 64), (32, 32), (16, 16)]
     rc = mjw.create_render_context(mjm, m, d, cam_res=cam_res, render_rgb=True, render_depth=True)
 
-    self.assertEqual(rc.ncam, 3, "render context ncam")
-    np.testing.assert_array_equal(rc.cam_res.numpy(), cam_res, err_msg="render context cam res values")
+    self.assertEqual(rc.ncam, 3, "ncam")
+    np.testing.assert_array_equal(rc.cam_res.numpy(), cam_res, err_msg="cam_res")
 
     expected_total = 64 * 64 + 32 * 32 + 16 * 16
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "render context rgb data shape")
-    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "render context depth data shape")
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
 
     rgb_adr = rc.rgb_adr.numpy()
     depth_adr = rc.depth_adr.numpy()
-    np.testing.assert_array_equal(rgb_adr, [0, 64 * 64, 64 * 64 + 32 * 32], err_msg="render context rgb adr values")
-    np.testing.assert_array_equal(depth_adr, [0, 64 * 64, 64 * 64 + 32 * 32], err_msg="render context depth adr values")
+    np.testing.assert_array_equal(rgb_adr, [0, 64 * 64, 64 * 64 + 32 * 32], err_msg="rgb_adr")
+    np.testing.assert_array_equal(depth_adr, [0, 64 * 64, 64 * 64 + 32 * 32], err_msg="depth_adr")
 
-    # Test that results are same when reading from xml values
+    # Test that results are same when reading from mjmodel fields loaded through xml
     rc_xml = mjw.create_render_context(mjm, m, d, render_rgb=True, render_depth=True)
-    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "render context rgb data shape from xml")
-    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "render context depth data shape from xml")
-    np.testing.assert_array_equal(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), err_msg="render context rgb adr values from xml")
-    np.testing.assert_array_equal(
-      rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), err_msg="render context depth adr values from xml"
-    )
+    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
+    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
+    np.testing.assert_array_equal(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), err_msg="rgb_adr")
+    np.testing.assert_array_equal(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), err_msg="depth_adr")
 
   def test_cam_active_filtering(self):
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
@@ -107,10 +105,10 @@ class RenderContextTest(parameterized.TestCase):
 
     rc = mjw.create_render_context(mjm, m, d, cam_res=(width, height), cam_active=[True, False, True])
 
-    self.assertEqual(rc.ncam, 2, "render context ncam")
+    self.assertEqual(rc.ncam, 2, "ncam")
 
     expected_total = 2 * width * height
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "render context rgb data shape")
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
 
   def test_rgb_only_and_depth_only(self):
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
@@ -126,27 +124,21 @@ class RenderContextTest(parameterized.TestCase):
       render_depth=[False, True, True],
     )
 
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, 2 * pixels), "render context rgb data shape")
-    self.assertEqual(rc.depth_data.shape, (d.nworld, 2 * pixels), "render context depth data shape")
-    np.testing.assert_array_equal(rc.rgb_adr.numpy(), [0, -1, pixels], "render context rgb adr value")
-    np.testing.assert_array_equal(rc.depth_adr.numpy(), [-1, 0, pixels], "render context depth adr value")
-    np.testing.assert_array_equal(rc.render_rgb.numpy(), [True, False, True], err_msg="render context render rgb values")
-    np.testing.assert_array_equal(rc.render_depth.numpy(), [False, True, True], err_msg="render context render depth values")
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, 2 * pixels), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, 2 * pixels), "depth_data")
+    np.testing.assert_array_equal(rc.rgb_adr.numpy(), [0, -1, pixels], "rgb_adr")
+    np.testing.assert_array_equal(rc.depth_adr.numpy(), [-1, 0, pixels], "depth_adr")
+    np.testing.assert_array_equal(rc.render_rgb.numpy(), [True, False, True], "render_rgb")
+    np.testing.assert_array_equal(rc.render_depth.numpy(), [False, True, True], "render_depth")
 
-    # Test that results are same when reading from xml values
+    # Test that results are same when reading from mjmodel fields loaded through xml
     rc_xml = mjw.create_render_context(mjm, m, d, cam_res=(width, height))
-    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "render context rgb data shape from xml")
-    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "render context depth data shape from xml")
-    np.testing.assert_array_equal(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), err_msg="render context rgb adr values from xml")
-    np.testing.assert_array_equal(
-      rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), err_msg="render context depth adr values from xml"
-    )
-    np.testing.assert_array_equal(
-      rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), err_msg="render context render rgb values from xml"
-    )
-    np.testing.assert_array_equal(
-      rc.render_depth.numpy(), rc_xml.render_depth.numpy(), err_msg="render context render depth values from xml"
-    )
+    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
+    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
+    np.testing.assert_array_equal(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
+    np.testing.assert_array_equal(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), "depth_adr")
+    np.testing.assert_array_equal(rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), "render_rgb")
+    np.testing.assert_array_equal(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
 
 if __name__ == "__main__":
