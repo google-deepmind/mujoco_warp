@@ -1877,7 +1877,7 @@ def _polygon_clip(
     for i in range(npolygon):
       # get edge PQ of the polygon
       P = polygon_out[i]
-      Q = wp.where(i < npolygon - 1, polygon_out[i + 1], polygon_out[0])
+      Q = polygon_out[(i + 1) % npolygon]
 
       # determine if P and Q are in the halfspace of the clipping edge
       inside1 = _halfspace(face1[e], pn[e], P)
