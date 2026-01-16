@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 import warp as wp
 
 from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -836,7 +837,7 @@ def _ray(
 
   num_threads = wp.block_dim()
 
-  min_dist = float(wp.inf)
+  min_dist = float(MJ_MAXVAL)
   min_geomid = int(-1)
   min_normal = wp.vec3()
 

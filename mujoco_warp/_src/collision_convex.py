@@ -26,6 +26,7 @@ from mujoco_warp._src.collision_primitive import geom_collision_pair
 from mujoco_warp._src.collision_primitive import write_contact
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
@@ -365,9 +366,9 @@ def ccd_hfield_kernel_builder(
     hfield_contact_dist = vec_maxconpair()
     hfield_contact_pos = mat_maxconpair()
     hfield_contact_normal = mat_maxconpair()
-    min_dist = float(wp.inf)
-    min_normal = wp.vec3(wp.inf, wp.inf, wp.inf)
-    min_pos = wp.vec3(wp.inf, wp.inf, wp.inf)
+    min_dist = float(MJ_MAXVAL)
+    min_normal = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
+    min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     min_id = int(-1)
 
     # TODO(team): height field margin?
