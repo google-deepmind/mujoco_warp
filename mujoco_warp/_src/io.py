@@ -15,6 +15,7 @@
 
 import dataclasses
 import importlib.metadata
+import re
 import warnings
 from typing import Any, Optional, Sequence, Union
 
@@ -26,11 +27,23 @@ from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.warp_util import nested_kernel
 
-bleeding_edge_mujoco = tuple(map(int, mujoco.__version__.split(".")[:3])) >= (3, 4, 1)
-dist = importlib.metadata.distribution("mujoco")
-if "dev" in dist.version:
-  # breaking change: https://github.com/google-deepmind/mujoco/commit/a49576e469c8f42a496f5d71cd115f59b4762a06
-  bleeding_edge_mujoco = bleeding_edge_mujoco and int(dist.version.split("dev")[1]) >= 855718305
+
+def _is_mujoco_dev() -> bool:
+  _DEV_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+.+")  # anything after x.y.z
+
+  version = getattr(__import__("mujoco"), "__version__", None)
+  if version and _DEV_VERSION_PATTERN.match(version):
+    return True
+
+  # fall back to metadata
+  dist_version = importlib.metadata.version("mujoco")
+  if _DEV_VERSION_PATTERN.match(dist_version):
+    return True
+
+  return False
+
+
+BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
@@ -888,7 +901,7 @@ def put_data(
   flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
   if mjd.flexedge_J.size:
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if bleeding_edge_mujoco:
+    if BLEEDING_EDGE_MUJOCO:
       mujoco.mju_sparse2dense(
         flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
       )
@@ -1014,7 +1027,7 @@ def get_data_into(
   flexedge_J = d.flexedge_J.numpy()[world_id]
   if result.flexedge_J.size:
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if bleeding_edge_mujoco:
+    if BLEEDING_EDGE_MUJOCO:
       mujoco.mju_dense2sparse(
         result.flexedge_J.reshape(-1),
         flexedge_J,
