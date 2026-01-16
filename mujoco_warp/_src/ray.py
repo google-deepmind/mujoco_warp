@@ -892,7 +892,7 @@ def _ray(
       min_geomid = tile_geomid[local_min_geomid[0]]
       min_normal = tile_normal[local_min_geomid[0]]
 
-  if wp.isinf(min_dist):
+  if min_dist >= MJ_MAXVAL:
     dist_out[worldid, rayid] = -1.0
   else:
     dist_out[worldid, rayid] = min_dist
