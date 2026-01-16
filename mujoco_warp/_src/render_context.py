@@ -24,29 +24,32 @@ from . import bvh
 from .types import Data
 from .types import GeomType
 from .types import Model
+from .types import ProjectionType
 
 wp.set_module_options({"enable_backward": False})
 
 
 def _camera_frustum_bounds(
-  mjm: mujoco.MjModel,
-  cam_id: int,
+  cam_projection: int,
+  cam_fovy: float,
+  cam_sensorsize: wp.vec2,
+  cam_intrinsic: wp.vec4,
   img_w: int,
   img_h: int,
   znear: float,
 ) -> tuple[float, float, float, float, bool]:
   """Replicate MuJoCo's frustum computation to derive near-plane bounds."""
-  orthographic = mjm.cam_projection[cam_id] == mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
-  if orthographic:
-    half_height = mjm.cam_fovy[cam_id] * 0.5
+
+  if cam_projection == ProjectionType.ORTHOGRAPHIC:
+    half_height = cam_fovy * 0.5
     aspect = img_w / img_h
     half_width = half_height * aspect
     return (-half_width, half_width, half_height, -half_height, True)
 
-  sensorsize = mjm.cam_sensorsize[cam_id]
+  sensorsize = cam_sensorsize
   has_intrinsics = sensorsize[1] != 0.0
   if has_intrinsics:
-    fx, fy, cx, cy = mjm.cam_intrinsic[cam_id]
+    fx, fy, cx, cy = cam_intrinsic
     sensor_w, sensor_h = sensorsize
 
     # Clip sensor size to match desired aspect ratio
@@ -63,7 +66,7 @@ def _camera_frustum_bounds(
     bottom = -znear / fy * (sensor_h * 0.5 + cy)
     return (float(left), float(right), float(top), float(bottom), False)
 
-  fovy_rad = np.deg2rad(float(mjm.cam_fovy[cam_id]))
+  fovy_rad = np.deg2rad(cam_fovy)
   half_height = znear * np.tan(0.5 * fovy_rad)
   aspect = img_w / img_h
   half_width = half_height * aspect
@@ -266,37 +269,46 @@ class RenderContext:
     self.depth_data = wp.zeros((d.nworld, di), dtype=wp.float32)
     self.render_rgb = wp.array(render_rgb, dtype=bool)
     self.render_depth = wp.array(render_depth, dtype=bool)
-    self.ray = wp.zeros(int(total), dtype=wp.vec3)
+    self.znear = mjm.vis.map.znear * mjm.stat.extent
+    self.total_rays = int(total)
 
-    offset = 0
-    model_znear = mjm.vis.map.znear * mjm.stat.extent
-    for idx, cam_id in enumerate(active_cam_indices):
-      img_w = cam_res[idx][0]
-      img_h = cam_res[idx][1]
-      left, right, top, bottom, is_ortho = _camera_frustum_bounds(
-        mjm,
-        cam_id,
-        img_w,
-        img_h,
-        model_znear,
-      )
-      wp.launch(
-        kernel=build_primary_rays,
-        dim=int(img_w * img_h),
-        inputs=[
-          offset,
+    # if cam_fovy or cam_intrinsic is batched, we can skip precalculating the rays
+    # since we will need to compute the world specific ray in the render kernel
+    if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
+      self.ray = None
+    else:
+      self.ray = wp.zeros(int(total), dtype=wp.vec3)
+
+      offset = 0
+      for idx, cam_id in enumerate(active_cam_indices):
+        img_w = cam_res[idx][0]
+        img_h = cam_res[idx][1]
+        left, right, top, bottom, is_ortho = _camera_frustum_bounds(
+          m.cam_projection.numpy()[cam_id].item(),
+          m.cam_fovy.numpy()[cam_id].item(),
+          wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
+          wp.vec4(m.cam_intrinsic.numpy()[cam_id]),
           img_w,
           img_h,
-          left,
-          right,
-          top,
-          bottom,
-          model_znear,
-          int(is_ortho),
-        ],
-        outputs=[self.ray],
-      )
-      offset += img_w * img_h
+          self.znear,
+        )
+        wp.launch(
+          kernel=build_primary_rays,
+          dim=int(img_w * img_h),
+          inputs=[
+            offset,
+            img_w,
+            img_h,
+            left,
+            right,
+            top,
+            bottom,
+            self.znear,
+            int(is_ortho),
+          ],
+          outputs=[self.ray],
+        )
+        offset += img_w * img_h
 
     self.ncam = ncam
     self.cam_id_map = wp.array(active_cam_indices, dtype=int)

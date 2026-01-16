@@ -32,6 +32,7 @@ from .render_context import RenderContext
 from .types import Data
 from .types import GeomType
 from .types import Model
+from .types import ProjectionType
 from .warp_util import event_scope
 from .warp_util import nested_kernel
 
@@ -94,6 +95,65 @@ def render(m: Model, d: Data, rc: RenderContext):
   if m.nflex:
     bvh.refit_flex_bvh(m, d, rc)
   render_megakernel(m, d, rc)
+
+
+@wp.func
+def compute_ray(
+  # In:
+  projection: int,
+  fovy: float,
+  sensorsize: wp.vec2,
+  intrinsic: wp.vec4,
+  img_w: int,
+  img_h: int,
+  px: int, py: int,
+  znear: float,
+) -> wp.vec3:
+  """Compute ray direction for a pixel with per-world camera parameters.
+
+  This combines _camera_frustum_bounds and build_primary_rays logic for use
+  inside a kernel when camera parameters are batched/randomized across worlds.
+  """
+  if projection == ProjectionType.ORTHOGRAPHIC:
+    return wp.vec3(0.0, 0.0, -1.0)
+
+  aspect = float(img_w) / float(img_h)
+  sensor_h = sensorsize[1]
+
+  # Check if we have intrinsics (sensorsize[1] != 0)
+  if sensor_h != 0.0:
+    fx = intrinsic[0]
+    fy = intrinsic[1]
+    cx = intrinsic[2]
+    cy = intrinsic[3]
+    sensor_w = sensorsize[0]
+
+    target_aspect = float(img_w) / float(img_h)
+    sensor_aspect = sensor_w / sensor_h
+    if target_aspect > sensor_aspect:
+      sensor_h = sensor_w / target_aspect
+    elif target_aspect < sensor_aspect:
+      sensor_w = sensor_h * target_aspect
+
+    left = -znear / fx * (sensor_w * 0.5 - cx)
+    right = znear / fx * (sensor_w * 0.5 + cx)
+    top = znear / fy * (sensor_h * 0.5 - cy)
+    bottom = -znear / fy * (sensor_h * 0.5 + cy)
+  else:
+    fovy_rad = fovy * wp.pi / 180.0
+    half_height = znear * wp.tan(0.5 * fovy_rad)
+    half_width = half_height * aspect
+    left = -half_width
+    right = half_width
+    top = half_height
+    bottom = -half_height
+
+  u = (float(px) + 0.5) / float(img_w)
+  v = (float(py) + 0.5) / float(img_h)
+  x = left + (right - left) * u
+  y = top + (bottom - top) * v
+
+  return wp.normalize(wp.vec3(x, y, -znear))
 
 
 @wp.func
@@ -582,6 +642,10 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     light_active: wp.array2d(dtype=bool),
     light_type: wp.array2d(dtype=int),
     light_castshadow: wp.array2d(dtype=bool),
+    cam_projection: wp.array(dtype=int),
+    cam_fovy: wp.array2d(dtype=float),
+    cam_sensorsize: wp.array(dtype=wp.vec2),
+    cam_intrinsic: wp.array2d(dtype=wp.vec4),
     # Data in:
     cam_xpos: wp.array2d(dtype=wp.vec3),
     cam_xmat: wp.array2d(dtype=wp.mat33),
@@ -640,7 +704,26 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     # Map active camera index to MuJoCo camera ID
     mujoco_cam_id = cam_id_map[cam_idx]
 
-    ray_dir_local_cam = ray[ray_idx]
+
+    if wp.static(rc.ray is None):
+      img_w = cam_res[cam_idx][0]
+      img_h = cam_res[cam_idx][1]
+      px = ray_idx_local % img_w
+      py = ray_idx_local // img_w
+      ray_dir_local_cam = compute_ray(
+        cam_projection[mujoco_cam_id],
+        cam_fovy[world_idx, mujoco_cam_id],
+        cam_sensorsize[mujoco_cam_id],
+        cam_intrinsic[world_idx, mujoco_cam_id],
+        img_w,
+        img_h,
+        px,
+        py,
+        wp.static(rc.znear),
+      )
+    else:
+      ray_dir_local_cam = ray[ray_idx]
+
     ray_dir_world = cam_xmat[world_idx, mujoco_cam_id] @ ray_dir_local_cam
     ray_origin_world = cam_xpos[world_idx, mujoco_cam_id]
 
@@ -772,7 +855,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
   wp.launch(
     kernel=_render_megakernel,
-    dim=(d.nworld, rc.ray.shape[0]),
+    dim=(d.nworld, rc.total_rays),
     inputs=[
       m.geom_type,
       m.geom_dataid,
@@ -787,6 +870,10 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       m.light_active,
       m.light_type,
       m.light_castshadow,
+      m.cam_projection,
+      m.cam_fovy,
+      m.cam_sensorsize,
+      m.cam_intrinsic,
       d.cam_xpos,
       d.cam_xmat,
       d.light_xpos,
