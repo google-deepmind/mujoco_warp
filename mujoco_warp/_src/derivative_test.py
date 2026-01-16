@@ -107,7 +107,7 @@ class DerivativeTest(parameterized.TestCase):
       for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
         mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
     else:
-      mjw_out = out_smooth_vel.numpy()[0, :m.nv, :m.nv]
+      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
