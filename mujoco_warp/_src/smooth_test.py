@@ -496,9 +496,9 @@ class SmoothTest(parameterized.TestCase):
     flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
 
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    from mujoco_warp._src.io import bleeding_edge_mujoco
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
 
-    if bleeding_edge_mujoco:
+    if BLEEDING_EDGE_MUJOCO:
       mujoco.mju_sparse2dense(
         flexedge_J,
         mjd.flexedge_J.reshape(-1),
