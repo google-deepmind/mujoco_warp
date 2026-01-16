@@ -358,7 +358,9 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     # wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 1.0 + 5e-4)
+    wlen, wpnt0, wpnt1 = _wrap_circle(
+      np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 1.0 + 5e-4
+    )
     _assert_eq(wlen, 0.0, "wlen")
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
