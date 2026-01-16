@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import dataclasses
-from typing import Tuple, Union
+from typing import Optional, Union
 
 import mujoco
 import numpy as np
@@ -116,14 +116,14 @@ class RenderContext:
     mjm: mujoco.MjModel,
     m: Model,
     d: Data,
-    cam_res: Union[list[Tuple[int, int]] | Tuple[int, int]] = [],
-    render_rgb: Union[list[bool] | bool] = True,
-    render_depth: Union[list[bool] | bool] = False,
+    cam_res: Optional[Union[list[tuple[int, int]] | tuple[int, int]]] = None,
+    render_rgb: Optional[Union[list[bool] | bool]] = None,
+    render_depth: Optional[Union[list[bool] | bool]] = None,
     use_textures: bool = True,
     use_shadows: bool = False,
     enabled_geom_groups: list[int] = [0, 1, 2],
-    cam_active: list[bool] = [],
-    flex_render_smooth: bool = False,
+    cam_active: Optional[list[bool]] = None,
+    flex_render_smooth: bool = True,
   ):
     # Mesh BVHs
     nmesh = mjm.nmesh
@@ -211,7 +211,7 @@ class RenderContext:
     # If a global camera resolution is provided, use it for all cameras
     # otherwise check the xml for camera resolutions
     if cam_res is not None:
-      if isinstance(cam_res, Tuple):
+      if isinstance(cam_res, tuple):
         cam_res = [cam_res] * ncam
       assert len(cam_res) == ncam, (
         f"Camera resolutions must be provided for all active cameras (got {len(cam_res)}, expected {ncam})"
@@ -219,20 +219,22 @@ class RenderContext:
       active_cam_res = cam_res
     else:
       # Extract resolutions only for active cameras
-      mjm.cam_resoultion[active_cam_indices]
+      active_cam_res = mjm.cam_resolution[active_cam_indices]
 
     self.cam_res = wp.array(active_cam_res, dtype=wp.vec2i)
 
-    if isinstance(render_rgb, bool):
+    if render_rgb and isinstance(render_rgb, bool):
       render_rgb = [render_rgb] * ncam
-    assert len(render_rgb) == ncam, (
-      f"Render RGB must be provided for all active cameras (got {len(render_rgb)}, expected {ncam})"
-    )
+    elif render_rgb is None:
+      render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
 
-    if isinstance(render_depth, bool):
+    if render_depth and isinstance(render_depth, bool):
       render_depth = [render_depth] * ncam
-    assert len(render_depth) == ncam, (
-      f"Render depth must be provided for all active cameras (got {len(render_depth)}, expected {ncam})"
+    elif render_depth is None:
+      render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+
+    assert len(render_rgb) == ncam and len(render_depth) == ncam, (
+      f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
     )
 
     rgb_adr = -1 * np.ones(ncam, dtype=int)
@@ -353,7 +355,7 @@ def build_primary_rays(
   ray_out[offset + tid] = wp.normalize(wp.vec3(x, y, -znear))
 
 
-def _create_packed_texture_data(mjm: mujoco.MjModel) -> Tuple[wp.array, wp.array]:
+def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array]:
   """Create packed uint32 texture data from uint8 texture data for optimized sampling."""
   if mjm.ntex == 0:
     return wp.array([], dtype=wp.uint32), wp.array([], dtype=int)
@@ -405,7 +407,7 @@ def _build_mesh_bvh(
   meshid: int,
   constructor: str = "sah",
   leaf_size: int = 1,
-) -> Tuple[wp.Mesh, wp.vec3]:
+) -> tuple[wp.Mesh, wp.vec3]:
   """Create a Warp mesh BVH from mjcf mesh data."""
   v_start = mjm.mesh_vertadr[meshid]
   v_end = v_start + mjm.mesh_vertnum[meshid]
@@ -435,7 +437,7 @@ def _optimize_hfield_mesh(
   sz_scale: float,
   width: float,
   height: float,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
   """Greedy meshing for heightfield optimization.
 
   Merges coplanar adjacent cells into larger rectangles to
@@ -559,7 +561,7 @@ def _build_hfield_mesh(
   hfieldid: int,
   constructor: str = "sah",
   leaf_size: int = 1,
-) -> Tuple[wp.Mesh, wp.vec3]:
+) -> tuple[wp.Mesh, wp.vec3]:
   """Create a Warp mesh BVH from mjcf heightfield data."""
   nr = mjm.hfield_nrow[hfieldid]
   nc = mjm.hfield_ncol[hfieldid]

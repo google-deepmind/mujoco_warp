@@ -722,6 +722,26 @@ def ray_mesh_with_bvh(
 
 
 @wp.func
+def ray_mesh_with_bvh_anyhit(
+  # In:
+  mesh_bvh_id: wp.array(dtype=wp.uint64),
+  mesh_geom_id: int,
+  pos: wp.vec3,
+  mat: wp.mat33,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+  max_t: float,
+) -> bool:
+  """Returns True if there is any hit for ray mesh intersections.
+
+  Requires wp.Mesh be constructed and their ids to be passed. This variant is useful
+  for shadow ray casts where the only goal is if there is any ray hit.
+  """
+  lpnt, lvec = _ray_map(pos, mat, pnt, vec)
+  return wp.mesh_query_ray_anyhit(mesh_bvh_id[mesh_geom_id], lpnt, lvec, max_t)
+
+
+@wp.func
 def ray_flex_with_bvh(
   # In:
   bvh_id: wp.uint64,

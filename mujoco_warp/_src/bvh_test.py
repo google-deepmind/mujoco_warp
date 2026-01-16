@@ -87,7 +87,7 @@ class BvhTest(absltest.TestCase):
     lower = rc.lower.numpy()
     upper = rc.upper.numpy()
 
-    np.testing.assert_allclose(lower < upper, True, err_msg="lower must always be less than upper")
+    np.testing.assert_allclose(lower < upper, True, err_msg="lower < upper")
 
   def test_compute_bvh_bounds_multiworld(self):
     """Tests bounds computation with multiple worlds."""
@@ -114,10 +114,8 @@ class BvhTest(absltest.TestCase):
       ],
     )
 
-    self.assertEqual(rc.lower.shape[0], 4 * rc.bvh_ngeom, "render context lower shape")
-    np.testing.assert_array_equal(
-      rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), err_msg="render context group values"
-    )
+    self.assertEqual(rc.lower.shape[0], 4 * rc.bvh_ngeom, "lower")
+    np.testing.assert_array_equal(rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), err_msg="group")
 
   def test_build_warp_bvh(self):
     """Tests that build_warp_bvh creates a valid BVH."""
@@ -126,8 +124,8 @@ class BvhTest(absltest.TestCase):
 
     bvh.build_warp_bvh(m, d, rc)
 
-    self.assertIsNotNone(rc.bvh, "render context bvh object")
-    self.assertIsNotNone(rc.bvh_id, "render context bvh int identifier")
+    self.assertIsNotNone(rc.bvh, "bvh")
+    self.assertIsNotNone(rc.bvh_id, "bvh_id")
 
   def test_build_warp_bvh_multiworld(self):
     """Tests BVH construction with multiple worlds."""
@@ -136,8 +134,8 @@ class BvhTest(absltest.TestCase):
 
     bvh.build_warp_bvh(m, d, rc)
 
-    self.assertEqual(rc.lower.shape, (8 * rc.bvh_ngeom,), "render context lower shape")
-    self.assertEqual(rc.group_root.shape, (8,), "render context group root shape")
+    self.assertEqual(rc.lower.shape, (8 * rc.bvh_ngeom,), "lower")
+    self.assertEqual(rc.group_root.shape, (8,), "group_root")
 
   def test_refit_warp_bvh(self):
     """Tests that refit_warp_bvh updates bounds correctly."""
@@ -155,7 +153,7 @@ class BvhTest(absltest.TestCase):
     bvh.refit_warp_bvh(m, d, rc)
 
     lower_after = rc.lower.numpy()
-    np.testing.assert_allclose(lower_before, lower_after, err_msg="recalculate bvh bounds should update lower/upper")
+    np.testing.assert_allclose(lower_before, lower_after, err_msg="lower < upper")
 
   def test_compute_bvh_group_roots(self):
     """Tests that group roots are computed for each world."""
@@ -165,7 +163,7 @@ class BvhTest(absltest.TestCase):
     bvh.build_warp_bvh(m, d, rc)
 
     group_root = rc.group_root.numpy()
-    self.assertEqual(len(group_root), d.nworld, "render context group root length")
+    self.assertEqual(len(group_root), d.nworld, "group_root")
 
   def test_compute_bvh_group_roots_multiworld(self):
     """Tests that each world has a unique group root."""
@@ -175,8 +173,8 @@ class BvhTest(absltest.TestCase):
     bvh.build_warp_bvh(m, d, rc)
 
     group_root = rc.group_root.numpy()
-    self.assertEqual(rc.group_root.shape[0], 16, "render context group root shape")
-    self.assertEqual(len(set(group_root)), 16, "render context group root unique values")
+    self.assertEqual(rc.group_root.shape[0], 16, "group_root")
+    self.assertEqual(len(set(group_root)), 16, "group_root")
 
   def test_accumulate_flex_vertex_normals(self):
     """Tests flex vertex normal accumulation kernel."""
@@ -202,7 +200,7 @@ class BvhTest(absltest.TestCase):
     )
 
     normals = flexvert_norm.numpy()
-    self.assertTrue(np.any(normals != 0), "flex vertex normals non-zero")
+    self.assertTrue(np.any(normals != 0), "flexvert_norm")
 
   def test_normalize_vertex_normals(self):
     """Tests flex vertex normal normalization kernel."""
@@ -223,7 +221,7 @@ class BvhTest(absltest.TestCase):
     normals = flexvert_norm.numpy()
     for i in range(nvert):
       norm = np.linalg.norm(normals[0, i])
-      np.testing.assert_allclose(norm, 1.0, rtol=1e-5, err_msg="flex vertex normal normalized")
+      np.testing.assert_allclose(norm, 1.0, rtol=1e-5, err_msg="flexvert_norm")
 
 
 if __name__ == "__main__":

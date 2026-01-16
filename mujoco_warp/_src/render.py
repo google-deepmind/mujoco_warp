@@ -25,6 +25,7 @@ from .ray import ray_cylinder
 from .ray import ray_ellipsoid
 from .ray import ray_flex_with_bvh
 from .ray import ray_mesh_with_bvh
+from .ray import ray_mesh_with_bvh_anyhit
 from .ray import ray_plane
 from .ray import ray_sphere
 from .render_context import RenderContext
@@ -383,7 +384,7 @@ def cast_ray_first_hit(
   ray_dir_world: wp.vec3,
   max_dist: float,
 ) -> bool:
-  """A simpler version of cast_ray_first_hit that only checks for the first hit."""
+  """A simpler version of casting rays that only checks for the first hit."""
   query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
   bounds_nr = int(0)
 
@@ -451,7 +452,7 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      d, n, u, v, f, mesh_id = ray_mesh_with_bvh(
+      hit = ray_mesh_with_bvh_anyhit(
         mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
@@ -460,6 +461,7 @@ def cast_ray_first_hit(
         ray_dir_world,
         max_dist,
       )
+      d = 0.0 if hit else -1.0
 
     if d >= 0.0 and d < max_dist:
       return True
