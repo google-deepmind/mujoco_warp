@@ -98,7 +98,7 @@ class DerivativeTest(parameterized.TestCase):
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
     else:
-      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
 
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 

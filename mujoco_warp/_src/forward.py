@@ -486,8 +486,8 @@ def implicit(m: Model, d: Data):
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
     else:
-      qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
-      qLD = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+      qDeriv = wp.empty(d.qM.shape, dtype=float)
+      qLD = wp.empty(d.qM.shape, dtype=float)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
