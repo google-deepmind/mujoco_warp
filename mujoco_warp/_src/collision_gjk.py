@@ -17,10 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive import Geom
-from .types import GeomType
-from .types import mat43
-from .types import mat63
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -92,7 +92,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp.cached_index = -1
   sp.vertex_index = -1
   if geomtype == GeomType.SPHERE:
-    sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
+    sp.point = geom.pos + (geom.size[0] + 0.5 * geom.margin) * dir
     return sp
 
   local_dir = wp.transpose(geom.rot) @ dir
@@ -1877,7 +1877,7 @@ def _polygon_clip(
     for i in range(npolygon):
       # get edge PQ of the polygon
       P = polygon_out[i]
-      Q = wp.where(i < npolygon - 1, polygon_out[i + 1], polygon_out[0])
+      Q = polygon_out[(i + 1) % npolygon]
 
       # determine if P and Q are in the halfspace of the clipping edge
       inside1 = _halfspace(face1[e], pn[e], P)

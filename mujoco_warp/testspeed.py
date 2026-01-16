@@ -285,6 +285,7 @@ def _main(argv: Sequence[str]):
         f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations}"
         f" linesearch: {'parallel' if m.opt.ls_parallel else 'iterative'} ls_iterations: {m.opt.ls_iterations}\n"
         f"  cone: {mjw.ConeType(m.opt.cone).name} integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
+        f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
         f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n\n"
         f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}..."
       )

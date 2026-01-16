@@ -112,6 +112,10 @@ convention = "google"
 docstring-code-format = true
 docstring-code-line-length = 100
 
+[tool.pytest.ini_options]
+testpaths = ["mujoco_warp"]
+norecursedirs = ["benchmarks", "contrib"]
+
 [tool.setuptools]
 package-data = { "mujoco_warp" = ["test_data/**"] }
 
