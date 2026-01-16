@@ -21,9 +21,10 @@ Example:
   mjwarp-testspeed benchmark/humanoid/humanoid.xml --nworld 4096 -o "opt.solver=cg"
 """
 
+import dataclasses
 import inspect
+import json
 import sys
-from dataclasses import fields
 from typing import Sequence
 
 import mujoco
@@ -58,34 +59,7 @@ _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to sum
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
-
-
-def _print_table(matrix, headers, title):
-  num_cols = len(headers)
-  col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
-  col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
-
-  print(f"\n{title}:\n")
-  print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))
-  print("-" * sum(col_widths) + "--" * 3)  # Separator line
-  for row in matrix:
-    print("  ".join(f"{row[i]:{col_widths[i]}g}" for i in range(num_cols)))
-
-
-def _print_trace(trace, indent, steps):
-  if indent == 0:
-    print("\nEvent trace:\n")
-  for k, v in trace.items():
-    times, sub_trace = v
-    if len(times) == 1:
-      print("  " * indent + f"{k}: {1e6 * times[0] / steps:.2f}")
-    else:
-      print("  " * indent + f"{k}: [ ", end="")
-      for i in range(len(times)):
-        print(f"{1e6 * times[i] / steps:.2f}", end="")
-        print(", " if i < len(times) - 1 else " ", end="")
-      print("]")
-    _print_trace(sub_trace, indent + 1, steps)
+_FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format for results")
 
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
@@ -95,7 +69,6 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
       raise FileNotFoundError(f"file not found: {path}\nalso tried: {resource_path}")
     path = resource_path
 
-  print(f"Loading model from: {path}...")
   if path.suffix == ".mjb":
     return mujoco.MjModel.from_binary_path(path.as_posix())
 
@@ -109,37 +82,178 @@ def _load_model(path: epath.Path) -> mujoco.MjModel:
   return spec.compile()
 
 
-def _dataclass_memory(dataclass, total_bytes, conversion, unit):
-  total_memory = 0
-  out = ""
-  for field in fields(dataclass):
+def _dataclass_memory(dataclass, prefix: str = "") -> list[tuple[str, int]]:
+  ret = []
+  for field in dataclasses.fields(dataclass):
     value = getattr(dataclass, field.name)
-    fieldinfo = []
-    if isinstance(value, mjw.Contact) or isinstance(value, mjw.Constraint):
-      for vfield in fields(value):
-        vvalue = getattr(value, vfield.name)
-        if type(vvalue) is wp.array:
-          fieldinfo.append((f"{field.name}.{vfield.name}", vvalue.capacity))
-    elif type(value) is wp.array:
-      fieldinfo.append((field.name, value.capacity))
-    for array in fieldinfo:
-      total_memory += array[1]
-      field_percentage = 100 * (array[1] / total_bytes)
-      # only print if field contributes at least 1% of total memory usage
-      if field_percentage >= 1:
-        out += f" {array[0]}: {(array[1] / conversion):.2f} {unit} ({field_percentage:.2f}%)\n"
-  out = out or " (no field >= 1% of utilized memory)\n"
-  return out, total_memory
+    if dataclasses.is_dataclass(value):
+      ret.extend(_dataclass_memory(value, prefix=f"{prefix}{field.name}."))
+    elif isinstance(value, wp.array):
+      ret.append((f"{prefix}{field.name}", value.capacity))
+  return ret
+
+
+def _collect_metrics(
+  m, d, path: epath.Path, free_mem_at_init, jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess
+) -> dict[str, float]:
+  """Collect all metrics into a dictionary."""
+  steps = _NWORLD.value * _NSTEP.value
+  model_name = path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem
+  metrics = {
+    f"{model_name}:jit_duration": jit_time,
+    f"{model_name}:run_time": run_time,
+    f"{model_name}:steps_per_second": steps / run_time,
+    f"{model_name}:converged_worlds": int(nsuccess),
+  }
+
+  def flatten_trace(prefix: str, trace, metrics):
+    for k, v in trace.items():
+      times, sub_trace = v
+      for i, t in enumerate(times):
+        metrics[f"{prefix}{k}{f'[{i}]' if len(times) > 1 else ''}"] = 1e6 * t / steps
+      flatten_trace(f"{prefix}{k}.", sub_trace, metrics)
+
+  flatten_trace(model_name + ":", trace, metrics)
+
+  if _MEMORY.value:
+    metrics.update(
+      {
+        f"{model_name}:model_memory": sum(c for _, c in _dataclass_memory(m)),
+        f"{model_name}:data_memory": sum(c for _, c in _dataclass_memory(d)),
+        f"{model_name}:total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
+      }
+    )
+
+  if nacon and nefc:
+    metrics.update(
+      {
+        f"{model_name}:ncon_mean": np.mean(nacon) / _NWORLD.value,
+        f"{model_name}:ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
+        f"{model_name}:nefc_mean": np.mean(nefc),
+        f"{model_name}:nefc_p95": np.percentile(nefc, 95),
+      }
+    )
+
+  if solver_niter:
+    metrics.update(
+      {
+        f"{model_name}:solver_niter_mean": np.mean(solver_niter),
+        f"{model_name}:solver_niter_p95": np.percentile(solver_niter, 95),
+      }
+    )
+
+  return metrics
+
+
+def _output_short(*args):
+  """Output metrics in a short format."""
+  metrics = _collect_metrics(*args)
+  max_key_len = max(len(key) for key in metrics.keys())
+  for key, value in metrics.items():
+    print(f"{key:<{max_key_len}} {value}")
+
+
+def _output_json(*args):
+  """Output metrics in a JSON format."""
+  metrics = _collect_metrics(*args)
+  print(json.dumps(metrics, indent=2))
+
+
+def _output_human(m, d, path: epath.Path, free_mem_at_init, jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess):
+  """Output metrics in a human-readable format."""
+  steps = _NWORLD.value * _NSTEP.value
+  print(f"""
+Summary for {_NWORLD.value} parallel rollouts
+
+Total JIT time: {jit_time:.2f} s
+Total simulation time: {run_time:.2f} s
+Total steps per second: {steps / run_time:,.0f}
+Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
+Total time per step: {1e9 * run_time / steps:.2f} ns
+Total converged worlds: {nsuccess} / {d.nworld}""")
+
+  if trace:
+    print("\nEvent trace:\n")
+
+    def print_trace(trace, indent):
+      for k, v in trace.items():
+        times, sub_trace = v
+        if len(times) == 1:
+          print("  " * indent + f"{k}: {1e6 * times[0] / steps:.2f}")
+        else:
+          print("  " * indent + f"{k}: [ ", end="")
+          for i in range(len(times)):
+            print(f"{1e6 * times[i] / steps:.2f}", end="")
+            print(", " if i < len(times) - 1 else " ", end="")
+          print("]")
+        print_trace(sub_trace, indent + 1)
+
+    print_trace(trace, 0)
+
+  def print_table(matrix, headers, title):
+    num_cols = len(headers)
+    col_widths = [max(len(f"{row[i]:g}") for row in matrix) for i in range(num_cols)]
+    col_widths = [max(col_widths[i], len(headers[i])) for i in range(num_cols)]
+
+    print(f"\n{title}:\n")
+    print("  ".join(f"{headers[i]:<{col_widths[i]}}" for i in range(num_cols)))
+    print("-" * sum(col_widths) + "--" * 3)  # Separator line
+    for row in matrix:
+      print("  ".join(f"{row[i]:{col_widths[i]}g}" for i in range(num_cols)))
+
+  if nacon and nefc:
+    idx = 0
+    nacon_matrix, nefc_matrix = [], []
+    for i in range(_NUM_BUCKETS.value):
+      size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
+      nacon_arr = np.array(nacon[idx : idx + size])
+      nefc_arr = np.array(nefc[idx : idx + size])
+      nacon_matrix.append([np.mean(nacon_arr), np.std(nacon_arr), np.min(nacon_arr), np.max(nacon_arr)])
+      nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
+      idx += size
+
+    print_table(nacon_matrix, ("mean", "std", "min", "max"), "nacon alloc")
+    print_table(nefc_matrix, ("mean", "std", "min", "max"), "nefc alloc")
+
+  if solver_niter:
+    idx = 0
+    matrix = []
+    for i in range(_NUM_BUCKETS.value):
+      size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
+      arr = np.array(solver_niter[idx : idx + size])
+      matrix.append([np.mean(arr), np.std(arr), np.min(arr), np.max(arr)])
+      idx += size
+
+    print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
+
+  if _MEMORY.value:
+    total_mem = wp.get_device(_DEVICE.value).total_memory
+    used_mem = free_mem_at_init - wp.get_device(_DEVICE.value).free_memory
+    other_mem = used_mem
+    for dataclass, name in [(m, "\nModel"), (d, "Data")]:
+      mem = _dataclass_memory(dataclass)
+      other_mem -= sum(c for _, c in mem)
+      other_mem_total = sum(c for _, c in mem)
+      print(f"{name} memory {other_mem_total / 1024**2:.2f} MB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
+      fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
+      for field, capacity in fields:
+        print(f" {field}: {capacity / 1024**2:.2f} MB ({100 * capacity / used_mem:.2f}%)")
+      if not fields:
+        print(" (no field >= 1% of used memory)")
+    print(f"Other memory: {other_mem / 1024**2:.2f} MB ({100 * other_mem / used_mem:.2f}% of used memory)")
+    print(f"Total memory: {used_mem / 1024**2:.2f} MB ({100 * used_mem / total_mem:.2f}% of total device memory)")
 
 
 def _main(argv: Sequence[str]):
-  """Runs testpeed app."""
   if len(argv) < 2:
     raise app.UsageError("Missing required input: mjcf path.")
   elif len(argv) > 2:
     raise app.UsageError("Too many command-line arguments.")
 
-  mjm = _load_model(epath.Path(argv[1]))
+  path = epath.Path(argv[1])
+  if _FORMAT.value == "human":
+    print(f"Loading model from: {path}...")
+  mjm = _load_model(path)
   mjd = mujoco.MjData(mjm)
   ctrls = None
   if _REPLAY.value:
@@ -153,96 +267,39 @@ def _main(argv: Sequence[str]):
     if ctrls is None:
       ctrls = [mjd.ctrl.copy() for _ in range(_NSTEP.value)]
 
-  # populate some constraints
-  mujoco.mj_forward(mjm, mjd)
-
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
+  free_mem_at_init = wp.get_device(_DEVICE.value).free_memory
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()
 
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
-
-    broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
-    solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
-    integrator = mjw.IntegratorType(m.opt.integrator).name
-    iterations, ls_iterations = m.opt.iterations, m.opt.ls_iterations
-    ls_str = f"{'parallel' if m.opt.ls_parallel else 'iterative'} linesearch iterations: {ls_iterations}"
-    print(
-      f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
-      f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
-      f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
-      f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}\n"
-      f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}"
-    )
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-    print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
-
-    print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
+    if _FORMAT.value == "human":
+      print(
+        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}"
+        f" graph_conditional: {m.opt.graph_conditional}\n"
+        f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
+        f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations}"
+        f" linesearch: {'parallel' if m.opt.ls_parallel else 'iterative'} ls_iterations: {m.opt.ls_iterations}\n"
+        f"  cone: {mjw.ConeType(m.opt.cone).name} integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
+        f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
+        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n\n"
+        f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}..."
+      )
 
     fn = _FUNCS[_FUNCTION.value]
     res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
-    jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess = res
-    steps = _NWORLD.value * _NSTEP.value
 
-    print(f"""
-Summary for {_NWORLD.value} parallel rollouts
-
-Total JIT time: {jit_time:.2f} s
-Total simulation time: {run_time:.2f} s
-Total steps per second: {steps / run_time:,.0f}
-Total realtime factor: {steps * m.opt.timestep.numpy()[0] / run_time:,.2f} x
-Total time per step: {1e9 * run_time / steps:.2f} ns
-Total converged worlds: {nsuccess} / {d.nworld}""")
-
-    if trace:
-      _print_trace(trace, 0, steps)
-
-    if nacon and nefc:
-      idx = 0
-      nacon_matrix, nefc_matrix = [], []
-      for i in range(_NUM_BUCKETS.value):
-        size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
-        nacon_arr = np.array(nacon[idx : idx + size])
-        nefc_arr = np.array(nefc[idx : idx + size])
-        nacon_matrix.append([np.mean(nacon_arr), np.std(nacon_arr), np.min(nacon_arr), np.max(nacon_arr)])
-        nefc_matrix.append([np.mean(nefc_arr), np.std(nefc_arr), np.min(nefc_arr), np.max(nefc_arr)])
-        idx += size
-
-      _print_table(nacon_matrix, ("mean", "std", "min", "max"), "nacon alloc")
-      _print_table(nefc_matrix, ("mean", "std", "min", "max"), "nefc alloc")
-
-    if solver_niter:
-      idx = 0
-      matrix = []
-      for i in range(_NUM_BUCKETS.value):
-        size = _NSTEP.value // _NUM_BUCKETS.value + (i < (_NSTEP.value % _NUM_BUCKETS.value))
-        arr = np.array(solver_niter[idx : idx + size])
-        matrix.append([np.mean(arr), np.std(arr), np.min(arr), np.max(arr)])
-        idx += size
-
-      _print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
-
-    if _MEMORY.value:
-      memory_unit = "MB"
-      memory_conversion = 1024 * 1024
-      total_bytes = wp.get_device(_DEVICE.value).total_memory
-      utilized_bytes = wp.get_mempool_used_mem_current(_DEVICE.value)
-      utilized_mb = utilized_bytes / memory_conversion
-      total_mb = total_bytes / memory_conversion
-      utilized_percentage = 100 * (utilized_bytes / total_bytes)
-      memory_str = (
-        f"\nTotal memory: {utilized_mb:.2f} {memory_unit} / {total_mb:.2f} {memory_unit} ({utilized_percentage:.2f}%)\n"
-      )
-      model_field_str, model_bytes = _dataclass_memory(m, utilized_bytes, memory_conversion, memory_unit)
-      memory_str += f"Model memory ({100 * model_bytes / utilized_bytes:.2f}%):\n"
-      memory_str += model_field_str
-      data_field_str, data_bytes = _dataclass_memory(d, utilized_bytes, memory_conversion, memory_unit)
-      memory_str += f"Data memory ({100 * data_bytes / utilized_bytes:.2f}%):\n"
-      memory_str += data_field_str
-      print(memory_str)
+    match _FORMAT.value:
+      case "short":
+        _output_short(m, d, path, free_mem_at_init, *res)
+      case "json":
+        _output_json(m, d, path, free_mem_at_init, *res)
+      case "human":
+        _output_human(m, d, path, free_mem_at_init, *res)
 
 
 def main():

@@ -24,11 +24,10 @@ import mujoco_warp as mjw
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import types
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
-
-from . import types
 
 _TOLERANCE = 5e-5
 
@@ -882,26 +881,27 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
 
   def test_min_friction(self):
-    _, _, _, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body>
-          <geom type="sphere" size=".1" friction="0 0 0"/>
-          <joint type="slide"/>
-        </body>
-        <body>
-          <geom type="sphere" size=".1" friction="0 0 0"/>
-          <joint type="slide"/>
-        </body>
-      </worldbody>
-      <keyframe>
-        <key qpos="0 .1"/>
-      </keyframe>
-    </mujoco>
-    """,
-      keyframe=0,
-    )
+    with self.assertWarns(UserWarning):
+      _, _, _, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1" friction="0 0 0"/>
+            <joint type="slide"/>
+          </body>
+          <body>
+            <geom type="sphere" size=".1" friction="0 0 0"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 .1"/>
+        </keyframe>
+      </mujoco>
+      """,
+        keyframe=0,
+      )
 
     self.assertEqual(d.nacon.numpy()[0], 1)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)
