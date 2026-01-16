@@ -17,32 +17,32 @@ from typing import Optional
 
 import warp as wp
 
-from . import collision_driver
-from . import constraint
-from . import derivative
-from . import math
-from . import passive
-from . import sensor
-from . import smooth
-from . import solver
-from . import util_misc
-from .support import xfrc_accumulate
-from .types import MJ_MINVAL
-from .types import BiasType
-from .types import Data
-from .types import DisableBit
-from .types import DynType
-from .types import EnableBit
-from .types import GainType
-from .types import IntegratorType
-from .types import JointType
-from .types import Model
-from .types import TileSet
-from .types import TrnType
-from .types import vec10f
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import collision_driver
+from mujoco_warp._src import constraint
+from mujoco_warp._src import derivative
+from mujoco_warp._src import math
+from mujoco_warp._src import passive
+from mujoco_warp._src import sensor
+from mujoco_warp._src import smooth
+from mujoco_warp._src import solver
+from mujoco_warp._src import util_misc
+from mujoco_warp._src.support import xfrc_accumulate
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import GainType
+from mujoco_warp._src.types import IntegratorType
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -956,6 +956,7 @@ def step1(m: Model, d: Data):
   # TODO(team): mj_checkPos
   # TODO(team): mj_checkVel
   fwd_position(m, d)
+  d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 
   if energy:

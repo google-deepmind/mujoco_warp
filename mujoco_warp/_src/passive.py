@@ -15,15 +15,15 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from .types import MJ_MINVAL
-from .types import Data
-from .types import DisableBit
-from .types import GeomType
-from .types import JointType
-from .types import Model
-from .warp_util import event_scope
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -595,15 +595,15 @@ def _flex_elasticity(
   nedge = nvert * (nvert - 1) / 2
   edges = wp.where(
     dim == 3,
-    wp.types.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-    wp.types.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+    wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
+    wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
   )
   if timestep > 0.0 and not dsbl_damper:
     kD = flex_damping[f] / timestep
   else:
     kD = 0.0
 
-  gradient = wp.types.matrix(0.0, shape=(6, 6))
+  gradient = wp.matrix(0.0, shape=(6, 6))
   for e in range(nedge):
     vert0 = flex_elem[(dim + 1) * elemid + edges[e, 0]]
     vert1 = flex_elem[(dim + 1) * elemid + edges[e, 1]]
@@ -622,7 +622,7 @@ def _flex_elasticity(
     previous = deformed - vel * timestep
     elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
 
-  metric = wp.types.matrix(0.0, shape=(6, 6))
+  metric = wp.matrix(0.0, shape=(6, 6))
   id = int(0)
   for ed1 in range(nedge):
     for ed2 in range(ed1, nedge):
@@ -630,7 +630,7 @@ def _flex_elasticity(
       metric[ed2, ed1] = flex_stiffness[elemid, id]
       id += 1
 
-  force = wp.types.matrix(0.0, shape=(6, 3))
+  force = wp.matrix(0.0, shape=(6, 3))
   for ed1 in range(nedge):
     for ed2 in range(nedge):
       for i in range(2):
@@ -684,7 +684,7 @@ def _flex_bending(
     flex_vertadr[f] + flex_edgeflap[edgeid][1],
   )
 
-  frc = wp.types.matrix(0.0, shape=(4, 3))
+  frc = wp.matrix(0.0, shape=(4, 3))
   if flex_bending[edgeid, 16]:
     v0 = flexvert_xpos_in[worldid, v[0]]
     v1 = flexvert_xpos_in[worldid, v[1]]
@@ -695,7 +695,7 @@ def _flex_bending(
     frc[3] = wp.cross(v1 - v0, v2 - v0)
     frc[0] = -(frc[1] + frc[2] + frc[3])
 
-  force = wp.types.matrix(0.0, shape=(nvert, 3))
+  force = wp.matrix(0.0, shape=(nvert, 3))
   for i in range(nvert):
     for x in range(3):
       for j in range(nvert):
