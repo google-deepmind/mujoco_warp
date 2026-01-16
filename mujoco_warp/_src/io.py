@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import dataclasses
+import importlib.metadata
 import warnings
 from typing import Any, Optional, Sequence, Union
 
@@ -24,6 +25,12 @@ import warp as wp
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.warp_util import nested_kernel
+
+bleeding_edge_mujoco = tuple(map(int, mujoco.__version__.split(".")[:3])) >= (3, 4, 1)
+dist = importlib.metadata.distribution("mujoco")
+if "dev" in dist.version:
+  # breaking change: https://github.com/google-deepmind/mujoco/commit/a49576e469c8f42a496f5d71cd115f59b4762a06
+  bleeding_edge_mujoco = bleeding_edge_mujoco and int(dist.version.split("dev")[1]) >= 855718305
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
@@ -874,16 +881,22 @@ def put_data(
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
     mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-    mujoco.mju_sparse2dense(
-      flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
-    )
-    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-    flexedge_J = mjd.flexedge_J.reshape((mjm.nflexedge, mjm.nv))
-    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
+
+  flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+  if mjd.flexedge_J.size:
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if bleeding_edge_mujoco:
+      mujoco.mju_sparse2dense(
+        flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
+      )
+    else:
+      mujoco.mju_sparse2dense(
+        flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
+      )
+  d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -999,7 +1012,24 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   flexedge_J = d.flexedge_J.numpy()[world_id]
-  mujoco.mju_dense2sparse(result.flexedge_J, flexedge_J, mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind)
+  if result.flexedge_J.size:
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if bleeding_edge_mujoco:
+      mujoco.mju_dense2sparse(
+        result.flexedge_J.reshape(-1),
+        flexedge_J,
+        mjm.flexedge_J_rownnz,
+        mjm.flexedge_J_rowadr,
+        mjm.flexedge_J_colind.reshape(-1),
+      )
+    else:
+      mujoco.mju_dense2sparse(
+        result.flexedge_J.reshape(-1),
+        flexedge_J,
+        result.flexedge_J_rownnz,
+        result.flexedge_J_rowadr,
+        result.flexedge_J_colind.reshape(-1),
+      )
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
