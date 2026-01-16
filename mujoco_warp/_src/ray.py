@@ -17,12 +17,12 @@ from typing import Optional, Tuple
 
 import warp as wp
 
-from .math import safe_div
-from .types import MJ_MINVAL
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import vec6
+from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import vec6
 
 wp.set_module_options({"enable_backward": False})
 
@@ -952,6 +952,23 @@ def rays(
   geomid: wp.array2d(dtype=int),
   normal: wp.array2d(dtype=wp.vec3),
 ):
+  """Ray intersection for multiple worlds and multiple rays.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    pnt: Ray origin points, shape (nworld, nray).
+    vec: Ray directions, shape (nworld, nray).
+    geomgroup: Group inclusion/exclusion mask. Set all elements to -1 to ignore.
+    flg_static: If True, allows rays to intersect with static geoms.
+    bodyexclude: Per-ray body exclusion array of shape (nray,). Geoms on the
+      specified body ids are ignored (-1 to disable for that ray).
+    dist: Output array for distances from ray origins to geom surfaces, shape
+      (nworld, nray). -1 indicates no intersection.
+    geomid: Output array for IDs of intersected geoms, shape (nworld, nray). -1
+      indicates no intersection.
+    normal: Output array for normals at intersection points, shape (nworld, nray).
+  """
   wp.launch_tiled(
     _ray,
     dim=(d.nworld, pnt.shape[1]),
