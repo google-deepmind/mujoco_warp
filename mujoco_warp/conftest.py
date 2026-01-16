@@ -17,8 +17,6 @@ import os
 
 import warp as wp
 
-collect_ignore = ["benchmark/mujoco_menagerie"]
-
 
 def pytest_addoption(parser):
   parser.addoption("--cpu", action="store_true", default=False, help="run tests with cpu")

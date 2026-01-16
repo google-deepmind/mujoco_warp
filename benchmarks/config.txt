@@ -1,0 +1,22 @@
+# MuJoCo Warp Benchmark Configuration
+# Format: NAME MJCF NWORLD NCONMAX NJMAX [NSTEP] [REPLAY]
+# Use '-' for optional parameters (NSTEP, REPLAY) when not needed
+#
+# NAME:     Benchmark identifier
+# MJCF:     Path to MJCF file (relative to benchmarks directory)
+# NWORLD:   Number of parallel worlds
+# NCONMAX:  Maximum contacts per world
+# NJMAX:    Maximum constraints per world
+# NSTEP:    Number of steps (optional, defaults to 1000)
+# REPLAY:   Keyframe sequence prefix (optional)
+
+aloha_cloth               aloha_cloth/scene.xml                32     920  6300  100   -
+aloha_pot                 aloha_pot/scene.xml                  8192   24   128   -     lift_pot
+aloha_sdf                 aloha_sdf/scene.xml                  8192   32   226   -     -
+apptronik_apollo_flat     apptronik_apollo/scene_flat.xml      8192   16   64    -     -
+apptronik_apollo_hfield   apptronik_apollo/scene_hfield.xml    8192   32   128   -     -
+apptronik_apollo_terrain  apptronik_apollo/scene_terrain.xml   8192   48   96    -     -
+cloth                     cloth/scene.xml                      32     200  3000  100   -
+franka_emika_panda        franka_emika_panda/scene.xml         32768  1    5     -     -
+humanoid                  humanoid/humanoid.xml                8192   24   64    -     -
+three_humanoids           humanoid/three_humanoids.xml         1024   100  192   -     -

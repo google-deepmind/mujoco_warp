@@ -16,9 +16,9 @@
 import warp as wp
 from absl.testing import absltest
 
-from .math import closest_segment_to_segment_points
-from .math import upper_tri_index
-from .math import upper_trid_index
+from mujoco_warp._src.math import closest_segment_to_segment_points
+from mujoco_warp._src.math import upper_tri_index
+from mujoco_warp._src.math import upper_trid_index
 
 
 class ClosestSegmentSegmentPointsTest(absltest.TestCase):

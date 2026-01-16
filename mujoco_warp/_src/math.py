@@ -17,7 +17,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
-from . import types
+from mujoco_warp._src import types
 
 
 @wp.func

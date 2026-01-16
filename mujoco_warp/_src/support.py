@@ -17,17 +17,17 @@ from typing import Optional, Tuple
 
 import warp as wp
 
-from .math import motion_cross
-from .types import ConeType
-from .types import Data
-from .types import JointType
-from .types import Model
-from .types import State
-from .types import TileSet
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.math import motion_cross
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import State
+from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -245,32 +245,6 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
     qfrc: Total applied force mapped to dof space.
   """
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
-
-
-@wp.func
-def all_same(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
-  dx = abs(v0[0] - v1[0])
-  dy = abs(v0[1] - v1[1])
-  dz = abs(v0[2] - v1[2])
-
-  return (
-    (dx <= 1.0e-9 or dx <= max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
-    and (dy <= 1.0e-9 or dy <= max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
-    and (dz <= 1.0e-9 or dz <= max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
-  )
-
-
-@wp.func
-def any_different(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
-  dx = abs(v0[0] - v1[0])
-  dy = abs(v0[1] - v1[1])
-  dz = abs(v0[2] - v1[2])
-
-  return (
-    (dx > 1.0e-9 and dx > max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
-    or (dy > 1.0e-9 and dy > max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
-    or (dz > 1.0e-9 and dz > max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
-  )
 
 
 @wp.func
