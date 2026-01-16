@@ -264,7 +264,7 @@ def capsule_capsule(
     x2 = wp.clamp((v - mb) / mc, -1.0, 1.0)
     vec2 = cap2_pos + axis2 * x2
     dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
-    if dist <= margin and contact_count < 2:
+    if dist <= margin:
       contact_dist[contact_count] = dist
       contact_pos[contact_count] = pos
       contact_normal[contact_count] = normal
@@ -275,7 +275,7 @@ def capsule_capsule(
     x2 = wp.clamp((v + mb) / mc, -1.0, 1.0)
     vec2 = cap2_pos + axis2 * x2
     dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
-    if dist <= margin and contact_count < 2:
+    if dist <= margin:
       contact_dist[contact_count] = dist
       contact_pos[contact_count] = pos
       contact_normal[contact_count] = normal
