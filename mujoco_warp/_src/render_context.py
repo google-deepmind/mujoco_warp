@@ -285,9 +285,9 @@ class RenderContext:
         img_h = cam_res[idx][1]
         left, right, top, bottom, is_ortho = _camera_frustum_bounds(
           m.cam_projection.numpy()[cam_id].item(),
-          m.cam_fovy.numpy()[cam_id].item(),
+          m.cam_fovy.numpy()[0, cam_id].item(),
           wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
-          wp.vec4(m.cam_intrinsic.numpy()[cam_id]),
+          wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
           img_w,
           img_h,
           self.znear,
