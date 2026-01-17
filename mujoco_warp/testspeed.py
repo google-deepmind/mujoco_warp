@@ -278,14 +278,125 @@ def _main(argv: Sequence[str]):
     override_model(m, _OVERRIDE.value)
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     if _FORMAT.value == "human":
-      print(
-        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}"
-        f" graph_conditional: {m.opt.graph_conditional}\n"
+      # Model sizes
+      size_fields = [
+        "nq",
+        "nv",
+        "nu",
+        "na",
+        "nbody",
+        "noct",
+        "njnt",
+        "nM",
+        "nC",
+        "ngeom",
+        "nsite",
+        "ncam",
+        "nlight",
+        "nflex",
+        "nflexvert",
+        "nflexedge",
+        "nflexelem",
+        "nflexelemdata",
+        "nflexelemedge",
+        "nmesh",
+        "nmeshvert",
+        "nmeshnormal",
+        "nmeshface",
+        "nmeshgraph",
+        "nmeshpoly",
+        "nmeshpolyvert",
+        "nmeshpolymap",
+        "nhfield",
+        "nhfielddata",
+        "nmat",
+        "npair",
+        "nexclude",
+        "neq",
+        "ntendon",
+        "nwrap",
+        "nsensor",
+        "nmocap",
+        "nplugin",
+        "ngravcomp",
+        "nsensordata",
+      ]
+      size_items = [f"{name}: {getattr(m, name)}" for name in size_fields if getattr(m, name) > 0]
+      # Wrap sizes at 10 items per line
+      sizes_lines = []
+      for i in range(0, len(size_items), 10):
+        sizes_lines.append("  " + " ".join(size_items[i : i + 10]))
+      sizes_str = "\n".join(sizes_lines) + "\n"
+
+      # Parse Option.disableflags and Option.enableflags to show individual flag names
+      disable_names = [f.name for f in mjw.DisableBit if m.opt.disableflags & f]
+      enable_names = [f.name for f in mjw.EnableBit if m.opt.enableflags & f]
+      disableflags_str = ", ".join(disable_names) if disable_names else "none"
+      enableflags_str = ", ".join(enable_names) if enable_names else "none"
+
+      # Option fields
+      opt_str = (
+        f"Option\n"
+        f"  timestep: {m.opt.timestep.numpy()[0]:.6f} tolerance: {m.opt.tolerance.numpy()[0]:g}\n"
+        f"  ls_tolerance: {m.opt.ls_tolerance.numpy()[0]:g} ccd_tolerance: {m.opt.ccd_tolerance.numpy()[0]:g}\n"
+        f"  density: {m.opt.density.numpy()[0]:g} viscosity: {m.opt.viscosity.numpy()[0]:g}\n"
+        f"  gravity: {m.opt.gravity.numpy()[0]} wind: {m.opt.wind.numpy()[0]} magnetic: {m.opt.magnetic.numpy()[0]}\n"
+        f"  integrator: {mjw.IntegratorType(m.opt.integrator).name} cone: {mjw.ConeType(m.opt.cone).name}\n"
+        f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations}\n"
+        f"  ccd_iterations: {m.opt.ccd_iterations} sdf_initpoints: {m.opt.sdf_initpoints} sdf_iterations: {m.opt.sdf_iterations}\n"
+        f"  disableflags: [{disableflags_str}]\n"
+        f"  enableflags: [{enableflags_str}]\n"
+        f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g} is_sparse: {m.opt.is_sparse}\n"
+        f"  ls_parallel: {m.opt.ls_parallel} ls_parallel_min_step: {m.opt.ls_parallel_min_step:g} has_fluid: {m.opt.has_fluid}\n"
         f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
-        f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations}"
-        f" linesearch: {'parallel' if m.opt.ls_parallel else 'iterative'} ls_iterations: {m.opt.ls_iterations}\n"
-        f"  cone: {mjw.ConeType(m.opt.cone).name} integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
-        f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
+        f"  graph_conditional: {m.opt.graph_conditional} run_collision_detection: {m.opt.run_collision_detection}\n"
+        f"  contact_sensor_maxmatch: {m.opt.contact_sensor_maxmatch}\n"
+      )
+
+      # Collider types grouped by category
+      from mujoco_warp._src import collision_convex
+      from mujoco_warp._src import collision_primitive
+
+      def trid_to_types(trid):
+        """Convert triangular index back to geom type pair."""
+        n = len(mjw.GeomType)
+        i = 0
+        while (i + 1) * (2 * n - i) // 2 <= trid:
+          i += 1
+        j = trid - i * (2 * n - i - 1) // 2
+        return mjw.GeomType(i), mjw.GeomType(j)
+
+      # Categorize collision pairs
+      primitive_pairs = set(collision_primitive._PRIMITIVE_COLLISIONS.keys())
+      hfield_ccd_pairs = set(collision_convex._HFIELD_COLLISION_PAIRS)
+      ccd_pairs = set(collision_convex._NON_HFIELD_COLLISION_PAIRS)
+
+      primitive_colliders, hfield_ccd_colliders, ccd_colliders = [], [], []
+      for trid, count in enumerate(m.geom_pair_type_count):
+        if count > 0:
+          t1, t2 = trid_to_types(trid)
+          pair = (t1, t2)
+          pair_str = f"{t1.name}-{t2.name}: {count}"
+          if pair in primitive_pairs:
+            primitive_colliders.append(pair_str)
+          elif pair in hfield_ccd_pairs:
+            hfield_ccd_colliders.append(pair_str)
+          elif pair in ccd_pairs:
+            ccd_colliders.append(pair_str)
+
+      collider_lines = []
+      if primitive_colliders:
+        collider_lines.append(f"  Primitive: {', '.join(primitive_colliders)}")
+      if hfield_ccd_colliders:
+        collider_lines.append(f"  HFieldCCD: {', '.join(hfield_ccd_colliders)}")
+      if ccd_colliders:
+        collider_lines.append(f"  CCD: {', '.join(ccd_colliders)}")
+      max_collisions = sum(m.geom_pair_type_count)
+      collider_lines.append(f"  max collisions: {max_collisions}")
+      collider_str = "Colliders\n" + "\n".join(collider_lines) + "\n" if collider_lines else ""
+
+      print(
+        f"Model\n{sizes_str}\n{opt_str}\n{collider_str}"
         f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n\n"
         f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}..."
       )
