@@ -64,18 +64,18 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install pip and uv
+      - name: Install pip
         run: |
           python -m pip install --upgrade pip
-          pip install uv
       - name: Install release
         if: matrix.dep-version == 'release'
         run: |
           pip install pytest pytest-xdist
-          uv pip install --system -e .
+          pip install -e .
       - name: Install dev
         if: matrix.dep-version == 'dev'
         run: |
+          pip install uv
           uv pip install --system -e .[dev]
       - name: Test with pytest
         run: |
@@ -86,10 +86,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
