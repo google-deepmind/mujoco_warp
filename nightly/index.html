@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MuJoCo Warp Nightly Benchmarks</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-card: #f6f8fa;
+      --text: #1f2328;
+      --text-dim: #656d76;
+      --border: #d0d7de;
+      --accent: #0969da;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --bg-card: #161b22;
+        --text: #c9d1d9;
+        --text-dim: #8b949e;
+        --border: #30363d;
+        --accent: #58a6ff;
+      }
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header {
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: var(--text-dim);
+      font-size: 0.875rem;
+    }
+
+    .benchmark-buttons {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .benchmark-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .benchmark-btn:hover {
+      border-color: var(--accent);
+    }
+
+    .benchmark-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .chart-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .chart-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .chart-canvas {
+      height: 400px;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-dim);
+    }
+
+    .error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 2rem;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .error {
+        background: #451a03;
+        border-color: #7c2d12;
+        color: #fca5a5;
+      }
+    }
+
+    .benchmark-header {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+      display: none;
+    }
+
+    .benchmark-header.visible {
+      display: flex;
+      gap: 2rem;
+      align-items: flex-start;
+    }
+
+    .benchmark-screenshot {
+      width: 200px;
+      height: 150px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      font-size: 0.875rem;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .benchmark-screenshot img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .benchmark-info {
+      flex: 1;
+    }
+
+    .benchmark-name {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .benchmark-description {
+      color: var(--text-dim);
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+
+    .benchmark-properties {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .benchmark-property {
+      text-align: center;
+    }
+
+    .benchmark-property-value {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .benchmark-property-label {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.875rem;
+    }
+
+    footer p {
+      margin-bottom: 0.75rem;
+    }
+
+    footer .system-info {
+      display: flex;
+      justify-content: center;
+      gap: 2rem;
+      flex-wrap: wrap;
+    }
+
+    footer .system-info span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    footer .system-label {
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.7rem;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>MuJoCo Warp Nightly Benchmarks</h1>
+    <div class="subtitle">Performance tracking over time</div>
+  </header>
+
+  <div class="benchmark-buttons" id="benchmark-buttons"></div>
+  <div id="error-message" class="error" style="display: none;"></div>
+  <div id="loading" class="loading">Select a benchmark to view data</div>
+
+  <div id="benchmark-header" class="benchmark-header">
+    <div class="benchmark-screenshot" id="benchmark-screenshot"><span>No screenshot</span></div>
+    <div class="benchmark-info">
+      <div class="benchmark-name" id="benchmark-name"></div>
+      <div class="benchmark-description" id="benchmark-description"></div>
+      <div class="benchmark-properties" id="benchmark-properties"></div>
+    </div>
+  </div>
+
+  <div id="charts-container" style="display: none;">
+    <div class="chart-container">
+      <div class="chart-title">Step Time Breakdown (ns/step)</div>
+      <div class="chart-canvas"><canvas id="step-chart"></canvas></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">fwd_position Breakdown (ns/step)</div>
+      <div class="chart-canvas"><canvas id="fwd-position-chart"></canvas></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">fwd_velocity Breakdown (ns/step)</div>
+      <div class="chart-canvas"><canvas id="fwd-velocity-chart"></canvas></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">Memory Usage (bytes)</div>
+      <div class="chart-canvas"><canvas id="memory-chart"></canvas></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">JIT Compilation Time (seconds)</div>
+      <div class="chart-canvas"><canvas id="jit-chart"></canvas></div>
+    </div>
+  </div>
+
+  <script>
+    const GITHUB_REPO = 'https://github.com/google-deepmind/mujoco_warp';
+
+    // Shared color palette for all charts
+    const COLORS = [
+      '#5FA8A8', '#5E8C6A', '#8B7355', '#4A7C9E', '#D4644A',
+      '#6B8E7C', '#9B6B6B', '#5D8AA6', '#A08662', '#7A8E77'
+    ];
+
+    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu, solver]
+    const BENCHMARK_DATA = {
+      aloha_cloth: ['Aloha Cloth', 'Manipulation with a coarse-resolution flex body.', 922, 2716, 995, 14, 'CG'],
+      aloha_pot: ['Aloha Pot', 'Manipulation with mesh geoms using GJK.', 26, 23, 204, 14, 'Newton'],
+      aloha_sdf: ['Aloha SDF', 'Manipulation with SDFs.', 23, 22, 80, 14, 'Newton'],
+      apptronik_apollo_flat: ['Apptronik Apollo Flat', 'Humanoid locomotion on an infinite plane.', 37, 25, 19, 19, 'Newton'],
+      apptronik_apollo_hfield: ['Apptronik Apollo Hfield', 'Humanoid locomotion on a classic Isaac Gym terrain defined by a heightfield.', 37, 25, 19, 19, 'Newton'],
+      apptronik_apollo_terrain: ['Apptronik Apollo Terrain', 'Humanoid locomotion on a classic Isaac Gym terrain comprised of boxes.', 37, 25, 5290, 19, 'Newton'],
+      cloth: ['Cloth', 'A large cloth simulation.', 918, 2706, 921, 0, 'CG'],
+      franka_emika_panda: ['Franka Emika Panda', 'Measures how quickly you can simulate nothing useful happening.', 12, 9, 23, 8, 'Newton'],
+      humanoid: ['Humanoid', 'No benchmark suite is complete without the classic MuJoCo humanoid!', 17, 27, 20, 21, 'Newton'],
+      three_humanoids: ['Three Humanoids', 'Tests higher-dof scenes that have distinct kinematic subtrees.', 49, 81, 58, 63, 'Newton']
+    };
+
+    // Execution orders for breakdown charts (matching forward.py)
+    const EXECUTION_ORDERS = {
+      fwd_position: ['kinematics', 'com_pos', 'camlight', 'flex', 'tendon', 'crb',
+        'tendon_armature', 'factor_m', 'collision', 'make_constraint', 'transmission'],
+      fwd_velocity: ['actuator_velocity', 'tendon_velocity', 'com_vel', 'passive', 'rne', 'tendon_bias']
+    };
+
+    let allCharts = [];
+
+    // --- UI Setup ---
+
+    const buttonsContainer = document.getElementById('benchmark-buttons');
+    Object.keys(BENCHMARK_DATA).forEach(name => {
+      const btn = document.createElement('button');
+      btn.className = 'benchmark-btn';
+      btn.textContent = name.replace(/_/g, ' ');
+      btn.dataset.benchmark = name;
+      btn.addEventListener('click', () => loadBenchmark(name));
+      buttonsContainer.appendChild(btn);
+    });
+
+    function updateBenchmarkHeader(benchmarkName) {
+      const header = document.getElementById('benchmark-header');
+      const meta = BENCHMARK_DATA[benchmarkName];
+      if (!meta) { header.classList.remove('visible'); return; }
+
+      const [name, desc, nbody, nv, ngeom, nu, solver] = meta;
+
+      document.getElementById('benchmark-name').textContent = name;
+      document.getElementById('benchmark-description').textContent = desc || 'No description available.';
+
+      const screenshotEl = document.getElementById('benchmark-screenshot');
+      screenshotEl.innerHTML = `<img src="screenshots/${benchmarkName}.png" alt="${name}" onerror="this.parentElement.innerHTML='<span>No screenshot</span>'">`;
+
+      const propsEl = document.getElementById('benchmark-properties');
+      propsEl.innerHTML = [
+        ['bodies', nbody], ['DoFs', nv], ['geoms', ngeom], ['actuators', nu], ['solver', solver]
+      ].map(([label, value]) => `
+        <div class="benchmark-property">
+          <div class="benchmark-property-value">${value}</div>
+          <div class="benchmark-property-label">${label}</div>
+        </div>
+      `).join('');
+
+      header.classList.add('visible');
+    }
+
+    async function loadBenchmark(benchmarkName) {
+      document.querySelectorAll('.benchmark-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.benchmark === benchmarkName);
+      });
+
+      updateBenchmarkHeader(benchmarkName);
+
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('charts-container').style.display = 'none';
+      document.getElementById('error-message').style.display = 'none';
+
+      try {
+        const response = await fetch(`${benchmarkName}.jsonl`);
+        if (!response.ok) throw new Error(`Failed to load ${benchmarkName}.jsonl`);
+
+        const text = await response.text();
+        const data = text.trim().split('\n').filter(l => l.trim()).map(line => JSON.parse(line));
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('charts-container').style.display = 'block';
+
+        renderCharts(data);
+      } catch (error) {
+        document.getElementById('loading').style.display = 'none';
+        const errorDiv = document.getElementById('error-message');
+        errorDiv.textContent = `Error loading ${benchmarkName}: ${error.message}`;
+        errorDiv.style.display = 'block';
+      }
+    }
+
+    // --- Chart Rendering ---
+
+    // Plugin to draw centered labels in stacked areas
+    Chart.register({
+      id: 'stackedAreaLabels',
+      afterDraw(chart, args, options) {
+        if (!chart.options.scales?.y?.stacked) return;
+
+        const ctx = chart.ctx;
+        const { left, right, top, bottom } = chart.chartArea;
+        const centerX = (left + right) / 2;
+        const minHeight = options.minHeight || 20;
+
+        chart.data.datasets.forEach((dataset, i) => {
+          const meta = chart.getDatasetMeta(i);
+          if (meta.hidden) return;
+
+          // Find closest point to center
+          let closestIdx = 0, closestDist = Infinity;
+          meta.data.forEach((pt, j) => {
+            const dist = Math.abs(pt.x - centerX);
+            if (dist < closestDist) { closestDist = dist; closestIdx = j; }
+          });
+
+          const point = meta.data[closestIdx];
+          if (!point) return;
+
+          const topY = point.y;
+          let baseY = bottom;
+          for (let k = i - 1; k >= 0; k--) {
+            const prevMeta = chart.getDatasetMeta(k);
+            if (!prevMeta.hidden && prevMeta.data[closestIdx]) {
+              baseY = prevMeta.data[closestIdx].y;
+              break;
+            }
+          }
+
+          const areaHeight = Math.abs(baseY - topY);
+          if (areaHeight < minHeight) return;
+
+          const centerY = Math.max(top + 8, Math.min(bottom - 8, (topY + baseY) / 2));
+
+          ctx.save();
+          ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = '#ffffff';
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+          ctx.shadowBlur = 3;
+          ctx.shadowOffsetX = 1;
+          ctx.shadowOffsetY = 1;
+          ctx.fillText(dataset.label, centerX, centerY);
+          ctx.restore();
+        });
+      }
+    });
+
+    function getChartColors() {
+      const style = getComputedStyle(document.documentElement);
+      return {
+        textDim: style.getPropertyValue('--text-dim').trim(),
+        border: style.getPropertyValue('--border').trim()
+      };
+    }
+
+    function baseChartOptions(commits, textDimColor, borderColor, stacked = false) {
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: true, position: 'top', labels: { boxWidth: 12, font: { size: 11 }, padding: 10 } },
+          tooltip: { mode: 'index', callbacks: { footer: () => 'Click to view commit on GitHub' } }
+        },
+        onClick: (event, elements) => {
+          if (elements.length > 0) {
+            const commit = commits[elements[0].index];
+            if (commit) window.open(`${GITHUB_REPO}/commit/${commit}`, '_blank');
+          }
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'day', displayFormats: { day: 'MMM d' }, tooltipFormat: 'MMM d, yyyy' },
+            ticks: { color: textDimColor },
+            grid: { color: borderColor },
+            stacked
+          },
+          y: {
+            ticks: { color: textDimColor },
+            grid: { color: borderColor },
+            stacked,
+            beginAtZero: true
+          }
+        }
+      };
+    }
+
+    function renderCharts(data) {
+      allCharts.forEach(c => c.destroy());
+      allCharts = [];
+
+      const { textDim, border } = getChartColors();
+      const timestamps = data.map(d => new Date(d.timestamp));
+      const commits = data.map(d => d.commit);
+
+      renderStepChart(data, timestamps, commits, textDim, border);
+      renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_position');
+      renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_velocity');
+      renderMemoryChart(data, timestamps, commits, textDim, border);
+      renderJitChart(data, timestamps, commits, textDim, border);
+    }
+
+    function renderStepChart(data, timestamps, commits, textDimColor, borderColor) {
+      const sampleData = data[0];
+
+      // Get forward children (excluding sensors)
+      const forwardChildren = Object.keys(sampleData)
+        .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
+        .sort();
+      const sensorKeys = forwardChildren.filter(k => k.includes('sensor_'));
+      const nonSensorKeys = forwardChildren.filter(k => !k.includes('sensor_'));
+
+      const executionOrder = [
+        'step.forward.fwd_position', 'step.forward.fwd_velocity',
+        'step.forward.fwd_actuation', 'step.forward.fwd_acceleration', 'step.forward.solve'
+      ];
+
+      const datasets = [];
+
+      // Forward children in execution order
+      executionOrder.forEach((key, idx) => {
+        if (nonSensorKeys.includes(key)) {
+          datasets.push(createStackedDataset(key.replace('step.forward.', ''), data, key, timestamps, commits, COLORS[idx], 'step'));
+        }
+      });
+
+      // Combined sensors
+      if (sensorKeys.length > 0) {
+        const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
+        datasets.push({
+          label: 'sensor', data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] })),
+          backgroundColor: COLORS[5], borderColor: COLORS[5], borderWidth: 0, pointRadius: 0, fill: true, stack: 'step'
+        });
+      }
+
+      // Integrators
+      const integratorKeys = Object.keys(sampleData)
+        .filter(k => k.startsWith('step.') && k !== 'step' && !k.startsWith('step.forward') && !k.substring(5).includes('.'))
+        .sort();
+      integratorKeys.forEach((key, idx) => {
+        datasets.push(createStackedDataset(key.replace('step.', ''), data, key, timestamps, commits, COLORS[(6 + idx) % COLORS.length], 'step'));
+      });
+
+      const opts = baseChartOptions(commits, textDimColor, borderColor, true);
+      opts.scales.x.title = { display: true, text: 'Date', color: textDimColor };
+      opts.scales.y.title = { display: true, text: 'Time (ns/step)', color: textDimColor };
+      opts.scales.y.ticks.callback = v => v.toLocaleString();
+
+      allCharts.push(new Chart(document.getElementById('step-chart'), { type: 'line', data: { datasets }, options: opts }));
+    }
+
+    function renderBreakdownChart(data, timestamps, commits, textDimColor, borderColor, phaseName) {
+      const prefix = `step.forward.${phaseName}.`;
+      const chartId = `${phaseName.replace(/_/g, '-')}-chart`;
+      const ctx = document.getElementById(chartId);
+      if (!ctx) return;
+
+      const sampleData = data[0];
+      const availableKeys = Object.keys(sampleData).filter(k => k.startsWith(prefix) && !k.substring(prefix.length).includes('.'));
+
+      const order = EXECUTION_ORDERS[phaseName] || [];
+      const orderedKeys = order.map(n => prefix + n).filter(k => availableKeys.includes(k));
+      availableKeys.forEach(k => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
+
+      const datasets = orderedKeys.map((key, idx) =>
+        createStackedDataset(key.replace(prefix, ''), data, key, timestamps, commits, COLORS[idx % COLORS.length], phaseName)
+      );
+
+      allCharts.push(new Chart(ctx, { type: 'line', data: { datasets }, options: baseChartOptions(commits, textDimColor, borderColor, true) }));
+    }
+
+    function createStackedDataset(label, data, key, timestamps, commits, color, stack) {
+      return {
+        label,
+        data: timestamps.map((t, i) => ({ x: t, y: data[i][key] || 0, commit: commits[i] })),
+        backgroundColor: color,
+        borderColor: color,
+        borderWidth: 0,
+        pointRadius: 0,
+        fill: true,
+        stack
+      };
+    }
+
+    function renderMemoryChart(data, timestamps, commits, textDimColor, borderColor) {
+      const datasets = [
+        { label: 'Model Memory', key: 'model_memory', bg: '#3fb95080', border: '#3fb950', stack: 'memory' },
+        { label: 'Data Memory', key: 'data_memory', bg: '#58a6ff80', border: '#58a6ff', stack: 'memory' },
+        { label: 'Total Memory', key: 'total_memory', bg: 'transparent', border: '#f85149', stack: null, dash: [5, 5] }
+      ].map(({ label, key, bg, border, stack, dash }) => ({
+        label, data: data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i] })),
+        backgroundColor: bg, borderColor: border, borderWidth: stack ? 1 : 2,
+        ...(stack && { stack }), ...(dash && { borderDash: dash, pointRadius: 3, fill: false })
+      }));
+
+      const opts = baseChartOptions(commits, textDimColor, borderColor);
+      opts.scales.x.title = { display: true, text: 'Date', color: textDimColor };
+      opts.scales.y.title = { display: true, text: 'Memory (bytes)', color: textDimColor };
+      opts.scales.y.ticks.callback = v => (v / 1e9).toFixed(1) + ' GB';
+
+      allCharts.push(new Chart(document.getElementById('memory-chart'), { type: 'line', data: { datasets }, options: opts }));
+    }
+
+    function renderJitChart(data, timestamps, commits, textDimColor, borderColor) {
+      const jitData = data.map((d, i) => ({ x: timestamps[i], y: d.jit_duration, commit: commits[i] }));
+
+      const opts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => items[0]?.raw ? new Date(items[0].raw.x).toLocaleDateString() : '',
+              label: item => `${item.raw.y.toFixed(2)} seconds`,
+              afterLabel: item => item.raw.commit ? `Commit: ${item.raw.commit.substring(0, 7)}` : '',
+              footer: () => 'Click to view commit on GitHub'
+            }
+          }
+        },
+        onClick: (event, elements) => {
+          if (elements.length > 0) {
+            const commit = jitData[elements[0].index].commit;
+            if (commit) window.open(`${GITHUB_REPO}/commit/${commit}`, '_blank');
+          }
+        },
+        scales: {
+          x: { type: 'time', time: { unit: 'day', displayFormats: { day: 'MMM d' } }, title: { display: true, text: 'Date', color: textDimColor }, ticks: { color: textDimColor }, grid: { color: borderColor } },
+          y: { title: { display: true, text: 'Seconds', color: textDimColor }, ticks: { color: textDimColor }, grid: { color: borderColor } }
+        }
+      };
+
+      allCharts.push(new Chart(document.getElementById('jit-chart'), {
+        type: 'line',
+        data: { datasets: [{ label: 'JIT Duration', data: jitData, borderColor: '#a371f7', backgroundColor: '#a371f720', borderWidth: 2, pointRadius: 5, pointHoverRadius: 7, tension: 0.1, fill: true }] },
+        options: opts
+      }));
+    }
+
+    // Load default benchmark
+    loadBenchmark('aloha_pot');
+  </script>
+
+  <footer>
+    <p>These benchmarks were recorded on a workstation with the following specifications:</p>
+    <div class="system-info">
+      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper PRO 5995WX 64-Cores</span>
+      <span><span class="system-label">RAM:</span> 256 GB</span>
+      <span><span class="system-label">GPU:</span> NVIDIA RTX 6000 Ada Generation</span>
+      <span><span class="system-label">VRAM:</span> 48 GB</span>
+    </div>
+  </footer>
+</body>
+
+</html>
