@@ -27,7 +27,7 @@ requires-python = ">=3.10"
 dependencies = [
     "absl-py",
     "etils[epath]",
-    "mujoco>=3.3.7",
+    "mujoco>=3.4.0",
     "numpy",
     "warp-lang>=1.11.0",
 ]
@@ -111,6 +111,10 @@ convention = "google"
 [tool.ruff.format]
 docstring-code-format = true
 docstring-code-line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["mujoco_warp"]
+norecursedirs = ["benchmarks", "contrib"]
 
 [tool.setuptools]
 package-data = { "mujoco_warp" = ["test_data/**"] }

@@ -46,6 +46,7 @@ MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (t
 The minimum supported CUDA version is `12.4`.
 
 **Linux**
+
 ```bash
 git clone https://github.com/google-deepmind/mujoco_warp.git
 cd mujoco_warp
@@ -54,6 +55,7 @@ source env/bin/activate
 pip install --upgrade pip
 pip install uv
 ```
+
 **Windows**
 (native Python only, not MSYS2 or WSL)
 
@@ -65,7 +67,6 @@ python -m venv env
 pip install --upgrade pip
 pip install uv
 ```
-
 
 Then install MJWarp in editable mode for local development:
 
@@ -110,7 +111,7 @@ The following features are implemented:
 | Mass matrix format | Sparse and Dense                                                                                        |
 | Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
 
-[Differentiability via Warp](https://nvidia.github.io/warp/modules/differentiability.html#differentiability) is not currently
+[Differentiability via Warp](https://nvidia.github.io/warp/user_guide/differentiability.html) is not currently
 available.
 
 # Viewing simulations
@@ -118,7 +119,7 @@ available.
 Explore MuJoCo Warp simulations using an interactive viewer:
 
 ```bash
-mjwarp-viewer benchmark/humanoid/humanoid.xml
+mjwarp-viewer benchmarks/humanoid/humanoid.xml
 ```
 
 This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
@@ -128,13 +129,13 @@ This will open a window on your local machine that uses the [MuJoCo native visua
 Benchmark as follows:
 
 ```bash
-mjwarp-testspeed benchmark/humanoid/humanoid.xml
+mjwarp-testspeed benchmarks/humanoid/humanoid.xml
 ```
 
 To get a full trace of the physics steps (e.g. timings of the subcomponents) run the following:
 
 ```bash
-mjwarp-testspeed benchmark/humanoid/humanoid.xml --event_trace=True
+mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.

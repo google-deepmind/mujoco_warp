@@ -18,15 +18,15 @@ from math import sqrt
 
 import warp as wp
 
-from . import math
-from . import smooth
-from . import support
-from . import types
-from .block_cholesky import create_blocked_cholesky_func
-from .block_cholesky import create_blocked_cholesky_solve_func
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import smooth
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -2045,8 +2045,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
       # AD: leaving bounds-check disabled here because I'm not entirely sure that
       # everything always hits the fast path. The padding takes care of any
       #  potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_padded), offset=(k, 0), bounds_check=False)
-      J_kj = J_ki
+      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_padded), offset=(k, 0), bounds_check=False)
 
       # state check
       D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
@@ -2061,7 +2060,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
       active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv_padded, TILE_SIZE_K)))
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_padded, TILE_SIZE_K)))
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
