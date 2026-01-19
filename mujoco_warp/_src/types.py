@@ -114,6 +114,18 @@ class CamLightType(enum.IntEnum):
   TARGETBODYCOM = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODYCOM
 
 
+class ProjectionType(enum.IntEnum):
+  """Type of camera projection.
+
+  Attributes:
+    PERSPECTIVE: perspective projection
+    ORTHOGRAPHIC: orthographic projection
+  """
+
+  PERSPECTIVE = mujoco.mjtProjection.mjPROJ_PERSPECTIVE
+  ORTHOGRAPHIC = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
+
+
 class DataType(enum.IntFlag):
   """Sensor data types.
 
@@ -870,10 +882,11 @@ class Model:
     cam_poscom0: global position rel. to sub-com in qpos0    (*, ncam, 3)
     cam_pos0: global position rel. to body in qpos0          (*, ncam, 3)
     cam_mat0: global orientation in qpos0                    (*, ncam, 3, 3)
-    cam_fovy: y field-of-view (ortho ? len : deg)            (ncam,)
+    cam_fovy: y field-of-view (ortho ? len : deg)            (*, ncam,)
     cam_resolution: resolution: pixels [width, height]       (ncam, 2)
     cam_sensorsize: sensor size: length [width, height]      (ncam, 2)
-    cam_intrinsic: [focal length; principal point]           (ncam, 4)
+    cam_intrinsic: [focal length; principal point]           (*, ncam, 4)
+    cam_projection: projection type (ProjectionType)         (ncam,)
     light_mode: light tracking mode (CamLightType)           (nlight,)
     light_bodyid: id of light's body                         (nlight,)
     light_targetbodyid: id of targeted body; -1: none        (nlight,)
@@ -1218,10 +1231,11 @@ class Model:
   cam_poscom0: array("*", "ncam", wp.vec3)
   cam_pos0: array("*", "ncam", wp.vec3)
   cam_mat0: array("*", "ncam", wp.mat33)
-  cam_fovy: array("ncam", float)
+  cam_fovy: array("*", "ncam", float)
   cam_resolution: array("ncam", wp.vec2i)
   cam_sensorsize: array("ncam", wp.vec2)
-  cam_intrinsic: array("ncam", wp.vec4)
+  cam_intrinsic: array("*", "ncam", wp.vec4)
+  cam_projection: array("ncam", int)
   light_mode: array("nlight", int)
   light_bodyid: array("nlight", int)
   light_targetbodyid: array("nlight", int)

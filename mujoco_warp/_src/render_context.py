@@ -24,29 +24,31 @@ from . import bvh
 from .types import Data
 from .types import GeomType
 from .types import Model
+from .types import ProjectionType
 
 wp.set_module_options({"enable_backward": False})
 
 
 def _camera_frustum_bounds(
-  mjm: mujoco.MjModel,
-  cam_id: int,
+  cam_projection: int,
+  cam_fovy: float,
+  cam_sensorsize: wp.vec2,
+  cam_intrinsic: wp.vec4,
   img_w: int,
   img_h: int,
   znear: float,
 ) -> tuple[float, float, float, float, bool]:
   """Replicate MuJoCo's frustum computation to derive near-plane bounds."""
-  orthographic = mjm.cam_projection[cam_id] == mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
-  if orthographic:
-    half_height = mjm.cam_fovy[cam_id] * 0.5
+  if cam_projection == ProjectionType.ORTHOGRAPHIC:
+    half_height = cam_fovy * 0.5
     aspect = img_w / img_h
     half_width = half_height * aspect
     return (-half_width, half_width, half_height, -half_height, True)
 
-  sensorsize = mjm.cam_sensorsize[cam_id]
+  sensorsize = cam_sensorsize
   has_intrinsics = sensorsize[1] != 0.0
   if has_intrinsics:
-    fx, fy, cx, cy = mjm.cam_intrinsic[cam_id]
+    fx, fy, cx, cy = cam_intrinsic
     sensor_w, sensor_h = sensorsize
 
     # Clip sensor size to match desired aspect ratio
@@ -63,7 +65,7 @@ def _camera_frustum_bounds(
     bottom = -znear / fy * (sensor_h * 0.5 + cy)
     return (float(left), float(right), float(top), float(bottom), False)
 
-  fovy_rad = np.deg2rad(float(mjm.cam_fovy[cam_id]))
+  fovy_rad = np.deg2rad(cam_fovy)
   half_height = znear * np.tan(0.5 * fovy_rad)
   aspect = img_w / img_h
   half_width = half_height * aspect
@@ -138,7 +140,7 @@ class RenderContext:
     for i in range(nmesh):
       if i not in used_mesh_id:
         continue
-      mesh, half = _build_mesh_bvh(mjm, i)
+      mesh, half = bvh.build_mesh_bvh(mjm, i)
       self.mesh_registry[mesh.id] = mesh
       mesh_bvh_id[i] = mesh.id
       mesh_bounds_size[i] = half
@@ -266,37 +268,46 @@ class RenderContext:
     self.depth_data = wp.zeros((d.nworld, di), dtype=wp.float32)
     self.render_rgb = wp.array(render_rgb, dtype=bool)
     self.render_depth = wp.array(render_depth, dtype=bool)
-    self.ray = wp.zeros(int(total), dtype=wp.vec3)
+    self.znear = mjm.vis.map.znear * mjm.stat.extent
+    self.total_rays = int(total)
 
-    offset = 0
-    model_znear = mjm.vis.map.znear * mjm.stat.extent
-    for idx, cam_id in enumerate(active_cam_indices):
-      img_w = cam_res[idx][0]
-      img_h = cam_res[idx][1]
-      left, right, top, bottom, is_ortho = _camera_frustum_bounds(
-        mjm,
-        cam_id,
-        img_w,
-        img_h,
-        model_znear,
-      )
-      wp.launch(
-        kernel=build_primary_rays,
-        dim=int(img_w * img_h),
-        inputs=[
-          offset,
+    # if cam_fovy or cam_intrinsic is batched, we can skip precalculating the rays
+    # since we will need to compute the world specific ray in the render kernel
+    if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
+      self.ray = None
+    else:
+      self.ray = wp.zeros(int(total), dtype=wp.vec3)
+
+      offset = 0
+      for idx, cam_id in enumerate(active_cam_indices):
+        img_w = cam_res[idx][0]
+        img_h = cam_res[idx][1]
+        left, right, top, bottom, is_ortho = _camera_frustum_bounds(
+          m.cam_projection.numpy()[cam_id].item(),
+          m.cam_fovy.numpy()[0, cam_id].item(),
+          wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
+          wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
           img_w,
           img_h,
-          left,
-          right,
-          top,
-          bottom,
-          model_znear,
-          int(is_ortho),
-        ],
-        outputs=[self.ray],
-      )
-      offset += img_w * img_h
+          self.znear,
+        )
+        wp.launch(
+          kernel=build_primary_rays,
+          dim=int(img_w * img_h),
+          inputs=[
+            offset,
+            img_w,
+            img_h,
+            left,
+            right,
+            top,
+            bottom,
+            self.znear,
+            int(is_ortho),
+          ],
+          outputs=[self.ray],
+        )
+        offset += img_w * img_h
 
     self.ncam = ncam
     self.cam_id_map = wp.array(active_cam_indices, dtype=int)
@@ -319,7 +330,7 @@ class RenderContext:
     self.group_root = wp.zeros(d.nworld, dtype=int)
     self.bvh = None
     self.bvh_id = None
-    bvh.build_warp_bvh(m, d, self)
+    bvh.build_scene_bvh(m, d, self)
 
 
 @wp.kernel
@@ -400,32 +411,6 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array
   )
 
   return tex_data_packed, wp.array(tex_adr_packed, dtype=int)
-
-
-def _build_mesh_bvh(
-  mjm: mujoco.MjModel,
-  meshid: int,
-  constructor: str = "sah",
-  leaf_size: int = 1,
-) -> tuple[wp.Mesh, wp.vec3]:
-  """Create a Warp mesh BVH from mjcf mesh data."""
-  v_start = mjm.mesh_vertadr[meshid]
-  v_end = v_start + mjm.mesh_vertnum[meshid]
-  points = mjm.mesh_vert[v_start:v_end]
-
-  f_start = mjm.mesh_faceadr[meshid]
-  f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
-  indices = mjm.mesh_face[f_start:f_end]
-  indices = indices.flatten()
-  pmin = np.min(points, axis=0)
-  pmax = np.max(points, axis=0)
-  half = 0.5 * (pmax - pmin)
-
-  points = wp.array(points, dtype=wp.vec3)
-  indices = wp.array(indices, dtype=wp.int32)
-  mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
-
-  return mesh, half
 
 
 def _optimize_hfield_mesh(
@@ -560,7 +545,7 @@ def _build_hfield_mesh(
   mjm: mujoco.MjModel,
   hfieldid: int,
   constructor: str = "sah",
-  leaf_size: int = 1,
+  leaf_size: int = 2,
 ) -> tuple[wp.Mesh, wp.vec3]:
   """Create a Warp mesh BVH from mjcf heightfield data."""
   nr = mjm.hfield_nrow[hfieldid]
@@ -778,7 +763,9 @@ def _make_faces_3d_shells(
   group_out[face_id] = worldid
 
 
-def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
+def _make_flex_mesh(
+  mjm: mujoco.MjModel, m: Model, d: Data, constructor: str = "sah", leaf_size: int = 2
+) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, wp.array, wp.array, int]:
   """Create a Warp Mesh for flex meshes.
 
   We create a single Warp Mesh (single BVH) for all flex objects across all worlds
@@ -875,12 +862,7 @@ def _make_flex_mesh(mjm: mujoco.MjModel, m: Model, d: Data):
         outputs=[face_point, face_index, group],
       )
 
-  flex_mesh = wp.Mesh(
-    points=face_point,
-    indices=face_index,
-    groups=group,
-    bvh_constructor="sah",
-  )
+  flex_mesh = wp.Mesh(points=face_point, indices=face_index, groups=group, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
 
   group_root = wp.zeros(d.nworld, dtype=int)
   wp.launch(
