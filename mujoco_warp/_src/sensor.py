@@ -124,10 +124,10 @@ def _magnetometer(
 @wp.func
 def _cam_projection(
   # Model:
-  cam_fovy: wp.array(dtype=float),
+  cam_fovy: wp.array2d(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
-  cam_intrinsic: wp.array(dtype=wp.vec4),
+  cam_intrinsic: wp.array2d(dtype=wp.vec4),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -138,8 +138,8 @@ def _cam_projection(
   refid: int,
 ) -> wp.vec2:
   sensorsize = cam_sensorsize[refid]
-  intrinsic = cam_intrinsic[refid]
-  fovy = cam_fovy[refid]
+  intrinsic = cam_intrinsic[worldid, refid]
+  fovy = cam_fovy[worldid, refid]
   res = cam_resolution[refid]
 
   target_xpos = site_xpos_in[worldid, objid]
@@ -470,10 +470,10 @@ def _sensor_pos(
   site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
   cam_quat: wp.array2d(dtype=wp.quat),
-  cam_fovy: wp.array(dtype=float),
+  cam_fovy: wp.array2d(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
-  cam_intrinsic: wp.array(dtype=wp.vec4),
+  cam_intrinsic: wp.array2d(dtype=wp.vec4),
   sensor_type: wp.array(dtype=int),
   sensor_datatype: wp.array(dtype=int),
   sensor_objtype: wp.array(dtype=int),
