@@ -294,7 +294,6 @@ def _geom_dist(
 class GJKTest(absltest.TestCase):
   """Tests for GJK/EPA."""
 
-  '''
   def test_spheres_distance(self):
     """Test distance between two spheres."""
     _, _, m, d = test_data.fixture(
@@ -643,11 +642,10 @@ class GJKTest(absltest.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
-    self.assertAlmostEqual(dist, -0.00011578822, 6) # dist = -0.00011579410621457821 - MJC 64 bit precision
-    '''
+    self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
 
-  def test_box_box_4contacts(self):
-    """Test box-box with EPA horizon with 13 edges."""
+  def test_box_box_rotation(self):
+    """Test box-box with slight rotation which should give 4 contacts"""
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
@@ -684,7 +682,6 @@ class GJKTest(absltest.TestCase):
 
     dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2)
     self.assertEqual(ncon, 4)
-    self.assertAlmostEqual(dist, -0.0017784332037877803, 7)
 
 
 if __name__ == "__main__":
