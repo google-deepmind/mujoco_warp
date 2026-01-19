@@ -1821,7 +1821,7 @@ def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
 
 
 @wp.func
-def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[float]:
+def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
   """Returns the parameter t where the line a + t(b - a) intersects the given plane."""
   dot = wp.dot(pn, b - a)
 
