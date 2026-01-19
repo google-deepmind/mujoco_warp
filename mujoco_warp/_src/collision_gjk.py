@@ -34,6 +34,13 @@ MIN_DIST = 1e-10
 FACE_TOL = 0.99999872
 EDGE_TOL = 0.00159999931
 
+# Bit flags for face status in EPA polytope.
+# Defined at module scope to avoid Warp's intermediate type issues with literals.
+# See: https://github.com/NVIDIA/warp/issues/485
+_FACE_DELETED_BIT = wp.constant(wp.uint32(0x80000000))
+_FACE_INVALID_BIT = wp.constant(wp.uint32(0x40000000))
+_FACE_INVALID_OR_DELETED_MASK = wp.constant(wp.uint32(0xC0000000))
+
 
 @wp.struct
 class GJKResult:
@@ -1178,25 +1185,25 @@ def _get_face_verts(face: int) -> wp.vec3i:
 @wp.func
 def _delete_face(face: int) -> int:
   """Return the face with the deleted bit enabled."""
-  return face | 0x80000000
+  return int(wp.uint32(face) | _FACE_DELETED_BIT)
 
 
 @wp.func
 def _is_face_deleted(face: int) -> bool:
   """Return true if face is deleted."""
-  return bool(face & 0x80000000)
+  return bool(wp.uint32(face) & _FACE_DELETED_BIT)
 
 
 @wp.func
 def _invalidate_face(face: int) -> int:
   """Return the face with the invalid bit enabled."""
-  return face | 0x40000000
+  return int(wp.uint32(face) | _FACE_INVALID_BIT)
 
 
 @wp.func
 def _is_invalid_face(face: int) -> bool:
   """Return true if face is invalid or deleted."""
-  return bool(face & 0xC0000000)
+  return bool(wp.uint32(face) & _FACE_INVALID_OR_DELETED_MASK)
 
 
 @wp.func
@@ -1877,7 +1884,7 @@ def _polygon_clip(
     for i in range(npolygon):
       # get edge PQ of the polygon
       P = polygon_out[i]
-      Q = wp.where(i < npolygon - 1, polygon_out[i + 1], polygon_out[0])
+      Q = polygon_out[(i + 1) % npolygon]
 
       # determine if P and Q are in the halfspace of the clipping edge
       inside1 = _halfspace(face1[e], pn[e], P)
