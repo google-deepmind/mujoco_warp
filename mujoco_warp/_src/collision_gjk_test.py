@@ -642,7 +642,46 @@ class GJKTest(absltest.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
-    self.assertAlmostEqual(dist, -0.00011578822, 6)  #  dist = -0.00011579410621457821 - MJC 64 bit precision
+    self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
+
+  def test_box_box_rotation(self):
+    """Test box-box with slight rotation which should give 4 contacts."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size=".02 .02 .02" type="box"/>
+          <geom size=".02 .02 .02" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos1 = wp.vec3(
+      0.100000001490116,
+      0.100000001490116,
+      0.002112504327670,
+    )
+    rot1 = wp.mat33(
+      1.000000000000000,
+      0.000000000000004,
+      -0.000000048104223,
+      0.000000000000005,
+      1.000000000000000,
+      0.000000180167476,
+      0.000000048104223,
+      -0.000000180167476,
+      1.000000000000000,
+    )
+
+    pos2 = wp.vec3(
+      0.100000001490116,
+      0.100000001490116,
+      0.040334075689316,
+    )
+
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2)
+    self.assertEqual(ncon, 4)
 
 
 if __name__ == "__main__":
