@@ -1204,7 +1204,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
 
 def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
-  """Iterative linesearch with parallel reductions over efc rows.
+  """Iterative linesearch with parallel reductions over efc rows and dofs.
 
   Args:
     m: Model.
