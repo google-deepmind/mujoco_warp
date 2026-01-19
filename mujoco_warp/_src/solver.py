@@ -46,7 +46,8 @@ def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
 @wp.func
 def _compute_quad(jaref: float, jv: float, d: float) -> wp.vec3:
   """Compute quad coefficients from Jaref, jv, and efc_D (for pyramidal cones)."""
-  return wp.vec3(0.5 * jaref * jaref * d, jv * jaref * d, 0.5 * jv * jv * d)
+  jarefD = jaref * d
+  return wp.vec3(0.5 * jaref * jarefD, jv * jarefD, 0.5 * jv * jv * d)
 
 
 @wp.func
