@@ -867,7 +867,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         efc_D = efc_D_in[worldid, efcid]
 
         # scalar quadratic coefficients
-        quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
+        jvD = jv * efc_D
+        quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jvD * Jaref, 0.5 * jv * jvD)
 
         # non-contact constraints: write quad immediately
         if efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
