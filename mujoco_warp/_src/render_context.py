@@ -39,7 +39,6 @@ def _camera_frustum_bounds(
   znear: float,
 ) -> tuple[float, float, float, float, bool]:
   """Replicate MuJoCo's frustum computation to derive near-plane bounds."""
-
   if cam_projection == ProjectionType.ORTHOGRAPHIC:
     half_height = cam_fovy * 0.5
     aspect = img_w / img_h
@@ -765,12 +764,8 @@ def _make_faces_3d_shells(
 
 
 def _make_flex_mesh(
-  mjm: mujoco.MjModel,
-  m: Model,
-  d: Data,
-  constructor: str = "sah",
-  leaf_size: int = 2
-  ) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, wp.array, wp.array, int]:
+  mjm: mujoco.MjModel, m: Model, d: Data, constructor: str = "sah", leaf_size: int = 2
+) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, wp.array, wp.array, int]:
   """Create a Warp Mesh for flex meshes.
 
   We create a single Warp Mesh (single BVH) for all flex objects across all worlds
@@ -867,13 +862,7 @@ def _make_flex_mesh(
         outputs=[face_point, face_index, group],
       )
 
-  flex_mesh = wp.Mesh(
-    points=face_point,
-    indices=face_index,
-    groups=group,
-    bvh_constructor=constructor,
-    bvh_leaf_size=leaf_size
-  )
+  flex_mesh = wp.Mesh(points=face_point, indices=face_index, groups=group, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
 
   group_root = wp.zeros(d.nworld, dtype=int)
   wp.launch(

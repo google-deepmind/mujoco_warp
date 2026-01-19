@@ -15,8 +15,8 @@
 
 from typing import Tuple
 
-import numpy as np
 import mujoco
+import numpy as np
 import warp as wp
 
 from .render_context import RenderContext

@@ -121,6 +121,7 @@ class ProjectionType(enum.IntEnum):
     PERSPECTIVE: perspective projection
     ORTHOGRAPHIC: orthographic projection
   """
+
   PERSPECTIVE = mujoco.mjtProjection.mjPROJ_PERSPECTIVE
   ORTHOGRAPHIC = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
 

@@ -175,7 +175,7 @@ class BvhTest(absltest.TestCase):
     group_root = rc.group_root.numpy()
     self.assertEqual(rc.group_root.shape[0], 16, "group_root")
     self.assertEqual(len(set(group_root)), 16, "group_root")
-  
+
   def test_build_mesh_bvh(self):
     """Tests that build_mesh_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")

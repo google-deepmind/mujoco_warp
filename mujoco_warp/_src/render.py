@@ -106,7 +106,8 @@ def compute_ray(
   intrinsic: wp.vec4,
   img_w: int,
   img_h: int,
-  px: int, py: int,
+  px: int,
+  py: int,
   znear: float,
 ) -> wp.vec3:
   """Compute ray direction for a pixel with per-world camera parameters.
@@ -703,7 +704,6 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
 
     # Map active camera index to MuJoCo camera ID
     mujoco_cam_id = cam_id_map[cam_idx]
-
 
     if wp.static(rc.ray is None):
       img_w = cam_res[cam_idx][0]
