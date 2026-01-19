@@ -120,14 +120,31 @@ def _eval_frictionloss_pt(x: float, f: float, rf: float, jv: float, d: float) ->
 
 
 @wp.func
+def _eval_frictionloss_pt_one(
+  x: float, f: float, rf: float, half_d: float, jvD: float, hessian: float, f_jv: float
+) -> wp.vec3:
+  """Eval frictionloss with precomputed shared values."""
+  if (-rf < x) and (x < rf):
+    return wp.vec3(half_d * x * x, jvD * x, hessian)
+  elif x <= -rf:
+    return wp.vec3(f * (-0.5 * rf - x), -f_jv, 0.0)
+  else:
+    return wp.vec3(f * (-0.5 * rf + x), f_jv, 0.0)
+
+
+@wp.func
 def _eval_frictionloss_pt_3alphas(
   x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float
 ):
-  """Eval frictionloss for 3 x values."""
+  """Eval frictionloss for 3 x values with shared precomputation."""
+  jvD = jv * d
+  half_d = 0.5 * d
+  hessian = jv * jvD
+  f_jv = f * jv
   return (
-    _eval_frictionloss_pt(x_lo, f, rf, jv, d),
-    _eval_frictionloss_pt(x_hi, f, rf, jv, d),
-    _eval_frictionloss_pt(x_mid, f, rf, jv, d),
+    _eval_frictionloss_pt_one(x_lo, f, rf, half_d, jvD, hessian, f_jv),
+    _eval_frictionloss_pt_one(x_hi, f, rf, half_d, jvD, hessian, f_jv),
+    _eval_frictionloss_pt_one(x_mid, f, rf, half_d, jvD, hessian, f_jv),
   )
 
 
