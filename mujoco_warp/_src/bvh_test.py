@@ -185,6 +185,15 @@ class BvhTest(absltest.TestCase):
     self.assertNotEqual(mesh.id, wp.uint64(0), "mesh id")
     self.assertFalse(np.array_equal(np.array(half), np.array([0.0, 0.0, 0.0])), "mesh half size")
 
+  def test_build_hfield_bvh(self):
+    """Tests that build_hfield_bvh creates a valid BVH."""
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    hmesh, half = bvh.build_hfield_bvh(mjm, 0)
+
+    self.assertNotEqual(hmesh.id, wp.uint64(0), "hfield id")
+    self.assertFalse(np.array_equal(np.array(half), np.array([0.0, 0.0, 0.0])), "hfield half size")
+
   def test_accumulate_flex_vertex_normals(self):
     """Tests flex vertex normal accumulation kernel."""
     nworld = 2
