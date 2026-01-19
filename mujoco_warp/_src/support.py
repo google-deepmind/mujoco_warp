@@ -98,9 +98,12 @@ def mul_m_dense(nv: int, check_skip: bool):
 
   @wp.kernel
   def _mul_m_dense(
+    # Data in:
     qM_in: wp.array3d(dtype=float),
+    # In:
     vec: wp.array2d(dtype=float),
     skip: wp.array(dtype=bool),
+    # Out:
     res: wp.array2d(dtype=float),
   ):
     worldid, i = wp.tid()
