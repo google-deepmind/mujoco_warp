@@ -1141,6 +1141,9 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         local_hi[2],
         local_mid[2],
       )
+
+      # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
+      # this is faster than 3 vec3 reductions because it avoids synchronization barriers
       combined_tile = wp.tile(local_combined, preserve_type=True)
       combined_sum = wp.tile_reduce(wp.add, combined_tile)
       result = combined_sum[0]
