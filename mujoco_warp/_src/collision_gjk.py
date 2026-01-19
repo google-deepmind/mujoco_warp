@@ -1831,6 +1831,8 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[fl
   if temp == 0.0:
     return FLOAT_MAX, res  # parallel; no intersection
   t = (pd - wp.dot(pn, a)) / temp
+  if t > 1.0 and t < 1.0000002:
+    t = 1.0
   if t >= 0.0 and t <= 1.0:
     res[0] = a[0] + t * ab[0]
     res[1] = a[1] + t * ab[1]
