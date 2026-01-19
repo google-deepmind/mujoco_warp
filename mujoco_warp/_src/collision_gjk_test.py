@@ -645,7 +645,7 @@ class GJKTest(absltest.TestCase):
     self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
 
   def test_box_box_rotation(self):
-    """Test box-box with slight rotation which should give 4 contacts"""
+    """Test box-box with slight rotation which should give 4 contacts."""
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
