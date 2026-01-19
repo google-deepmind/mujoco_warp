@@ -975,6 +975,9 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_jv_inout[worldid, efcid],
         )
 
+    # at this point, every thread has computed some contributions to p0 in local_p0
+    # we now create a tile of all local_p0 contributions and reduce them to a single value
+    # this is done in parallel using a tile reduction
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
 
