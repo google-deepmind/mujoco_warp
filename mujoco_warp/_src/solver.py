@@ -44,18 +44,8 @@ def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
 
 
 @wp.func
-def _compute_quad(jaref: float, jv: float, d: float) -> wp.vec3:
-  """Compute quad coefficients from Jaref, jv, and efc_D (for pyramidal cones)."""
-  jarefD = jaref * d
-  return wp.vec3(0.5 * jaref * jarefD, jv * jarefD, 0.5 * jv * jv * d)
-
-
-@wp.func
 def _eval_pt_direct(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
-  """Compute (cost, gradient, hessian) directly without intermediate quad.
-
-  Equivalent to _eval_pt(_compute_quad(jaref, jv, d), alpha) but more efficient.
-  """
+  """Eval quadratic constraint, return (cost, grad, hessian)."""
   x = jaref + alpha * jv
   jvD = jv * d
   return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
@@ -63,14 +53,16 @@ def _eval_pt_direct(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
 
 @wp.func
 def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
-  """Optimized _eval_pt_direct for alpha=0."""
+  """Eval quadratic constraint at alpha=0."""
   jvD = jv * d
   return wp.vec3(0.5 * d * jaref * jaref, jvD * jaref, jv * jvD)
 
 
 @wp.func
-def _eval_pt_direct_3alphas(jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float):
-  """Compute _eval_pt_direct for 3 alphas, sharing common subexpressions."""
+def _eval_pt_direct_3alphas(
+  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
+):
+  """Eval quadratic constraint for 3 alphas."""
   x_lo = jaref + lo_alpha * jv
   x_hi = jaref + hi_alpha * jv
   x_mid = jaref + mid_alpha * jv
@@ -91,6 +83,7 @@ def _eval_cost(quad: wp.vec3, alpha: float) -> float:
 
 @wp.func
 def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
+  """Eval quad polynomial at alpha, return (cost, grad, hessian)."""
   aq2 = alpha * quad[2]
   return wp.vec3(
     alpha * aq2 + alpha * quad[1] + quad[0],
@@ -101,16 +94,12 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 @wp.func
 def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha: float):
-  """Compute _eval_pt for 3 alphas, sharing the constant hessian."""
-  q0 = quad[0]
-  q1 = quad[1]
-  q2 = quad[2]
+  """Eval quad polynomial for 3 alphas."""
+  q0, q1, q2 = quad[0], quad[1], quad[2]
   hessian = 2.0 * q2
-
   lo_aq2 = lo_alpha * q2
   hi_aq2 = hi_alpha * q2
   mid_aq2 = mid_alpha * q2
-
   return (
     wp.vec3(lo_alpha * lo_aq2 + lo_alpha * q1 + q0, 2.0 * lo_aq2 + q1, hessian),
     wp.vec3(hi_alpha * hi_aq2 + hi_alpha * q1 + q0, 2.0 * hi_aq2 + q1, hessian),
@@ -119,24 +108,27 @@ def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha:
 
 
 @wp.func
-def _eval_frictionloss_pt(
-  x: float,  # already Jaref + alpha * jv
-  f: float,
-  rf: float,
-  jv: float,
-  d: float,
-) -> wp.vec3:
-  """Fused frictionloss + eval_pt: returns final (cost, grad, hessian)."""
-  # -bound < x < bound : quadratic
+def _eval_frictionloss_pt(x: float, f: float, rf: float, jv: float, d: float) -> wp.vec3:
+  """Eval frictionloss and return (cost, grad, hessian). x = Jaref + alpha * jv."""
   if (-rf < x) and (x < rf):
     jvD = jv * d
     return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
-  # x < -bound: linear negative
   elif x <= -rf:
     return wp.vec3(f * (-0.5 * rf - x), -f * jv, 0.0)
-  # bound < x : linear positive
   else:
     return wp.vec3(f * (-0.5 * rf + x), f * jv, 0.0)
+
+
+@wp.func
+def _eval_frictionloss_pt_3alphas(
+  x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float
+):
+  """Eval frictionloss for 3 x values."""
+  return (
+    _eval_frictionloss_pt(x_lo, f, rf, jv, d),
+    _eval_frictionloss_pt(x_hi, f, rf, jv, d),
+    _eval_frictionloss_pt(x_mid, f, rf, jv, d),
+  )
 
 
 @wp.func
@@ -633,11 +625,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_mid = efc_Jaref + mid_alpha * efc_jv
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return (
-      _eval_frictionloss_pt(x_lo, f, rf, efc_jv, efc_D),
-      _eval_frictionloss_pt(x_hi, f, rf, efc_jv, efc_D),
-      _eval_frictionloss_pt(x_mid, f, rf, efc_jv, efc_D),
-    )
+    return _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, efc_jv, efc_D)
 
   # Equality constraint: always active
   return _eval_pt_direct_3alphas(efc_Jaref, efc_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
@@ -699,11 +687,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return (
-      _eval_frictionloss_pt(x_lo, f, rf, efc_jv, efc_D),
-      _eval_frictionloss_pt(x_hi, f, rf, efc_jv, efc_D),
-      _eval_frictionloss_pt(x_mid, f, rf, efc_jv, efc_D),
-    )
+    return _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, efc_jv, efc_D)
 
   # Equality constraint: always active
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
