@@ -311,11 +311,6 @@ class SmoothTest(parameterized.TestCase):
 
     d.cfrc_ext.zero_()
 
-    # clear equality constraint counts
-    d.ne_connect.zero_()
-    d.ne_weld.zero_()
-    d.ne_jnt.zero_()
-
     mjw.rne_postconstraint(m, d)
 
     _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (contact)")
