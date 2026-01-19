@@ -1061,7 +1061,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     # main iterative loop
     alpha = float(0.0)
 
-    for _ in range(wp.static(LS_ITERATIONS)):
+    for _ in range(LS_ITERATIONS):
       lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
       hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
       mid_alpha = 0.5 * (lo_alpha + hi_alpha)
