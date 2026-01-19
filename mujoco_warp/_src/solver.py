@@ -119,24 +119,24 @@ def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha:
 
 
 @wp.func
-def _eval_frictionloss(
-  # In:
-  x: float,
+def _eval_frictionloss_pt(
+  x: float,  # already Jaref + alpha * jv
   f: float,
   rf: float,
-  Jaref: float,
   jv: float,
-  quad: wp.vec3,
+  d: float,
 ) -> wp.vec3:
+  """Fused frictionloss + eval_pt: returns final (cost, grad, hessian)."""
   # -bound < x < bound : quadratic
   if (-rf < x) and (x < rf):
-    return quad
+    jvD = jv * d
+    return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
   # x < -bound: linear negative
   elif x <= -rf:
-    return wp.vec3(f * (-0.5 * rf - Jaref), -f * jv, 0.0)
+    return wp.vec3(f * (-0.5 * rf - x), -f * jv, 0.0)
   # bound < x : linear positive
   else:
-    return wp.vec3(f * (-0.5 * rf + Jaref), f * jv, 0.0)
+    return wp.vec3(f * (-0.5 * rf + x), f * jv, 0.0)
 
 
 @wp.func
@@ -471,9 +471,7 @@ def _compute_efc_eval_pt_pyramidal(
     f = efc_frictionloss[efcid]
     x = efc_Jaref + alpha * efc_jv
     rf = math.safe_div(f, efc_D)
-    efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-    quad_f = _eval_frictionloss(x, f, rf, efc_Jaref, efc_jv, efc_quad)
-    return _eval_pt(quad_f, alpha)
+    return _eval_frictionloss_pt(x, f, rf, efc_jv, efc_D)
 
   # Equality constraint
   return _eval_pt_direct(efc_Jaref, efc_jv, efc_D, alpha)
@@ -520,8 +518,7 @@ def _compute_efc_eval_pt_elliptic(
     f = efc_frictionloss[efcid]
     x = efc_Jaref + alpha * efc_jv
     rf = math.safe_div(f, efc_D)
-    quad_f = _eval_frictionloss(x, f, rf, efc_Jaref, efc_jv, efc_quad)
-    return _eval_pt(quad_f, alpha)
+    return _eval_frictionloss_pt(x, f, rf, efc_jv, efc_D)
 
   # Equality constraint
   return _eval_pt(efc_quad, alpha)
@@ -549,9 +546,7 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   if efcid >= ne:
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-    quad_f = _eval_frictionloss(efc_Jaref, f, rf, efc_Jaref, efc_jv, efc_quad)
-    return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
+    return _eval_frictionloss_pt(efc_Jaref, f, rf, efc_jv, efc_D)
 
   # Equality constraint
   return _eval_pt_direct_alpha_zero(efc_Jaref, efc_jv, efc_D)
@@ -595,8 +590,7 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    quad_f = _eval_frictionloss(efc_Jaref, f, rf, efc_Jaref, efc_jv, efc_quad)
-    return wp.vec3(quad_f[0], quad_f[1], 2.0 * quad_f[2])
+    return _eval_frictionloss_pt(efc_Jaref, f, rf, efc_jv, efc_D)
 
   # Equality constraint
   return wp.vec3(efc_quad[0], efc_quad[1], 2.0 * efc_quad[2])
@@ -639,14 +633,10 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_mid = efc_Jaref + mid_alpha * efc_jv
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    efc_quad = _compute_quad(efc_Jaref, efc_jv, efc_D)
-    quad_f_lo = _eval_frictionloss(x_lo, f, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_hi = _eval_frictionloss(x_hi, f, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_mid = _eval_frictionloss(x_mid, f, rf, efc_Jaref, efc_jv, efc_quad)
     return (
-      _eval_pt(quad_f_lo, lo_alpha),
-      _eval_pt(quad_f_hi, hi_alpha),
-      _eval_pt(quad_f_mid, mid_alpha),
+      _eval_frictionloss_pt(x_lo, f, rf, efc_jv, efc_D),
+      _eval_frictionloss_pt(x_hi, f, rf, efc_jv, efc_D),
+      _eval_frictionloss_pt(x_mid, f, rf, efc_jv, efc_D),
     )
 
   # Equality constraint: always active
@@ -709,13 +699,10 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    quad_f_lo = _eval_frictionloss(x_lo, f, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_hi = _eval_frictionloss(x_hi, f, rf, efc_Jaref, efc_jv, efc_quad)
-    quad_f_mid = _eval_frictionloss(x_mid, f, rf, efc_Jaref, efc_jv, efc_quad)
     return (
-      _eval_pt(quad_f_lo, lo_alpha),
-      _eval_pt(quad_f_hi, hi_alpha),
-      _eval_pt(quad_f_mid, mid_alpha),
+      _eval_frictionloss_pt(x_lo, f, rf, efc_jv, efc_D),
+      _eval_frictionloss_pt(x_hi, f, rf, efc_jv, efc_D),
+      _eval_frictionloss_pt(x_mid, f, rf, efc_jv, efc_D),
     )
 
   # Equality constraint: always active
