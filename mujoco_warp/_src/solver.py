@@ -34,6 +34,67 @@ wp.set_module_options({"enable_backward": False})
 _BLOCK_CHOLESKY_DIM = 32
 
 
+class SolverContext:
+  """Temporary solver workspace arrays allocated inline during solve."""
+
+  def __init__(self, m: types.Model, d: types.Data, inverse: bool = False):
+    """Create a SolverContext with allocated workspace arrays.
+
+    Args:
+      m: Model containing nv, nv_pad, and solver type.
+      d: Data containing nworld and njmax.
+      inverse: If True, only allocate arrays needed for inverse dynamics.
+    """
+    nworld = d.nworld
+    nv = m.nv
+    nv_pad = m.nv_pad
+    njmax = d.njmax
+
+    # Arrays needed for both forward and inverse
+    self.Jaref = wp.zeros((nworld, njmax), dtype=float)
+    self.search_dot = wp.zeros((nworld,), dtype=float)
+    self.gauss = wp.zeros((nworld,), dtype=float)
+    self.cost = wp.zeros((nworld,), dtype=float)
+    self.prev_cost = wp.zeros((nworld,), dtype=float)
+    self.done = wp.zeros((nworld,), dtype=bool)
+
+    if inverse:
+      # For inverse dynamics, remaining arrays are empty placeholders
+      self.grad = wp.empty((nworld, 0), dtype=float)
+      self.grad_dot = wp.empty((nworld,), dtype=float)
+      self.Mgrad = wp.empty((nworld, 0), dtype=float)
+      self.search = wp.empty((nworld, 0), dtype=float)
+      self.mv = wp.empty((nworld, 0), dtype=float)
+      self.jv = wp.empty((nworld, 0), dtype=float)
+      self.quad = wp.empty((nworld, 0), dtype=wp.vec3)
+      self.quad_gauss = wp.empty((nworld,), dtype=wp.vec3)
+      self.alpha = wp.empty((nworld,), dtype=float)
+      self.prev_grad = wp.empty((nworld, 0), dtype=float)
+      self.prev_Mgrad = wp.empty((nworld, 0), dtype=float)
+      self.beta = wp.empty((nworld,), dtype=float)
+      self.h = wp.empty((nworld, 0, 0), dtype=float)
+      self.hfactor = wp.empty((nworld, 0, 0), dtype=float)
+    else:
+      # Newton solver needs h; hfactor only needed if nv > _BLOCK_CHOLESKY_DIM
+      alloc_h = m.opt.solver == types.SolverType.NEWTON
+      alloc_hfactor = alloc_h and nv > _BLOCK_CHOLESKY_DIM
+
+      self.grad = wp.zeros((nworld, nv_pad), dtype=float)
+      self.grad_dot = wp.zeros((nworld,), dtype=float)
+      self.Mgrad = wp.zeros((nworld, nv_pad), dtype=float)
+      self.search = wp.zeros((nworld, nv), dtype=float)
+      self.mv = wp.zeros((nworld, nv), dtype=float)
+      self.jv = wp.zeros((nworld, njmax), dtype=float)
+      self.quad = wp.zeros((nworld, njmax), dtype=wp.vec3)
+      self.quad_gauss = wp.zeros((nworld,), dtype=wp.vec3)
+      self.alpha = wp.zeros((nworld,), dtype=float)
+      self.prev_grad = wp.zeros((nworld, nv), dtype=float)
+      self.prev_Mgrad = wp.zeros((nworld, nv), dtype=float)
+      self.beta = wp.zeros((nworld,), dtype=float)
+      self.h = wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float)
+      self.hfactor = wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float)
+
+
 @wp.func
 def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
   return value / (stat_meaninertia * float(nv))
@@ -455,7 +516,7 @@ def linesearch_iterative(
   efc_alpha_out[worldid] = alpha
 
 
-def _linesearch_iterative(m: types.Model, d: types.Data):
+def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext):
   """Iterative linesearch."""
   wp.launch(
     linesearch_iterative,
@@ -476,15 +537,15 @@ def _linesearch_iterative(m: types.Model, d: types.Data):
       d.efc.id,
       d.efc.D,
       d.efc.frictionloss,
-      d.efc.Jaref,
-      d.efc.search_dot,
-      d.efc.jv,
-      d.efc.quad,
-      d.efc.quad_gauss,
-      d.efc.done,
+      ctx.Jaref,
+      ctx.search_dot,
+      ctx.jv,
+      ctx.quad,
+      ctx.quad_gauss,
+      ctx.done,
       d.njmax,
     ],
-    outputs=[d.efc.alpha],
+    outputs=[ctx.alpha],
     block_dim=m.block_dim.linesearch_iterative,
   )
 
@@ -646,7 +707,7 @@ def linesearch_parallel_best_alpha(
   efc_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, bestid)
 
 
-def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
+def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost: wp.array2d(dtype=float)):
   wp.launch(
     linesearch_parallel_fused,
     dim=(d.nworld, m.opt.ls_iterations),
@@ -663,11 +724,11 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
       d.efc.id,
       d.efc.D,
       d.efc.frictionloss,
-      d.efc.Jaref,
-      d.efc.jv,
-      d.efc.quad,
-      d.efc.quad_gauss,
-      d.efc.done,
+      ctx.Jaref,
+      ctx.jv,
+      ctx.quad,
+      ctx.quad_gauss,
+      ctx.done,
       d.njmax,
       d.nacon,
     ],
@@ -677,8 +738,8 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
   wp.launch(
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
-    inputs=[m.opt.ls_iterations, m.opt.ls_parallel_min_step, d.efc.done, cost],
-    outputs=[d.efc.alpha],
+    inputs=[m.opt.ls_iterations, m.opt.ls_parallel_min_step, ctx.done, cost],
+    outputs=[ctx.alpha],
   )
 
 
@@ -924,9 +985,9 @@ def linesearch_jaref(
 
 
 @event_scope
-def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
+def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext, cost: wp.array2d(dtype=float)):
   # mv = qM @ search
-  support.mul_m(m, d, d.efc.mv, d.efc.search, skip=d.efc.done)
+  support.mul_m(m, d, ctx.mv, ctx.search, skip=ctx.done)
 
   # jv = efc_J @ search
   # TODO(team): is there a better way of doing batched matmuls with dynamic array sizes?
@@ -945,27 +1006,27 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
     wp.launch(
       linesearch_zero_jv,
       dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.efc.done],
-      outputs=[d.efc.jv],
+      inputs=[d.nefc, ctx.done],
+      outputs=[ctx.jv],
     )
 
   wp.launch(
     linesearch_jv_fused(m.nv, dofs_per_thread),
     dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.efc.J, d.efc.search, d.efc.done],
-    outputs=[d.efc.jv],
+    inputs=[d.nefc, d.efc.J, ctx.search, ctx.done],
+    outputs=[ctx.jv],
   )
 
   # prepare quadratics
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
+    ctx.quad_gauss.zero_()
 
   wp.launch(
     linesearch_prepare_gauss(m.nv, dofs_per_thread),
     dim=(d.nworld, threads_per_efc),
-    inputs=[d.qfrc_smooth, d.efc.Ma, d.efc.search, d.efc.gauss, d.efc.mv, d.efc.done],
-    outputs=[d.efc.quad_gauss],
+    inputs=[d.qfrc_smooth, d.efc.Ma, ctx.search, ctx.gauss, ctx.mv, ctx.done],
+    outputs=[ctx.quad_gauss],
   )
 
   # quad = [0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D]
@@ -981,31 +1042,31 @@ def _linesearch(m: types.Model, d: types.Data, cost: wp.array2d(dtype=float)):
       d.efc.type,
       d.efc.id,
       d.efc.D,
-      d.efc.Jaref,
-      d.efc.jv,
-      d.efc.done,
+      ctx.Jaref,
+      ctx.jv,
+      ctx.done,
       d.nacon,
     ],
-    outputs=[d.efc.quad],
+    outputs=[ctx.quad],
   )
 
   if m.opt.ls_parallel:
-    _linesearch_parallel(m, d, cost)
+    _linesearch_parallel(m, d, ctx, cost)
   else:
-    _linesearch_iterative(m, d)
+    _linesearch_iterative(m, d, ctx)
 
   wp.launch(
     linesearch_qacc_ma,
     dim=(d.nworld, m.nv),
-    inputs=[d.efc.search, d.efc.mv, d.efc.alpha, d.efc.done],
+    inputs=[ctx.search, ctx.mv, ctx.alpha, ctx.done],
     outputs=[d.qacc, d.efc.Ma],
   )
 
   wp.launch(
     linesearch_jaref,
     dim=(d.nworld, d.njmax),
-    inputs=[d.nefc, d.efc.jv, d.efc.alpha, d.efc.done],
-    outputs=[d.efc.Jaref],
+    inputs=[d.nefc, ctx.jv, ctx.alpha, ctx.done],
+    outputs=[ctx.Jaref],
   )
 
 
@@ -1286,13 +1347,13 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
   return kernel
 
 
-def _update_constraint(m: types.Model, d: types.Data):
+def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext):
   """Update constraint arrays after each solve iteration."""
   wp.launch(
     update_constraint_init_cost,
     dim=(d.nworld),
-    inputs=[d.efc.cost, d.efc.done],
-    outputs=[d.efc.gauss, d.efc.cost, d.efc.prev_cost],
+    inputs=[ctx.cost, ctx.done],
+    outputs=[ctx.gauss, ctx.cost, ctx.prev_cost],
   )
 
   wp.launch(
@@ -1310,18 +1371,18 @@ def _update_constraint(m: types.Model, d: types.Data):
       d.efc.id,
       d.efc.D,
       d.efc.frictionloss,
-      d.efc.Jaref,
-      d.efc.done,
+      ctx.Jaref,
+      ctx.done,
       d.nacon,
     ],
-    outputs=[d.efc.force, d.efc.cost, d.efc.state],
+    outputs=[d.efc.force, ctx.cost, d.efc.state],
   )
 
   # qfrc_constraint = efc_J.T @ efc_force
   wp.launch(
     update_constraint_init_qfrc_constraint,
     dim=(d.nworld, m.nv),
-    inputs=[d.nefc, d.efc.J, d.efc.force, d.efc.done, d.njmax],
+    inputs=[d.nefc, d.efc.J, d.efc.force, ctx.done, d.njmax],
     outputs=[d.qfrc_constraint],
   )
 
@@ -1338,8 +1399,8 @@ def _update_constraint(m: types.Model, d: types.Data):
   wp.launch(
     update_constraint_gauss_cost(m.nv, dofs_per_thread),
     dim=(d.nworld, threads_per_efc),
-    inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, d.efc.done],
-    outputs=[d.efc.gauss, d.efc.cost],
+    inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, ctx.done],
+    outputs=[ctx.gauss, ctx.cost],
   )
 
 
@@ -1755,19 +1816,19 @@ def padding_h(nv: int, efc_done_in: wp.array(dtype=bool), h_out: wp.array3d(dtyp
   h_out[worldid, dofid, dofid] = 1.0
 
 
-def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), hfactor: wp.array3d(dtype=float)):
+def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
-  wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.grad_dot])
+  wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.grad_dot])
 
   wp.launch(
     update_gradient_grad,
     dim=(d.nworld, m.nv),
-    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.efc.done],
-    outputs=[d.efc.grad, d.efc.grad_dot],
+    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+    outputs=[ctx.grad, ctx.grad_dot],
   )
 
   if m.opt.solver == types.SolverType.CG:
-    smooth.solve_m(m, d, d.efc.Mgrad, d.efc.grad)
+    smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.opt.is_sparse:
@@ -1781,17 +1842,17 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
           d.efc.J,
           d.efc.D,
           d.efc.state,
-          d.efc.done,
+          ctx.done,
         ],
-        outputs=[h],
+        outputs=[ctx.h],
         block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
 
       wp.launch(
         update_gradient_set_h_qM_lower_sparse,
         dim=(d.nworld, m.qM_fullm_i.size),
-        inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, d.efc.done],
-        outputs=[h],
+        inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
+        outputs=[ctx.h],
       )
     else:
       nv_padded = d.efc.J.shape[2]
@@ -1804,9 +1865,9 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
           d.efc.J,
           d.efc.D,
           d.efc.state,
-          d.efc.done,
+          ctx.done,
         ],
-        outputs=[h],
+        outputs=[ctx.h],
         block_dim=m.block_dim.update_gradient_JTDAJ_dense,
       )
 
@@ -1849,15 +1910,15 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
           d.contact.worldid,
           d.efc.J,
           d.efc.D,
-          d.efc.Jaref,
+          ctx.Jaref,
           d.efc.state,
-          d.efc.done,
+          ctx.done,
           d.naconmax,
           d.nacon,
           nblocks_perblock,
           dim_block,
         ],
-        outputs=[h],
+        outputs=[ctx.h],
       )
 
     # TODO(team): Define good threshold for blocked vs non-blocked cholesky
@@ -1865,23 +1926,23 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
-        inputs=[d.efc.grad, h, d.efc.done],
-        outputs=[d.efc.Mgrad],
+        inputs=[ctx.grad, ctx.h, ctx.done],
+        outputs=[ctx.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
     else:
       wp.launch(
         padding_h,
         dim=(d.nworld, m.nv_pad - m.nv),
-        inputs=[m.nv, d.efc.done],
-        outputs=[h],
+        inputs=[m.nv, ctx.done],
+        outputs=[ctx.h],
       )
 
       wp.launch_tiled(
         update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), h, d.efc.done, hfactor],
-        outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
+        inputs=[ctx.grad.reshape(shape=(d.nworld, m.nv_pad, 1)), ctx.h, ctx.done, ctx.hfactor],
+        outputs=[ctx.Mgrad.reshape(shape=(d.nworld, m.nv_pad, 1))],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
   else:
@@ -2016,39 +2077,38 @@ def solve_done(
 def _solver_iteration(
   m: types.Model,
   d: types.Data,
-  h: wp.array3d(dtype=float),
-  hfactor: wp.array3d(dtype=float),
+  ctx: SolverContext,
   step_size_cost: wp.array2d(dtype=float),
 ):
-  _linesearch(m, d, step_size_cost)
+  _linesearch(m, d, ctx, step_size_cost)
 
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_prev_grad_Mgrad,
       dim=(d.nworld, m.nv),
-      inputs=[d.efc.grad, d.efc.Mgrad, d.efc.done],
-      outputs=[d.efc.prev_grad, d.efc.prev_Mgrad],
+      inputs=[ctx.grad, ctx.Mgrad, ctx.done],
+      outputs=[ctx.prev_grad, ctx.prev_Mgrad],
     )
 
-  _update_constraint(m, d)
-  _update_gradient(m, d, h, hfactor)
+  _update_constraint(m, d, ctx)
+  _update_gradient(m, d, ctx)
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
       solve_beta,
       dim=d.nworld,
-      inputs=[m.nv, d.efc.grad, d.efc.Mgrad, d.efc.prev_grad, d.efc.prev_Mgrad, d.efc.done],
-      outputs=[d.efc.beta],
+      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      outputs=[ctx.beta],
     )
 
-  wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[d.efc.done], outputs=[d.efc.search_dot])
+  wp.launch(solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
 
   wp.launch(
     solve_search_update,
     dim=(d.nworld, m.nv),
-    inputs=[m.opt.solver, d.efc.Mgrad, d.efc.search, d.efc.beta, d.efc.done],
-    outputs=[d.efc.search, d.efc.search_dot],
+    inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+    outputs=[ctx.search, ctx.search_dot],
   )
 
   wp.launch(
@@ -2059,23 +2119,21 @@ def _solver_iteration(
       m.opt.tolerance,
       m.opt.iterations,
       m.stat.meaninertia,
-      d.efc.grad_dot,
-      d.efc.cost,
-      d.efc.prev_cost,
-      d.efc.done,
+      ctx.grad_dot,
+      ctx.cost,
+      ctx.prev_cost,
+      ctx.done,
     ],
-    outputs=[d.solver_niter, d.efc.done, d.nsolving],
+    outputs=[d.solver_niter, ctx.done, d.nsolving],
   )
 
 
-def create_context(
-  m: types.Model, d: types.Data, h: wp.array3d(dtype=float), hfactor: wp.array3d(dtype=float), grad: bool = True
-):
+def create_context(m: types.Model, d: types.Data, ctx: SolverContext, grad: bool = True):
   # initialize some efc arrays
   wp.launch(
     solve_init_efc,
     dim=(d.nworld),
-    outputs=[d.solver_niter, d.efc.search_dot, d.efc.cost, d.efc.done],
+    outputs=[d.solver_niter, ctx.search_dot, ctx.cost, ctx.done],
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
@@ -2091,22 +2149,22 @@ def create_context(
   threads_per_efc = ceil(m.nv / dofs_per_thread)
   # we need to clear the jaref array if we're doing atomic adds.
   if threads_per_efc > 1:
-    d.efc.Jaref.zero_()
+    ctx.Jaref.zero_()
 
   wp.launch(
     solve_init_jaref(m.nv, dofs_per_thread),
     dim=(d.nworld, d.njmax, threads_per_efc),
     inputs=[d.nefc, d.qacc, d.efc.J, d.efc.aref],
-    outputs=[d.efc.Jaref],
+    outputs=[ctx.Jaref],
   )
 
   # Ma = qM @ qacc
-  support.mul_m(m, d, d.efc.Ma, d.qacc, skip=d.efc.done)
+  support.mul_m(m, d, d.efc.Ma, d.qacc, skip=ctx.done)
 
-  _update_constraint(m, d)
+  _update_constraint(m, d, ctx)
 
   if grad:
-    _update_gradient(m, d, h, hfactor)
+    _update_gradient(m, d, ctx)
 
 
 @event_scope
@@ -2125,26 +2183,18 @@ def _solve(m: types.Model, d: types.Data):
   else:
     wp.copy(d.qacc, d.qacc_smooth)
 
-  # Newton solver Hessian
-  if m.opt.solver == types.SolverType.NEWTON:
-    h = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
-    if m.nv > _BLOCK_CHOLESKY_DIM:
-      hfactor = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
-    else:
-      hfactor = wp.empty((d.nworld, 0, 0), dtype=float)
-  else:
-    h = wp.empty((d.nworld, 0, 0), dtype=float)
-    hfactor = wp.empty((d.nworld, 0, 0), dtype=float)
+  # Create solver context with all temporary arrays
+  ctx = SolverContext(m, d)
 
   # create context
-  create_context(m, d, h, hfactor, grad=True)
+  create_context(m, d, ctx, grad=True)
 
   # search = -Mgrad
   wp.launch(
     solve_init_search,
     dim=(d.nworld, m.nv),
-    inputs=[d.efc.Mgrad],
-    outputs=[d.efc.search, d.efc.search_dot],
+    inputs=[ctx.Mgrad],
+    outputs=[ctx.search, ctx.search_dot],
   )
 
   step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
@@ -2158,10 +2208,10 @@ def _solve(m: types.Model, d: types.Data):
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
     d.nsolving.fill_(d.nworld)
-    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost)
+    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, step_size_cost=step_size_cost)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, h, hfactor, step_size_cost)
+      _solver_iteration(m, d, ctx, step_size_cost)

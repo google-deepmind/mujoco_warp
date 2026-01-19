@@ -239,11 +239,12 @@ class SupportTest(parameterized.TestCase):
       h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
     h = wp.array(h_np, dtype=float)
 
-    # 3. Reuse built-in arrays from data structure to fill d.efc.grad with test data
-    grad_np = d.efc.grad.numpy()
+    # 3. Create inline arrays for grad, Mgrad, and done (no longer in d.efc)
+    grad = wp.zeros((nworld, nv_pad), dtype=float)
+    grad_np = grad.numpy()
     grad_np.fill(0)  # Zero out first
     grad_np[0, :nv] = b
-    d.efc.grad.assign(grad_np)
+    grad.assign(grad_np)
 
     # Zero out the temporary arrays to ensure clean state
     L_init = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
@@ -252,25 +253,24 @@ class SupportTest(parameterized.TestCase):
 
     hfactor = wp.array(L_init, dtype=float)
 
-    d.efc.Mgrad.zero_()
+    Mgrad = wp.zeros((nworld, nv_pad), dtype=float)
 
     # Ensure done is False so kernel executes
-    d.efc.done.zero_()
+    done = wp.zeros((nworld,), dtype=bool)
 
-    # Launch with same dimensions as solver.py, using built-in arrays
-    grad_shape_1 = d.efc.grad.shape[1]
+    # Launch with same dimensions as solver.py, using inline arrays
     wp.launch_tiled(
       combined_cholesky_kernel,
       dim=nworld,
-      inputs=[d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)), h, d.efc.done, hfactor],
-      outputs=[d.efc.Mgrad.reshape(shape=(nworld, d.efc.Mgrad.shape[1], 1))],
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor],
+      outputs=[Mgrad.reshape(shape=(nworld, nv_pad, 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
     wp.synchronize()
 
-    # Get results from built-in arrays
+    # Get results from inline arrays
     L_result = hfactor.numpy()[0]
-    x_result = d.efc.Mgrad.numpy()[0]
+    x_result = Mgrad.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
