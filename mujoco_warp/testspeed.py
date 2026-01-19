@@ -98,12 +98,12 @@ def _collect_metrics(
 ) -> dict[str, float]:
   """Collect all metrics into a dictionary."""
   steps = _NWORLD.value * _NSTEP.value
-  model_name = path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem
   metrics = {
-    f"{model_name}:jit_duration": jit_time,
-    f"{model_name}:run_time": run_time,
-    f"{model_name}:steps_per_second": steps / run_time,
-    f"{model_name}:converged_worlds": int(nsuccess),
+    "benchmark": path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem,
+    "jit_duration": jit_time,
+    "run_time": run_time,
+    "steps_per_second": steps / run_time,
+    "converged_worlds": int(nsuccess),
   }
 
   def flatten_trace(prefix: str, trace, metrics):
@@ -113,32 +113,32 @@ def _collect_metrics(
         metrics[f"{prefix}{k}{f'[{i}]' if len(times) > 1 else ''}"] = 1e6 * t / steps
       flatten_trace(f"{prefix}{k}.", sub_trace, metrics)
 
-  flatten_trace(model_name + ":", trace, metrics)
+  flatten_trace("", trace, metrics)
 
   if _MEMORY.value:
     metrics.update(
       {
-        f"{model_name}:model_memory": sum(c for _, c in _dataclass_memory(m)),
-        f"{model_name}:data_memory": sum(c for _, c in _dataclass_memory(d)),
-        f"{model_name}:total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
+        f"model_memory": sum(c for _, c in _dataclass_memory(m)),
+        f"data_memory": sum(c for _, c in _dataclass_memory(d)),
+        f"total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
       }
     )
 
   if nacon and nefc:
     metrics.update(
       {
-        f"{model_name}:ncon_mean": np.mean(nacon) / _NWORLD.value,
-        f"{model_name}:ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
-        f"{model_name}:nefc_mean": np.mean(nefc),
-        f"{model_name}:nefc_p95": np.percentile(nefc, 95),
+        f"ncon_mean": np.mean(nacon) / _NWORLD.value,
+        f"ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
+        f"nefc_mean": np.mean(nefc),
+        f"nefc_p95": np.percentile(nefc, 95),
       }
     )
 
   if solver_niter:
     metrics.update(
       {
-        f"{model_name}:solver_niter_mean": np.mean(solver_niter),
-        f"{model_name}:solver_niter_p95": np.percentile(solver_niter, 95),
+        f"solver_niter_mean": np.mean(solver_niter),
+        f"solver_niter_p95": np.percentile(solver_niter, 95),
       }
     )
 
@@ -148,15 +148,17 @@ def _collect_metrics(
 def _output_short(*args):
   """Output metrics in a short format."""
   metrics = _collect_metrics(*args)
-  max_key_len = max(len(key) for key in metrics.keys())
+  benchmark = metrics.pop("benchmark")
+  max_key_len = max(len(key) for key in metrics.keys()) + len(benchmark)
   for key, value in metrics.items():
-    print(f"{key:<{max_key_len}} {value}")
+    print(f"{benchmark}:{key:<{max_key_len}} {value}")
 
 
 def _output_json(*args):
   """Output metrics in a JSON format."""
   metrics = _collect_metrics(*args)
-  print(json.dumps(metrics, indent=2))
+  del metrics["benchmark"]
+  print(json.dumps(metrics))
 
 
 def _output_human(m, d, path: epath.Path, free_mem_at_init, jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess):
