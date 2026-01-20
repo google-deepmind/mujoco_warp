@@ -17,28 +17,28 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_gjk import ccd
-from .collision_gjk import multicontact
-from .collision_gjk import support
-from .collision_primitive import Geom
-from .collision_primitive import contact_params
-from .collision_primitive import geom_collision_pair
-from .collision_primitive import write_contact
-from .math import make_frame
-from .math import upper_trid_index
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
-from .types import MJ_MAXCONPAIR
-from .types import Data
-from .types import EnableBit
-from .types import GeomType
-from .types import Model
-from .types import mat43
-from .types import mat63
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_primitive import contact_params
+from mujoco_warp._src.collision_primitive import geom_collision_pair
+from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAX_EPAFACES
+from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -1155,7 +1155,7 @@ def convex_narrowphase(m: Model, d: Data):
   # epa_norm2: epa_pr * epa_pr
   epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
   # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+  epa_horizon = wp.empty(shape=(d.naconmax, MJ_MAX_EPAHORIZON), dtype=int)
 
   # Contact outputs
   contact_outputs = [

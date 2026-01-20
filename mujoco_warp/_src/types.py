@@ -25,7 +25,7 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 # maximum size (by number of edges) of an horizon in EPA algorithm
-MJ_MAX_EPAHORIZON = 12
+MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
 MJ_MAX_EPAFACES = 5
 

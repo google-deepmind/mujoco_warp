@@ -14,6 +14,8 @@
 # ==============================================================================
 
 import dataclasses
+import importlib.metadata
+import re
 import warnings
 from typing import Any, Optional, Sequence, Union
 
@@ -21,9 +23,27 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from . import types
-from . import warp_util
-from .warp_util import nested_kernel
+from mujoco_warp._src import types
+from mujoco_warp._src import warp_util
+from mujoco_warp._src.warp_util import nested_kernel
+
+
+def _is_mujoco_dev() -> bool:
+  _DEV_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+.+")  # anything after x.y.z
+
+  version = getattr(__import__("mujoco"), "__version__", None)
+  if version and _DEV_VERSION_PATTERN.match(version):
+    return True
+
+  # fall back to metadata
+  dist_version = importlib.metadata.version("mujoco")
+  if _DEV_VERSION_PATTERN.match(dist_version):
+    return True
+
+  return False
+
+
+BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
 
 
 def _compute_bottom_up_segments(mjm: mujoco.MjModel) -> list[tuple[list[int], bool]]:
@@ -990,16 +1010,22 @@ def put_data(
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
     mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-    mujoco.mju_sparse2dense(
-      flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
-    )
-    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-    flexedge_J = mjd.flexedge_J.reshape((mjm.nflexedge, mjm.nv))
-    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
+
+  flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+  if mjd.flexedge_J.size:
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      mujoco.mju_sparse2dense(
+        flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
+      )
+    else:
+      mujoco.mju_sparse2dense(
+        flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
+      )
+  d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -1114,16 +1140,31 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id]
+  flexedge_J = d.flexedge_J.numpy()[world_id]
+  if result.flexedge_J.size:
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      mujoco.mju_dense2sparse(
+        result.flexedge_J.reshape(-1),
+        flexedge_J,
+        mjm.flexedge_J_rownnz,
+        mjm.flexedge_J_rowadr,
+        mjm.flexedge_J_colind.reshape(-1),
+      )
+    else:
+      mujoco.mju_dense2sparse(
+        result.flexedge_J.reshape(-1),
+        flexedge_J,
+        result.flexedge_J_rownnz,
+        result.flexedge_J_rowadr,
+        result.flexedge_J_colind.reshape(-1),
+      )
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
+  actuator_moment = d.actuator_moment.numpy()[world_id]
   mujoco.mju_dense2sparse(
-    result.actuator_moment,
-    d.actuator_moment.numpy()[world_id],
-    result.moment_rownnz,
-    result.moment_rowadr,
-    result.moment_colind,
+    result.actuator_moment, actuator_moment, result.moment_rownnz, result.moment_rowadr, result.moment_colind
   )
   result.crb[:] = d.crb.numpy()[world_id]
   result.qLDiagInv[:] = d.qLDiagInv.numpy()[world_id]

@@ -17,10 +17,10 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive import Geom
-from .types import GeomType
-from .types import mat43
-from .types import mat63
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -33,6 +33,16 @@ MIN_DIST = 1e-10
 # TODO(kbayes): write out formulas to derive these constants
 FACE_TOL = 0.99999872
 EDGE_TOL = 0.00159999931
+
+# tolarance used by multicontact for intersecting a plane and a line segment
+INTERSECT_TOL = 0.0000002
+
+# Bit flags for face status in EPA polytope.
+# Defined at module scope to avoid Warp's intermediate type issues with literals.
+# See: https://github.com/NVIDIA/warp/issues/485
+_FACE_DELETED_BIT = wp.constant(wp.uint32(0x80000000))
+_FACE_INVALID_BIT = wp.constant(wp.uint32(0x40000000))
+_FACE_INVALID_OR_DELETED_MASK = wp.constant(wp.uint32(0xC0000000))
 
 
 @wp.struct
@@ -92,7 +102,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   sp.cached_index = -1
   sp.vertex_index = -1
   if geomtype == GeomType.SPHERE:
-    sp.point = geom.pos + (0.5 * geom.margin) * geom.size[0] * dir
+    sp.point = geom.pos + (geom.size[0] + 0.5 * geom.margin) * dir
     return sp
 
   local_dir = wp.transpose(geom.rot) @ dir
@@ -828,26 +838,29 @@ def _ray_triangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec
 
 
 @wp.func
+def _get_edge(edge: int) -> wp.vec2i:
+  return wp.vec2i(edge & 0x3FF, (edge >> 10) & 0x3FF)
+
+
+@wp.func
 def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
   n = pt.nhorizon
 
   if n < 0:
     return -1
 
+  edge = (wp.min(e1, e2) << 10) | wp.max(e1, e2)
+
   for i in range(n):
-    old_e1 = pt.horizon[2 * i + 0]
-    old_e2 = pt.horizon[2 * i + 1]
-    if (old_e1 == e1 and old_e2 == e2) or (old_e1 == e2 and old_e2 == e1):
-      pt.horizon[2 * i + 0] = pt.horizon[2 * (n - 1) + 0]
-      pt.horizon[2 * i + 1] = pt.horizon[2 * (n - 1) + 1]
+    if edge == pt.horizon[i]:
+      pt.horizon[i] = pt.horizon[n - 1]
       return n - 1
 
   # out of memory, force EPA to return early without contact
-  if n > pt.horizon.shape[0] - 2:
+  if n == pt.horizon.shape[0]:
     return -1
 
-  pt.horizon[2 * n + 0] = e1
-  pt.horizon[2 * n + 1] = e2
+  pt.horizon[n] = edge
   return n + 1
 
 
@@ -1175,25 +1188,25 @@ def _get_face_verts(face: int) -> wp.vec3i:
 @wp.func
 def _delete_face(face: int) -> int:
   """Return the face with the deleted bit enabled."""
-  return face | 0x80000000
+  return int(wp.uint32(face) | _FACE_DELETED_BIT)
 
 
 @wp.func
 def _is_face_deleted(face: int) -> bool:
   """Return true if face is deleted."""
-  return bool(face & 0x80000000)
+  return bool(wp.uint32(face) & _FACE_DELETED_BIT)
 
 
 @wp.func
 def _invalidate_face(face: int) -> int:
   """Return the face with the invalid bit enabled."""
-  return face | 0x40000000
+  return int(wp.uint32(face) | _FACE_INVALID_BIT)
 
 
 @wp.func
 def _is_invalid_face(face: int) -> bool:
   """Return true if face is invalid or deleted."""
-  return bool(face & 0xC0000000)
+  return bool(wp.uint32(face) & _FACE_INVALID_OR_DELETED_MASK)
 
 
 @wp.func
@@ -1278,6 +1291,7 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
+      wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
       idx = -1
       break
 
@@ -1294,12 +1308,14 @@ def _epa(
         pt.nhorizon = _add_edge(pt, face[1], face[2])
         pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
+          wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
           idx = -1
           break
 
     # insert w as new vertex and attach faces along the horizon
     for i in range(pt.nhorizon):
-      dist2 = _attach_face(pt, pt.nface, wi, pt.horizon[2 * i + 0], pt.horizon[2 * i + 1])
+      edge = _get_edge(pt.horizon[i])
+      dist2 = _attach_face(pt, pt.nface, wi, edge[0], edge[1])
       if dist2 == 0:
         idx = -1
         break
@@ -1336,47 +1352,41 @@ def _area4(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> float:
 
 
 @wp.func
-def _next(n: int, i: int) -> int:
-  """Returns (i + 1) mod n for 0 <= i <= n - 1."""
-  return wp.where(i == n - 1, 0, i + 1)
-
-
-@wp.func
 def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int) -> wp.vec4i:
-  """Returns the indices of a quadrilateral of maximum area in a convex polygon."""
-  b = _next(npolygon, 0)
-  c = _next(npolygon, b)
-  d = _next(npolygon, c)
+  """Returns the indices of a quadrilateral of maximum area in a convex polygon (npolygon > 4)."""
+  b = int(1)
+  c = int(2)
+  d = int(3)
   res = wp.vec4i(0, b, c, d)
   m = _area4(polygon[0], polygon[b], polygon[c], polygon[d])
   for a in range(npolygon):
     while True:
-      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[_next(npolygon, d)])
+      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[(d + 1) % npolygon])
       if m_next <= m:
         break
       m = m_next
-      d = _next(npolygon, d)
+      d = (d + 1) % npolygon
       res = wp.vec4i(a, b, c, d)
       while True:
-        m_next = _area4(polygon[a], polygon[b], polygon[_next(npolygon, c)], polygon[d])
+        m_next = _area4(polygon[a], polygon[b], polygon[(c + 1) % npolygon], polygon[d])
         if m_next <= m:
           break
         m = m_next
-        c = _next(npolygon, c)
+        c = (c + 1) % npolygon
         res = wp.vec4i(a, b, c, d)
       while True:
-        m_next = _area4(polygon[a], polygon[_next(npolygon, b)], polygon[c], polygon[d])
+        m_next = _area4(polygon[a], polygon[(b + 1) % npolygon], polygon[c], polygon[d])
         if m_next <= m:
           break
         m = m_next
-        b = _next(npolygon, b)
+        b = (b + 1) % npolygon
         res = wp.vec4i(a, b, c, d)
     if b == a:
-      b = _next(npolygon, b)
+      b = (b + 1) % npolygon
       if c == b:
-        c = _next(npolygon, c)
+        c = (c + 1) % npolygon
         if d == c:
-          d = _next(npolygon, d)
+          d = (d + 1) % npolygon
   return res
 
 
@@ -1811,18 +1821,15 @@ def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
 
 
 @wp.func
-def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[float, wp.vec3]:
-  res = wp.vec3()
-  ab = b - a
-  temp = wp.dot(pn, ab)
-  if temp == 0.0:
-    return FLOAT_MAX, res  # parallel; no intersection
-  t = (pd - wp.dot(pn, a)) / temp
-  if t >= 0.0 and t <= 1.0:
-    res[0] = a[0] + t * ab[0]
-    res[1] = a[1] + t * ab[1]
-    res[2] = a[2] + t * ab[2]
-  return t, res
+def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
+  """Returns the parameter t where the line a + t(b - a) intersects the given plane."""
+  dot = wp.dot(pn, b - a)
+
+  # parallel; no intersection
+  if wp.abs(dot) < 1e-10:
+    return FLOAT_MAX
+
+  return (pd - wp.dot(pn, a)) / dot
 
 
 # clip a polygon against another polygon
@@ -1871,7 +1878,7 @@ def _polygon_clip(
     for i in range(npolygon):
       # get edge PQ of the polygon
       P = polygon_out[i]
-      Q = wp.where(i < npolygon - 1, polygon_out[i + 1], polygon_out[0])
+      Q = polygon_out[(i + 1) % npolygon]
 
       # determine if P and Q are in the halfspace of the clipping edge
       inside1 = _halfspace(face1[e], pn[e], P)
@@ -1888,9 +1895,10 @@ def _polygon_clip(
         continue
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
-      t, res = _plane_intersect(pn[e], pd[e], P, Q)
-      if t >= 0.0 and t <= 1.0:
-        clipped_out[nclipped] = res
+      t = _plane_intersect(pn[e], pd[e], P, Q)
+      if t > -INTERSECT_TOL and t < 1.0 + INTERSECT_TOL:
+        t = wp.clamp(t, 0.0, 1.0)
+        clipped_out[nclipped] = P + t * (Q - P)
         nclipped += 1
 
       # add Q as PQ is now back inside the clipping edge

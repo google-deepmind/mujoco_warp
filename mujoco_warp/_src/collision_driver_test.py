@@ -24,11 +24,10 @@ import mujoco_warp as mjw
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import types
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
-
-from . import types
 
 _TOLERANCE = 5e-5
 
@@ -274,6 +273,20 @@ class CollisionTest(parameterized.TestCase):
               <joint type="free"/>
               <geom fromto="0.5505271 0.60345304 0.476661 1.3900293 0.30709633 0.932082"
                size="0.05" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_capsule_parallel_axes": """
+        <mujoco>
+          <worldbody>
+            <body pos="-0.09 0 0">
+              <joint type="free"/>
+              <geom size="0.1 1" type="capsule"/>
+            </body>
+            <body pos="0.09 0 0">
+              <joint type="free"/>
+              <geom size="0.1 1" type="capsule"/>
             </body>
           </worldbody>
         </mujoco>
