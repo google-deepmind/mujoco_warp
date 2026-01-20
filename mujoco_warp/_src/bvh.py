@@ -290,7 +290,7 @@ def build_mesh_bvh(
   constructor: str = "sah",
   leaf_size: int = 2,
 ) -> tuple[wp.Mesh, wp.vec3]:
-  """Create a Warp mesh BVH from mjcf mesh data."""
+  """Create a Warp mesh BVH from mesh data."""
   v_start = mjm.mesh_vertadr[meshid]
   v_end = v_start + mjm.mesh_vertnum[meshid]
   points = mjm.mesh_vert[v_start:v_end]
@@ -444,7 +444,7 @@ def build_hfield_bvh(
   constructor: str = "sah",
   leaf_size: int = 2,
 ) -> tuple[wp.Mesh, wp.vec3]:
-  """Create a Warp mesh BVH from mjcf heightfield data."""
+  """Create a Warp mesh BVH from heightfield data."""
   nr = mjm.hfield_nrow[hfieldid]
   nc = mjm.hfield_ncol[hfieldid]
   sz = np.asarray(mjm.hfield_size[hfieldid], dtype=np.float32)
