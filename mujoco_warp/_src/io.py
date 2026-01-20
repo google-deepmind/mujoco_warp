@@ -108,36 +108,6 @@ def _compute_bottom_up_segments(mjm: mujoco.MjModel) -> list[tuple[list[int], bo
   return segments
 
 
-def _compute_branches(mjm: mujoco.MjModel) -> list[list[int]]:
-  """Identify branches in kinematic tree.
-
-  Each branch includes the full path, even if ancestors are shared with other
-  branches. This ensures each thread can process its branch independently
-  without race conditions.
-  """
-  nbody = mjm.nbody
-  parent = mjm.body_parentid
-
-  children_count = np.zeros(nbody, dtype=int)
-  for i in range(1, nbody):
-    children_count[parent[i]] += 1
-
-  branches = []
-  leaves = np.where((children_count == 0) & (np.arange(nbody) > 0))[0]
-  for leaf in leaves:
-    branch = []
-    bodyid = leaf
-    while bodyid > 0:
-      # Iterate until root
-      branch.append(bodyid)
-      bodyid = parent[bodyid]
-    if branch:
-      # Reverse order
-      branches.append(branch[::-1])
-
-  return branches
-
-
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
   """Creates a warp array and populates it with data.
 
@@ -346,7 +316,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
 
   # branch-based traversal data
-  branches = _compute_branches(mjm)
+  children_count = np.bincount(mjm.body_parentid[1:], minlength=mjm.nbody)
+  ancestor_chain = lambda b: ancestor_chain(mjm.body_parentid[b]) + [b] if b else []
+  branches = [ancestor_chain(l) for l in np.where(children_count[1:] == 0)[0] + 1]
   m.num_branches = len(branches)
 
   branch_bodies_flat = []
