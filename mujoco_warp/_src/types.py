@@ -1643,7 +1643,6 @@ class Data:
     ne_jnt: number of equality joint constraints                (nworld,)
     ne_ten: number of equality tendon constraints               (nworld,)
     ne_flex: number of flex edge equality constraints           (nworld,)
-    nsolving: number of unconverged worlds                      (1,)
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
@@ -1739,7 +1738,6 @@ class Data:
   ne_jnt: array("nworld", int)
   ne_ten: array("nworld", int)
   ne_flex: array("nworld", int)
-  nsolving: array(1, int)
   subtree_bodyvel: array("nworld", "nbody", wp.spatial_vector)
 
   # warp only: collision driver
