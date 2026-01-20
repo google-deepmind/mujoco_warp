@@ -120,10 +120,8 @@ def inv_constraint(m: Model, d: Data):
     d.qfrc_constraint.zero_()
     return
 
-  # update
-  h = wp.empty((d.nworld, 0, 0), dtype=float)  # not used
-  hfactor = wp.empty((d.nworld, 0, 0), dtype=float)  # not used
-  solver.create_context(m, d, h, hfactor, grad=False)
+  ctx = solver.SolverContext(m, d, inverse=True)
+  solver.create_context(m, d, ctx, grad=False)
 
 
 def inverse(m: Model, d: Data):
