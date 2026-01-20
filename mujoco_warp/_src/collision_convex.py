@@ -29,6 +29,7 @@ from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
@@ -223,14 +224,14 @@ def ccd_hfield_kernel_builder(
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
+    ncollision_in: wp.array(dtype=int),
+    # In:
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
-    ncollision_in: wp.array(dtype=int),
-    # In:
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -920,14 +921,14 @@ def ccd_kernel_builder(
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
+    ncollision_in: wp.array(dtype=int),
+    # In:
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
-    ncollision_in: wp.array(dtype=int),
-    # In:
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
@@ -1110,7 +1111,7 @@ _NON_HFIELD_COLLISION_PAIRS = [
 
 
 @event_scope
-def convex_narrowphase(m: Model, d: Data):
+def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext):
   """Runs narrowphase collision detection for convex geom pairs.
 
   This function handles collision detection for pairs of convex geometries that were
@@ -1223,13 +1224,13 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_margin,
           m.pair_gap,
           m.pair_friction,
-          d.naconmax,
           d.geom_xpos,
           d.geom_xmat,
-          d.collision_pair,
-          d.collision_pairid,
-          d.collision_worldid,
+          d.naconmax,
           d.ncollision,
+          ctx.collision_pair,
+          ctx.collision_pairid,
+          ctx.collision_worldid,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
@@ -1308,13 +1309,13 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_margin,
           m.pair_gap,
           m.pair_friction,
-          d.naconmax,
           d.geom_xpos,
           d.geom_xmat,
-          d.collision_pair,
-          d.collision_pairid,
-          d.collision_worldid,
+          d.naconmax,
           d.ncollision,
+          ctx.collision_pair,
+          ctx.collision_pairid,
+          ctx.collision_worldid,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
