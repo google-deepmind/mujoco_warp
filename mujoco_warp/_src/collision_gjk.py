@@ -35,7 +35,7 @@ FACE_TOL = 0.99999872
 EDGE_TOL = 0.00159999931
 
 # tolarance used by multicontact for intersecting a plane and a line segment
-INTERSECT_TOL = 0.0000002
+INTERSECT_TOL = 0.0000003
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
@@ -1672,7 +1672,7 @@ def _box_normals(
     y = float((v1 & 2) and (v2 & 2)) - float(not (v1 & 2) and not (v2 & 2))
     z = float((v1 & 4) and (v2 & 4)) - float(not (v1 & 4) and not (v2 & 4))
     if x != 0.0:
-      normal_out[c] = mat @ wp.vec3(float(x), 0.0, 0.0)
+      normal_out[c] = mat @ wp.vec3(x, 0.0, 0.0)
       index_out[c] = wp.where(x > 0.0, 0, 1)
       c += 1
     if y != 0.0:
@@ -1683,7 +1683,9 @@ def _box_normals(
       normal_out[c] = mat @ wp.vec3(0.0, 0.0, z)
       index_out[c] = wp.where(z > 0.0, 4, 5)
       c += 1
-    if c == 2:
+    # c is 1 if edge is diagonal of a box face
+    # c is 2 if edge is an external edge of box
+    if c == 1 or c == 2:
       return 2
     return _box_normals2(mat, dir, normal_out, index_out)
 
