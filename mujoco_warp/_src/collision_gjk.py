@@ -1683,7 +1683,8 @@ def _box_normals(
       normal_out[c] = mat @ wp.vec3(0.0, 0.0, z)
       index_out[c] = wp.where(z > 0.0, 4, 5)
       c += 1
-    # c is 2 when edge is edge of box c is 1 if edge is diagonal of a face
+    # c is 1 if edge is diagonal of a box face
+    # c is 2 if edge is an external edge of box
     if c == 1 or c == 2:
       return 2
     return _box_normals2(mat, dir, normal_out, index_out)
