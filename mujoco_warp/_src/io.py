@@ -289,35 +289,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
   opt = types.Option(**opt_kwargs)
 
-  # create model
-  m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
-
-  # body ids grouped by tree level (depth-based traversal)
-  bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
-  for i in range(mjm.nbody):
-    body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
-    bodies.setdefault(body_depth[i], []).append(i)
-  m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
-
-  # branch-based traversal data
-  branches = _compute_branches(mjm)
-  m.num_branches = len(branches)
-
-  branch_bodies_flat = []
-  branch_start = []
-  branch_length = []
-  offset = 0
-
-  for branch in branches:
-    branch_start.append(offset)
-    branch_length.append(len(branch))
-    branch_bodies_flat.extend(branch)
-    offset += len(branch)
-
-  m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
-  m.branch_start = np.array(branch_start, dtype=int)
-  m.branch_length = np.array(branch_length, dtype=int)
-
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
   # bouncing around the optimal solution
@@ -349,6 +320,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # create stat
   stat = types.Statistic(meaninertia=mjm.stat.meaninertia)
 
+  # create model
+  m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+
   m.opt = opt
   m.stat = stat
 
@@ -363,6 +337,32 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
+
+  # body ids grouped by tree level (depth-based traversal)
+  bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
+  for i in range(mjm.nbody):
+    body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
+    bodies.setdefault(body_depth[i], []).append(i)
+  m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
+
+  # branch-based traversal data
+  branches = _compute_branches(mjm)
+  m.num_branches = len(branches)
+
+  branch_bodies_flat = []
+  branch_start = []
+  branch_length = []
+  offset = 0
+
+  for branch in branches:
+    branch_start.append(offset)
+    branch_length.append(len(branch))
+    branch_bodies_flat.extend(branch)
+    offset += len(branch)
+
+  m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
+  m.branch_start = np.array(branch_start, dtype=int)
+  m.branch_length = np.array(branch_length, dtype=int)
 
   # Segment-based bottom-up traversal data
   segments = _compute_bottom_up_segments(mjm)
