@@ -1645,9 +1645,6 @@ class Data:
     ne_flex: number of flex edge equality constraints           (nworld,)
     nsolving: number of unconverged worlds                      (1,)
     subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
   """
 
@@ -1741,9 +1738,19 @@ class Data:
   ne_flex: array("nworld", int)
   nsolving: array(1, int)
   subtree_bodyvel: array("nworld", "nbody", wp.spatial_vector)
-
-  # warp only: collision driver
-  collision_pair: array("naconmax", wp.vec2i)
-  collision_pairid: array("naconmax", wp.vec2i)
-  collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+
+@dataclasses.dataclass
+class CollisionContext:
+  """Collision driver intermediate arrays.
+
+  Attributes:
+    collision_pair: collision pairs from broadphase             (naconmax, 2)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
+    collision_worldid: collision world ids from broadphase      (naconmax,)
+  """
+
+  collision_pair: wp.array
+  collision_pairid: wp.array
+  collision_worldid: wp.array
