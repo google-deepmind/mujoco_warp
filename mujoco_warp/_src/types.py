@@ -1024,8 +1024,7 @@ class Model:
     block_dim: block dim options
     body_tree: list of body ids by tree level
     branch_bodies: flattened body ids for all branches
-    branch_start: start index in branch_bodies for each branch
-    branch_length: number of bodies in each branch
+    branch_start: start index in branch_bodies for each branch   (nbranch + 1,)
     bottom_up_segment_bodies: tuple of body arrays for bottom-up traversal segments
     bottom_up_segment_is_chain: whether each segment is a sequential chain
     mocap_bodyid: id of body for mocap                       (nmocap,)
@@ -1377,7 +1376,6 @@ class Model:
   body_tree: tuple[wp.array(dtype=int), ...]
   branch_bodies: wp.array(dtype=int)
   branch_start: wp.array(dtype=int)
-  branch_length: wp.array(dtype=int)
   bottom_up_segment_bodies: tuple[wp.array(dtype=int), ...]
   bottom_up_segment_is_chain: tuple[bool, ...]
   mocap_bodyid: array("nmocap", int)

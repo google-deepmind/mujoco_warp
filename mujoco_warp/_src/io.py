@@ -323,18 +323,16 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   branch_bodies_flat = []
   branch_start = []
-  branch_length = []
   offset = 0
 
   for branch in branches:
     branch_start.append(offset)
-    branch_length.append(len(branch))
     branch_bodies_flat.extend(branch)
     offset += len(branch)
+  branch_start.append(offset)
 
   m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
   m.branch_start = np.array(branch_start, dtype=int)
-  m.branch_length = np.array(branch_length, dtype=int)
 
   # Segment-based bottom-up traversal data
   segments = _compute_bottom_up_segments(mjm)
