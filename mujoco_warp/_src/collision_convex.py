@@ -439,11 +439,7 @@ def ccd_hfield_kernel_builder(
           geom1.hfprism = prism
 
           # prism center
-          x1 = geom1.pos
-          x1_ = wp.vec3(0.0, 0.0, 0.0)
-          for j in range(6):
-            x1_ += prism[j]
-          x1 += geom1.rot @ (x1_ / 6.0)
+          x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
 
           dist, ncontact, w1, w2, idx = ccd(
             opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
