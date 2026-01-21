@@ -34,6 +34,7 @@ from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -477,10 +478,9 @@ def contact_params(
   pair_margin: wp.array2d(dtype=float),
   pair_gap: wp.array2d(dtype=float),
   pair_friction: wp.array2d(dtype=vec5),
-  # Data in:
+  # In:
   collision_pair_in: wp.array(dtype=wp.vec2i),
   collision_pairid_in: wp.array(dtype=wp.vec2i),
-  # In:
   cid: int,
   worldid: int,
 ):
@@ -1612,10 +1612,11 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     naconmax_in: int,
+    ncollision_in: wp.array(dtype=int),
+    # In:
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
-    ncollision_in: wp.array(dtype=int),
     # Data out:
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
@@ -1730,7 +1731,7 @@ _PRIMITIVE_COLLISION_FUNC = []
 
 
 @event_scope
-def primitive_narrowphase(m: Model, d: Data):
+def primitive_narrowphase(m: Model, d: Data, ctx: CollisionContext):
   """Runs collision detection on primitive geom pairs discovered during broadphase.
 
   This function processes collision pairs involving primitive shapes that were
@@ -1793,10 +1794,10 @@ def primitive_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.naconmax,
-      d.collision_pair,
-      d.collision_pairid,
-      d.collision_worldid,
       d.ncollision,
+      ctx.collision_pair,
+      ctx.collision_pairid,
+      ctx.collision_worldid,
     ],
     outputs=[
       d.contact.dist,
