@@ -46,68 +46,6 @@ def _is_mujoco_dev() -> bool:
 BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
 
 
-def _compute_bottom_up_segments(mjm: mujoco.MjModel) -> list[tuple[list[int], bool]]:
-  """Compute segments for bottom-up tree traversal.
-
-  Segments are ordered from deepest to shallowest. Each segment contains bodies
-  that can be processed together:
-  - Parallel segments: bodies at same depth that add to different parents
-  - Chain segments: linear chain of bodies
-  """
-  nbody = mjm.nbody
-  parent = mjm.body_parentid
-
-  if nbody <= 1:
-    return []
-
-  body_depth = np.zeros(nbody, dtype=int)
-  for i in range(1, nbody):
-    body_depth[i] = body_depth[parent[i]] + 1
-  max_depth = body_depth.max()
-
-  segments = []
-  processed = [0]
-
-  # Process from deepest to shallowest
-  for depth in range(max_depth, 0, -1):
-    bodies_at_depth = np.where(body_depth == depth)[0]
-    unprocessed = [b for b in bodies_at_depth if b not in processed]
-
-    if len(bodies_at_depth) == 0 or len(unprocessed) == 0:
-      continue
-
-    # Try to build chains for each unprocessed body at that depth
-    parallel_bodies = []
-    chain_bodies = []
-    for b in bodies_at_depth:
-      if b in unprocessed:
-        chain = [b]
-        current = parent[b]
-        while current > 0 and current not in processed:
-          # Check if current is ready to be processed
-          children = np.where(parent == current)[0]
-          if not all(c in processed or c in chain for c in children):
-            break
-          chain.append(current)
-          processed.append(current)
-          current = parent[current]
-
-        if len(chain) > 1:
-          chain_bodies.append(chain)
-          processed.append(b)
-        else:
-          parallel_bodies.append(b)
-          processed.append(b)
-
-    # Add first independent bodies and then chains, order is important
-    if parallel_bodies:
-      segments.append((parallel_bodies, False))
-    for chain in chain_bodies:
-      segments.append((chain, True))
-
-  return segments
-
-
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
   """Creates a warp array and populates it with data.
 
@@ -333,11 +271,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
   m.branch_start = np.array(branch_start, dtype=int)
-
-  # Segment-based bottom-up traversal data
-  segments = _compute_bottom_up_segments(mjm)
-  m.bottom_up_segment_bodies = tuple(wp.array(bodies, dtype=int) for bodies, _ in segments)
-  m.bottom_up_segment_is_chain = tuple(is_chain for _, is_chain in segments)
 
   m.mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]

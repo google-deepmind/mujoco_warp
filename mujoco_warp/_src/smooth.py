@@ -399,33 +399,15 @@ def _subtree_com_acc(
   # Data in:
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   # In:
-  body_ids: wp.array(dtype=int),
+  body_tree_: wp.array(dtype=int),
   # Data out:
   subtree_com_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, nodeid = wp.tid()
-  bodyid = body_ids[nodeid]
+  bodyid = body_tree_[nodeid]
   pid = body_parentid[bodyid]
   if bodyid != 0:
     wp.atomic_add(subtree_com_out, worldid, pid, subtree_com_in[worldid, bodyid])
-
-
-@wp.kernel
-def _subtree_com_acc_segment_chain(
-  # Model:
-  body_parentid: wp.array(dtype=int),
-  # In:
-  segment_bodies: wp.array(dtype=int),
-  # Data out:
-  subtree_com_out: wp.array2d(dtype=wp.vec3),
-):
-  worldid = wp.tid()
-  segment_length = segment_bodies.shape[0]
-
-  for i in range(segment_length):
-    bodyid = segment_bodies[i]
-    pid = body_parentid[bodyid]
-    subtree_com_out[worldid, pid] += subtree_com_out[worldid, bodyid]
 
 
 @wp.kernel
@@ -545,21 +527,14 @@ def com_pos(m: Model, d: Data):
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
-  for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-    if is_chain:
-      wp.launch(
-        _subtree_com_acc_segment_chain,
-        dim=(d.nworld,),
-        inputs=[m.body_parentid, segment_bodies],
-        outputs=[d.subtree_com],
-      )
-    else:
-      wp.launch(
-        _subtree_com_acc,
-        dim=(d.nworld, segment_bodies.size),
-        inputs=[m.body_parentid, d.subtree_com, segment_bodies],
-        outputs=[d.subtree_com],
-      )
+  for i in reversed(range(len(m.body_tree))):
+    body_tree = m.body_tree[i]
+    wp.launch(
+      _subtree_com_acc,
+      dim=(d.nworld, body_tree.size),
+      inputs=[m.body_parentid, d.subtree_com, body_tree],
+      outputs=[d.subtree_com],
+    )
 
   wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
@@ -754,35 +729,16 @@ def _crb_accumulate(
   # Data in:
   crb_in: wp.array2d(dtype=vec10),
   # In:
-  body_ids: wp.array(dtype=int),
+  body_tree_: wp.array(dtype=int),
   # Data out:
   crb_out: wp.array2d(dtype=vec10),
 ):
   worldid, nodeid = wp.tid()
-  bodyid = body_ids[nodeid]
+  bodyid = body_tree_[nodeid]
   pid = body_parentid[bodyid]
   if pid == 0:
     return
   wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
-
-
-@wp.kernel
-def _crb_accumulate_segment_chain(
-  # Model:
-  body_parentid: wp.array(dtype=int),
-  # In:
-  segment_bodies: wp.array(dtype=int),
-  # Data out:
-  crb_out: wp.array2d(dtype=vec10),
-):
-  worldid = wp.tid()
-  segment_length = segment_bodies.shape[0]
-
-  for i in range(segment_length):
-    bodyid = segment_bodies[i]
-    pid = body_parentid[bodyid]
-    if pid != 0:
-      crb_out[worldid, pid] += crb_out[worldid, bodyid]
 
 
 @wp.kernel
@@ -857,21 +813,9 @@ def crb(m: Model, d: Data):
   """
   wp.copy(d.crb, d.cinert)
 
-  for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-    if is_chain:
-      wp.launch(
-        _crb_accumulate_segment_chain,
-        dim=(d.nworld,),
-        inputs=[m.body_parentid, segment_bodies],
-        outputs=[d.crb],
-      )
-    else:
-      wp.launch(
-        _crb_accumulate,
-        dim=(d.nworld, segment_bodies.size),
-        inputs=[m.body_parentid, d.crb, segment_bodies],
-        outputs=[d.crb],
-      )
+  for i in reversed(range(len(m.body_tree))):
+    body_tree = m.body_tree[i]
+    wp.launch(_crb_accumulate, dim=(d.nworld, body_tree.size), inputs=[m.body_parentid, d.crb, body_tree], outputs=[d.crb])
 
   d.qM.zero_()
   if m.opt.is_sparse:
@@ -1168,51 +1112,22 @@ def _cfrc_backward(
   # Data in:
   cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
-  body_ids: wp.array(dtype=int),
+  body_tree_: wp.array(dtype=int),
   # Data out:
   cfrc_int_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid, nodeid = wp.tid()
-  bodyid = body_ids[nodeid]
+  bodyid = body_tree_[nodeid]
   pid = body_parentid[bodyid]
   if bodyid != 0:
     wp.atomic_add(cfrc_int_out[worldid], pid, cfrc_int_in[worldid, bodyid])
 
 
-@wp.kernel
-def _cfrc_backward_segment_chain(
-  # Model:
-  body_parentid: wp.array(dtype=int),
-  # In:
-  segment_bodies: wp.array(dtype=int),
-  # Data out:
-  cfrc_int_out: wp.array2d(dtype=wp.spatial_vector),
-):
-  worldid = wp.tid()
-  segment_length = segment_bodies.shape[0]
-
-  for i in range(segment_length):
-    bodyid = segment_bodies[i]
-    pid = body_parentid[bodyid]
-    cfrc_int_out[worldid, pid] += cfrc_int_out[worldid, bodyid]
-
-
 def _rne_cfrc_backward(m: Model, d: Data):
-  for segment_bodies, is_chain in zip(m.bottom_up_segment_bodies, m.bottom_up_segment_is_chain):
-    if is_chain:
-      wp.launch(
-        _cfrc_backward_segment_chain,
-        dim=(d.nworld,),
-        inputs=[m.body_parentid, segment_bodies],
-        outputs=[d.cfrc_int],
-      )
-    else:
-      wp.launch(
-        _cfrc_backward,
-        dim=(d.nworld, segment_bodies.size),
-        inputs=[m.body_parentid, d.cfrc_int, segment_bodies],
-        outputs=[d.cfrc_int],
-      )
+  for body_tree in reversed(m.body_tree):
+    wp.launch(
+      _cfrc_backward, dim=[d.nworld, body_tree.size], inputs=[m.body_parentid, d.cfrc_int, body_tree], outputs=[d.cfrc_int]
+    )
 
 
 @wp.kernel
