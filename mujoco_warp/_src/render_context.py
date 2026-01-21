@@ -197,7 +197,7 @@ class RenderContext:
       self.flex_nface = flex_nface
       self.flex_radius = mjm.flex_radius
       self.flex_render_smooth = flex_render_smooth
-    
+
     textures = []
     for i in range(mjm.ntex):
       textures.append(_create_warp_texture(mjm, i))
@@ -363,6 +363,7 @@ def build_primary_rays(
   x = left + (right - left) * u
   y = top + (bottom - top) * v
   ray_out[offset + tid] = wp.normalize(wp.vec3(x, y, -znear))
+
 
 def _create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
   """Create a Warp texture from a MuJoCo model texture data."""
