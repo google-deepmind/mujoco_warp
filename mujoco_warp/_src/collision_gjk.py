@@ -15,6 +15,7 @@
 
 from typing import Tuple
 
+import math
 import warp as wp
 
 from mujoco_warp._src.collision_primitive import Geom
@@ -30,9 +31,8 @@ FLOAT_MAX = 1e30
 MINVAL = 1e-15
 MIN_DIST = 1e-10
 
-# TODO(kbayes): write out formulas to derive these constants
-FACE_TOL = 0.99999872
-EDGE_TOL = 0.00159999931
+FACE_TOL = math.cos(0.0016)
+EDGE_TOL = math.sin(0.0016)
 
 # tolarance used by multicontact for intersecting a plane and a line segment
 INTERSECT_TOL = 0.0000003
