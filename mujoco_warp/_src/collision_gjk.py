@@ -73,7 +73,6 @@ class Polytope:
   # 10 bits per each vertex index, while the last significant bits are for
   # invalid and deleted face
   face: wp.array(dtype=int)
-  face_pr: wp.array(dtype=wp.vec3)
   face_norm2: wp.array(dtype=float)
   nface: int
 
@@ -201,12 +200,17 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
 
   # compute witness point v
   r, ret = _project_origin_plane(pt.vert1[v3] - pt.vert2[v3], pt.vert1[v2] - pt.vert2[v2], pt.vert1[v1] - pt.vert2[v1])
-  if ret:
+  if ret == 0:
     return 0.0
 
-  face = v1 + (v2 << 10) + (v3 << 20)
+  if ret == 1:
+    face = v3 + (v2 << 10) + (v1 << 20)
+  elif ret == 2:
+    face = v3 + (v1 << 10) + (v2 << 20)
+  else:
+    face = v2 + (v3 << 10) + (v1 << 20)
+
   pt.face[idx] = face
-  pt.face_pr[idx] = r
 
   pt.face_norm2[idx] = wp.dot(r, r)
   return pt.face_norm2[idx]
@@ -297,24 +301,24 @@ def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec
     return z, 1
   if nv != 0 and nn > MINVAL:
     v = (nv / nn) * n
-    return v, 0
+    return v, 1
 
   # n = (v2 - v1) x (v3 - v1)
   n = wp.cross(diff21, diff31)
   nv = wp.dot(n, v1)
   nn = wp.dot(n, n)
   if nn == 0:
-    return z, 1
+    return z, 0
   if nv != 0 and nn > MINVAL:
     v = (nv / nn) * n
-    return v, 0
+    return v, 2
 
   # n = (v1 - v3) x (v2 - v3)
   n = wp.cross(diff31, diff32)
   nv = wp.dot(n, v3)
   nn = wp.dot(n, n)
   v = (nv / nn) * n
-  return v, 0
+  return v, 3
 
 
 @wp.func
@@ -397,7 +401,7 @@ def _S3D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3, s4: wp.vec3) -> wp.vec4:
 def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3) -> wp.vec3:
   # project origin onto affine hull of the simplex
   p_o, ret = _project_origin_plane(s1, s2, s3)
-  if ret:
+  if ret == 0:
     v = _S1D(s1, s2)
     return wp.vec3(v[0], v[1], 0.0)
 
@@ -874,7 +878,7 @@ def _epa_witness(
   v2 = pt.vert1[face[1]] - pt.vert2[face[1]]
   v3 = pt.vert1[face[2]] - pt.vert2[face[2]]
 
-  coordinates = _tri_affine_coord(v1, v2, v3, pt.face_pr[face_idx])
+  coordinates = _tri_affine_coord(v1, v2, v3, _face_pr(pt, face_idx))
   l1 = coordinates[0]
   l2 = coordinates[1]
   l3 = coordinates[2]
@@ -1210,6 +1214,16 @@ def _is_invalid_face(face: int) -> bool:
 
 
 @wp.func
+def _face_pr(pt: Polytope, idx: int) -> wp.vec3:
+  face = _get_face_verts(pt.face[idx])
+  v1 = pt.vert1[face[0]] - pt.vert2[face[0]]
+  v2 = pt.vert1[face[1]] - pt.vert2[face[1]]
+  v3 = pt.vert1[face[2]] - pt.vert2[face[2]]
+  n = wp.cross(v3 - v2, v2 - v1)
+  return (wp.dot(n, v2) / wp.dot(n, n)) * n
+
+
+@wp.func
 def _epa(
   # In:
   tolerance: float,
@@ -1258,7 +1272,7 @@ def _epa(
     # compute support point w from the closest face's normal
     lower = wp.sqrt(lower2)
     wi = pt.nvert
-    face_pr_normalized = pt.face_pr[idx] / lower
+    face_pr_normalized = _face_pr(pt, idx) / lower
     i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr_normalized)
     w = pt.vert1[wi] - pt.vert2[wi]
     geom1.index = i1
@@ -1300,7 +1314,7 @@ def _epa(
       if _is_face_deleted(pt.face[i]):
         continue
 
-      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > 1e-10:
+      if wp.dot(_face_pr(pt, i), w) - pt.face_norm2[i] > 1e-10:
         nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
         pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
@@ -2232,7 +2246,6 @@ def ccd(
   vert_index1: wp.array(dtype=int),
   vert_index2: wp.array(dtype=int),
   face: wp.array(dtype=int),
-  face_pr: wp.array(dtype=wp.vec3),
   face_norm2: wp.array(dtype=float),
   horizon: wp.array(dtype=int),
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
@@ -2291,7 +2304,6 @@ def ccd(
   pt.vert_index1 = vert_index1
   pt.vert_index2 = vert_index2
   pt.face = face
-  pt.face_pr = face_pr
   pt.face_norm2 = face_norm2
   pt.horizon = horizon
 
