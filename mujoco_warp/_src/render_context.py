@@ -87,6 +87,7 @@ class RenderContext:
   mesh_texcoord: wp.array(dtype=wp.vec2)
   mesh_texcoord_offsets: wp.array(dtype=int)
   mesh_texcoord_num: wp.array(dtype=int)
+  textures: wp.array(dtype=wp.Texture2D)
   tex_adr: wp.array(dtype=int)
   tex_data: wp.array(dtype=wp.uint32)
   tex_height: wp.array(dtype=int)
@@ -200,6 +201,11 @@ class RenderContext:
       self.flex_nface = flex_nface
       self.flex_radius = mjm.flex_radius
       self.flex_render_smooth = flex_render_smooth
+    
+    textures = []
+    for i in range(mjm.ntex):
+      textures.append(_create_warp_texture(mjm, i))
+    self.textures = wp.array(textures, dtype=wp.Texture2D)
 
     tex_data_packed, tex_adr_packed = _create_packed_texture_data(mjm)
 
@@ -367,6 +373,52 @@ def build_primary_rays(
   y = top + (bottom - top) * v
   ray_out[offset + tid] = wp.normalize(wp.vec3(x, y, -znear))
 
+def _create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
+  """Create a Warp texture from a MuJoCo model texture data."""
+  print(f"Creating texture {tex_id}")
+  print("Texture width: ", mjm.tex_width[tex_id])
+  print("Texture height: ", mjm.tex_height[tex_id])
+  print("Texture nchannel: ", mjm.tex_nchannel[tex_id])
+  tex_adr = mjm.tex_adr[tex_id]
+  tex_width = mjm.tex_width[tex_id]
+  tex_height = mjm.tex_height[tex_id]
+  nchannel = mjm.tex_nchannel[tex_id]
+
+  tex_data = wp.zeros((tex_width, tex_height, 4), dtype=wp.float32)
+  
+  @wp.kernel
+  def convert_texture_to_vec4(
+    # In:
+    width: int,
+    height: int,
+    adr: int,
+    nc: int,
+    tex_data_in: wp.array(dtype=wp.uint8),
+    # Out:
+    tex_data_out: wp.array3d(dtype=wp.float32),
+  ):
+    """Convert uint8 texture data to vec4 format for efficient sampling."""
+    tid = wp.tid()
+    iy = tid // width
+    ix = tid % width
+    src_idx = adr + (iy * width + ix) * nc
+    r = tex_data_in[src_idx + 0] if nc > 0 else wp.uint8(0)
+    g = tex_data_in[src_idx + 1] if nc > 1 else wp.uint8(0)
+    b = tex_data_in[src_idx + 2] if nc > 2 else wp.uint8(0)
+    a = wp.uint8(255)
+    tex_data_out[ix, iy, 0] = float(r) / 255.0
+    tex_data_out[ix, iy, 1] = float(g) / 255.0
+    tex_data_out[ix, iy, 2] = float(b) / 255.0
+    tex_data_out[ix, iy, 3] = float(a) / 255.0
+  
+  wp.launch(
+    convert_texture_to_vec4,
+    dim=int(tex_width * tex_height),
+    inputs=[tex_width, tex_height, tex_adr, nchannel, wp.array(mjm.tex_data, dtype=wp.uint8)],
+    outputs=[tex_data],
+  )
+  return wp.Texture2D(tex_data, filter_mode=wp.TextureFilterMode.LINEAR)
+
 
 def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array]:
   """Create packed uint32 texture data from uint8 texture data for optimized sampling."""
@@ -384,6 +436,7 @@ def _create_packed_texture_data(mjm: mujoco.MjModel) -> tuple[wp.array, wp.array
     tex_adr_packed.append(mjm.tex_adr[i] // mjm.tex_nchannel[i])
 
   nchannel = wp.static(int(mjm.tex_nchannel[0]))
+
 
   @wp.kernel
   def convert_texture_to_packed(

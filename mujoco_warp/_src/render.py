@@ -195,10 +195,7 @@ def sample_texture_plane(
   pos: wp.vec3,
   rot: wp.mat33,
   tex_repeat: wp.vec2,
-  tex_adr: int,
-  tex_data: wp.array(dtype=wp.uint32),
-  tex_height: int,
-  tex_width: int,
+  tex: wp.Texture2D,
 ) -> wp.vec3:
   local = wp.transpose(rot) @ (hit_point - pos)
   u = local[0] * tex_repeat[0]
@@ -206,13 +203,8 @@ def sample_texture_plane(
   u = u - wp.floor(u)
   v = v - wp.floor(v)
   v = 1.0 - v
-  return sample_texture_2d(
-    wp.vec2(u, v),
-    tex_width,
-    tex_height,
-    tex_adr,
-    tex_data,
-  )
+  tex_color = wp.texture_sample(tex, wp.vec2(u, v), dtype=wp.vec4)
+  return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
 
 
 @wp.func
@@ -224,10 +216,7 @@ def sample_texture_mesh(
   v_idx: wp.vec3i,
   mesh_texcoord: wp.array(dtype=wp.vec2),
   tex_repeat: wp.vec2,
-  tex_adr: int,
-  tex_data: wp.array(dtype=wp.uint32),
-  tex_height: int,
-  tex_width: int,
+  tex: wp.Texture2D,
 ) -> wp.vec3:
   bw = 1.0 - bary_u - bary_v
   uv0 = mesh_texcoord[uv_baseadr + v_idx.x]
@@ -239,14 +228,8 @@ def sample_texture_mesh(
   u = u - wp.floor(u)
   v = v - wp.floor(v)
   v = 1.0 - v
-  return sample_texture_2d(
-    wp.vec2(u, v),
-    tex_width,
-    tex_height,
-    tex_adr,
-    tex_data,
-  )
-
+  tex_color = wp.texture_sample(tex, u, v, dtype=wp.vec4)
+  return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
 
 @wp.func
 def sample_texture(
@@ -257,10 +240,7 @@ def sample_texture(
   # In:
   geom_id: int,
   tex_repeat: wp.vec2,
-  tex_adr: int,
-  tex_data: wp.array(dtype=wp.uint32),
-  tex_height: int,
-  tex_width: int,
+  tex: wp.Texture2D,
   pos: wp.vec3,
   rot: wp.mat33,
   mesh_texcoord: wp.array(dtype=wp.vec2),
@@ -279,10 +259,7 @@ def sample_texture(
       pos,
       rot,
       tex_repeat,
-      tex_adr,
-      tex_data,
-      tex_height,
-      tex_width,
+      tex,
     )
 
   if geom_type[geom_id] == GeomType.MESH:
@@ -299,10 +276,7 @@ def sample_texture(
       mesh_face[face_global],
       mesh_texcoord,
       tex_repeat,
-      tex_adr,
-      tex_data,
-      tex_height,
-      tex_width,
+      tex,
     )
 
   return tex_color
@@ -675,10 +649,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_id: wp.array(dtype=wp.uint64),
     flex_rgba: wp.array(dtype=wp.vec4),
-    tex_adr: wp.array(dtype=int),
-    tex_data: wp.array(dtype=wp.uint32),
-    tex_height: wp.array(dtype=int),
-    tex_width: wp.array(dtype=int),
+    textures: wp.array(dtype=wp.Texture2D),
     # Out:
     rgb_out: wp.array2d(dtype=wp.uint32),
     depth_out: wp.array2d(dtype=float),
@@ -794,10 +765,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
               mesh_face,
               geom_id,
               mat_texrepeat[world_idx, mat_id],
-              tex_adr[tex_id],
-              tex_data,
-              tex_height[tex_id],
-              tex_width[tex_id],
+              textures[tex_id],
               geom_xpos[world_idx, geom_id],
               geom_xmat[world_idx, geom_id],
               mesh_texcoord,
@@ -900,10 +868,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       rc.mesh_texcoord_offsets,
       rc.hfield_bvh_id,
       rc.flex_rgba,
-      rc.tex_adr,
-      rc.tex_data,
-      rc.tex_height,
-      rc.tex_width,
+      rc.textures,
     ],
     outputs=[
       rc.rgb_data,
