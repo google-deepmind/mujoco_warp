@@ -120,7 +120,7 @@ def _collect_metrics(
       {
         f"{model_name}:model_memory": sum(c for _, c in _dataclass_memory(m)),
         f"{model_name}:data_memory": sum(c for _, c in _dataclass_memory(d)),
-        f"{model_name}:total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
+        f"{model_name}:total_memory": free_mem_at_init - wp.get_device(_DEVICE.value).free_memory,
       }
     )
 
@@ -234,14 +234,14 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       mem = _dataclass_memory(dataclass)
       other_mem -= sum(c for _, c in mem)
       other_mem_total = sum(c for _, c in mem)
-      print(f"{name} memory {other_mem_total / 1024**2:.2f} MB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
+      print(f"{name} memory {other_mem_total / 1024**2:.2f} MiB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
       fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
       for field, capacity in fields:
-        print(f" {field}: {capacity / 1024**2:.2f} MB ({100 * capacity / used_mem:.2f}%)")
+        print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / used_mem:.2f}%)")
       if not fields:
         print(" (no field >= 1% of used memory)")
-    print(f"Other memory: {other_mem / 1024**2:.2f} MB ({100 * other_mem / used_mem:.2f}% of used memory)")
-    print(f"Total memory: {used_mem / 1024**2:.2f} MB ({100 * used_mem / total_mem:.2f}% of total device memory)")
+    print(f"Other memory: {other_mem / 1024**2:.2f} MiB ({100 * other_mem / used_mem:.2f}% of used memory)")
+    print(f"Total memory: {used_mem / 1024**2:.2f} MiB ({100 * used_mem / total_mem:.2f}% of total device memory)")
 
 
 def _main(argv: Sequence[str]):
