@@ -5,6 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MuJoCo Warp Nightly Benchmarks</title>
+  <link rel="icon" href="data:,">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
   <style>
@@ -233,6 +234,43 @@
       font-weight: 600;
       text-transform: uppercase;
       font-size: 0.7rem;
+    }
+
+    /* Mobile responsive styles */
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem;
+      }
+
+      .benchmark-header.visible {
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        text-align: center;
+      }
+
+      .benchmark-screenshot {
+        width: 160px;
+        height: 120px;
+      }
+
+      .benchmark-info {
+        width: 100%;
+      }
+
+      .benchmark-properties {
+        justify-content: center;
+      }
+
+      footer .system-info {
+        flex-direction: column;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      footer .system-info span {
+        justify-content: center;
+      }
     }
   </style>
 </head>
@@ -636,10 +674,9 @@
   <footer>
     <p>These benchmarks were recorded on a workstation with the following specifications:</p>
     <div class="system-info">
-      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper PRO 5995WX 64-Cores</span>
-      <span><span class="system-label">RAM:</span> 256 GB</span>
       <span><span class="system-label">GPU:</span> NVIDIA RTX 6000 Ada Generation</span>
       <span><span class="system-label">VRAM:</span> 48 GB</span>
+      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper PRO 5995WX 64-Cores</span>
     </div>
   </footer>
 </body>
