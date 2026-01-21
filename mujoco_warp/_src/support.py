@@ -37,7 +37,6 @@ def mul_m_sparse(check_skip: bool):
   @nested_kernel(module="unique", enable_backward=False)
   def _mul_m_sparse(
     # Model:
-    dof_Madr: wp.array(dtype=int),
     qM_mulm_rowadr: wp.array(dtype=int),
     qM_mulm_col: wp.array(dtype=int),
     qM_mulm_madr: wp.array(dtype=int),
@@ -56,10 +55,8 @@ def mul_m_sparse(check_skip: bool):
       if skip[worldid]:
         return
 
-    # Diagonal contribution
-    acc = qM_in[worldid, 0, dof_Madr[dofid]] * vec[worldid, dofid]
-
-    # Off-diagonal contributions (both lower and upper triangle)
+    # Gather all contributions (diagonal + off-diagonal)
+    acc = float(0.0)
     start = qM_mulm_rowadr[dofid]
     end = qM_mulm_rowadr[dofid + 1]
     for k in range(start, end):
@@ -132,7 +129,7 @@ def mul_m(
     wp.launch(
       mul_m_sparse(check_skip),
       dim=(d.nworld, m.nv),
-      inputs=[m.dof_Madr, m.qM_mulm_rowadr, m.qM_mulm_col, m.qM_mulm_madr, M, vec, skip],
+      inputs=[m.qM_mulm_rowadr, m.qM_mulm_col, m.qM_mulm_madr, M, vec, skip],
       outputs=[res],
     )
 

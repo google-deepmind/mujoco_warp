@@ -575,24 +575,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_j.append(j)
       m.qM_madr_ij.append(madr_ij)
 
-  # Gather-based sparse mul_m indices: for each row, list all (col, madr) to gather.
-  # Each row i needs: ancestors (j < i from lower triangle) + descendants (k > i from upper triangle).
-  # We build row-based CSR-like structure: rowadr[i] gives start index, rowadr[i+1] gives end.
-  row_elements = [[] for _ in range(mjm.nv)]  # row_elements[i] = list of (col, madr)
+  # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
+  row_elements = [[] for _ in range(mjm.nv)]
 
-  # Add ancestors (lower triangle): for element (i, j) where j is ancestor of i
-  for idx in range(len(m.qM_mulm_i)):
-    i = m.qM_mulm_i[idx]
-    j = m.qM_mulm_j[idx]
-    madr = m.qM_madr_ij[idx]
-    row_elements[i].append((j, madr))  # row i gathers from col j
+  # Add diagonal
+  for i in range(mjm.nv):
+    row_elements[i].append((i, mjm.dof_Madr[i]))
 
-  # Add descendants (upper triangle): same elements, but row j gathers from col i
+  # Add off-diagonals: ancestors (lower) and descendants (upper)
   for idx in range(len(m.qM_mulm_i)):
-    i = m.qM_mulm_i[idx]
-    j = m.qM_mulm_j[idx]
-    madr = m.qM_madr_ij[idx]
-    row_elements[j].append((i, madr))  # row j gathers from col i
+    i, j, madr = m.qM_mulm_i[idx], m.qM_mulm_j[idx], m.qM_madr_ij[idx]
+    row_elements[i].append((j, madr))  # row i gathers M[i,j] * vec[j]
+    row_elements[j].append((i, madr))  # row j gathers M[j,i] * vec[i]
 
   # Flatten into CSR-like arrays
   m.qM_mulm_rowadr = [0]

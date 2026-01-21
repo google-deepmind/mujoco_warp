@@ -1426,6 +1426,10 @@ class Model:
   qM_mulm_j: wp.array(dtype=int)
   qM_madr_ij: wp.array(dtype=int)
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
+  qM_mulm_rowadr: wp.array(dtype=int)  # row pointers [nv+1]
+  qM_mulm_col: wp.array(dtype=int)     # column index (includes diagonal)
+  qM_mulm_madr: wp.array(dtype=int)    # matrix address
+  # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   qM_mulm_rowadr: wp.array(dtype=int)  # start address for each row [nv+1]
   qM_mulm_col: wp.array(dtype=int)     # column index to gather from
   qM_mulm_madr: wp.array(dtype=int)    # matrix address to read
