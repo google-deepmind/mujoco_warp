@@ -170,116 +170,48 @@ def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
 
 
 @wp.func
-def sample_texture_2d(
-  # In:
-  uv: wp.vec2,
-  width: int,
-  height: int,
-  tex_adr: int,
-  tex_data: wp.array(dtype=wp.uint32),
-) -> wp.vec3:
-  ix = wp.min(width - 1, int(uv[0] * float(width)))
-  iy = wp.min(height - 1, int(uv[1] * float(height)))
-  linear_idx = tex_adr + (iy * width + ix)
-  packed_rgba = tex_data[linear_idx]
-  r = float((packed_rgba >> wp.uint32(16)) & wp.uint32(0xFF)) * INV_255
-  g = float((packed_rgba >> wp.uint32(8)) & wp.uint32(0xFF)) * INV_255
-  b = float(packed_rgba & wp.uint32(0xFF)) * INV_255
-  return wp.vec3(r, g, b)
-
-
-@wp.func
-def sample_texture_plane(
-  # In:
-  hit_point: wp.vec3,
-  pos: wp.vec3,
-  rot: wp.mat33,
-  tex_repeat: wp.vec2,
-  tex: wp.Texture2D,
-) -> wp.vec3:
-  local = wp.transpose(rot) @ (hit_point - pos)
-  u = local[0] * tex_repeat[0]
-  v = local[1] * tex_repeat[1]
-  u = u - wp.floor(u)
-  v = v - wp.floor(v)
-  v = 1.0 - v
-  tex_color = wp.texture_sample(tex, wp.vec2(u, v), dtype=wp.vec4)
-  return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
-
-
-@wp.func
-def sample_texture_mesh(
-  # In:
-  bary_u: float,
-  bary_v: float,
-  uv_baseadr: int,
-  v_idx: wp.vec3i,
-  mesh_texcoord: wp.array(dtype=wp.vec2),
-  tex_repeat: wp.vec2,
-  tex: wp.Texture2D,
-) -> wp.vec3:
-  bw = 1.0 - bary_u - bary_v
-  uv0 = mesh_texcoord[uv_baseadr + v_idx.x]
-  uv1 = mesh_texcoord[uv_baseadr + v_idx.y]
-  uv2 = mesh_texcoord[uv_baseadr + v_idx.z]
-  uv = uv0 * bw + uv1 * bary_u + uv2 * bary_v
-  u = uv[0] * tex_repeat[0]
-  v = uv[1] * tex_repeat[1]
-  u = u - wp.floor(u)
-  v = v - wp.floor(v)
-  v = 1.0 - v
-  tex_color = wp.texture_sample(tex, u, v, dtype=wp.vec4)
-  return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
-
-@wp.func
 def sample_texture(
   # Model:
   geom_type: wp.array(dtype=int),
   mesh_faceadr: wp.array(dtype=int),
-  mesh_face: wp.array(dtype=wp.vec3i),
   # In:
   geom_id: int,
   tex_repeat: wp.vec2,
   tex: wp.Texture2D,
   pos: wp.vec3,
   rot: wp.mat33,
+  mesh_facetexcoord: wp.array(dtype=wp.vec3i),
   mesh_texcoord: wp.array(dtype=wp.vec2),
   mesh_texcoord_offsets: wp.array(dtype=int),
   hit_point: wp.vec3,
-  u: float,
-  v: float,
+  bary_u: float,
+  bary_v: float,
   f: int,
   mesh_id: int,
 ) -> wp.vec3:
-  tex_color = wp.vec3(1.0, 1.0, 1.0)
+  uv = wp.vec2(0.0, 0.0)
 
   if geom_type[geom_id] == GeomType.PLANE:
-    tex_color = sample_texture_plane(
-      hit_point,
-      pos,
-      rot,
-      tex_repeat,
-      tex,
-    )
+    local = wp.transpose(rot) @ (hit_point - pos)
+    uv = wp.vec2(local[0], local[1])
 
   if geom_type[geom_id] == GeomType.MESH:
     if f < 0 or mesh_id < 0:
-      return tex_color
+      return wp.vec3(0.0, 0.0, 0.0)
 
-    base_face = mesh_faceadr[mesh_id]
-    uv_base = mesh_texcoord_offsets[mesh_id]
-    face_global = base_face + f
-    tex_color = sample_texture_mesh(
-      u,
-      v,
-      uv_base,
-      mesh_face[face_global],
-      mesh_texcoord,
-      tex_repeat,
-      tex,
-    )
+    face_adr = mesh_faceadr[mesh_id] + f
+    uv0 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr].x]
+    uv1 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr].y]
+    uv2 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr].z]
+    uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
 
-  return tex_color
+  u = uv[0] * tex_repeat[0]
+  v = uv[1] * tex_repeat[1]
+  u = u - wp.floor(u)
+  v = v - wp.floor(v)
+  v = 1.0 - v
+  tex_color = wp.texture_sample(tex, wp.vec2(u, v), dtype=wp.vec4)
+  return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
 
 
 @wp.func
@@ -317,6 +249,12 @@ def cast_ray(
     gi_global = bounds_nr
     gi_bvh_local = gi_global - (world_id * bvh_ngeom)
     gi = enabled_geom_ids[gi_bvh_local]
+
+    hit_mesh_id = int(-1)
+    u = float(0.0)
+    v = float(0.0)
+    f = int(-1)
+    n = wp.vec3(0.0, 0.0, 0.0)
 
     # TODO: Investigate branch elimination with static loop unrolling
     if geom_type[gi] == GeomType.PLANE:
@@ -377,7 +315,7 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      d, n, u, v, f, geom_mesh_id = ray_mesh_with_bvh(
+      d, n, u, v, f, hit_mesh_id = ray_mesh_with_bvh(
         mesh_bvh_id,
         geom_dataid[gi],
         geom_xpos_in[world_id, gi],
@@ -394,6 +332,7 @@ def cast_ray(
       bary_u = u
       bary_v = v
       face_idx = f
+      geom_mesh_id = hit_mesh_id
 
   return geom_id, dist, normal, bary_u, bary_v, face_idx, geom_mesh_id
 
@@ -610,7 +549,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     geom_size: wp.array2d(dtype=wp.vec3),
     geom_rgba: wp.array2d(dtype=wp.vec4),
     mesh_faceadr: wp.array(dtype=int),
-    mesh_face: wp.array(dtype=wp.vec3i),
+    mesh_facetexcoord: wp.array(dtype=wp.vec3i),
     mat_texid: wp.array3d(dtype=int),
     mat_texrepeat: wp.array2d(dtype=wp.vec2),
     mat_rgba: wp.array2d(dtype=wp.vec4),
@@ -762,12 +701,12 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
             tex_color = sample_texture(
               geom_type,
               mesh_faceadr,
-              mesh_face,
               geom_id,
               mat_texrepeat[world_idx, mat_id],
               textures[tex_id],
               geom_xpos[world_idx, geom_id],
               geom_xmat[world_idx, geom_id],
+              mesh_facetexcoord,
               mesh_texcoord,
               mesh_texcoord_offsets,
               hit_point,
@@ -831,7 +770,7 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
       m.geom_size,
       m.geom_rgba,
       m.mesh_faceadr,
-      m.mesh_face,
+      rc.mesh_facetexcoord,
       m.mat_texid,
       m.mat_texrepeat,
       m.mat_rgba,
