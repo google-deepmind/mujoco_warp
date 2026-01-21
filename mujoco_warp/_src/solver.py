@@ -1991,6 +1991,7 @@ def solve_done(
   # Data out:
   solver_niter_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
+  # Out:
   nsolving_out: wp.array(dtype=int),
 ):
   worldid = wp.tid()
@@ -2018,6 +2019,7 @@ def _solver_iteration(
   h: wp.array3d(dtype=float),
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
+  nsolving: wp.array(dtype=int),
 ):
   _linesearch(m, d, step_size_cost)
 
@@ -2063,7 +2065,7 @@ def _solver_iteration(
       d.efc.prev_cost,
       d.efc.done,
     ],
-    outputs=[d.solver_niter, d.efc.done, d.nsolving],
+    outputs=[d.solver_niter, d.efc.done, nsolving],
   )
 
 
@@ -2148,6 +2150,7 @@ def _solve(m: types.Model, d: types.Data):
 
   step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
 
+  nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
@@ -2156,11 +2159,12 @@ def _solve(m: types.Model, d: types.Data):
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    d.nsolving.fill_(d.nworld)
-    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost)
+    wp.capture_while(
+      nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost, nsolving=nsolving
+    )
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, h, hfactor, step_size_cost)
+      _solver_iteration(m, d, h, hfactor, step_size_cost, nsolving)
