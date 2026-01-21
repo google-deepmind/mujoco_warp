@@ -82,7 +82,6 @@ def _kinematics_branch(
     if jntnum == 1:
       jnt_type_ = jnt_type[jntadr]
       if jnt_type_ == JointType.FREE:
-        # free joint
         qadr = jnt_qposadr[jntadr]
         xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
         xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
