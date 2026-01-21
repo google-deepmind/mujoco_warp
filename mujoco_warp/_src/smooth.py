@@ -302,7 +302,7 @@ def kinematics(m: Model, d: Data):
   """
   wp.launch(
     _kinematics_branch,
-    dim=(d.nworld, m.num_branches),
+    dim=(d.nworld, m.nbranch),
     inputs=[
       m.qpos0,
       m.body_parentid,
@@ -1116,7 +1116,7 @@ def _cacc_branch(
 def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
   wp.launch(
     _cacc_branch,
-    dim=(d.nworld, m.num_branches),
+    dim=(d.nworld, m.nbranch),
     inputs=[
       m.body_parentid,
       m.body_dofnum,
@@ -1917,7 +1917,7 @@ def com_vel(m: Model, d: Data):
 
   wp.launch(
     _comvel_branch,
-    dim=(d.nworld, m.num_branches),
+    dim=(d.nworld, m.nbranch),
     inputs=[
       m.body_parentid,
       m.body_jntnum,

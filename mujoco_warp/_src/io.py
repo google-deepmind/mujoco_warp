@@ -319,7 +319,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   children_count = np.bincount(mjm.body_parentid[1:], minlength=mjm.nbody)
   ancestor_chain = lambda b: ancestor_chain(mjm.body_parentid[b]) + [b] if b else []
   branches = [ancestor_chain(l) for l in np.where(children_count[1:] == 0)[0] + 1]
-  m.num_branches = len(branches)
+  m.nbranch = len(branches)
 
   branch_bodies_flat = []
   branch_start = []

@@ -1008,6 +1008,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
@@ -1022,7 +1023,6 @@ class Model:
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
-    num_branches: number of branches (leaf-to-root paths)
     branch_bodies: flattened body ids for all branches
     branch_start: start index in branch_bodies for each branch
     branch_length: number of bodies in each branch
@@ -1361,6 +1361,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  nbranch: int
   nv_pad: int
   nacttrnbody: int
   nsensorcollision: int
@@ -1374,7 +1375,6 @@ class Model:
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
-  num_branches: int
   branch_bodies: wp.array(dtype=int)
   branch_start: wp.array(dtype=int)
   branch_length: wp.array(dtype=int)
