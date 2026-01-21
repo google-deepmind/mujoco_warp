@@ -575,6 +575,35 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_j.append(j)
       m.qM_madr_ij.append(madr_ij)
 
+  # Gather-based sparse mul_m indices: for each row, list all (col, madr) to gather.
+  # Each row i needs: ancestors (j < i from lower triangle) + descendants (k > i from upper triangle).
+  # We build row-based CSR-like structure: rowadr[i] gives start index, rowadr[i+1] gives end.
+  row_elements = [[] for _ in range(mjm.nv)]  # row_elements[i] = list of (col, madr)
+
+  # Add ancestors (lower triangle): for element (i, j) where j is ancestor of i
+  for idx in range(len(m.qM_mulm_i)):
+    i = m.qM_mulm_i[idx]
+    j = m.qM_mulm_j[idx]
+    madr = m.qM_madr_ij[idx]
+    row_elements[i].append((j, madr))  # row i gathers from col j
+
+  # Add descendants (upper triangle): same elements, but row j gathers from col i
+  for idx in range(len(m.qM_mulm_i)):
+    i = m.qM_mulm_i[idx]
+    j = m.qM_mulm_j[idx]
+    madr = m.qM_madr_ij[idx]
+    row_elements[j].append((i, madr))  # row j gathers from col i
+
+  # Flatten into CSR-like arrays
+  m.qM_mulm_rowadr = [0]
+  m.qM_mulm_col = []
+  m.qM_mulm_madr = []
+  for i in range(mjm.nv):
+    for col, madr in row_elements[i]:
+      m.qM_mulm_col.append(col)
+      m.qM_mulm_madr.append(madr)
+    m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
+
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
