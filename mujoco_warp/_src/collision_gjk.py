@@ -13,9 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
+import math
 from typing import Tuple
 
-import math
 import warp as wp
 
 from mujoco_warp._src.collision_primitive import Geom
