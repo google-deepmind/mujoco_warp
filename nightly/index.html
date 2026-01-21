@@ -326,18 +326,18 @@
       '#6B8E7C', '#9B6B6B', '#5D8AA6', '#A08662', '#7A8E77'
     ];
 
-    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu, solver]
+    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu]
     const BENCHMARK_DATA = {
-      aloha_cloth: ['Aloha Cloth', 'Manipulation with a coarse-resolution flex body.', 922, 2716, 995, 14, 'CG'],
-      aloha_pot: ['Aloha Pot', 'Manipulation with mesh geoms using GJK.', 26, 23, 204, 14, 'Newton'],
-      aloha_sdf: ['Aloha SDF', 'Manipulation with SDFs.', 23, 22, 80, 14, 'Newton'],
-      apptronik_apollo_flat: ['Apptronik Apollo Flat', 'Humanoid locomotion on an infinite plane.', 37, 25, 19, 19, 'Newton'],
-      apptronik_apollo_hfield: ['Apptronik Apollo Hfield', 'Humanoid locomotion on a classic Isaac Gym terrain defined by a heightfield.', 37, 25, 19, 19, 'Newton'],
-      apptronik_apollo_terrain: ['Apptronik Apollo Terrain', 'Humanoid locomotion on a classic Isaac Gym terrain comprised of boxes.', 37, 25, 5290, 19, 'Newton'],
-      cloth: ['Cloth', 'A large cloth simulation.', 918, 2706, 921, 0, 'CG'],
-      franka_emika_panda: ['Franka Emika Panda', 'Measures how quickly you can simulate nothing useful happening.', 12, 9, 23, 8, 'Newton'],
-      humanoid: ['Humanoid', 'No benchmark suite is complete without the classic MuJoCo humanoid!', 17, 27, 20, 21, 'Newton'],
-      three_humanoids: ['Three Humanoids', 'Tests higher-dof scenes that have distinct kinematic subtrees.', 49, 81, 58, 63, 'Newton']
+      aloha_cloth: ['Aloha Cloth', 'Manipulation with a coarse-resolution flex body.', 922, 2716, 995, 14],
+      aloha_pot: ['Aloha Pot', 'Manipulation with mesh geoms using GJK.', 26, 23, 204, 14],
+      aloha_sdf: ['Aloha SDF', 'Manipulation with SDFs.', 23, 22, 80, 14],
+      apptronik_apollo_flat: ['Apptronik Apollo Flat', 'Humanoid locomotion on an infinite plane.', 37, 25, 19, 19],
+      apptronik_apollo_hfield: ['Apptronik Apollo Hfield', 'Humanoid locomotion on a classic Isaac Gym terrain defined by a heightfield.', 37, 25, 19, 19],
+      apptronik_apollo_terrain: ['Apptronik Apollo Terrain', 'Humanoid locomotion on a classic Isaac Gym terrain comprised of boxes.', 37, 25, 5290, 19],
+      cloth: ['Cloth', 'A large cloth simulation.', 918, 2706, 921, 0],
+      franka_emika_panda: ['Franka Emika Panda', 'Measures how quickly you can simulate nothing useful happening.', 12, 9, 23, 8],
+      humanoid: ['Humanoid', 'No benchmark suite is complete without the classic MuJoCo humanoid!', 17, 27, 20, 21],
+      three_humanoids: ['Three Humanoids', 'Tests higher-dof scenes that have distinct kinematic subtrees.', 49, 81, 58, 63]
     };
 
     // Execution orders for breakdown charts (matching forward.py)
@@ -376,7 +376,7 @@
 
       const propsEl = document.getElementById('benchmark-properties');
       propsEl.innerHTML = [
-        ['bodies', nbody], ['DoFs', nv], ['geoms', ngeom], ['actuators', nu], ['solver', solver]
+        ['bodies', nbody], ['DoFs', nv], ['geoms', ngeom], ['actuators', nu]
       ].map(([label, value]) => `
         <div class="benchmark-property">
           <div class="benchmark-property-value">${value}</div>
