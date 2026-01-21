@@ -1859,7 +1859,6 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
         outputs=[h],
       )
 
-    # TODO(team): Define good threshold for blocked vs non-blocked cholesky
     if m.nv <= _BLOCK_CHOLESKY_DIM:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
