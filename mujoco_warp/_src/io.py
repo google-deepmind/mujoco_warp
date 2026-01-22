@@ -864,7 +864,6 @@ def put_data(
     "ne_jnt": None,
     "ne_ten": None,
     "ne_flex": None,
-    "nsolving": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -923,7 +922,6 @@ def put_data(
   d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
-  d.nsolving = wp.array([nworld], dtype=int)
 
   return d
 
@@ -1202,7 +1200,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ne_jnt_out: wp.array(dtype=int),
     ne_ten_out: wp.array(dtype=int),
     ne_flex_out: wp.array(dtype=int),
-    nsolving_out: wp.array(dtype=int),
   ):
     worldid = wp.tid()
 
@@ -1222,8 +1219,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
-    if worldid == 0:
-      nsolving_out[0] = nworld_in
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
     qpos0_id = worldid % qpos0.shape[0]
@@ -1387,7 +1382,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.ne_jnt,
       d.ne_ten,
       d.ne_flex,
-      d.nsolving,
     ],
   )
 

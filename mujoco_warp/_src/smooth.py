@@ -2449,6 +2449,7 @@ def _subtree_vel_forward(
   # Data out:
   subtree_linvel_out: wp.array2d(dtype=wp.vec3),
   subtree_angmom_out: wp.array2d(dtype=wp.vec3),
+  # Out:
   subtree_bodyvel_out: wp.array2d(dtype=wp.spatial_vector),
 ):
   worldid, bodyid = wp.tid()
@@ -2504,8 +2505,8 @@ def _angular_momentum(
   xipos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   subtree_linvel_in: wp.array2d(dtype=wp.vec3),
-  subtree_bodyvel_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
+  subtree_bodyvel_in: wp.array2d(dtype=wp.spatial_vector),
   body_tree_: wp.array(dtype=int),
   # Data out:
   subtree_angmom_out: wp.array2d(dtype=wp.vec3),
@@ -2553,12 +2554,14 @@ def subtree_vel(m: Model, d: Data):
   Computes the linear momentum and angular momentum for each subtree, accumulating
   contributions up the kinematic tree.
   """
+  subtree_bodyvel = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+
   # bodywise quantities
   wp.launch(
     _subtree_vel_forward,
     dim=(d.nworld, m.nbody),
     inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com, d.cvel],
-    outputs=[d.subtree_linvel, d.subtree_angmom, d.subtree_bodyvel],
+    outputs=[d.subtree_linvel, d.subtree_angmom, subtree_bodyvel],
   )
 
   # sum body linear momentum recursively up the kinematic tree
@@ -2581,7 +2584,7 @@ def subtree_vel(m: Model, d: Data):
         d.xipos,
         d.subtree_com,
         d.subtree_linvel,
-        d.subtree_bodyvel,
+        subtree_bodyvel,
         body_tree,
       ],
       outputs=[d.subtree_angmom],
