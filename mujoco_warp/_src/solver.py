@@ -59,7 +59,7 @@ def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
 
 
 @wp.func
-def _eval_pt_direct_3alphas(jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float):
+def _eval_pt_direct_3alphas(jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Eval quadratic constraint for 3 alphas."""
   x_lo = jaref + lo_alpha * jv
   x_hi = jaref + hi_alpha * jv
@@ -91,7 +91,7 @@ def _eval_pt(quad: wp.vec3, alpha: float) -> wp.vec3:
 
 
 @wp.func
-def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha: float):
+def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha: float) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Eval quad polynomial for 3 alphas."""
   q0, q1, q2 = quad[0], quad[1], quad[2]
   hessian = 2.0 * q2
@@ -129,7 +129,7 @@ def _eval_frictionloss_pt_one(x: float, f: float, rf: float, half_d: float, jvD:
 
 
 @wp.func
-def _eval_frictionloss_pt_3alphas(x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float):
+def _eval_frictionloss_pt_3alphas(x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Eval frictionloss for 3 x values with shared precomputation."""
   jvD = jv * d
   half_d = 0.5 * d
@@ -612,7 +612,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   efc_frictionloss: wp.array(dtype=float),
   efc_Jaref: float,
   efc_jv: float,
-):
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Compute (cost, gradient, hessian) for 3 alphas, pyramidal cones.
 
   Returns a tuple of 3 vec3s for (lo_alpha, hi_alpha, mid_alpha).
@@ -663,7 +663,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   efc_address0: int,
   quad1: wp.vec3,
   quad2: wp.vec3,
-):
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Compute (cost, gradient, hessian) for 3 alphas, elliptic cones.
 
   Returns a tuple of 3 vec3s for (lo_alpha, hi_alpha, mid_alpha).
