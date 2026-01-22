@@ -1521,8 +1521,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
       # AD: leaving bounds-check disabled here because I'm not entirely sure that
       # everything always hits the fast path. The padding takes care of any
       #  potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_padded), offset=(k, 0), bounds_check=False)
-      J_kj = J_ki
+      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_padded), offset=(k, 0), bounds_check=False)
 
       # state check
       D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
@@ -1537,7 +1536,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
       active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(nv_padded, TILE_SIZE_K)))
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_padded, TILE_SIZE_K)))
 
       sum_val += wp.tile_matmul(J_ki, J_kj)
 
@@ -1860,7 +1859,6 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
         outputs=[h],
       )
 
-    # TODO(team): Define good threshold for blocked vs non-blocked cholesky
     if m.nv <= _BLOCK_CHOLESKY_DIM:
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
@@ -1992,6 +1990,7 @@ def solve_done(
   # Data out:
   solver_niter_out: wp.array(dtype=int),
   efc_done_out: wp.array(dtype=bool),
+  # Out:
   nsolving_out: wp.array(dtype=int),
 ):
   worldid = wp.tid()
@@ -2019,6 +2018,7 @@ def _solver_iteration(
   h: wp.array3d(dtype=float),
   hfactor: wp.array3d(dtype=float),
   step_size_cost: wp.array2d(dtype=float),
+  nsolving: wp.array(dtype=int),
 ):
   _linesearch(m, d, step_size_cost)
 
@@ -2064,7 +2064,7 @@ def _solver_iteration(
       d.efc.prev_cost,
       d.efc.done,
     ],
-    outputs=[d.solver_niter, d.efc.done, d.nsolving],
+    outputs=[d.solver_niter, d.efc.done, nsolving],
   )
 
 
@@ -2149,6 +2149,7 @@ def _solve(m: types.Model, d: types.Data):
 
   step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
 
+  nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
@@ -2157,11 +2158,12 @@ def _solve(m: types.Model, d: types.Data):
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    d.nsolving.fill_(d.nworld)
-    wp.capture_while(d.nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost)
+    wp.capture_while(
+      nsolving, while_body=_solver_iteration, m=m, d=d, h=h, hfactor=hfactor, step_size_cost=step_size_cost, nsolving=nsolving
+    )
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, h, hfactor, step_size_cost)
+      _solver_iteration(m, d, h, hfactor, step_size_cost, nsolving)

@@ -221,4 +221,4 @@ def check_toolkit_driver():
   wp.init()
   if wp.get_device().is_cuda:
     if not wp.is_conditional_graph_supported():
-      RuntimeError("Minimum supported CUDA version: 12.4.")
+      raise RuntimeError("Minimum supported CUDA version: 12.4.")

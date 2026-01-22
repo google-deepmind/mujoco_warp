@@ -118,27 +118,27 @@ def _collect_metrics(
   if _MEMORY.value:
     metrics.update(
       {
-        f"model_memory": sum(c for _, c in _dataclass_memory(m)),
-        f"data_memory": sum(c for _, c in _dataclass_memory(d)),
-        f"total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
+        "model_memory": sum(c for _, c in _dataclass_memory(m)),
+        "data_memory": sum(c for _, c in _dataclass_memory(d)),
+        "total_memory": free_mem_at_init - wp.get_device(_DEVICE.value).free_memory,
       }
     )
 
   if nacon and nefc:
     metrics.update(
       {
-        f"ncon_mean": np.mean(nacon) / _NWORLD.value,
-        f"ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
-        f"nefc_mean": np.mean(nefc),
-        f"nefc_p95": np.percentile(nefc, 95),
+        "ncon_mean": np.mean(nacon) / _NWORLD.value,
+        "ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
+        "nefc_mean": np.mean(nefc),
+        "nefc_p95": np.percentile(nefc, 95),
       }
     )
 
   if solver_niter:
     metrics.update(
       {
-        f"solver_niter_mean": np.mean(solver_niter),
-        f"solver_niter_p95": np.percentile(solver_niter, 95),
+        "solver_niter_mean": np.mean(solver_niter),
+        "solver_niter_p95": np.percentile(solver_niter, 95),
       }
     )
 
@@ -236,14 +236,14 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       mem = _dataclass_memory(dataclass)
       other_mem -= sum(c for _, c in mem)
       other_mem_total = sum(c for _, c in mem)
-      print(f"{name} memory {other_mem_total / 1024**2:.2f} MB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
+      print(f"{name} memory {other_mem_total / 1024**2:.2f} MiB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
       fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
       for field, capacity in fields:
-        print(f" {field}: {capacity / 1024**2:.2f} MB ({100 * capacity / used_mem:.2f}%)")
+        print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / used_mem:.2f}%)")
       if not fields:
         print(" (no field >= 1% of used memory)")
-    print(f"Other memory: {other_mem / 1024**2:.2f} MB ({100 * other_mem / used_mem:.2f}% of used memory)")
-    print(f"Total memory: {used_mem / 1024**2:.2f} MB ({100 * used_mem / total_mem:.2f}% of total device memory)")
+    print(f"Other memory: {other_mem / 1024**2:.2f} MiB ({100 * other_mem / used_mem:.2f}% of used memory)")
+    print(f"Total memory: {used_mem / 1024**2:.2f} MiB ({100 * used_mem / total_mem:.2f}% of total device memory)")
 
 
 def _main(argv: Sequence[str]):
