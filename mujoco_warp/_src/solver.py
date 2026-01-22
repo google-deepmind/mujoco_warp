@@ -59,7 +59,9 @@ def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
 
 
 @wp.func
-def _eval_pt_direct_3alphas(jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+def _eval_pt_direct_3alphas(
+  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Eval quadratic constraint for 3 alphas."""
   x_lo = jaref + lo_alpha * jv
   x_hi = jaref + hi_alpha * jv
@@ -129,7 +131,9 @@ def _eval_frictionloss_pt_one(x: float, f: float, rf: float, half_d: float, jvD:
 
 
 @wp.func
-def _eval_frictionloss_pt_3alphas(x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+def _eval_frictionloss_pt_3alphas(
+  x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
   """Eval frictionloss for 3 x values with shared precomputation."""
   jvD = jv * d
   half_d = 0.5 * d
