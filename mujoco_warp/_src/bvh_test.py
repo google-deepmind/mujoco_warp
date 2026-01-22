@@ -241,6 +241,14 @@ class BvhTest(absltest.TestCase):
       norm = np.linalg.norm(normals[0, i])
       np.testing.assert_allclose(norm, 1.0, rtol=1e-5, err_msg="flexvert_norm")
 
+  def test_build_flex_bvh(self):
+    """Tests that build_flex_bvh creates a valid BVH."""
+    mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
+
+    flex_mesh, face_point, group, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)
+
+    self.assertNotEqual(flex_mesh.id, wp.uint64(0), "flex_mesh id")
+
 
 if __name__ == "__main__":
   wp.init()
