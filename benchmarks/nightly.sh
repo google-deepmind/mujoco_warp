@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,14 +15,14 @@
 # limitations under the License.
 # ==============================================================================
 
-# This script clones a fresh copy of the repo, installs it, runs benchmarks on any new commits its finds. The script starts with
+# This script clones a fresh copy of the repo, installs it, runs benchmarks on any new commits it finds. The script starts with
 # the oldest commit in the log that wasn't previously run, and continues until it has run all commits.  By default, it runs all
 # benchmarks defined in config.txt.
 
 # New benchmark results are appended to a json file in a configurable branch (typically `gh-pages`) and pushed to github.
 
 # This script is intended to be run as a nightly cron job. It expects an ssh identify file to be present at
-# ~/.ssh/id_ed25519_mujoco_warp_nightly that correspodns to a deploy key on github with write access to
+# ~/.ssh/id_ed25519_mujoco_warp_nightly that corresponds to a deploy key on github with write access to
 # https://github.com/google-deepmind/mujoco_warp
 
 set -euo pipefail
