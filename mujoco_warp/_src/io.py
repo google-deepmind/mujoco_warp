@@ -259,18 +259,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   branches = [ancestor_chain(l) for l in np.where(children_count[1:] == 0)[0] + 1]
   m.nbranch = len(branches)
 
-  branch_bodies_flat = []
-  branch_start = []
+  body_branches = []
+  body_branch_start = []
   offset = 0
 
   for branch in branches:
-    branch_start.append(offset)
-    branch_bodies_flat.extend(branch)
+    body_branches.extend(branch)
+    body_branch_start.append(offset)
     offset += len(branch)
-  branch_start.append(offset)
+  body_branch_start.append(offset)
 
-  m.branch_bodies = np.array(branch_bodies_flat, dtype=int)
-  m.branch_start = np.array(branch_start, dtype=int)
+  m.body_branches = np.array(body_branches, dtype=int)
+  m.body_branch_start = np.array(body_branch_start, dtype=int)
 
   m.mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]

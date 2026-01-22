@@ -54,8 +54,8 @@ def _kinematics_branch(
   jnt_qposadr: wp.array(dtype=int),
   jnt_pos: wp.array2d(dtype=wp.vec3),
   jnt_axis: wp.array2d(dtype=wp.vec3),
-  branch_bodies: wp.array(dtype=int),
-  branch_start: wp.array(dtype=int),
+  body_branches: wp.array(dtype=int),
+  body_branch_start: wp.array(dtype=int),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   mocap_pos_in: wp.array2d(dtype=wp.vec3),
@@ -68,13 +68,13 @@ def _kinematics_branch(
 ):
   worldid, branchid = wp.tid()
 
-  start = branch_start[branchid]
-  end = branch_start[branchid + 1]
+  start = body_branch_start[branchid]
+  end = body_branch_start[branchid + 1]
 
   qpos = qpos_in[worldid]
 
   for i in range(start, end):
-    bodyid = branch_bodies[i]
+    bodyid = body_branches[i]
     pid = body_parentid[bodyid]
     jntadr = body_jntadr[bodyid]
     jntnum = body_jntnum[bodyid]
@@ -313,8 +313,8 @@ def kinematics(m: Model, d: Data):
       m.jnt_qposadr,
       m.jnt_pos,
       m.jnt_axis,
-      m.branch_bodies,
-      m.branch_start,
+      m.body_branches,
+      m.body_branch_start,
       d.qpos,
       d.mocap_pos,
       d.mocap_quat,
@@ -1022,8 +1022,8 @@ def _cacc_branch(
   body_parentid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
-  branch_bodies: wp.array(dtype=int),
-  branch_start: wp.array(dtype=int),
+  body_branches: wp.array(dtype=int),
+  body_branch_start: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   qacc_in: wp.array2d(dtype=float),
@@ -1036,14 +1036,14 @@ def _cacc_branch(
 ):
   worldid, branchid = wp.tid()
 
-  start = branch_start[branchid]
-  end = branch_start[branchid + 1]
+  start = body_branch_start[branchid]
+  end = body_branch_start[branchid + 1]
 
-  bodyid = branch_bodies[start]
+  bodyid = body_branches[start]
   pid = body_parentid[bodyid]
   local_cacc = cacc_out[worldid, pid]
   for i in range(start, end):
-    bodyid = branch_bodies[i]
+    bodyid = body_branches[i]
     dofnum = body_dofnum[bodyid]
     dofadr = body_dofadr[bodyid]
     for j in range(dofnum):
@@ -1061,8 +1061,8 @@ def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
       m.body_parentid,
       m.body_dofnum,
       m.body_dofadr,
-      m.branch_bodies,
-      m.branch_start,
+      m.body_branches,
+      m.body_branch_start,
       d.qvel,
       d.qacc,
       d.cdof,
@@ -1716,8 +1716,8 @@ def _comvel_branch(
   body_jntadr: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   jnt_type: wp.array(dtype=int),
-  branch_bodies: wp.array(dtype=int),
-  branch_start: wp.array(dtype=int),
+  body_branches: wp.array(dtype=int),
+  body_branch_start: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
@@ -1727,14 +1727,14 @@ def _comvel_branch(
 ):
   worldid, branchid = wp.tid()
 
-  start = branch_start[branchid]
-  end = branch_start[branchid + 1]
+  start = body_branch_start[branchid]
+  end = body_branch_start[branchid + 1]
 
   qvel = qvel_in[worldid]
   cdof = cdof_in[worldid]
 
   for i in range(start, end):
-    bodyid = branch_bodies[i]
+    bodyid = body_branches[i]
     pid = body_parentid[bodyid]
     cvel = cvel_out[worldid, pid]
     dofid = body_dofadr[bodyid]
@@ -1799,8 +1799,8 @@ def com_vel(m: Model, d: Data):
       m.body_jntadr,
       m.body_dofadr,
       m.jnt_type,
-      m.branch_bodies,
-      m.branch_start,
+      m.body_branches,
+      m.body_branch_start,
       d.qvel,
       d.cdof,
     ],

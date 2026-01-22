@@ -1023,8 +1023,8 @@ class Model:
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
-    branch_bodies: flattened body ids for all branches
-    branch_start: start index in branch_bodies for each branch   (nbranch + 1,)
+    body_branches: flattened body ids for all branches
+    body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
@@ -1372,8 +1372,8 @@ class Model:
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
-  branch_bodies: wp.array(dtype=int)
-  branch_start: wp.array(dtype=int)
+  body_branches: wp.array(dtype=int)
+  body_branch_start: wp.array(dtype=int)
   mocap_bodyid: array("nmocap", int)
   body_fluid_ellipsoid: array("nbody", bool)
   jnt_limited_slide_hinge_adr: wp.array(dtype=int)
