@@ -22,7 +22,7 @@ from absl.testing import absltest
 
 from mujoco_warp import test_data
 
-from . import bvh
+from mujoco_warp._src import bvh
 
 
 @dataclasses.dataclass
