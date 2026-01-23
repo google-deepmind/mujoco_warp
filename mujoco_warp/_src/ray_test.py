@@ -51,6 +51,16 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, -1, "dist")
     _assert_eq(normal_np, 0, "normal")
 
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    bvh_normal_np = normal.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "bvh geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "bvh dist")
+    _assert_eq(bvh_normal_np, normal_np, "bvh normal")
+
   def test_ray_plane(self):
     """Tests ray<>plane matches MuJoCo."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")

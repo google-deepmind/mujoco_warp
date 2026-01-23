@@ -20,11 +20,11 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from . import bvh
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import ProjectionType
+import mujoco_warp as mjw
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ProjectionType
 
 wp.set_module_options({"enable_backward": False})
 

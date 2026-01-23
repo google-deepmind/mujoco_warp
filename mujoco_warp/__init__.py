@@ -29,6 +29,11 @@ from mujoco_warp._src.types import Model as Model
 from mujoco_warp._src.types import Data as Data
 # isort: on
 
+from mujoco_warp._src.bvh import build_scene_bvh as build_scene_bvh
+from mujoco_warp._src.bvh import refit_scene_bvh as refit_scene_bvh
+from mujoco_warp._src.bvh import build_mesh_bvh as build_mesh_bvh
+from mujoco_warp._src.bvh import build_hfield_bvh as build_hfield_bvh
+from mujoco_warp._src.bvh import refit_flex_bvh as refit_flex_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
 from mujoco_warp._src.collision_driver import sap_broadphase as sap_broadphase
@@ -56,8 +61,6 @@ from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
-from mujoco_warp._src.ray_bvh import ray_bvh as ray_bvh
-from mujoco_warp._src.ray_bvh import rays_bvh as rays_bvh
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc

@@ -19,10 +19,10 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from .render_context import RenderContext
-from .types import Data
-from .types import GeomType
-from .types import Model
+from mujoco_warp._src.render_context import RenderContext
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
 
 wp.set_module_options({"enable_backward": False})
 
