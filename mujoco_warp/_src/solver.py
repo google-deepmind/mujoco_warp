@@ -822,16 +822,17 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     efc_search_dot_in: wp.array(dtype=float),
     efc_gauss_in: wp.array(dtype=float),
     efc_mv_in: wp.array2d(dtype=float),
+    efc_jv_in: wp.array2d(dtype=float),
+    efc_quad_in: wp.array2d(dtype=wp.vec3),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
     nacon_in: wp.array(dtype=int),
-    # Data in/out:
-    efc_jv_inout: wp.array2d(dtype=float),
-    efc_quad_inout: wp.array2d(dtype=wp.vec3),
     # Data out:
     qacc_out: wp.array2d(dtype=float),
     efc_Jaref_out: wp.array2d(dtype=float),
     efc_Ma_out: wp.array2d(dtype=float),
+    efc_jv_out: wp.array2d(dtype=float),
+    efc_quad_out: wp.array2d(dtype=wp.vec3),
   ):
     worldid, tid = wp.tid()
 
@@ -848,7 +849,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         jv = float(0.0)
         for i in range(nv):
           jv += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
-        efc_jv_inout[worldid, efcid] = jv
+        efc_jv_out[worldid, efcid] = jv
 
       _syncthreads()  # ensure all jv values are written before reading
 
@@ -860,7 +861,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
       for efcid in range(tid, nefc, wp.block_dim()):
         Jaref = efc_Jaref_in[worldid, efcid]
-        jv = efc_jv_inout[worldid, efcid]
+        jv = efc_jv_in[worldid, efcid]
         efc_D = efc_D_in[worldid, efcid]
 
         # scalar quadratic coefficients
@@ -869,7 +870,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
         # non-contact constraints: write quad immediately
         if efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
-          efc_quad_inout[worldid, efcid] = quad
+          efc_quad_out[worldid, efcid] = quad
         else:
           # CONTACT_ELLIPTIC: only primary row of active contacts writes
           conid = efc_id_in[worldid, efcid]
@@ -890,7 +891,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
               for j in range(1, dim):
                 efcidj = contact_efc_address_in[conid, j]
                 if efcidj >= 0:
-                  jvj = efc_jv_inout[worldid, efcidj]
+                  jvj = efc_jv_in[worldid, efcidj]
                   jarefj = efc_Jaref_in[worldid, efcidj]
                   dj = efc_D_in[worldid, efcidj]
                   DJj = dj * jarefj
@@ -906,14 +907,14 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
                   uv += uj * vj
                   vv += vj * vj
 
-              efc_quad_inout[worldid, efcid] = quad
+              efc_quad_out[worldid, efcid] = quad
 
               efcid1 = contact_efc_address_in[conid, 1]
-              efc_quad_inout[worldid, efcid1] = wp.vec3(u0, v0, uu)
+              efc_quad_out[worldid, efcid1] = wp.vec3(u0, v0, uu)
 
               mu2 = mu * mu
               efcid2 = contact_efc_address_in[conid, 2]
-              efc_quad_inout[worldid, efcid2] = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
+              efc_quad_out[worldid, efcid2] = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
 
       _syncthreads()  # ensure all quads are written before reading
 
@@ -941,8 +942,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_inout[worldid, efc_addr1]
-          quad2 = efc_quad_inout[worldid, efc_addr2]
+          quad1 = efc_quad_in[worldid, efc_addr1]
+          quad2 = efc_quad_in[worldid, efc_addr2]
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid,
@@ -953,8 +954,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
-          efc_quad_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
+          efc_quad_in[worldid, efcid],
           contact_friction,
           efc_addr0,
           quad1,
@@ -969,7 +970,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid, efcid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
         )
 
     # at this point, every thread has computed some contributions to p0 in local_p0
@@ -1014,8 +1015,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_inout[worldid, efc_addr1]
-          quad2 = efc_quad_inout[worldid, efc_addr2]
+          quad1 = efc_quad_in[worldid, efc_addr1]
+          quad2 = efc_quad_in[worldid, efc_addr2]
 
         local_lo_in += _compute_efc_eval_pt(
           efcid,
@@ -1027,8 +1028,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
-          efc_quad_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
+          efc_quad_in[worldid, efcid],
           contact_friction,
           efc_addr0,
           quad1,
@@ -1044,7 +1045,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid, efcid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
         )
 
     lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
@@ -1085,8 +1086,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_addr0 = contact_efc_address_in[efc_id, 0]
             efc_addr1 = contact_efc_address_in[efc_id, 1]
             efc_addr2 = contact_efc_address_in[efc_id, 2]
-            quad1 = efc_quad_inout[worldid, efc_addr1]
-            quad2 = efc_quad_inout[worldid, efc_addr2]
+            quad1 = efc_quad_in[worldid, efc_addr1]
+            quad2 = efc_quad_in[worldid, efc_addr2]
 
           # compute all 3 alphas at once, sharing constraint type checking
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
@@ -1101,8 +1102,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_D_in[worldid],
             efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid],
-            efc_jv_inout[worldid, efcid],
-            efc_quad_inout[worldid, efcid],
+            efc_jv_in[worldid, efcid],
+            efc_quad_in[worldid, efcid],
             contact_friction,
             efc_addr0,
             quad1,
@@ -1120,7 +1121,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_D_in[worldid, efcid],
             efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid],
-            efc_jv_inout[worldid, efcid],
+            efc_jv_in[worldid, efcid],
           )
         local_lo += r_lo
         local_hi += r_hi
@@ -1195,7 +1196,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
     # Jaref update
     for efcid in range(tid, nefc, wp.block_dim()):
-      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
+      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_in[worldid, efcid]
 
   return kernel
 
@@ -1234,11 +1235,13 @@ def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
       d.efc.search_dot,
       d.efc.gauss,
       d.efc.mv,
+      d.efc.jv,
+      d.efc.quad,
       d.efc.done,
       d.njmax,
       d.nacon,
     ],
-    outputs=[d.efc.jv, d.efc.quad, d.qacc, d.efc.Jaref, d.efc.Ma],
+    outputs=[d.qacc, d.efc.Jaref, d.efc.Ma, d.efc.jv, d.efc.quad],
     block_dim=m.block_dim.linesearch_iterative,
   )
 

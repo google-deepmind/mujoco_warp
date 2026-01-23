@@ -160,19 +160,13 @@ def _get_function_arg_range(node: ast.FunctionDef, source: str) -> tuple[tuple[i
   return start_pos, (node.end_lineno - 1, node.end_col_offset)
 
 
-def _get_arg_expected_comment(param_source: str, param_out: bool, param_inout: bool = False) -> str:
+def _get_arg_expected_comment(param_source: str, param_out: bool) -> str:
   if param_source == "Model":
     expected_comment = "# Model:"
   elif param_source == "Data":
-    if param_inout:
-      expected_comment = "# Data in/out:"
-    else:
-      expected_comment = f"# Data {'out' if param_out else 'in'}:"
+    expected_comment = f"# Data {'out' if param_out else 'in'}:"
   else:
-    if param_inout:
-      expected_comment = "# In/Out:"
-    else:
-      expected_comment = f"# {'Out' if param_out else 'In'}:"
+    expected_comment = f"# {'Out' if param_out else 'In'}:"
   return expected_comment
 
 
@@ -298,15 +292,9 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       param_type = ast.get_source_segment(source, param.annotation)
       param_type = param_type.replace("types.", "")  # ignore types module prefix
       param_types[param_name] = param_type
-      has_suffix = param_name.endswith("_in") or param_name.endswith("_out") or param_name.endswith("_inout")
-      if param_name.endswith("_inout"):
-        field_name = param_name[: param_name.rfind("_inout")]
-      elif has_suffix:
-        field_name = param_name[: param_name.rfind("_")]
-      else:
-        field_name = param_name
-      param_inout = param_name.endswith("_inout")
-      param_out = param_name.endswith("_out") or param_inout or param_name in ("res", "out")
+      has_suffix = param_name.endswith("_in") or param_name.endswith("_out")
+      field_name = param_name[: param_name.rfind("_")] if has_suffix else param_name
+      param_out = param_name.endswith("_out") or param_name in ("res", "out")
       if param_out:
         param_outs.add(param_name)
       if "array" in param_type:
@@ -316,11 +304,10 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       # TODO(team): indicate array slice with suffix and check type?
 
       # if parameters are multi-line, parameters must be grouped by comments of the form
-      # "{source} {in | out | ""}:" e.g. "Model:" or "Data in:" or "Out:" or "Data in/out:"
-      group_key = (param_out, param_inout, param_source)
-      if params_multiline and group_key not in param_groups:
-        param_groups.add(group_key)
-        expected_comment = _get_arg_expected_comment(param_source, param_out, param_inout)
+      # "{source} {in | out | ""}:" e.g. "Model:" or "Data in:" or "Out:"
+      if params_multiline and (param_out, param_source) not in param_groups:
+        param_groups.add((param_out, param_source))
+        expected_comment = _get_arg_expected_comment(param_source, param_out)
         if param.lineno < 2 or source_lines[param.lineno - 2].strip() != expected_comment:
           issues.append(MissingComment(param, kernel, expected_comment))
 
@@ -355,17 +342,10 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
 
       source_order = {"Model": 0, "Data": 1, None: 2}[param_source]
       param_order = len(params_ordering) if param_order is None else param_order
-      # io_order: 0=in, 1=inout, 2=out
-      if param_inout:
-        io_order = 1
-      elif param_out:
-        io_order = 2
-      else:
-        io_order = 0
-      params_ordering.append((io_order, source_order, param_order, param_name, param_inout))
+      params_ordering.append((param_out, source_order, param_order, param_name))
 
     # parameters must follow a specified order:
-    # 1) in fields, then inout fields, then out fields
+    # 1) in fields, then out fields
     # 2) Model, then Data, then other
     # 3) matching Model field order or Data field order
     expected_ordering = sorted(params_ordering)
@@ -380,9 +360,8 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       for e in expected_ordering:
         if prev != e[:2]:
           src = {0: "Model", 1: "Data", 2: None}[e[1]]
-          is_out = e[0] == 2
-          is_inout = e[4]
-          expected_full.append(_get_arg_expected_comment(src, is_out, is_inout))
+          is_out = e[0]
+          expected_full.append(_get_arg_expected_comment(src, is_out))
         type_ = expected_types[e[3]] or param_types[e[3]]
         expected_full.append(e[3] + ": " + type_ + ",")
         prev = e[:2]
