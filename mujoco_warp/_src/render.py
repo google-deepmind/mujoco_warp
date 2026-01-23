@@ -745,14 +745,14 @@ def render_megakernel(m: Model, d: Data, rc: RenderContext):
     )
 
     if wp.static(m.nflex > 0):
-      h, d, n, u, v, f = ray_flex_with_bvh(
+      d, n, u, v, f = ray_flex_with_bvh(
         flex_bvh_id,
         flex_group_root[world_idx],
         ray_origin_world,
         ray_dir_world,
         dist,
       )
-      if h and d < dist:
+      if d >= 0.0 and d < dist:
         dist = d
         normal = n
         geom_id = -2

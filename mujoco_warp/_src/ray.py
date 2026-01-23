@@ -749,7 +749,7 @@ def ray_flex_with_bvh(
   pnt: wp.vec3,
   vec: wp.vec3,
   max_t: float,
-) -> Tuple[float, wp.vec3, float, float, int, int]:
+) -> Tuple[float, wp.vec3, float, float, int]:
   """Returns intersection information for flex intersections.
 
   Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space.
@@ -766,7 +766,7 @@ def ray_flex_with_bvh(
   if hit:
     return t, n, u, v, f
 
-  return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
+  return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1
 
 
 @wp.func
