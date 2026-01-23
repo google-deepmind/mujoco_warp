@@ -958,7 +958,7 @@ def _tile_cholesky_factorize(tile: TileSet):
 
   @wp.kernel(module="unique", enable_backward=False)
   def cholesky_factorize(
-    # Data In:
+    # Data in:
     qM_in: wp.array3d(dtype=float),
     # In:
     adr: wp.array(dtype=int),
