@@ -33,6 +33,7 @@ from mujoco_warp._src.bvh import build_scene_bvh as build_scene_bvh
 from mujoco_warp._src.bvh import refit_scene_bvh as refit_scene_bvh
 from mujoco_warp._src.bvh import build_mesh_bvh as build_mesh_bvh
 from mujoco_warp._src.bvh import build_hfield_bvh as build_hfield_bvh
+from mujoco_warp._src.bvh import build_flex_bvh as build_flex_bvh
 from mujoco_warp._src.bvh import refit_flex_bvh as refit_flex_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase

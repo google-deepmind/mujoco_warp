@@ -51,15 +51,16 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, -1, "dist")
     _assert_eq(normal_np, 0, "normal")
 
+    # test that bvh accelerated produces the same results
     rc = mjw.create_render_context(mjm, m, d)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
     bvh_normal_np = normal.numpy()[0, 0]
-    _assert_eq(bvh_geomid_np, geomid_np, "bvh geom_id")
-    _assert_eq(bvh_dist_np, dist_np, "bvh dist")
-    _assert_eq(bvh_normal_np, normal_np, "bvh normal")
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+    _assert_eq(bvh_normal_np, normal_np, "normal")
 
   def test_ray_plane(self):
     """Tests ray<>plane matches MuJoCo."""
@@ -78,6 +79,15 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
     # looking on wrong side of plane
     pnt = wp.array([wp.vec3(0.0, 0.0, -0.5)], dtype=wp.vec3).reshape((1, 1))
     dist, geomid, normal = mjw.ray(m, d, pnt, vec)
@@ -86,6 +96,14 @@ class RayTest(absltest.TestCase):
     dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
+
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
 
   def test_ray_sphere(self):
     """Tests ray<>sphere matches MuJoCo."""
@@ -104,6 +122,15 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
   def test_ray_capsule(self):
     """Tests ray<>capsule matches MuJoCo."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -121,6 +148,15 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
     # looking up at capsule from below
     pnt = wp.array([wp.vec3(-0.5, 1.0, 0.05)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
@@ -133,6 +169,14 @@ class RayTest(absltest.TestCase):
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
+
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
 
     # looking at cylinder of capsule from the side
     pnt = wp.array([wp.vec3(0.0, 1.0, 0.75)], dtype=wp.vec3).reshape((1, 1))
@@ -147,6 +191,14 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
   def test_ray_cylinder(self):
     """Tests ray<>cylinder matches MuJoCo."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -157,9 +209,21 @@ class RayTest(absltest.TestCase):
     mj_geomid = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec)
+    wp.synchronize()
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
 
-    _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "geomid")
-    _assert_eq(dist.numpy()[0, 0], mj_dist, "dist")
+    _assert_eq(geomid_np, mj_geomid[0], "geomid")
+    _assert_eq(dist_np, mj_dist, "dist")
+
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
 
   def test_ray_box(self):
     """Tests ray<>box matches MuJoCo."""
@@ -178,6 +242,15 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
     # looking up at box from below
     pnt = wp.array([wp.vec3(1.0, 0.0, 0.05)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
@@ -190,6 +263,14 @@ class RayTest(absltest.TestCase):
     unused = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
+
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "bvh geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "bvh dist")
 
   def test_ray_mesh(self):
     """Tests ray<>mesh matches MuJoCo."""
@@ -209,6 +290,15 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist-tetrahedron")
 
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
     # look away from the dodecahedron
     pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(2.0, 1.0, 1.0))], dtype=wp.vec3).reshape((1, 1))
@@ -216,6 +306,12 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
+
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
 
     # look at the dodecahedron
     pnt = wp.array([wp.vec3(4.0, 2.0, 2.0)], dtype=wp.vec3).reshape((1, 1))
@@ -231,6 +327,14 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist-dodecahedron")
 
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "bvh geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "bvh dist")
+
   def test_ray_hfield(self):
     mjm, mjd, m, d = test_data.fixture("ray.xml")
 
@@ -240,9 +344,21 @@ class RayTest(absltest.TestCase):
 
     mj_geomid = np.zeros(1, dtype=np.int32)
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
+    wp.synchronize()
+    geomid_np = geomid.numpy()[0, 0]
+    dist_np = dist.numpy()[0, 0]
 
-    _assert_eq(dist.numpy()[0, 0], mj_dist, "dist")
-    _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "geomid")
+    _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(geomid_np, mj_geomid[0], "geomid")
+
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "bvh dist")
 
   def test_ray_geomgroup(self):
     """Tests ray geomgroup filter."""
@@ -263,6 +379,15 @@ class RayTest(absltest.TestCase):
     mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
     _assert_eq(dist_np, mj_dist, "dist")
 
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+
     # nothing hit with geom_group[0] = 0
     pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
     vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
@@ -273,6 +398,14 @@ class RayTest(absltest.TestCase):
     dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
+
+    # test that bvh raycast produces the same results
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
 
   def test_ray_flg_static(self):
     """Tests ray flg_static filter."""
@@ -287,6 +420,15 @@ class RayTest(absltest.TestCase):
     dist_np = dist.numpy()[0, 0]
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
+
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, flg_static=False, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
 
   def test_ray_bodyexclude(self):
     """Tests ray bodyexclude filter."""
@@ -303,6 +445,17 @@ class RayTest(absltest.TestCase):
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
     _assert_eq(normal_np, 0, "normal")
+
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, bodyexclude=0, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    bvh_normal_np = normal.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+    _assert_eq(bvh_normal_np, normal_np, "normal")
 
   def test_ray_invisible(self):
     """Tests ray doesn't hit transparent geoms."""
@@ -322,6 +475,17 @@ class RayTest(absltest.TestCase):
     _assert_eq(geomid_np, -1, "geom_id")
     _assert_eq(dist_np, -1, "dist")
     _assert_eq(normal_np, 0, "normal")
+
+    # test that bvh raycast produces the same results
+    rc = mjw.create_render_context(mjm, m, d)
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
+    wp.synchronize()
+    bvh_geomid_np = geomid.numpy()[0, 0]
+    bvh_dist_np = dist.numpy()[0, 0]
+    bvh_normal_np = normal.numpy()[0, 0]
+    _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
+    _assert_eq(bvh_dist_np, dist_np, "dist")
+    _assert_eq(bvh_normal_np, normal_np, "normal")
 
 
 if __name__ == "__main__":
