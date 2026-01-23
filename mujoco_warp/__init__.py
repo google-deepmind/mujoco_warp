@@ -56,6 +56,8 @@ from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
+from mujoco_warp._src.ray_bvh import ray_bvh as ray_bvh
+from mujoco_warp._src.ray_bvh import rays_bvh as rays_bvh
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
