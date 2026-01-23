@@ -335,8 +335,8 @@ def _sap_project(opt_broadphase: int):
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
     # Data in:
-    nworld_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
+    nworld_in: int,
     # In:
     direction_in: wp.vec3,
     # Out:
@@ -411,10 +411,10 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     geom_margin: wp.array2d(dtype=float),
     nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
-    nworld_in: int,
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    nworld_in: int,
+    naconmax_in: int,
     # In:
     sort_index_in: wp.array2d(dtype=int),
     cumulative_sum_in: wp.array(dtype=int),
@@ -542,7 +542,7 @@ def sap_broadphase(m: Model, d: Data):
   wp.launch(
     kernel=_sap_project(m.opt.broadphase),
     dim=(d.nworld, m.ngeom),
-    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.nworld, d.geom_xpos, direction],
+    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.geom_xpos, d.nworld, direction],
     outputs=[
       projection_lower.reshape((-1, m.ngeom)),
       projection_upper,
@@ -587,10 +587,10 @@ def sap_broadphase(m: Model, d: Data):
       m.geom_rbound,
       m.geom_margin,
       m.nxn_pairid,
-      d.nworld,
-      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
+      d.nworld,
+      d.naconmax,
       sort_index.reshape((-1, m.ngeom)),
       cumulative_sum.reshape(-1),
       nsweep,
@@ -611,9 +611,9 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     nxn_geom_pair: wp.array(dtype=wp.vec2i),
     nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
     collision_pairid_out: wp.array(dtype=wp.vec2i),
@@ -673,9 +673,9 @@ def nxn_broadphase(m: Model, d: Data):
       m.geom_margin,
       m.nxn_geom_pair_filtered,
       m.nxn_pairid_filtered,
-      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
+      d.naconmax,
     ],
     outputs=[
       d.collision_pair,
