@@ -17,33 +17,33 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive_core import box_box
-from .collision_primitive_core import capsule_box
-from .collision_primitive_core import capsule_capsule
-from .collision_primitive_core import plane_box
-from .collision_primitive_core import plane_capsule
-from .collision_primitive_core import plane_cylinder
-from .collision_primitive_core import plane_ellipsoid
-from .collision_primitive_core import plane_sphere
-from .collision_primitive_core import sphere_box
-from .collision_primitive_core import sphere_capsule
-from .collision_primitive_core import sphere_cylinder
-from .collision_primitive_core import sphere_sphere
-from .math import make_frame
-from .math import safe_div
-from .math import upper_trid_index
-from .types import MJ_MINMU
-from .types import MJ_MINVAL
-from .types import ContactType
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import mat43
-from .types import mat63
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_primitive_core import box_box
+from mujoco_warp._src.collision_primitive_core import capsule_box
+from mujoco_warp._src.collision_primitive_core import capsule_capsule
+from mujoco_warp._src.collision_primitive_core import plane_box
+from mujoco_warp._src.collision_primitive_core import plane_capsule
+from mujoco_warp._src.collision_primitive_core import plane_cylinder
+from mujoco_warp._src.collision_primitive_core import plane_ellipsoid
+from mujoco_warp._src.collision_primitive_core import plane_sphere
+from mujoco_warp._src.collision_primitive_core import sphere_box
+from mujoco_warp._src.collision_primitive_core import sphere_capsule
+from mujoco_warp._src.collision_primitive_core import sphere_cylinder
+from mujoco_warp._src.collision_primitive_core import sphere_sphere
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MINMU
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -535,11 +535,11 @@ def contact_params(
       max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
 
     friction = vec5(
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[1]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
+      max_geom_friction[0],
+      max_geom_friction[0],
+      max_geom_friction[1],
+      max_geom_friction[2],
+      max_geom_friction[2],
     )
 
     if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
@@ -552,6 +552,14 @@ def contact_params(
     # geom priority is ignored
     margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
     gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
+
+  friction = vec5(
+    wp.max(MJ_MINMU, friction[0]),
+    wp.max(MJ_MINMU, friction[1]),
+    wp.max(MJ_MINMU, friction[2]),
+    wp.max(MJ_MINMU, friction[3]),
+    wp.max(MJ_MINMU, friction[4]),
+  )
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -814,39 +822,41 @@ def capsule_capsule_wrapper(
     cap2_axis,
     cap2.size[0],  # radius2
     cap2.size[1],  # half_length2
+    margin,
   )
 
-  write_contact(
-    naconmax_in,
-    0,
-    dist,
-    pos,
-    make_frame(normal),
-    margin,
-    gap,
-    condim,
-    friction,
-    solref,
-    solreffriction,
-    solimp,
-    geoms,
-    pairid,
-    worldid,
-    contact_dist_out,
-    contact_pos_out,
-    contact_frame_out,
-    contact_includemargin_out,
-    contact_friction_out,
-    contact_solref_out,
-    contact_solreffriction_out,
-    contact_solimp_out,
-    contact_dim_out,
-    contact_geom_out,
-    contact_worldid_out,
-    contact_type_out,
-    contact_geomcollisionid_out,
-    nacon_out,
-  )
+  for i in range(2):
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      wp.vec3(pos[i, 0], pos[i, 1], pos[i, 2]),
+      make_frame(wp.vec3(normal[i, 0], normal[i, 1], normal[i, 2])),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func

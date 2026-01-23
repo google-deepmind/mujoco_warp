@@ -17,20 +17,20 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive import contact_params
-from .collision_primitive import geom_collision_pair
-from .collision_primitive import write_contact
-from .math import make_frame
-from .ray import ray_mesh
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import vec5
-from .types import vec8
-from .types import vec8i
-from .types import vec_pluginattr
-from .util_misc import halton
-from .warp_util import event_scope
+from mujoco_warp._src.collision_primitive import contact_params
+from mujoco_warp._src.collision_primitive import geom_collision_pair
+from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.ray import ray_mesh
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec8
+from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.types import vec_pluginattr
+from mujoco_warp._src.util_misc import halton
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -66,7 +66,6 @@ class MeshData:
   mesh_vert: wp.array(dtype=wp.vec3)
   mesh_faceadr: wp.array(dtype=int)
   mesh_face: wp.array(dtype=wp.vec3i)
-  data_id: int
   data_id: int
   pos: wp.vec3
   mat: wp.mat33
@@ -174,7 +173,7 @@ def grad_sphere(p: wp.vec3) -> wp.vec3:
   if c > 1e-9:
     return p / c
   else:
-    wp.vec3(0.0)
+    return wp.vec3(0.0)
 
 
 @wp.func

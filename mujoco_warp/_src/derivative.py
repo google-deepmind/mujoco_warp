@@ -15,17 +15,17 @@
 
 import warp as wp
 
-from .types import BiasType
-from .types import Data
-from .types import DisableBit
-from .types import DynType
-from .types import GainType
-from .types import Model
-from .types import TileSet
-from .types import vec10f
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import GainType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 

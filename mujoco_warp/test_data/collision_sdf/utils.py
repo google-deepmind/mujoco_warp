@@ -21,15 +21,14 @@ import mujoco
 import warp as wp
 
 from mujoco_warp._src.types import vec_pluginattr
-
-from .bolt import bolt
-from .bolt import bolt_sdf_grad
-from .gear import gear
-from .gear import gear_sdf_grad
-from .nut import nut
-from .nut import nut_sdf_grad
-from .torus import torus
-from .torus import torus_sdf_grad
+from mujoco_warp.test_data.collision_sdf.bolt import bolt
+from mujoco_warp.test_data.collision_sdf.bolt import bolt_sdf_grad
+from mujoco_warp.test_data.collision_sdf.gear import gear
+from mujoco_warp.test_data.collision_sdf.gear import gear_sdf_grad
+from mujoco_warp.test_data.collision_sdf.nut import nut
+from mujoco_warp.test_data.collision_sdf.nut import nut_sdf_grad
+from mujoco_warp.test_data.collision_sdf.torus import torus
+from mujoco_warp.test_data.collision_sdf.torus import torus_sdf_grad
 
 
 class SDFType(enum.Enum):
