@@ -2361,11 +2361,11 @@ def _contact_sort(maxmatch: int):
     # Model:
     sensor_intprm: wp.array2d(dtype=int),
     sensor_contact_adr: wp.array(dtype=int),
-    # Data in:
+    # In:
     sensor_contact_nmatch_in: wp.array2d(dtype=int),
     sensor_contact_matchid_in: wp.array3d(dtype=int),
     sensor_contact_criteria_in: wp.array3d(dtype=float),
-    # Data out:
+    # Out:
     sensor_contact_matchid_out: wp.array3d(dtype=int),
   ):
     worldid, contactsensorid = wp.tid()
@@ -2824,7 +2824,7 @@ def _energy_vel_kinetic(nv: int):
     qvel_in: wp.array2d(dtype=float),
     # In:
     Mqvel: wp.array2d(dtype=float),
-    # Out:
+    # Data out:
     energy_out: wp.array(dtype=wp.vec2),
   ):
     worldid = wp.tid()
