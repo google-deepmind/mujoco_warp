@@ -62,8 +62,8 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
   linesearch_iterative: int = 32
-  # support
-  mul_m_dense: int = 32
+  # derivative
+  qderiv_actuator_dense: int = 32
 
 
 class BroadphaseType(enum.IntEnum):
