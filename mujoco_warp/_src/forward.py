@@ -293,14 +293,14 @@ def _tile_euler_dense(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def euler_dense(
     # Model:
-    dof_damping: wp.array2d(dtype=float),
     opt_timestep: wp.array(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
     # Data in:
     qM_in: wp.array3d(dtype=float),
     efc_Ma_in: wp.array2d(dtype=float),
     # In:
     adr_in: wp.array(dtype=int),
-    # Out:
+    # Data out:
     qacc_out: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
@@ -343,7 +343,7 @@ def euler(m: Model, d: Data):
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
-          inputs=[m.dof_damping, m.opt.timestep, d.qM, d.efc.Ma, tile.adr],
+          inputs=[m.opt.timestep, m.dof_damping, d.qM, d.efc.Ma, tile.adr],
           outputs=[qacc],
           block_dim=m.block_dim.euler_dense,
         )
