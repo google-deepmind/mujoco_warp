@@ -34,7 +34,8 @@ wp.set_module_options({"enable_backward": False})
 
 @cache_kernel
 def mul_m_sparse(check_skip: bool):
-  @nested_kernel(module="unique", enable_backward=False)
+
+  @wp.kernel
   def _mul_m_sparse(
     # Model:
     qM_mulm_rowadr: wp.array(dtype=int),
