@@ -25,7 +25,6 @@ from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -80,7 +79,7 @@ def _qderiv_actuator_passive_vel(
 
 @cache_kernel
 def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     vel_in: wp.array3d(dtype=float),

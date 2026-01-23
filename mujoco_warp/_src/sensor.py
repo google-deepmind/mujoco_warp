@@ -42,7 +42,6 @@ from mujoco_warp._src.types import vec8i
 from mujoco_warp._src.util_misc import inside_geom
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -2357,7 +2356,7 @@ def _contact_match(
 
 @cache_kernel
 def _contact_sort(maxmatch: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def contact_sort(
     # Model:
     sensor_intprm: wp.array2d(dtype=int),
@@ -2819,7 +2818,7 @@ def energy_pos(m: Model, d: Data):
 
 @cache_kernel
 def _energy_vel_kinetic(nv: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(
     # Data in:
     qvel_in: wp.array2d(dtype=float),

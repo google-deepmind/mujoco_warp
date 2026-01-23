@@ -31,7 +31,6 @@ from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -329,7 +328,7 @@ def _binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: i
 
 
 def _sap_project(opt_broadphase: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def sap_project(
     # Model:
     ngeom: int,
@@ -402,7 +401,7 @@ def _sap_range(
 
 @cache_kernel
 def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     ngeom: int,
@@ -602,7 +601,7 @@ def sap_broadphase(m: Model, d: Data):
 
 @cache_kernel
 def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     geom_type: wp.array(dtype=int),

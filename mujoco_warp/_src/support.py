@@ -26,14 +26,13 @@ from mujoco_warp._src.types import State
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
 
 @cache_kernel
 def mul_m_sparse_diag(check_skip: bool):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _mul_m_sparse_diag(
     # Model:
     dof_Madr: wp.array(dtype=int),
@@ -59,7 +58,7 @@ def mul_m_sparse_diag(check_skip: bool):
 
 @cache_kernel
 def mul_m_sparse_ij(check_skip: bool):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _mul_m_sparse_ij(
     # Model:
     qM_mulm_i: wp.array(dtype=int),
@@ -517,7 +516,7 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _get_state(
     # Model:
     nq: int,
@@ -656,7 +655,7 @@ def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _set_state(
     # Model:
     nq: int,

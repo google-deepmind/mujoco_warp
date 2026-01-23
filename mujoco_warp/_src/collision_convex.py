@@ -38,7 +38,6 @@ from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -180,7 +179,7 @@ def ccd_hfield_kernel_builder(
   """Kernel builder for heightfield CCD collisions (no multiccd args)."""
 
   # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def ccd_hfield_kernel(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
@@ -883,7 +882,7 @@ def ccd_kernel_builder(
     return ncontact
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def ccd_kernel(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),

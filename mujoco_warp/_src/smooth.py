@@ -35,7 +35,6 @@ from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -957,7 +956,7 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array3d(dtype=float), L: wp.array3
 def _tile_cholesky_factorize(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization of a tile."""
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def cholesky_factorize(
     # Data In:
     qM_in: wp.array3d(dtype=float),
@@ -2349,7 +2348,7 @@ def _solve_LD_sparse(
 def _tile_cholesky_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky backsubstitution of a tile."""
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def cholesky_solve(
     # In:
     L: wp.array3d(dtype=float),
@@ -2427,7 +2426,7 @@ def solve_m(m: Model, d: Data, x: wp.array2d(dtype=float), y: wp.array2d(dtype=f
 def _tile_cholesky_factorize_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization and backsubstitution of a tile."""
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def cholesky_factorize_solve(
     # In:
     M: wp.array3d(dtype=float),

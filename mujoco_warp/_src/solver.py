@@ -26,7 +26,6 @@ from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -797,7 +796,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
     _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     nv: int,
@@ -1265,7 +1264,7 @@ def linesearch_zero_jv(
 
 @cache_kernel
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1302,7 +1301,7 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
 @cache_kernel
 def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     qfrc_smooth_in: wp.array2d(dtype=float),
@@ -1544,7 +1543,7 @@ def solve_init_efc(
 
 @cache_kernel
 def solve_init_jaref(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1766,7 +1765,7 @@ def update_constraint_init_qfrc_constraint(
 
 @cache_kernel
 def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     qacc_in: wp.array2d(dtype=float),
@@ -1938,7 +1937,7 @@ def active_check(tid: int, threshold: int) -> float:
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
   TILE_SIZE = tile_size
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -2010,7 +2009,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
   TILE_SIZE_K = tile_size
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -2206,7 +2205,7 @@ def update_gradient_JTCJ(
 
 @cache_kernel
 def update_gradient_cholesky(tile_size: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     efc_grad_in: wp.array2d(dtype=float),
@@ -2232,7 +2231,7 @@ def update_gradient_cholesky(tile_size: int):
 
 @cache_kernel
 def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     efc_grad_in: wp.array3d(dtype=float),

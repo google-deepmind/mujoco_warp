@@ -208,7 +208,11 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     is_kernel = False
     for d in node.decorator_list:
       decorator_name = ast.get_source_segment(source, d)
-      if decorator_name in ("kernel", "warp_util.nested_kernel", "wp.kernel", "wp.func"):
+      # Handle both bare decorators (wp.kernel) and called decorators (wp.kernel(...))
+      if decorator_name and any(
+          decorator_name == name or decorator_name.startswith(name + "(")
+          for name in ("kernel", "wp.kernel", "wp.func")
+      ):
         is_kernel = True
         break
 
