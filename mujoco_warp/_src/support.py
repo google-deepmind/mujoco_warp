@@ -23,7 +23,6 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import State
-from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -94,32 +93,29 @@ def mul_m_sparse_ij(check_skip: bool):
 
 
 @cache_kernel
-def mul_m_dense(tile: TileSet, check_skip: bool):
-  """Returns a matmul kernel for some tile size."""
+def mul_m_dense(nv: int, check_skip: bool):
+  """Simple SIMT dense matmul: one thread per output element."""
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel
   def _mul_m_dense(
-    # Data In:
+    # Data in:
     qM_in: wp.array3d(dtype=float),
     # In:
-    adr: wp.array(dtype=int),
-    vec: wp.array3d(dtype=float),
+    vec: wp.array2d(dtype=float),
     skip: wp.array(dtype=bool),
     # Out:
-    res: wp.array3d(dtype=float),
+    res: wp.array2d(dtype=float),
   ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
+    worldid, i = wp.tid()
 
     if wp.static(check_skip):
       if skip[worldid]:
         return
 
-    dofid = adr[nodeid]
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid), bounds_check=False)
-    vec_tile = wp.tile_load(vec[worldid], shape=(TILE_SIZE, 1), offset=(dofid, 0), bounds_check=False)
-    res_tile = wp.tile_matmul(qM_tile, vec_tile)
-    wp.tile_store(res[worldid], res_tile, offset=(dofid, 0), bounds_check=False)
+    acc = float(0.0)
+    for j in range(wp.static(nv)):
+      acc += qM_in[worldid, i, j] * vec[worldid, j]
+    res[worldid, i] = acc
 
   return _mul_m_dense
 
@@ -165,20 +161,12 @@ def mul_m(
     )
 
   else:
-    for tile in m.qM_tiles:
-      wp.launch_tiled(
-        mul_m_dense(tile, check_skip),
-        dim=(d.nworld, tile.adr.size),
-        inputs=[
-          M,
-          tile.adr,
-          # note reshape: tile_matmul expects 2d input
-          vec.reshape(vec.shape + (1,)),
-          skip,
-        ],
-        outputs=[res.reshape(res.shape + (1,))],
-        block_dim=m.block_dim.mul_m_dense,
-      )
+    wp.launch(
+      mul_m_dense(m.nv, check_skip),
+      dim=(d.nworld, m.nv),
+      inputs=[M, vec, skip],
+      outputs=[res],
+    )
 
 
 @wp.kernel
