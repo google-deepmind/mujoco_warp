@@ -584,6 +584,43 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(m.opt.contact_sensor_maxmatch, 5)
 
+  @parameterized.parameters(
+    '<worldbody><geom type="sphere" size=".1" condim="3" friction="0 0.1 0.1"/></worldbody>',
+    '<worldbody><geom type="sphere" size=".1" condim="4" friction="1 0 0.1"/></worldbody>',
+    '<worldbody><geom type="sphere" size=".1" condim="6" friction="1 1 0"/></worldbody>',
+    """
+      <worldbody>
+        <geom name="g1" type="sphere" size=".1"/>
+        <geom name="g2" type="sphere" size=".1" pos="0.5 0 0"/>
+      </worldbody>
+      <contact>
+        <pair geom1="g1" geom2="g2" condim="3" friction="0 1 1 1 1"/>
+      </contact>
+    """,
+    """
+      <worldbody>
+        <geom name="g1" type="sphere" size=".1"/>
+        <geom name="g2" type="sphere" size=".1" pos="0.5 0 0"/>
+      </worldbody>
+      <contact>
+        <pair geom1="g1" geom2="g2" condim="4" friction="1 0 0 1 1"/>
+      </contact>
+    """,
+    """
+      <worldbody>
+        <geom name="g1" type="sphere" size=".1"/>
+        <geom name="g2" type="sphere" size=".1" pos="0.5 0 0"/>
+      </worldbody>
+      <contact>
+        <pair geom1="g1" geom2="g2" condim="6" friction="1 1 1 0 0"/>
+      </contact>
+    """,
+  )
+  def test_small_friction_warning(self, xml):
+    """Tests that a warning is raised for small friction values."""
+    with self.assertWarns(UserWarning):
+      mjwarp.put_model(mujoco.MjModel.from_xml_string(f"<mujoco>{xml}</mujoco>"))
+
   @parameterized.product(active=["true", "false"], make_data=[True, False])
   def test_eq_active(self, active, make_data):
     mjm, mjd, m, d = test_data.fixture(
