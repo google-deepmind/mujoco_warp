@@ -207,43 +207,34 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   issues: List[Issue] = []
   source_lines = source.splitlines()
 
-  def _is_kernel_decorator(decorator_name: str) -> bool:
-    """Check if a decorator marks a kernel or func."""
-    return decorator_name and any(
-      decorator_name == name or decorator_name.startswith(name + "(") for name in ("wp.kernel", "wp.func")
-    )
+  def _is_kernel(name: str) -> bool:
+    """Check if decorator is wp.kernel."""
+    return name and (name == "wp.kernel" or name.startswith("wp.kernel("))
 
-  def _is_kernel_only_decorator(decorator_name: str) -> bool:
-    """Check if a decorator marks a kernel (not func)."""
-    return decorator_name and (decorator_name == "wp.kernel" or decorator_name.startswith("wp.kernel("))
-
-  def _has_module_unique(decorator_name: str) -> bool:
-    """Check if decorator has module='unique' or module=\"unique\"."""
-    return 'module="unique"' in decorator_name or "module='unique'" in decorator_name
+  def _is_func(name: str) -> bool:
+    """Check if decorator is wp.func."""
+    return name and (name == "wp.func" or name.startswith("wp.func("))
 
   def _analyze_function(node: ast.FunctionDef, is_nested: bool):
     """Analyze a function definition for kernel issues."""
-    decorator_name = None
-    is_kernel = False
-    is_kernel_only = False
-    for d in node.decorator_list:
-      decorator_name = ast.get_source_segment(source, d)
-      if _is_kernel_decorator(decorator_name):
-        is_kernel = True
-        is_kernel_only = _is_kernel_only_decorator(decorator_name)
-        break
-
     # Recursively check nested functions first
     for child in ast.iter_child_nodes(node):
       if isinstance(child, ast.FunctionDef):
         _analyze_function(child, is_nested=True)
 
-    if not is_kernel:
-      return
+    # Find wp.kernel or wp.func decorator
+    decorator = None
+    for d in node.decorator_list:
+      decorator = ast.get_source_segment(source, d)
+      if _is_kernel(decorator) or _is_func(decorator):
+        break
+    else:
+      return  # not a kernel/func
 
-    # Check for nested kernel missing module="unique" (only for wp.kernel, not wp.func)
-    if is_nested and is_kernel_only and decorator_name and not _has_module_unique(decorator_name):
-      issues.append(MissingModuleUnique(node, node.name))
+    # Nested wp.kernel must have module="unique" (wp.func doesn't need it)
+    if is_nested and _is_kernel(decorator):
+      if 'module="unique"' not in decorator and "module='unique'" not in decorator:
+        issues.append(MissingModuleUnique(node, node.name))
 
     _analyze_kernel(node)
 
