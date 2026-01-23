@@ -33,7 +33,6 @@ wp.set_module_options({"enable_backward": False})
 
 @cache_kernel
 def mul_m_sparse(check_skip: bool):
-
   @wp.kernel(module="unique")
   def _mul_m_sparse(
     # Model:
