@@ -645,6 +645,18 @@ class IOTest(parameterized.TestCase):
 
     _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
 
+  def test_tree_structure_fields(self):
+    """Tests that tree structure fields match between types.Model and mjModel."""
+    mjm, _, m, _ = test_data.fixture("pendula.xml")
+
+    # verify fields match MuJoCo
+    for field in ["ntree", "tree_dofadr", "tree_dofnum", "tree_bodynum", "body_treeid", "dof_treeid"]:
+      m_val = getattr(m, field)
+      mjm_val = getattr(mjm, field)
+      if isinstance(m_val, wp.array):
+        m_val = m_val.numpy()
+      np.testing.assert_array_equal(m_val, mjm_val, err_msg=f"mismatch: {field}")
+
 
 if __name__ == "__main__":
   wp.init()
