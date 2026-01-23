@@ -481,7 +481,7 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
 
 
 def _segmented_sort(tile_size: int):
-  @wp.kernel
+  @wp.kernel(module="unique")
   def segmented_sort(
     # In:
     projection_lower_in: wp.array2d(dtype=float),
