@@ -100,6 +100,12 @@ class InvalidWrite(Issue):
     return f'"{self.node.id}" invalid write: parameter is read-only'
 
 
+@dataclasses.dataclass
+class MissingModuleUnique(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" nested kernel missing module="unique"'
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -201,24 +207,43 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   issues: List[Issue] = []
   source_lines = source.splitlines()
 
-  for node in ast.walk(tree):
-    if not isinstance(node, ast.FunctionDef):
-      continue
+  def _is_kernel_decorator(decorator_name: str) -> bool:
+    """Check if a decorator marks a kernel or func."""
+    return decorator_name and any(
+        decorator_name == name or decorator_name.startswith(name + "(")
+        for name in ("wp.kernel", "wp.func")
+    )
 
+  def _has_module_unique(decorator_name: str) -> bool:
+    """Check if decorator has module='unique' or module=\"unique\"."""
+    return 'module="unique"' in decorator_name or "module='unique'" in decorator_name
+
+  def _analyze_function(node: ast.FunctionDef, is_nested: bool):
+    """Analyze a function definition for kernel issues."""
+    decorator_name = None
     is_kernel = False
     for d in node.decorator_list:
       decorator_name = ast.get_source_segment(source, d)
-      # Handle both bare decorators (wp.kernel) and called decorators (wp.kernel(...))
-      if decorator_name and any(
-          decorator_name == name or decorator_name.startswith(name + "(")
-          for name in ("wp.kernel", "wp.func")
-      ):
+      if _is_kernel_decorator(decorator_name):
         is_kernel = True
         break
 
-    if not is_kernel:
-      continue
+    # Recursively check nested functions first
+    for child in ast.iter_child_nodes(node):
+      if isinstance(child, ast.FunctionDef):
+        _analyze_function(child, is_nested=True)
 
+    if not is_kernel:
+      return
+
+    # Check for nested kernel missing module="unique"
+    if is_nested and decorator_name and not _has_module_unique(decorator_name):
+      issues.append(MissingModuleUnique(node, node.name))
+
+    _analyze_kernel(node)
+
+  def _analyze_kernel(node: ast.FunctionDef):
+    """Analyze kernel parameters and body."""
     kernel, args = node.name, node.args
 
     # defaults not allowed
@@ -355,6 +380,11 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         if assignee in param_names and assignee not in param_outs and assignee in param_reftypes:
           issues.append(InvalidWrite(sub_node.value, kernel))
       # TODO: atomic_add, atomic_sub
+
+  # Analyze all top-level function definitions
+  for node in ast.iter_child_nodes(tree):
+    if isinstance(node, ast.FunctionDef):
+      _analyze_function(node, is_nested=False)
 
   # skip issues in ignored lines
   ignore_lines = set()

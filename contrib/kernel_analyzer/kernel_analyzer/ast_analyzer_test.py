@@ -174,6 +174,36 @@ def test_multiline_ignore(
     qpos0[3] = 3  # this should still be reported
 """
 
+_NESTED_KERNEL_MISSING_UNIQUE_CODE = """
+import warp as wp
+
+def kernel_factory(nv: int):
+    @wp.kernel
+    def nested_kernel(x: int):
+        pass
+    return nested_kernel
+"""
+
+_NESTED_KERNEL_WITH_UNIQUE_CODE = """
+import warp as wp
+
+def kernel_factory(nv: int):
+    @wp.kernel(module="unique")
+    def nested_kernel(x: int):
+        pass
+    return nested_kernel
+"""
+
+_NESTED_KERNEL_WITH_UNIQUE_SINGLE_QUOTES_CODE = """
+import warp as wp
+
+def kernel_factory(nv: int):
+    @wp.kernel(module='unique')
+    def nested_kernel(x: int):
+        pass
+    return nested_kernel
+"""
+
 
 def _analyze_str(code_str: str) -> List[Any]:
   full_path = os.path.realpath(__file__)
@@ -273,6 +303,25 @@ class TestAnalyzer(absltest.TestCase):
     """Test that multiline ignore works."""
     issues = _analyze_str(_MULTILINE_IGNORE_CODE)
     self.assertEqual(len(issues), 1, issues)
+
+  def test_nested_kernel_missing_module_unique(self):
+    """Test that nested kernels without module='unique' raise an issue."""
+    issues = _analyze_str(_NESTED_KERNEL_MISSING_UNIQUE_CODE)
+    _assert_has_issue(issues, ast_analyzer.MissingModuleUnique)
+
+  def test_nested_kernel_with_module_unique(self):
+    """Test that nested kernels with module='unique' don't raise an issue."""
+    issues = _analyze_str(_NESTED_KERNEL_WITH_UNIQUE_CODE)
+    # Filter out other issue types - we only care about MissingModuleUnique
+    unique_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
+    self.assertEqual(len(unique_issues), 0, unique_issues)
+
+  def test_nested_kernel_with_module_unique_single_quotes(self):
+    """Test that nested kernels with module='unique' (single quotes) don't raise an issue."""
+    issues = _analyze_str(_NESTED_KERNEL_WITH_UNIQUE_SINGLE_QUOTES_CODE)
+    # Filter out other issue types - we only care about MissingModuleUnique
+    unique_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
+    self.assertEqual(len(unique_issues), 0, unique_issues)
 
 
 if __name__ == "__main__":

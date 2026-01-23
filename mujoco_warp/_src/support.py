@@ -95,7 +95,7 @@ def mul_m_sparse_ij(check_skip: bool):
 def mul_m_dense(nv: int, check_skip: bool):
   """Simple SIMT dense matmul: one thread per output element."""
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def _mul_m_dense(
     # Data in:
     qM_in: wp.array3d(dtype=float),
