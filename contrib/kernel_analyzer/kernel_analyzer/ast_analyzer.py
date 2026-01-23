@@ -210,15 +210,12 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   def _is_kernel_decorator(decorator_name: str) -> bool:
     """Check if a decorator marks a kernel or func."""
     return decorator_name and any(
-        decorator_name == name or decorator_name.startswith(name + "(")
-        for name in ("wp.kernel", "wp.func")
+      decorator_name == name or decorator_name.startswith(name + "(") for name in ("wp.kernel", "wp.func")
     )
 
   def _is_kernel_only_decorator(decorator_name: str) -> bool:
     """Check if a decorator marks a kernel (not func)."""
-    return decorator_name and (
-        decorator_name == "wp.kernel" or decorator_name.startswith("wp.kernel(")
-    )
+    return decorator_name and (decorator_name == "wp.kernel" or decorator_name.startswith("wp.kernel("))
 
   def _has_module_unique(decorator_name: str) -> bool:
     """Check if decorator has module='unique' or module=\"unique\"."""
