@@ -796,6 +796,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
     _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
+  # kernel_analyzer: off
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -1197,6 +1198,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     for efcid in range(tid, nefc, wp.block_dim()):
       efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
 
+  # kernel_analyzer: on
   return kernel
 
 
@@ -2209,8 +2211,9 @@ def update_gradient_cholesky(tile_size: int):
   def kernel(
     # Data in:
     efc_grad_in: wp.array2d(dtype=float),
-    h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
+    # In:
+    h_in: wp.array3d(dtype=float),
     # Data out:
     efc_Mgrad_out: wp.array2d(dtype=float),
   ):
@@ -2234,12 +2237,13 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
-    efc_grad_in: wp.array3d(dtype=float),
-    h_in: wp.array3d(dtype=float),
+    efc_grad_in: wp.array3d(dtype=float),  # kernel_analyzer: ignore
     efc_done_in: wp.array(dtype=bool),
+    # In:
+    h_in: wp.array3d(dtype=float),
     hfactor: wp.array3d(dtype=float),
     # Data out:
-    efc_Mgrad_out: wp.array3d(dtype=float),
+    efc_Mgrad_out: wp.array3d(dtype=float),  # kernel_analyzer: ignore
   ):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
@@ -2380,7 +2384,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
-        inputs=[d.efc.grad, h, d.efc.done],
+        inputs=[d.efc.grad, d.efc.done, h],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
@@ -2395,7 +2399,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
       wp.launch_tiled(
         update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), h, d.efc.done, hfactor],
+        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), d.efc.done, h, hfactor],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
