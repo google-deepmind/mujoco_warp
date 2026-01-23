@@ -61,7 +61,7 @@ class BlockDim:
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
-  linesearch_iterative: int = 64
+  linesearch_iterative: int = 32
   # support
   mul_m_dense: int = 32
 
@@ -1543,9 +1543,9 @@ class Constraint:
   state: array("nworld", "njmax_pad", int)
   mv: array("nworld", "nv", float)
   jv: array("nworld", "njmax", float)
-  quad: array("nworld", "njmax", wp.vec3)
-  quad_gauss: array("nworld", wp.vec3)
-  alpha: array("nworld", float)
+  quad: array("nworld", "njmax", wp.vec3)  # parallel, or iterative+elliptic
+  quad_gauss: array("nworld", wp.vec3)  # parallel linesearch only
+  alpha: array("nworld", float)  # parallel linesearch only
   prev_grad: array("nworld", "nv", float)
   prev_Mgrad: array("nworld", "nv", float)
   beta: array("nworld", float)
