@@ -451,7 +451,6 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
   )
 
 
-# kernel_analyzer: off
 @wp.func
 def _compute_efc_eval_pt_pyramidal(
   efcid: int,
@@ -707,8 +706,6 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
 
-# kernel_analyzer: on
-
 # =============================================================================
 # Iterative Linesearch
 # =============================================================================
@@ -796,7 +793,6 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
     _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
-  # kernel_analyzer: off
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -809,30 +805,30 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
     nefc_in: wp.array(dtype=int),
+    qfrc_smooth_in: wp.array2d(dtype=float),
     contact_friction_in: wp.array(dtype=types.vec5),
     contact_dim_in: wp.array(dtype=int),
     contact_efc_address_in: wp.array2d(dtype=int),
     efc_type_in: wp.array2d(dtype=int),
     efc_id_in: wp.array2d(dtype=int),
+    efc_J_in: wp.array3d(dtype=float),
     efc_D_in: wp.array2d(dtype=float),
     efc_frictionloss_in: wp.array2d(dtype=float),
     efc_Jaref_in: wp.array2d(dtype=float),
+    efc_search_in: wp.array2d(dtype=float),
     efc_search_dot_in: wp.array(dtype=float),
-    efc_J_in: wp.array3d(dtype=float),
     efc_gauss_in: wp.array(dtype=float),
-    qfrc_smooth_in: wp.array2d(dtype=float),
+    efc_mv_in: wp.array2d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
     nacon_in: wp.array(dtype=int),
-    efc_search_in: wp.array2d(dtype=float),
-    efc_mv_in: wp.array2d(dtype=float),
     # Data in/out:
-    efc_quad_inout: wp.array2d(dtype=wp.vec3),
     efc_jv_inout: wp.array2d(dtype=float),
+    efc_quad_inout: wp.array2d(dtype=wp.vec3),
     # Data out:
     qacc_out: wp.array2d(dtype=float),
-    efc_Ma_out: wp.array2d(dtype=float),
     efc_Jaref_out: wp.array2d(dtype=float),
+    efc_Ma_out: wp.array2d(dtype=float),
   ):
     worldid, tid = wp.tid()
 
@@ -1198,7 +1194,6 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     for efcid in range(tid, nefc, wp.block_dim()):
       efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
 
-  # kernel_analyzer: on
   return kernel
 
 
@@ -1222,25 +1217,25 @@ def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
       d.ne,
       d.nf,
       d.nefc,
+      d.qfrc_smooth,
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,
       d.efc.type,
       d.efc.id,
+      d.efc.J,
       d.efc.D,
       d.efc.frictionloss,
       d.efc.Jaref,
+      d.efc.search,
       d.efc.search_dot,
-      d.efc.J,
       d.efc.gauss,
-      d.qfrc_smooth,
+      d.efc.mv,
       d.efc.done,
       d.njmax,
       d.nacon,
-      d.efc.search,
-      d.efc.mv,
     ],
-    outputs=[d.efc.quad, d.efc.jv, d.qacc, d.efc.Ma, d.efc.Jaref],
+    outputs=[d.efc.jv, d.efc.quad, d.qacc, d.efc.Jaref, d.efc.Ma],
     block_dim=m.block_dim.linesearch_iterative,
   )
 
