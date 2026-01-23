@@ -581,19 +581,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_fullm_j.append(j)
       j = mjm.dof_parentid[j]
 
-  # indices for sparse qM mul_m (used in support)
-  m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij = [], [], []
-  for i in range(mjm.nv):
-    madr_ij, j = mjm.dof_Madr[i], i
-
-    while True:
-      madr_ij, j = madr_ij + 1, mjm.dof_parentid[j]
-      if j == -1:
-        break
-      m.qM_mulm_i.append(i)
-      m.qM_mulm_j.append(j)
-      m.qM_madr_ij.append(madr_ij)
-
   # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
   row_elements = [[] for _ in range(mjm.nv)]
 
@@ -602,10 +589,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     row_elements[i].append((i, mjm.dof_Madr[i]))
 
   # Add off-diagonals: ancestors (lower) and descendants (upper)
-  for idx in range(len(m.qM_mulm_i)):
-    i, j, madr = m.qM_mulm_i[idx], m.qM_mulm_j[idx], m.qM_madr_ij[idx]
-    row_elements[i].append((j, madr))  # row i gathers M[i,j] * vec[j]
-    row_elements[j].append((i, madr))  # row j gathers M[j,i] * vec[i]
+  for i in range(mjm.nv):
+    madr_ij, j = mjm.dof_Madr[i], i
+    while True:
+      madr_ij, j = madr_ij + 1, mjm.dof_parentid[j]
+      if j == -1:
+        break
+      row_elements[i].append((j, madr_ij))  # row i gathers M[i,j] * vec[j]
+      row_elements[j].append((i, madr_ij))  # row j gathers M[j,i] * vec[i]
 
   # Flatten into CSR-like arrays
   m.qM_mulm_rowadr = [0]

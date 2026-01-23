@@ -1088,9 +1088,9 @@ class Model:
     qLD_updates: tuple of index triples for sparse factorization
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
-    qM_mulm_i: sparse matmul addressing
-    qM_mulm_j: sparse matmul addressing
-    qM_madr_ij: sparse matmul addressing
+    qM_mulm_rowadr: sparse matmul row pointers
+    qM_mulm_col: sparse matmul column indices
+    qM_mulm_madr: sparse matmul matrix addresses
   """
 
   nq: int
@@ -1428,13 +1428,6 @@ class Model:
   qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]
   qM_fullm_i: wp.array(dtype=int)
   qM_fullm_j: wp.array(dtype=int)
-  qM_mulm_i: wp.array(dtype=int)
-  qM_mulm_j: wp.array(dtype=int)
-  qM_madr_ij: wp.array(dtype=int)
-  # Gather-based sparse mul_m indices (thread per DOF, no atomics)
-  qM_mulm_rowadr: wp.array(dtype=int)  # row pointers [nv+1]
-  qM_mulm_col: wp.array(dtype=int)     # column index (includes diagonal)
-  qM_mulm_madr: wp.array(dtype=int)    # matrix address
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   qM_mulm_rowadr: wp.array(dtype=int)  # start address for each row [nv+1]
   qM_mulm_col: wp.array(dtype=int)     # column index to gather from
