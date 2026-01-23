@@ -451,6 +451,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, cost: wp.array2d(dtype=f
   )
 
 
+# kernel_analyzer: off
 @wp.func
 def _compute_efc_eval_pt_pyramidal(
   efcid: int,
@@ -705,6 +706,8 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   # Equality constraint: always active
   return _eval_pt_3alphas(efc_quad, lo_alpha, hi_alpha, mid_alpha)
 
+
+# kernel_analyzer: on
 
 # =============================================================================
 # Iterative Linesearch
