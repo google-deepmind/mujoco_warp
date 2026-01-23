@@ -34,7 +34,7 @@ wp.set_module_options({"enable_backward": False})
 @cache_kernel
 def mul_m_sparse(check_skip: bool):
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def _mul_m_sparse(
     # Model:
     qM_mulm_rowadr: wp.array(dtype=int),
@@ -73,7 +73,7 @@ def mul_m_sparse(check_skip: bool):
 def mul_m_dense(nv: int, check_skip: bool):
   """Simple SIMT dense matmul: one thread per output element."""
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def _mul_m_dense(
     # Data in:
     qM_in: wp.array3d(dtype=float),
