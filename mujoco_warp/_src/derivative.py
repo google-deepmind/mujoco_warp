@@ -82,9 +82,9 @@ def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
-    vel_in: wp.array3d(dtype=float),
     actuator_moment_in: wp.array3d(dtype=float),
     # In:
+    vel_in: wp.array3d(dtype=float),
     adr: wp.array(dtype=int),
     # Out:
     qDeriv_out: wp.array3d(dtype=float),
@@ -257,7 +257,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
           wp.launch_tiled(
             _qderiv_actuator_passive_actuation_dense(tile, m.nu),
             dim=(d.nworld, tile.adr.size),
-            inputs=[vel_3d, d.actuator_moment, tile.adr],
+            inputs=[d.actuator_moment, vel_3d, tile.adr],
             outputs=[out],
             block_dim=m.block_dim.qderiv_actuator_dense,
           )
