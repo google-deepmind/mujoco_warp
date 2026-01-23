@@ -25,72 +25,64 @@ from . import ast_analyzer
 # Test code snippets
 _DEFAULT_PARAMS_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_default_params(qpos0: int, qvel: int = 0):
     pass
 """
 
 _VARARGS_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_varargs(qpos0: int, *args):
     pass
 """
 
 _KWARGS_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_kwargs(qpos0: int, **kwargs):
     pass
 """
 
 _TYPE_ISSUE_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_type_issue(qpos0: str, qvel):
     pass
 """
 
 _TYPE_MISMATCH_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_type_mismatch(qpos0: array, geom_pos: array2d):
     pass
 """
 
 _MODEL_SUFFIX_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_model_suffix(qpos0_in: int):
     pass
 """
 
 _DATA_SUFFIX_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_data_suffix(qpos: int):
     pass
 """
 
 _MISSING_COMMENT_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_missing_comment(
     qpos0: int,
     qvel: int,
@@ -100,9 +92,8 @@ def test_missing_comment(
 
 _WRITE_READONLY_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_write_readonly(qpos0: wp.array(dtype=int), qvel_in: wp.array(dtype=int)):
     qpos0 = 1  # Writing to Model field
     qvel_in = 2  # Writing to Data _in field
@@ -110,9 +101,8 @@ def test_write_readonly(qpos0: wp.array(dtype=int), qvel_in: wp.array(dtype=int)
 
 _ALL_ISSUES_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_all_issues(
     haha,                         # No type
     qpos0: str,                   # Type mismatch with Model field
@@ -131,9 +121,8 @@ def test_all_issues(
 
 _NO_ISSUES_CODE = """
 import warp as wp
-from mujoco_warp.warp_util import kernel
 
-@kernel
+@wp.kernel
 def test_no_issues(
     # Model:
     qpos0: wp.array2d(dtype=float),
