@@ -494,9 +494,26 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_flex(mjm, mjd)
 
     flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
-    mujoco.mju_sparse2dense(
-      flexedge_J, mjd.flexedge_J.ravel(), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.ravel()
-    )
+
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if BLEEDING_EDGE_MUJOCO:
+      mujoco.mju_sparse2dense(
+        flexedge_J,
+        mjd.flexedge_J.reshape(-1),
+        mjm.flexedge_J_rownnz,
+        mjm.flexedge_J_rowadr,
+        mjm.flexedge_J_colind.reshape(-1),
+      )
+    else:
+      mujoco.mju_sparse2dense(
+        flexedge_J,
+        mjd.flexedge_J.reshape(-1),
+        mjd.flexedge_J_rownnz,
+        mjd.flexedge_J_rowadr,
+        mjd.flexedge_J_colind.reshape(-1),
+      )
 
     _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
     _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")

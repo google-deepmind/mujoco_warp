@@ -796,7 +796,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
             dim=(d.nworld, tile.adr.size),
             inputs=[vel_3d, d.actuator_moment, tile.adr],
             outputs=[out],
-            block_dim=m.block_dim.mul_m_dense,
+            block_dim=m.block_dim.qderiv_actuator_dense,
           )
     wp.launch(
       _qderiv_actuator_passive,

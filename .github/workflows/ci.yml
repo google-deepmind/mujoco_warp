@@ -79,7 +79,7 @@ jobs:
           uv pip install --system -e .[dev]
       - name: Test with pytest
         run: |
-          pytest -n 4
+          pytest -n 2
 
   kernel_analyzer:
     name: Kernel analyzer
