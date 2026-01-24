@@ -209,7 +209,6 @@ def sample_texture(
   v = uv[1] * tex_repeat[1]
   u = u - wp.floor(u)
   v = v - wp.floor(v)
-  v = 1.0 - v
   tex_color = wp.texture_sample(tex, wp.vec2(u, v), dtype=wp.vec4)
   return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
 
