@@ -19,6 +19,7 @@ from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.warp_util import event_scope
 
 
 @wp.kernel
@@ -44,7 +45,7 @@ def _tree_edges(
   # In:
   edge_seen: wp.array3d(dtype=int),
 ):
-  """Find tree edges. Launch: (nworld, njmax)."""
+  """Find tree edges."""
   worldid, efcid = wp.tid()
 
   # skip if beyond active constraints
@@ -173,4 +174,113 @@ def tree_edges(m: types.Model, d: types.Data, edges: wp.array3d(dtype=int)):
       d.njmax,
     ],
     outputs=[edges],
+  )
+
+
+@wp.kernel
+def _flood_fill(
+  # Model:
+  ntree: int,
+  # In:
+  max_stack_size: int,
+  edge_seen_in: wp.array3d(dtype=int),
+  labels_in: wp.array2d(dtype=int),
+  stack_in: wp.array2d(dtype=int),
+  # Data out:
+  nisland_out: wp.array(dtype=int),
+  # Out:
+  labels_out: wp.array2d(dtype=int),
+  stack_out: wp.array2d(dtype=int),
+):
+  """DFS flood fill to discover islands using edge_seen matrix.
+
+  Each thread handles one world. For each unvisited tree with edges,
+  performs DFS traversal to assign all connected trees the same island ID.
+
+  Args:
+    ntree: Number of trees
+    max_stack_size: Maximum stack size (>= ntree for safety)
+    edge_seen_in: Edge matrix (upper triangular), shape (nworld, ntree, ntree)
+    labels_in: Input tree labels (-1 if not assigned)
+    stack_in: Stack array for reads (same array as stack_out)
+    nisland_out: Number of islands discovered
+    labels_out: Output tree labels (same array as labels_in)
+    stack_out: Stack array for writes (same array as stack_in)
+  """
+  worldid = wp.tid()
+  nisland = int(0)
+
+  # iterate over trees
+  for i in range(ntree):
+    # already assigned
+    if labels_in[worldid, i] != -1:
+      continue
+
+    # check if tree has any edges
+    has_edge = int(0)
+    for j in range(ntree):
+      t1 = wp.min(i, j)
+      t2 = wp.max(i, j)
+      if edge_seen_in[worldid, t1, t2] != 0:
+        has_edge = 1
+        break
+    if has_edge == 0:
+      continue
+
+    # DFS: push i onto stack
+    nstack = int(0)
+    stack_out[worldid, nstack] = i
+    nstack = nstack + 1
+
+    while nstack > 0:
+      # pop v from stack
+      nstack = nstack - 1
+      v = stack_in[worldid, nstack]
+
+      # already assigned
+      if labels_in[worldid, v] != -1:
+        continue
+
+      # assign to current island
+      labels_out[worldid, v] = nisland
+
+      # push neighbors
+      for neighbor in range(ntree):
+        t1 = wp.min(v, neighbor)
+        t2 = wp.max(v, neighbor)
+        if edge_seen_in[worldid, t1, t2] != 0:
+          if labels_in[worldid, neighbor] == -1 and nstack < max_stack_size:
+            stack_out[worldid, nstack] = neighbor
+            nstack = nstack + 1
+
+    # island filled
+    nisland = nisland + 1
+
+  nisland_out[worldid] = nisland
+
+
+@event_scope
+def island(
+  m: types.Model,
+  d: types.Data,
+) -> None:
+  """Discover constraint islands via edge extraction and flood fill."""
+  if m.ntree == 0:
+    d.nisland.zero_()
+    return
+
+  # Step 1: Find tree edges
+  edge_seen = wp.zeros((d.nworld, m.ntree, m.ntree), dtype=int)
+  tree_edges(m, d, edge_seen)
+
+  # Step 2: DFS flood fill
+  d.tree_island.fill_(-1)
+  max_stack_size = m.ntree
+  stack_scratch = wp.zeros((d.nworld, max_stack_size), dtype=int)
+
+  wp.launch(
+    _flood_fill,
+    dim=d.nworld,
+    inputs=[m.ntree, max_stack_size, edge_seen, d.tree_island, stack_scratch],
+    outputs=[d.nisland, d.tree_island, stack_scratch],
   )
