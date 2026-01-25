@@ -179,6 +179,179 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
     self.assertEqual(nedge.numpy()[0], 0)
 
 
+class IslandDiscoveryTest(absltest.TestCase):
+  """Tests for full island discovery including label propagation."""
+
+  def test_two_trees_one_constraint_one_island(self):
+    """Two trees connected by one constraint form one island."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+        </equality>
+      </mujoco>
+      """
+    )
+
+    mjwarp.forward(m, d)
+    island.island(m, d)
+
+    # should have exactly 1 island
+    self.assertEqual(d.nisland.numpy()[0], 1)
+    # both trees should be in island 0
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[0], 0)
+
+  def test_three_trees_chain_one_island(self):
+    """Three trees in a chain form one island."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body3" pos="2 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+          <weld body1="body2" body2="body3"/>
+        </equality>
+      </mujoco>
+      """
+    )
+
+    mjwarp.forward(m, d)
+    island.island(m, d)
+
+    # should have exactly 1 island
+    self.assertEqual(d.nisland.numpy()[0], 1)
+    # all trees should be in the same island
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[1], tree_island[2])
+
+  def test_two_disconnected_pairs_two_islands(self):
+    """Two pairs of disconnected trees form two islands."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body3" pos="10 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body4" pos="11 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+          <weld body1="body3" body2="body4"/>
+        </equality>
+      </mujoco>
+      """
+    )
+
+    mjwarp.forward(m, d)
+    island.island(m, d)
+
+    # should have exactly 2 islands
+    self.assertEqual(d.nisland.numpy()[0], 2)
+    # trees 0,1 should be in one island, trees 2,3 in another
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[2], tree_island[3])
+    self.assertNotEqual(tree_island[0], tree_island[2])
+
+  def test_no_constraints_no_islands(self):
+    """No constraints means no constrained islands."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    mjwarp.forward(m, d)
+    island.island(m, d)
+
+    # should have 0 islands (unconstrained tree is not an island)
+    self.assertEqual(d.nisland.numpy()[0], 0)
+
+  def test_multiple_worlds(self):
+    """Test island discovery with nworld=2."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+    island.island(m, d)
+
+    # both worlds should have exactly 1 island
+    nisland = d.nisland.numpy()
+    self.assertEqual(nisland[0], 1)
+    self.assertEqual(nisland[1], 1)
+
+    # both trees in both worlds should be in island 0
+    tree_island = d.tree_island.numpy()
+    for worldid in range(2):
+      self.assertEqual(tree_island[worldid, 0], 0)
+      self.assertEqual(tree_island[worldid, 1], 0)
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()

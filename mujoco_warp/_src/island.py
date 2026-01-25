@@ -16,6 +16,7 @@
 import warp as wp
 
 from mujoco_warp._src import types
+from mujoco_warp._src.warp_util import event_scope
 
 
 @wp.kernel
@@ -257,3 +258,239 @@ def find_tree_edges(
   )
 
   return edges_unique, nedge_unique
+
+
+@wp.kernel
+def _prefix_sum_per_world(
+  # In:
+  n: int,
+  # In:
+  input_in: wp.array2d(dtype=int),
+  # Out:
+  output_out: wp.array2d(dtype=int),
+):
+  """Compute exclusive prefix sum for each world independently."""
+  worldid = wp.tid()
+  total = int(0)
+  for i in range(n):
+    output_out[worldid, i] = total
+    total = total + input_in[worldid, i]
+
+
+@wp.kernel
+def _count_edge_degrees(
+  # Model:
+  ntree: int,
+  # In:
+  nedge_in: wp.array(dtype=int),
+  edges_in: wp.array2d(dtype=int),
+  # Out:
+  rownnz_out: wp.array2d(dtype=int),
+):
+  """Count edges per tree (degree in symmetric adjacency)."""
+  worldid, edgeid = wp.tid()
+  if edgeid >= nedge_in[0]:
+    return
+  t1 = edges_in[edgeid, 0]
+  t2 = edges_in[edgeid, 1]
+  if t1 >= 0 and t1 < ntree:
+    wp.atomic_add(rownnz_out, worldid, t1, 1)
+  if t2 != t1 and t2 >= 0 and t2 < ntree:
+    wp.atomic_add(rownnz_out, worldid, t2, 1)
+
+
+@wp.kernel
+def _fill_adjacency(
+  # Model:
+  ntree: int,
+  # In:
+  nedge_in: wp.array(dtype=int),
+  edges_in: wp.array2d(dtype=int),
+  rowadr_in: wp.array2d(dtype=int),
+  # Out:
+  row_cursor_out: wp.array2d(dtype=int),
+  colind_out: wp.array2d(dtype=int),
+):
+  """Fill CSR column indices for symmetric adjacency matrix."""
+  worldid, edgeid = wp.tid()
+  if edgeid >= nedge_in[0]:
+    return
+  t1 = edges_in[edgeid, 0]
+  t2 = edges_in[edgeid, 1]
+  if t1 >= 0 and t1 < ntree:
+    slot = wp.atomic_add(row_cursor_out, worldid, t1, 1)
+    colind_out[worldid, rowadr_in[worldid, t1] + slot] = t2
+  if t2 != t1 and t2 >= 0 and t2 < ntree:
+    slot = wp.atomic_add(row_cursor_out, worldid, t2, 1)
+    colind_out[worldid, rowadr_in[worldid, t2] + slot] = t1
+
+
+
+@wp.kernel
+def _flood_fill(
+  # Model:
+  ntree: int,
+  max_stack_size: int,
+  # In:
+  rownnz_in: wp.array2d(dtype=int),
+  rowadr_in: wp.array2d(dtype=int),
+  colind_in: wp.array2d(dtype=int),
+  # InOut:
+  labels_inout: wp.array2d(dtype=int),
+  # Out:
+  nisland_out: wp.array(dtype=int),
+  # Scratch:
+  stack_scratch: wp.array2d(dtype=int),
+):
+  """DFS flood fill to discover islands, matching MuJoCo's mj_floodFill().
+  
+  Each thread handles one world. For each unvisited tree with edges,
+  performs DFS traversal to assign all connected trees the same island ID.
+  
+  Args:
+    ntree: Number of trees
+    max_stack_size: Maximum stack size (>= 2*njmax for safety)
+    rownnz_in: Number of neighbors per tree  
+    rowadr_in: CSR row addresses
+    colind_in: CSR column indices (neighbor tree IDs)
+    labels_inout: On exit, island ID per tree (-1 if singleton)
+    nisland_out: Number of islands discovered
+    stack_scratch: Scratch array for DFS stack, shape (nworld, max_stack_size)
+  """
+  worldid = wp.tid()
+
+  # Initialize island count
+  nisland = int(0)
+
+  # Iterate over vertices, discover islands
+  for i in range(ntree):
+    # Tree already in island or singleton with no edges: skip
+    if labels_inout[worldid, i] != -1 or rownnz_in[worldid, i] == 0:
+      continue
+
+    # Push i onto stack
+    nstack = int(0)
+    stack_scratch[worldid, nstack] = i
+    nstack = nstack + 1
+
+    # DFS traversal of island
+    while nstack > 0:
+      # Pop v from stack
+      nstack = nstack - 1
+      v = stack_scratch[worldid, nstack]
+
+      # If v is already assigned, continue
+      if labels_inout[worldid, v] != -1:
+        continue
+
+      # Assign v to current island
+      labels_inout[worldid, v] = nisland
+
+      # Push adjacent vertices onto stack
+      for j in range(rownnz_in[worldid, v]):
+        neighbor = colind_in[worldid, rowadr_in[worldid, v] + j]
+        # Only push if not already assigned and stack has room
+        if labels_inout[worldid, neighbor] == -1 and nstack < max_stack_size:
+          stack_scratch[worldid, nstack] = neighbor
+          nstack = nstack + 1
+
+    # Island is filled: increment nisland
+    nisland = nisland + 1
+
+  # Write island count
+  nisland_out[worldid] = nisland
+
+
+
+@wp.kernel
+def _count_island_trees(
+  # Model:
+  ntree: int,
+  # In:
+  labels_in: wp.array2d(dtype=int),
+  # Data out:
+  island_ntree_out: wp.array2d(dtype=int),
+):
+  """Count trees per island."""
+  worldid, tree = wp.tid()
+  if tree >= ntree:
+    return
+  island = labels_in[worldid, tree]
+  if island >= 0:
+    wp.atomic_add(island_ntree_out, worldid, island, 1)
+
+
+@wp.kernel
+def _build_tree_mapping(
+  # Model:
+  ntree: int,
+  # Data in:
+  island_itreeadr_in: wp.array2d(dtype=int),
+  # In:
+  labels_in: wp.array2d(dtype=int),
+  # Data out:
+  map_itree2tree_out: wp.array2d(dtype=int),
+  # Out:
+  island_cursor_out: wp.array2d(dtype=int),
+):
+  """Build map from island-local tree index to global tree ID."""
+  worldid, tree = wp.tid()
+  if tree >= ntree:
+    return
+  island = labels_in[worldid, tree]
+  if island < 0:
+    return
+  slot = wp.atomic_add(island_cursor_out, worldid, island, 1)
+  map_itree2tree_out[worldid, island_itreeadr_in[worldid, island] + slot] = tree
+
+
+@event_scope
+def island(
+  m: types.Model,
+  d: types.Data,
+) -> None:
+  """Discover constraint islands via edge extraction and label propagation.
+  """
+  if m.ntree == 0:
+    d.nisland.zero_()
+    return
+
+  # Allocate temporary arrays
+  rownnz = wp.zeros((d.nworld, m.ntree), dtype=int)
+  rowadr = wp.zeros((d.nworld, m.ntree), dtype=int)
+  colind = wp.zeros((d.nworld, 2 * d.njmax), dtype=int)
+  row_cursor = wp.zeros((d.nworld, m.ntree), dtype=int)
+  island_cursor = wp.zeros((d.nworld, types.MJ_MAX_NISLAND), dtype=int)
+
+  # Step 1: Find tree edges from Jacobian
+  edges, nedge = find_tree_edges(m, d)
+
+  # Step 2: Build CSR adjacency matrix
+  wp.launch(_count_edge_degrees, dim=(d.nworld, d.njmax), inputs=[m.ntree, nedge, edges, rownnz])
+  wp.launch(_prefix_sum_per_world, dim=d.nworld, inputs=[m.ntree, rownnz, rowadr])
+  wp.launch(_fill_adjacency, dim=(d.nworld, d.njmax), inputs=[m.ntree, nedge, edges, rowadr, row_cursor, colind])
+
+  # Step 3: DFS flood fill to discover islands
+  # DFS directly assigns island IDs to tree_island and counts nisland
+  # Initialize labels to -1 (labels are stored directly in tree_island)
+  d.tree_island.fill_(-1)
+  
+  # Allocate DFS stack scratch space (2*njmax for safety)
+  max_stack_size = 2 * d.njmax
+  stack_scratch = wp.zeros((d.nworld, max_stack_size), dtype=int)
+  
+  wp.launch(
+    _flood_fill,
+    dim=d.nworld,
+    inputs=[m.ntree, max_stack_size, rownnz, rowadr, colind, d.tree_island, d.nisland, stack_scratch],
+  )
+
+  # Step 5: Build island-tree mappings
+  d.island_ntree.zero_()
+  wp.launch(_count_island_trees, dim=(d.nworld, m.ntree), inputs=[m.ntree, d.tree_island, d.island_ntree])
+  wp.launch(_prefix_sum_per_world, dim=d.nworld, inputs=[types.MJ_MAX_NISLAND, d.island_ntree, d.island_itreeadr])
+  wp.launch(
+    _build_tree_mapping,
+    dim=(d.nworld, m.ntree),
+    inputs=[m.ntree, d.island_itreeadr, d.tree_island, d.map_itree2tree, island_cursor],
+  )

@@ -729,6 +729,12 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
+    # island arrays
+    "nisland": None,
+    "tree_island": None,
+    "island_ntree": None,
+    "island_itreeadr": None,
+    "map_itree2tree": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -743,6 +749,13 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  # island discovery arrays
+  d.nisland = wp.zeros((nworld,), dtype=int)
+  d.tree_island = wp.zeros((nworld, mjm.ntree), dtype=int)
+  d.island_ntree = wp.zeros((nworld, types.MJ_MAX_NISLAND), dtype=int)
+  d.island_itreeadr = wp.zeros((nworld, types.MJ_MAX_NISLAND), dtype=int)
+  d.map_itree2tree = wp.zeros((nworld, mjm.ntree), dtype=int)
 
   return d
 
@@ -883,6 +896,12 @@ def put_data(
     "ne_jnt": None,
     "ne_ten": None,
     "ne_flex": None,
+    # island arrays
+    "nisland": None,
+    "tree_island": None,
+    "island_ntree": None,
+    "island_itreeadr": None,
+    "map_itree2tree": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -907,6 +926,13 @@ def put_data(
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
+
+  # island arrays
+  d.nisland = wp.zeros((nworld,), dtype=int)
+  d.tree_island = wp.zeros((nworld, mjm.ntree), dtype=int)
+  d.island_ntree = wp.zeros((nworld, types.MJ_MAX_NISLAND), dtype=int)
+  d.island_itreeadr = wp.zeros((nworld, types.MJ_MAX_NISLAND), dtype=int)
+  d.map_itree2tree = wp.zeros((nworld, mjm.ntree), dtype=int)
 
   if mujoco.mj_isSparse(mjm):
     ten_J = np.zeros((mjm.ntendon, mjm.nv))

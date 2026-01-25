@@ -28,6 +28,9 @@ MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
 MJ_MAX_EPAFACES = 5
+# maximum number of constraint islands
+# TODO(team): make this configurable
+MJ_MAX_NISLAND = 64
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
@@ -147,6 +150,7 @@ class DisableBit(enum.IntFlag):
     SENSOR:       sensors
     EULERDAMP:    implicit damping for Euler integration
     NATIVECCD:    native convex collision detection (ignored in MJWarp)
+    ISLAND:       constraint islands
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
@@ -164,7 +168,8 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-  # unsupported: MIDPHASE, AUTORESET, NATIVECCD, ISLAND
+  ISLAND = mujoco.mjtDisableBit.mjDSBL_ISLAND
+  # unsupported: MIDPHASE, AUTORESET, NATIVECCD
 
 
 class EnableBit(enum.IntFlag):
@@ -1574,6 +1579,7 @@ class Data:
     nf: number of friction constraints                          (nworld,)
     nl: number of limit constraints                             (nworld,)
     nefc: number of constraints                                 (nworld,)
+    nisland: number of constraint islands                       (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1650,6 +1656,10 @@ class Data:
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
     contact: contact data
     efc: constraint data
+    tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
+    island_ntree: number of trees per island                    (nworld, max_nisland)
+    island_itreeadr: start address of island's trees            (nworld, max_nisland)
+    map_itree2tree: island tree index to global tree ID         (nworld, ntree)
 
   warp only fields:
     nworld: number of worlds
@@ -1672,6 +1682,7 @@ class Data:
   nf: array("nworld", int)
   nl: array("nworld", int)
   nefc: array("nworld", int)
+  nisland: array("nworld", int)
   time: array("nworld", float)
   energy: array("nworld", wp.vec2)
   qpos: array("nworld", "nq", float)
@@ -1744,6 +1755,10 @@ class Data:
   cfrc_ext: array("nworld", "nbody", wp.spatial_vector)
   contact: Contact
   efc: Constraint
+  tree_island: array("nworld", "ntree", int)
+  island_ntree: array("nworld", "max_nisland", int)
+  island_itreeadr: array("nworld", "max_nisland", int)
+  map_itree2tree: array("nworld", "ntree", int)
 
   # warp only fields:
   nworld: int
