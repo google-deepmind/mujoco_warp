@@ -22,6 +22,7 @@ from absl.testing import absltest
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import island
+from mujoco_warp._src.types import DisableBit
 
 
 class IslandEdgeDiscoveryTest(absltest.TestCase):
@@ -51,7 +52,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       """
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -82,7 +83,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       """
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -117,7 +118,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       """
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -151,7 +152,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       """
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -176,7 +177,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       """
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -207,7 +208,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       nworld=2,
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -238,7 +239,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       nworld=2,
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     nefc = d.nefc.numpy()
     if nefc[0] > 0:
@@ -265,7 +266,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       nworld=2,
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -301,7 +302,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       nworld=2,
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -332,7 +333,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       nworld=2,
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -368,7 +369,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       nworld=2,
     )
 
-    mjwarp.forward(m, d)
+    mjwarp.fwd_position(m, d)
 
     treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
     island.tree_edges(m, d, treetree)
@@ -378,6 +379,267 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
     self.assertEqual(tt[0, 1, 0], 1)
     self.assertEqual(tt[0, 0, 2], 1)
     self.assertEqual(tt[0, 2, 0], 1)
+
+
+class IslandDiscoveryTest(absltest.TestCase):
+  """Tests for full island discovery including label propagation."""
+
+  def test_two_trees_one_constraint_one_island(self):
+    """Two trees connected by one constraint form one island.
+
+    topology:
+      [[0, 1],
+       [1, 0]]
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.ISLAND},
+    )
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+
+    # should have exactly 1 island
+    self.assertEqual(d.nisland.numpy()[0], 1)
+    # both trees should be in island 0
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[0], 0)
+
+  def test_three_trees_chain_one_island(self):
+    """Three trees in a chain form one island.
+
+    topology:
+      [[0, 1, 0],
+       [1, 0, 1],
+       [0, 1, 0]]
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body3" pos="2 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+          <weld body1="body2" body2="body3"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.ISLAND},
+    )
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+
+    # should have exactly 1 island
+    self.assertEqual(d.nisland.numpy()[0], 1)
+    # all trees should be in the same island
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[1], tree_island[2])
+
+  def test_two_disconnected_pairs_two_islands(self):
+    """Two pairs of disconnected trees form two islands.
+
+    topology:
+      [[0, 1, 0, 0],
+       [1, 0, 0, 0],
+       [0, 0, 0, 1],
+       [0, 0, 1, 0]]
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body3" pos="10 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body4" pos="11 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+          <weld body1="body3" body2="body4"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.ISLAND},
+    )
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+
+    # should have exactly 2 islands
+    self.assertEqual(d.nisland.numpy()[0], 2)
+    # trees 0,1 should be in one island, trees 2,3 in another
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[2], tree_island[3])
+    self.assertNotEqual(tree_island[0], tree_island[2])
+
+  def test_no_constraints_no_islands(self):
+    """No constraints means no constrained islands.
+
+    topology:
+      [[0]]  (no edges)
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.ISLAND},
+    )
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+
+    # should have 0 islands (unconstrained tree is not an island)
+    self.assertEqual(d.nisland.numpy()[0], 0)
+
+  def test_multiple_worlds(self):
+    """Test island discovery with nworld=2.
+
+    topology:
+      [[0, 1],
+       [1, 0]]
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+      overrides={"opt.disableflags": DisableBit.ISLAND},
+    )
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+
+    # both worlds should have exactly 1 island
+    nisland = d.nisland.numpy()
+    self.assertEqual(nisland[0], 1)
+    self.assertEqual(nisland[1], 1)
+
+    # both trees in both worlds should be in island 0
+    tree_island = d.tree_island.numpy()
+    for worldid in range(2):
+      self.assertEqual(tree_island[worldid, 0], 0)
+      self.assertEqual(tree_island[worldid, 1], 0)
+
+  def test_three_trees_star_hub_at_end(self):
+    """Three trees with tree 2 as hub connecting trees 0 and 1.
+
+    topology:
+      [[0, 0, 1],
+       [0, 0, 1],
+       [1, 1, 0]]
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body3" pos="2 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body3"/>
+          <weld body1="body2" body2="body3"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.ISLAND},
+    )
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+
+    # should have exactly 1 island
+    self.assertEqual(d.nisland.numpy()[0], 1)
+    # all trees should be in the same island
+    tree_island = d.tree_island.numpy()[0]
+    self.assertEqual(tree_island[0], tree_island[1])
+    self.assertEqual(tree_island[1], tree_island[2])
 
 
 if __name__ == "__main__":

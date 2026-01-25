@@ -126,6 +126,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
+    self.assertEqual(d.nisland.numpy()[world_id], mjd.nisland)
 
     for field in [
       "energy",
@@ -196,6 +197,7 @@ class IOTest(parameterized.TestCase):
       "wrap_obj",
       "wrap_xpos",
       "sensordata",
+      "tree_island",
     ]:
       _assert_eq(
         getattr(d, field).numpy()[world_id].reshape(-1),
