@@ -37,7 +37,7 @@ usage() {
 }
 
 FILTER=""
-CLEAR_KERNEL_CACHE="false"
+CLEAR_WARP_CACHE="false"
 
 while [[ $# -gt 0 ]]; do
   # if the argument contains '=', split it into key and value
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     set -- "${1%%=*}" "${1#*=}" "${@:2}"
   fi
   case $1 in
-    --clear_kernel_cache) CLEAR_KERNEL_CACHE="$2"; shift 2 ;;
+    --clear_warp_cache) CLEAR_WARP_CACHE="$2"; shift 2 ;;
     -f|--filter) FILTER="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) error "Unknown option: $1" ;;
@@ -63,6 +63,11 @@ if ! command -v mjwarp-testspeed &> /dev/null; then
   error "mjwarp-testspeed not found. Please install MuJoCo Warp (or activate its environment)."
 fi
 
+# Clear CUDA driver-level cache if requested (ensures cold JIT timing)
+if [[ "$CLEAR_WARP_CACHE" == "true" ]]; then
+  log "Warp cache clearing will be handled by testspeed.py"
+fi
+
 while read -r NAME MJCF NWORLD NCONMAX NJMAX NSTEP REPLAY; do
     # Skip comments and empty lines
     [[ "$NAME" =~ ^#.*$ || -z "$NAME" ]] && continue
@@ -76,7 +81,7 @@ while read -r NAME MJCF NWORLD NCONMAX NJMAX NSTEP REPLAY; do
       "--nworld=$NWORLD"
       "--nconmax=$NCONMAX"
       "--njmax=$NJMAX"
-      "--clear_kernel_cache=$CLEAR_KERNEL_CACHE"
+      "--clear_warp_cache=$CLEAR_WARP_CACHE"
       "--format=short"
       "--event_trace=true"
       "--memory=true"

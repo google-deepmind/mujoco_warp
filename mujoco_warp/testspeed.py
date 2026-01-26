@@ -24,6 +24,7 @@ Example:
 import dataclasses
 import inspect
 import json
+import shutil
 import sys
 from typing import Sequence
 
@@ -51,7 +52,7 @@ _NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of con
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
-_CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "clear kernel cache (to calculate full JIT time)")
+_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "print an event trace report")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "print a report of contacts and constraints per step")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of solver iterations per step")
@@ -272,8 +273,14 @@ def _main(argv: Sequence[str]):
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
   free_mem_at_init = wp.get_device(_DEVICE.value).free_memory
-  if _CLEAR_KERNEL_CACHE.value:
+  if _CLEAR_WARP_CACHE.value:
     wp.clear_kernel_cache()
+    wp.clear_lto_cache()
+    # Clear CUDA compute cache for truly cold start JIT
+    compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
+    if compute_cache.exists():
+      shutil.rmtree(compute_cache)
+      compute_cache.mkdir()
 
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)
