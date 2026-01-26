@@ -365,6 +365,30 @@ def build_primary_rays(
   ray_out[offset + tid] = wp.normalize(wp.vec3(x, y, -znear))
 
 
+@wp.kernel
+def _convert_texture_data(
+  # In:
+  width: int,
+  adr: int,
+  nc: int,
+  tex_data_in: wp.array(dtype=wp.uint8),
+  # Out:
+  tex_data_out: wp.array3d(dtype=float),
+):
+  """Convert uint8 texture data to vec4 format for efficient sampling."""
+  x, y = wp.tid()
+  offset = adr + (y * width + x) * nc
+  r = tex_data_in[offset + 0] if nc > 0 else wp.uint8(0)
+  g = tex_data_in[offset + 1] if nc > 1 else wp.uint8(0)
+  b = tex_data_in[offset + 2] if nc > 2 else wp.uint8(0)
+  a = wp.uint8(255)
+
+  tex_data_out[y, x, 0] = float(r) * wp.static(1.0 / 255.0)
+  tex_data_out[y, x, 1] = float(g) * wp.static(1.0 / 255.0)
+  tex_data_out[y, x, 2] = float(b) * wp.static(1.0 / 255.0)
+  tex_data_out[y, x, 3] = float(a) * wp.static(1.0 / 255.0)
+
+
 def _create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
   """Create a Warp texture from a MuJoCo model texture data."""
   tex_adr = mjm.tex_adr[tex_id]
@@ -373,34 +397,10 @@ def _create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
   nchannel = mjm.tex_nchannel[tex_id]
   tex_data = wp.zeros((tex_height, tex_width, 4), dtype=float)
 
-  @wp.kernel
-  def _convert_texture(
-    # In:
-    width: int,
-    adr: int,
-    nc: int,
-    tex_data_in: wp.array(dtype=wp.uint8),
-    # Out:
-    tex_data_out: wp.array3d(dtype=float),
-  ):
-    """Convert uint8 texture data to vec4 format for efficient sampling."""
-    x, y = wp.tid()
-    offset = adr + (y * width + x) * nc
-    r = tex_data_in[offset + 0] if nc > 0 else wp.uint8(0)
-    g = tex_data_in[offset + 1] if nc > 1 else wp.uint8(0)
-    b = tex_data_in[offset + 2] if nc > 2 else wp.uint8(0)
-    a = wp.uint8(255)
-    
-    tex_data_out[y, x, 0] = float(r) * wp.static(1.0 / 255.0)
-    tex_data_out[y, x, 1] = float(g) * wp.static(1.0 / 255.0)
-    tex_data_out[y, x, 2] = float(b) * wp.static(1.0 / 255.0)
-    tex_data_out[y, x, 3] = float(a) * wp.static(1.0 / 255.0)
-
   wp.launch(
-    _convert_texture,
+    _convert_texture_data,
     dim=(tex_width, tex_height),
     inputs=[tex_width, tex_adr, nchannel, wp.array(mjm.tex_data, dtype=wp.uint8)],
     outputs=[tex_data],
   )
   return wp.Texture2D(tex_data, filter_mode=wp.TextureFilterMode.LINEAR)
-
