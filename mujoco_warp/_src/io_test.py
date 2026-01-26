@@ -645,6 +645,66 @@ class IOTest(parameterized.TestCase):
 
     _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
 
+  @parameterized.parameters(True, False)
+  def test_sleep_state_initial(self, use_make_data):
+    """Tests that make_data and put_data initialize all trees awake."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+
+    if use_make_data:
+      d = mjwarp.make_data(mjm)
+    else:
+      d = mjwarp.put_data(mjm, mjd)
+
+    # All trees should be awake (tree_asleep < 0)
+    tree_asleep = d.tree_asleep.numpy()
+    self.assertTrue((tree_asleep < 0).all(), "tree_asleep should be < 0 (awake)")
+    # tree_awake should all be 1
+    tree_awake = d.tree_awake.numpy()
+    np.testing.assert_array_equal(tree_awake, 1, "tree_awake should be 1")
+    # body_awake should all be 1
+    body_awake = d.body_awake.numpy()
+    np.testing.assert_array_equal(body_awake, 1, "body_awake should be 1")
+
+  def test_sleep_policy_import(self):
+    """Tests that tree_sleep_policy matches MuJoCo."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    m = mjwarp.put_model(mjm)
+    np.testing.assert_array_equal(m.tree_sleep_policy.numpy(), mjm.tree_sleep_policy)
+
+  def test_dof_length_import(self):
+    """Tests that dof_length matches MuJoCo."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    m = mjwarp.put_model(mjm)
+    np.testing.assert_allclose(m.dof_length.numpy(), mjm.dof_length)
+
 
 if __name__ == "__main__":
   wp.init()

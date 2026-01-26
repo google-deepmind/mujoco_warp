@@ -594,7 +594,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_madr_ij.append(madr_ij)
 
   # place m on device
-  sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
+  # TODO(team): remove ntree once field is added to types.Model
+  sizes = dict(
+    {"*": 1, "ntree": mjm.ntree}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}
+  )
   for f in dataclasses.fields(types.Model):
     if isinstance(f.type, wp.array):
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes))
@@ -691,6 +694,7 @@ def make_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
+  sizes["ntree"] = mjm.ntree
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
@@ -728,6 +732,10 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
+    # sleep state: all trees start fully awake
+    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
+    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -805,6 +813,7 @@ def put_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
+  sizes["ntree"] = mjm.ntree
 
   # ensure static geom positions are computed
   # TODO: remove once MjData creation semantics are fixed
@@ -882,6 +891,10 @@ def put_data(
     "ne_jnt": None,
     "ne_ten": None,
     "ne_flex": None,
+    # sleep state: all trees start fully awake
+    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
+    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
