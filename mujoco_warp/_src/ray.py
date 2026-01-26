@@ -716,7 +716,7 @@ def ray_mesh_with_bvh(
   if hit and wp.dot(lvec, n) < 0.0:  # Backface culling in local space
     normal = mat @ n
     normal = wp.normalize(normal)
-    return t, normal, u, v, f, 0
+    return t, normal, u, v, f, mesh_geom_id
 
   return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
 
