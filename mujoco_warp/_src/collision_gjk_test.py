@@ -26,7 +26,6 @@ from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
-from mujoco_warp._src.warp_util import nested_kernel
 
 
 def _geom_dist(
@@ -64,7 +63,7 @@ def _geom_dist(
   multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
   multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
