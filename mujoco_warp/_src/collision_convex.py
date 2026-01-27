@@ -17,27 +17,27 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_gjk import ccd
-from .collision_gjk import multicontact
-from .collision_primitive import Geom
-from .collision_primitive import contact_params
-from .collision_primitive import geom_collision_pair
-from .collision_primitive import write_contact
-from .math import make_frame
-from .math import upper_trid_index
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
-from .types import MJ_MAXCONPAIR
-from .types import MJ_MAXVAL
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import mat43
-from .types import mat63
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_primitive import contact_params
+from mujoco_warp._src.collision_primitive import geom_collision_pair
+from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAX_EPAFACES
+from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
@@ -85,8 +85,9 @@ assert _check_convex_collision_pairs(), "_CONVEX_COLLISION_PAIRS is in invalid o
 @wp.func
 def _hfield_filter(
   # Model:
+  geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
-  geom_aabb: wp.array3d(dtype=wp.vec3),
+  geom_size: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
   hfield_size: wp.array(dtype=wp.vec4),
@@ -109,6 +110,7 @@ def _hfield_filter(
   # geom info
   rbound_id = worldid % geom_rbound.shape[0]
   margin_id = worldid % geom_margin.shape[0]
+  size_id = worldid % geom_size.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
   mat1 = geom_xmat_in[worldid, g1]
@@ -135,47 +137,23 @@ def _hfield_filter(
   mat2 = geom_xmat_in[worldid, g2]
   mat = mat1T @ mat2
 
-  # aabb for geom in height field frame
-  xmax = -MJ_MAXVAL
-  ymax = -MJ_MAXVAL
-  zmax = -MJ_MAXVAL
-  xmin = MJ_MAXVAL
-  ymin = MJ_MAXVAL
-  zmin = MJ_MAXVAL
+  # create geom in height field frame for support function queries
+  geom2 = Geom()
+  geom2.pos = pos
+  geom2.rot = mat
+  geom2.size = geom_size[size_id, g2]
+  geom2.margin = 0.0  # margin handled separately
+  geom2.index = -1
 
-  aabb_id = worldid % geom_aabb.shape[0]
-  center2 = geom_aabb[aabb_id, g2, 0]
-  size2 = geom_aabb[aabb_id, g2, 1]
+  geomtype2 = geom_type[g2]
 
-  pos += mat1T @ center2
-
-  sign = wp.vec2(-1.0, 1.0)
-
-  for i in range(2):
-    for j in range(2):
-      for k in range(2):
-        corner_local = wp.vec3(sign[i] * size2[0], sign[j] * size2[1], sign[k] * size2[2])
-        corner_hf = mat @ corner_local
-
-        if corner_hf[0] > xmax:
-          xmax = corner_hf[0]
-        if corner_hf[1] > ymax:
-          ymax = corner_hf[1]
-        if corner_hf[2] > zmax:
-          zmax = corner_hf[2]
-        if corner_hf[0] < xmin:
-          xmin = corner_hf[0]
-        if corner_hf[1] < ymin:
-          ymin = corner_hf[1]
-        if corner_hf[2] < zmin:
-          zmin = corner_hf[2]
-
-  xmax += pos[0]
-  xmin += pos[0]
-  ymax += pos[1]
-  ymin += pos[1]
-  zmax += pos[2]
-  zmin += pos[2]
+  # use support functions for tight AABB bounds
+  xmax = support(geom2, geomtype2, wp.vec3(1.0, 0.0, 0.0)).point[0]
+  xmin = support(geom2, geomtype2, wp.vec3(-1.0, 0.0, 0.0)).point[0]
+  ymax = support(geom2, geomtype2, wp.vec3(0.0, 1.0, 0.0)).point[1]
+  ymin = support(geom2, geomtype2, wp.vec3(0.0, -1.0, 0.0)).point[1]
+  zmax = support(geom2, geomtype2, wp.vec3(0.0, 0.0, 1.0)).point[2]
+  zmin = support(geom2, geomtype2, wp.vec3(0.0, 0.0, -1.0)).point[2]
 
   # box-box test
   if (
@@ -201,7 +179,7 @@ def ccd_hfield_kernel_builder(
   """Kernel builder for heightfield CCD collisions (no multiccd args)."""
 
   # runs convex collision on a set of geom pairs to recover contact info
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def ccd_hfield_kernel(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
@@ -213,20 +191,14 @@ def ccd_hfield_kernel_builder(
     geom_solref: wp.array2d(dtype=wp.vec2),
     geom_solimp: wp.array2d(dtype=vec5),
     geom_size: wp.array2d(dtype=wp.vec3),
-    geom_aabb: wp.array3d(dtype=wp.vec3),
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
-    hfield_adr: wp.array(dtype=int),
-    hfield_nrow: wp.array(dtype=int),
-    hfield_ncol: wp.array(dtype=int),
-    hfield_size: wp.array(dtype=wp.vec4),
-    hfield_data: wp.array(dtype=float),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graphadr: wp.array(dtype=int),
+    mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graph: wp.array(dtype=int),
     mesh_polynum: wp.array(dtype=int),
     mesh_polyadr: wp.array(dtype=int),
@@ -237,6 +209,11 @@ def ccd_hfield_kernel_builder(
     mesh_polymapadr: wp.array(dtype=int),
     mesh_polymapnum: wp.array(dtype=int),
     mesh_polymap: wp.array(dtype=int),
+    hfield_size: wp.array(dtype=wp.vec4),
+    hfield_nrow: wp.array(dtype=int),
+    hfield_ncol: wp.array(dtype=int),
+    hfield_adr: wp.array(dtype=int),
+    hfield_data: wp.array(dtype=float),
     pair_dim: wp.array(dtype=int),
     pair_solref: wp.array2d(dtype=wp.vec2),
     pair_solreffriction: wp.array2d(dtype=wp.vec2),
@@ -245,27 +222,23 @@ def ccd_hfield_kernel_builder(
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
+    epa_face_in: wp.array2d(dtype=int),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
     # Data out:
-    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -279,6 +252,7 @@ def ccd_hfield_kernel_builder(
     contact_worldid_out: wp.array(dtype=int),
     contact_type_out: wp.array(dtype=int),
     contact_geomcollisionid_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -295,7 +269,7 @@ def ccd_hfield_kernel_builder(
 
     # height field filter
     no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-      geom_dataid, geom_aabb, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+      geom_type, geom_dataid, geom_size, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
     )
     if no_hf_collision:
       return
@@ -346,6 +320,18 @@ def ccd_hfield_kernel_builder(
       worldid,
     )
 
+    # transform geom2 into heightfield frame
+    hf_pos = geom_xpos_in[worldid, g1]
+    hf_mat = geom_xmat_in[worldid, g1]
+    hf_matT = wp.transpose(hf_mat)
+
+    geom2.pos = hf_matT @ (geom2.pos - hf_pos)
+    geom2.rot = hf_matT @ geom2.rot
+
+    # geom1 has identity pose
+    geom1.pos = wp.vec3(0.0, 0.0, 0.0)
+    geom1.rot = wp.identity(n=3, dtype=float)
+
     # see MuJoCo mjc_ConvexHField
     geom1_dataid = geom_dataid[g1]
 
@@ -388,7 +374,6 @@ def ccd_hfield_kernel_builder(
     geom2.margin = margin
 
     # EPA memory
-    epa_vert = epa_vert_in[tid]
     epa_vert1 = epa_vert1_in[tid]
     epa_vert2 = epa_vert2_in[tid]
     epa_vert_index1 = epa_vert_index1_in[tid]
@@ -396,8 +381,6 @@ def ccd_hfield_kernel_builder(
     epa_face = epa_face_in[tid]
     epa_pr = epa_pr_in[tid]
     epa_norm2 = epa_norm2_in[tid]
-    epa_index = epa_index_in[tid]
-    epa_map = epa_map_in[tid]
     epa_horizon = epa_horizon_in[tid]
 
     collision_pairid = collision_pairid_in[tid]
@@ -405,8 +388,24 @@ def ccd_hfield_kernel_builder(
     # process all prisms in subgrid
     count = int(0)
     for r in range(rmin, rmax):
-      nvert = int(0)
-      for c in range(cmin, cmax + 1):
+      # pre-initialize first 2 vertices
+      for init_i in range(2):
+        x = dx * float(cmin) - size[0]
+        y = dy * float(r + dr[init_i]) - size[1]
+        z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
+
+        prism[0] = prism[1]
+        prism[1] = prism[2]
+        prism[3] = prism[4]
+        prism[4] = prism[5]
+
+        prism[2, 0] = x
+        prism[5, 0] = x
+        prism[2, 1] = y
+        prism[5, 1] = y
+        prism[5, 2] = z
+
+      for c in range(cmin + 1, cmax + 1):
         # add both triangles from this cell
         for i in range(2):
           if count >= MJ_MAXCONPAIR:
@@ -432,11 +431,6 @@ def ccd_hfield_kernel_builder(
           prism[5, 1] = y
           prism[5, 2] = z
 
-          nvert += 1
-
-          if nvert <= 2:
-            continue
-
           # prism height test
           if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
             continue
@@ -444,11 +438,7 @@ def ccd_hfield_kernel_builder(
           geom1.hfprism = prism
 
           # prism center
-          x1 = geom1.pos
-          x1_ = wp.vec3(0.0, 0.0, 0.0)
-          for i in range(6):
-            x1_ += prism[i]
-          x1 += geom1.rot @ (x1_ / 6.0)
+          x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
 
           dist, ncontact, w1, w2, idx = ccd(
             opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
@@ -461,7 +451,6 @@ def ccd_hfield_kernel_builder(
             geomtype2,
             x1,
             geom2.pos,
-            epa_vert,
             epa_vert1,
             epa_vert2,
             epa_vert_index1,
@@ -469,8 +458,6 @@ def ccd_hfield_kernel_builder(
             epa_face,
             epa_pr,
             epa_norm2,
-            epa_index,
-            epa_map,
             epa_horizon,
           )
 
@@ -480,13 +467,16 @@ def ccd_hfield_kernel_builder(
           # cache contact information
           hfield_contact_dist[count] = dist
 
-          pos = 0.5 * (w1 + w2)
+          # transform contact to global frame
+          pos_local = 0.5 * (w1 + w2)
+          pos = hf_mat @ pos_local + hf_pos
           hfield_contact_pos[count, 0] = pos[0]
           hfield_contact_pos[count, 1] = pos[1]
           hfield_contact_pos[count, 2] = pos[2]
 
-          frame = make_frame(w1 - w2)
-          normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
+          frame_local = make_frame(w1 - w2)
+          normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
+          normal = hf_mat @ normal_local
           hfield_contact_normal[count, 0] = normal[0]
           hfield_contact_normal[count, 1] = normal[1]
           hfield_contact_normal[count, 2] = normal[2]
@@ -720,16 +710,13 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
+    epa_face_in: wp.array2d(dtype=int),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
     multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
     multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
@@ -795,7 +782,6 @@ def ccd_kernel_builder(
       geomtype2,
       x1,
       x2,
-      epa_vert_in[tid],
       epa_vert1_in[tid],
       epa_vert2_in[tid],
       epa_vert_index1_in[tid],
@@ -803,8 +789,6 @@ def ccd_kernel_builder(
       epa_face_in[tid],
       epa_pr_in[tid],
       epa_norm2_in[tid],
-      epa_index_in[tid],
-      epa_map_in[tid],
       epa_horizon_in[tid],
     )
 
@@ -894,7 +878,7 @@ def ccd_kernel_builder(
     return ncontact
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def ccd_kernel(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
@@ -911,8 +895,8 @@ def ccd_kernel_builder(
     geom_gap: wp.array2d(dtype=float),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graphadr: wp.array(dtype=int),
+    mesh_vert: wp.array(dtype=wp.vec3),
     mesh_graph: wp.array(dtype=int),
     mesh_polynum: wp.array(dtype=int),
     mesh_polyadr: wp.array(dtype=int),
@@ -931,24 +915,21 @@ def ccd_kernel_builder(
     pair_gap: wp.array2d(dtype=float),
     pair_friction: wp.array2d(dtype=vec5),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
     ncollision_in: wp.array(dtype=int),
     # In:
-    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert1_in: wp.array2d(dtype=wp.vec3),
     epa_vert2_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
-    epa_face_in: wp.array2d(dtype=wp.vec3i),
+    epa_face_in: wp.array2d(dtype=int),
     epa_pr_in: wp.array2d(dtype=wp.vec3),
     epa_norm2_in: wp.array2d(dtype=float),
-    epa_index_in: wp.array2d(dtype=int),
-    epa_map_in: wp.array2d(dtype=int),
     epa_horizon_in: wp.array2d(dtype=int),
     multiccd_polygon_in: wp.array2d(dtype=wp.vec3),
     multiccd_clipped_in: wp.array2d(dtype=wp.vec3),
@@ -962,7 +943,6 @@ def ccd_kernel_builder(
     multiccd_face1_in: wp.array2d(dtype=wp.vec3),
     multiccd_face2_in: wp.array2d(dtype=wp.vec3),
     # Data out:
-    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -976,6 +956,7 @@ def ccd_kernel_builder(
     contact_worldid_out: wp.array(dtype=int),
     contact_type_out: wp.array(dtype=int),
     contact_geomcollisionid_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -1040,7 +1021,6 @@ def ccd_kernel_builder(
       opt_ccd_tolerance,
       geom_type,
       naconmax_in,
-      epa_vert_in,
       epa_vert1_in,
       epa_vert2_in,
       epa_vert_index1_in,
@@ -1048,8 +1028,6 @@ def ccd_kernel_builder(
       epa_face_in,
       epa_pr_in,
       epa_norm2_in,
-      epa_index_in,
-      epa_map_in,
       epa_horizon_in,
       multiccd_polygon_in,
       multiccd_clipped_in,
@@ -1153,12 +1131,10 @@ def convex_narrowphase(m: Model, d: Data):
   epa_iterations = m.opt.ccd_iterations
 
   # set to true to enable multiccd
-  use_multiccd = False
+  use_multiccd = m.opt.enableflags & EnableBit.MULTICCD
   nmaxpolygon = m.nmaxpolygon if use_multiccd else 0
   nmaxmeshdeg = m.nmaxmeshdeg if use_multiccd else 0
 
-  # epa_vert: vertices in EPA polytope in Minkowski space
-  epa_vert = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
   # epa_vert1: vertices in EPA polytope in geom 1 space
   epa_vert1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
   # epa_vert2: vertices in EPA polytope in geom 2 space
@@ -1168,21 +1144,16 @@ def convex_narrowphase(m: Model, d: Data):
   # epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
   epa_vert_index2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
   # epa_face: faces of polytope represented by three indices
-  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3i)
+  epa_face = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
   # epa_pr: projection of origin on polytope faces
   epa_pr = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
   # epa_norm2: epa_pr * epa_pr
   epa_norm2 = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
-  # epa_index: index of face in polytope map
-  epa_index = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_map: status of faces in polytope
-  epa_map = wp.empty(shape=(d.naconmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
   # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naconmax, 2 * MJ_MAX_EPAHORIZON), dtype=int)
+  epa_horizon = wp.empty(shape=(d.naconmax, MJ_MAX_EPAHORIZON), dtype=int)
 
   # Contact outputs
   contact_outputs = [
-    d.nacon,
     d.contact.dist,
     d.contact.pos,
     d.contact.frame,
@@ -1196,6 +1167,7 @@ def convex_narrowphase(m: Model, d: Data):
     d.contact.worldid,
     d.contact.type,
     d.contact.geomcollisionid,
+    d.nacon,
   ]
 
   # Launch heightfield collision kernels (no multiccd args, 72 args total)
@@ -1216,20 +1188,14 @@ def convex_narrowphase(m: Model, d: Data):
           m.geom_solref,
           m.geom_solimp,
           m.geom_size,
-          m.geom_aabb,
           m.geom_rbound,
           m.geom_friction,
           m.geom_margin,
           m.geom_gap,
-          m.hfield_adr,
-          m.hfield_nrow,
-          m.hfield_ncol,
-          m.hfield_size,
-          m.hfield_data,
           m.mesh_vertadr,
           m.mesh_vertnum,
-          m.mesh_vert,
           m.mesh_graphadr,
+          m.mesh_vert,
           m.mesh_graph,
           m.mesh_polynum,
           m.mesh_polyadr,
@@ -1240,6 +1206,11 @@ def convex_narrowphase(m: Model, d: Data):
           m.mesh_polymapadr,
           m.mesh_polymapnum,
           m.mesh_polymap,
+          m.hfield_size,
+          m.hfield_nrow,
+          m.hfield_ncol,
+          m.hfield_adr,
+          m.hfield_data,
           m.pair_dim,
           m.pair_solref,
           m.pair_solreffriction,
@@ -1247,14 +1218,13 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_margin,
           m.pair_gap,
           m.pair_friction,
-          d.naconmax,
           d.geom_xpos,
           d.geom_xmat,
+          d.naconmax,
           d.collision_pair,
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
@@ -1262,8 +1232,6 @@ def convex_narrowphase(m: Model, d: Data):
           epa_face,
           epa_pr,
           epa_norm2,
-          epa_index,
-          epa_map,
           epa_horizon,
         ],
         outputs=contact_outputs,
@@ -1316,8 +1284,8 @@ def convex_narrowphase(m: Model, d: Data):
           m.geom_gap,
           m.mesh_vertadr,
           m.mesh_vertnum,
-          m.mesh_vert,
           m.mesh_graphadr,
+          m.mesh_vert,
           m.mesh_graph,
           m.mesh_polynum,
           m.mesh_polyadr,
@@ -1335,14 +1303,13 @@ def convex_narrowphase(m: Model, d: Data):
           m.pair_margin,
           m.pair_gap,
           m.pair_friction,
-          d.naconmax,
           d.geom_xpos,
           d.geom_xmat,
+          d.naconmax,
           d.collision_pair,
           d.collision_pairid,
           d.collision_worldid,
           d.ncollision,
-          epa_vert,
           epa_vert1,
           epa_vert2,
           epa_vert_index1,
@@ -1350,8 +1317,6 @@ def convex_narrowphase(m: Model, d: Data):
           epa_face,
           epa_pr,
           epa_norm2,
-          epa_index,
-          epa_map,
           epa_horizon,
           multiccd_polygon,
           multiccd_clipped,
