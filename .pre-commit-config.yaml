@@ -1,12 +1,12 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.2 # Use the latest Ruff version
+    rev: v0.14.14 # Use the latest Ruff version
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0 # Use the latest version
+    rev: v6.0.0 # Use the latest version
     hooks:
       - id: check-yaml
   - repo: https://github.com/astral-sh/uv-pre-commit
