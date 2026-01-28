@@ -280,7 +280,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
   m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
 
-  # Pad dof_affects_body to nv_pad for efficient tile operations
   dof_affects_body = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
   for bodyid in range(mjm.nbody):
     for dofid in range(mjm.nv):
@@ -293,7 +292,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           break
         parentid = mjm.body_parentid[parentid]
       dof_affects_body[bodyid, dofid] = in_tree
-  # Padding elements (dofid >= nv) remain 0, which is correct behavior
   m.dof_affects_body = dof_affects_body
 
   # precalculated geom pairs

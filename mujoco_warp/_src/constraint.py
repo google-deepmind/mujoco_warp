@@ -30,6 +30,7 @@ wp.set_module_options({"enable_backward": False})
 
 def _reinterpret(arr, dtype, shape):
   """Reinterpret array memory as a different dtype/shape (zero-copy view)."""
+  # This allows a better memory access pattern for certain usecases
   return wp.array(
     ptr=arr.ptr,
     dtype=dtype,
@@ -1231,7 +1232,6 @@ def _efc_contact_init(cone_type: types.ConeType):
     # Data out:
     nefc_out: wp.array(dtype=int),
     contact_efc_address_out: wp.array2d(dtype=int),
-    # Mapping out (for jac/update kernels):
     efc_conid_out: wp.array2d(dtype=int),
   ):
     conid = wp.tid()
