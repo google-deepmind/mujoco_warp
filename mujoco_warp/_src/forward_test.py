@@ -144,7 +144,7 @@ class ForwardTest(parameterized.TestCase):
     mjw.euler(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    _assert_eq(d.qvel.numpy()[0, : mjm.nv], mjd.qvel, "qvel")  # qvel is padded to nv_pad
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
   def test_rungekutta4(self):
@@ -176,7 +176,7 @@ class ForwardTest(parameterized.TestCase):
     mujoco.mj_RungeKutta(mjm, mjd, 4)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    _assert_eq(d.qvel.numpy()[0, : mjm.nv], mjd.qvel, "qvel")  # qvel is padded to nv_pad
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
     _assert_eq(d.time.numpy()[0], mjd.time, "time")
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
 
@@ -249,7 +249,7 @@ class ForwardTest(parameterized.TestCase):
     mjw.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    _assert_eq(d.qvel.numpy()[0, : mjm.nv], mjd.qvel, "qvel")  # qvel is padded to nv_pad
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
   def test_implicit_tendon_damping(self):
     mjm, mjd, m, d = test_data.fixture(
@@ -266,7 +266,7 @@ class ForwardTest(parameterized.TestCase):
     mjw.implicit(m, d)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    _assert_eq(d.qvel.numpy()[0, : mjm.nv], mjd.qvel, "qvel")  # qvel is padded to nv_pad
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   @parameterized.product(
@@ -410,10 +410,6 @@ class ForwardTest(parameterized.TestCase):
         ten_J = np.zeros((mjm.ntendon, mjm.nv))
         mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
         mjd_arr = ten_J
-      elif arr == "cdof":
-        d_arr = d_arr[: mjm.nv]  # cdof is padded to nv_pad
-      elif arr == "qvel":
-        d_arr = d_arr[: mjm.nv]  # qvel is padded to nv_pad
       elif arr == "efc_J":
         d_arr = d_arr[:, : m.nv]  # efc_J is padded up to the next multiple of the tile size
         if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
@@ -499,9 +495,6 @@ class ForwardTest(parameterized.TestCase):
       d_arr = d_arr.numpy()[0]
       if is_efc:
         d_arr = d_arr[: d.nefc.numpy()[0]]
-      # Slice padded arrays to original nv size
-      if arr == "qvel":
-        d_arr = d_arr[: mjm.nv]
       _assert_eq(d_arr, getattr(mjd, arr), arr)
 
   def test_step_no_dofs(self):

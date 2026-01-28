@@ -1259,11 +1259,10 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     for i in range(nq):
       qpos_out[worldid, i] = qpos0[qpos0_id, i]
       if i < nv:
+        qvel_out[worldid, i] = 0.0
         qacc_warmstart_out[worldid, i] = 0.0
         qfrc_applied_out[worldid, i] = 0.0
         qacc_out[worldid, i] = 0.0
-    for i in range(nv):
-      qvel_out[worldid, i] = 0.0
     for i in range(nu):
       ctrl_out[worldid, i] = 0.0
       if i < na:

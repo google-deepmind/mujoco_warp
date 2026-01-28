@@ -157,7 +157,7 @@ class SmoothTest(parameterized.TestCase):
 
   def test_com_pos(self):
     """Tests com_pos."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml")
+    _, mjd, m, d = test_data.fixture("pendula.xml")
 
     for arr in (d.subtree_com, d.cinert, d.cdof):
       arr.zero_()
@@ -165,8 +165,7 @@ class SmoothTest(parameterized.TestCase):
     mjw.com_pos(m, d)
     _assert_eq(d.subtree_com.numpy()[0], mjd.subtree_com, "subtree_com")
     _assert_eq(d.cinert.numpy()[0], mjd.cinert, "cinert")
-    # cdof is padded to nv_pad, slice to nv
-    _assert_eq(d.cdof.numpy()[0, : mjm.nv], mjd.cdof, "cdof")
+    _assert_eq(d.cdof.numpy()[0], mjd.cdof, "cdof")
 
   def test_camlight(self):
     """Tests camlight."""
