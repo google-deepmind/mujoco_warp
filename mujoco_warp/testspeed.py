@@ -42,10 +42,11 @@ from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
 
-_FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
-
-# Add render
-_FUNCS["render"] = mjw.render
+_FUNCS = {
+  n: f
+  for n, f in inspect.getmembers(mjw, inspect.isfunction)
+  if inspect.signature(f).parameters.keys() == {"m", "d"} or inspect.signature(f).parameters.keys() == {"m", "d", "rc"}
+}
 
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
@@ -289,7 +290,7 @@ def _main(argv: Sequence[str]):
     override_model(m, _OVERRIDE.value)
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     rc = None
-    if _FUNCTION.value == "render":
+    if "rc" in inspect.signature(_FUNCS[_FUNCTION.value]).parameters.keys():
       rc = mjw.create_render_context(
         mjm,
         m,

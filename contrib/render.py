@@ -251,6 +251,7 @@ def _main(argv: Sequence[str]):
 
       step = 0
       while step < total_steps:
+        mjw.refit_bvh(m, d, rc)
         mjw.render(m, d, rc)
 
         if _TILED.value:

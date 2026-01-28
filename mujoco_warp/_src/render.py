@@ -17,24 +17,23 @@ from typing import Tuple
 
 import warp as wp
 
-from . import bvh
-from . import math
-from .ray import ray_box
-from .ray import ray_capsule
-from .ray import ray_cylinder
-from .ray import ray_ellipsoid
-from .ray import ray_flex_with_bvh
-from .ray import ray_mesh_with_bvh
-from .ray import ray_mesh_with_bvh_anyhit
-from .ray import ray_plane
-from .ray import ray_sphere
-from .render_context import RenderContext
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import ProjectionType
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src.ray import ray_box
+from mujoco_warp._src.ray import ray_capsule
+from mujoco_warp._src.ray import ray_cylinder
+from mujoco_warp._src.ray import ray_ellipsoid
+from mujoco_warp._src.ray import ray_flex_with_bvh
+from mujoco_warp._src.ray import ray_mesh_with_bvh
+from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
+from mujoco_warp._src.ray import ray_plane
+from mujoco_warp._src.ray import ray_sphere
+from mujoco_warp._src.render_context import RenderContext
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ProjectionType
+from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -78,23 +77,6 @@ def _tile_coords(tid: int, W: int, H: int):
   i = tile_x + u
   j = tile_y + v
   return i, j
-
-
-@event_scope
-def render(m: Model, d: Data, rc: RenderContext):
-  """Render the current frame.
-
-  Outputs are stored in buffers within the render context.
-
-  Args:
-    m: The model on device.
-    d: The data on device.
-    rc: The render context on device.
-  """
-  bvh.refit_scene_bvh(m, d, rc)
-  if m.nflex:
-    bvh.refit_flex_bvh(m, d, rc)
-  render_megakernel(m, d, rc)
 
 
 @wp.func
@@ -533,7 +515,16 @@ def compute_lighting(
 
 
 @event_scope
-def render_megakernel(m: Model, d: Data, rc: RenderContext):
+def render(m: Model, d: Data, rc: RenderContext):
+  """Render the current frame.
+
+  Outputs are stored in buffers within the render context.
+
+  Args:
+    m: The model on device.
+    d: The data on device.
+    rc: The render context on device.
+  """
   rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
   rc.depth_data.fill_(0.0)
 
