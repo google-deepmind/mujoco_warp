@@ -37,12 +37,12 @@ To run specific benchmarks, use the `-f` or `--filter` option with a regex patte
 ./run.sh -f cloth
 ```
 
-### Clearing the Kernel Cache
+### Clearing the Warp Cache
 
-By default, benchmarks use Warp's kernel cache for faster execution. To measure accurate JIT compilation times, you can disable the cache:
+By default, benchmarks use Warp's caches for faster execution. To measure accurate JIT compilation times, you can disable the cache:
 
 ```bash
-./run.sh --clear_kernel_cache=true
+./run.sh --clear_warp_cache=true
 ```
 
 ## Output Format
@@ -50,7 +50,7 @@ By default, benchmarks use Warp's kernel cache for faster execution. To measure 
 The benchmark script uses `mjwarp-testspeed` with the `--format=short` option, which outputs metrics in a columnar format:
 
 ```
-2026-01-12 18:57:20] mjwarp-testspeed /home/<username>/mujoco_warp/benchmarks/humanoid/humanoid.xml --nworld=8192 --nconmax=24 --njmax=64 --clear_kernel_cache=false --format=short --event_trace=true --memory=true --measure_solver=true --measure_alloc=true
+2026-01-12 18:57:20] mjwarp-testspeed /home/<username>/mujoco_warp/benchmarks/humanoid/humanoid.xml --nworld=8192 --nconmax=24 --njmax=64 --clear_warp_cache=false --format=short --event_trace=true --memory=true --measure_solver=true --measure_alloc=true
 [2026-01-12 18:57:26] humanoid:jit_duration                                              0.3430611090734601
 [2026-01-12 18:57:26] humanoid:run_time                                                  3.0016206190921366
 [2026-01-12 18:57:26] humanoid:steps_per_second                                          2729192.3395961127
