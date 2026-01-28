@@ -31,8 +31,8 @@ FLOAT_MAX = 1e30
 MINVAL = 1e-15
 MIN_DIST = 1e-10
 
-FACE_TOL = math.cos(0.0016)
-EDGE_TOL = math.sin(0.0016)
+FACE_TOL = wp.static(math.cos(0.0016))
+EDGE_TOL = wp.static(math.sin(0.0016))
 
 # tolarance used by multicontact for intersecting a plane and a line segment
 INTERSECT_TOL = 0.0000003
