@@ -9,6 +9,11 @@ repos:
     rev: v4.6.0 # Use the latest version
     hooks:
       - id: check-yaml
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    # uv version.
+    rev: 0.9.27
+    hooks:
+      - id: uv-lock
   - repo: local
     hooks:
       - id: kernel-analyzer
