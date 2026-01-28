@@ -702,7 +702,7 @@ def _flex_bending(
     force[i, x] -= flex_bending[edgeid, 16] * frc[i, x]
 
   for i in range(nvert):
-    bodyid = flex_vertbodyid[flex_vertadr[f] + v[i]]
+    bodyid = flex_vertbodyid[v[i]]
     for x in range(3):
       wp.atomic_add(qfrc_spring_out, worldid, body_dofadr[bodyid] + x, force[i, x])
 
