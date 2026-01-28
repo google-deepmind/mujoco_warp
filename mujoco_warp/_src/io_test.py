@@ -569,7 +569,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_qpos0_modification(self):
     """Test set_const recomputes fields after qpos0 modification."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="link1">
@@ -590,7 +591,8 @@ class IOTest(parameterized.TestCase):
         </spatial>
       </tendon>
     </mujoco>
-    """)
+    """
+    )
 
     mjm.qpos0[:] = [0.3, 0.5]
     m.qpos0.numpy()[0, :] = [0.3, 0.5]
@@ -604,7 +606,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_body_mass_modification(self):
     """Test set_const recomputes fields after body_mass modification."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="link1">
@@ -621,7 +624,8 @@ class IOTest(parameterized.TestCase):
         <motor name="motor2" joint="j2" gear="1"/>
       </actuator>
     </mujoco>
-    """)
+    """
+    )
 
     new_mass = 3.0
     mjm.body_mass[1] = new_mass
@@ -639,7 +643,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_freejoint(self):
     """Test set_const with freejoint (6 DOFs with special averaging)."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="floating" pos="0 0 1">
@@ -648,7 +653,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     new_mass = 5.0
     mjm.body_mass[1] = new_mass
@@ -664,7 +670,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_balljoint(self):
     """Test set_const with ball joint (3 DOFs with averaging)."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="arm">
@@ -673,7 +680,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     new_inertia = np.array([0.1, 0.2, 0.3])
     mjm.body_inertia[1] = new_inertia
@@ -688,7 +696,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_static_body(self):
     """Test set_const with static body (welded to world)."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="static_body" pos="1 0 0">
@@ -700,7 +709,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
@@ -711,7 +721,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_preserves_qpos(self):
     """Test that qpos is restored after set_const."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="mass">
@@ -720,7 +731,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     # Set qpos to a specific value
     mjd.qpos[0] = 0.5
@@ -734,7 +746,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_fixed_body_subtreemass(self):
     """Test body_subtreemass accumulation for multi-level tree."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="root">
@@ -755,7 +768,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     # Modify body masses and recompute
     mjm.body_mass[1] = 10.0  # root
@@ -783,7 +797,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_fixed_ngravcomp(self):
     """Test ngravcomp counting with gravcomp bodies."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="body1" gravcomp="1">
@@ -800,7 +815,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
@@ -810,7 +826,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_camera_light_positions(self):
     """Test camera and light reference position computations."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="body1" pos="1 2 3">
@@ -825,7 +842,8 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
+    """
+    )
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
@@ -839,7 +857,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_idempotent(self):
     """Test calling set_const twice gives same results."""
-    _, _, m, d = test_data.fixture(xml="""
+    _, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="link1">
@@ -855,7 +874,8 @@ class IOTest(parameterized.TestCase):
         <motor name="motor1" joint="j1" gear="1"/>
       </actuator>
     </mujoco>
-    """)
+    """
+    )
 
     mjwarp.set_const(m, d)
     dof_invweight0_1 = m.dof_invweight0.numpy().copy()
@@ -871,7 +891,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_full_pipeline(self):
     """Test complete set_const matches MuJoCo for complex model."""
-    mjm, mjd, m, d = test_data.fixture(xml="""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="torso" pos="0 0 1">
@@ -904,7 +925,8 @@ class IOTest(parameterized.TestCase):
         <motor name="hip_motor" joint="hip" gear="1"/>
       </actuator>
     </mujoco>
-    """)
+    """
+    )
 
     mjm.qpos0[7:11] = [0.9, 0.1, 0.1, 0.1]
     mjm.qpos0[11] = 0.5
