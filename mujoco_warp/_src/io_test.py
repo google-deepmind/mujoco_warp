@@ -125,6 +125,9 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
 
+    # Fields that are padded to nv_pad and need slicing
+    padded_nv_fields = {"qvel", "cdof"}
+
     for field in [
       "energy",
       "qpos",
@@ -195,8 +198,12 @@ class IOTest(parameterized.TestCase):
       "wrap_xpos",
       "sensordata",
     ]:
+      d_arr = getattr(d, field).numpy()[world_id]
+      # Slice padded arrays to original nv size
+      if field in padded_nv_fields:
+        d_arr = d_arr[: mjm.nv]
       _assert_eq(
-        getattr(d, field).numpy()[world_id].reshape(-1),
+        d_arr.reshape(-1),
         getattr(mjd, field).reshape(-1),
         field,
       )
@@ -394,12 +401,18 @@ class IOTest(parameterized.TestCase):
     wp.copy(d.nacon, wp.array([naconmax], dtype=int))
     mjwarp.reset_data(m, d)
 
+    # Fields that are padded to nv_pad
+    padded_nv_fields = {"qvel"}
+
     for arr in reset_datafield:
       d_arr = getattr(d, arr).numpy()
       for i in range(d_arr.shape[0]):
         di_arr = d_arr[i]
         if arr == "qM":
           di_arr = di_arr.reshape(-1)[: mjd.qM.size]
+        # Slice padded arrays to original nv size
+        if arr in padded_nv_fields:
+          di_arr = di_arr[: mjm.nv]
         _assert_eq(di_arr, getattr(mjd, arr), arr)
 
     _assert_eq(d.nacon.numpy(), 0, "nacon")
@@ -423,8 +436,13 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.make_data(mjm, nworld=2)
 
+    nv = mjm.nv
+
     # nonzero values
-    qvel = wp.array(np.array([[1.0], [2.0]]), dtype=float)
+    qvel_np = np.zeros((2, nv), dtype=np.float32)
+    qvel_np[0, 0] = 1.0
+    qvel_np[1, 0] = 2.0
+    qvel = wp.array(qvel_np, dtype=float)
 
     wp.copy(d.qvel, qvel)
 

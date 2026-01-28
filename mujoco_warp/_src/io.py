@@ -262,6 +262,22 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
   m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
 
+  # Pad dof_affects_body to nv_pad for efficient tile operations
+  dof_affects_body = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
+  for bodyid in range(mjm.nbody):
+    for dofid in range(mjm.nv):
+      dof_bodyid_ = mjm.dof_bodyid[dofid]
+      in_tree = int(dof_bodyid_ == 0)
+      parentid = bodyid
+      while parentid != 0:
+        if parentid == dof_bodyid_:
+          in_tree = 1
+          break
+        parentid = mjm.body_parentid[parentid]
+      dof_affects_body[bodyid, dofid] = in_tree
+  # Padding elements (dofid >= nv) remain 0, which is correct behavior
+  m.dof_affects_body = dof_affects_body
+
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
 
@@ -864,7 +880,6 @@ def put_data(
     "ne_jnt": None,
     "ne_ten": None,
     "ne_flex": None,
-    "nsolving": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -923,7 +938,6 @@ def put_data(
   d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
-  d.nsolving = wp.array([nworld], dtype=int)
 
   return d
 
@@ -1202,7 +1216,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ne_jnt_out: wp.array(dtype=int),
     ne_ten_out: wp.array(dtype=int),
     ne_flex_out: wp.array(dtype=int),
-    nsolving_out: wp.array(dtype=int),
   ):
     worldid = wp.tid()
 
@@ -1222,18 +1235,17 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
-    if worldid == 0:
-      nsolving_out[0] = nworld_in
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
     qpos0_id = worldid % qpos0.shape[0]
     for i in range(nq):
       qpos_out[worldid, i] = qpos0[qpos0_id, i]
       if i < nv:
-        qvel_out[worldid, i] = 0.0
         qacc_warmstart_out[worldid, i] = 0.0
         qfrc_applied_out[worldid, i] = 0.0
         qacc_out[worldid, i] = 0.0
+    for i in range(nv):
+      qvel_out[worldid, i] = 0.0
     for i in range(nu):
       ctrl_out[worldid, i] = 0.0
       if i < na:
@@ -1387,7 +1399,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.ne_jnt,
       d.ne_ten,
       d.ne_flex,
-      d.nsolving,
     ],
   )
 

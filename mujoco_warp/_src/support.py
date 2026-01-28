@@ -408,11 +408,26 @@ def transform_force(frc: wp.spatial_vector, offset: wp.vec3) -> wp.spatial_vecto
 
 
 @wp.func
+def _compute_jacp(cdof_clip: wp.spatial_vector, offset: wp.vec3, affect: int) -> wp.vec3:
+  if affect == 0:
+    return wp.vec3(0.0, 0.0, 0.0)
+  cdof_lin = wp.spatial_bottom(cdof_clip)
+  cdof_ang = wp.spatial_top(cdof_clip)
+  return cdof_lin + wp.cross(cdof_ang, offset)
+
+
+@wp.func
+def _compute_jacr(cdof_clip: wp.spatial_vector, affect: int) -> wp.vec3:
+  if affect == 0:
+    return wp.vec3(0.0, 0.0, 0.0)
+  return wp.spatial_top(cdof_clip)
+
+
+@wp.func
 def jac(
   # Model:
-  body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  dof_bodyid: wp.array(dtype=int),
+  dof_affects_body: wp.array2d(dtype=int),
   # Data in:
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
@@ -422,26 +437,11 @@ def jac(
   dofid: int,
   worldid: int,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  dof_bodyid_ = dof_bodyid[dofid]
-  in_tree = int(dof_bodyid_ == 0)
-  parentid = bodyid
-  while parentid != 0:
-    if parentid == dof_bodyid_:
-      in_tree = 1
-      break
-    parentid = body_parentid[parentid]
-
-  if not in_tree:
-    return wp.vec3(0.0), wp.vec3(0.0)
-
   offset = point - wp.vec3(subtree_com_in[worldid, body_rootid[bodyid]])
-
   cdof = cdof_in[worldid, dofid]
-  cdof_ang = wp.spatial_top(cdof)
-  cdof_lin = wp.spatial_bottom(cdof)
-
-  jacp = cdof_lin + wp.cross(cdof_ang, offset)
-  jacr = cdof_ang
+  affect = dof_affects_body[bodyid, dofid]
+  jacp = _compute_jacp(cdof, offset, affect)
+  jacr = _compute_jacr(cdof, affect)
 
   return jacp, jacr
 
@@ -449,12 +449,12 @@ def jac(
 @wp.func
 def jac_dot(
   # Model:
-  body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   jnt_type: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
+  dof_affects_body: wp.array2d(dtype=int),
   # Data in:
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
@@ -466,16 +466,7 @@ def jac_dot(
   dofid: int,
   worldid: int,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  dof_bodyid_ = dof_bodyid[dofid]
-  in_tree = int(dof_bodyid_ == 0)
-  parentid = bodyid
-  while parentid != 0:
-    if parentid == dof_bodyid_:
-      in_tree = 1
-      break
-    parentid = body_parentid[parentid]
-
-  if not in_tree:
+  if not dof_affects_body[bodyid, dofid]:
     return wp.vec3(0.0), wp.vec3(0.0)
 
   com = subtree_com_in[worldid, body_rootid[bodyid]]

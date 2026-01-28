@@ -1028,6 +1028,7 @@ class Model:
     jnt_limited_ball_adr: limited/ball jntadr
     dof_tri_row: dof lower triangle row (used in solver)
     dof_tri_col: dof lower triangle col (used in solver)
+    dof_affects_body: precomputed mask: does DOF affect body (nbody, nv)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1374,6 +1375,7 @@ class Model:
   jnt_limited_ball_adr: wp.array(dtype=int)
   dof_tri_row: wp.array(dtype=int)
   dof_tri_col: wp.array(dtype=int)
+  dof_affects_body: array("nbody", "nv_pad", int)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)
   nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)
   nxn_pairid: wp.array(dtype=wp.vec2i)
@@ -1484,6 +1486,7 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
+    conid: contact id for each efc row                (nworld, njmax)
     J: constraint Jacobian                            (nworld, njmax_pad, nv_pad)
     pos: constraint position (equality, contact)      (nworld, njmax)
     margin: inclusion margin (contact)                (nworld, njmax)
@@ -1516,6 +1519,7 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
+  conid: array("nworld", "njmax", int)
   J: array("nworld", "njmax_pad", "nv_pad", float)
   pos: array("nworld", "njmax", float)
   margin: array("nworld", "njmax", float)
@@ -1643,8 +1647,6 @@ class Data:
     ne_jnt: number of equality joint constraints                (nworld,)
     ne_ten: number of equality tendon constraints               (nworld,)
     ne_flex: number of flex edge equality constraints           (nworld,)
-    nsolving: number of unconverged worlds                      (1,)
-    subtree_bodyvel: subtree body velocity (ang, vel)           (nworld, nbody, 6)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1739,8 +1741,6 @@ class Data:
   ne_jnt: array("nworld", int)
   ne_ten: array("nworld", int)
   ne_flex: array("nworld", int)
-  nsolving: array(1, int)
-  subtree_bodyvel: array("nworld", "nbody", wp.spatial_vector)
 
   # warp only: collision driver
   collision_pair: array("naconmax", wp.vec2i)
