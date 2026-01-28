@@ -25,7 +25,6 @@ import warp as wp
 
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-from mujoco_warp._src.warp_util import nested_kernel
 
 
 def _is_mujoco_dev() -> bool:
@@ -1160,7 +1159,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     reset: Per-world bitmask. Reset if True.
   """
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_xfrc_applied(reset_in: wp.array(dtype=bool), xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector)):
     worldid, bodyid, elemid = wp.tid()
 
@@ -1170,7 +1169,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_qM(reset_in: wp.array(dtype=bool), qM_out: wp.array3d(dtype=float)):
     worldid, elemid1, elemid2 = wp.tid()
 
@@ -1180,7 +1179,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     qM_out[worldid, elemid1, elemid2] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_nworld(
     # Model:
     nq: int,
@@ -1258,7 +1257,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
     # Model:
     body_mocapid: wp.array(dtype=int),
@@ -1282,7 +1281,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       mocap_pos_out[worldid, mocapid] = body_pos[worldid, bodyid]
       mocap_quat_out[worldid, mocapid] = body_quat[worldid, bodyid]
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_contact(
     # Data in:
     nacon_in: wp.array(dtype=int),

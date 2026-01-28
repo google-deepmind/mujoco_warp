@@ -62,8 +62,8 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
   linesearch_iterative: int = 32
-  # support
-  mul_m_dense: int = 32
+  # derivative
+  qderiv_actuator_dense: int = 32
 
 
 class BroadphaseType(enum.IntEnum):
@@ -1612,7 +1612,7 @@ class Data:
     qLD: L'*D*L factorization of M                              (nworld, nv, nv) if dense
                                                                 (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
-    flexedge_velocity: flex edge velocities                     (nworld, nflexedge,)
+    flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
     cvel: com-based velocity (rot:lin)                          (nworld, nbody, 6)
