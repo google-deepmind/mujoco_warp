@@ -25,7 +25,6 @@ import warp as wp
 
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-from mujoco_warp._src.warp_util import nested_kernel
 
 
 def _is_mujoco_dev() -> bool:
@@ -246,12 +245,31 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
 
-  # body ids grouped by tree level
+  # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
   for i in range(mjm.nbody):
     body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
     bodies.setdefault(body_depth[i], []).append(i)
   m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
+
+  # branch-based traversal data
+  children_count = np.bincount(mjm.body_parentid[1:], minlength=mjm.nbody)
+  ancestor_chain = lambda b: ancestor_chain(mjm.body_parentid[b]) + [b] if b else []
+  branches = [ancestor_chain(l) for l in np.where(children_count[1:] == 0)[0] + 1]
+  m.nbranch = len(branches)
+
+  body_branches = []
+  body_branch_start = []
+  offset = 0
+
+  for branch in branches:
+    body_branches.extend(branch)
+    body_branch_start.append(offset)
+    offset += len(branch)
+  body_branch_start.append(offset)
+
+  m.body_branches = np.array(body_branches, dtype=int)
+  m.body_branch_start = np.array(body_branch_start, dtype=int)
 
   m.mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
@@ -1141,7 +1159,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     reset: Per-world bitmask. Reset if True.
   """
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_xfrc_applied(reset_in: wp.array(dtype=bool), xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector)):
     worldid, bodyid, elemid = wp.tid()
 
@@ -1151,7 +1169,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_qM(reset_in: wp.array(dtype=bool), qM_out: wp.array3d(dtype=float)):
     worldid, elemid1, elemid2 = wp.tid()
 
@@ -1161,7 +1179,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     qM_out[worldid, elemid1, elemid2] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_nworld(
     # Model:
     nq: int,
@@ -1239,7 +1257,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
     # Model:
     body_mocapid: wp.array(dtype=int),
@@ -1263,7 +1281,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       mocap_pos_out[worldid, mocapid] = body_pos[worldid, bodyid]
       mocap_quat_out[worldid, mocapid] = body_quat[worldid, bodyid]
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_contact(
     # Data in:
     nacon_in: wp.array(dtype=int),

@@ -61,9 +61,9 @@ class BlockDim:
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
-  linesearch_iterative: int = 64
-  # support
-  mul_m_dense: int = 32
+  linesearch_iterative: int = 32
+  # derivative
+  qderiv_actuator_dense: int = 32
 
 
 class BroadphaseType(enum.IntEnum):
@@ -1008,6 +1008,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
@@ -1022,6 +1023,8 @@ class Model:
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
+    body_branches: flattened body ids for all branches
+    body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
@@ -1355,6 +1358,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  nbranch: int
   nv_pad: int
   nacttrnbody: int
   nsensorcollision: int
@@ -1368,6 +1372,8 @@ class Model:
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
+  body_branches: wp.array(dtype=int)
+  body_branch_start: wp.array(dtype=int)
   mocap_bodyid: array("nmocap", int)
   body_fluid_ellipsoid: array("nbody", bool)
   jnt_limited_slide_hinge_adr: wp.array(dtype=int)
@@ -1537,9 +1543,9 @@ class Constraint:
   state: array("nworld", "njmax_pad", int)
   mv: array("nworld", "nv", float)
   jv: array("nworld", "njmax", float)
-  quad: array("nworld", "njmax", wp.vec3)
-  quad_gauss: array("nworld", wp.vec3)
-  alpha: array("nworld", float)
+  quad: array("nworld", "njmax", wp.vec3)  # parallel, or iterative+elliptic
+  quad_gauss: array("nworld", wp.vec3)  # parallel linesearch only
+  alpha: array("nworld", float)  # parallel linesearch only
   prev_grad: array("nworld", "nv", float)
   prev_Mgrad: array("nworld", "nv", float)
   beta: array("nworld", float)
@@ -1606,7 +1612,7 @@ class Data:
     qLD: L'*D*L factorization of M                              (nworld, nv, nv) if dense
                                                                 (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
-    flexedge_velocity: flex edge velocities                     (nworld, nflexedge,)
+    flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
     cvel: com-based velocity (rot:lin)                          (nworld, nbody, 6)
