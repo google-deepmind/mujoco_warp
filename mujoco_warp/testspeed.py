@@ -24,6 +24,7 @@ Example:
 import dataclasses
 import inspect
 import json
+import shutil
 import sys
 from typing import Sequence
 
@@ -51,7 +52,7 @@ _NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of con
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
-_CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "clear kernel cache (to calculate full JIT time)")
+_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "print an event trace report")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "print a report of contacts and constraints per step")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of solver iterations per step")
@@ -98,12 +99,12 @@ def _collect_metrics(
 ) -> dict[str, float]:
   """Collect all metrics into a dictionary."""
   steps = _NWORLD.value * _NSTEP.value
-  model_name = path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem
   metrics = {
-    f"{model_name}:jit_duration": jit_time,
-    f"{model_name}:run_time": run_time,
-    f"{model_name}:steps_per_second": steps / run_time,
-    f"{model_name}:converged_worlds": int(nsuccess),
+    "benchmark": path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem,
+    "jit_duration": jit_time,
+    "run_time": run_time,
+    "steps_per_second": steps / run_time,
+    "converged_worlds": int(nsuccess),
   }
 
   def flatten_trace(prefix: str, trace, metrics):
@@ -113,32 +114,32 @@ def _collect_metrics(
         metrics[f"{prefix}{k}{f'[{i}]' if len(times) > 1 else ''}"] = 1e6 * t / steps
       flatten_trace(f"{prefix}{k}.", sub_trace, metrics)
 
-  flatten_trace(model_name + ":", trace, metrics)
+  flatten_trace("", trace, metrics)
 
   if _MEMORY.value:
     metrics.update(
       {
-        f"{model_name}:model_memory": sum(c for _, c in _dataclass_memory(m)),
-        f"{model_name}:data_memory": sum(c for _, c in _dataclass_memory(d)),
-        f"{model_name}:total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
+        "model_memory": sum(c for _, c in _dataclass_memory(m)),
+        "data_memory": sum(c for _, c in _dataclass_memory(d)),
+        "total_memory": free_mem_at_init - wp.get_device(_DEVICE.value).free_memory,
       }
     )
 
   if nacon and nefc:
     metrics.update(
       {
-        f"{model_name}:ncon_mean": np.mean(nacon) / _NWORLD.value,
-        f"{model_name}:ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
-        f"{model_name}:nefc_mean": np.mean(nefc),
-        f"{model_name}:nefc_p95": np.percentile(nefc, 95),
+        "ncon_mean": np.mean(nacon) / _NWORLD.value,
+        "ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
+        "nefc_mean": np.mean(nefc),
+        "nefc_p95": np.percentile(nefc, 95),
       }
     )
 
   if solver_niter:
     metrics.update(
       {
-        f"{model_name}:solver_niter_mean": np.mean(solver_niter),
-        f"{model_name}:solver_niter_p95": np.percentile(solver_niter, 95),
+        "solver_niter_mean": np.mean(solver_niter),
+        "solver_niter_p95": np.percentile(solver_niter, 95),
       }
     )
 
@@ -148,15 +149,17 @@ def _collect_metrics(
 def _output_short(*args):
   """Output metrics in a short format."""
   metrics = _collect_metrics(*args)
-  max_key_len = max(len(key) for key in metrics.keys())
+  benchmark = metrics.pop("benchmark")
+  max_key_len = max(len(key) for key in metrics.keys()) + len(benchmark)
   for key, value in metrics.items():
-    print(f"{key:<{max_key_len}} {value}")
+    print(f"{benchmark}:{key:<{max_key_len}} {value}")
 
 
 def _output_json(*args):
   """Output metrics in a JSON format."""
   metrics = _collect_metrics(*args)
-  print(json.dumps(metrics, indent=2))
+  del metrics["benchmark"]
+  print(json.dumps(metrics))
 
 
 def _output_human(m, d, path: epath.Path, free_mem_at_init, jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess):
@@ -234,14 +237,14 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       mem = _dataclass_memory(dataclass)
       other_mem -= sum(c for _, c in mem)
       other_mem_total = sum(c for _, c in mem)
-      print(f"{name} memory {other_mem_total / 1024**2:.2f} MB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
+      print(f"{name} memory {other_mem_total / 1024**2:.2f} MiB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
       fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
       for field, capacity in fields:
-        print(f" {field}: {capacity / 1024**2:.2f} MB ({100 * capacity / used_mem:.2f}%)")
+        print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / used_mem:.2f}%)")
       if not fields:
         print(" (no field >= 1% of used memory)")
-    print(f"Other memory: {other_mem / 1024**2:.2f} MB ({100 * other_mem / used_mem:.2f}% of used memory)")
-    print(f"Total memory: {used_mem / 1024**2:.2f} MB ({100 * used_mem / total_mem:.2f}% of total device memory)")
+    print(f"Other memory: {other_mem / 1024**2:.2f} MiB ({100 * other_mem / used_mem:.2f}% of used memory)")
+    print(f"Total memory: {used_mem / 1024**2:.2f} MiB ({100 * used_mem / total_mem:.2f}% of total device memory)")
 
 
 def _main(argv: Sequence[str]):
@@ -270,8 +273,14 @@ def _main(argv: Sequence[str]):
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
   free_mem_at_init = wp.get_device(_DEVICE.value).free_memory
-  if _CLEAR_KERNEL_CACHE.value:
+  if _CLEAR_WARP_CACHE.value:
     wp.clear_kernel_cache()
+    wp.clear_lto_cache()
+    # Clear CUDA compute cache for truly cold start JIT
+    compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
+    if compute_cache.exists():
+      shutil.rmtree(compute_cache)
+      compute_cache.mkdir()
 
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)

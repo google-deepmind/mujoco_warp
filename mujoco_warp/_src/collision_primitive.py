@@ -43,7 +43,6 @@ from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1573,7 +1572,7 @@ assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order
 
 @cache_kernel
 def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),
