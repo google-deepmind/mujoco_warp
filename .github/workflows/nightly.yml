@@ -1,0 +1,36 @@
+name: Nightly dependency check
+
+on:
+  schedule:
+    - cron: "0 11 * * *" # Daily at 11 AM UTC (3 AM PST)
+  workflow_dispatch: # Allow manual triggers for testing
+
+permissions:
+  contents: read
+
+jobs:
+  test-latest-deps:
+    name: Test with latest dependencies (including pre-releases)
+    # Early warning: tests against latest upstream versions to catch breaking changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.27"
+          python-version: ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install
+      - name: Update dependencies to latest (including pre-releases)
+        run: |
+          uv lock --upgrade
+      - name: Show updated dependency tree
+        run: |
+          uv tree
+      - name: Test with pytest
+        run: |
+          uv run --with pytest --with pytest-xdist pytest -n 2
