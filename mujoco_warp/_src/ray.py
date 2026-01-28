@@ -18,12 +18,12 @@ from typing import Optional, Tuple
 import warp as wp
 
 from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.render_context import RenderContext
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec6
-from mujoco_warp._src.render_context import RenderContext
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1157,6 +1157,8 @@ def ray(
     geomgroup: Group inclusion/exclusion mask. If all are wp.inf, ignore.
     flg_static: If True, allows rays to intersect with static geoms.
     bodyexclude: Ignore geoms on specified body id (-1 to disable).
+    rc: Optional Render context containing BVH information for BVH accelerated ray
+      intersections.
 
   Returns:
     Distances from ray origins to geom surfaces, IDs of intersected geoms (-1 if none),
@@ -1211,6 +1213,7 @@ def rays(
     rc: Optional Render context containing BVH information for BVH accelerated ray
       intersections.
   """
+  # TODO: Investigate building rc if none and removing the non-accelerated path
   if rc is None:
     wp.launch_tiled(
       _ray,

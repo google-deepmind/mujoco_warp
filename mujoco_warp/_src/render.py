@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src import bvh
 from mujoco_warp._src import math
 from mujoco_warp._src.ray import ray_box
 from mujoco_warp._src.ray import ray_capsule
@@ -78,23 +77,6 @@ def _tile_coords(tid: int, W: int, H: int):
   i = tile_x + u
   j = tile_y + v
   return i, j
-
-
-@event_scope
-def render(m: Model, d: Data, rc: RenderContext):
-  """Render the current frame.
-
-  Outputs are stored in buffers within the render context.
-
-  Args:
-    m: The model on device.
-    d: The data on device.
-    rc: The render context on device.
-  """
-  bvh.refit_scene_bvh(m, d, rc)
-  if m.nflex:
-    bvh.refit_flex_bvh(m, d, rc)
-  render_megakernel(m, d, rc)
 
 
 @wp.func
@@ -621,7 +603,16 @@ def compute_lighting(
 
 
 @event_scope
-def render_megakernel(m: Model, d: Data, rc: RenderContext):
+def render(m: Model, d: Data, rc: RenderContext):
+  """Render the current frame.
+
+  Outputs are stored in buffers within the render context.
+
+  Args:
+    m: The model on device.
+    d: The data on device.
+    rc: The render context on device.
+  """
   rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
   rc.depth_data.fill_(0.0)
 

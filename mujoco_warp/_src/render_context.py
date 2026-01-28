@@ -20,7 +20,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
-import mujoco_warp as mjw
+from mujoco_warp._src import bvh
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
@@ -140,7 +140,7 @@ class RenderContext:
     for i in range(nmesh):
       if i not in used_mesh_id:
         continue
-      mesh, half = mjw.build_mesh_bvh(mjm, i)
+      mesh, half = bvh.build_mesh_bvh(mjm, i)
       self.mesh_registry[mesh.id] = mesh
       mesh_bvh_id[i] = mesh.id
       mesh_bounds_size[i] = half
@@ -160,7 +160,7 @@ class RenderContext:
     for hid in range(nhfield):
       if hid not in used_hfield_id:
         continue
-      hmesh, hhalf = mjw.build_hfield_bvh(mjm, hid)
+      hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
       self.hfield_registry[hmesh.id] = hmesh
       hfield_bvh_id[hid] = hmesh.id
       hfield_bounds_size[hid] = hhalf
@@ -181,7 +181,7 @@ class RenderContext:
         flex_shell,
         flex_faceadr,
         flex_nface,
-      ) = mjw.build_flex_bvh(mjm, m, d)
+      ) = bvh.build_flex_bvh(mjm, m, d)
 
       self.flex_registry[fmesh.id] = fmesh
       self.flex_bvh_id = fmesh.id
@@ -332,7 +332,7 @@ class RenderContext:
     self.group_root = wp.zeros(d.nworld, dtype=int)
     self.bvh = None
     self.bvh_id = None
-    mjw.build_scene_bvh(m, d, self)
+    bvh.build_scene_bvh(m, d, self)
 
 
 @wp.kernel

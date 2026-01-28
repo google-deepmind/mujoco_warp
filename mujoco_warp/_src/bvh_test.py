@@ -21,7 +21,6 @@ import warp as wp
 from absl.testing import absltest
 
 from mujoco_warp import test_data
-
 from mujoco_warp._src import bvh
 
 
