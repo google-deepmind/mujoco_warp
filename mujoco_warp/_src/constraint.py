@@ -1218,7 +1218,7 @@ def _efc_limit_tendon(
 def _efc_contact_init(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     njmax_in: int,
@@ -1284,15 +1284,15 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
     geom_bodyid: wp.array(dtype=int),
     dof_affects_body: wp.array2d(dtype=int),
     # Data in:
-    subtree_com_in: wp.array2d(dtype=wp.vec3),
-    cdof_in: wp.array2d(dtype=wp.spatial_vector),
-    qvel_in: wp.array2d(dtype=float),
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
     nl_in: wp.array(dtype=int),
     nefc_in: wp.array(dtype=int),
-    efc_conid_in: wp.array2d(dtype=int),
+    qvel_in: wp.array2d(dtype=float),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cdof_in: wp.array2d(dtype=wp.spatial_vector),
     contact_efc_address_in: wp.array2d(dtype=int),
+    efc_conid_in: wp.array2d(dtype=int),
     # In:
     condim_in: wp.array(dtype=int),
     geom_in: wp.array(dtype=wp.vec2i),
@@ -1402,7 +1402,7 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
 def _efc_contact_update(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -1950,15 +1950,15 @@ def make_constraint(m: types.Model, d: types.Data):
           m.body_rootid,
           m.geom_bodyid,
           m.dof_affects_body,
-          d.subtree_com,
-          d.cdof,
-          d.qvel,
           d.ne,
           d.nf,
           d.nl,
           d.nefc,
-          d.efc.conid,
+          d.qvel,
+          d.subtree_com,
+          d.cdof,
           d.contact.efc_address,
+          d.efc.conid,
           d.contact.dim,
           d.contact.geom,
           d.contact.pos,
