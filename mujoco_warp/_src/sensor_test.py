@@ -22,6 +22,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjw
+from mujoco_warp._src.types import CollisionType
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
@@ -103,7 +104,7 @@ class SensorTest(parameterized.TestCase):
       """
       )
 
-      primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == True]
+      primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == CollisionType.PRIMITIVE]
       mjw.primitive_narrowphase(m, d, primitive_pairs)
 
   def test_sensor(self):
