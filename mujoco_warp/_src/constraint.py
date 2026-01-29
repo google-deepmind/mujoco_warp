@@ -1300,6 +1300,7 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
     # Data in:
     subtree_com_in: wp.array2d(dtype=wp.vec3),
     cdof_in: wp.array2d(dtype=wp.spatial_vector),
+    qvel_in: wp.array2d(dtype=float),
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
     nl_in: wp.array(dtype=int),
@@ -1314,6 +1315,7 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
     friction_in: wp.array2d(dtype=float),
     # Data out:
     efc_J_out: wp.array3d(dtype=float),
+    efc_Jqvel_out: wp.array2d(dtype=float),
   ):
     worldid = wp.tid()
 
@@ -1321,6 +1323,7 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
     efcid_end = nefc_in[worldid]
 
     cdof_tile = wp.tile_load(cdof_in[worldid], shape=NV_PADDED, bounds_check=True)
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=NV_PADDED, bounds_check=True)
 
     prev_conid = int(-1)
     condim = int(0)
@@ -1401,6 +1404,11 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
 
       wp.tile_store(efc_J_out[worldid, efcid], J, bounds_check=False)
 
+      # Compute Jqvel = J @ qvel
+      J_times_qvel = wp.tile_map(wp.mul, J, qvel_tile)
+      Jqvel_reduced = wp.tile_reduce(wp.add, J_times_qvel)
+      wp.tile_store(efc_Jqvel_out[worldid], Jqvel_reduced, offset=efcid, bounds_check=False)
+
   return kernel
 
 
@@ -1411,7 +1419,6 @@ def _efc_contact_update(cone_type: types.ConeType):
   @wp.kernel
   def kernel(
     # Model:
-    nv: int,
     opt_timestep: wp.array(dtype=float),
     opt_impratio_invsqrt: wp.array(dtype=float),
     body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -1421,10 +1428,9 @@ def _efc_contact_update(cone_type: types.ConeType):
     nf_in: wp.array(dtype=int),
     nl_in: wp.array(dtype=int),
     nefc_in: wp.array(dtype=int),
-    qvel_in: wp.array2d(dtype=float),
     contact_efc_address_in: wp.array2d(dtype=int),
     efc_conid_in: wp.array2d(dtype=int),
-    efc_J_in: wp.array3d(dtype=float),
+    efc_Jqvel_in: wp.array2d(dtype=float),
     # In:
     refsafe_in: int,
     condim_in: wp.array(dtype=int),
@@ -1461,9 +1467,7 @@ def _efc_contact_update(cone_type: types.ConeType):
     body1 = geom_bodyid[geom[0]]
     body2 = geom_bodyid[geom[1]]
 
-    Jqvel = float(0.0)
-    for i in range(nv):
-      Jqvel += efc_J_in[worldid, efcid, i] * qvel_in[worldid, i]
+    Jqvel = efc_Jqvel_in[worldid, efcid]
 
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
     impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
@@ -1962,6 +1966,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.dof_affects_body,
           d.subtree_com,
           d.cdof,
+          d.qvel,
           d.ne,
           d.nf,
           d.nl,
@@ -1976,6 +1981,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
         outputs=[
           d.efc.J,
+          d.efc.Jqvel,
         ],
         block_dim=m.nv_pad,
       )
@@ -1984,7 +1990,6 @@ def make_constraint(m: types.Model, d: types.Data):
         _efc_contact_update(m.opt.cone),
         dim=(d.nworld, d.njmax),
         inputs=[
-          m.nv,
           m.opt.timestep,
           m.opt.impratio_invsqrt,
           m.body_invweight0,
@@ -1993,10 +1998,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nf,
           d.nl,
           d.nefc,
-          d.qvel,
           d.contact.efc_address,
           d.efc.conid,
-          d.efc.J,
+          d.efc.Jqvel,
           refsafe,
           d.contact.dim,
           d.contact.includemargin,
