@@ -2491,7 +2491,7 @@ def sensor_acc(m: Model, d: Data):
     sensor_contact_criteria.fill_(1.0e32)
 
     wp.launch(
-      _contact_match_printf,
+      _contact_match_silent,
       dim=(m.sensor_contact_adr.size, d.naconmax),
       inputs=[
         m.opt.cone,
