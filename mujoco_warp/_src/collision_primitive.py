@@ -1539,6 +1539,7 @@ def box_box_wrapper(
     )
 
 
+# Map of supported primitive collision functions
 _PRIMITIVE_COLLISIONS = {
   (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
   (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
@@ -1554,20 +1555,6 @@ _PRIMITIVE_COLLISIONS = {
   (GeomType.CAPSULE, GeomType.BOX): capsule_box_wrapper,
   (GeomType.BOX, GeomType.BOX): box_box_wrapper,
 }
-
-
-# TODO(team): _check_collisions shared utility
-def _check_primitive_collisions():
-  prev_idx = -1
-  for types in _PRIMITIVE_COLLISIONS.keys():
-    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
-    if types[1] < types[0] or idx <= prev_idx:
-      return False
-    prev_idx = idx
-  return True
-
-
-assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order"
 
 
 @cache_kernel
@@ -1729,7 +1716,7 @@ _PRIMITIVE_COLLISION_FUNC = []
 
 
 @event_scope
-def primitive_narrowphase(m: Model, d: Data):
+def primitive_narrowphase(m: Model, d: Data, collision_table: list[tuple[GeomType, GeomType]]):
   """Runs collision detection on primitive geom pairs discovered during broadphase.
 
   This function processes collision pairs involving primitive shapes that were
@@ -1748,6 +1735,8 @@ def primitive_narrowphase(m: Model, d: Data):
   # for pair types without collisions, as well as updating the launch dimensions.
 
   for types, func in _PRIMITIVE_COLLISIONS.items():
+    if types not in collision_table:
+      continue
     idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _PRIMITIVE_COLLISION_TYPES:
       _PRIMITIVE_COLLISION_TYPES.append(types)
