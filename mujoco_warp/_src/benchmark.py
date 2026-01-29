@@ -25,6 +25,7 @@ from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.util_misc import halton
+from mujoco_warp._src.warning import check_warnings
 
 
 def _sum(stack1, stack2):
@@ -144,6 +145,9 @@ def benchmark(
         wp.capture_launch(graph)
         wp.synchronize()
         run_end = time.perf_counter()
+
+        # Check and emit any overflow warnings, then clear flags
+        check_warnings(d, clear=True)
 
       time_vec[i] = run_end - run_beg
       if trace:

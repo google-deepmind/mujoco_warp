@@ -15,7 +15,6 @@
 """Warning utilities for kernel-side overflow detection."""
 
 import sys
-import warnings
 from typing import List
 
 from . import types
@@ -62,7 +61,7 @@ def check_warnings(d: types.Data, clear: bool = True) -> List[str]:
   for wtype in types.WarningType:
     if flags[wtype]:
       msg = _WARNING_MESSAGES[wtype].format(info[wtype, 0], info[wtype, 1])
-      warnings.warn(msg)
+      print(f"Warning: {msg}", file=sys.stderr)
       emitted.append(msg)
 
   if clear:
