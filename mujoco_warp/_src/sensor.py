@@ -2220,11 +2220,12 @@ def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objty
   return False
 
 
-def _create_contact_match_kernel(enable_printf: bool):
+@cache_kernel
+def _contact_match(enable_printf: bool):
   """Creates _contact_match kernel with optional printf for warnings."""
 
   @wp.kernel(module="unique")
-  def _contact_match(
+  def contact_match(
     # Model:
     opt_cone: int,
     opt_contact_sensor_maxmatch: int,
@@ -2366,12 +2367,7 @@ def _create_contact_match_kernel(enable_printf: bool):
     # contact direction
     sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
-  return _contact_match
-
-
-# Pre-create kernel variants
-_contact_match_printf = _create_contact_match_kernel(enable_printf=True)
-_contact_match_silent = _create_contact_match_kernel(enable_printf=False)
+  return contact_match
 
 
 @cache_kernel
@@ -2494,9 +2490,8 @@ def sensor_acc(m: Model, d: Data):
     sensor_contact_matchid.fill_(-1)
     sensor_contact_criteria.fill_(1.0e32)
 
-    _contact_match_kernel = _contact_match_printf if m.opt.warning_printf else _contact_match_silent
     wp.launch(
-      _contact_match_kernel,
+      _contact_match(m.opt.warning_printf),
       dim=(m.sensor_contact_adr.size, d.naconmax),
       inputs=[
         m.opt.cone,

@@ -191,11 +191,12 @@ def _next_activation(
   act_out[worldid, actid] = act
 
 
-def _create_next_time_kernel(enable_printf: bool):
+@cache_kernel
+def _next_time(enable_printf: bool):
   """Creates _next_time kernel with optional printf for warnings."""
 
   @wp.kernel(module="unique")
-  def _next_time(
+  def next_time(
     # Model:
     opt_timestep: wp.array(dtype=float),
     # Data in:
@@ -208,7 +209,6 @@ def _create_next_time_kernel(enable_printf: bool):
     ncollision_in: wp.array(dtype=int),
     # Data out:
     time_out: wp.array(dtype=float),
-    # Warning outputs:
     warning_out: wp.array(dtype=int),
     warning_info_out: wp.array2d(dtype=int),
   ):
@@ -240,12 +240,7 @@ def _create_next_time_kernel(enable_printf: bool):
         wp.atomic_max(warning_info_out[int(WarningType.NARROWPHASE_OVERFLOW)], 0, nconmax)
         wp.atomic_max(warning_info_out[int(WarningType.NARROWPHASE_OVERFLOW)], 1, nacon_in[0])
 
-  return _next_time
-
-
-# Pre-create kernel variants
-_next_time_printf = _create_next_time_kernel(enable_printf=True)
-_next_time_silent = _create_next_time_kernel(enable_printf=False)
+  return next_time
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -287,9 +282,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     outputs=[d.qpos],
   )
 
-  _next_time_kernel = _next_time_printf if m.opt.warning_printf else _next_time_silent
   wp.launch(
-    _next_time_kernel,
+    _next_time(m.opt.warning_printf),
     dim=d.nworld,
     inputs=[m.opt.timestep, d.nefc, d.time, d.nworld, d.naconmax, d.njmax, d.nacon, d.ncollision],
     outputs=[d.time, d.warning, d.warning_info],
