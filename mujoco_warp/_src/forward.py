@@ -287,8 +287,9 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     outputs=[d.qpos],
   )
 
+  _next_time_kernel = _next_time_printf if m.opt.warning_printf else _next_time_silent
   wp.launch(
-    _next_time_silent,
+    _next_time_kernel,
     dim=d.nworld,
     inputs=[m.opt.timestep, d.nefc, d.time, d.nworld, d.naconmax, d.njmax, d.nacon, d.ncollision],
     outputs=[d.time, d.warning, d.warning_info],

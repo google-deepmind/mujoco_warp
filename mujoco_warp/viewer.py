@@ -147,6 +147,7 @@ def _main(argv: Sequence[str]) -> None:
 
     with wp.ScopedDevice(_DEVICE.value):
       m = mjw.put_model(mjm)
+      m.opt.warning_printf = False  # use check_warnings instead
       override_model(m, _OVERRIDE.value)
       broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
       solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
@@ -189,6 +190,7 @@ def _main(argv: Sequence[str]) -> None:
         if mjm.opt != opt:
           opt = copy.copy(mjm.opt)
           m = mjw.put_model(mjm)
+          m.opt.warning_printf = False  # use check_warnings instead
           graph = _compile_step(m, d)
 
         if _VIEWER_GLOBAL_STATE["running"]:

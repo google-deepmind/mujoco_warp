@@ -99,6 +99,7 @@ class WarningTest(absltest.TestCase):
     self.assertEqual(mjd.ncon, 0, "Test setup: should have no initial contacts")
 
     m = mjw.put_model(mjm)
+    m.opt.warning_printf = False  # disable printf in tests
     # Set njmax very low to trigger overflow when sphere hits ground
     d = mjw.put_data(mjm, mjd, njmax=1)
 
@@ -139,6 +140,7 @@ class WarningTest(absltest.TestCase):
     mujoco.mj_forward(mjm, mjd)
 
     m = mjw.put_model(mjm)
+    m.opt.warning_printf = False  # disable printf in tests
     d = mjw.put_data(mjm, mjd, njmax=1)
 
     # Run until contact
@@ -176,6 +178,7 @@ class WarningTest(absltest.TestCase):
     mujoco.mj_forward(mjm, mjd)
 
     m = mjw.put_model(mjm)
+    m.opt.warning_printf = False  # disable printf in tests
     d = mjw.put_data(mjm, mjd, njmax=1)
 
     # Run until contact
@@ -220,6 +223,7 @@ class WarningTest(absltest.TestCase):
     self.assertEqual(mjd.ncon, 0, "Test setup: should have no initial contacts")
 
     m = mjw.put_model(mjm)
+    m.opt.warning_printf = False  # disable printf in tests
     d = mjw.put_data(mjm, mjd, njmax=1)
 
     # Clear warnings
@@ -277,6 +281,7 @@ class WarningTest(absltest.TestCase):
     mujoco.mj_forward(mjm, mjd)
 
     m = mjw.put_model(mjm)
+    m.opt.warning_printf = False  # disable printf in tests
     d = mjw.put_data(mjm, mjd, njmax=1)
 
     # Clear warnings
@@ -322,6 +327,25 @@ class WarningTest(absltest.TestCase):
     result = mjw.get_warnings(d)
     self.assertEqual(len(result), 1)
     self.assertIn("nefc overflow", result[0])
+
+
+  def test_warning_printf_option(self):
+    """Tests that warning_printf option is available and defaults to True."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size="0.1"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+
+    m = mjw.put_model(mjm)
+
+    # Default should be True (printf enabled)
+    self.assertTrue(m.opt.warning_printf)
 
 
 if __name__ == "__main__":

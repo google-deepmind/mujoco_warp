@@ -715,6 +715,9 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    warning_printf: if True, emit overflow warnings via printf to stdout in addition to setting
+                    warning flags. Default True. Set to False and use check_warnings(d) for
+                    programmatic access to warnings without stdout output.
   """
 
   timestep: array("*", float)
@@ -747,6 +750,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  warning_printf: bool
 
 
 @dataclasses.dataclass

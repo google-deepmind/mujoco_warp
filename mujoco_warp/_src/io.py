@@ -218,6 +218,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   else:
     opt.contact_sensor_maxmatch = 64
 
+  # warning_printf: emit overflow warnings via printf (default True)
+  opt.warning_printf = True
+
   # place opt on device
   for f in dataclasses.fields(types.Option):
     if isinstance(f.type, wp.array):
