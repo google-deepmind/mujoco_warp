@@ -35,6 +35,9 @@ _WARNING_MESSAGES = {
         "GJK did not converge - increase opt.ccd_iterations (currently {0})"
     ),
     types.WarningType.EPA_HORIZON: "EPA horizon overflow - horizon size {0} insufficient",
+    types.WarningType.HFIELD_OVERFLOW: (
+        "heightfield collision overflow - decrease hfield rows/cols or modify colliding geom size (limit {0})"
+    ),
 }
 
 

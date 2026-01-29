@@ -33,6 +33,7 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import WarningType
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
@@ -377,10 +378,13 @@ def ccd_hfield_kernel_builder(
         # add both triangles from this cell
         for i in range(2):
           if count >= MJ_MAXCONPAIR:
-            wp.printf(
-              "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
-              MJ_MAXCONPAIR,
-            )
+            if wp.static(warning_printf):
+              wp.printf(
+                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
+                MJ_MAXCONPAIR,
+              )
+            wp.atomic_max(warning_out, int(WarningType.HFIELD_OVERFLOW), 1)
+            wp.atomic_max(warning_info_out, int(WarningType.HFIELD_OVERFLOW), 0, MJ_MAXCONPAIR)
             continue
 
           # add vert

@@ -76,6 +76,7 @@ class WarningType(enum.IntEnum):
     CONTACT_MATCH_OVERFLOW: contact sensor match count exceeded maxmatch
     GJK_ITERATIONS: GJK algorithm did not converge within iteration limit
     EPA_HORIZON: EPA horizon buffer overflow
+    HFIELD_OVERFLOW: heightfield collision count exceeded MJ_MAXCONPAIR
   """
 
   NEFC_OVERFLOW = 0
@@ -84,6 +85,7 @@ class WarningType(enum.IntEnum):
   CONTACT_MATCH_OVERFLOW = 3
   GJK_ITERATIONS = 4
   EPA_HORIZON = 5
+  HFIELD_OVERFLOW = 6
 
 
 NUM_WARNINGS = len(WarningType)
