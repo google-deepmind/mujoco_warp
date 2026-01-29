@@ -27,7 +27,6 @@ from mujoco_warp._src import types
 
 
 class WarningTest(absltest.TestCase):
-
   def test_warning_arrays_initialized(self):
     """Tests that warning arrays are properly initialized."""
     mjm = mujoco.MjModel.from_xml_string("""
@@ -198,7 +197,7 @@ class WarningTest(absltest.TestCase):
 
   def test_multi_step_graph_captures_mid_graph_warning(self):
     """Tests that a multi-step graph captures warnings even if they occur mid-graph.
-    
+
     Captures 20 steps in one graph. The sphere starts close to ground and hits it
     around step 5-10. The warning from that step should be captured and readable
     after the graph completes.
@@ -242,13 +241,17 @@ class WarningTest(absltest.TestCase):
 
     # Check that warning was captured from the step where contact happened
     warning_flags = d.warning.numpy()
-    self.assertEqual(warning_flags[types.WarningType.NEFC_OVERFLOW], 1,
-      f"Expected nefc overflow warning, got flags: {warning_flags}")
+    self.assertEqual(
+      warning_flags[types.WarningType.NEFC_OVERFLOW], 1, f"Expected nefc overflow warning, got flags: {warning_flags}"
+    )
 
     # Verify warning info shows the correct suggested value
     warning_info = d.warning_info.numpy()
-    self.assertEqual(warning_info[types.WarningType.NEFC_OVERFLOW, 0], 4,
-      f"Expected nefc=4 in warning info, got: {warning_info[types.WarningType.NEFC_OVERFLOW]}")
+    self.assertEqual(
+      warning_info[types.WarningType.NEFC_OVERFLOW, 0],
+      4,
+      f"Expected nefc=4 in warning info, got: {warning_info[types.WarningType.NEFC_OVERFLOW]}",
+    )
 
     # Get warnings - should include the overflow message
     result = mjw.get_warnings(d)
@@ -258,7 +261,7 @@ class WarningTest(absltest.TestCase):
 
   def test_single_step_graph_warns_only_when_event_occurs(self):
     """Tests that a single-step graph only reports warning on the step it happens.
-    
+
     Captures 1 step as a graph. Runs it multiple times. Verifies that:
     1. Before contact: no warnings generated
     2. After contact: warnings generated
@@ -299,8 +302,7 @@ class WarningTest(absltest.TestCase):
 
     # Check: no warnings yet (sphere hasn't hit ground)
     warning_flags_before = d.warning.numpy().copy()
-    self.assertEqual(warning_flags_before[types.WarningType.NEFC_OVERFLOW], 0,
-      "Should have no warning before contact")
+    self.assertEqual(warning_flags_before[types.WarningType.NEFC_OVERFLOW], 0, "Should have no warning before contact")
 
     # Clear and run more launches until contact happens
     mjw.clear_warnings(d)
@@ -310,8 +312,7 @@ class WarningTest(absltest.TestCase):
 
     # Check: warning should now be set (contact occurred)
     warning_flags_after = d.warning.numpy()
-    self.assertEqual(warning_flags_after[types.WarningType.NEFC_OVERFLOW], 1,
-      "Should have warning after contact")
+    self.assertEqual(warning_flags_after[types.WarningType.NEFC_OVERFLOW], 1, "Should have warning after contact")
 
     # Clear and run more - warning should still be generated (overflow persists each step)
     mjw.clear_warnings(d)
@@ -320,14 +321,14 @@ class WarningTest(absltest.TestCase):
     wp.synchronize()
 
     warning_flags_final = d.warning.numpy()
-    self.assertEqual(warning_flags_final[types.WarningType.NEFC_OVERFLOW], 1,
-      "Warning should still be generated (overflow persists)")
+    self.assertEqual(
+      warning_flags_final[types.WarningType.NEFC_OVERFLOW], 1, "Warning should still be generated (overflow persists)"
+    )
 
     # Check warning message
     result = mjw.get_warnings(d)
     self.assertEqual(len(result), 1)
     self.assertIn("nefc overflow", result[0])
-
 
   def test_warning_printf_option(self):
     """Tests that warning_printf option is available and defaults to True."""

@@ -749,6 +749,8 @@ def ccd_kernel_builder(
     else:
       cutoff = 0.0
     dist, ncontact, w1, w2, multiccd_idx = ccd(
+      warning_out,
+      warning_info_out,
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
@@ -768,8 +770,6 @@ def ccd_kernel_builder(
       epa_norm2_in[tid],
       epa_horizon_in[tid],
       wp.static(warning_printf),
-      warning_out,
-      warning_info_out,
     )
 
     if dist >= 0.0 and pairid[1] == -1:

@@ -194,7 +194,7 @@ def _next_activation(
 def _create_next_time_kernel(enable_printf: bool):
   """Creates _next_time kernel with optional printf for warnings."""
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def _next_time(
     # Model:
     opt_timestep: wp.array(dtype=float),

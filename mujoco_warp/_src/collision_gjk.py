@@ -572,10 +572,10 @@ def gjk(
   geomtype2: int,
   cutoff: float,
   is_discrete: bool,
-  # Warning output:
   warning_printf: bool,
-  warning: wp.array(dtype=int),
-  warning_info: wp.array2d(dtype=int),
+  # Data out:
+  warning_out: wp.array(dtype=int),
+  warning_info_out: wp.array2d(dtype=int),
 ) -> GJKResult:
   """Find distance within a tolerance between two geoms."""
   cutoff2 = cutoff * cutoff
@@ -674,8 +674,8 @@ def gjk(
   if cnt == gjk_iterations:
     if warning_printf:
       wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
-    wp.atomic_max(warning, int(WarningType.GJK_ITERATIONS), 1)
-    wp.atomic_max(warning_info, int(WarningType.GJK_ITERATIONS), 0, gjk_iterations)
+    wp.atomic_max(warning_out, int(WarningType.GJK_ITERATIONS), 1)
+    wp.atomic_max(warning_info_out, int(WarningType.GJK_ITERATIONS), 0, gjk_iterations)
 
   result = GJKResult()
 
@@ -1226,10 +1226,10 @@ def _epa(
   geomtype1: int,
   geomtype2: int,
   is_discrete: bool,
-  # Warning output:
   warning_printf: bool,
-  warning: wp.array(dtype=int),
-  warning_info: wp.array2d(dtype=int),
+  # Data out:
+  warning_out: wp.array(dtype=int),
+  warning_info_out: wp.array2d(dtype=int),
 ) -> Tuple[float, wp.vec3, wp.vec3, int]:
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
@@ -1302,8 +1302,8 @@ def _epa(
     if pt.nhorizon == -1:
       if warning_printf:
         wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
-      wp.atomic_max(warning, int(WarningType.EPA_HORIZON), 1)
-      wp.atomic_max(warning_info, int(WarningType.EPA_HORIZON), 0, pt.horizon.shape[0])
+      wp.atomic_max(warning_out, int(WarningType.EPA_HORIZON), 1)
+      wp.atomic_max(warning_info_out, int(WarningType.EPA_HORIZON), 0, pt.horizon.shape[0])
       idx = -1
       break
 
@@ -1322,8 +1322,8 @@ def _epa(
         if pt.nhorizon == -1:
           if warning_printf:
             wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
-          wp.atomic_max(warning, int(WarningType.EPA_HORIZON), 1)
-          wp.atomic_max(warning_info, int(WarningType.EPA_HORIZON), 0, pt.horizon.shape[0])
+          wp.atomic_max(warning_out, int(WarningType.EPA_HORIZON), 1)
+          wp.atomic_max(warning_info_out, int(WarningType.EPA_HORIZON), 0, pt.horizon.shape[0])
           idx = -1
           break
 
@@ -1353,8 +1353,8 @@ def _epa(
   if cnt == epa_iterations:
     if warning_printf:
       wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
-    wp.atomic_max(warning, int(WarningType.GJK_ITERATIONS), 1)
-    wp.atomic_max(warning_info, int(WarningType.GJK_ITERATIONS), 0, gjk_iterations)
+    wp.atomic_max(warning_out, int(WarningType.GJK_ITERATIONS), 1)
+    wp.atomic_max(warning_info_out, int(WarningType.GJK_ITERATIONS), 0, gjk_iterations)
 
   # return from valid face
   if idx > -1:
@@ -2253,10 +2253,10 @@ def ccd(
   face_pr: wp.array(dtype=wp.vec3),
   face_norm2: wp.array(dtype=float),
   horizon: wp.array(dtype=int),
-  # Warning output:
   warning_printf: bool,
-  warning: wp.array(dtype=int),
-  warning_info: wp.array2d(dtype=int),
+  # Data out:
+  warning_out: wp.array(dtype=int),
+  warning_info_out: wp.array2d(dtype=int),
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """General convex collision detection via GJK/EPA."""
   full_margin1 = 0.0
@@ -2282,7 +2282,21 @@ def ccd(
   # special handling for sphere and capsule (shrink to point and line respectively)
   if size1 + size2 > 0.0:
     cutoff += full_margin1 + full_margin2
-    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete, warning_printf, warning, warning_info)
+    result = gjk(
+      tolerance,
+      gjk_iterations,
+      geom1,
+      geom2,
+      x_1,
+      x_2,
+      geomtype1,
+      geomtype2,
+      cutoff,
+      is_discrete,
+      warning_printf,
+      warning_out,
+      warning_info_out,
+    )
 
     # shallow penetration, inflate contact
     if result.dist > tolerance:
@@ -2298,7 +2312,21 @@ def ccd(
     geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
     cutoff -= full_margin1 + full_margin2
 
-  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete, warning_printf, warning, warning_info)
+  result = gjk(
+    tolerance,
+    gjk_iterations,
+    geom1,
+    geom2,
+    x_1,
+    x_2,
+    geomtype1,
+    geomtype2,
+    cutoff,
+    is_discrete,
+    warning_printf,
+    warning_out,
+    warning_info_out,
+  )
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
@@ -2374,7 +2402,20 @@ def ccd(
   if pt.status:
     return result.dist, 1, result.x1, result.x2, -1
 
-  dist, x1, x2, idx = _epa(tolerance, gjk_iterations, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete, warning_printf, warning, warning_info)
+  dist, x1, x2, idx = _epa(
+    tolerance,
+    gjk_iterations,
+    epa_iterations,
+    pt,
+    geom1,
+    geom2,
+    geomtype1,
+    geomtype2,
+    is_discrete,
+    warning_printf,
+    warning_out,
+    warning_info_out,
+  )
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
 

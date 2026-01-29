@@ -2223,7 +2223,7 @@ def _check_match(body_parentid: wp.array(dtype=int), body: int, geom: int, objty
 def _create_contact_match_kernel(enable_printf: bool):
   """Creates _contact_match kernel with optional printf for warnings."""
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def _contact_match(
     # Model:
     opt_cone: int,
@@ -2253,14 +2253,14 @@ def _create_contact_match_kernel(enable_printf: bool):
     efc_force_in: wp.array2d(dtype=float),
     njmax_in: int,
     nacon_in: wp.array(dtype=int),
+    # Data out:
+    warning_out: wp.array(dtype=int),
+    warning_info_out: wp.array2d(dtype=int),
     # Out:
     sensor_contact_nmatch_out: wp.array2d(dtype=int),
     sensor_contact_matchid_out: wp.array3d(dtype=int),
     sensor_contact_criteria_out: wp.array3d(dtype=float),
     sensor_contact_direction_out: wp.array3d(dtype=float),
-    # Warning outputs:
-    warning_out: wp.array(dtype=int),
-    warning_info_out: wp.array2d(dtype=int),
   ):
     contactsensorid, contactid = wp.tid()
     sensorid = sensor_contact_adr[contactsensorid]
@@ -2283,7 +2283,11 @@ def _create_contact_match_kernel(enable_printf: bool):
     # site filter
     if objtype == ObjType.SITE:
       if not inside_geom(
-        site_xpos_in[worldid, objid], site_xmat_in[worldid, objid], site_size[objid], site_type[objid], contact_pos_in[contactid]
+        site_xpos_in[worldid, objid],
+        site_xmat_in[worldid, objid],
+        site_size[objid],
+        site_type[objid],
+        contact_pos_in[contactid],
       ):
         return
 
@@ -2522,7 +2526,14 @@ def sensor_acc(m: Model, d: Data):
         d.njmax,
         d.nacon,
       ],
-      outputs=[sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction, d.warning, d.warning_info],
+      outputs=[
+        d.warning,
+        d.warning_info,
+        sensor_contact_nmatch,
+        sensor_contact_matchid,
+        sensor_contact_criteria,
+        sensor_contact_direction,
+      ],
     )
 
     # sorting

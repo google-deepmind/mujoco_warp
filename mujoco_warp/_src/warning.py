@@ -20,23 +20,15 @@ from typing import List
 from . import types
 
 _WARNING_MESSAGES = {
-    types.WarningType.NEFC_OVERFLOW: "nefc overflow - increase njmax to {0}",
-    types.WarningType.BROADPHASE_OVERFLOW: (
-        "broadphase overflow - increase nconmax to {0} or naconmax to {1}"
-    ),
-    types.WarningType.NARROWPHASE_OVERFLOW: (
-        "narrowphase overflow - increase nconmax to {0} or naconmax to {1}"
-    ),
-    types.WarningType.CONTACT_MATCH_OVERFLOW: (
-        "contact match overflow - increase Option.contact_sensor_maxmatch to {0}"
-    ),
-    types.WarningType.GJK_ITERATIONS: (
-        "GJK did not converge - increase opt.ccd_iterations (currently {0})"
-    ),
-    types.WarningType.EPA_HORIZON: "EPA horizon overflow - horizon size {0} insufficient",
-    types.WarningType.HFIELD_OVERFLOW: (
-        "heightfield collision overflow - decrease hfield rows/cols or modify colliding geom size (limit {0})"
-    ),
+  types.WarningType.NEFC_OVERFLOW: "nefc overflow - increase njmax to {0}",
+  types.WarningType.BROADPHASE_OVERFLOW: ("broadphase overflow - increase nconmax to {0} or naconmax to {1}"),
+  types.WarningType.NARROWPHASE_OVERFLOW: ("narrowphase overflow - increase nconmax to {0} or naconmax to {1}"),
+  types.WarningType.CONTACT_MATCH_OVERFLOW: ("contact match overflow - increase Option.contact_sensor_maxmatch to {0}"),
+  types.WarningType.GJK_ITERATIONS: ("GJK did not converge - increase opt.ccd_iterations (currently {0})"),
+  types.WarningType.EPA_HORIZON: "EPA horizon overflow - horizon size {0} insufficient",
+  types.WarningType.HFIELD_OVERFLOW: (
+    "heightfield collision overflow - decrease hfield rows/cols or modify colliding geom size (limit {0})"
+  ),
 }
 
 
@@ -100,4 +92,3 @@ def clear_warnings(d: types.Data) -> None:
   """
   d.warning.zero_()
   d.warning_info.zero_()
-
