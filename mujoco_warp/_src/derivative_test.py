@@ -118,6 +118,63 @@ class DerivativeTest(parameterized.TestCase):
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_rne_vel_effect(self, jacobian):
+    """Tests that RNE derivative computes non-zero terms for centrifugal/coriolis effects."""
+    # A double pendulum or spinning body should have RNE terms (d(C(q,qdot))/dqdot)
+    # The default sphere in previous tests might be too simple, use something with rotation.
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 0">
+          <joint type="hinge" axis="1 0 0"/>
+          <geom type="capsule" fromto="0 0 0 0 1 0" size="0.1"/>
+          <body pos="0 1 0">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="capsule" fromto="0 0 0 1 0 0" size="0.1"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+      qvel_noise=1.0,  # randomize velocity to ensure coriolis terms exist
+    )
+
+    # Run step to populate data
+    mjw.step(m, d)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      shape = (1, 1, m.nM)
+    else:
+      shape = (1, m.nv, m.nv)
+
+    # Compute with RNE
+    out_rne = wp.zeros(shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_rne, flg_rne=True)
+
+    # Compute without RNE
+    out_no_rne = wp.zeros(shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_no_rne, flg_rne=False)
+
+    # Difference should be non-zero if RNE is working and physics dictates it
+    res_rne = out_rne.numpy()
+    res_no_rne = out_no_rne.numpy()
+
+    # We expect a difference due to RNE specific terms (e.g. coriolis/centrifugal effects:
+    # cinert * cacc + cvel x (cinert * cvel)).
+    #
+    # Note: `deriv_smooth_vel` (without RNE) only computes damping and actuation derivatives.
+    # While the pure mass matrix part is handled separately in implicit integration (M - dt*qDeriv),
+    # the RNE contributions must be added directly to qDeriv here.
+
+    diff = np.linalg.norm(res_rne - res_no_rne)
+    self.assertGreater(diff, 1e-6, "RNE derivative should contribute non-zero terms for this model")
+
 
 if __name__ == "__main__":
   wp.init()
