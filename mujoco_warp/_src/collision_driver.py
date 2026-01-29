@@ -26,6 +26,7 @@ from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
@@ -33,6 +34,44 @@ from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+# Corresponding table to MuJoCo's mjCOLLISIONFUNC table in engine_collision_driver.c
+# A "True" value corresponds to using a primitive collision method
+MJ_COLLISION_FUNC = {
+  (GeomType.PLANE, GeomType.SPHERE): True,
+  (GeomType.PLANE, GeomType.CAPSULE): True,
+  (GeomType.PLANE, GeomType.ELLIPSOID): True,
+  (GeomType.PLANE, GeomType.CYLINDER): True,
+  (GeomType.PLANE, GeomType.BOX): True,
+  (GeomType.PLANE, GeomType.MESH): True,
+  (GeomType.HFIELD, GeomType.SPHERE): False,
+  (GeomType.HFIELD, GeomType.CAPSULE): False,
+  (GeomType.HFIELD, GeomType.ELLIPSOID): False,
+  (GeomType.HFIELD, GeomType.CYLINDER): False,
+  (GeomType.HFIELD, GeomType.BOX): False,
+  (GeomType.HFIELD, GeomType.MESH): False,
+  (GeomType.SPHERE, GeomType.SPHERE): True,
+  (GeomType.SPHERE, GeomType.CAPSULE): True,
+  (GeomType.SPHERE, GeomType.ELLIPSOID): False,
+  (GeomType.SPHERE, GeomType.CYLINDER): True,
+  (GeomType.SPHERE, GeomType.BOX): True,
+  (GeomType.SPHERE, GeomType.MESH): False,
+  (GeomType.CAPSULE, GeomType.CAPSULE): True,
+  (GeomType.CAPSULE, GeomType.ELLIPSOID): False,
+  (GeomType.CAPSULE, GeomType.CYLINDER): False,
+  (GeomType.CAPSULE, GeomType.BOX): True,
+  (GeomType.CAPSULE, GeomType.MESH): False,
+  (GeomType.ELLIPSOID, GeomType.ELLIPSOID): False,
+  (GeomType.ELLIPSOID, GeomType.CYLINDER): False,
+  (GeomType.ELLIPSOID, GeomType.BOX): False,
+  (GeomType.ELLIPSOID, GeomType.MESH): False,
+  (GeomType.CYLINDER, GeomType.CYLINDER): False,
+  (GeomType.CYLINDER, GeomType.BOX): False,
+  (GeomType.CYLINDER, GeomType.MESH): False,
+  (GeomType.BOX, GeomType.BOX): False,  # overwritten by NATIVECCD disable flag
+  (GeomType.BOX, GeomType.MESH): False,
+  (GeomType.MESH, GeomType.MESH): False,
+}
 
 
 @wp.kernel
@@ -687,10 +726,16 @@ def nxn_broadphase(m: Model, d: Data):
 
 
 def _narrowphase(m, d):
+  collision_func = MJ_COLLISION_FUNC
+  collision_func[(GeomType.BOX, GeomType.BOX)] = bool(m.opt.disableflags & DisableBit.NATIVECCD)
+
+  convex_pairs = [key for key, value in collision_func.items() if value == False]
+  primitive_pairs = [key for key, value in collision_func.items() if value == True]
+
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
-  convex_narrowphase(m, d)
-  primitive_narrowphase(m, d)
+  convex_narrowphase(m, d, convex_pairs)
+  primitive_narrowphase(m, d, primitive_pairs)
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d)

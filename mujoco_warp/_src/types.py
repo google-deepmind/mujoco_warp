@@ -164,7 +164,8 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-  # unsupported: MIDPHASE, AUTORESET, NATIVECCD, ISLAND
+  NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+  # unsupported: MIDPHASE, AUTORESET, ISLAND
 
 
 class EnableBit(enum.IntFlag):
