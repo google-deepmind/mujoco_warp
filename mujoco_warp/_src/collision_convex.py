@@ -139,6 +139,7 @@ def ccd_hfield_kernel_builder(
   geomtype2: int,
   gjk_iterations: int,
   epa_iterations: int,
+  warning_printf: bool,
 ):
   """Kernel builder for heightfield CCD collisions (no multiccd args)."""
 
@@ -217,6 +218,9 @@ def ccd_hfield_kernel_builder(
     contact_type_out: wp.array(dtype=int),
     contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
+    # Warning output:
+    warning_out: wp.array(dtype=int),
+    warning_info_out: wp.array2d(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -423,6 +427,9 @@ def ccd_hfield_kernel_builder(
             epa_pr,
             epa_norm2,
             epa_horizon,
+            wp.static(warning_printf),
+            warning_out,
+            warning_info_out,
           )
 
           if ncontact == 0:
@@ -662,6 +669,7 @@ def ccd_kernel_builder(
   gjk_iterations: int,
   epa_iterations: int,
   use_multiccd: bool,
+  warning_printf: bool,
 ):
   """Kernel builder for non-heightfield CCD collisions (no hfield args)."""
 
@@ -722,6 +730,9 @@ def ccd_kernel_builder(
     contact_type_out: wp.array(dtype=int),
     contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
+    # Warning output:
+    warning_out: wp.array(dtype=int),
+    warning_info_out: wp.array2d(dtype=int),
   ) -> int:
     points = mat43()
     witness1 = mat43()
@@ -752,6 +763,9 @@ def ccd_kernel_builder(
       epa_pr_in[tid],
       epa_norm2_in[tid],
       epa_horizon_in[tid],
+      wp.static(warning_printf),
+      warning_out,
+      warning_info_out,
     )
 
     if dist >= 0.0 and pairid[1] == -1:
@@ -924,6 +938,9 @@ def ccd_kernel_builder(
     contact_type_out: wp.array(dtype=int),
     contact_geomcollisionid_out: wp.array(dtype=int),
     nacon_out: wp.array(dtype=int),
+    # Warning output:
+    warning_out: wp.array(dtype=int),
+    warning_info_out: wp.array2d(dtype=int),
   ):
     tid = wp.tid()
     if tid >= ncollision_in[0]:
@@ -1036,6 +1053,8 @@ def ccd_kernel_builder(
       contact_type_out,
       contact_geomcollisionid_out,
       nacon_out,
+      warning_out,
+      warning_info_out,
     )
 
   return ccd_kernel
@@ -1122,6 +1141,8 @@ def convex_narrowphase(m: Model, d: Data, collision_table: list[tuple[GeomType, 
     d.contact.type,
     d.contact.geomcollisionid,
     d.nacon,
+    d.warning,
+    d.warning_info,
   ]
 
   # Launch heightfield collision kernels (no multiccd args, 72 args total)
@@ -1130,7 +1151,7 @@ def convex_narrowphase(m: Model, d: Data, collision_table: list[tuple[GeomType, 
     g2 = geom_pair[1].value
     if (g1 == GeomType.HFIELD or g2 == GeomType.HFIELD) and _pair_count(g1, g2):
       wp.launch(
-        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations),
+        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, m.opt.warning_printf),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
@@ -1221,7 +1242,7 @@ def convex_narrowphase(m: Model, d: Data, collision_table: list[tuple[GeomType, 
     g2 = geom_pair[1].value
     if g1 != GeomType.HFIELD and g2 != GeomType.HFIELD and _pair_count(g1, g2):
       wp.launch(
-        ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, use_multiccd),
+        ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, use_multiccd, m.opt.warning_printf),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
