@@ -1272,20 +1272,6 @@ def _efc_contact_init(cone_type: types.ConeType):
   return kernel
 
 
-@wp.func
-def _select_Ji(dimid2: int, Ji_1p: float, Ji_2p: float, Ji_0r: float, Ji_1r: float, Ji_2r: float) -> float:
-  if dimid2 == 1:
-    return Ji_1p
-  elif dimid2 == 2:
-    return Ji_2p
-  elif dimid2 == 3:
-    return Ji_0r
-  elif dimid2 == 4:
-    return Ji_1r
-  else:
-    return Ji_2r
-
-
 @cache_kernel
 def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
   NV_PADDED = nv_padded
@@ -1341,16 +1327,13 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
 
         con_pos = pos_in[conid]
         offset1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
-        offset1_tile = wp.tile(offset1, preserve_type=True)
-
         offset2 = con_pos - subtree_com_in[worldid, body_rootid[body2]]
-        offset2_tile = wp.tile(offset2, preserve_type=True)
 
         affects1_tile = wp.tile_load(dof_affects_body[body1], shape=NV_PADDED, bounds_check=False)
         affects2_tile = wp.tile_load(dof_affects_body[body2], shape=NV_PADDED, bounds_check=False)
 
-        jacp1_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset1_tile, affects1_tile)
-        jacp2_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset2_tile, affects2_tile)
+        jacp1_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset1, affects1_tile)
+        jacp2_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset2, affects2_tile)
         jacp_dif_tile = wp.tile_map(wp.sub, jacp2_tile, jacp1_tile)
 
         jacr1_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects1_tile)
@@ -1361,19 +1344,16 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
 
         if not wp.static(IS_ELLIPTIC):
           frame_0 = frame_in[conid, 0]
-          frame_0_tile = wp.tile(frame_0, preserve_type=True)
-          Ji_0p_tile = wp.tile_map(wp.dot, frame_0_tile, jacp_dif_tile)
+          Ji_0p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_0)
 
           if condim > 1:
-            Ji_0r_tile = wp.tile_map(wp.dot, frame_0_tile, jacr_dif_tile)
+            Ji_0r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_0)
             frame_1 = frame_in[conid, 1]
-            frame_1_tile = wp.tile(frame_1, preserve_type=True)
-            Ji_1p_tile = wp.tile_map(wp.dot, frame_1_tile, jacp_dif_tile)
-            Ji_1r_tile = wp.tile_map(wp.dot, frame_1_tile, jacr_dif_tile)
+            Ji_1p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_1)
+            Ji_1r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_1)
             frame_2 = frame_in[conid, 2]
-            frame_2_tile = wp.tile(frame_2, preserve_type=True)
-            Ji_2p_tile = wp.tile_map(wp.dot, frame_2_tile, jacp_dif_tile)
-            Ji_2r_tile = wp.tile_map(wp.dot, frame_2_tile, jacr_dif_tile)
+            Ji_2p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_2)
+            Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
 
       if wp.static(IS_ELLIPTIC):
         dimid = efcid - base_efcid
@@ -1383,12 +1363,11 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
           frame_idx = dimid - 3
 
         frame_row = frame_in[conid, frame_idx]
-        frame_tile = wp.tile(frame_row, preserve_type=True)
 
         if dimid < 3:
-          J = wp.tile_map(wp.dot, frame_tile, jacp_dif_tile)
+          J = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
         else:
-          J = wp.tile_map(wp.dot, frame_tile, jacr_dif_tile)
+          J = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
       else:
         J = Ji_0p_tile
 
@@ -1397,10 +1376,17 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
           frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
-          frii_sign_tile = wp.tile(frii_sign)
-          dimid2_tile = wp.tile(dimid2)
-          Ji_tile = wp.tile_map(_select_Ji, dimid2_tile, Ji_1p_tile, Ji_2p_tile, Ji_0r_tile, Ji_1r_tile, Ji_2r_tile)
-          J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_tile, frii_sign_tile))
+
+          if dimid2 == 1:
+            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
+          elif dimid2 == 2:
+            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
+          elif dimid2 == 3:
+            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
+          elif dimid2 == 4:
+            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
+          else:
+            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
       wp.tile_store(efc_J_out[worldid, efcid], J, bounds_check=False)
 
