@@ -1591,8 +1591,7 @@ class Data:
     flexedge_J_rownnz: number of nonzeros in Jacobian row       (nworld, nflexedge)
     flexedge_J_rowadr: row start address in colind array        (nworld, nflexedge)
     flexedge_J_colind: column indices in sparse Jacobian        (nworld, nflexedge * 6)
-    flexedge_J: edge length Jacobian                            (nworld, nflexedge, nv) if dense
-                                                                (nworld, 1, nflexedge*6) if sparse
+    flexedge_J: edge length Jacobian                            (nworld, 1, nflexedge*6)
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
