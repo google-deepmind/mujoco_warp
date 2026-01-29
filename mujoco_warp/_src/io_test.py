@@ -15,6 +15,8 @@
 
 """Tests for io functions."""
 
+import dataclasses
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -821,6 +823,39 @@ class IOTest(parameterized.TestCase):
       d = mjwarp.make_data(mjm)
 
     _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
+
+  def test_model_batched_fields(self):
+    """Test Model batched fields."""
+    nworld = 2
+    mjm, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0, nworld=nworld)
+
+    for f in dataclasses.fields(m):
+      # TODO(team): test arrays that are warp only
+      if not hasattr(mjm, f.name):
+        continue
+      if isinstance(f.type, wp.array):
+        # get fields
+        arr = getattr(m, f.name)
+        mj_arr = getattr(mjm, f.name)
+
+        # check that field is not empty
+        if 0 in mj_arr.shape + arr.shape:
+          continue
+
+        # check for batched field
+        if hasattr(arr, "_is_batched") and arr._is_batched:
+          assert arr.shape[0] == 1
+
+          # reshape if necessary
+          if f.name in ("cam_mat0"):
+            mj_arr = mj_arr.reshape((-1, 3, 3))
+
+          # set batched field
+          setattr(m, f.name, wp.array(np.tile(mj_arr, (nworld,) + arr.shape[1:]), dtype=f.type.dtype))
+
+    mjwarp.forward(m, d)
+    mjwarp.reset_data(m, d)
+    mjwarp.forward(m, d)
 
   def test_set_fixed_body_subtreemass(self):
     """Test body_subtreemass accumulation for multi-level tree."""
