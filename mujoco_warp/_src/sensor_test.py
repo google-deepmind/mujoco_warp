@@ -25,7 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
-from mujoco_warp._src.collision_driver import MJ_COLLISION_FUNC
+from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
@@ -103,7 +103,7 @@ class SensorTest(parameterized.TestCase):
       """
       )
 
-      primitive_pairs = [key for key, value in MJ_COLLISION_FUNC.items() if value == True]
+      primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == True]
       mjw.primitive_narrowphase(m, d, primitive_pairs)
 
   def test_sensor(self):

@@ -24,6 +24,7 @@ from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
@@ -36,41 +37,40 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 # Corresponding table to MuJoCo's mjCOLLISIONFUNC table in engine_collision_driver.c
-# A "True" value corresponds to using a primitive collision method
-MJ_COLLISION_FUNC = {
-  (GeomType.PLANE, GeomType.SPHERE): True,
-  (GeomType.PLANE, GeomType.CAPSULE): True,
-  (GeomType.PLANE, GeomType.ELLIPSOID): True,
-  (GeomType.PLANE, GeomType.CYLINDER): True,
-  (GeomType.PLANE, GeomType.BOX): True,
-  (GeomType.PLANE, GeomType.MESH): True,
-  (GeomType.HFIELD, GeomType.SPHERE): False,
-  (GeomType.HFIELD, GeomType.CAPSULE): False,
-  (GeomType.HFIELD, GeomType.ELLIPSOID): False,
-  (GeomType.HFIELD, GeomType.CYLINDER): False,
-  (GeomType.HFIELD, GeomType.BOX): False,
-  (GeomType.HFIELD, GeomType.MESH): False,
-  (GeomType.SPHERE, GeomType.SPHERE): True,
-  (GeomType.SPHERE, GeomType.CAPSULE): True,
-  (GeomType.SPHERE, GeomType.ELLIPSOID): False,
-  (GeomType.SPHERE, GeomType.CYLINDER): True,
-  (GeomType.SPHERE, GeomType.BOX): True,
-  (GeomType.SPHERE, GeomType.MESH): False,
-  (GeomType.CAPSULE, GeomType.CAPSULE): True,
-  (GeomType.CAPSULE, GeomType.ELLIPSOID): False,
-  (GeomType.CAPSULE, GeomType.CYLINDER): False,
-  (GeomType.CAPSULE, GeomType.BOX): True,
-  (GeomType.CAPSULE, GeomType.MESH): False,
-  (GeomType.ELLIPSOID, GeomType.ELLIPSOID): False,
-  (GeomType.ELLIPSOID, GeomType.CYLINDER): False,
-  (GeomType.ELLIPSOID, GeomType.BOX): False,
-  (GeomType.ELLIPSOID, GeomType.MESH): False,
-  (GeomType.CYLINDER, GeomType.CYLINDER): False,
-  (GeomType.CYLINDER, GeomType.BOX): False,
-  (GeomType.CYLINDER, GeomType.MESH): False,
-  (GeomType.BOX, GeomType.BOX): False,  # overwritten by NATIVECCD disable flag
-  (GeomType.BOX, GeomType.MESH): False,
-  (GeomType.MESH, GeomType.MESH): False,
+MJ_COLLISION_TABLE = {
+  (GeomType.PLANE, GeomType.SPHERE): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.CAPSULE): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.ELLIPSOID): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.CYLINDER): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.BOX): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.MESH): CollisionType.PRIMITIVE,
+  (GeomType.HFIELD, GeomType.SPHERE): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.CAPSULE): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.BOX): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.SPHERE, GeomType.SPHERE): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.CAPSULE): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.SPHERE, GeomType.CYLINDER): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.BOX): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.CAPSULE, GeomType.CAPSULE): CollisionType.PRIMITIVE,
+  (GeomType.CAPSULE, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.CAPSULE, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.CAPSULE, GeomType.BOX): CollisionType.PRIMITIVE,
+  (GeomType.CAPSULE, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.BOX): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.CYLINDER, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.CYLINDER, GeomType.BOX): CollisionType.CONVEX,
+  (GeomType.CYLINDER, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.BOX, GeomType.BOX): CollisionType.CONVEX,  # overwritten by NATIVECCD disable flag
+  (GeomType.BOX, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.MESH, GeomType.MESH): CollisionType.CONVEX,
 }
 
 
@@ -726,11 +726,12 @@ def nxn_broadphase(m: Model, d: Data):
 
 
 def _narrowphase(m, d):
-  collision_func = MJ_COLLISION_FUNC
-  collision_func[(GeomType.BOX, GeomType.BOX)] = bool(m.opt.disableflags & DisableBit.NATIVECCD)
+  collision_table = MJ_COLLISION_TABLE
+  if m.opt.disableflags & DisableBit.NATIVECCD:
+    collision_table[(GeomType.BOX, GeomType.BOX)] = CollisionType.PRIMITIVE
 
-  convex_pairs = [key for key, value in collision_func.items() if value == False]
-  primitive_pairs = [key for key, value in collision_func.items() if value == True]
+  convex_pairs = [key for key, value in collision_table.items() if value == CollisionType.CONVEX]
+  primitive_pairs = [key for key, value in collision_table.items() if value == CollisionType.PRIMITIVE]
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics

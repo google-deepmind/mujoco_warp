@@ -322,6 +322,20 @@ class GeomType(enum.IntEnum):
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
+class CollisionType(enum.IntEnum):
+  """Type of narrowphase collision.
+
+  Attributes:
+    PRIMITIVE: primitive collision
+    CONVEX: convex collision (CCD)
+    SDF: sdf collision
+  """
+
+  PRIMITIVE = 0
+  CONVEX = 1
+  SDF = 2
+
+
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
 

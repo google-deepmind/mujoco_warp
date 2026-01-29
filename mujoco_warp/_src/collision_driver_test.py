@@ -26,7 +26,7 @@ from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import types
-from mujoco_warp._src.collision_driver import MJ_COLLISION_FUNC
+from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
@@ -515,7 +515,7 @@ class CollisionTest(parameterized.TestCase):
     """Tests that the collision table is in order."""
     in_order = True
     prev_idx = -1
-    for pair in MJ_COLLISION_FUNC.keys():
+    for pair in MJ_COLLISION_TABLE.keys():
       idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
       if pair[1] < pair[0] or idx <= prev_idx:
         in_order = False
