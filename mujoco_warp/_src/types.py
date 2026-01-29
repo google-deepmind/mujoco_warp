@@ -1795,5 +1795,5 @@ class Data:
   ncollision: array(1, int)
 
   # warp only: warning flags (accumulated across steps, checked on host)
-  warning: wp.array(dtype=int)  # shape: (NUM_WARNINGS,) flag per warning type
-  warning_info: wp.array2d(dtype=int)  # shape: (NUM_WARNINGS, 2) suggested values
+  warning: array("NUM_WARNINGS", int)  # flag per warning type
+  warning_info: array("NUM_WARNINGS", 2, int)  # suggested values
