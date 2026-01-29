@@ -1052,6 +1052,10 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
     lo_in = _eval_pt(efc_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
+    # check for initial convergence: if |derivative| < gtol, accept Newton step immediately
+    # (same as MuJoCo: mju_abs(p1.deriv[0]) < gtol)
+    initial_converged = wp.abs(lo_in[1]) < gtol
+
     # initialize bounds
     lo_less = lo_in[1] < p0[1]
     lo = wp.where(lo_less, lo_in, p0)
@@ -1059,10 +1063,14 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     hi = wp.where(lo_less, p0, lo_in)
     hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
 
-    # main iterative loop
-    alpha = float(0.0)
+    # main iterative loop - skip if already converged
+    alpha = wp.where(initial_converged, lo_alpha_in, 0.0)
 
     for _ in range(LS_ITERATIONS):
+      # skip iterations if Newton step was already good enough
+      if initial_converged:
+        break
+
       lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
       hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
       mid_alpha = 0.5 * (lo_alpha + hi_alpha)
