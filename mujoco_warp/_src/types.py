@@ -66,6 +66,29 @@ class BlockDim:
   qderiv_actuator_dense: int = 32
 
 
+class WarningType(enum.IntEnum):
+  """Warning types for kernel-side overflow detection.
+
+  Attributes:
+    NEFC_OVERFLOW: constraint count exceeded njmax
+    BROADPHASE_OVERFLOW: broadphase collision count exceeded naconmax
+    NARROWPHASE_OVERFLOW: narrowphase contact count exceeded naconmax
+    CONTACT_MATCH_OVERFLOW: contact sensor match count exceeded maxmatch
+    GJK_ITERATIONS: GJK algorithm did not converge within iteration limit
+    EPA_HORIZON: EPA horizon buffer overflow
+  """
+
+  NEFC_OVERFLOW = 0
+  BROADPHASE_OVERFLOW = 1
+  NARROWPHASE_OVERFLOW = 2
+  CONTACT_MATCH_OVERFLOW = 3
+  GJK_ITERATIONS = 4
+  EPA_HORIZON = 5
+
+
+NUM_WARNINGS = len(WarningType)
+
+
 class BroadphaseType(enum.IntEnum):
   """Type of broadphase algorithm.
 
@@ -1764,3 +1787,7 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+  # warp only: warning flags (accumulated across steps, checked on host)
+  warning: wp.array(dtype=int)  # shape: (NUM_WARNINGS,) flag per warning type
+  warning_info: wp.array2d(dtype=int)  # shape: (NUM_WARNINGS, 2) suggested values

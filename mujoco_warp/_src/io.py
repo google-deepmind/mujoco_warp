@@ -705,6 +705,9 @@ def make_data(
     "njmax": njmax,
     "qM": None,
     "qLD": None,
+    # warning arrays (set after initialization)
+    "warning": None,
+    "warning_info": None,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
@@ -733,6 +736,10 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  # warning flags (accumulated across steps, checked on host)
+  d.warning = wp.zeros(types.NUM_WARNINGS, dtype=int)
+  d.warning_info = wp.zeros((types.NUM_WARNINGS, 2), dtype=int)
 
   return d
 
@@ -873,6 +880,9 @@ def put_data(
     "ne_jnt": None,
     "ne_ten": None,
     "ne_flex": None,
+    # warning arrays (set after initialization)
+    "warning": None,
+    "warning_info": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -931,6 +941,10 @@ def put_data(
   d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
+
+  # warning flags (accumulated across steps, checked on host)
+  d.warning = wp.zeros(types.NUM_WARNINGS, dtype=int)
+  d.warning_info = wp.zeros((types.NUM_WARNINGS, 2), dtype=int)
 
   return d
 

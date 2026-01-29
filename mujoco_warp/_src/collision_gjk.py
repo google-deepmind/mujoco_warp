@@ -667,6 +667,7 @@ def gjk(
     cnt += 1
 
   if cnt == gjk_iterations:
+    # TODO(team): convert to warning flag system (requires passing warning arrays through wp.func chain)
     wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   result = GJKResult()
@@ -1288,6 +1289,7 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
+      # TODO(team): convert to warning flag system (requires passing warning arrays through wp.func chain)
       wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
       idx = -1
       break
@@ -1305,6 +1307,7 @@ def _epa(
         pt.nhorizon = _add_edge(pt, face[1], face[2])
         pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
+          # TODO(team): convert to warning flag system (requires passing warning arrays through wp.func chain)
           wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
           idx = -1
           break
@@ -1333,6 +1336,7 @@ def _epa(
     cnt += 1
 
   if cnt == epa_iterations:
+    # TODO(team): convert to warning flag system (requires passing warning arrays through wp.func chain)
     wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   # return from valid face

@@ -43,6 +43,7 @@ import mujoco_warp as mjw
 from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
+from mujoco_warp._src.warning import check_warnings
 
 
 class EngineOptions(enum.IntEnum):
@@ -193,10 +194,12 @@ def _main(argv: Sequence[str]) -> None:
         if _VIEWER_GLOBAL_STATE["running"]:
           wp.capture_launch(graph)
           wp.synchronize()
+          check_warnings(d)
         elif _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
           wp.capture_launch(graph)
           wp.synchronize()
+          check_warnings(d)
 
         mjw.get_data_into(mjd, mjm, d)
 

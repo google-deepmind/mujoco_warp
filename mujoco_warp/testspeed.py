@@ -42,6 +42,7 @@ from mujoco_warp._src.benchmark import benchmark
 from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
+from mujoco_warp._src.warning import check_warnings
 
 _FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
 
@@ -453,6 +454,9 @@ def _main(argv: Sequence[str]):
 
     fn = _FUNCS[_FUNCTION.value]
     res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
+
+    # Check and emit any overflow warnings to stderr
+    check_warnings(d)
 
     match _FORMAT.value:
       case "short":
