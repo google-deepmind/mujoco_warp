@@ -1250,7 +1250,7 @@ def _efc_contact_init(cone_type: types.ConeType):
       worldid = worldid_in[conid]
       condim = condim_in[conid]
 
-      if IS_ELLIPTIC:
+      if wp.static(IS_ELLIPTIC):
         nrows = condim
       else:
         nrows = 1
@@ -1359,7 +1359,7 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
 
         base_efcid = contact_efc_address_in[conid, 0]
 
-        if not IS_ELLIPTIC:
+        if not wp.static(IS_ELLIPTIC):
           frame_0 = frame_in[conid, 0]
           frame_0_tile = wp.tile(frame_0, preserve_type=True)
           Ji_0p_tile = wp.tile_map(wp.dot, frame_0_tile, jacp_dif_tile)
@@ -1375,7 +1375,7 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
             Ji_2p_tile = wp.tile_map(wp.dot, frame_2_tile, jacp_dif_tile)
             Ji_2r_tile = wp.tile_map(wp.dot, frame_2_tile, jacr_dif_tile)
 
-      if IS_ELLIPTIC:
+      if wp.static(IS_ELLIPTIC):
         dimid = efcid - base_efcid
         if dimid < 3:
           frame_idx = dimid
@@ -1483,7 +1483,7 @@ def _efc_contact_update(cone_type: types.ConeType):
     if condim == 1:
       efc_type = ConstraintType.CONTACT_FRICTIONLESS
     else:
-      if IS_ELLIPTIC:
+      if wp.static(IS_ELLIPTIC):
         efc_type = ConstraintType.CONTACT_ELLIPTIC
 
         base_efcid = contact_efc_address_in[conid, 0]
