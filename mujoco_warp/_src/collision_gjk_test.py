@@ -21,13 +21,11 @@ from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
-
-from .collision_gjk import ccd
-from .collision_gjk import multicontact
-from .collision_primitive import Geom
-from .types import MJ_MAX_EPAFACES
-from .types import MJ_MAX_EPAHORIZON
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.types import MJ_MAX_EPAFACES
+from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 
 
 def _geom_dist(
@@ -45,7 +43,6 @@ def _geom_dist(
   # we run multiccd on static scenes so these need to be initialized
   nmaxpolygon = 10 if multiccd else 0
   nmaxmeshdeg = 10 if multiccd else 0
-  epa_vert = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert1 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert2 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert_index1 = wp.empty(5 + m.opt.ccd_iterations, dtype=int)
@@ -53,7 +50,7 @@ def _geom_dist(
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
   epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
-  epa_horizon = wp.empty(2 * MJ_MAX_EPAHORIZON, dtype=int)
+  epa_horizon = wp.empty(MJ_MAX_EPAHORIZON, dtype=int)
   multiccd_polygon = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
   multiccd_clipped = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
   multiccd_pnormal = wp.empty(nmaxpolygon, dtype=wp.vec3)
@@ -66,7 +63,7 @@ def _geom_dist(
   multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
   multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -92,7 +89,6 @@ def _geom_dist(
     gid2: int,
     iterations: int,
     tolerance: wp.array(dtype=float),
-    vert: wp.array(dtype=wp.vec3),
     vert1: wp.array(dtype=wp.vec3),
     vert2: wp.array(dtype=wp.vec3),
     vert_index1: wp.array(dtype=int),
@@ -196,7 +192,6 @@ def _geom_dist(
       geomtype2,
       geom1.pos,
       geom2.pos,
-      vert,
       vert1,
       vert2,
       vert_index1,
@@ -266,7 +261,6 @@ def _geom_dist(
       gid2,
       m.opt.ccd_iterations,
       m.opt.ccd_tolerance,
-      epa_vert,
       epa_vert1,
       epa_vert2,
       epa_vert_index1,
@@ -606,6 +600,132 @@ class GJKTest(absltest.TestCase):
     dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertEqual(ncon, 1)
     self.assertLess(dist, 0.0001)  # real depth is ~ 2E-6
+
+  def test_box_box_horizon(self):
+    """Test box-box with EPA horizon with 13 edges."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos1 = wp.vec3(0.065118454396725, -0.125125020742416, 0.124963559210300)
+    rot1 = wp.mat33(
+      0.996357858181000,
+      0.085266821086407,
+      -0.000942531623878,
+      -0.085266284644604,
+      0.996358215808868,
+      0.000591202871874,
+      0.000989508931525,
+      -0.000508683384396,
+      0.999999582767487,
+    )
+
+    pos2 = wp.vec3(0.065104484558105, -0.124979749321938, 0.174992129206657)
+    rot2 = wp.mat33(
+      0.996556758880615,
+      -0.082913912832737,
+      -0.000453041866422,
+      0.082915119826794,
+      0.996536433696747,
+      0.006357696373016,
+      -0.000075668765930,
+      -0.006373368669301,
+      0.999979794025421,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
+
+  def test_box_box_rotation(self):
+    """Test box-box with slight rotation which should give 4 contacts."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos1 = wp.vec3(
+      0.015344001352787,
+      -0.195344015955925,
+      0.174637570977211,
+    )
+    rot1 = wp.mat33(
+      1.000000000000000,
+      0.000000000029901,
+      0.000004057303613,
+      -0.000000000062404,
+      1.000000000000000,
+      0.000008010840247,
+      -0.000004057303613,
+      -0.000008010840247,
+      1.000000000000000,
+    )
+
+    pos2 = wp.vec3(
+      0.015344001352787,
+      -0.195344015955925,
+      0.224056228995323,
+    )
+    rot2 = wp.mat33(
+      1.000000000000000,
+      0.000000000029692,
+      -0.000003355821491,
+      -0.000000000057016,
+      1.000000000000000,
+      -0.000008142159459,
+      0.000003355821491,
+      0.000008142159459,
+      1.000000000000000,
+    )
+
+    _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertEqual(ncon, 4)
+
+  def test_box_box_diagonal(self):
+    """Test box-box where multiccd has a diagonal edge as a face."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size="0.50 0.50 0.10" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos2 = wp.vec3(
+      0.135535001754761,
+      -0.195535004138947,
+      0.124984227120876,
+    )
+    rot2 = wp.mat33(
+      1.000000000000000,
+      0.000000000048563,
+      -0.000000135524601,
+      -0.000000000048577,
+      1.000000000000000,
+      -0.000000103374248,
+      0.000000135524601,
+      0.000000103374248,
+      1.000000000000000,
+    )
+
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -1.5778851595232846e-05)
+    self.assertEqual(ncon, 4)
 
 
 if __name__ == "__main__":

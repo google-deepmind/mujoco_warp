@@ -24,6 +24,7 @@ Example:
 import copy
 import enum
 import logging
+import shutil
 import sys
 import time
 from typing import Sequence
@@ -51,7 +52,7 @@ class EngineOptions(enum.IntEnum):
   C = 1
 
 
-_CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "Clear kernel cache (to calculate full JIT time)")
+_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "Clear warp caches (kernel, LTO, CUDA compute)")
 _ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.WARP, EngineOptions, "Simulation engine")
 _NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
 _NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per world.")
@@ -121,7 +122,6 @@ def _main(argv: Sequence[str]) -> None:
     mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
   elif mjm.nkey > 0 and _KEYFRAME.value > -1:
     mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
-  mujoco.mj_forward(mjm, mjd)
 
   if _ENGINE.value == EngineOptions.C:
     override_model(mjm, _OVERRIDE.value)
@@ -135,8 +135,14 @@ def _main(argv: Sequence[str]) -> None:
   else:
     wp.config.quiet = flags.FLAGS["verbosity"].value < 1
     wp.init()
-    if _CLEAR_KERNEL_CACHE.value:
+    if _CLEAR_WARP_CACHE.value:
       wp.clear_kernel_cache()
+      wp.clear_lto_cache()
+      # Clear CUDA compute cache for truly cold start JIT
+      compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
+      if compute_cache.exists():
+        shutil.rmtree(compute_cache)
+        compute_cache.mkdir()
 
     with wp.ScopedDevice(_DEVICE.value):
       m = mjw.put_model(mjm)

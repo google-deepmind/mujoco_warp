@@ -14,15 +14,36 @@
 # ==============================================================================
 
 import dataclasses
+import importlib.metadata
+import re
+import warnings
 from typing import Any, Optional, Sequence, Union
 
 import mujoco
 import numpy as np
 import warp as wp
 
-from . import types
-from . import warp_util
-from .warp_util import nested_kernel
+from mujoco_warp._src import smooth
+from mujoco_warp._src import types
+from mujoco_warp._src import warp_util
+
+
+def _is_mujoco_dev() -> bool:
+  _DEV_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+.+")  # anything after x.y.z
+
+  version = getattr(__import__("mujoco"), "__version__", None)
+  if version and _DEV_VERSION_PATTERN.match(version):
+    return True
+
+  # fall back to metadata
+  dist_version = importlib.metadata.version("mujoco")
+  if _DEV_VERSION_PATTERN.match(dist_version):
+    return True
+
+  return False
+
+
+BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
@@ -72,36 +93,38 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   warp_util.check_toolkit_driver()
 
   # model: check supported features in array types
-  for field, field_type in (
-    (mjm.actuator_trntype, types.TrnType),
-    (mjm.actuator_dyntype, types.DynType),
-    (mjm.actuator_gaintype, types.GainType),
-    (mjm.actuator_biastype, types.BiasType),
-    (mjm.eq_type, types.EqType),
-    (mjm.geom_type, types.GeomType),
-    (mjm.sensor_type, types.SensorType),
-    (mjm.wrap_type, types.WrapType),
+  for field, field_type, mj_type in (
+    (mjm.actuator_trntype, types.TrnType, mujoco.mjtTrn),
+    (mjm.actuator_dyntype, types.DynType, mujoco.mjtDyn),
+    (mjm.actuator_gaintype, types.GainType, mujoco.mjtGain),
+    (mjm.actuator_biastype, types.BiasType, mujoco.mjtBias),
+    (mjm.eq_type, types.EqType, mujoco.mjtEq),
+    (mjm.geom_type, types.GeomType, mujoco.mjtGeom),
+    (mjm.sensor_type, types.SensorType, mujoco.mjtSensor),
+    (mjm.wrap_type, types.WrapType, mujoco.mjtWrap),
   ):
     missing = ~np.isin(field, field_type)
     if missing.any():
-      raise NotImplementedError(f"{field_type.__name__}: {field[missing]} not supported.")
+      names = [mj_type(v).name for v in field[missing]]
+      raise NotImplementedError(f"{names} not supported.")
 
   # opt: check supported features in scalar types
-  for field, field_type in (
-    (mjm.opt.integrator, types.IntegratorType),
-    (mjm.opt.cone, types.ConeType),
-    (mjm.opt.solver, types.SolverType),
+  for field, field_type, mj_type in (
+    (mjm.opt.integrator, types.IntegratorType, mujoco.mjtIntegrator),
+    (mjm.opt.cone, types.ConeType, mujoco.mjtCone),
+    (mjm.opt.solver, types.SolverType, mujoco.mjtSolver),
   ):
     if field not in set(field_type):
-      raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
+      raise NotImplementedError(f"{mj_type(field).name} is unsupported.")
 
   # opt: check supported features in scalar flag types
-  for field, field_type in (
-    (mjm.opt.disableflags, types.DisableBit),
-    (mjm.opt.enableflags, types.EnableBit),
+  for field, field_type, mj_type in (
+    (mjm.opt.disableflags, types.DisableBit, mujoco.mjtDisableBit),
+    (mjm.opt.enableflags, types.EnableBit, mujoco.mjtEnableBit),
   ):
-    if field & ~np.bitwise_or.reduce(field_type):
-      raise NotImplementedError(f"{field_type.__name__} {field} is unsupported.")
+    unsupported = field & ~np.bitwise_or.reduce(field_type)
+    if unsupported:
+      raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
   if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
     raise NotImplementedError("Flex collisions are not implemented.")
@@ -143,6 +166,21 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       if mjm.geom_type[objid] == geomtype:
         return True
     return False
+
+  def _check_friction(name: str, id_: int, condim: int, friction, checks):
+    for min_condim, indices in checks:
+      if condim >= min_condim:
+        for idx in indices:
+          if friction[idx] < types.MJ_MINMU:
+            warnings.warn(
+              f"{name} {id_}: friction[{idx}] ({friction[idx]}) < MJ_MINMU ({types.MJ_MINMU}) with condim={condim} may cause NaN"
+            )
+
+  for geomid in range(mjm.ngeom):
+    _check_friction("geom", geomid, mjm.geom_condim[geomid], mjm.geom_friction[geomid], [(3, [0]), (4, [1]), (6, [2])])
+
+  for pairid in range(mjm.npair):
+    _check_friction("pair", pairid, mjm.pair_dim[pairid], mjm.pair_friction[pairid], [(3, [0]), (4, [1, 2]), (6, [3, 4])])
 
   # create opt
   opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}
@@ -199,12 +237,31 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
 
-  # body ids grouped by tree level
+  # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
   for i in range(mjm.nbody):
     body_depth[i] = body_depth[mjm.body_parentid[i]] + 1
     bodies.setdefault(body_depth[i], []).append(i)
   m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
+
+  # branch-based traversal data
+  children_count = np.bincount(mjm.body_parentid[1:], minlength=mjm.nbody)
+  ancestor_chain = lambda b: ancestor_chain(mjm.body_parentid[b]) + [b] if b else []
+  branches = [ancestor_chain(l) for l in np.where(children_count[1:] == 0)[0] + 1]
+  m.nbranch = len(branches)
+
+  body_branches = []
+  body_branch_start = []
+  offset = 0
+
+  for branch in branches:
+    body_branches.extend(branch)
+    body_branch_start.append(offset)
+    offset += len(branch)
+  body_branch_start.append(offset)
+
+  m.body_branches = np.array(body_branches, dtype=int)
+  m.body_branch_start = np.array(body_branch_start, dtype=int)
 
   m.mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
@@ -318,18 +375,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
   )
 
-  # compute nmaxpolygon and nmaxmeshdeg given the geom pairs for the model
-  nboxbox = m.geom_pair_type_count[geom_trid_index(types.GeomType.BOX, types.GeomType.BOX)]
-  nboxmesh = m.geom_pair_type_count[geom_trid_index(types.GeomType.BOX, types.GeomType.MESH)]
-  nmeshmesh = m.geom_pair_type_count[geom_trid_index(types.GeomType.MESH, types.GeomType.MESH)]
-  # need at least 4 (square sides) if there's a box collision needing multiccd
-  m.nmaxpolygon = 4 * (nboxbox + nboxmesh > 0)
-  m.nmaxmeshdeg = 3 * (nboxbox + nboxmesh > 0)
-  # possibly need to allocate more memory if there's meshes
-  if nmeshmesh + nboxmesh > 0:
-    # TODO(kbayes): remove nboxbox or enable ccd for box-box collisions
-    m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, m.nmaxpolygon).max()
-    m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, m.nmaxmeshdeg).max()
+  m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, 0).max()
+  m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, 0).max()
 
   # filter plugins for only geom plugins, drop the rest
   m.plugin, m.plugin_attr = [], []
@@ -817,7 +864,6 @@ def put_data(
     "ne_jnt": None,
     "ne_ten": None,
     "ne_flex": None,
-    "nsolving": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -847,16 +893,22 @@ def put_data(
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
     mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-    mujoco.mju_sparse2dense(
-      flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
-    )
-    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-    flexedge_J = mjd.flexedge_J.reshape((mjm.nflexedge, mjm.nv))
-    d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
+
+  flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+  if mjd.flexedge_J.size:
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      mujoco.mju_sparse2dense(
+        flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
+      )
+    else:
+      mujoco.mju_sparse2dense(
+        flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
+      )
+  d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -870,7 +922,6 @@ def put_data(
   d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
   d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
   d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
-  d.nsolving = wp.array([nworld], dtype=int)
 
   return d
 
@@ -971,16 +1022,31 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id]
+  flexedge_J = d.flexedge_J.numpy()[world_id]
+  if result.flexedge_J.size:
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      mujoco.mju_dense2sparse(
+        result.flexedge_J.reshape(-1),
+        flexedge_J,
+        mjm.flexedge_J_rownnz,
+        mjm.flexedge_J_rowadr,
+        mjm.flexedge_J_colind.reshape(-1),
+      )
+    else:
+      mujoco.mju_dense2sparse(
+        result.flexedge_J.reshape(-1),
+        flexedge_J,
+        result.flexedge_J_rownnz,
+        result.flexedge_J_rowadr,
+        result.flexedge_J_colind.reshape(-1),
+      )
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
+  actuator_moment = d.actuator_moment.numpy()[world_id]
   mujoco.mju_dense2sparse(
-    result.actuator_moment,
-    d.actuator_moment.numpy()[world_id],
-    result.moment_rownnz,
-    result.moment_rowadr,
-    result.moment_colind,
+    result.actuator_moment, actuator_moment, result.moment_rownnz, result.moment_rowadr, result.moment_colind
   )
   result.crb[:] = d.crb.numpy()[world_id]
   result.qLDiagInv[:] = d.qLDiagInv.numpy()[world_id]
@@ -1075,7 +1141,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     reset: Per-world bitmask. Reset if True.
   """
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_xfrc_applied(reset_in: wp.array(dtype=bool), xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector)):
     worldid, bodyid, elemid = wp.tid()
 
@@ -1085,7 +1151,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_qM(reset_in: wp.array(dtype=bool), qM_out: wp.array3d(dtype=float)):
     worldid, elemid1, elemid2 = wp.tid()
 
@@ -1095,7 +1161,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     qM_out[worldid, elemid1, elemid2] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_nworld(
     # Model:
     nq: int,
@@ -1134,7 +1200,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ne_jnt_out: wp.array(dtype=int),
     ne_ten_out: wp.array(dtype=int),
     ne_flex_out: wp.array(dtype=int),
-    nsolving_out: wp.array(dtype=int),
   ):
     worldid = wp.tid()
 
@@ -1154,8 +1219,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
-    if worldid == 0:
-      nsolving_out[0] = nworld_in
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
     qpos0_id = worldid % qpos0.shape[0]
@@ -1176,7 +1239,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
     # Model:
     body_mocapid: wp.array(dtype=int),
@@ -1200,7 +1263,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       mocap_pos_out[worldid, mocapid] = body_pos[worldid, bodyid]
       mocap_quat_out[worldid, mocapid] = body_quat[worldid, bodyid]
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def reset_contact(
     # Data in:
     nacon_in: wp.array(dtype=int),
@@ -1319,9 +1382,565 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.ne_jnt,
       d.ne_ten,
       d.ne_flex,
-      d.nsolving,
     ],
   )
+
+
+# kernel_analyzer: off
+@wp.kernel
+def _init_subtreemass(
+  body_mass_in: wp.array2d(dtype=float),
+  body_subtreemass_out: wp.array2d(dtype=float),
+):
+  worldid, bodyid = wp.tid()
+  body_mass_id = worldid % body_mass_in.shape[0]
+  body_subtreemass_id = worldid % body_subtreemass_out.shape[0]
+  body_subtreemass_out[body_subtreemass_id, bodyid] = body_mass_in[body_mass_id, bodyid]
+
+
+@wp.kernel
+def _accumulate_subtreemass(
+  body_parentid: wp.array(dtype=int),
+  body_subtreemass_io: wp.array2d(dtype=float),
+  body_tree_: wp.array(dtype=int),
+):
+  worldid, nodeid = wp.tid()
+  body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
+  bodyid = body_tree_[nodeid]
+  parentid = body_parentid[bodyid]
+  if bodyid != 0:
+    wp.atomic_add(body_subtreemass_io, body_subtreemass_id, parentid, body_subtreemass_io[body_subtreemass_id, bodyid])
+
+
+@wp.kernel
+def _copy_qpos0_to_qpos(
+  qpos0: wp.array2d(dtype=float),
+  qpos_out: wp.array2d(dtype=float),
+):
+  worldid, i = wp.tid()
+  qpos0_id = worldid % qpos0.shape[0]
+  qpos_out[worldid, i] = qpos0[qpos0_id, i]
+
+
+@wp.kernel
+def _copy_tendon_length0(
+  ten_length_in: wp.array2d(dtype=float),
+  tendon_length0_out: wp.array2d(dtype=float),
+):
+  worldid, tenid = wp.tid()
+  tendon_length0_id = worldid % tendon_length0_out.shape[0]
+  tendon_length0_out[tendon_length0_id, tenid] = ten_length_in[worldid, tenid]
+
+
+@wp.kernel
+def _set_unit_vector(
+  dofid_target: int,
+  unit_vec_out: wp.array2d(dtype=float),
+):
+  worldid = wp.tid()
+  nv = unit_vec_out.shape[1]
+  for i in range(nv):
+    if i == dofid_target:
+      unit_vec_out[worldid, i] = 1.0
+    else:
+      unit_vec_out[worldid, i] = 0.0
+
+
+@wp.kernel
+def _extract_dof_A_diag(
+  dofid: int,
+  result_vec_in: wp.array2d(dtype=float),
+  dof_A_diag_out: wp.array2d(dtype=float),
+):
+  worldid = wp.tid()
+  dof_A_diag_id = worldid % dof_A_diag_out.shape[0]
+  dof_A_diag_out[dof_A_diag_id, dofid] = result_vec_in[worldid, dofid]
+
+
+@wp.kernel
+def _finalize_dof_invweight0(
+  dof_jntid: wp.array(dtype=int),
+  jnt_type: wp.array(dtype=int),
+  jnt_dofadr: wp.array(dtype=int),
+  dof_A_diag_in: wp.array2d(dtype=float),
+  dof_invweight0_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  dof_invweight0_id = worldid % dof_invweight0_out.shape[0]
+  dof_A_diag_id = worldid % dof_A_diag_in.shape[0]
+
+  jntid = dof_jntid[dofid]
+  jtype = jnt_type[jntid]
+  dofadr = jnt_dofadr[jntid]
+
+  if jtype == int(types.JointType.FREE.value):
+    # FREE joint: 6 DOFs, average first 3 (trans) and last 3 (rot) separately
+    if dofid < dofadr + 3:
+      avg = wp.static(1.0 / 3.0) * (
+        dof_A_diag_in[dof_A_diag_id, dofadr + 0]
+        + dof_A_diag_in[dof_A_diag_id, dofadr + 1]
+        + dof_A_diag_in[dof_A_diag_id, dofadr + 2]
+      )
+    else:
+      avg = wp.static(1.0 / 3.0) * (
+        dof_A_diag_in[dof_A_diag_id, dofadr + 3]
+        + dof_A_diag_in[dof_A_diag_id, dofadr + 4]
+        + dof_A_diag_in[dof_A_diag_id, dofadr + 5]
+      )
+    dof_invweight0_out[dof_invweight0_id, dofid] = avg
+  elif jtype == int(types.JointType.BALL.value):
+    # BALL joint: 3 DOFs, average all
+    avg = wp.static(1.0 / 3.0) * (
+      dof_A_diag_in[dof_A_diag_id, dofadr + 0]
+      + dof_A_diag_in[dof_A_diag_id, dofadr + 1]
+      + dof_A_diag_in[dof_A_diag_id, dofadr + 2]
+    )
+    dof_invweight0_out[dof_invweight0_id, dofid] = avg
+  else:
+    # HINGE/SLIDE: 1 DOF, no averaging
+    dof_invweight0_out[dof_invweight0_id, dofid] = dof_A_diag_in[dof_A_diag_id, dofid]
+
+
+@wp.kernel
+def _compute_body_jac_row(
+  nv: int,
+  bodyid_target: int,
+  row_idx: int,
+  body_parentid: wp.array(dtype=int),
+  body_rootid: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  dof_parentid: wp.array(dtype=int),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  xipos_in: wp.array2d(dtype=wp.vec3),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  body_jac_row_out: wp.array2d(dtype=float),
+):
+  worldid = wp.tid()
+
+  for i in range(nv):
+    body_jac_row_out[worldid, i] = 0.0
+
+  bodyid = bodyid_target
+  while bodyid > 0 and body_dofnum[bodyid] == 0:
+    bodyid = body_parentid[bodyid]
+
+  if bodyid == 0:
+    return
+
+  # Compute offset from point (xipos) to subtree_com of root body
+  point = xipos_in[worldid, bodyid_target]
+  offset = point - subtree_com_in[worldid, body_rootid[bodyid_target]]
+
+  # Get last dof that affects this body
+  dofid = body_dofadr[bodyid] + body_dofnum[bodyid] - 1
+
+  # Backward pass over dof ancestor chain
+  while dofid >= 0:
+    cdof = cdof_in[worldid, dofid]
+    cdof_ang = wp.spatial_top(cdof)
+    cdof_lin = wp.spatial_bottom(cdof)
+
+    if row_idx < 3:
+      tmp = wp.cross(cdof_ang, offset)
+      if row_idx == 0:
+        body_jac_row_out[worldid, dofid] = cdof_lin[0] + tmp[0]
+      elif row_idx == 1:
+        body_jac_row_out[worldid, dofid] = cdof_lin[1] + tmp[1]
+      else:
+        body_jac_row_out[worldid, dofid] = cdof_lin[2] + tmp[2]
+    else:
+      if row_idx == 3:
+        body_jac_row_out[worldid, dofid] = cdof_ang[0]
+      elif row_idx == 4:
+        body_jac_row_out[worldid, dofid] = cdof_ang[1]
+      else:
+        body_jac_row_out[worldid, dofid] = cdof_ang[2]
+
+    dofid = dof_parentid[dofid]
+
+
+@wp.kernel
+def _compute_body_A_diag_entry(
+  nv: int,
+  bodyid_target: int,
+  row_idx: int,
+  body_jac_row_in: wp.array2d(dtype=float),
+  result_vec_in: wp.array2d(dtype=float),
+  body_A_diag_out: wp.array3d(dtype=float),
+):
+  worldid = wp.tid()
+  body_A_diag_id = worldid % body_A_diag_out.shape[0]
+  # A[row,row] = J[row] · inv(M) · J[row]' = J[row] · result_vec
+  dot_prod = float(0.0)
+  for i in range(nv):
+    dot_prod += body_jac_row_in[worldid, i] * result_vec_in[worldid, i]
+  body_A_diag_out[body_A_diag_id, bodyid_target, row_idx] = dot_prod
+
+
+@wp.kernel
+def _finalize_body_invweight0(
+  body_weldid: wp.array(dtype=int),
+  body_A_diag_in: wp.array3d(dtype=float),
+  body_invweight0_out: wp.array2d(dtype=wp.vec2),
+):
+  worldid, bodyid = wp.tid()
+  body_invweight0_id = worldid % body_invweight0_out.shape[0]
+  body_A_diag_id = worldid % body_A_diag_in.shape[0]
+
+  # World body and static bodies have zero invweight
+  if bodyid == 0 or body_weldid[bodyid] == 0:
+    body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(0.0, 0.0)
+    return
+
+  # Average diagonal: trans = (A[0,0]+A[1,1]+A[2,2])/3, rot = (A[3,3]+A[4,4]+A[5,5])/3
+  inv_trans = wp.static(1.0 / 3.0) * (
+    body_A_diag_in[body_A_diag_id, bodyid, 0]
+    + body_A_diag_in[body_A_diag_id, bodyid, 1]
+    + body_A_diag_in[body_A_diag_id, bodyid, 2]
+  )
+  inv_rot = wp.static(1.0 / 3.0) * (
+    body_A_diag_in[body_A_diag_id, bodyid, 3]
+    + body_A_diag_in[body_A_diag_id, bodyid, 4]
+    + body_A_diag_in[body_A_diag_id, bodyid, 5]
+  )
+
+  # Prevent degenerate constraints: if one component is near zero, use the other as fallback
+  if inv_trans < mujoco.mjMINVAL and inv_rot > mujoco.mjMINVAL:
+    inv_trans = inv_rot  # use rotation as fallback for translation
+  elif inv_rot < mujoco.mjMINVAL and inv_trans > mujoco.mjMINVAL:
+    inv_rot = inv_trans  # use translation as fallback for rotation
+
+  body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
+
+
+@wp.kernel
+def _copy_tendon_jacobian(
+  tenid_target: int,
+  ten_J_in: wp.array3d(dtype=float),
+  ten_J_vec_out: wp.array2d(dtype=float),
+):
+  worldid = wp.tid()
+  nv = ten_J_in.shape[2]
+  for i in range(nv):
+    ten_J_vec_out[worldid, i] = ten_J_in[worldid, tenid_target, i]
+
+
+@wp.kernel
+def _compute_tendon_dot_product(
+  tenid_target: int,
+  nv: int,
+  ten_J_in: wp.array3d(dtype=float),
+  result_vec_in: wp.array2d(dtype=float),
+  tendon_invweight0_out: wp.array2d(dtype=float),
+):
+  worldid = wp.tid()
+  tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
+  dot_prod = float(0.0)
+  for i in range(nv):
+    dot_prod += ten_J_in[worldid, tenid_target, i] * result_vec_in[worldid, i]
+  tendon_invweight0_out[tendon_invweight0_id, tenid_target] = dot_prod
+
+
+@wp.kernel
+def _compute_cam_pos0(
+  cam_bodyid: wp.array(dtype=int),
+  cam_targetbodyid: wp.array(dtype=int),
+  cam_xpos_in: wp.array2d(dtype=wp.vec3),
+  cam_xmat_in: wp.array2d(dtype=wp.mat33),
+  xpos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  cam_pos0_out: wp.array2d(dtype=wp.vec3),
+  cam_poscom0_out: wp.array2d(dtype=wp.vec3),
+  cam_mat0_out: wp.array2d(dtype=wp.mat33),
+):
+  worldid, camid = wp.tid()
+  cam_pos0_id = worldid % cam_pos0_out.shape[0]
+  bodyid = cam_bodyid[camid]
+  targetid = cam_targetbodyid[camid]
+  cam_xpos = cam_xpos_in[worldid, camid]
+
+  cam_pos0_out[cam_pos0_id, camid] = cam_xpos - xpos_in[worldid, bodyid]
+  if targetid >= 0:
+    cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, targetid]
+  else:
+    cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, bodyid]
+  cam_mat0_out[cam_pos0_id, camid] = cam_xmat_in[worldid, camid]
+
+
+@wp.kernel
+def _compute_light_pos0(
+  light_bodyid: wp.array(dtype=int),
+  light_targetbodyid: wp.array(dtype=int),
+  light_xpos_in: wp.array2d(dtype=wp.vec3),
+  light_xdir_in: wp.array2d(dtype=wp.vec3),
+  xpos_in: wp.array2d(dtype=wp.vec3),
+  subtree_com_in: wp.array2d(dtype=wp.vec3),
+  light_pos0_out: wp.array2d(dtype=wp.vec3),
+  light_poscom0_out: wp.array2d(dtype=wp.vec3),
+  light_dir0_out: wp.array2d(dtype=wp.vec3),
+):
+  worldid, lightid = wp.tid()
+  light_pos0_id = worldid % light_pos0_out.shape[0]
+  bodyid = light_bodyid[lightid]
+  targetid = light_targetbodyid[lightid]
+  light_xpos = light_xpos_in[worldid, lightid]
+
+  light_pos0_out[light_pos0_id, lightid] = light_xpos - xpos_in[worldid, bodyid]
+  if targetid >= 0:
+    light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, targetid]
+  else:
+    light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, bodyid]
+  light_dir0_out[light_pos0_id, lightid] = light_xdir_in[worldid, lightid]
+
+
+@wp.kernel
+def _copy_actuator_moment(
+  actid_target: int,
+  actuator_moment_in: wp.array3d(dtype=float),
+  act_moment_vec_out: wp.array2d(dtype=float),
+):
+  worldid = wp.tid()
+  nv = actuator_moment_in.shape[2]
+  for i in range(nv):
+    act_moment_vec_out[worldid, i] = actuator_moment_in[worldid, actid_target, i]
+
+
+@wp.kernel
+def _compute_actuator_acc0(
+  actid_target: int,
+  nv: int,
+  result_vec_in: wp.array2d(dtype=float),
+  actuator_acc0_out: wp.array(dtype=float),
+):
+  worldid = wp.tid()
+  norm_sq = float(0.0)
+  for i in range(nv):
+    norm_sq += result_vec_in[worldid, i] * result_vec_in[worldid, i]
+  actuator_acc0_out[actid_target] = wp.sqrt(norm_sq)
+
+
+# kernel_analyzer: on
+
+
+def set_const_fixed(m: types.Model, d: types.Data):
+  """Compute fixed quantities (independent of qpos0).
+
+  Computes:
+    - body_subtreemass: mass of body and all descendants (depends on body_mass)
+    - ngravcomp: count of bodies with gravity compensation (depends on body_gravcomp)
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+  """
+  wp.launch(_init_subtreemass, dim=(d.nworld, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
+  for i in reversed(range(len(m.body_tree))):
+    body_tree = m.body_tree[i]
+    wp.launch(
+      _accumulate_subtreemass,
+      dim=(d.nworld, body_tree.size),
+      inputs=[m.body_parentid, m.body_subtreemass, body_tree],
+    )
+
+  # TODO(team): refactor for graph capture compatibility
+  body_gravcomp_np = m.body_gravcomp.numpy()
+  m.ngravcomp = int((body_gravcomp_np > 0.0).any(axis=0).sum())
+
+
+def set_const_0(m: types.Model, d: types.Data):
+  """Compute quantities that depend on qpos0.
+
+  Computes:
+    - tendon_length0: tendon resting lengths
+    - dof_invweight0: inverse inertia for DOFs
+    - body_invweight0: inverse spatial inertia for bodies
+    - tendon_invweight0: inverse weight for tendons
+    - cam_pos0, cam_poscom0, cam_mat0: camera references
+    - light_pos0, light_poscom0, light_dir0: light references
+    - actuator_acc0: acceleration from unit actuator force
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+  """
+  qpos_saved = wp.clone(d.qpos)
+
+  wp.launch(_copy_qpos0_to_qpos, dim=(d.nworld, m.nq), inputs=[m.qpos0], outputs=[d.qpos])
+
+  smooth.kinematics(m, d)
+  smooth.com_pos(m, d)
+  smooth.camlight(m, d)
+  smooth.flex(m, d)
+  smooth.tendon(m, d)
+  smooth.crb(m, d)
+  smooth.tendon_armature(m, d)
+  smooth.factor_m(m, d)
+  smooth.transmission(m, d)
+
+  wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
+
+  # dof_invweight0: computed per joint with averaging for multi-DOF joints
+  # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])
+  # BALL: 3 DOFs, all get mean(A[0:3])
+  # HINGE/SLIDE: 1 DOF, gets A[0,0]
+  if m.nv > 0:
+    unit_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    dof_A_diag = wp.zeros((d.nworld, m.nv), dtype=float)
+
+    # TODO(team): more efficient approach instead of looping over nv?
+    for dofid in range(m.nv):
+      wp.launch(_set_unit_vector, dim=d.nworld, inputs=[dofid], outputs=[unit_vec])
+      smooth.solve_m(m, d, result_vec, unit_vec)
+      wp.launch(_extract_dof_A_diag, dim=d.nworld, inputs=[dofid, result_vec], outputs=[dof_A_diag])
+
+    wp.launch(
+      _finalize_dof_invweight0,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_jntid, m.jnt_type, m.jnt_dofadr, dof_A_diag],
+      outputs=[m.dof_invweight0],
+    )
+
+  # body_invweight0: computed as mean diagonal of J * inv(M) * J'
+  # where J is the 6xnv body Jacobian (3 rows translation, 3 rows rotation)
+  if m.nv > 0:
+    body_jac_row = wp.zeros((d.nworld, m.nv), dtype=float)
+    body_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    body_A_diag = wp.zeros((d.nworld, m.nbody, 6), dtype=float)
+
+    # TODO(team): more efficient approach instead of nested iterations?
+    for bodyid in range(1, m.nbody):
+      for row_idx in range(6):
+        wp.launch(
+          _compute_body_jac_row,
+          dim=d.nworld,
+          inputs=[
+            m.nv,
+            bodyid,
+            row_idx,
+            m.body_parentid,
+            m.body_rootid,
+            m.body_dofadr,
+            m.body_dofnum,
+            m.dof_parentid,
+            d.subtree_com,
+            d.xipos,
+            d.cdof,
+          ],
+          outputs=[body_jac_row],
+        )
+        smooth.solve_m(m, d, body_result_vec, body_jac_row)
+        wp.launch(
+          _compute_body_A_diag_entry,
+          dim=d.nworld,
+          inputs=[m.nv, bodyid, row_idx, body_jac_row, body_result_vec],
+          outputs=[body_A_diag],
+        )
+
+    wp.launch(
+      _finalize_body_invweight0,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_weldid, body_A_diag],
+      outputs=[m.body_invweight0],
+    )
+  else:
+    m.body_invweight0.zero_()
+
+  # tendon_invweight0[t] = J_t * inv(M) * J_t'
+  if m.ntendon > 0:
+    ten_J_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    ten_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+
+    for tenid in range(m.ntendon):
+      wp.launch(_copy_tendon_jacobian, dim=d.nworld, inputs=[tenid, d.ten_J], outputs=[ten_J_vec])
+      smooth.solve_m(m, d, ten_result_vec, ten_J_vec)
+      wp.launch(
+        _compute_tendon_dot_product,
+        dim=d.nworld,
+        inputs=[tenid, m.nv, d.ten_J, ten_result_vec],
+        outputs=[m.tendon_invweight0],
+      )
+
+  wp.launch(
+    _compute_cam_pos0,
+    dim=(d.nworld, m.ncam),
+    inputs=[m.cam_bodyid, m.cam_targetbodyid, d.cam_xpos, d.cam_xmat, d.xpos, d.subtree_com],
+    outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
+  )
+
+  wp.launch(
+    _compute_light_pos0,
+    dim=(d.nworld, m.nlight),
+    inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
+    outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
+  )
+
+  # actuator_acc0[i] = ||inv(M) * actuator_moment[i]|| - acceleration from unit actuator force
+  if m.nu > 0 and m.nv > 0:
+    act_moment_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    act_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+
+    for actid in range(m.nu):
+      wp.launch(_copy_actuator_moment, dim=d.nworld, inputs=[actid, d.actuator_moment], outputs=[act_moment_vec])
+      smooth.solve_m(m, d, act_result_vec, act_moment_vec)
+      wp.launch(_compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
+
+  wp.copy(d.qpos, qpos_saved)
+
+
+def set_const(m: types.Model, d: types.Data):
+  """Recomputes qpos0-dependent constant model fields.
+
+  This function propagates changes from some model fields to derived fields,
+  allowing modifications that would otherwise be unsafe. It should be called
+  after modifying model parameters at runtime.
+
+  Model fields that can be modified safely with set_const:
+
+    Field                            | Notes
+    ---------------------------------|----------------------------------------------
+    qpos0, qpos_spring               |
+    body_mass, body_inertia,         | Mass and inertia are usually scaled together
+    body_ipos, body_iquat            | since inertia is sum(m * r^2).
+    body_pos, body_quat              | Unsafe for static bodies (invalidates BVH).
+    body_gravcomp                    | If changing from 0 to >0 bodies, required.
+    dof_armature                     |
+    eq_data                          | For connect/weld, offsets computed if not set.
+    hfield_size                      |
+    tendon_stiffness, tendon_damping | Only if changing from/to zero.
+    actuator_gainprm, actuator_biasprm | For position actuators with dampratio.
+
+  For selective updates, use the sub-functions directly based on what changed:
+
+    Modified Field  | Call
+    ----------------|------------------
+    body_mass       | set_const
+    body_gravcomp   | set_const_fixed
+    body_inertia    | set_const_0
+    qpos0           | set_const_0
+
+  Computes:
+    - Fixed quantities (via set_const_fixed):
+      - body_subtreemass: mass of body and all descendants
+      - ngravcomp: count of bodies with gravity compensation
+    - qpos0-dependent quantities (via set_const_0):
+      - tendon_length0: tendon resting lengths
+      - dof_invweight0: inverse inertia for DOFs
+      - body_invweight0: inverse spatial inertia for bodies
+      - tendon_invweight0: inverse weight for tendons
+      - cam_pos0, cam_poscom0, cam_mat0: camera references
+      - light_pos0, light_poscom0, light_dir0: light references
+      - actuator_acc0: acceleration from unit actuator force
+
+  Skips: dof_M0, actuator_length0 (not in mjwarp).
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+  """
+  set_const_fixed(m, d)
+  set_const_0(m, d)
 
 
 def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[dict[str, Any], Sequence[str]]):
