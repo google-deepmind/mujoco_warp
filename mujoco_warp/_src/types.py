@@ -43,6 +43,8 @@ class BlockDim:
 
   # collision_driver
   segmented_sort: int = 128
+  # constraint
+  contact_jac_tiled: int = 32
   # forward
   euler_dense: int = 32
   actuator_velocity: int = 32

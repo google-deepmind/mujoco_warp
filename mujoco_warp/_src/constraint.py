@@ -1943,34 +1943,35 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
-      wp.launch_tiled(
-        _efc_contact_jac_tiled(m.nv_pad, m.opt.cone),
-        dim=(d.nworld,),
-        inputs=[
-          m.body_rootid,
-          m.geom_bodyid,
-          m.dof_affects_body,
-          d.ne,
-          d.nf,
-          d.nl,
-          d.nefc,
-          d.qvel,
-          d.subtree_com,
-          d.cdof,
-          d.contact.efc_address,
-          d.efc.conid,
-          d.contact.dim,
-          d.contact.geom,
-          d.contact.pos,
-          contact_frame_2d,
-          contact_friction_2d,
-        ],
-        outputs=[
-          d.efc.J,
-          d.efc.Jqvel,
-        ],
-        block_dim=m.nv_pad,
-      )
+      if m.nv_pad > 0:
+        wp.launch_tiled(
+          _efc_contact_jac_tiled(m.nv_pad, m.opt.cone),
+          dim=(d.nworld,),
+          inputs=[
+            m.body_rootid,
+            m.geom_bodyid,
+            m.dof_affects_body,
+            d.ne,
+            d.nf,
+            d.nl,
+            d.nefc,
+            d.qvel,
+            d.subtree_com,
+            d.cdof,
+            d.contact.efc_address,
+            d.efc.conid,
+            d.contact.dim,
+            d.contact.geom,
+            d.contact.pos,
+            contact_frame_2d,
+            contact_friction_2d,
+          ],
+          outputs=[
+            d.efc.J,
+            d.efc.Jqvel,
+          ],
+          block_dim=m.block_dim.contact_jac_tiled,
+        )
 
       wp.launch(
         _efc_contact_update(m.opt.cone),
