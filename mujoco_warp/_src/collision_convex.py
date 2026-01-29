@@ -706,7 +706,6 @@ def ccd_kernel_builder(
   def eval_ccd_write_contact(
     # Model:
     opt_ccd_tolerance: wp.array(dtype=float),
-    geom_type: wp.array(dtype=int),
     # Data in:
     naconmax_in: int,
     # In:
@@ -771,7 +770,7 @@ def ccd_kernel_builder(
       cutoff = 1.0e32
     else:
       cutoff = 0.0
-    dist, ncontact, w1, w2, idx = ccd(
+    dist, ncontact, w1, w2, multiccd_idx = ccd(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
@@ -799,12 +798,17 @@ def ccd_kernel_builder(
     witness2[0] = w2
 
     if wp.static(use_multiccd):
-      if (
-        geom1.margin == 0.0
-        and geom2.margin == 0.0
-        and (geomtype1 == GeomType.BOX or (geomtype1 == GeomType.MESH and geom1.mesh_polyadr > -1))
-        and (geomtype2 == GeomType.BOX or (geomtype2 == GeomType.MESH and geom2.mesh_polyadr > -1))
-      ):
+      if wp.static(geomtype1 == GeomType.MESH):
+        # verify that geom1 mesh data is present for multicontact
+        if geom1.mesh_polyadr < 0:
+          multiccd_idx = -1
+
+      if wp.static(geomtype2 == GeomType.MESH):
+        # verify that geom2 mesh data is present for multicontact
+        if geom2.mesh_polyadr < 0:
+          multiccd_idx = -1
+
+      if multiccd_idx > -1:
         ncontact, witness1, witness2 = multicontact(
           multiccd_polygon_in[tid],
           multiccd_clipped_in[tid],
@@ -821,7 +825,7 @@ def ccd_kernel_builder(
           epa_vert2_in[tid],
           epa_vert_index1_in[tid],
           epa_vert_index2_in[tid],
-          epa_face_in[tid, idx],
+          epa_face_in[tid, multiccd_idx],
           w1,
           w2,
           geom1,
@@ -1019,7 +1023,6 @@ def ccd_kernel_builder(
 
     eval_ccd_write_contact(
       opt_ccd_tolerance,
-      geom_type,
       naconmax_in,
       epa_vert1_in,
       epa_vert2_in,
