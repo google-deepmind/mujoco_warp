@@ -1053,7 +1053,6 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     lo_in = _eval_pt(efc_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
     # check for initial convergence: if |derivative| < gtol, accept Newton step immediately
-    # (same as MuJoCo: mju_abs(p1.deriv[0]) < gtol)
     initial_converged = wp.abs(lo_in[1]) < gtol
 
     # main iterative loop - skip if already converged
