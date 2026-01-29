@@ -27,7 +27,6 @@ from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_driver import MJ_COLLISION_FUNC
 
-
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
 _TOLERANCE = 5e-5
