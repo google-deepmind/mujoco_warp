@@ -238,11 +238,10 @@ def _spring_damper_tendon_passive(
 def _gravity_force(
   # Model:
   opt_gravity: wp.array(dtype=wp.vec3),
-  body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   body_mass: wp.array2d(dtype=float),
   body_gravcomp: wp.array2d(dtype=float),
-  dof_bodyid: wp.array(dtype=int),
+  dof_affects_body: wp.array2d(dtype=int),
   # Data in:
   xipos_in: wp.array2d(dtype=wp.vec3),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -258,7 +257,7 @@ def _gravity_force(
   if gravcomp:
     force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
     pos = xipos_in[worldid, bodyid]
-    jac, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
+    jac, _ = support.jac(body_rootid, dof_affects_body, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
 
     wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
 
@@ -814,11 +813,10 @@ def passive(m: Model, d: Data):
       dim=(d.nworld, m.nbody - 1, m.nv),
       inputs=[
         m.opt.gravity,
-        m.body_parentid,
         m.body_rootid,
         m.body_mass,
         m.body_gravcomp,
-        m.dof_bodyid,
+        m.dof_affects_body,
         d.xipos,
         d.subtree_com,
         d.cdof,
