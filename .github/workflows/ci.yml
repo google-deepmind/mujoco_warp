@@ -49,7 +49,7 @@ jobs:
   test-locked-deps:
     name: Test with locked uv dependencies
     # Tests against exact versions pinned in uv.lock
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # https://github.com/orgs/community/discussions/160680
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
@@ -70,7 +70,7 @@ jobs:
     name: Test with stable PyPI dependencies
     # Tests against stable releases from pypi.org (not custom indexes like pypi.nvidia.com)
     # This ensures the library works for users installing dependencies from standard PyPI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # https://github.com/orgs/community/discussions/160680
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
