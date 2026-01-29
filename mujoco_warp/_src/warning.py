@@ -59,7 +59,7 @@ def check_warnings(d: types.Data, clear: bool = True) -> List[str]:
   for wtype in types.WarningType:
     if flags[wtype]:
       msg = _WARNING_MESSAGES[wtype].format(info[wtype, 0], info[wtype, 1])
-      warnings.warn(msg, RuntimeWarning, stacklevel=2)
+      warnings.warn(msg)
       emitted.append(msg)
 
   if clear:
