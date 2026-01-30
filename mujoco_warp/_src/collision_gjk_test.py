@@ -26,7 +26,6 @@ from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
-from mujoco_warp._src.warp_util import nested_kernel
 
 
 def _geom_dist(
@@ -64,7 +63,7 @@ def _geom_dist(
   multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
   multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -650,37 +649,82 @@ class GJKTest(absltest.TestCase):
       xml="""
        <mujoco>
          <worldbody>
-          <geom size=".02 .02 .02" type="box"/>
-          <geom size=".02 .02 .02" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
          </worldbody>
        </mujoco>
        """
     )
 
     pos1 = wp.vec3(
-      0.100000001490116,
-      0.100000001490116,
-      0.002112504327670,
+      0.015344001352787,
+      -0.195344015955925,
+      0.174637570977211,
     )
     rot1 = wp.mat33(
       1.000000000000000,
-      0.000000000000004,
-      -0.000000048104223,
-      0.000000000000005,
+      0.000000000029901,
+      0.000004057303613,
+      -0.000000000062404,
       1.000000000000000,
-      0.000000180167476,
-      0.000000048104223,
-      -0.000000180167476,
+      0.000008010840247,
+      -0.000004057303613,
+      -0.000008010840247,
       1.000000000000000,
     )
 
     pos2 = wp.vec3(
-      0.100000001490116,
-      0.100000001490116,
-      0.040334075689316,
+      0.015344001352787,
+      -0.195344015955925,
+      0.224056228995323,
+    )
+    rot2 = wp.mat33(
+      1.000000000000000,
+      0.000000000029692,
+      -0.000003355821491,
+      -0.000000000057016,
+      1.000000000000000,
+      -0.000008142159459,
+      0.000003355821491,
+      0.000008142159459,
+      1.000000000000000,
     )
 
-    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2)
+    _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertEqual(ncon, 4)
+
+  def test_box_box_diagonal(self):
+    """Test box-box where multiccd has a diagonal edge as a face."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size="0.50 0.50 0.10" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos2 = wp.vec3(
+      0.135535001754761,
+      -0.195535004138947,
+      0.124984227120876,
+    )
+    rot2 = wp.mat33(
+      1.000000000000000,
+      0.000000000048563,
+      -0.000000135524601,
+      -0.000000000048577,
+      1.000000000000000,
+      -0.000000103374248,
+      0.000000135524601,
+      0.000000103374248,
+      1.000000000000000,
+    )
+
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -1.5778851595232846e-05)
     self.assertEqual(ncon, 4)
 
 
