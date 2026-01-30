@@ -38,7 +38,7 @@ def _assert_eq(a, b, name):
 def _is_intersect(p1: np.array, p2: np.array, p3: np.array, p4: np.array) -> bool:
   intersect = wp.empty(1, dtype=bool)
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def is_intersect(
     # In:
     p1: wp.vec2,
@@ -69,7 +69,7 @@ def _is_intersect(p1: np.array, p2: np.array, p3: np.array, p4: np.array) -> boo
 def _length_circle(p0: np.array, p1: np.array, ind: int, radius: float) -> float:
   length = wp.empty(1, dtype=float)
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def length_circle(
     # In:
     p0: wp.vec2,
@@ -97,7 +97,7 @@ def _wrap_circle(end: np.array, side: np.array, radius: float) -> Tuple[float, n
   wpnt0 = wp.empty(1, dtype=wp.vec2)
   wpnt1 = wp.empty(1, dtype=wp.vec2)
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def wrap_circle(
     # In:
     end: wp.vec4,
@@ -135,7 +135,7 @@ def _wrap_inside(end: np.array, radius: float) -> Tuple[float, np.array, np.arra
   wpnt0 = wp.empty(1, dtype=wp.vec2)
   wpnt1 = wp.empty(1, dtype=wp.vec2)
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def wrap_inside(
     # In:
     end: wp.vec4,
@@ -176,7 +176,7 @@ def _wrap(
   wpnt0 = wp.empty(1, dtype=wp.vec3)
   wpnt1 = wp.empty(1, dtype=wp.vec3)
 
-  @wp.kernel
+  @wp.kernel(module="unique")
   def wrap(
     # In:
     x0: wp.vec3,
@@ -245,7 +245,7 @@ def _muscle_dynamics_millard(ctrl, act, prm):
 
 
 def _muscle_dynamics(ctrl, act, prm):
-  @wp.kernel
+  @wp.kernel(module="unique")
   def muscle_dynamics(control: float, activation: float, prm: vec10, dynamics_out: wp.array(dtype=float)):
     dynamics_out[0] = util_misc.muscle_dynamics(control, activation, prm)
 
@@ -265,7 +265,7 @@ def _muscle_dynamics(ctrl, act, prm):
 
 
 def _muscle_gain_length(length, lmin, lmax):
-  @wp.kernel
+  @wp.kernel(module="unique")
   def muscle_gain_length(length: float, lmin: float, lmax: float, gain_length_out: wp.array(dtype=float)):
     gain_length_out[0] = util_misc.muscle_gain_length(length, lmin, lmax)
 
@@ -276,7 +276,7 @@ def _muscle_gain_length(length, lmin, lmax):
 
 
 def _muscle_dynamics_timescale(dctrl, tau_act, tau_deact, smooth_width):
-  @wp.kernel
+  @wp.kernel(module="unique")
   def muscle_gain_length(
     dctrl: float, tau_act: float, tau_deact: float, smooth_width: float, dynamics_timescale_out: wp.array(dtype=float)
   ):

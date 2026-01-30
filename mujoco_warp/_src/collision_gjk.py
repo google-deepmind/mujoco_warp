@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import math
 from typing import Tuple
 
 import warp as wp
@@ -30,9 +31,11 @@ FLOAT_MAX = 1e30
 MINVAL = 1e-15
 MIN_DIST = 1e-10
 
-# TODO(kbayes): write out formulas to derive these constants
-FACE_TOL = 0.99999872
-EDGE_TOL = 0.00159999931
+FACE_TOL = wp.static(math.cos(0.0016))
+EDGE_TOL = wp.static(math.sin(0.0016))
+
+# tolarance used by multicontact for intersecting a plane and a line segment
+INTERSECT_TOL = 0.0000003
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
@@ -107,9 +110,9 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
     sp.point = geom.rot @ res + geom.pos
-    sp.vertex_index = wp.where(tmp[0] > 0, 1, 0)
-    sp.vertex_index += wp.where(tmp[1] > 0, 2, 0)
-    sp.vertex_index += wp.where(tmp[2] > 0, 4, 0)
+    sp.vertex_index = wp.where(tmp[0] > 0.0, 1, 0)
+    sp.vertex_index += wp.where(tmp[1] > 0.0, 2, 0)
+    sp.vertex_index += wp.where(tmp[2] > 0.0, 4, 0)
   elif geomtype == GeomType.CAPSULE:
     res = local_dir * geom.size[0]
     # add cylinder contribution
@@ -177,7 +180,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     # TODO(kbayes): Support edge prisms
-    sp.vertex_index = wp.where(dir[2] < 0, -2, -3)
+    sp.vertex_index = wp.where(dir[2] < 0.0, -2, -3)
     for i in range(6):
       vert = geom.hfprism[i]
       dist = wp.dot(vert, dir)
@@ -265,9 +268,9 @@ def _det3(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> float:
 
 @wp.func
 def _same_sign(a: float, b: float) -> int:
-  if a > 0 and b > 0:
+  if a > 0.0 and b > 0.0:
     return 1
-  if a < 0 and b < 0:
+  if a < 0.0 and b < 0.0:
     return -1
   return 0
 
@@ -290,28 +293,25 @@ def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec
   n = wp.cross(diff32, diff21)
   nv = wp.dot(n, v2)
   nn = wp.dot(n, n)
-  if nn == 0:
+  if nn == 0.0:
     return z, 1
-  if nv != 0 and nn > MINVAL:
-    v = (nv / nn) * n
-    return v, 0
+  if nv != 0.0 and nn > MINVAL:
+    return (nv / nn) * n, 0
 
   # n = (v2 - v1) x (v3 - v1)
   n = wp.cross(diff21, diff31)
   nv = wp.dot(n, v1)
   nn = wp.dot(n, n)
-  if nn == 0:
+  if nn == 0.0:
     return z, 1
-  if nv != 0 and nn > MINVAL:
-    v = (nv / nn) * n
-    return v, 0
+  if nv != 0.0 and nn > MINVAL:
+    return (nv / nn) * n, 0
 
   # n = (v1 - v3) x (v2 - v3)
   n = wp.cross(diff31, diff32)
   nv = wp.dot(n, v3)
   nn = wp.dot(n, n)
-  v = (nv / nn) * n
-  return v, 0
+  return (nv / nn) * n, 0
 
 
 @wp.func
@@ -610,14 +610,14 @@ def gjk(
     simplex[n] = simplex1[n] - simplex2[n]
 
     if cutoff == 0.0:
-      if wp.dot(x_k, simplex[n]) > 0:
+      if wp.dot(x_k, simplex[n]) > 0.0:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / xnorm) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
@@ -635,7 +635,7 @@ def gjk(
     # remove vertices from the simplex no longer needed
     n = int(0)
     for i in range(4):
-      if coordinates[i] == 0:
+      if coordinates[i] == 0.0:
         continue
 
       simplex[n] = simplex[i]
@@ -692,7 +692,7 @@ def _same_side(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3) -> bool:
   n = wp.cross(p1 - p0, p2 - p0)
   dot1 = wp.dot(n, p3 - p0)
   dot2 = wp.dot(n, -p0)
-  return (dot1 > 0 and dot2 > 0) or (dot1 < 0 and dot2 < 0)
+  return (dot1 > 0.0 and dot2 > 0.0) or (dot1 < 0.0 and dot2 < 0.0)
 
 
 @wp.func
@@ -750,7 +750,7 @@ def _tri_point_intersect(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> b
   l2 = coordinates[1]
   l3 = coordinates[2]
 
-  if l1 < 0 or l2 < 0 or l3 < 0:
+  if l1 < 0.0 or l2 < 0.0 or l3 < 0.0:
     return False
 
   pr = wp.vec3()
@@ -827,9 +827,9 @@ def _ray_triangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec
   vol2 = _det3(v4 - v1, v5 - v1, v2 - v1)
   vol3 = _det3(v5 - v1, v3 - v1, v2 - v1)
 
-  if vol1 >= 0 and vol2 >= 0 and vol3 >= 0:
+  if vol1 >= 0.0 and vol2 >= 0.0 and vol3 >= 0.0:
     return 1
-  if vol1 <= 0 and vol2 <= 0 and vol3 <= 0:
+  if vol1 <= 0.0 and vol2 <= 0.0 and vol3 <= 0.0:
     return -1
   return 0
 
@@ -914,7 +914,7 @@ def _epa_witness(
       x2 = sp.point
 
     coordinates2 = _tri_affine_coord(a, b, c, x2)
-    if coordinates2[0] > 0 and coordinates2[1] > 0 and coordinates2[2] > 0:
+    if coordinates2[0] > 0.0 and coordinates2[1] > 0.0 and coordinates2[2] > 0.0:
       x1 = coordinates2[0] * a + coordinates2[1] * b + coordinates2[2] * c
     else:
       p = c
@@ -1249,7 +1249,7 @@ def _epa(
       break
 
     # check if lower bound is 0
-    if lower2 <= 0:
+    if lower2 <= 0.0:
       break
 
     # compute support point w from the closest face's normal
@@ -1313,7 +1313,7 @@ def _epa(
     for i in range(pt.nhorizon):
       edge = _get_edge(pt.horizon[i])
       dist2 = _attach_face(pt, pt.nface, wi, edge[0], edge[1])
-      if dist2 == 0:
+      if dist2 == 0.0:
         idx = -1
         break
 
@@ -1349,47 +1349,41 @@ def _area4(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> float:
 
 
 @wp.func
-def _next(n: int, i: int) -> int:
-  """Returns (i + 1) mod n for 0 <= i <= n - 1."""
-  return wp.where(i == n - 1, 0, i + 1)
-
-
-@wp.func
 def _polygon_quad(polygon: wp.array(dtype=wp.vec3), npolygon: int) -> wp.vec4i:
-  """Returns the indices of a quadrilateral of maximum area in a convex polygon."""
-  b = _next(npolygon, 0)
-  c = _next(npolygon, b)
-  d = _next(npolygon, c)
+  """Returns the indices of a quadrilateral of maximum area in a convex polygon (npolygon > 4)."""
+  b = int(1)
+  c = int(2)
+  d = int(3)
   res = wp.vec4i(0, b, c, d)
   m = _area4(polygon[0], polygon[b], polygon[c], polygon[d])
   for a in range(npolygon):
     while True:
-      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[_next(npolygon, d)])
+      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[(d + 1) % npolygon])
       if m_next <= m:
         break
       m = m_next
-      d = _next(npolygon, d)
+      d = (d + 1) % npolygon
       res = wp.vec4i(a, b, c, d)
       while True:
-        m_next = _area4(polygon[a], polygon[b], polygon[_next(npolygon, c)], polygon[d])
+        m_next = _area4(polygon[a], polygon[b], polygon[(c + 1) % npolygon], polygon[d])
         if m_next <= m:
           break
         m = m_next
-        c = _next(npolygon, c)
+        c = (c + 1) % npolygon
         res = wp.vec4i(a, b, c, d)
       while True:
-        m_next = _area4(polygon[a], polygon[_next(npolygon, b)], polygon[c], polygon[d])
+        m_next = _area4(polygon[a], polygon[(b + 1) % npolygon], polygon[c], polygon[d])
         if m_next <= m:
           break
         m = m_next
-        b = _next(npolygon, b)
+        b = (b + 1) % npolygon
         res = wp.vec4i(a, b, c, d)
     if b == a:
-      b = _next(npolygon, b)
+      b = (b + 1) % npolygon
       if c == b:
-        c = _next(npolygon, c)
+        c = (c + 1) % npolygon
         if d == c:
-          d = _next(npolygon, d)
+          d = (d + 1) % npolygon
   return res
 
 
@@ -1675,7 +1669,7 @@ def _box_normals(
     y = float((v1 & 2) and (v2 & 2)) - float(not (v1 & 2) and not (v2 & 2))
     z = float((v1 & 4) and (v2 & 4)) - float(not (v1 & 4) and not (v2 & 4))
     if x != 0.0:
-      normal_out[c] = mat @ wp.vec3(float(x), 0.0, 0.0)
+      normal_out[c] = mat @ wp.vec3(x, 0.0, 0.0)
       index_out[c] = wp.where(x > 0.0, 0, 1)
       c += 1
     if y != 0.0:
@@ -1686,7 +1680,9 @@ def _box_normals(
       normal_out[c] = mat @ wp.vec3(0.0, 0.0, z)
       index_out[c] = wp.where(z > 0.0, 4, 5)
       c += 1
-    if c == 2:
+    # c is 1 if edge is diagonal of a box face
+    # c is 2 if edge is an external edge of box
+    if c == 1 or c == 2:
       return 2
     return _box_normals2(mat, dir, normal_out, index_out)
 
@@ -1824,18 +1820,15 @@ def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
 
 
 @wp.func
-def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> Tuple[float, wp.vec3]:
-  res = wp.vec3()
-  ab = b - a
-  temp = wp.dot(pn, ab)
-  if temp == 0.0:
-    return FLOAT_MAX, res  # parallel; no intersection
-  t = (pd - wp.dot(pn, a)) / temp
-  if t >= 0.0 and t <= 1.0:
-    res[0] = a[0] + t * ab[0]
-    res[1] = a[1] + t * ab[1]
-    res[2] = a[2] + t * ab[2]
-  return t, res
+def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
+  """Returns the parameter t where the line a + t(b - a) intersects the given plane."""
+  dot = wp.dot(pn, b - a)
+
+  # parallel; no intersection
+  if wp.abs(dot) < 1e-10:
+    return FLOAT_MAX
+
+  return (pd - wp.dot(pn, a)) / dot
 
 
 # clip a polygon against another polygon
@@ -1901,9 +1894,10 @@ def _polygon_clip(
         continue
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
-      t, res = _plane_intersect(pn[e], pd[e], P, Q)
-      if t >= 0.0 and t <= 1.0:
-        clipped_out[nclipped] = res
+      t = _plane_intersect(pn[e], pd[e], P, Q)
+      if t > -INTERSECT_TOL and t < 1.0 + INTERSECT_TOL:
+        t = wp.clamp(t, 0.0, 1.0)
+        clipped_out[nclipped] = P + t * (Q - P)
         nclipped += 1
 
       # add Q as PQ is now back inside the clipping edge
@@ -2197,12 +2191,12 @@ def _inflate(
       c = geom1.hfprism[5]
 
       coordinates = _tri_affine_coord(a, b, c, x2)
-      if coordinates[0] > 0 and coordinates[1] > 0 and coordinates[2] > 0:
+      if coordinates[0] > 0.0 and coordinates[1] > 0.0 and coordinates[2] > 0.0:
         x1 = coordinates[0] * a + coordinates[1] * b + coordinates[2] * c
       else:
         p = c
-        p = wp.where(coordinates[1] > 0, b, p)
-        p = wp.where(coordinates[0] > 0, a, p)
+        p = wp.where(coordinates[1] > 0.0, b, p)
+        p = wp.where(coordinates[0] > 0.0, a, p)
         x1 = x2 - wp.dot(x2 - p, n) * n
       dist = -wp.norm_l2(x1 - x2)
       return dist, x1, x2
@@ -2358,4 +2352,13 @@ def ccd(
   dist, x1, x2, idx = _epa(tolerance, gjk_iterations, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
+
+  # multicontact not supported for margin
+  if geom1.margin != 0.0 or geom2.margin != 0.0:
+    idx = -1
+
+  # multicontact only supported for boxes and meshes
+  if (geomtype1 != GeomType.BOX and geomtype1 != GeomType.MESH) or (geomtype2 != GeomType.BOX and geomtype2 != GeomType.MESH):
+    idx = -1
+
   return dist, 1, x1, x2, idx

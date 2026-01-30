@@ -628,10 +628,16 @@ def ray_mesh(
   data_id: int,
   pos: wp.vec3,
   mat: wp.mat33,
+  size: wp.vec3,
   pnt: wp.vec3,
   vec: wp.vec3,
 ) -> Tuple[float, wp.vec3]:
   """Returns the distance and normal for ray mesh intersections."""
+  # bounding box test
+  dist_box, _all, _normal = _ray_box(pos, mat, size, pnt, vec)
+  if dist_box < 0.0:
+    return -1.0, wp.vec3()
+
   pnt, vec = _ray_map(pos, mat, pnt, vec)
 
   # compute orthogonal basis vectors
@@ -772,6 +778,7 @@ def _ray_geom_mesh(
         geom_dataid[geomid],
         pos,
         mat,
+        geom_size[worldid % geom_size.shape[0], geomid],
         pnt,
         vec,
       )

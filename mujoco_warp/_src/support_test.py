@@ -27,7 +27,6 @@ from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
-from mujoco_warp._src.warp_util import nested_kernel
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -203,7 +202,7 @@ class SupportTest(parameterized.TestCase):
     nworld = d.nworld
 
     # Create combined factor and solve kernel as in solver.py
-    @nested_kernel(module="unique", enable_backward=False)
+    @wp.kernel(module="unique", enable_backward=False)
     def combined_cholesky_kernel(
       grad_in: wp.array3d(dtype=float),
       h_in: wp.array3d(dtype=float),
