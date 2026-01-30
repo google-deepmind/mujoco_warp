@@ -209,8 +209,8 @@ class IOTest(parameterized.TestCase):
     """Tests that put_data arrays that scale with nworld have leading dim nworld."""
     mjm, mjd, _, _ = test_data.fixture(xml)
     d1 = mjw.put_data(mjm, mjd, nworld=2, nconmax=1, njmax=40)
-    dn = mjw.put_data(mjm, mjd, nworld=133, nconmax=1, njmax=40)
-    _leading_dims_scale_w_nworld(self, d1, dn, 2, 133)
+    dn = mjw.put_data(mjm, mjd, nworld=7, nconmax=1, njmax=40)
+    _leading_dims_scale_w_nworld(self, d1, dn, 2, 7)
 
   def test_public_api_jax_compat(self):
     """Tests that annotations meet a set of criteria for JAX compat."""

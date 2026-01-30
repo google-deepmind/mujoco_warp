@@ -26,7 +26,6 @@ from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -797,7 +796,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
     _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     nv: int,
@@ -809,30 +808,31 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
     nefc_in: wp.array(dtype=int),
+    qfrc_smooth_in: wp.array2d(dtype=float),
     contact_friction_in: wp.array(dtype=types.vec5),
     contact_dim_in: wp.array(dtype=int),
     contact_efc_address_in: wp.array2d(dtype=int),
     efc_type_in: wp.array2d(dtype=int),
     efc_id_in: wp.array2d(dtype=int),
+    efc_J_in: wp.array3d(dtype=float),
     efc_D_in: wp.array2d(dtype=float),
     efc_frictionloss_in: wp.array2d(dtype=float),
     efc_Jaref_in: wp.array2d(dtype=float),
+    efc_search_in: wp.array2d(dtype=float),
     efc_search_dot_in: wp.array(dtype=float),
-    efc_J_in: wp.array3d(dtype=float),
     efc_gauss_in: wp.array(dtype=float),
-    qfrc_smooth_in: wp.array2d(dtype=float),
+    efc_mv_in: wp.array2d(dtype=float),
+    efc_jv_in: wp.array2d(dtype=float),
+    efc_quad_in: wp.array2d(dtype=wp.vec3),
     efc_done_in: wp.array(dtype=bool),
     njmax_in: int,
     nacon_in: wp.array(dtype=int),
-    efc_search_in: wp.array2d(dtype=float),
-    efc_mv_in: wp.array2d(dtype=float),
-    # Data in/out:
-    efc_quad_inout: wp.array2d(dtype=wp.vec3),
-    efc_jv_inout: wp.array2d(dtype=float),
     # Data out:
     qacc_out: wp.array2d(dtype=float),
-    efc_Ma_out: wp.array2d(dtype=float),
     efc_Jaref_out: wp.array2d(dtype=float),
+    efc_Ma_out: wp.array2d(dtype=float),
+    efc_jv_out: wp.array2d(dtype=float),
+    efc_quad_out: wp.array2d(dtype=wp.vec3),
   ):
     worldid, tid = wp.tid()
 
@@ -849,7 +849,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         jv = float(0.0)
         for i in range(nv):
           jv += efc_J_in[worldid, efcid, i] * efc_search_in[worldid, i]
-        efc_jv_inout[worldid, efcid] = jv
+        efc_jv_out[worldid, efcid] = jv
 
       _syncthreads()  # ensure all jv values are written before reading
 
@@ -861,7 +861,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
       for efcid in range(tid, nefc, wp.block_dim()):
         Jaref = efc_Jaref_in[worldid, efcid]
-        jv = efc_jv_inout[worldid, efcid]
+        jv = efc_jv_in[worldid, efcid]
         efc_D = efc_D_in[worldid, efcid]
 
         # scalar quadratic coefficients
@@ -870,7 +870,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
         # non-contact constraints: write quad immediately
         if efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
-          efc_quad_inout[worldid, efcid] = quad
+          efc_quad_out[worldid, efcid] = quad
         else:
           # CONTACT_ELLIPTIC: only primary row of active contacts writes
           conid = efc_id_in[worldid, efcid]
@@ -891,7 +891,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
               for j in range(1, dim):
                 efcidj = contact_efc_address_in[conid, j]
                 if efcidj >= 0:
-                  jvj = efc_jv_inout[worldid, efcidj]
+                  jvj = efc_jv_in[worldid, efcidj]
                   jarefj = efc_Jaref_in[worldid, efcidj]
                   dj = efc_D_in[worldid, efcidj]
                   DJj = dj * jarefj
@@ -907,14 +907,14 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
                   uv += uj * vj
                   vv += vj * vj
 
-              efc_quad_inout[worldid, efcid] = quad
+              efc_quad_out[worldid, efcid] = quad
 
               efcid1 = contact_efc_address_in[conid, 1]
-              efc_quad_inout[worldid, efcid1] = wp.vec3(u0, v0, uu)
+              efc_quad_out[worldid, efcid1] = wp.vec3(u0, v0, uu)
 
               mu2 = mu * mu
               efcid2 = contact_efc_address_in[conid, 2]
-              efc_quad_inout[worldid, efcid2] = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
+              efc_quad_out[worldid, efcid2] = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
 
       _syncthreads()  # ensure all quads are written before reading
 
@@ -942,8 +942,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_inout[worldid, efc_addr1]
-          quad2 = efc_quad_inout[worldid, efc_addr2]
+          quad1 = efc_quad_in[worldid, efc_addr1]
+          quad2 = efc_quad_in[worldid, efc_addr2]
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid,
@@ -954,8 +954,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
-          efc_quad_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
+          efc_quad_in[worldid, efcid],
           contact_friction,
           efc_addr0,
           quad1,
@@ -970,7 +970,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid, efcid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
         )
 
     # at this point, every thread has computed some contributions to p0 in local_p0
@@ -1015,8 +1015,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
-          quad1 = efc_quad_inout[worldid, efc_addr1]
-          quad2 = efc_quad_inout[worldid, efc_addr2]
+          quad1 = efc_quad_in[worldid, efc_addr1]
+          quad2 = efc_quad_in[worldid, efc_addr2]
 
         local_lo_in += _compute_efc_eval_pt(
           efcid,
@@ -1028,8 +1028,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
-          efc_quad_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
+          efc_quad_in[worldid, efcid],
           contact_friction,
           efc_addr0,
           quad1,
@@ -1045,7 +1045,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_D_in[worldid, efcid],
           efc_frictionloss_in[worldid],
           efc_Jaref_in[worldid, efcid],
-          efc_jv_inout[worldid, efcid],
+          efc_jv_in[worldid, efcid],
         )
 
     lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
@@ -1086,8 +1086,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_addr0 = contact_efc_address_in[efc_id, 0]
             efc_addr1 = contact_efc_address_in[efc_id, 1]
             efc_addr2 = contact_efc_address_in[efc_id, 2]
-            quad1 = efc_quad_inout[worldid, efc_addr1]
-            quad2 = efc_quad_inout[worldid, efc_addr2]
+            quad1 = efc_quad_in[worldid, efc_addr1]
+            quad2 = efc_quad_in[worldid, efc_addr2]
 
           # compute all 3 alphas at once, sharing constraint type checking
           r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
@@ -1102,8 +1102,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_D_in[worldid],
             efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid],
-            efc_jv_inout[worldid, efcid],
-            efc_quad_inout[worldid, efcid],
+            efc_jv_in[worldid, efcid],
+            efc_quad_in[worldid, efcid],
             contact_friction,
             efc_addr0,
             quad1,
@@ -1121,7 +1121,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_D_in[worldid, efcid],
             efc_frictionloss_in[worldid],
             efc_Jaref_in[worldid, efcid],
-            efc_jv_inout[worldid, efcid],
+            efc_jv_in[worldid, efcid],
           )
         local_lo += r_lo
         local_hi += r_hi
@@ -1196,7 +1196,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
     # Jaref update
     for efcid in range(tid, nefc, wp.block_dim()):
-      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_inout[worldid, efcid]
+      efc_Jaref_out[worldid, efcid] += alpha * efc_jv_in[worldid, efcid]
 
   return kernel
 
@@ -1221,25 +1221,27 @@ def _linesearch_iterative(m: types.Model, d: types.Data, fuse_jv: bool):
       d.ne,
       d.nf,
       d.nefc,
+      d.qfrc_smooth,
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,
       d.efc.type,
       d.efc.id,
+      d.efc.J,
       d.efc.D,
       d.efc.frictionloss,
       d.efc.Jaref,
+      d.efc.search,
       d.efc.search_dot,
-      d.efc.J,
       d.efc.gauss,
-      d.qfrc_smooth,
+      d.efc.mv,
+      d.efc.jv,
+      d.efc.quad,
       d.efc.done,
       d.njmax,
       d.nacon,
-      d.efc.search,
-      d.efc.mv,
     ],
-    outputs=[d.efc.quad, d.efc.jv, d.qacc, d.efc.Ma, d.efc.Jaref],
+    outputs=[d.qacc, d.efc.Jaref, d.efc.Ma, d.efc.jv, d.efc.quad],
     block_dim=m.block_dim.linesearch_iterative,
   )
 
@@ -1265,7 +1267,7 @@ def linesearch_zero_jv(
 
 @cache_kernel
 def linesearch_jv_fused(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1302,7 +1304,7 @@ def linesearch_jv_fused(nv: int, dofs_per_thread: int):
 
 @cache_kernel
 def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     qfrc_smooth_in: wp.array2d(dtype=float),
@@ -1544,7 +1546,7 @@ def solve_init_efc(
 
 @cache_kernel
 def solve_init_jaref(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -1766,7 +1768,7 @@ def update_constraint_init_qfrc_constraint(
 
 @cache_kernel
 def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     qacc_in: wp.array2d(dtype=float),
@@ -1938,7 +1940,7 @@ def active_check(tid: int, threshold: int) -> float:
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
   TILE_SIZE = tile_size
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -2010,7 +2012,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_padded: int, tile_size: int, njmax: int
 
   TILE_SIZE_K = tile_size
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     nefc_in: wp.array(dtype=int),
@@ -2206,12 +2208,13 @@ def update_gradient_JTCJ(
 
 @cache_kernel
 def update_gradient_cholesky(tile_size: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     efc_grad_in: wp.array2d(dtype=float),
-    h_in: wp.array3d(dtype=float),
     efc_done_in: wp.array(dtype=bool),
+    # In:
+    h_in: wp.array3d(dtype=float),
     # Data out:
     efc_Mgrad_out: wp.array2d(dtype=float),
   ):
@@ -2232,15 +2235,16 @@ def update_gradient_cholesky(tile_size: int):
 
 @cache_kernel
 def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
-    efc_grad_in: wp.array3d(dtype=float),
-    h_in: wp.array3d(dtype=float),
+    efc_grad_in: wp.array3d(dtype=float),  # kernel_analyzer: ignore
     efc_done_in: wp.array(dtype=bool),
+    # In:
+    h_in: wp.array3d(dtype=float),
     hfactor: wp.array3d(dtype=float),
     # Data out:
-    efc_Mgrad_out: wp.array3d(dtype=float),
+    efc_Mgrad_out: wp.array3d(dtype=float),  # kernel_analyzer: ignore
   ):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
@@ -2381,7 +2385,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
       wp.launch_tiled(
         update_gradient_cholesky(m.nv),
         dim=d.nworld,
-        inputs=[d.efc.grad, h, d.efc.done],
+        inputs=[d.efc.grad, d.efc.done, h],
         outputs=[d.efc.Mgrad],
         block_dim=m.block_dim.update_gradient_cholesky,
       )
@@ -2396,7 +2400,7 @@ def _update_gradient(m: types.Model, d: types.Data, h: wp.array3d(dtype=float), 
       wp.launch_tiled(
         update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), h, d.efc.done, hfactor],
+        inputs=[d.efc.grad.reshape(shape=(d.nworld, d.efc.grad.shape[1], 1)), d.efc.done, h, hfactor],
         outputs=[d.efc.Mgrad.reshape(shape=(d.nworld, d.efc.Mgrad.shape[1], 1))],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
