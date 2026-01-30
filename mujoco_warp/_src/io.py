@@ -884,11 +884,6 @@ def put_data(
     "actuator_moment": None,
     "flexedge_J": None,
     "nacon": None,
-    "ne_connect": None,
-    "ne_weld": None,
-    "ne_jnt": None,
-    "ne_ten": None,
-    "ne_flex": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -930,12 +925,6 @@ def put_data(
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
-
-  d.ne_connect = wp.full(nworld, 3 * int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active)), dtype=int)
-  d.ne_weld = wp.full(nworld, 6 * int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active)), dtype=int)
-  d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
-  d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
-  d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
 
   return d
 
@@ -1197,11 +1186,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     act_dot_out: wp.array2d(dtype=float),
     sensordata_out: wp.array2d(dtype=float),
     nacon_out: wp.array(dtype=int),
-    ne_connect_out: wp.array(dtype=int),
-    ne_weld_out: wp.array(dtype=int),
-    ne_jnt_out: wp.array(dtype=int),
-    ne_ten_out: wp.array(dtype=int),
-    ne_flex_out: wp.array(dtype=int),
   ):
     worldid = wp.tid()
 
@@ -1213,11 +1197,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     if worldid == 0:
       nacon_out[0] = 0
     ne_out[worldid] = 0
-    ne_connect_out[worldid] = 0
-    ne_weld_out[worldid] = 0
-    ne_jnt_out[worldid] = 0
-    ne_ten_out[worldid] = 0
-    ne_flex_out[worldid] = 0
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
@@ -1379,11 +1358,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.act_dot,
       d.sensordata,
       d.nacon,
-      d.ne_connect,
-      d.ne_weld,
-      d.ne_jnt,
-      d.ne_ten,
-      d.ne_flex,
     ],
   )
 

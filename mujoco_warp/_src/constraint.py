@@ -34,21 +34,11 @@ def _zero_constraint_counts(
   nf_out: wp.array(dtype=int),
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
-  ne_connect_out: wp.array(dtype=int),
-  ne_weld_out: wp.array(dtype=int),
-  ne_jnt_out: wp.array(dtype=int),
-  ne_ten_out: wp.array(dtype=int),
-  ne_flex_out: wp.array(dtype=int),
 ):
   worldid = wp.tid()
 
   # Zero all constraint counters
   ne_out[worldid] = 0
-  ne_connect_out[worldid] = 0
-  ne_weld_out[worldid] = 0
-  ne_jnt_out[worldid] = 0
-  ne_ten_out[worldid] = 0
-  ne_flex_out[worldid] = 0
   nf_out[worldid] = 0
   nl_out[worldid] = 0
   nefc_out[worldid] = 0
@@ -155,6 +145,7 @@ def _efc_equality_connect(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -165,7 +156,6 @@ def _efc_equality_connect(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_connect_out: wp.array(dtype=int),
 ):
   """Calculates constraint rows for connect equality constraints."""
   worldid, eqconnectid = wp.tid()
@@ -174,7 +164,7 @@ def _efc_equality_connect(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_connect_out, worldid, 3)
+  wp.atomic_add(ne_out, worldid, 3)
   efcid = wp.atomic_add(nefc_out, worldid, 3)
 
   if efcid + 3 >= njmax_in:
@@ -293,6 +283,7 @@ def _efc_equality_joint(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -303,7 +294,6 @@ def _efc_equality_joint(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_jnt_out: wp.array(dtype=int),
 ):
   worldid, eqjntid = wp.tid()
   eqid = eq_jnt_adr[eqjntid]
@@ -311,7 +301,7 @@ def _efc_equality_joint(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_jnt_out, worldid, 1)
+  wp.atomic_add(ne_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
 
   if efcid >= njmax_in:
@@ -399,6 +389,7 @@ def _efc_equality_tendon(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -409,7 +400,6 @@ def _efc_equality_tendon(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_ten_out: wp.array(dtype=int),
 ):
   worldid, eqtenid = wp.tid()
   eqid = eq_ten_adr[eqtenid]
@@ -417,7 +407,7 @@ def _efc_equality_tendon(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_ten_out, worldid, 1)
+  wp.atomic_add(ne_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
 
   if efcid >= njmax_in:
@@ -508,6 +498,7 @@ def _efc_equality_flex(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -518,12 +509,11 @@ def _efc_equality_flex(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_flex_out: wp.array(dtype=int),
 ):
   worldid, eqflexid, edgeid = wp.tid()
   eqid = eq_flex_adr[eqflexid]
 
-  wp.atomic_add(ne_flex_out, worldid, 1)
+  wp.atomic_add(ne_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
 
   if efcid >= njmax_in:
@@ -761,6 +751,7 @@ def _efc_equality_weld(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -771,7 +762,6 @@ def _efc_equality_weld(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_weld_out: wp.array(dtype=int),
 ):
   worldid, eqweldid = wp.tid()
   eqid = eq_wld_adr[eqweldid]
@@ -779,7 +769,7 @@ def _efc_equality_weld(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_weld_out, worldid, 6)
+  wp.atomic_add(ne_out, worldid, 6)
   efcid = wp.atomic_add(nefc_out, worldid, 6)
 
   if efcid + 6 >= njmax_in:
@@ -1562,29 +1552,13 @@ def _efc_contact_elliptic(
     )
 
 
-@wp.kernel
-def _num_equality(
-  # Data in:
-  ne_connect_in: wp.array(dtype=int),
-  ne_weld_in: wp.array(dtype=int),
-  ne_jnt_in: wp.array(dtype=int),
-  ne_ten_in: wp.array(dtype=int),
-  ne_flex_in: wp.array(dtype=int),
-  # Data out:
-  ne_out: wp.array(dtype=int),
-):
-  worldid = wp.tid()
-  ne = ne_connect_in[worldid] + ne_weld_in[worldid] + ne_jnt_in[worldid] + ne_ten_in[worldid] + ne_flex_in[worldid]
-  ne_out[worldid] = ne
-
-
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
-    inputs=[d.ne, d.nf, d.nl, d.nefc, d.ne_connect, d.ne_weld, d.ne_jnt, d.ne_ten, d.ne_flex],
+    inputs=[d.ne, d.nf, d.nl, d.nefc],
   )
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
@@ -1621,6 +1595,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1631,7 +1606,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_connect,
         ],
       )
       wp.launch(
@@ -1666,6 +1640,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1676,7 +1651,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_weld,
         ],
       )
       wp.launch(
@@ -1702,6 +1676,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1712,7 +1687,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_jnt,
         ],
       )
       wp.launch(
@@ -1737,6 +1711,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1747,7 +1722,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_ten,
         ],
       )
 
@@ -1772,6 +1746,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1782,15 +1757,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_flex,
         ],
-      )
-
-      wp.launch(
-        _num_equality,
-        dim=d.nworld,
-        inputs=[d.ne_connect, d.ne_weld, d.ne_jnt, d.ne_ten, d.ne_flex],
-        outputs=[d.ne],
       )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
