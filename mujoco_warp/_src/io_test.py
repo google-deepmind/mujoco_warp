@@ -114,6 +114,7 @@ class IOTest(parameterized.TestCase):
 
     # keyframe=2: ncon=0, nefc=0
     mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
+    d.time.fill_(0.12345)
 
     # check that mujoco._functions._realloc_con_efc allocates for contact and efc
     mjwarp.get_data_into(mjd, mjm, d, world_id=world_id)
@@ -126,6 +127,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
+    _assert_eq(d.time.numpy()[world_id], mjd.time, "time")
 
     for field in [
       "energy",
@@ -163,7 +165,6 @@ class IOTest(parameterized.TestCase):
       "flexedge_length",
       "flexedge_velocity",
       "actuator_length",
-      # TODO(team): actuator_moment mjd sparse2dense
       "crb",
       # TODO(team): qLDiagInv sparse factorization
       "ten_velocity",
@@ -202,6 +203,15 @@ class IOTest(parameterized.TestCase):
         getattr(mjd, field).reshape(-1),
         field,
       )
+
+    # actuator_moment
+    actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment_dense, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    _assert_eq(
+      d.actuator_moment.numpy()[world_id].reshape(-1),
+      actuator_moment_dense.reshape(-1),
+      "actuator_moment",
+    )
 
     # contact
     ncon = int(d.nacon.numpy()[0] / nworld)
@@ -242,6 +252,69 @@ class IOTest(parameterized.TestCase):
         getattr(d.efc, field).numpy()[world_id, :nefc].reshape(-1),
         getattr(mjd, "efc_" + field).reshape(-1),
         field,
+      )
+
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_get_data_into_io_test_models(self, xml):
+    """Tests get_data_into for field coverage across diverse model types."""
+    mjm, mjd, _, d = test_data.fixture(xml)
+
+    # Create fresh MjData to verify get_data_into populates it correctly
+    mjd_result = mujoco.MjData(mjm)
+
+    mjwarp.get_data_into(mjd_result, mjm, d)
+
+    # Compare key fields, including flex/tendon data not covered by humanoid.xml
+    for field in [
+      "qpos",
+      "qvel",
+      "qacc",
+      "ctrl",
+      "act",
+      "flexvert_xpos",
+      "flexedge_length",
+      "flexedge_velocity",
+      "ten_length",
+      "ten_velocity",
+      "actuator_length",
+      "actuator_velocity",
+      "actuator_force",
+      "xpos",
+      "xquat",
+      "geom_xpos",
+    ]:
+      if getattr(mjd, field).size > 0:
+        _assert_eq(
+          getattr(mjd_result, field).reshape(-1),
+          getattr(mjd, field).reshape(-1),
+          f"{field} (model: {xml})",
+        )
+
+    # flexedge_J
+    if xml == "flex/floppy.xml":
+      from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+      flexedge_J_dense = np.zeros((mjm.nflexedge, mjm.nv))
+      if BLEEDING_EDGE_MUJOCO:
+        mujoco.mju_sparse2dense(
+          flexedge_J_dense,
+          mjd_result.flexedge_J.reshape(-1),
+          mjm.flexedge_J_rownnz,
+          mjm.flexedge_J_rowadr,
+          mjm.flexedge_J_colind.reshape(-1),
+        )
+      else:
+        mujoco.mju_sparse2dense(
+          flexedge_J_dense,
+          mjd_result.flexedge_J.reshape(-1),
+          mjd_result.flexedge_J_rownnz,
+          mjd_result.flexedge_J_rowadr,
+          mjd_result.flexedge_J_colind.reshape(-1),
+        )
+      _assert_eq(
+        d.flexedge_J.numpy()[0].reshape(-1),
+        flexedge_J_dense.reshape(-1),
+        "flexedge_J",
       )
 
   def test_ellipsoid_fluid_model(self):
