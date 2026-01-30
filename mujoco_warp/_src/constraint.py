@@ -15,14 +15,14 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from . import types
-from .types import ConstraintType
-from .types import ContactType
-from .types import vec5
-from .types import vec11
-from .warp_util import event_scope
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -34,21 +34,11 @@ def _zero_constraint_counts(
   nf_out: wp.array(dtype=int),
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
-  ne_connect_out: wp.array(dtype=int),
-  ne_weld_out: wp.array(dtype=int),
-  ne_jnt_out: wp.array(dtype=int),
-  ne_ten_out: wp.array(dtype=int),
-  ne_flex_out: wp.array(dtype=int),
 ):
   worldid = wp.tid()
 
   # Zero all constraint counters
   ne_out[worldid] = 0
-  ne_connect_out[worldid] = 0
-  ne_weld_out[worldid] = 0
-  ne_jnt_out[worldid] = 0
-  ne_ten_out[worldid] = 0
-  ne_flex_out[worldid] = 0
   nf_out[worldid] = 0
   nl_out[worldid] = 0
   nefc_out[worldid] = 0
@@ -155,6 +145,7 @@ def _efc_equality_connect(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -165,7 +156,6 @@ def _efc_equality_connect(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_connect_out: wp.array(dtype=int),
 ):
   """Calculates constraint rows for connect equality constraints."""
   worldid, eqconnectid = wp.tid()
@@ -174,7 +164,7 @@ def _efc_equality_connect(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_connect_out, worldid, 3)
+  wp.atomic_add(ne_out, worldid, 3)
   efcid = wp.atomic_add(nefc_out, worldid, 3)
 
   if efcid + 3 >= njmax_in:
@@ -293,6 +283,7 @@ def _efc_equality_joint(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -303,7 +294,6 @@ def _efc_equality_joint(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_jnt_out: wp.array(dtype=int),
 ):
   worldid, eqjntid = wp.tid()
   eqid = eq_jnt_adr[eqjntid]
@@ -311,7 +301,7 @@ def _efc_equality_joint(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_jnt_out, worldid, 1)
+  wp.atomic_add(ne_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
 
   if efcid >= njmax_in:
@@ -333,7 +323,7 @@ def _efc_equality_joint(
     # Two joint constraint
     qposadr2 = jnt_qposadr[jntid_2]
     dofadr2 = jnt_dofadr[jntid_2]
-    dif = qpos_in[worldid, qposadr2] - qpos0[worldid, qposadr2]
+    dif = qpos_in[worldid, qposadr2] - qpos0[qpos0_id, qposadr2]
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
@@ -399,6 +389,7 @@ def _efc_equality_tendon(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -409,7 +400,6 @@ def _efc_equality_tendon(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_ten_out: wp.array(dtype=int),
 ):
   worldid, eqtenid = wp.tid()
   eqid = eq_ten_adr[eqtenid]
@@ -417,7 +407,7 @@ def _efc_equality_tendon(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_ten_out, worldid, 1)
+  wp.atomic_add(ne_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
 
   if efcid >= njmax_in:
@@ -494,6 +484,9 @@ def _efc_equality_flex(
   opt_timestep: wp.array(dtype=float),
   flexedge_length0: wp.array(dtype=float),
   flexedge_invweight0: wp.array(dtype=float),
+  flexedge_J_rownnz: wp.array(dtype=int),
+  flexedge_J_rowadr: wp.array(dtype=int),
+  flexedge_J_colind: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
   eq_flex_adr: wp.array(dtype=int),
@@ -505,6 +498,7 @@ def _efc_equality_flex(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -515,12 +509,11 @@ def _efc_equality_flex(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_flex_out: wp.array(dtype=int),
 ):
   worldid, eqflexid, edgeid = wp.tid()
   eqid = eq_flex_adr[eqflexid]
 
-  wp.atomic_add(ne_flex_out, worldid, 1)
+  wp.atomic_add(ne_out, worldid, 1)
   efcid = wp.atomic_add(nefc_out, worldid, 1)
 
   if efcid >= njmax_in:
@@ -531,10 +524,20 @@ def _efc_equality_flex(
   solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
 
   Jqvel = float(0.0)
+
+  # TODO(team): remove once efc.J is sparse
   for i in range(nv):
-    J = flexedge_J_in[worldid, edgeid, i]
-    efc_J_out[worldid, efcid, i] = J
-    Jqvel += J * qvel_in[worldid, i]
+    efc_J_out[worldid, efcid, i] = 0.0
+
+  rownnz = flexedge_J_rownnz[edgeid]
+  rowadr = flexedge_J_rowadr[edgeid]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    colind = flexedge_J_colind[sparseid]
+    J = flexedge_J_in[worldid, 0, sparseid]
+    # TODO(team): sparse efc.J
+    efc_J_out[worldid, efcid, colind] = J
+    Jqvel += J * qvel_in[worldid, colind]
 
   _update_efc_row(
     worldid,
@@ -748,6 +751,7 @@ def _efc_equality_weld(
   # In:
   refsafe_in: int,
   # Data out:
+  ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
   efc_type_out: wp.array2d(dtype=int),
   efc_id_out: wp.array2d(dtype=int),
@@ -758,7 +762,6 @@ def _efc_equality_weld(
   efc_vel_out: wp.array2d(dtype=float),
   efc_aref_out: wp.array2d(dtype=float),
   efc_frictionloss_out: wp.array2d(dtype=float),
-  ne_weld_out: wp.array(dtype=int),
 ):
   worldid, eqweldid = wp.tid()
   eqid = eq_wld_adr[eqweldid]
@@ -766,7 +769,7 @@ def _efc_equality_weld(
   if not eq_active_in[worldid, eqid]:
     return
 
-  wp.atomic_add(ne_weld_out, worldid, 6)
+  wp.atomic_add(ne_out, worldid, 6)
   efcid = wp.atomic_add(nefc_out, worldid, 6)
 
   if efcid + 6 >= njmax_in:
@@ -1599,29 +1602,13 @@ def _efc_contact_elliptic(
     )
 
 
-@wp.kernel
-def _num_equality(
-  # Data in:
-  ne_connect_in: wp.array(dtype=int),
-  ne_weld_in: wp.array(dtype=int),
-  ne_jnt_in: wp.array(dtype=int),
-  ne_ten_in: wp.array(dtype=int),
-  ne_flex_in: wp.array(dtype=int),
-  # Data out:
-  ne_out: wp.array(dtype=int),
-):
-  worldid = wp.tid()
-  ne = ne_connect_in[worldid] + ne_weld_in[worldid] + ne_jnt_in[worldid] + ne_ten_in[worldid] + ne_flex_in[worldid]
-  ne_out[worldid] = ne
-
-
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
-    inputs=[d.ne, d.nf, d.nl, d.nefc, d.ne_connect, d.ne_weld, d.ne_jnt, d.ne_ten, d.ne_flex],
+    inputs=[d.ne, d.nf, d.nl, d.nefc],
   )
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
@@ -1658,6 +1645,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1668,7 +1656,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_connect,
         ],
       )
       wp.launch(
@@ -1703,6 +1690,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1713,7 +1701,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_weld,
         ],
       )
       wp.launch(
@@ -1739,6 +1726,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1749,7 +1737,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_jnt,
         ],
       )
       wp.launch(
@@ -1774,6 +1761,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1784,7 +1772,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_ten,
         ],
       )
 
@@ -1796,6 +1783,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.timestep,
           m.flexedge_length0,
           m.flexedge_invweight0,
+          m.flexedge_J_rownnz,
+          m.flexedge_J_rowadr,
+          m.flexedge_J_colind,
           m.eq_solref,
           m.eq_solimp,
           m.eq_flex_adr,
@@ -1806,6 +1796,7 @@ def make_constraint(m: types.Model, d: types.Data):
           refsafe,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1816,15 +1807,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_flex,
         ],
-      )
-
-      wp.launch(
-        _num_equality,
-        dim=d.nworld,
-        inputs=[d.ne_connect, d.ne_weld, d.ne_jnt, d.ne_ten, d.ne_flex],
-        outputs=[d.ne],
       )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):

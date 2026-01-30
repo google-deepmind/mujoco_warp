@@ -17,27 +17,27 @@ from typing import Optional, Tuple
 
 import warp as wp
 
-from .math import motion_cross
-from .types import ConeType
-from .types import Data
-from .types import JointType
-from .types import Model
-from .types import State
-from .types import TileSet
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.math import motion_cross
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import State
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
 
 @cache_kernel
-def mul_m_sparse_diag(check_skip: bool):
-  @nested_kernel(module="unique", enable_backward=False)
-  def _mul_m_sparse_diag(
+def mul_m_sparse(check_skip: bool):
+  @wp.kernel(module="unique")
+  def _mul_m_sparse(
     # Model:
-    dof_Madr: wp.array(dtype=int),
+    qM_mulm_rowadr: wp.array(dtype=int),
+    qM_mulm_col: wp.array(dtype=int),
+    qM_mulm_madr: wp.array(dtype=int),
     # Data in:
     qM_in: wp.array3d(dtype=float),
     # In:
@@ -46,26 +46,33 @@ def mul_m_sparse_diag(check_skip: bool):
     # Out:
     res: wp.array2d(dtype=float),
   ):
-    """Diagonal update for sparse matmul."""
+    """Sparse matmul: one thread per DOF, gather-based (no atomics)."""
     worldid, dofid = wp.tid()
 
     if wp.static(check_skip):
       if skip[worldid]:
         return
 
-    res[worldid, dofid] = qM_in[worldid, 0, dof_Madr[dofid]] * vec[worldid, dofid]
+    # Gather all contributions (diagonal + off-diagonal)
+    acc = float(0.0)
+    start = qM_mulm_rowadr[dofid]
+    end = qM_mulm_rowadr[dofid + 1]
+    for k in range(start, end):
+      col = qM_mulm_col[k]
+      madr = qM_mulm_madr[k]
+      acc += qM_in[worldid, 0, madr] * vec[worldid, col]
 
-  return _mul_m_sparse_diag
+    res[worldid, dofid] = acc
+
+  return _mul_m_sparse
 
 
 @cache_kernel
-def mul_m_sparse_ij(check_skip: bool):
-  @nested_kernel(module="unique", enable_backward=False)
-  def _mul_m_sparse_ij(
-    # Model:
-    qM_mulm_i: wp.array(dtype=int),
-    qM_mulm_j: wp.array(dtype=int),
-    qM_madr_ij: wp.array(dtype=int),
+def mul_m_dense(nv: int, check_skip: bool):
+  """Simple SIMT dense matmul: one thread per output element."""
+
+  @wp.kernel(module="unique")
+  def _mul_m_dense(
     # Data in:
     qM_in: wp.array3d(dtype=float),
     # In:
@@ -74,52 +81,16 @@ def mul_m_sparse_ij(check_skip: bool):
     # Out:
     res: wp.array2d(dtype=float),
   ):
-    """Off-diagonal update for sparse matmul."""
-    worldid, elementid = wp.tid()
+    worldid, i = wp.tid()
 
     if wp.static(check_skip):
       if skip[worldid]:
         return
 
-    i = qM_mulm_i[elementid]
-    j = qM_mulm_j[elementid]
-    madr_ij = qM_madr_ij[elementid]
-
-    qM_ij = qM_in[worldid, 0, madr_ij]
-
-    wp.atomic_add(res[worldid], i, qM_ij * vec[worldid, j])
-    wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
-
-  return _mul_m_sparse_ij
-
-
-@cache_kernel
-def mul_m_dense(tile: TileSet, check_skip: bool):
-  """Returns a matmul kernel for some tile size."""
-
-  @nested_kernel(module="unique", enable_backward=False)
-  def _mul_m_dense(
-    # Data In:
-    qM_in: wp.array3d(dtype=float),
-    # In:
-    adr: wp.array(dtype=int),
-    vec: wp.array3d(dtype=float),
-    skip: wp.array(dtype=bool),
-    # Out:
-    res: wp.array3d(dtype=float),
-  ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
-
-    if wp.static(check_skip):
-      if skip[worldid]:
-        return
-
-    dofid = adr[nodeid]
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid), bounds_check=False)
-    vec_tile = wp.tile_load(vec[worldid], shape=(TILE_SIZE, 1), offset=(dofid, 0), bounds_check=False)
-    res_tile = wp.tile_matmul(qM_tile, vec_tile)
-    wp.tile_store(res[worldid], res_tile, offset=(dofid, 0), bounds_check=False)
+    acc = float(0.0)
+    for j in range(wp.static(nv)):
+      acc += qM_in[worldid, i, j] * vec[worldid, j]
+    res[worldid, i] = acc
 
   return _mul_m_dense
 
@@ -151,34 +122,19 @@ def mul_m(
 
   if m.opt.is_sparse:
     wp.launch(
-      mul_m_sparse_diag(check_skip),
+      mul_m_sparse(check_skip),
       dim=(d.nworld, m.nv),
-      inputs=[m.dof_Madr, M, vec, skip],
-      outputs=[res],
-    )
-
-    wp.launch(
-      mul_m_sparse_ij(check_skip),
-      dim=(d.nworld, m.qM_madr_ij.size),
-      inputs=[m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij, M, vec, skip],
+      inputs=[m.qM_mulm_rowadr, m.qM_mulm_col, m.qM_mulm_madr, M, vec, skip],
       outputs=[res],
     )
 
   else:
-    for tile in m.qM_tiles:
-      wp.launch_tiled(
-        mul_m_dense(tile, check_skip),
-        dim=(d.nworld, tile.adr.size),
-        inputs=[
-          M,
-          tile.adr,
-          # note reshape: tile_matmul expects 2d input
-          vec.reshape(vec.shape + (1,)),
-          skip,
-        ],
-        outputs=[res.reshape(res.shape + (1,))],
-        block_dim=m.block_dim.mul_m_dense,
-      )
+    wp.launch(
+      mul_m_dense(m.nv, check_skip),
+      dim=(d.nworld, m.nv),
+      inputs=[M, vec, skip],
+      outputs=[res],
+    )
 
 
 @wp.kernel
@@ -245,32 +201,6 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
     qfrc: Total applied force mapped to dof space.
   """
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
-
-
-@wp.func
-def all_same(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
-  dx = abs(v0[0] - v1[0])
-  dy = abs(v0[1] - v1[1])
-  dz = abs(v0[2] - v1[2])
-
-  return (
-    (dx <= 1.0e-9 or dx <= max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
-    and (dy <= 1.0e-9 or dy <= max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
-    and (dz <= 1.0e-9 or dz <= max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
-  )
-
-
-@wp.func
-def any_different(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
-  dx = abs(v0[0] - v1[0])
-  dy = abs(v0[1] - v1[1])
-  dz = abs(v0[2] - v1[2])
-
-  return (
-    (dx > 1.0e-9 and dx > max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
-    or (dy > 1.0e-9 and dy > max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
-    or (dz > 1.0e-9 and dz > max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
-  )
 
 
 @wp.func
@@ -555,7 +485,7 @@ def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _get_state(
     # Model:
     nq: int,
@@ -694,7 +624,7 @@ def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, activ
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _set_state(
     # Model:
     nq: int,
