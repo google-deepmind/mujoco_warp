@@ -16,7 +16,6 @@ import dataclasses
 import enum
 
 import mujoco
-import numpy as np
 import warp as wp
 
 MJ_MINVAL = mujoco.mjMINVAL
@@ -1785,24 +1784,22 @@ class RenderContext:
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
     hfield_bounds_size: hfield bounds size
-    flex_registry: flex BVH id to warp mesh mapping
     flex_rgba: flex rgba
     flex_matid: flex material ids
     flex_bvh_id: flex BVH id
     flex_face_point: flex face points
     flex_faceadr: flex face addresses
     flex_nface: number of flex faces
+    flex_nwork: total flex work items for refit
     flex_group: flex groups
     flex_group_root: flex group roots
     flex_dim: flex dimensions
-    flex_elemnum: flex element counts
-    flex_elemadr: flex element addresses
     flex_elemdataadr: flex element data addresses
     flex_shell: flex shell data
-    flex_shellnum: flex shell counts
     flex_shelldataadr: flex shell data addresses
-    flex_vertadr: flex vertex addresses
     flex_radius: flex radius
+    flex_workadr: flex work item addresses for refit
+    flex_worknum: flex work item counts for refit
     flex_render_smooth: whether to render flex meshes smoothly
     bvh: scene BVH
     bvh_id: scene BVH id
@@ -1841,24 +1838,25 @@ class RenderContext:
   hfield_registry: dict
   hfield_bvh_id: wp.array(dtype=wp.uint64)
   hfield_bounds_size: wp.array(dtype=wp.vec3)
-  flex_registry: dict
+  flex: wp.Mesh
   flex_rgba: wp.array(dtype=wp.vec4)
   flex_matid: wp.array(dtype=int)
   flex_bvh_id: wp.uint64
   flex_face_point: wp.array(dtype=wp.vec3)
-  flex_faceadr: list[int]
+  flex_faceadr: wp.array(dtype=int)
   flex_nface: int
+  flex_nwork: int
   flex_group: wp.array(dtype=int)
   flex_group_root: wp.array(dtype=int)
-  flex_dim: np.ndarray
-  flex_elemnum: np.ndarray
-  flex_elemadr: np.ndarray
-  flex_elemdataadr: np.ndarray
+  flex_dim: wp.array(dtype=int)
+  flex_elemadr: wp.array(dtype=int)
+  flex_elemdataadr: wp.array(dtype=int)
   flex_shell: wp.array(dtype=int)
-  flex_shellnum: np.ndarray
-  flex_shelldataadr: np.ndarray
-  flex_vertadr: np.ndarray
-  flex_radius: np.ndarray
+  flex_shelldataadr: wp.array(dtype=int)
+  flex_vertadr: wp.array(dtype=int)
+  flex_radius: wp.array(dtype=float)
+  flex_workadr: wp.array(dtype=int)
+  flex_worknum: wp.array(dtype=int)
   flex_render_smooth: bool
   bvh: wp.Bvh
   bvh_id: wp.uint64

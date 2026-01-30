@@ -23,9 +23,9 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import render_util
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-from mujoco_warp._src import render_util
 from mujoco_warp._src.warp_util import nested_kernel
 
 bleeding_edge_mujoco = tuple(map(int, mujoco.__version__.split(".")[:3])) >= (3, 4, 1)
@@ -1492,6 +1492,7 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
 
 @wp.kernel
 def _build_rays(
+  # In:
   offset: int,
   img_w: int,
   img_h: int,
@@ -1500,6 +1501,7 @@ def _build_rays(
   sensorsize: wp.vec2,
   intrinsic: wp.vec4,
   znear: float,
+  # Out:
   ray_out: wp.array(dtype=wp.vec3),
 ):
   px, py = wp.tid()
@@ -1547,7 +1549,9 @@ def create_render_context(
   nmesh = mjm.nmesh
   geom_enabled_idx = [i for i in range(mjm.ngeom) if mjm.geom_group[i] in enabled_geom_groups]
   used_mesh_id = set(
-    int(mjm.geom_dataid[g]) for g in geom_enabled_idx if mjm.geom_type[g] == types.GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
+    int(mjm.geom_dataid[g])
+    for g in geom_enabled_idx
+    if mjm.geom_type[g] == types.GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
   )
   rc.mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
@@ -1567,7 +1571,9 @@ def create_render_context(
   # HField BVHs
   nhfield = mjm.nhfield
   used_hfield_id = set(
-    int(mjm.geom_dataid[g]) for g in geom_enabled_idx if mjm.geom_type[g] == types.GeomType.HFIELD and int(mjm.geom_dataid[g]) >= 0
+    int(mjm.geom_dataid[g])
+    for g in geom_enabled_idx
+    if mjm.geom_type[g] == types.GeomType.HFIELD and int(mjm.geom_dataid[g]) >= 0
   )
   rc.hfield_registry = {}
   hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]
@@ -1585,7 +1591,6 @@ def create_render_context(
   rc.hfield_bounds_size = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
   # Flex BVHs
-  rc.flex_registry = {}
   rc.flex_bvh_id = wp.uint64(0)
   rc.flex_group_root = wp.zeros(d.nworld, dtype=int)
   if mjm.nflex > 0:
@@ -1599,23 +1604,34 @@ def create_render_context(
       flex_nface,
     ) = bvh.build_flex_bvh(mjm, m, d)
 
-    rc.flex_registry[fmesh.id] = fmesh
+    rc.flex = fmesh
     rc.flex_bvh_id = fmesh.id
     rc.flex_face_point = face_point
     rc.flex_group = flex_groups
     rc.flex_group_root = flex_group_roots
-    rc.flex_dim = mjm.flex_dim
-    rc.flex_elemnum = mjm.flex_elemnum
-    rc.flex_elemadr = mjm.flex_elemadr
-    rc.flex_elemdataadr = mjm.flex_elemdataadr
+    rc.flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
     rc.flex_shell = flex_shell
-    rc.flex_shellnum = mjm.flex_shellnum
-    rc.flex_shelldataadr = mjm.flex_shelldataadr
-    rc.flex_vertadr = mjm.flex_vertadr
-    rc.flex_faceadr = flex_faceadr
+    rc.flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
+    rc.flex_faceadr = wp.array(flex_faceadr, dtype=int)
     rc.flex_nface = flex_nface
-    rc.flex_radius = mjm.flex_radius
+    rc.flex_radius = wp.array(mjm.flex_radius, dtype=float)
     rc.flex_render_smooth = flex_render_smooth
+
+    # precompute work item layout for unified refit kernel
+    nflex = mjm.nflex
+    workadr = np.zeros(nflex, dtype=np.int32)
+    worknum = np.zeros(nflex, dtype=np.int32)
+    cumsum = 0
+    for f in range(nflex):
+      workadr[f] = cumsum
+      if mjm.flex_dim[f] == 2:
+        worknum[f] = mjm.flex_elemnum[f] + mjm.flex_shellnum[f]
+      else:
+        worknum[f] = mjm.flex_shellnum[f]
+      cumsum += worknum[f]
+    rc.flex_workadr = wp.array(workadr, dtype=int)
+    rc.flex_worknum = wp.array(worknum, dtype=int)
+    rc.flex_nwork = int(cumsum)
 
   textures = []
   for i in range(mjm.ntex):

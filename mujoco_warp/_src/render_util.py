@@ -14,7 +14,6 @@
 # ==============================================================================
 
 import mujoco
-import numpy as np
 import warp as wp
 
 from mujoco_warp._src.types import ProjectionType
