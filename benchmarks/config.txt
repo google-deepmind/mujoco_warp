@@ -19,4 +19,4 @@ apptronik_apollo_terrain  apptronik_apollo/scene_terrain.xml   8192   48   96   
 cloth                     cloth/scene.xml                      32     200  3000  100   -
 franka_emika_panda        franka_emika_panda/scene.xml         32768  1    5     -     -
 humanoid                  humanoid/humanoid.xml                8192   24   64    -     -
-three_humanoids           humanoid/three_humanoids.xml         1024   100  192   -     -
+three_humanoids           humanoid/three_humanoids.xml         8192   100  192   -     -
