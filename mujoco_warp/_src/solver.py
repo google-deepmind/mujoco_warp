@@ -2720,20 +2720,18 @@ def solve(m: types.Model, d: types.Data):
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
-    _solve(m, d)
+    ctx = create_solver_context(m, d)
+    _solve(m, d, ctx)
 
 
-def _solve(m: types.Model, d: types.Data):
+def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   """Finds forces that satisfy constraints."""
   if not (m.opt.disableflags & types.DisableBit.WARMSTART):
     wp.copy(d.qacc, d.qacc_warmstart)
   else:
     wp.copy(d.qacc, d.qacc_smooth)
 
-  # Create solver context with all temporary arrays
-  ctx = create_solver_context(m, d)
-
-  # create context
+  #  context
   create_context(m, d, ctx, grad=True)
 
   # search = -Mgrad

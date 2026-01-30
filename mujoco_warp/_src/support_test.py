@@ -239,11 +239,9 @@ class SupportTest(parameterized.TestCase):
     h = wp.array(h_np, dtype=float)
 
     # 3. Create inline arrays for grad, Mgrad, and done (no longer in d.efc)
-    grad = wp.zeros((nworld, nv_pad), dtype=float)
-    grad_np = grad.numpy()
-    grad_np.fill(0)  # Zero out first
+    grad_np = np.zeros((nworld, nv_pad))
     grad_np[0, :nv] = b
-    grad.assign(grad_np)
+    grad = wp.array(grad_np, dtype=float)
 
     # Zero out the temporary arrays to ensure clean state
     L_init = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
@@ -267,7 +265,6 @@ class SupportTest(parameterized.TestCase):
     )
     wp.synchronize()
 
-    # Get results from inline arrays
     L_result = hfactor.numpy()[0]
     x_result = Mgrad.numpy()[0]
 

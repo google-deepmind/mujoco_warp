@@ -61,7 +61,8 @@ class SolverTest(parameterized.TestCase):
       # solve with 0 iterations just initializes constraints and costs and then exits
       d.efc.force.zero_()
       d.qfrc_constraint.zero_()
-      mjw.solve(m, d)
+      ctx = solver.create_solver_context(m, d)
+      solver._solve(m, d, ctx)
 
       # Get the ordering indices based on efc_force, efc_state for MJWarp
       nefc = d.nefc.numpy()[0]
@@ -75,10 +76,8 @@ class SolverTest(parameterized.TestCase):
       d_sort_indices = np.lexsort((efc_force, efc_state))
       mjd_sort_indices = np.lexsort((mjd_efc_force, mjd_efc_state))
 
-      # Create SolverContext to access cost/gauss
-      ctx = solver.create_solver_context(m, d)
       solver.create_context(m, d, ctx, grad=False)
-      efc_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
+      ctx_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
       qfrc_constraint = d.qfrc_constraint.numpy()[0]
 
       efc_sorted_force = efc_force[d_sort_indices]
@@ -88,7 +87,7 @@ class SolverTest(parameterized.TestCase):
 
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
-      _assert_eq(efc_cost, mjd_cost, "cost")
+      _assert_eq(ctx_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
   @parameterized.product(ls_parallel=(True, False), cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC))
@@ -120,29 +119,29 @@ class SolverTest(parameterized.TestCase):
 
       # Calculate target values
       nefc = d.nefc.numpy()[0]
-      efc_search_np = ctx.search.numpy()[0]
+      ctx_search_np = ctx.search.numpy()[0]
       efc_J_np = d.efc.J.numpy()[0][: d.njmax, : m.nv]
-      efc_gauss_np = ctx.gauss.numpy()[0]
+      ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
-      efc_Jaref_np = ctx.Jaref.numpy()[0]
+      ctx_Jaref_np = ctx.Jaref.numpy()[0]
       efc_D_np = d.efc.D.numpy()[0][: d.njmax]
       qfrc_smooth_np = d.qfrc_smooth.numpy()[0]
 
       target_mv = np.zeros(mjm.nv)
-      mujoco.mj_mulM(mjm, mjd, target_mv, efc_search_np)
-      target_jv = efc_J_np @ efc_search_np
+      mujoco.mj_mulM(mjm, mjd, target_mv, ctx_search_np)
+      target_jv = efc_J_np @ ctx_search_np
       target_quad_gauss = np.array(
         [
-          efc_gauss_np,
-          np.dot(efc_search_np, efc_Ma_np - qfrc_smooth_np),
-          0.5 * np.dot(efc_search_np, target_mv),
+          ctx_gauss_np,
+          np.dot(ctx_search_np, efc_Ma_np - qfrc_smooth_np),
+          0.5 * np.dot(ctx_search_np, target_mv),
         ]
       )
       target_quad = np.transpose(
         np.vstack(
           [
-            0.5 * efc_Jaref_np * efc_Jaref_np * efc_D_np,
-            target_jv * efc_Jaref_np * efc_D_np,
+            0.5 * ctx_Jaref_np * ctx_Jaref_np * efc_D_np,
+            target_jv * ctx_Jaref_np * efc_D_np,
             0.5 * target_jv * target_jv * efc_D_np,
           ]
         )
@@ -156,22 +155,22 @@ class SolverTest(parameterized.TestCase):
       solver._linesearch(m, d, ctx, step_size_cost)
 
       # mv and jv are always written
-      efc_mv = ctx.mv.numpy()[0]
-      efc_jv = ctx.jv.numpy()[0]
-      _assert_eq(efc_mv, target_mv, "mv")
-      _assert_eq(efc_jv[:nefc], target_jv[:nefc], "jv")
+      ctx_mv = ctx.mv.numpy()[0]
+      ctx_jv = ctx.jv.numpy()[0]
+      _assert_eq(ctx_mv, target_mv, "mv")
+      _assert_eq(ctx_jv[:nefc], target_jv[:nefc], "jv")
 
       if ls_parallel and cone == ConeType.PYRAMIDAL:
         # Parallel pyramidal has separate prep kernels that write quad_gauss and quad
         # (Elliptic quad uses special quad1/quad2 format that target_quad doesn't compute)
-        efc_quad_gauss = ctx.quad_gauss.numpy()[0]
-        efc_quad = ctx.quad.numpy()[0]
-        _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
-        _assert_eq(efc_quad[:nefc], target_quad[:nefc], "quad")
+        ctx_quad_gauss = ctx.quad_gauss.numpy()[0]
+        ctx_quad = ctx.quad.numpy()[0]
+        _assert_eq(ctx_quad_gauss, target_quad_gauss, "quad_gauss")
+        _assert_eq(ctx_quad[:nefc], target_quad[:nefc], "quad")
       elif ls_parallel and cone == ConeType.ELLIPTIC:
         # Parallel elliptic: only check quad_gauss (quad uses special format)
-        efc_quad_gauss = ctx.quad_gauss.numpy()[0]
-        _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
+        ctx_quad_gauss = ctx.quad_gauss.numpy()[0]
+        _assert_eq(ctx_quad_gauss, target_quad_gauss, "quad_gauss")
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -193,8 +192,8 @@ class SolverTest(parameterized.TestCase):
     mj_grad = np.tile(ctx.grad.numpy()[:, : mjm.nv], (1, 1))
     mujoco.mj_solveM(mjm, mjd, mj_Mgrad, mj_grad)
 
-    efc_Mgrad = ctx.Mgrad.numpy()[0, : mjm.nv]
-    _assert_eq(efc_Mgrad, mj_Mgrad[0], name="Mgrad")
+    ctx_Mgrad = ctx.Mgrad.numpy()[0, : mjm.nv]
+    _assert_eq(ctx_Mgrad, mj_Mgrad[0], name="Mgrad")
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_parallel_linesearch(self, cone):
@@ -212,11 +211,8 @@ class SolverTest(parameterized.TestCase):
     m.opt.iterations = 0
     mjw.fwd_velocity(m, d)
     mjw.fwd_acceleration(m, d, factorize=True)
-    solver.solve(m, d)
-
-    # Create SolverContext and initialize
     ctx = solver.create_solver_context(m, d)
-    solver.create_context(m, d, ctx, grad=True)
+    solver._solve(m, d, ctx)
 
     # Storing some initial values
     d_efc_Ma = d.efc.Ma.numpy().copy()

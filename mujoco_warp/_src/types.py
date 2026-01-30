@@ -1733,7 +1733,7 @@ class Data:
 
 @dataclasses.dataclass
 class InverseContext:
-  """Temporary solver workspace arrays for inverse dynamics."""
+  """Workspace arrays for inverse dynamics."""
 
   Jaref: wp.array2d(dtype=float)
   search_dot: wp.array(dtype=float)
@@ -1745,7 +1745,7 @@ class InverseContext:
 
 @dataclasses.dataclass
 class SolverContext:
-  """Temporary solver workspace arrays for forward solve."""
+  """Workspace arrays for constraint solver."""
 
   Jaref: wp.array2d(dtype=float)
   search_dot: wp.array(dtype=float)
