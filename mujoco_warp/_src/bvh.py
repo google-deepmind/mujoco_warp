@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from typing import Tuple
 
 import mujoco
 import numpy as np
@@ -24,10 +24,9 @@ import warp as wp
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
 
-if TYPE_CHECKING:
-  from mujoco_warp._src.render_context import RenderContext
 
 wp.set_module_options({"enable_backward": False})
 

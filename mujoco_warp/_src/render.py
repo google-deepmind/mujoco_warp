@@ -27,11 +27,11 @@ from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.ray import ray_sphere
-from mujoco_warp._src.render_context import RenderContext
+from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import ProjectionType
+from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import nested_kernel
 
@@ -77,66 +77,6 @@ def _tile_coords(tid: int, W: int, H: int):
   i = tile_x + u
   j = tile_y + v
   return i, j
-
-
-@wp.func
-def compute_ray(
-  # In:
-  projection: int,
-  fovy: float,
-  sensorsize: wp.vec2,
-  intrinsic: wp.vec4,
-  img_w: int,
-  img_h: int,
-  px: int,
-  py: int,
-  znear: float,
-) -> wp.vec3:
-  """Compute ray direction for a pixel with per-world camera parameters.
-
-  This combines _camera_frustum_bounds and build_primary_rays logic for use
-  inside a kernel when camera parameters are batched/randomized across worlds.
-  """
-  if projection == ProjectionType.ORTHOGRAPHIC:
-    return wp.vec3(0.0, 0.0, -1.0)
-
-  aspect = float(img_w) / float(img_h)
-  sensor_h = sensorsize[1]
-
-  # Check if we have intrinsics (sensorsize[1] != 0)
-  if sensor_h != 0.0:
-    fx = intrinsic[0]
-    fy = intrinsic[1]
-    cx = intrinsic[2]
-    cy = intrinsic[3]
-    sensor_w = sensorsize[0]
-
-    target_aspect = float(img_w) / float(img_h)
-    sensor_aspect = sensor_w / sensor_h
-    if target_aspect > sensor_aspect:
-      sensor_h = sensor_w / target_aspect
-    elif target_aspect < sensor_aspect:
-      sensor_w = sensor_h * target_aspect
-
-    left = -znear / fx * (sensor_w * 0.5 - cx)
-    right = znear / fx * (sensor_w * 0.5 + cx)
-    top = znear / fy * (sensor_h * 0.5 - cy)
-    bottom = -znear / fy * (sensor_h * 0.5 + cy)
-  else:
-    fovy_rad = fovy * wp.pi / 180.0
-    half_height = znear * wp.tan(0.5 * fovy_rad)
-    half_width = half_height * aspect
-    left = -half_width
-    right = half_width
-    top = half_height
-    bottom = -half_height
-
-  u = (float(px) + 0.5) / float(img_w)
-  v = (float(py) + 0.5) / float(img_h)
-  x = left + (right - left) * u
-  y = top + (bottom - top) * v
-
-  return wp.normalize(wp.vec3(x, y, -znear))
 
 
 @wp.func
@@ -777,7 +717,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       d.light_xdir,
       d.geom_xpos,
       d.geom_xmat,
-      rc.ncam,
+      rc.nacam,
       rc.use_shadows,
       rc.bvh_ngeom,
       rc.cam_res,

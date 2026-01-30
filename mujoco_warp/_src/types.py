@@ -16,6 +16,7 @@ import dataclasses
 import enum
 
 import mujoco
+import numpy as np
 import warp as wp
 
 MJ_MINVAL = mujoco.mjMINVAL
@@ -1760,3 +1761,117 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+
+class RenderContext:
+  """Render context for rendering.
+
+  Attributes:
+    nacam: number of active cameras that are rendering
+    cam_res: camera resolution
+    cam_id_map: camera id map
+    use_textures: whether to use textures
+    use_shadows: whether to use shadows
+    bvh_ngeom: number of geometries in the BVH
+    enabled_geom_ids: enabled geometry ids
+    mesh_registry: mesh BVH id to warp mesh mapping
+    mesh_bvh_id: mesh BVH ids
+    mesh_bounds_size: mesh bounds size
+    mesh_texcoord: mesh texture coordinates
+    mesh_texcoord_offsets: mesh texture coordinate offsets
+    mesh_facetexcoord: mesh facet texture coordinates
+    textures: textures
+    textures_registry: texture registry
+    hfield_registry: hfield BVH id to warp mesh mapping
+    hfield_bvh_id: hfield BVH ids
+    hfield_bounds_size: hfield bounds size
+    flex_registry: flex BVH id to warp mesh mapping
+    flex_rgba: flex rgba
+    flex_matid: flex material ids
+    flex_bvh_id: flex BVH id
+    flex_face_point: flex face points
+    flex_faceadr: flex face addresses
+    flex_nface: number of flex faces
+    flex_group: flex groups
+    flex_group_root: flex group roots
+    flex_dim: flex dimensions
+    flex_elemnum: flex element counts
+    flex_elemadr: flex element addresses
+    flex_elemdataadr: flex element data addresses
+    flex_shell: flex shell data
+    flex_shellnum: flex shell counts
+    flex_shelldataadr: flex shell data addresses
+    flex_vertadr: flex vertex addresses
+    flex_radius: flex radius
+    flex_render_smooth: whether to render flex meshes smoothly
+    bvh: scene BVH
+    bvh_id: scene BVH id
+    lower: lower bounds
+    upper: upper bounds
+    group: groups
+    group_root: group roots
+    ray: rays
+    rgb_data: RGB data
+    rgb_adr: RGB addresses
+    rgb_size: per-camera RGB buffer sizes
+    depth_data: depth data
+    depth_adr: depth addresses
+    depth_size: per-camera depth buffer sizes
+    render_rgb: per-camera RGB render flags
+    render_depth: per-camera depth render flags
+    znear: near plane distance
+    total_rays: total number of rays
+  """
+
+  nacam: int
+  cam_res: wp.array(dtype=wp.vec2i)
+  cam_id_map: wp.array(dtype=int)
+  use_textures: bool
+  use_shadows: bool
+  bvh_ngeom: int
+  enabled_geom_ids: wp.array(dtype=int)
+  mesh_registry: dict
+  mesh_bvh_id: wp.array(dtype=wp.uint64)
+  mesh_bounds_size: wp.array(dtype=wp.vec3)
+  mesh_texcoord: wp.array(dtype=wp.vec2)
+  mesh_texcoord_offsets: wp.array(dtype=int)
+  mesh_facetexcoord: wp.array(dtype=wp.vec3i)
+  textures: wp.array(dtype=wp.Texture2D)
+  textures_registry: list[wp.Texture2D]
+  hfield_registry: dict
+  hfield_bvh_id: wp.array(dtype=wp.uint64)
+  hfield_bounds_size: wp.array(dtype=wp.vec3)
+  flex_registry: dict
+  flex_rgba: wp.array(dtype=wp.vec4)
+  flex_matid: wp.array(dtype=int)
+  flex_bvh_id: wp.uint64
+  flex_face_point: wp.array(dtype=wp.vec3)
+  flex_faceadr: list[int]
+  flex_nface: int
+  flex_group: wp.array(dtype=int)
+  flex_group_root: wp.array(dtype=int)
+  flex_dim: np.ndarray
+  flex_elemnum: np.ndarray
+  flex_elemadr: np.ndarray
+  flex_elemdataadr: np.ndarray
+  flex_shell: wp.array(dtype=int)
+  flex_shellnum: np.ndarray
+  flex_shelldataadr: np.ndarray
+  flex_vertadr: np.ndarray
+  flex_radius: np.ndarray
+  flex_render_smooth: bool
+  bvh: wp.Bvh
+  bvh_id: wp.uint64
+  lower: wp.array(dtype=wp.vec3)
+  upper: wp.array(dtype=wp.vec3)
+  group: wp.array(dtype=int)
+  group_root: wp.array(dtype=int)
+  ray: wp.array(dtype=wp.vec3)
+  rgb_data: wp.array2d(dtype=wp.uint32)
+  rgb_adr: wp.array(dtype=int)
+  depth_data: wp.array2d(dtype=wp.float32)
+  depth_adr: wp.array(dtype=int)
+  render_rgb: wp.array(dtype=bool)
+  render_depth: wp.array(dtype=bool)
+  znear: float
+  total_rays: int

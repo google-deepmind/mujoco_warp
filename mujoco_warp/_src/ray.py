@@ -18,8 +18,8 @@ from typing import Optional, Tuple
 import warp as wp
 
 from mujoco_warp._src.math import safe_div
-from mujoco_warp._src.render_context import RenderContext
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model

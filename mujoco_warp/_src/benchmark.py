@@ -22,9 +22,9 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import warp_util
-from mujoco_warp._src.render_context import RenderContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.util_misc import halton
 
 

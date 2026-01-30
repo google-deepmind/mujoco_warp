@@ -22,9 +22,10 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src import render_context
+from mujoco_warp._src import bvh
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
+from mujoco_warp._src import render_util
 from mujoco_warp._src.warp_util import nested_kernel
 
 bleeding_edge_mujoco = tuple(map(int, mujoco.__version__.split(".")[:3])) >= (3, 4, 1)
@@ -1489,6 +1490,24 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
   return np.array(ctrls)
 
 
+@wp.kernel
+def _build_rays(
+  offset: int,
+  img_w: int,
+  img_h: int,
+  projection: int,
+  fovy: float,
+  sensorsize: wp.vec2,
+  intrinsic: wp.vec4,
+  znear: float,
+  ray_out: wp.array(dtype=wp.vec3),
+):
+  px, py = wp.tid()
+  ray_out[offset + px + py * img_w] = render_util.compute_ray(
+    projection, fovy, sensorsize, intrinsic, img_w, img_h, px, py, znear
+  )
+
+
 def create_render_context(
   mjm: mujoco.MjModel,
   m: types.Model,
@@ -1501,7 +1520,7 @@ def create_render_context(
   enabled_geom_groups: list[int] = [0, 1, 2],
   cam_active: Optional[list[bool]] = None,
   flex_render_smooth: bool = True,
-) -> render_context.RenderContext:
+) -> types.RenderContext:
   """Creates a render context on device.
 
   Args:
@@ -1522,16 +1541,192 @@ def create_render_context(
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
-  return render_context.RenderContext(
-    mjm,
-    m,
-    d,
-    cam_res,
-    render_rgb,
-    render_depth,
-    use_textures,
-    use_shadows,
-    enabled_geom_groups,
-    cam_active,
-    flex_render_smooth,
+  rc = types.RenderContext()
+
+  # Mesh BVHs
+  nmesh = mjm.nmesh
+  geom_enabled_idx = [i for i in range(mjm.ngeom) if mjm.geom_group[i] in enabled_geom_groups]
+  used_mesh_id = set(
+    int(mjm.geom_dataid[g]) for g in geom_enabled_idx if mjm.geom_type[g] == types.GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
   )
+  rc.mesh_registry = {}
+  mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
+  mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
+
+  for i in range(nmesh):
+    if i not in used_mesh_id:
+      continue
+    mesh, half = bvh.build_mesh_bvh(mjm, i)
+    rc.mesh_registry[mesh.id] = mesh
+    mesh_bvh_id[i] = mesh.id
+    mesh_bounds_size[i] = half
+
+  rc.mesh_bvh_id = wp.array(mesh_bvh_id, dtype=wp.uint64)
+  rc.mesh_bounds_size = wp.array(mesh_bounds_size, dtype=wp.vec3)
+
+  # HField BVHs
+  nhfield = mjm.nhfield
+  used_hfield_id = set(
+    int(mjm.geom_dataid[g]) for g in geom_enabled_idx if mjm.geom_type[g] == types.GeomType.HFIELD and int(mjm.geom_dataid[g]) >= 0
+  )
+  rc.hfield_registry = {}
+  hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]
+  hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
+
+  for hid in range(nhfield):
+    if hid not in used_hfield_id:
+      continue
+    hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
+    rc.hfield_registry[hmesh.id] = hmesh
+    hfield_bvh_id[hid] = hmesh.id
+    hfield_bounds_size[hid] = hhalf
+
+  rc.hfield_bvh_id = wp.array(hfield_bvh_id, dtype=wp.uint64)
+  rc.hfield_bounds_size = wp.array(hfield_bounds_size, dtype=wp.vec3)
+
+  # Flex BVHs
+  rc.flex_registry = {}
+  rc.flex_bvh_id = wp.uint64(0)
+  rc.flex_group_root = wp.zeros(d.nworld, dtype=int)
+  if mjm.nflex > 0:
+    (
+      fmesh,
+      face_point,
+      flex_groups,
+      flex_group_roots,
+      flex_shell,
+      flex_faceadr,
+      flex_nface,
+    ) = bvh.build_flex_bvh(mjm, m, d)
+
+    rc.flex_registry[fmesh.id] = fmesh
+    rc.flex_bvh_id = fmesh.id
+    rc.flex_face_point = face_point
+    rc.flex_group = flex_groups
+    rc.flex_group_root = flex_group_roots
+    rc.flex_dim = mjm.flex_dim
+    rc.flex_elemnum = mjm.flex_elemnum
+    rc.flex_elemadr = mjm.flex_elemadr
+    rc.flex_elemdataadr = mjm.flex_elemdataadr
+    rc.flex_shell = flex_shell
+    rc.flex_shellnum = mjm.flex_shellnum
+    rc.flex_shelldataadr = mjm.flex_shelldataadr
+    rc.flex_vertadr = mjm.flex_vertadr
+    rc.flex_faceadr = flex_faceadr
+    rc.flex_nface = flex_nface
+    rc.flex_radius = mjm.flex_radius
+    rc.flex_render_smooth = flex_render_smooth
+
+  textures = []
+  for i in range(mjm.ntex):
+    textures.append(render_util.create_warp_texture(mjm, i))
+  rc.textures_registry = textures
+  rc.textures = wp.array(textures, dtype=wp.Texture2D)
+
+  # Filter active cameras
+  if cam_active is not None:
+    assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
+    active_cam_indices = np.nonzero(cam_active)[0]
+  else:
+    active_cam_indices = list(range(mjm.ncam))
+
+  ncam = len(active_cam_indices)
+
+  if cam_res is not None:
+    if isinstance(cam_res, tuple):
+      cam_res = [cam_res] * ncam
+    assert len(cam_res) == ncam, (
+      f"Camera resolutions must be provided for all active cameras (got {len(cam_res)}, expected {ncam})"
+    )
+    active_cam_res = cam_res
+  else:
+    active_cam_res = mjm.cam_resolution[active_cam_indices]
+
+  rc.cam_res = wp.array(active_cam_res, dtype=wp.vec2i)
+
+  if render_rgb and isinstance(render_rgb, bool):
+    render_rgb = [render_rgb] * ncam
+  elif render_rgb is None:
+    render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
+
+  if render_depth and isinstance(render_depth, bool):
+    render_depth = [render_depth] * ncam
+  elif render_depth is None:
+    render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+
+  assert len(render_rgb) == ncam and len(render_depth) == ncam, (
+    f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
+  )
+
+  rgb_adr = -1 * np.ones(ncam, dtype=int)
+  depth_adr = -1 * np.ones(ncam, dtype=int)
+  cam_res_np = rc.cam_res.numpy()
+  ri = 0
+  di = 0
+  total = 0
+
+  for idx in range(ncam):
+    if render_rgb[idx]:
+      rgb_adr[idx] = ri
+      ri += cam_res_np[idx][0] * cam_res_np[idx][1]
+    if render_depth[idx]:
+      depth_adr[idx] = di
+      di += cam_res_np[idx][0] * cam_res_np[idx][1]
+
+    total += cam_res_np[idx][0] * cam_res_np[idx][1]
+
+  rc.rgb_adr = wp.array(rgb_adr, dtype=int)
+  rc.depth_adr = wp.array(depth_adr, dtype=int)
+  rc.rgb_data = wp.zeros((d.nworld, ri), dtype=wp.uint32)
+  rc.depth_data = wp.zeros((d.nworld, di), dtype=wp.float32)
+  rc.render_rgb = wp.array(render_rgb, dtype=bool)
+  rc.render_depth = wp.array(render_depth, dtype=bool)
+  rc.znear = mjm.vis.map.znear * mjm.stat.extent
+  rc.total_rays = int(total)
+
+  if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
+    rc.ray = None
+  else:
+    rc.ray = wp.zeros(int(total), dtype=wp.vec3)
+
+    offset = 0
+    for idx, cam_id in enumerate(active_cam_indices):
+      img_w = cam_res_np[idx][0]
+      img_h = cam_res_np[idx][1]
+      wp.launch(
+        kernel=_build_rays,
+        dim=(img_w, img_h),
+        inputs=[
+          offset,
+          img_w,
+          img_h,
+          m.cam_projection.numpy()[cam_id].item(),
+          m.cam_fovy.numpy()[0, cam_id].item(),
+          wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
+          wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
+          rc.znear,
+        ],
+        outputs=[rc.ray],
+      )
+      offset += img_w * img_h
+
+  rc.nacam = ncam
+  rc.cam_id_map = wp.array(active_cam_indices, dtype=int)
+  rc.use_textures = use_textures
+  rc.use_shadows = use_shadows
+  rc.mesh_texcoord = wp.array(mjm.mesh_texcoord, dtype=wp.vec2)
+  rc.mesh_texcoord_offsets = wp.array(mjm.mesh_texcoordadr, dtype=int)
+  rc.mesh_facetexcoord = wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i)
+  rc.flex_rgba = wp.array(mjm.flex_rgba, dtype=wp.vec4)
+  rc.flex_matid = wp.array(mjm.flex_matid, dtype=int)
+  rc.bvh_ngeom = len(geom_enabled_idx)
+  rc.enabled_geom_ids = wp.array(geom_enabled_idx, dtype=int)
+  rc.lower = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=wp.vec3)
+  rc.upper = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=wp.vec3)
+  rc.group = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=int)
+  rc.group_root = wp.zeros(d.nworld, dtype=int)
+  rc.bvh = None
+  rc.bvh_id = None
+  bvh.build_scene_bvh(m, d, rc)
+
+  return rc
