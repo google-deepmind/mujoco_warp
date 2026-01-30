@@ -62,8 +62,8 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
   linesearch_iterative: int = 32
-  # support
-  mul_m_dense: int = 32
+  # derivative
+  qderiv_actuator_dense: int = 32
 
 
 class BroadphaseType(enum.IntEnum):
@@ -164,7 +164,8 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-  # unsupported: MIDPHASE, AUTORESET, NATIVECCD, ISLAND
+  NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+  # unsupported: MIDPHASE, AUTORESET, ISLAND
 
 
 class EnableBit(enum.IntFlag):
@@ -319,6 +320,20 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
+
+
+class CollisionType(enum.IntEnum):
+  """Type of narrowphase collision.
+
+  Attributes:
+    PRIMITIVE: primitive collision
+    CONVEX: convex collision (CCD)
+    SDF: sdf collision
+  """
+
+  PRIMITIVE = 0
+  CONVEX = 1
+  SDF = 2
 
 
 class SolverType(enum.IntEnum):
@@ -903,6 +918,9 @@ class Model:
     flex_stiffness: finite element stiffness matrix          (nflexelem, 21)
     flex_bending: bending stiffness                          (nflexedge, 17)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
+    flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
+    flexedge_J_rowadr: row start address in colind array     (nflexedge,)
+    flexedge_J_colind: column indices in sparse Jacobian     (nJfe,)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_faceadr: first face address                         (nmesh,)
@@ -1254,6 +1272,9 @@ class Model:
   flex_stiffness: array("nflexelem", 21, float)
   flex_bending: array("nflexedge", 17, float)
   flex_damping: array("nflex", float)
+  flexedge_J_rownnz: array("nflexedge", int)
+  flexedge_J_rowadr: array("nflexedge", int)
+  flexedge_J_colind: wp.array(dtype=int)
   mesh_vertadr: array("nmesh", int)
   mesh_vertnum: array("nmesh", int)
   mesh_faceadr: array("nmesh", int)
@@ -1596,7 +1617,7 @@ class Data:
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
-    flexedge_J: edge length Jacobian                            (nworld, nflexedge, nv)
+    flexedge_J: edge length Jacobian                            (nworld, 1, nflexedge*6)
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
@@ -1612,7 +1633,7 @@ class Data:
     qLD: L'*D*L factorization of M                              (nworld, nv, nv) if dense
                                                                 (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
-    flexedge_velocity: flex edge velocities                     (nworld, nflexedge,)
+    flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
     cvel: com-based velocity (rot:lin)                          (nworld, nbody, 6)
@@ -1644,11 +1665,6 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     njmax: maximum number of constraints per world
     nacon: number of detected contacts (across all worlds)      (1,)
-    ne_connect: number of equality connect constraints          (nworld,)
-    ne_weld: number of equality weld constraints                (nworld,)
-    ne_jnt: number of equality joint constraints                (nworld,)
-    ne_ten: number of equality tendon constraints               (nworld,)
-    ne_flex: number of flex edge equality constraints           (nworld,)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1694,7 +1710,7 @@ class Data:
   cdof: array("nworld", "nv", wp.spatial_vector)
   cinert: array("nworld", "nbody", vec10)
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
-  flexedge_J: array("nworld", "nflexedge", "nv", float)
+  flexedge_J: wp.array3d(dtype=float)
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
@@ -1738,11 +1754,6 @@ class Data:
   naconmax: int
   njmax: int
   nacon: array(1, int)
-  ne_connect: array("nworld", int)
-  ne_weld: array("nworld", int)
-  ne_jnt: array("nworld", int)
-  ne_ten: array("nworld", int)
-  ne_flex: array("nworld", int)
 
   # warp only: collision driver
   collision_pair: array("naconmax", wp.vec2i)
