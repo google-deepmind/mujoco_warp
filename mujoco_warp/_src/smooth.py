@@ -24,6 +24,7 @@ from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
@@ -1184,6 +1185,36 @@ def _cfrc_ext(
 
 
 @wp.kernel
+def _count_equality_constraints(
+  # Model:
+  eq_type: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  efc_type_in: wp.array2d(dtype=int),
+  efc_id_in: wp.array2d(dtype=int),
+  # Out:
+  ne_connect_out: wp.array(dtype=int),
+  ne_weld_out: wp.array(dtype=int),
+):
+  """Counts connect and weld equality constraints from efc data."""
+  worldid, efcid = wp.tid()
+
+  # Only process rows within the equality constraint range
+  if efcid >= ne_in[worldid]:
+    return
+
+  # Get the equality constraint ID and its type
+  eq_id = efc_id_in[worldid, efcid]
+  eq_constraint_type = eq_type[eq_id]
+
+  # Count by type (each connect has 3 rows, each weld has 6 rows)
+  if eq_constraint_type == EqType.CONNECT:
+    wp.atomic_add(ne_connect_out, worldid, 1)
+  elif eq_constraint_type == EqType.WELD:
+    wp.atomic_add(ne_weld_out, worldid, 1)
+
+
+@wp.kernel
 def _cfrc_ext_equality(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -1199,6 +1230,7 @@ def _cfrc_ext_equality(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   efc_id_in: wp.array2d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  # In:
   ne_connect_in: wp.array(dtype=int),
   ne_weld_in: wp.array(dtype=int),
   # Data out:
@@ -1369,27 +1401,40 @@ def rne_postconstraint(m: Model, d: Data):
     outputs=[d.cfrc_ext],
   )
 
-  wp.launch(
-    _cfrc_ext_equality,
-    dim=(d.nworld, m.neq),
-    inputs=[
-      m.body_rootid,
-      m.site_bodyid,
-      m.site_pos,
-      m.eq_obj1id,
-      m.eq_obj2id,
-      m.eq_objtype,
-      m.eq_data,
-      d.xpos,
-      d.xmat,
-      d.subtree_com,
-      d.efc.id,
-      d.efc.force,
-      d.ne_connect,
-      d.ne_weld,
-    ],
-    outputs=[d.cfrc_ext],
-  )
+  # Equality constraint forces - only if model has equality constraints
+  if m.neq > 0:
+    # Allocate inline counters and count from efc data
+    ne_connect = wp.zeros((d.nworld,), dtype=int)
+    ne_weld = wp.zeros((d.nworld,), dtype=int)
+
+    wp.launch(
+      _count_equality_constraints,
+      dim=(d.nworld, d.njmax),  # TODO(team): launch over max equality constraints
+      inputs=[m.eq_type, d.ne, d.efc.type, d.efc.id],
+      outputs=[ne_connect, ne_weld],
+    )
+
+    wp.launch(
+      _cfrc_ext_equality,
+      dim=(d.nworld, m.neq),
+      inputs=[
+        m.body_rootid,
+        m.site_bodyid,
+        m.site_pos,
+        m.eq_obj1id,
+        m.eq_obj2id,
+        m.eq_objtype,
+        m.eq_data,
+        d.xpos,
+        d.xmat,
+        d.subtree_com,
+        d.efc.id,
+        d.efc.force,
+        ne_connect,
+        ne_weld,
+      ],
+      outputs=[d.cfrc_ext],
+    )
 
   # cfrc_ext += contacts
   wp.launch(
