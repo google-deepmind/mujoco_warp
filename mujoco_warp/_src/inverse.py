@@ -120,7 +120,7 @@ def inv_constraint(m: Model, d: Data):
     d.qfrc_constraint.zero_()
     return
 
-  ctx = solver.SolverContext(m, d, inverse=True)
+  ctx = solver.create_inverse_context(m, d)
   solver.create_context(m, d, ctx, grad=False)
 
 
