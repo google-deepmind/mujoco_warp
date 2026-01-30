@@ -195,6 +195,7 @@ class WarningTest(absltest.TestCase):
     self.assertEqual(len(mjw.get_warnings(d)), 0)
     np.testing.assert_array_equal(d.warning.numpy(), np.zeros(types.NUM_WARNINGS, dtype=np.int32))
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   def test_multi_step_graph_captures_mid_graph_warning(self):
     """Tests that a multi-step graph captures warnings even if they occur mid-graph.
 
@@ -259,6 +260,7 @@ class WarningTest(absltest.TestCase):
     self.assertIn("nefc overflow", result[0])
     self.assertIn("4", result[0])
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   def test_single_step_graph_warns_only_when_event_occurs(self):
     """Tests that a single-step graph only reports warning on the step it happens.
 
