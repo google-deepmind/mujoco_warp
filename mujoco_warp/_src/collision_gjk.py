@@ -1965,8 +1965,8 @@ def multicontact(
   geomtype1: int,
   geomtype2: int,
 ) -> Tuple[int, mat43, mat43]:
-  witness1 = mat43(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf)
-  witness2 = mat43(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf)
+  witness1 = mat43()
+  witness2 = mat43()
   witness1[0] = x1
   witness2[0] = x2
 
