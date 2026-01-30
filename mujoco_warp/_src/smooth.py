@@ -227,15 +227,14 @@ def _flex_edges(
   flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
+  flexedge_J_rowadr: wp.array(dtype=int),
+  flexedge_J_colind: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
-  flexedge_J_rownnz_out: wp.array2d(dtype=int),
-  flexedge_J_rowadr_out: wp.array2d(dtype=int),
-  flexedge_J_colind_out: wp.array2d(dtype=int),
   flexedge_J_out: wp.array3d(dtype=float),
   flexedge_length_out: wp.array2d(dtype=float),
   flexedge_velocity_out: wp.array2d(dtype=float),
@@ -274,9 +273,7 @@ def _flex_edges(
   vel2 = wp.vec3(qvel_in[worldid, dofj0], qvel_in[worldid, dofj1], qvel_in[worldid, dofj2])
   flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, edge)
 
-  flexedge_J_rownnz_out[worldid, edgeid] = 6
-  rowadr = edgeid * 6
-  flexedge_J_rowadr_out[worldid, edgeid] = rowadr
+  rowadr = flexedge_J_rowadr[edgeid]
 
   sparseid0 = rowadr + 0
   sparseid1 = rowadr + 1
@@ -284,13 +281,6 @@ def _flex_edges(
   sparseid3 = rowadr + 3
   sparseid4 = rowadr + 4
   sparseid5 = rowadr + 5
-
-  flexedge_J_colind_out[worldid, sparseid0] = dofi0
-  flexedge_J_colind_out[worldid, sparseid1] = dofi1
-  flexedge_J_colind_out[worldid, sparseid2] = dofi2
-  flexedge_J_colind_out[worldid, sparseid3] = dofj0
-  flexedge_J_colind_out[worldid, sparseid4] = dofj1
-  flexedge_J_colind_out[worldid, sparseid5] = dofj2
 
   # TODO(team): jacdif
 
@@ -402,15 +392,14 @@ def flex(m: Model, d: Data):
       m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
+      m.flexedge_J_rowadr,
+      m.flexedge_J_colind,
       d.qvel,
       d.subtree_com,
       d.cdof,
       d.flexvert_xpos,
     ],
     outputs=[
-      d.flexedge_J_rownnz,
-      d.flexedge_J_rowadr,
-      d.flexedge_J_colind,
       d.flexedge_J,
       d.flexedge_length,
       d.flexedge_velocity,

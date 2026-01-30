@@ -537,6 +537,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_j.append(j)
       m.qM_madr_ij.append(madr_ij)
 
+  # flexedge_J sparse structure (constant per model)
+  m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
+  m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
+  m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
+
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
@@ -645,9 +650,6 @@ def make_data(
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
     # flexedge
-    "flexedge_J_rownnz": None,
-    "flexedge_J_rowadr": None,
-    "flexedge_J_colind": None,
     "flexedge_J": None,
   }
   for f in dataclasses.fields(types.Data):
@@ -664,9 +666,6 @@ def make_data(
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  d.flexedge_J_rownnz = wp.zeros((nworld, mjm.nflexedge), dtype=int)
-  d.flexedge_J_rowadr = wp.zeros((nworld, mjm.nflexedge), dtype=int)
-  d.flexedge_J_colind = wp.zeros((nworld, mjm.nflexedge * 6), dtype=int)
   d.flexedge_J = wp.zeros((nworld, 1, mjm.nflexedge * 6), dtype=float)
 
   return d
@@ -801,9 +800,6 @@ def put_data(
     "qLD": None,
     "ten_J": None,
     "actuator_moment": None,
-    "flexedge_J_rownnz": None,
-    "flexedge_J_rowadr": None,
-    "flexedge_J_colind": None,
     "flexedge_J": None,
     "nacon": None,
     "ne_connect": None,
@@ -837,22 +833,7 @@ def put_data(
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
-  d.flexedge_J_rownnz = wp.array(np.tile(mjd.flexedge_J_rownnz, (nworld, 1)), dtype=int)
-  d.flexedge_J_rowadr = wp.array(np.tile(mjd.flexedge_J_rowadr, (nworld, 1)), dtype=int)
-
-  J_colind = np.zeros(mjm.nflexedge * 6, dtype=int)
-  J = np.zeros(mjm.nflexedge * 6, dtype=float)
-  cnt = 0
-  for i in range(mjm.nflexedge):
-    rownnz = mjd.flexedge_J_rownnz[i]
-    assert rownnz == 6
-    rowadr = mjd.flexedge_J_rowadr[i]
-    for j in range(rownnz):
-      J_colind[cnt] = mjd.flexedge_J_colind.reshape(-1)[rowadr + j]
-      J[cnt] = mjd.flexedge_J.reshape(-1)[rowadr + j]
-      cnt += 1
-  d.flexedge_J_colind = wp.array(np.tile(J_colind, (nworld, 1)), dtype=int)
-  d.flexedge_J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
+  d.flexedge_J = wp.array(np.tile(mjd.flexedge_J.reshape(-1), (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
 
   if mujoco.mj_isSparse(mjm):
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -974,15 +955,7 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-  mujoco.mju_sparse2dense(
-    flexedge_J,
-    d.flexedge_J.numpy()[world_id, 0].reshape(-1),
-    d.flexedge_J_rownnz.numpy()[world_id],
-    d.flexedge_J_rowadr.numpy()[world_id],
-    d.flexedge_J_colind.numpy()[world_id].reshape(-1),
-  )
-  result.flexedge_J[:] = flexedge_J
+  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]

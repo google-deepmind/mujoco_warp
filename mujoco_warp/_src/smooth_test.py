@@ -497,7 +497,7 @@ class SmoothTest(parameterized.TestCase):
 
     mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
     mujoco.mju_sparse2dense(
-      mj_flexedge_J, mjd.flexedge_J.ravel(), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.ravel()
+      mj_flexedge_J, mjd.flexedge_J.ravel(), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.ravel()
     )
 
     _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
@@ -508,9 +508,9 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(
       flexedge_J,
       d.flexedge_J.numpy()[0, 0].reshape(-1),
-      d.flexedge_J_rownnz.numpy()[0],
-      d.flexedge_J_rowadr.numpy()[0],
-      d.flexedge_J_colind.numpy()[0],
+      m.flexedge_J_rownnz.numpy(),
+      m.flexedge_J_rowadr.numpy(),
+      m.flexedge_J_colind.numpy(),
     )
 
     _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")

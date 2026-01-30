@@ -494,14 +494,14 @@ def _efc_equality_flex(
   opt_timestep: wp.array(dtype=float),
   flexedge_length0: wp.array(dtype=float),
   flexedge_invweight0: wp.array(dtype=float),
+  flexedge_J_rownnz: wp.array(dtype=int),
+  flexedge_J_rowadr: wp.array(dtype=int),
+  flexedge_J_colind: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
   eq_flex_adr: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
-  flexedge_J_rownnz_in: wp.array2d(dtype=int),
-  flexedge_J_rowadr_in: wp.array2d(dtype=int),
-  flexedge_J_colind_in: wp.array2d(dtype=int),
   flexedge_J_in: wp.array3d(dtype=float),
   flexedge_length_in: wp.array2d(dtype=float),
   njmax_in: int,
@@ -539,11 +539,11 @@ def _efc_equality_flex(
   for i in range(nv):
     efc_J_out[worldid, efcid, i] = 0.0
 
-  rownnz = flexedge_J_rownnz_in[worldid, edgeid]
-  rowadr = flexedge_J_rowadr_in[worldid, edgeid]
+  rownnz = flexedge_J_rownnz[edgeid]
+  rowadr = flexedge_J_rowadr[edgeid]
   for i in range(rownnz):
     sparseid = rowadr + i
-    colind = flexedge_J_colind_in[worldid, sparseid]
+    colind = flexedge_J_colind[sparseid]
     J = flexedge_J_in[worldid, 0, sparseid]
     # TODO(team): sparse efc.J
     efc_J_out[worldid, efcid, colind] = J
@@ -1759,13 +1759,13 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.timestep,
           m.flexedge_length0,
           m.flexedge_invweight0,
+          m.flexedge_J_rownnz,
+          m.flexedge_J_rowadr,
+          m.flexedge_J_colind,
           m.eq_solref,
           m.eq_solimp,
           m.eq_flex_adr,
           d.qvel,
-          d.flexedge_J_rownnz,
-          d.flexedge_J_rowadr,
-          d.flexedge_J_colind,
           d.flexedge_J,
           d.flexedge_length,
           d.njmax,
