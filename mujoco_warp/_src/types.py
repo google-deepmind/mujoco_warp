@@ -1659,11 +1659,6 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     njmax: maximum number of constraints per world
     nacon: number of detected contacts (across all worlds)      (1,)
-    ne_connect: number of equality connect constraints          (nworld,)
-    ne_weld: number of equality weld constraints                (nworld,)
-    ne_jnt: number of equality joint constraints                (nworld,)
-    ne_ten: number of equality tendon constraints               (nworld,)
-    ne_flex: number of flex edge equality constraints           (nworld,)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1753,11 +1748,6 @@ class Data:
   naconmax: int
   njmax: int
   nacon: array(1, int)
-  ne_connect: array("nworld", int)
-  ne_weld: array("nworld", int)
-  ne_jnt: array("nworld", int)
-  ne_ten: array("nworld", int)
-  ne_flex: array("nworld", int)
 
   # warp only: collision driver
   collision_pair: array("naconmax", wp.vec2i)
