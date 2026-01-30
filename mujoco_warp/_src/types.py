@@ -164,7 +164,8 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-  # unsupported: MIDPHASE, AUTORESET, NATIVECCD, ISLAND
+  NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+  # unsupported: MIDPHASE, AUTORESET, ISLAND
 
 
 class EnableBit(enum.IntFlag):
@@ -319,6 +320,20 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
+
+
+class CollisionType(enum.IntEnum):
+  """Type of narrowphase collision.
+
+  Attributes:
+    PRIMITIVE: primitive collision
+    CONVEX: convex collision (CCD)
+    SDF: sdf collision
+  """
+
+  PRIMITIVE = 0
+  CONVEX = 1
+  SDF = 2
 
 
 class SolverType(enum.IntEnum):
