@@ -796,8 +796,7 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.empty((d.nworld, m.nsensorcollision, 8, 7), dtype=float)
-  sensor_collision.fill_(1.0e32)
+  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
   if m.nsensorcollision:
     wp.launch(
       _sensor_collision,
@@ -1786,38 +1785,12 @@ def _sensor_acc(
     nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
 
     if reduce == 3:  # netforce
-      # compute point: force-weighted centroid of contact position
+      # Single-pass computation: first compute centroid, then wrench about centroid
+      # Pass 1: compute force-weighted centroid of contact positions
       net_pos = wp.vec3(0.0)
-      total_force_magnitude = float(0.0)
-
-      for i in range(nmatch):
-        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-
-        contact_forcetorque = support.contact_force_fn(
-          opt_cone,
-          contact_frame_in,
-          contact_friction_in,
-          contact_dim_in,
-          contact_efc_address_in,
-          efc_force_in,
-          njmax_in,
-          nacon_in,
-          worldid,
-          cid,
-          False,
-        )
-
-        weight = wp.norm_l2(wp.spatial_top(contact_forcetorque))
-        net_pos += weight * contact_pos_in[cid]
-        total_force_magnitude += weight
-
-      net_pos /= wp.max(total_force_magnitude, MJ_MINVAL)
-
-      # TODO(team): iterate over matches once
-
-      # compute total wrench about point, in the global frame
       net_force = wp.vec3(0.0)
       net_torque = wp.vec3(0.0)
+      total_force_magnitude = float(0.0)
 
       for i in range(nmatch):
         cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
@@ -1836,8 +1809,15 @@ def _sensor_acc(
           cid,
           False,
         )
-        contact_forcetorque *= dir
 
+        # Accumulate for centroid computation (unsigned force magnitude)
+        weight = wp.norm_l2(wp.spatial_top(contact_forcetorque))
+        contact_pos = contact_pos_in[cid]
+        net_pos += weight * contact_pos
+        total_force_magnitude += weight
+
+        # Apply direction and transform to global frame
+        contact_forcetorque *= dir
         force_local = wp.spatial_top(contact_forcetorque)
         torque_local = wp.spatial_bottom(contact_forcetorque)
 
@@ -1847,12 +1827,18 @@ def _sensor_acc(
         force_global = frameT @ force_local
         torque_global = frameT @ torque_local
 
-        # add to total force, torque
+        # Accumulate force and torque (about origin for now)
         net_force += force_global
         net_torque += torque_global
+        # Accumulate moment contribution: will adjust after centroid is computed
+        net_torque += wp.cross(contact_pos, force_global)
 
-        # add induced moment: torque += (pos - point) x force
-        net_torque += wp.cross(contact_pos_in[cid] - net_pos, force_global)
+      # Finalize centroid
+      net_pos /= wp.max(total_force_magnitude, MJ_MINVAL)
+
+      # Adjust torque: subtract moment from centroid (since we accumulated about origin)
+      # torque_about_centroid = torque_about_origin - centroid x total_force
+      net_torque -= wp.cross(net_pos, net_force)
 
       adr_slot = adr
 
@@ -1887,7 +1873,8 @@ def _sensor_acc(
         out[adr_slot + 1] = 1.0
         out[adr_slot + 2] = 0.0
     else:
-      for i in range(wp.min(nmatch, num)):
+      nslots = wp.min(nmatch, num)
+      for i in range(nslots):
         # sorted contact id
         cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
