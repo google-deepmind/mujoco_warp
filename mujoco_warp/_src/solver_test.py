@@ -25,8 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
-
-from . import solver
+from mujoco_warp._src import solver
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -89,14 +88,24 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
-  def test_init_linesearch(self):
-    """Test linesearch initialization."""
+  @parameterized.product(ls_parallel=(True, False), cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC))
+  def test_init_linesearch(self, ls_parallel, cone):
+    """Test linesearch initialization.
+
+    Parallel linesearch has separate prep kernels that write quad, quad_gauss, jv.
+    Iterative linesearch fuses these in-kernel: quad_gauss is internal, quad is
+    only written for elliptic cones.
+    """
     for keyframe in range(3):
-      # TODO(team): Add the case of elliptic cone friction
       mjm, mjd, m, d = test_data.fixture(
         "constraints.xml",
         keyframe=keyframe,
-        overrides={"opt.iterations": 0, "opt.ls_iterations": 0},
+        overrides={
+          "opt.iterations": 0,
+          "opt.ls_iterations": 1,
+          "opt.ls_parallel": ls_parallel,
+          "opt.cone": cone,
+        },
       )
 
       # One step to obtain more non-zeros results
@@ -132,20 +141,30 @@ class SolverTest(parameterized.TestCase):
         )
       )
 
-      # launch linesearch with 0 iteration just doing the initialization step
+      # Reset and launch linesearch
       d.efc.jv.zero_()
       d.efc.quad.zero_()
+      d.efc.quad_gauss.zero_()
       step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
       solver._linesearch(m, d, step_size_cost)
 
+      # mv and jv are always written
       efc_mv = d.efc.mv.numpy()[0]
       efc_jv = d.efc.jv.numpy()[0]
-      efc_quad_gauss = d.efc.quad_gauss.numpy()[0]
-      efc_quad = d.efc.quad.numpy()[0]
       _assert_eq(efc_mv, target_mv, "mv")
       _assert_eq(efc_jv[:nefc], target_jv[:nefc], "jv")
-      _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
-      _assert_eq(efc_quad[:nefc], target_quad[:nefc], "quad")
+
+      if ls_parallel and cone == ConeType.PYRAMIDAL:
+        # Parallel pyramidal has separate prep kernels that write quad_gauss and quad
+        # (Elliptic quad uses special quad1/quad2 format that target_quad doesn't compute)
+        efc_quad_gauss = d.efc.quad_gauss.numpy()[0]
+        efc_quad = d.efc.quad.numpy()[0]
+        _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
+        _assert_eq(efc_quad[:nefc], target_quad[:nefc], "quad")
+      elif ls_parallel and cone == ConeType.ELLIPTIC:
+        # Parallel elliptic: only check quad_gauss (quad uses special format)
+        efc_quad_gauss = d.efc.quad_gauss.numpy()[0]
+        _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -196,17 +215,10 @@ class SolverTest(parameterized.TestCase):
     m.opt.ls_parallel = False
     step_size_cost = wp.empty((d.nworld, 0), dtype=float)
     solver._linesearch(m, d, step_size_cost)
-    alpha_iterative = d.efc.alpha.numpy().copy()
-
-    # Launching parallel linesearch with 10 testing points
-    m.opt.ls_parallel = True
-    m.opt.ls_iterations = 10
-    d.efc.Ma = wp.array2d(d_efc_Ma)
-    d.efc.Jaref = wp.array(d_efc_Jaref)
-    d.qacc = wp.array2d(d_qacc)
-    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
-    solver._linesearch(m, d, step_size_cost)
-    alpha_parallel_10 = d.efc.alpha.numpy().copy()
+    # Iterative computes alpha internally and directly updates outputs
+    qacc_iterative = d.qacc.numpy().copy()
+    Ma_iterative = d.efc.Ma.numpy().copy()
+    Jaref_iterative = d.efc.Jaref.numpy().copy()
 
     # Launching parallel linesearch with 50 testing points
     m.opt.ls_parallel = True
@@ -216,12 +228,14 @@ class SolverTest(parameterized.TestCase):
     d.qacc = wp.array2d(d_qacc)
     step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
     solver._linesearch(m, d, step_size_cost)
-    alpha_parallel_50 = d.efc.alpha.numpy().copy()
+    qacc_parallel = d.qacc.numpy().copy()
+    Ma_parallel = d.efc.Ma.numpy().copy()
+    Jaref_parallel = d.efc.Jaref.numpy().copy()
 
-    # Checking that iterative and parallel linesearch lead to similar results
-    # and that increasing ls_iterations leads to better results
-    _assert_eq(alpha_iterative, alpha_parallel_50, name="linesearch alpha")
-    self.assertLessEqual(abs(alpha_iterative - alpha_parallel_50), abs(alpha_iterative - alpha_parallel_10))
+    # Check that iterative and parallel linesearch produce equivalent outputs
+    _assert_eq(qacc_iterative, qacc_parallel, name="qacc")
+    _assert_eq(Ma_iterative, Ma_parallel, name="Ma")
+    _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),

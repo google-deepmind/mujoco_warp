@@ -17,23 +17,61 @@ from typing import Any
 
 import warp as wp
 
-from .collision_convex import convex_narrowphase
-from .collision_primitive import primitive_narrowphase
-from .collision_sdf import sdf_narrowphase
-from .math import upper_tri_index
-from .types import MJ_MAXVAL
-from .types import BroadphaseFilter
-from .types import BroadphaseType
-from .types import Data
-from .types import DisableBit
-from .types import Model
-from .types import mat23
-from .types import mat63
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_convex import convex_narrowphase
+from mujoco_warp._src.collision_primitive import primitive_narrowphase
+from mujoco_warp._src.collision_sdf import sdf_narrowphase
+from mujoco_warp._src.math import upper_tri_index
+from mujoco_warp._src.types import MJ_MAXVAL
+from mujoco_warp._src.types import BroadphaseFilter
+from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import CollisionType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat23
+from mujoco_warp._src.types import mat63
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+# Corresponding table to MuJoCo's mjCOLLISIONFUNC table in engine_collision_driver.c
+MJ_COLLISION_TABLE = {
+  (GeomType.PLANE, GeomType.SPHERE): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.CAPSULE): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.ELLIPSOID): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.CYLINDER): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.BOX): CollisionType.PRIMITIVE,
+  (GeomType.PLANE, GeomType.MESH): CollisionType.PRIMITIVE,
+  (GeomType.HFIELD, GeomType.SPHERE): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.CAPSULE): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.BOX): CollisionType.CONVEX,
+  (GeomType.HFIELD, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.SPHERE, GeomType.SPHERE): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.CAPSULE): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.SPHERE, GeomType.CYLINDER): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.BOX): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.CAPSULE, GeomType.CAPSULE): CollisionType.PRIMITIVE,
+  (GeomType.CAPSULE, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.CAPSULE, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.CAPSULE, GeomType.BOX): CollisionType.PRIMITIVE,
+  (GeomType.CAPSULE, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.ELLIPSOID): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.BOX): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.CYLINDER, GeomType.CYLINDER): CollisionType.CONVEX,
+  (GeomType.CYLINDER, GeomType.BOX): CollisionType.CONVEX,
+  (GeomType.CYLINDER, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.BOX, GeomType.BOX): CollisionType.CONVEX,  # overwritten by NATIVECCD disable flag
+  (GeomType.BOX, GeomType.MESH): CollisionType.CONVEX,
+  (GeomType.MESH, GeomType.MESH): CollisionType.CONVEX,
+}
 
 
 @wp.kernel
@@ -329,15 +367,15 @@ def _binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: i
 
 
 def _sap_project(opt_broadphase: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def sap_project(
     # Model:
     ngeom: int,
     geom_rbound: wp.array2d(dtype=float),
     geom_margin: wp.array2d(dtype=float),
     # Data in:
-    nworld_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
+    nworld_in: int,
     # In:
     direction_in: wp.vec3,
     # Out:
@@ -402,7 +440,7 @@ def _sap_range(
 
 @cache_kernel
 def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     ngeom: int,
@@ -412,10 +450,10 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     geom_margin: wp.array2d(dtype=float),
     nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
-    nworld_in: int,
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    nworld_in: int,
+    naconmax_in: int,
     # In:
     sort_index_in: wp.array2d(dtype=int),
     cumulative_sum_in: wp.array(dtype=int),
@@ -482,7 +520,7 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
 
 
 def _segmented_sort(tile_size: int):
-  @wp.kernel
+  @wp.kernel(module="unique")
   def segmented_sort(
     # In:
     projection_lower_in: wp.array2d(dtype=float),
@@ -543,7 +581,7 @@ def sap_broadphase(m: Model, d: Data):
   wp.launch(
     kernel=_sap_project(m.opt.broadphase),
     dim=(d.nworld, m.ngeom),
-    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.nworld, d.geom_xpos, direction],
+    inputs=[m.ngeom, m.geom_rbound, m.geom_margin, d.geom_xpos, d.nworld, direction],
     outputs=[
       projection_lower.reshape((-1, m.ngeom)),
       projection_upper,
@@ -588,10 +626,10 @@ def sap_broadphase(m: Model, d: Data):
       m.geom_rbound,
       m.geom_margin,
       m.nxn_pairid,
-      d.nworld,
-      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
+      d.nworld,
+      d.naconmax,
       sort_index.reshape((-1, m.ngeom)),
       cumulative_sum.reshape(-1),
       nsweep,
@@ -602,7 +640,7 @@ def sap_broadphase(m: Model, d: Data):
 
 @cache_kernel
 def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -612,9 +650,9 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     nxn_geom_pair: wp.array(dtype=wp.vec2i),
     nxn_pairid: wp.array(dtype=wp.vec2i),
     # Data in:
-    naconmax_in: int,
     geom_xpos_in: wp.array2d(dtype=wp.vec3),
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    naconmax_in: int,
     # Data out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
     collision_pairid_out: wp.array(dtype=wp.vec2i),
@@ -674,9 +712,9 @@ def nxn_broadphase(m: Model, d: Data):
       m.geom_margin,
       m.nxn_geom_pair_filtered,
       m.nxn_pairid_filtered,
-      d.naconmax,
       d.geom_xpos,
       d.geom_xmat,
+      d.naconmax,
     ],
     outputs=[
       d.collision_pair,
@@ -688,10 +726,17 @@ def nxn_broadphase(m: Model, d: Data):
 
 
 def _narrowphase(m, d):
+  collision_table = MJ_COLLISION_TABLE
+  if m.opt.disableflags & DisableBit.NATIVECCD:
+    collision_table[(GeomType.BOX, GeomType.BOX)] = CollisionType.PRIMITIVE
+
+  convex_pairs = [key for key, value in collision_table.items() if value == CollisionType.CONVEX]
+  primitive_pairs = [key for key, value in collision_table.items() if value == CollisionType.PRIMITIVE]
+
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
-  convex_narrowphase(m, d)
-  primitive_narrowphase(m, d)
+  convex_narrowphase(m, d, convex_pairs)
+  primitive_narrowphase(m, d, primitive_pairs)
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d)

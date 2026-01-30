@@ -17,32 +17,31 @@ from typing import Any, Tuple
 
 import warp as wp
 
-from . import math
-from . import ray
-from . import smooth
-from . import support
-from .collision_sdf import get_sdf_params
-from .collision_sdf import sdf
-from .types import MJ_MINVAL
-from .types import ConeType
-from .types import ConstraintType
-from .types import ContactType
-from .types import Data
-from .types import DataType
-from .types import DisableBit
-from .types import JointType
-from .types import Model
-from .types import ObjType
-from .types import SensorType
-from .types import TrnType
-from .types import vec5
-from .types import vec6
-from .types import vec8
-from .types import vec8i
-from .util_misc import inside_geom
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import ray
+from mujoco_warp._src import smooth
+from mujoco_warp._src import support
+from mujoco_warp._src.collision_sdf import get_sdf_params
+from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DataType
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import SensorType
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec6
+from mujoco_warp._src.types import vec8
+from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.util_misc import inside_geom
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -572,7 +571,7 @@ def _sensor_pos(
     elif sensortype == SensorType.FRAMEZAXIS:
       axis = 2
     vec3 = _frame_axis(
-      ximat_in, xmat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
+      xmat_in, ximat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEQUAT:
@@ -2357,16 +2356,16 @@ def _contact_match(
 
 @cache_kernel
 def _contact_sort(maxmatch: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def contact_sort(
     # Model:
     sensor_intprm: wp.array2d(dtype=int),
     sensor_contact_adr: wp.array(dtype=int),
-    # Data in:
+    # In:
     sensor_contact_nmatch_in: wp.array2d(dtype=int),
     sensor_contact_matchid_in: wp.array3d(dtype=int),
     sensor_contact_criteria_in: wp.array3d(dtype=float),
-    # Data out:
+    # Out:
     sensor_contact_matchid_out: wp.array3d(dtype=int),
   ):
     worldid, contactsensorid = wp.tid()
@@ -2819,13 +2818,13 @@ def energy_pos(m: Model, d: Data):
 
 @cache_kernel
 def _energy_vel_kinetic(nv: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
     # In:
     Mqvel: wp.array2d(dtype=float),
-    # Out:
+    # Data out:
     energy_out: wp.array(dtype=wp.vec2),
   ):
     worldid = wp.tid()
