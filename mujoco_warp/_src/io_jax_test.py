@@ -39,14 +39,6 @@ _IO_TEST_MODELS = (
   "hfield/hfield.xml",
 )
 
-# Exclude flex/floppy.xml from nworld scaling test - it uses ~13GB with nworld=133
-_IO_TEST_MODELS_NWORLD = (
-  "pendula.xml",
-  "collision_sdf/tactile.xml",
-  "actuation/tendon_force_limit.xml",
-  "hfield/hfield.xml",
-)
-
 
 def _dims_match(test_obj, d1: Any, d2: Any, prefix: str = ""):
   """Checks that two dataclasses have fields with the same leading dims."""
@@ -212,13 +204,13 @@ class IOTest(parameterized.TestCase):
     self.assertGreater(m1.body_parentid.strides[0], 0)
     self.assertLen(m1.body_parentid.strides, m1.body_parentid.ndim)
 
-  @parameterized.parameters(*_IO_TEST_MODELS_NWORLD)
+  @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_nworld_array(self, xml):
     """Tests that put_data arrays that scale with nworld have leading dim nworld."""
     mjm, mjd, _, _ = test_data.fixture(xml)
     d1 = mjw.put_data(mjm, mjd, nworld=2, nconmax=1, njmax=40)
-    dn = mjw.put_data(mjm, mjd, nworld=133, nconmax=1, njmax=40)
-    _leading_dims_scale_w_nworld(self, d1, dn, 2, 133)
+    dn = mjw.put_data(mjm, mjd, nworld=7, nconmax=1, njmax=40)
+    _leading_dims_scale_w_nworld(self, d1, dn, 2, 7)
 
   def test_public_api_jax_compat(self):
     """Tests that annotations meet a set of criteria for JAX compat."""
