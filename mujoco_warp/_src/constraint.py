@@ -484,6 +484,9 @@ def _efc_equality_flex(
   opt_timestep: wp.array(dtype=float),
   flexedge_length0: wp.array(dtype=float),
   flexedge_invweight0: wp.array(dtype=float),
+  flexedge_J_rownnz: wp.array(dtype=int),
+  flexedge_J_rowadr: wp.array(dtype=int),
+  flexedge_J_colind: wp.array(dtype=int),
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
   eq_flex_adr: wp.array(dtype=int),
@@ -521,10 +524,20 @@ def _efc_equality_flex(
   solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
 
   Jqvel = float(0.0)
+
+  # TODO(team): remove once efc.J is sparse
   for i in range(nv):
-    J = flexedge_J_in[worldid, edgeid, i]
-    efc_J_out[worldid, efcid, i] = J
-    Jqvel += J * qvel_in[worldid, i]
+    efc_J_out[worldid, efcid, i] = 0.0
+
+  rownnz = flexedge_J_rownnz[edgeid]
+  rowadr = flexedge_J_rowadr[edgeid]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    colind = flexedge_J_colind[sparseid]
+    J = flexedge_J_in[worldid, 0, sparseid]
+    # TODO(team): sparse efc.J
+    efc_J_out[worldid, efcid, colind] = J
+    Jqvel += J * qvel_in[worldid, colind]
 
   _update_efc_row(
     worldid,
@@ -1720,6 +1733,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.timestep,
           m.flexedge_length0,
           m.flexedge_invweight0,
+          m.flexedge_J_rownnz,
+          m.flexedge_J_rowadr,
+          m.flexedge_J_colind,
           m.eq_solref,
           m.eq_solimp,
           m.eq_flex_adr,
