@@ -15,14 +15,14 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from . import types
-from .types import ConstraintType
-from .types import ContactType
-from .types import vec5
-from .types import vec11
-from .warp_util import event_scope
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -333,7 +333,7 @@ def _efc_equality_joint(
     # Two joint constraint
     qposadr2 = jnt_qposadr[jntid_2]
     dofadr2 = jnt_dofadr[jntid_2]
-    dif = qpos_in[worldid, qposadr2] - qpos0[worldid, qposadr2]
+    dif = qpos_in[worldid, qposadr2] - qpos0[qpos0_id, qposadr2]
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
