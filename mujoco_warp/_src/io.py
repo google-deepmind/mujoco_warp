@@ -590,6 +590,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
     m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
   else:
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
     m.flexedge_J_rownnz = mjd.flexedge_J_rownnz
     m.flexedge_J_rowadr = mjd.flexedge_J_rowadr
     m.flexedge_J_colind = mjd.flexedge_J_colind.reshape(-1)
@@ -746,7 +748,7 @@ def make_data(
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  d.flexedge_J = wp.zeros((nworld, 1, mjm.nflexedge * 6), dtype=float)
+  d.flexedge_J = wp.zeros((nworld, 1, mjd.flexedge_J.size), dtype=float)
 
   return d
 
@@ -1034,12 +1036,13 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
-  # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-  if not BLEEDING_EDGE_MUJOCO:
-    result.flexedge_J_rownnz[:] = d.flexedge_J_rownnz.numpy()[world_id]
-    result.flexedge_J_rowadr[:] = d.flexedge_J_rowadr.numpy()[world_id]
-    result.flexedge_J_colind[:] = d.flexedge_J_colind.numpy()[world_id].reshape(-1)
+  if mjm.nflexedge > 0:
+    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    if not BLEEDING_EDGE_MUJOCO:
+      result.flexedge_J_rownnz[:] = d.flexedge_J_rownnz.numpy()[world_id]
+      result.flexedge_J_rowadr[:] = d.flexedge_J_rowadr.numpy()[world_id]
+      result.flexedge_J_colind[:] = d.flexedge_J_colind.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
