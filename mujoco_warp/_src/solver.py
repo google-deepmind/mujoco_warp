@@ -96,8 +96,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
-    h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
-    hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
+    h=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
+    hfactor=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
   )
 
 
