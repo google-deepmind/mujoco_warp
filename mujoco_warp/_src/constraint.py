@@ -68,6 +68,14 @@ def _zero_constraint_counts(
 
 
 @wp.func
+def _active_check(tid: int, threshold: int) -> float:
+  """Return 1.0 if tid < threshold, else 0.0. Used to mask partial tiles."""
+  if tid >= threshold:
+    return 0.0
+  return 1.0
+
+
+@wp.func
 def _update_efc_row(
   # In:
   worldid: int,
@@ -1242,44 +1250,50 @@ def _efc_contact_init(cone_type: types.ConeType):
     if not type_in[conid] & ContactType.CONSTRAINT:
       return
 
+    condim = condim_in[conid]
+
+    if wp.static(IS_ELLIPTIC):
+      nrows = condim
+    else:
+      nrows = 1
+      if condim > 1:
+        nrows = 2 * (condim - 1)
+
     includemargin = includemargin_in[conid]
     pos = dist_in[conid] - includemargin
     active = pos < 0
 
-    if active:
-      worldid = worldid_in[conid]
-      condim = condim_in[conid]
-
-      if wp.static(IS_ELLIPTIC):
-        nrows = condim
-      else:
-        nrows = 1
-        if condim > 1:
-          nrows = 2 * (condim - 1)
-
-      base_efcid = wp.atomic_add(nefc_out, worldid, nrows)
-
-      if base_efcid + nrows > njmax_in:
-        for dimid in range(nrows):
-          contact_efc_address_out[conid, dimid] = -1
-        return
-
+    if not active:
       for dimid in range(nrows):
-        efcid = base_efcid + dimid
-        contact_efc_address_out[conid, dimid] = efcid
-        efc_conid_out[worldid, efcid] = conid
+        contact_efc_address_out[conid, dimid] = -1
+      return
+
+    worldid = worldid_in[conid]
+
+    base_efcid = wp.atomic_add(nefc_out, worldid, nrows)
+
+    if base_efcid + nrows > njmax_in:
+      for dimid in range(nrows):
+        contact_efc_address_out[conid, dimid] = -1
+      return
+
+    for dimid in range(nrows):
+      efcid = base_efcid + dimid
+      contact_efc_address_out[conid, dimid] = efcid
+      efc_conid_out[worldid, efcid] = conid
 
   return kernel
 
 
 @cache_kernel
-def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
-  NV_PADDED = nv_padded
+def _efc_contact_jac_tiled(tile_size: int, cone_type: types.ConeType):
+  TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    nv: int,
     body_rootid: wp.array(dtype=int),
     geom_bodyid: wp.array(dtype=int),
     dof_affects_body: wp.array2d(dtype=int),
@@ -1293,7 +1307,9 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
     cdof_in: wp.array2d(dtype=wp.spatial_vector),
     contact_efc_address_in: wp.array2d(dtype=int),
     efc_conid_in: wp.array2d(dtype=int),
+    njmax_in: int,
     # In:
+    nv_padded: int,
     condim_in: wp.array(dtype=int),
     geom_in: wp.array(dtype=wp.vec2i),
     pos_in: wp.array(dtype=wp.vec3),
@@ -1303,13 +1319,17 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
     efc_J_out: wp.array3d(dtype=float),
     efc_Jqvel_out: wp.array2d(dtype=float),
   ):
-    worldid = wp.tid()
+    worldid, dof_block_id, tid = wp.tid()
+
+    dof_start = dof_block_id * TILE_SIZE
+    dof_end = wp.min(dof_start + TILE_SIZE, nv)
+    if dof_start >= nv_padded:
+      return
+
+    cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
 
     efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid]
-    efcid_end = nefc_in[worldid]
-
-    cdof_tile = wp.tile_load(cdof_in[worldid], shape=NV_PADDED, bounds_check=True)
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=NV_PADDED, bounds_check=True)
+    efcid_end = wp.min(nefc_in[worldid], njmax_in)
 
     prev_conid = int(-1)
     condim = int(0)
@@ -1329,8 +1349,8 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
         offset1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
         offset2 = con_pos - subtree_com_in[worldid, body_rootid[body2]]
 
-        affects1_tile = wp.tile_load(dof_affects_body[body1], shape=NV_PADDED, bounds_check=False)
-        affects2_tile = wp.tile_load(dof_affects_body[body2], shape=NV_PADDED, bounds_check=False)
+        affects1_tile = wp.tile_load(dof_affects_body[body1], shape=TILE_SIZE, offset=dof_start, bounds_check=False)
+        affects2_tile = wp.tile_load(dof_affects_body[body2], shape=TILE_SIZE, offset=dof_start, bounds_check=False)
 
         jacp1_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset1, affects1_tile)
         jacp2_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset2, affects2_tile)
@@ -1388,12 +1408,18 @@ def _efc_contact_jac_tiled(nv_padded: int, cone_type: types.ConeType):
           else:
             J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
-      wp.tile_store(efc_J_out[worldid, efcid], J, bounds_check=False)
+      wp.tile_store(efc_J_out[worldid, efcid], J, offset=dof_start, bounds_check=True)
 
-      # Compute Jqvel = J @ qvel
-      J_times_qvel = wp.tile_map(wp.mul, J, qvel_tile)
-      Jqvel_reduced = wp.tile_reduce(wp.add, J_times_qvel)
-      wp.tile_store(efc_Jqvel_out[worldid], Jqvel_reduced, offset=efcid, bounds_check=False)
+      Jqvel = float(0.0)
+      # This loop has two functions, to no write outside the tile size,
+      # and to work on CPU where block_dim is equal to 1
+      for dofid in range(dof_start + tid, dof_end, wp.block_dim()):
+        Jqvel += efc_J_out[worldid, efcid, dofid] * qvel_in[worldid, dofid]
+
+      Jqvel_tile = wp.tile(Jqvel)
+      Jqvel_tile = wp.tile_reduce(wp.add, Jqvel_tile)
+      if tid == 0:
+        wp.atomic_add(efc_Jqvel_out, worldid, efcid, Jqvel_tile[0])
 
   return kernel
 
@@ -1943,11 +1969,18 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
-      if m.nv_pad > 0:
+      if m.nv_pad > 0 and m.nv > 0:
+        tile_size = m.block_dim.contact_jac_tiled
+        n_dof_blocks = (m.nv_pad + tile_size - 1) // tile_size
+
+        # Zero Jqvel since we use atomic_add to accumulate across DOF blocks
+        d.efc.Jqvel.zero_()
+
         wp.launch_tiled(
-          _efc_contact_jac_tiled(m.nv_pad, m.opt.cone),
-          dim=(d.nworld,),
+          _efc_contact_jac_tiled(tile_size, m.opt.cone),
+          dim=(d.nworld, n_dof_blocks),
           inputs=[
+            m.nv,
             m.body_rootid,
             m.geom_bodyid,
             m.dof_affects_body,
@@ -1960,6 +1993,8 @@ def make_constraint(m: types.Model, d: types.Data):
             d.cdof,
             d.contact.efc_address,
             d.efc.conid,
+            d.njmax,
+            m.nv_pad,
             d.contact.dim,
             d.contact.geom,
             d.contact.pos,
@@ -1970,7 +2005,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.J,
             d.efc.Jqvel,
           ],
-          block_dim=m.block_dim.contact_jac_tiled,
+          block_dim=tile_size,
         )
 
       wp.launch(
