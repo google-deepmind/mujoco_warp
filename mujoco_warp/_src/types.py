@@ -1697,6 +1697,8 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
+    warning: warning flags (accumulated across steps)           (NUM_WARNINGS,)
+    warning_info: warning info (suggested values)               (NUM_WARNINGS, 2)
   """
 
   solver_niter: array("nworld", int)
