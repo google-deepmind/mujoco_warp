@@ -571,18 +571,32 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_fullm_j.append(j)
       j = mjm.dof_parentid[j]
 
-  # indices for sparse qM mul_m (used in support)
-  m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij = [], [], []
+  # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
+  row_elements = [[] for _ in range(mjm.nv)]
+
+  # Add diagonal
+  for i in range(mjm.nv):
+    row_elements[i].append((i, mjm.dof_Madr[i]))
+
+  # Add off-diagonals: ancestors (lower) and descendants (upper)
   for i in range(mjm.nv):
     madr_ij, j = mjm.dof_Madr[i], i
-
     while True:
       madr_ij, j = madr_ij + 1, mjm.dof_parentid[j]
       if j == -1:
         break
-      m.qM_mulm_i.append(i)
-      m.qM_mulm_j.append(j)
-      m.qM_madr_ij.append(madr_ij)
+      row_elements[i].append((j, madr_ij))  # row i gathers M[i,j] * vec[j]
+      row_elements[j].append((i, madr_ij))  # row j gathers M[j,i] * vec[i]
+
+  # Flatten into CSR-like arrays
+  m.qM_mulm_rowadr = [0]
+  m.qM_mulm_col = []
+  m.qM_mulm_madr = []
+  for i in range(mjm.nv):
+    for col, madr in row_elements[i]:
+      m.qM_mulm_col.append(col)
+      m.qM_mulm_madr.append(madr)
+    m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
 
   # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
   if BLEEDING_EDGE_MUJOCO:
