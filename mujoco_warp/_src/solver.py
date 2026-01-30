@@ -13,9 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from math import ceil
 from math import sqrt
-from typing import Union
 
 import warp as wp
 
@@ -25,14 +25,50 @@ from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
-from mujoco_warp._src.types import InverseContext
-from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
 _BLOCK_CHOLESKY_DIM = 32
+
+
+@dataclasses.dataclass
+class InverseContext:
+  """Workspace arrays for inverse dynamics."""
+
+  Jaref: wp.array2d(dtype=float)
+  search_dot: wp.array(dtype=float)
+  gauss: wp.array(dtype=float)
+  cost: wp.array(dtype=float)
+  prev_cost: wp.array(dtype=float)
+  done: wp.array(dtype=bool)
+
+
+@dataclasses.dataclass
+class SolverContext:
+  """Workspace arrays for constraint solver."""
+
+  Jaref: wp.array2d(dtype=float)
+  search_dot: wp.array(dtype=float)
+  gauss: wp.array(dtype=float)
+  cost: wp.array(dtype=float)
+  prev_cost: wp.array(dtype=float)
+  done: wp.array(dtype=bool)
+  grad: wp.array2d(dtype=float)
+  grad_dot: wp.array(dtype=float)
+  Mgrad: wp.array2d(dtype=float)
+  search: wp.array2d(dtype=float)
+  mv: wp.array2d(dtype=float)
+  jv: wp.array2d(dtype=float)
+  quad: wp.array2d(dtype=wp.vec3)
+  quad_gauss: wp.array(dtype=wp.vec3)
+  alpha: wp.array(dtype=float)
+  prev_grad: wp.array2d(dtype=float)
+  prev_Mgrad: wp.array2d(dtype=float)
+  beta: wp.array(dtype=float)
+  h: wp.array3d(dtype=float)
+  hfactor: wp.array3d(dtype=float)
 
 
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
@@ -1890,7 +1926,7 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
   return kernel
 
 
-def _update_constraint(m: types.Model, d: types.Data, ctx: Union[SolverContext, InverseContext]):
+def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext):
   """Update constraint arrays after each solve iteration."""
   wp.launch(
     update_constraint_init_cost,
@@ -2675,7 +2711,7 @@ def _solver_iteration(
   )
 
 
-def create_context(m: types.Model, d: types.Data, ctx: Union[SolverContext, InverseContext], grad: bool = True):
+def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
   # initialize some efc arrays
   wp.launch(
     solve_init_efc,
@@ -2732,7 +2768,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     wp.copy(d.qacc, d.qacc_smooth)
 
   #  context
-  create_context(m, d, ctx, grad=True)
+  init_context(m, d, ctx, grad=True)
 
   # search = -Mgrad
   wp.launch(

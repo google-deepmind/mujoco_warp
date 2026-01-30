@@ -76,7 +76,7 @@ class SolverTest(parameterized.TestCase):
       d_sort_indices = np.lexsort((efc_force, efc_state))
       mjd_sort_indices = np.lexsort((mjd_efc_force, mjd_efc_state))
 
-      solver.create_context(m, d, ctx, grad=False)
+      solver.init_context(m, d, ctx, grad=False)
       ctx_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
       qfrc_constraint = d.qfrc_constraint.numpy()[0]
 
@@ -185,7 +185,7 @@ class SolverTest(parameterized.TestCase):
 
     # Create SolverContext and initialize
     ctx = solver.create_solver_context(m, d)
-    solver.create_context(m, d, ctx, grad=True)
+    solver.init_context(m, d, ctx, grad=True)
 
     # Calculate Mgrad with Mujoco C
     mj_Mgrad = np.zeros(shape=(1, mjm.nv), dtype=float)

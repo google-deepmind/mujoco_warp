@@ -121,7 +121,7 @@ def inv_constraint(m: Model, d: Data):
     return
 
   ctx = solver.create_inverse_context(m, d)
-  solver.create_context(m, d, ctx, grad=False)
+  solver.init_context(m, d, ctx, grad=False)
 
 
 def inverse(m: Model, d: Data):
