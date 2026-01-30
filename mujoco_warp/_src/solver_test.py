@@ -115,16 +115,16 @@ class SolverTest(parameterized.TestCase):
 
       # Create a SolverContext to access internal solver arrays
       ctx = solver.create_solver_context(m, d)
-      solver.create_context(m, d, ctx, grad=True)
+      solver._solve(m, d, ctx)
 
       # Calculate target values
       nefc = d.nefc.numpy()[0]
       ctx_search_np = ctx.search.numpy()[0]
-      efc_J_np = d.efc.J.numpy()[0][: d.njmax, : m.nv]
+      efc_J_np = d.efc.J.numpy()[0][:nefc, : m.nv]
       ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
-      ctx_Jaref_np = ctx.Jaref.numpy()[0]
-      efc_D_np = d.efc.D.numpy()[0][: d.njmax]
+      ctx_Jaref_np = ctx.Jaref.numpy()[0][:nefc]
+      efc_D_np = d.efc.D.numpy()[0][:nefc]
       qfrc_smooth_np = d.qfrc_smooth.numpy()[0]
 
       target_mv = np.zeros(mjm.nv)
