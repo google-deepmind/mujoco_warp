@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tests for render context creation."""
+"""Tests for render utility functions."""
 
 import numpy as np
 import warp as wp
@@ -25,8 +25,6 @@ from mujoco_warp._src import types
 
 
 class RenderUtilTest(parameterized.TestCase):
-  """Tests for render utility functions."""
-
   def test_create_warp_texture(self):
     """Tests that create_warp_texture creates a valid texture."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -62,7 +60,7 @@ class RenderUtilTest(parameterized.TestCase):
 
     self.assertFalse(
       np.allclose(np.array(persp_ray), np.array(ortho_ray)),
-      "perspective != orthographic rays",
+      "perspective != orthographic raydir",
     )
 
 if __name__ == "__main__":

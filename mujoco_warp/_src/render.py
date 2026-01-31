@@ -28,6 +28,7 @@ from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.ray import ray_sphere
 from mujoco_warp._src.render_util import compute_ray
+from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
@@ -36,8 +37,6 @@ from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
-
-MAX_NUM_VIEWS_PER_THREAD = 8
 
 BACKGROUND_COLOR = 255 << 24 | int(0.1 * 255.0) << 16 | int(0.1 * 255.0) << 8 | int(0.2 * 255.0)
 
@@ -77,18 +76,6 @@ def _tile_coords(tid: int, W: int, H: int):
   i = tile_x + u
   j = tile_y + v
   return i, j
-
-
-@wp.func
-def pack_rgba_to_uint32(r: wp.uint8, g: wp.uint8, b: wp.uint8, a: wp.uint8) -> wp.uint32:
-  """Pack RGBA values into a single uint32 for efficient memory access."""
-  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
-
-
-@wp.func
-def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
-  """Pack RGBA values into a single uint32 for efficient memory access."""
-  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
 
 
 @wp.func
