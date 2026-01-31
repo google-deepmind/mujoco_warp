@@ -40,6 +40,19 @@ _IO_TEST_MODELS = (
   "hfield/hfield.xml",
 )
 
+_CAMERA_TEST_XML = """
+<mujoco>
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <camera name="cam1" pos="0 -3 2" xyaxes="1 0 0 0 0.6 0.8" resolution="64 64" output="rgb"/>
+    <camera name="cam2" pos="0 3 2" xyaxes="-1 0 0 0 0.6 0.8" resolution="32 32" output="depth"/>
+    <camera name="cam3" pos="3 0 2" xyaxes="0 1 0 -0.6 0 0.8" resolution="16 16" output="rgb depth"/>
+    <geom type="plane" size="5 5 0.1"/>
+    <geom type="sphere" size="0.5" pos="0 0 1"/>
+  </worldbody>
+</mujoco>
+"""
+
 
 class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
@@ -644,6 +657,107 @@ class IOTest(parameterized.TestCase):
       d = mjwarp.make_data(mjm)
 
     _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
+
+  @parameterized.parameters(1, 4)
+  def test_bvh_creation(self, nworld):
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(64, 64))
+
+    self.assertIsNotNone(rc)
+    self.assertEqual(rc.nacam, mjm.ncam)
+
+    self.assertEqual(rc.lower.shape, (nworld * rc.bvh_ngeom,), "lower")
+    self.assertEqual(rc.upper.shape, (nworld * rc.bvh_ngeom,), "upper")
+    self.assertEqual(rc.group.shape, (nworld * rc.bvh_ngeom,), "group")
+    self.assertEqual(rc.group_root.shape, (nworld,), "group_root")
+
+    self.assertIsNotNone(rc.bvh_id)
+    self.assertNotEqual(rc.bvh_id, 0, "bvh_id")
+
+    group_np = rc.group.numpy()
+    np.testing.assert_array_equal(group_np, np.repeat(np.arange(nworld), rc.bvh_ngeom), err_msg="render context group values")
+
+  def test_output_buffers(self):
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    width, height = 32, 24
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), render_rgb=True, render_depth=True)
+
+    expected_total = 3 * width * height
+
+    self.assertEqual(rc.nacam, 3, "ncam")
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
+
+    rgb_adr = rc.rgb_adr.numpy()
+    depth_adr = rc.depth_adr.numpy()
+    np.testing.assert_array_equal(rgb_adr, [0, width * height, 2 * width * height], err_msg="rgb_adr")
+    np.testing.assert_array_equal(depth_adr, [0, width * height, 2 * width * height], err_msg="depth_adr")
+
+  def test_heterogeneous_camera(self):
+    """Tests render context with different resolutions and output."""
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    cam_res = [(64, 64), (32, 32), (16, 16)]
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=cam_res, render_rgb=True, render_depth=True)
+
+    self.assertEqual(rc.nacam, 3, "ncam")
+    np.testing.assert_array_equal(rc.cam_res.numpy(), cam_res, err_msg="cam_res")
+
+    expected_total = 64 * 64 + 32 * 32 + 16 * 16
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
+
+    rgb_adr = rc.rgb_adr.numpy()
+    depth_adr = rc.depth_adr.numpy()
+    np.testing.assert_array_equal(rgb_adr, [0, 64 * 64, 64 * 64 + 32 * 32], err_msg="rgb_adr")
+    np.testing.assert_array_equal(depth_adr, [0, 64 * 64, 64 * 64 + 32 * 32], err_msg="depth_adr")
+
+    # Test that results are same when reading from mjmodel fields loaded through xml
+    rc_xml = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True)
+    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
+    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
+    np.testing.assert_array_equal(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), err_msg="rgb_adr")
+    np.testing.assert_array_equal(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), err_msg="depth_adr")
+
+  def test_cam_active_filtering(self):
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    width, height = 32, 32
+
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), cam_active=[True, False, True])
+
+    self.assertEqual(rc.nacam, 2, "ncam")
+
+    expected_total = 2 * width * height
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+
+  def test_rgb_only_and_depth_only(self):
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    width, height = 32, 32
+    pixels = width * height
+
+    rc = mjwarp.create_render_context(
+      mjm,
+      m,
+      d,
+      cam_res=(width, height),
+      render_rgb=[True, False, True],
+      render_depth=[False, True, True],
+    )
+
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, 2 * pixels), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, 2 * pixels), "depth_data")
+    np.testing.assert_array_equal(rc.rgb_adr.numpy(), [0, -1, pixels], "rgb_adr")
+    np.testing.assert_array_equal(rc.depth_adr.numpy(), [-1, 0, pixels], "depth_adr")
+    np.testing.assert_array_equal(rc.render_rgb.numpy(), [True, False, True], "render_rgb")
+    np.testing.assert_array_equal(rc.render_depth.numpy(), [False, True, True], "render_depth")
+
+    # Test that results are same when reading from mjmodel fields loaded through xml
+    rc_xml = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height))
+    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
+    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
+    np.testing.assert_array_equal(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
+    np.testing.assert_array_equal(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), "depth_adr")
+    np.testing.assert_array_equal(rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), "render_rgb")
+    np.testing.assert_array_equal(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
 
 if __name__ == "__main__":
