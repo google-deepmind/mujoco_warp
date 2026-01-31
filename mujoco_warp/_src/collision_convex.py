@@ -29,6 +29,7 @@ from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
@@ -89,14 +90,14 @@ def _hfield_filter(
   # box-sphere test: horizontal plane
   for i in range(2):
     if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
-      return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+      return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
   # box-sphere test: vertical direction
   if size1[2] < pos[2] - r2 - margin:  # up
-    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+    return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
   if -size1[3] > pos[2] + r2 + margin:  # down
-    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+    return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
   mat2 = geom_xmat_in[worldid, g2]
   mat = mat1T @ mat2
@@ -128,7 +129,7 @@ def _hfield_filter(
     or (zmin - margin > size1[2])
     or (zmax + margin < -size1[3])
   ):
-    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+    return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
   else:
     return False, xmin, xmax, ymin, ymax, zmin, zmax
 
@@ -328,9 +329,9 @@ def ccd_hfield_kernel_builder(
     hfield_contact_dist = vec_maxconpair()
     hfield_contact_pos = mat_maxconpair()
     hfield_contact_normal = mat_maxconpair()
-    min_dist = float(wp.inf)
-    min_normal = wp.vec3(wp.inf, wp.inf, wp.inf)
-    min_pos = wp.vec3(wp.inf, wp.inf, wp.inf)
+    min_dist = float(MJ_MAXVAL)
+    min_normal = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
+    min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     min_id = int(-1)
 
     # TODO(team): height field margin?
@@ -493,7 +494,7 @@ def ccd_hfield_kernel_builder(
 
       # contact 1: furthest from minimum distance contact
       id1 = int(-1)
-      dist1 = float(-wp.inf)
+      dist1 = float(-MJ_MAXVAL)
       for i in range(count):
         if i == min_id:
           continue
@@ -547,7 +548,7 @@ def ccd_hfield_kernel_builder(
       dist_min1 = wp.cross(min_normal, min_pos - pos1)
 
       id2 = int(-1)
-      dist_12 = float(-wp.inf)
+      dist_12 = float(-MJ_MAXVAL)
       for i in range(count):
         if i == min_id or i == id1:
           continue
@@ -602,7 +603,7 @@ def ccd_hfield_kernel_builder(
       vec_12 = wp.cross(min_normal, pos1 - pos2)
 
       id3 = int(-1)
-      dist3 = float(-wp.inf)
+      dist3 = float(-MJ_MAXVAL)
       for i in range(count):
         if i == min_id or i == id1 or i == id2:
           continue
