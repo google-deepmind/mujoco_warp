@@ -119,7 +119,6 @@ class DerivativeTest(parameterized.TestCase):
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
-
   def _create_random_model_xml(self):
     # Create a simple chain with Free Joint
     return """
@@ -158,6 +157,7 @@ class DerivativeTest(parameterized.TestCase):
     d.qvel = wp.from_numpy(mjd.qvel.reshape(1, -1), dtype=float, device=d.qvel.device)
 
     from mujoco_warp._src import forward
+
     forward.fwd_position(m, d)
     forward.fwd_velocity(m, d)
 
@@ -201,9 +201,9 @@ class DerivativeTest(parameterized.TestCase):
 
     diff_norm = np.linalg.norm(mjw_rne_out - mjw_out)
     if diff_norm < 1e-6:
-       qvel_norm = np.linalg.norm(mjd.qvel)
-       if qvel_norm > 1e-3:
-           raise AssertionError(f"RNE enabled but no derivative change detected! (Diff={diff_norm}, qvel={qvel_norm})")
+      qvel_norm = np.linalg.norm(mjd.qvel)
+      if qvel_norm > 1e-3:
+        raise AssertionError(f"RNE enabled but no derivative change detected! (Diff={diff_norm}, qvel={qvel_norm})")
 
 
 if __name__ == "__main__":

@@ -347,7 +347,6 @@ def _derivative_com_vel_level(
       elif k >= dofid + 3 and k < dofid + 6:
         cvel_k += cdof[k]
 
-
       if k < nv:
         Dcdof_dot_out[worldid, dofid + 3, k] = math.motion_cross(cvel_k, cdof[dofid + 3])
         Dcdof_dot_out[worldid, dofid + 4, k] = math.motion_cross(cvel_k, cdof[dofid + 4])
@@ -375,8 +374,6 @@ def _derivative_com_vel_level(
       dofid += 1
 
   Dcvel_out[worldid, bodyid, k] = cvel_k
-
-
 
 
 @wp.func
@@ -446,7 +443,6 @@ def _derivative_rne_forward_level(
 
   # term1 = cinert * dcacc
   term1 = _mul_inert_vec(cinert, dcacc)
-
 
   cinert_cvel = _mul_inert_vec(cinert, cvel)
   cinert_dcvel = _mul_inert_vec(cinert, dcvel)
