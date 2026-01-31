@@ -1821,55 +1821,53 @@ class RenderContext:
   """
 
   nacam: int
-  cam_res: wp.array(dtype=wp.vec2i)
-  cam_id_map: wp.array(dtype=int)
+  cam_res: array("ncam", wp.vec2i)
+  cam_id_map: array("ncam", int)
   use_textures: bool
   use_shadows: bool
   bvh_ngeom: int
-  enabled_geom_ids: wp.array(dtype=int)
+  enabled_geom_ids: array("*", int)
   mesh_registry: dict
-  mesh_bvh_id: wp.array(dtype=wp.uint64)
-  mesh_bounds_size: wp.array(dtype=wp.vec3)
-  mesh_texcoord: wp.array(dtype=wp.vec2)
-  mesh_texcoord_offsets: wp.array(dtype=int)
-  mesh_facetexcoord: wp.array(dtype=wp.vec3i)
-  textures: wp.array(dtype=wp.Texture2D)
+  mesh_bvh_id: array("nmesh", wp.uint64)
+  mesh_bounds_size: array("nmesh", wp.vec3)
+  mesh_texcoord: array("*", wp.vec2)
+  mesh_texcoord_offsets: array("nmesh", int)
+  mesh_facetexcoord: array("nmeshface", wp.vec3i)
+  textures: array("*", wp.Texture2D)
   textures_registry: list[wp.Texture2D]
   hfield_registry: dict
-  hfield_bvh_id: wp.array(dtype=wp.uint64)
-  hfield_bounds_size: wp.array(dtype=wp.vec3)
+  hfield_bvh_id: array("nhfield", wp.uint64)
+  hfield_bounds_size: array("nhfield", wp.vec3)
   flex: wp.Mesh
-  flex_rgba: wp.array(dtype=wp.vec4)
-  flex_matid: wp.array(dtype=int)
+  flex_rgba: array("nflex", wp.vec4)
+  flex_matid: array("nflex", int)
   flex_bvh_id: wp.uint64
-  flex_face_point: wp.array(dtype=wp.vec3)
-  flex_faceadr: wp.array(dtype=int)
+  flex_face_point: array("*", wp.vec3)
+  flex_faceadr: array("nflex", int)
   flex_nface: int
   flex_nwork: int
-  flex_group: wp.array(dtype=int)
-  flex_group_root: wp.array(dtype=int)
-  flex_dim: wp.array(dtype=int)
-  flex_elemadr: wp.array(dtype=int)
-  flex_elemdataadr: wp.array(dtype=int)
-  flex_shell: wp.array(dtype=int)
-  flex_shelldataadr: wp.array(dtype=int)
-  flex_vertadr: wp.array(dtype=int)
-  flex_radius: wp.array(dtype=float)
-  flex_workadr: wp.array(dtype=int)
-  flex_worknum: wp.array(dtype=int)
+  flex_group: array("*", int)
+  flex_group_root: array("nworld", int)
+  flex_dim: array("nflex", int)
+  flex_elemdataadr: array("nflex", int)
+  flex_shell: array("*", int)
+  flex_shelldataadr: array("nflex", int)
+  flex_radius: array("nflex", float)
+  flex_workadr: array("nflex", int)
+  flex_worknum: array("nflex", int)
   flex_render_smooth: bool
   bvh: wp.Bvh
   bvh_id: wp.uint64
-  lower: wp.array(dtype=wp.vec3)
-  upper: wp.array(dtype=wp.vec3)
-  group: wp.array(dtype=int)
-  group_root: wp.array(dtype=int)
-  ray: wp.array(dtype=wp.vec3)
-  rgb_data: wp.array2d(dtype=wp.uint32)
-  rgb_adr: wp.array(dtype=int)
-  depth_data: wp.array2d(dtype=wp.float32)
-  depth_adr: wp.array(dtype=int)
-  render_rgb: wp.array(dtype=bool)
-  render_depth: wp.array(dtype=bool)
+  lower: array("*", wp.vec3)
+  upper: array("*", wp.vec3)
+  group: array("*", int)
+  group_root: array("*", int)
+  ray: array("*", wp.vec3)
+  rgb_data: array("*", wp.uint32)
+  rgb_adr: array("ncam", int)
+  depth_data: array("*", wp.float32)
+  depth_adr: array("ncam", int)
+  render_rgb: array("ncam", bool)
+  render_depth: array("ncam", bool)
   znear: float
   total_rays: int
