@@ -283,6 +283,9 @@ def _main(argv: Sequence[str]):
       shutil.rmtree(compute_cache)
       compute_cache.mkdir()
 
+  if (_DEVICE.value or wp.get_device()) == "cpu":
+    raise ValueError("testspeed available for gpu only")
+
   with wp.ScopedDevice(_DEVICE.value):
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
