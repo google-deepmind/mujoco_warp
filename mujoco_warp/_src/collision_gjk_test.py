@@ -26,6 +26,7 @@ from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import NUM_WARNINGS
 
 
 def _geom_dist(
@@ -108,6 +109,9 @@ def _geom_dist(
     endvert: wp.array(dtype=wp.vec3),
     face1: wp.array(dtype=wp.vec3),
     face2: wp.array(dtype=wp.vec3),
+    # Data out:
+    warning_out: wp.array(dtype=int),
+    warning_info_out: wp.array2d(dtype=int),
     # Out:
     dist_out: wp.array(dtype=float),
     ncon_out: wp.array(dtype=int),
@@ -200,6 +204,9 @@ def _geom_dist(
       face_pr,
       face_norm2,
       horizon,
+      False,  # warning_printf
+      warning_out,
+      warning_info_out,
     )
 
     if wp.static(multiccd):
@@ -236,6 +243,8 @@ def _geom_dist(
   dist_out = wp.array(shape=(1,), dtype=float)
   ncon_out = wp.array(shape=(1,), dtype=int)
   pos_out = wp.array(shape=(2,), dtype=wp.vec3)
+  warning_out = wp.zeros(NUM_WARNINGS, dtype=int)
+  warning_info_out = wp.zeros((NUM_WARNINGS, 2), dtype=int)
   wp.launch(
     _ccd_kernel,
     dim=1,
@@ -280,6 +289,8 @@ def _geom_dist(
       multiccd_endvert,
       multiccd_face1,
       multiccd_face2,
+      warning_out,
+      warning_info_out,
     ],
     outputs=[
       dist_out,

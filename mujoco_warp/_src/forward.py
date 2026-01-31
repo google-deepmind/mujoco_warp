@@ -39,6 +39,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import WarningType
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -190,37 +191,56 @@ def _next_activation(
   act_out[worldid, actid] = act
 
 
-@wp.kernel
-def _next_time(
-  # Model:
-  opt_timestep: wp.array(dtype=float),
-  # Data in:
-  nefc_in: wp.array(dtype=int),
-  time_in: wp.array(dtype=float),
-  nworld_in: int,
-  naconmax_in: int,
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
-  ncollision_in: wp.array(dtype=int),
-  # Data out:
-  time_out: wp.array(dtype=float),
-):
-  worldid = wp.tid()
-  time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
-  nefc = nefc_in[worldid]
+@cache_kernel
+def _next_time(enable_printf: bool):
+  """Creates _next_time kernel with optional printf for warnings."""
 
-  if nefc > njmax_in:
-    wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
+  @wp.kernel(module="unique")
+  def next_time(
+    # Model:
+    opt_timestep: wp.array(dtype=float),
+    # Data in:
+    nefc_in: wp.array(dtype=int),
+    time_in: wp.array(dtype=float),
+    nworld_in: int,
+    naconmax_in: int,
+    njmax_in: int,
+    nacon_in: wp.array(dtype=int),
+    ncollision_in: wp.array(dtype=int),
+    # Data out:
+    time_out: wp.array(dtype=float),
+    warning_out: wp.array(dtype=int),
+    warning_info_out: wp.array2d(dtype=int),
+  ):
+    worldid = wp.tid()
+    time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
+    nefc = nefc_in[worldid]
 
-  if worldid == 0:
-    ncollision = ncollision_in[0]
-    if ncollision > naconmax_in:
-      nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-      wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
+    if nefc > njmax_in:
+      if wp.static(enable_printf):
+        wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
+      wp.atomic_max(warning_out, int(WarningType.NEFC_OVERFLOW), 1)
+      wp.atomic_max(warning_info_out[int(WarningType.NEFC_OVERFLOW)], 0, nefc)
 
-    if nacon_in[0] > naconmax_in:
-      nconmax = int(wp.ceil(float(nacon_in[0]) / float(nworld_in)))
-      wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon_in[0])
+    if worldid == 0:
+      ncollision = ncollision_in[0]
+      if ncollision > naconmax_in:
+        nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
+        if wp.static(enable_printf):
+          wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
+        wp.atomic_max(warning_out, int(WarningType.BROADPHASE_OVERFLOW), 1)
+        wp.atomic_max(warning_info_out[int(WarningType.BROADPHASE_OVERFLOW)], 0, nconmax)
+        wp.atomic_max(warning_info_out[int(WarningType.BROADPHASE_OVERFLOW)], 1, ncollision)
+
+      if nacon_in[0] > naconmax_in:
+        nconmax = int(wp.ceil(float(nacon_in[0]) / float(nworld_in)))
+        if wp.static(enable_printf):
+          wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon_in[0])
+        wp.atomic_max(warning_out, int(WarningType.NARROWPHASE_OVERFLOW), 1)
+        wp.atomic_max(warning_info_out[int(WarningType.NARROWPHASE_OVERFLOW)], 0, nconmax)
+        wp.atomic_max(warning_info_out[int(WarningType.NARROWPHASE_OVERFLOW)], 1, nacon_in[0])
+
+  return next_time
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -263,10 +283,10 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   )
 
   wp.launch(
-    _next_time,
+    _next_time(m.opt.warning_printf),
     dim=d.nworld,
     inputs=[m.opt.timestep, d.nefc, d.time, d.nworld, d.naconmax, d.njmax, d.nacon, d.ncollision],
-    outputs=[d.time],
+    outputs=[d.time, d.warning, d.warning_info],
   )
 
   wp.copy(d.qacc_warmstart, d.qacc)
