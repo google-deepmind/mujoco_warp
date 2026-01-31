@@ -17,7 +17,7 @@ import dataclasses
 import importlib.metadata
 import re
 import warnings
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Sequence
 
 import mujoco
 import numpy as np
@@ -46,7 +46,7 @@ def _is_mujoco_dev() -> bool:
 BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
 
 
-def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
+def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
   """Creates a warp array and populates it with data.
 
   The array shape is determined by a field spec referencing MjModel / MjData array sizes.
@@ -1933,7 +1933,7 @@ def set_const(m: types.Model, d: types.Data):
   set_const_0(m, d)
 
 
-def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[dict[str, Any], Sequence[str]]):
+def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any] | Sequence[str]):
   """Overrides model parameters.
 
   Overrides are of the format:
