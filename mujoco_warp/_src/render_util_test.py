@@ -44,11 +44,25 @@ class RenderUtilTest(parameterized.TestCase):
 
     persp_ray = render_util.compute_ray(
       int(types.ProjectionType.PERSPECTIVE),
-      fovy, sensorsize, intrinsic, img_w, img_h, px, py, znear,
+      fovy,
+      sensorsize,
+      intrinsic,
+      img_w,
+      img_h,
+      px,
+      py,
+      znear,
     )
     ortho_ray = render_util.compute_ray(
       int(types.ProjectionType.ORTHOGRAPHIC),
-      fovy, sensorsize, intrinsic, img_w, img_h, px, py, znear,
+      fovy,
+      sensorsize,
+      intrinsic,
+      img_w,
+      img_h,
+      px,
+      py,
+      znear,
     )
 
     mag = np.sqrt(0.5**2 + 0.5**2 + 1.0**2)
@@ -62,6 +76,7 @@ class RenderUtilTest(parameterized.TestCase):
       np.allclose(np.array(persp_ray), np.array(ortho_ray)),
       "perspective != orthographic raydir",
     )
+
 
 if __name__ == "__main__":
   wp.init()

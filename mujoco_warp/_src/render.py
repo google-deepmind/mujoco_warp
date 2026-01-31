@@ -38,45 +38,6 @@ from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
-BACKGROUND_COLOR = 255 << 24 | int(0.1 * 255.0) << 16 | int(0.1 * 255.0) << 8 | int(0.2 * 255.0)
-
-SPOT_INNER_COS = float(0.95)
-SPOT_OUTER_COS = float(0.85)
-INV_255 = float(1.0 / 255.0)
-SHADOW_MIN_VISIBILITY = float(0.3)  # reduce shadow darkness (0: full black, 1: no shadow)
-
-AMBIENT_UP = wp.vec3(0.0, 0.0, 1.0)
-AMBIENT_SKY = wp.vec3(0.4, 0.4, 0.45)
-AMBIENT_GROUND = wp.vec3(0.1, 0.1, 0.12)
-AMBIENT_INTENSITY = float(0.5)
-
-TILE_W: int = 16
-TILE_H: int = 16
-THREADS_PER_TILE: int = TILE_W * TILE_H
-
-
-@wp.func
-def _ceil_div(a: int, b: int):
-  return (a + b - 1) // b
-
-
-# Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
-@wp.func
-def _tile_coords(tid: int, W: int, H: int):
-  tile_id = tid // THREADS_PER_TILE
-  local = tid - tile_id * THREADS_PER_TILE
-
-  u = local % TILE_W
-  v = local // TILE_W
-
-  tiles_x = _ceil_div(W, TILE_W)
-  tile_x = (tile_id % tiles_x) * TILE_W
-  tile_y = (tile_id // tiles_x) * TILE_H
-
-  i = tile_x + u
-  j = tile_y + v
-  return i, j
-
 
 @wp.func
 def sample_texture(
@@ -396,8 +357,8 @@ def compute_lighting(
     if lighttype == 0:  # spot light
       spot_dir = wp.normalize(lightdir)
       cos_theta = wp.dot(-L, spot_dir)
-      inner = SPOT_INNER_COS
-      outer = SPOT_OUTER_COS
+      inner = wp.static(0.95)
+      outer = wp.static(0.85)
       spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - outer) / (inner - outer)))
       attenuation = attenuation * spot_factor
 
@@ -436,7 +397,7 @@ def compute_lighting(
     )
 
     if shadow_hit:
-      visible = SHADOW_MIN_VISIBILITY
+      visible = wp.static(0.3)
 
   return ndotl * attenuation * visible
 
@@ -452,7 +413,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     d: The data on device.
     rc: The render context on device.
   """
-  rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
+  rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
 
   # TODO: Adding "unique" causes kernel re-compilation issues, need to investigate
@@ -635,11 +596,11 @@ def render(m: Model, d: Data, rc: RenderContext):
             base_color = wp.cw_mul(base_color, tex_color)
 
     len_n = wp.length(normal)
-    n = normal if len_n > 0.0 else AMBIENT_UP
+    n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
     n = wp.normalize(n)
-    hemispheric = 0.5 * (wp.dot(n, AMBIENT_UP) + 1.0)
-    ambient_color = AMBIENT_SKY * hemispheric + AMBIENT_GROUND * (1.0 - hemispheric)
-    result = AMBIENT_INTENSITY * wp.cw_mul(base_color, ambient_color)
+    hemispheric = 0.5 * (wp.dot(n, wp.vec3(0.0, 0.0, 1.0)) + 1.0)
+    ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
+    result = wp.static(0.5) * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
@@ -730,5 +691,4 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.rgb_data,
       rc.depth_data,
     ],
-    block_dim=THREADS_PER_TILE,
   )

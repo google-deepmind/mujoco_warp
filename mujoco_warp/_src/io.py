@@ -1728,6 +1728,7 @@ def create_render_context(
   rc.cam_id_map = wp.array(active_cam_indices, dtype=int)
   rc.use_textures = use_textures
   rc.use_shadows = use_shadows
+  rc.background_color = render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0)
   rc.mesh_texcoord = wp.array(mjm.mesh_texcoord, dtype=wp.vec2)
   rc.mesh_texcoord_offsets = wp.array(mjm.mesh_texcoordadr, dtype=int)
   rc.mesh_facetexcoord = wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i)

@@ -125,4 +125,4 @@ def compute_ray(
 @wp.func
 def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
   """Pack RGBA values into a single uint32 for efficient memory access."""
-  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
+  return wp.uint32((int(a) << int(24)) | (int(r) << int(16)) | (int(g) << int(8)) | int(b))

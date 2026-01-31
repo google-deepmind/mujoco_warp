@@ -1823,6 +1823,7 @@ class RenderContext:
   cam_id_map: array("ncam", int)
   use_textures: bool
   use_shadows: bool
+  background_color: wp.uint32
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict
