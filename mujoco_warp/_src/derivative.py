@@ -15,11 +15,13 @@
 
 import warp as wp
 
+from mujoco_warp._src import math
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import GainType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import vec10f
@@ -345,19 +347,6 @@ def _derivative_com_vel_level(
       elif k >= dofid + 3 and k < dofid + 6:
         cvel_k += cdof[k]
 
-      # Dcdofdot = cross(Dcvel, cdof)
-      # cdof for free joint are computed on the fly?
-      # In smooth.py:
-      # cvel += cdof[dofid+0] * qvel[dofid+0] ...
-      # cdof_dot[dofid+3] = cross(cvel, cdof[dofid+3])
-      # Wait, for FREE joint, cdof are usually aligned with world axes initially?
-      # In smooth.py, cdof is read from d.cdof.
-      # For FREE joint, d.cdof contains the axes.
-
-      # Dcdofdot calculation mirrors smooth.py loop
-      # dofid+0..2 are translation
-      # (no cdof_dot update needed? smooth.py doesn't update cdof_dot for 0..2)
-      # dofid+3..5 are rotation.
 
       if k < nv:
         Dcdof_dot_out[worldid, dofid + 3, k] = math.motion_cross(cvel_k, cdof[dofid + 3])
@@ -365,10 +354,6 @@ def _derivative_com_vel_level(
         Dcdof_dot_out[worldid, dofid + 5, k] = math.motion_cross(cvel_k, cdof[dofid + 5])
 
       dofid += 6
-      # Note: Free joint logic in smooth.py updates cvel using all 6 dofs.
-      # And BEFORE calculating cdof_dot for 3..5, it updates cvel with 0..2.
-      # And AFTER, it updates cvel with 3..5.
-      # I need to match this sequence!
 
     elif jnttype == JointType.BALL:
       if k < nv:
@@ -392,46 +377,10 @@ def _derivative_com_vel_level(
   Dcvel_out[worldid, bodyid, k] = cvel_k
 
 
-@wp.kernel
-def _derivative_rne_forward_level(
-  # Model:
-  nv: int,
-  body_jntnum: wp.array(dtype=int),
-  body_dofadr: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  cinert_in: wp.array2d(dtype=vec10),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
-  # In:
-  body_tree_: wp.array(dtype=int),
-  Dcvel_in: wp.array3d(dtype=wp.spatial_vector),
-  Dcdof_dot_in: wp.array3d(dtype=wp.spatial_vector),
-  # Out:
-  Dcacc_out: wp.array3d(dtype=wp.spatial_vector),
-  Dcfrcbody_out: wp.array3d(dtype=wp.spatial_vector),
-):
-  worldid, nodeid, k = wp.tid()
-  bodyid = body_tree_[nodeid]
-  dofid = body_dofadr[bodyid]
-  jntnum = body_jntnum[bodyid]
-
-  # Initialize Dcacc from parent
-  # (already done by recursive structure? No, need to copy or access parent)
-  # But here we are iterating bodies. Dcacc accumulation needs to be from parent.
-  # But we can't easily access parent index in Dcacc if it's not contiguous?
-  # Wait, _derivative_com_vel did "Initialize from parent".
-  # Here we also need `pid = body_parentid[bodyid]`.
-  # I'll need to pass body_parentid.
-
-  # Dcacc accumulation
-  # ...
-  # Placeholder for complex logic, I'll complete this in next step.
-  pass
 
 
 @wp.func
-def _mul_inert_vec(inert: vec10, vec: wp.spatial_vector) -> wp.spatial_vector:
+def _mul_inert_vec(inert: vec10f, vec: wp.spatial_vector) -> wp.spatial_vector:
   mass = inert[0]
   h = wp.vec3(inert[1], inert[2], inert[3])
   # I_3x3 from symmetric values (xx, yy, zz, xy, xz, yz)
@@ -450,7 +399,7 @@ def _mul_inert_vec(inert: vec10, vec: wp.spatial_vector) -> wp.spatial_vector:
 
 
 @wp.kernel
-def _derivative_rne_forward_level_fixed(
+def _derivative_rne_forward_level(
   # Model:
   nv: int,
   body_parentid: wp.array(dtype=int),
@@ -458,7 +407,7 @@ def _derivative_rne_forward_level_fixed(
   body_dofadr: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
-  cinert_in: wp.array2d(dtype=vec10),
+  cinert_in: wp.array2d(dtype=vec10f),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
@@ -498,12 +447,11 @@ def _derivative_rne_forward_level_fixed(
   # term1 = cinert * dcacc
   term1 = _mul_inert_vec(cinert, dcacc)
 
-  # term2 = D(cvel x (cinert * cvel))
-  #       = dcvel x (cinert * cvel) + cvel x (cinert * dcvel)
+
   cinert_cvel = _mul_inert_vec(cinert, cvel)
   cinert_dcvel = _mul_inert_vec(cinert, dcvel)
 
-  term2 = math.motion_cross(dcvel, cinert_cvel) + math.motion_cross(cvel, cinert_dcvel)
+  term2 = math.motion_cross_force(dcvel, cinert_cvel) + math.motion_cross_force(cvel, cinert_dcvel)
 
   Dcfrcbody_out[worldid, bodyid, k] = term1 + term2
 
@@ -610,7 +558,7 @@ def rne_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):  # out is qDeriv-l
   # Forward pass (Dcacc, Dcfrcbody)
   for body_tree in m.body_tree:
     wp.launch(
-      _derivative_rne_forward_level_fixed,
+      _derivative_rne_forward_level,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.nv,
