@@ -956,7 +956,6 @@ def build_flex_bvh(
   return (
     flex_mesh,
     face_point,
-    group,
     group_root,
     flex_shell,
     flex_faceadr,

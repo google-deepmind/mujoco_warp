@@ -1784,16 +1784,14 @@ class RenderContext:
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
     hfield_bounds_size: hfield bounds size
+    flex: flex mesh
     flex_rgba: flex rgba
-    flex_matid: flex material ids
     flex_bvh_id: flex BVH id
     flex_face_point: flex face points
     flex_faceadr: flex face addresses
     flex_nface: number of flex faces
     flex_nwork: total flex work items for refit
-    flex_group: flex groups
     flex_group_root: flex group roots
-    flex_dim: flex dimensions
     flex_elemdataadr: flex element data addresses
     flex_shell: flex shell data
     flex_shelldataadr: flex shell data addresses
@@ -1840,15 +1838,12 @@ class RenderContext:
   hfield_bounds_size: array("nhfield", wp.vec3)
   flex: wp.Mesh
   flex_rgba: array("nflex", wp.vec4)
-  flex_matid: array("nflex", int)
   flex_bvh_id: wp.uint64
   flex_face_point: array("*", wp.vec3)
   flex_faceadr: array("nflex", int)
   flex_nface: int
   flex_nwork: int
-  flex_group: array("*", int)
   flex_group_root: array("nworld", int)
-  flex_dim: array("nflex", int)
   flex_elemdataadr: array("nflex", int)
   flex_shell: array("*", int)
   flex_shelldataadr: array("nflex", int)

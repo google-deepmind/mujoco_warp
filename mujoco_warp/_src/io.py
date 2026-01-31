@@ -1597,7 +1597,6 @@ def create_render_context(
     (
       fmesh,
       face_point,
-      flex_groups,
       flex_group_roots,
       flex_shell,
       flex_faceadr,
@@ -1607,7 +1606,6 @@ def create_render_context(
     rc.flex = fmesh
     rc.flex_bvh_id = fmesh.id
     rc.flex_face_point = face_point
-    rc.flex_group = flex_groups
     rc.flex_group_root = flex_group_roots
     rc.flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
     rc.flex_shell = flex_shell
@@ -1734,7 +1732,6 @@ def create_render_context(
   rc.mesh_texcoord_offsets = wp.array(mjm.mesh_texcoordadr, dtype=int)
   rc.mesh_facetexcoord = wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i)
   rc.flex_rgba = wp.array(mjm.flex_rgba, dtype=wp.vec4)
-  rc.flex_matid = wp.array(mjm.flex_matid, dtype=int)
   rc.bvh_ngeom = len(geom_enabled_idx)
   rc.enabled_geom_ids = wp.array(geom_enabled_idx, dtype=int)
   rc.lower = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=wp.vec3)

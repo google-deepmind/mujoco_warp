@@ -212,7 +212,7 @@ class BvhTest(absltest.TestCase):
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
       dim=(nworld, nelem),
-      inputs=[flex_elem, flexvert_xpos, 0, 0],
+      inputs=[flex_elem, flexvert_xpos],
       outputs=[flexvert_norm],
     )
 
@@ -244,7 +244,7 @@ class BvhTest(absltest.TestCase):
     """Tests that build_flex_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
 
-    flex_mesh, face_point, group, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)
+    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)
 
     self.assertNotEqual(flex_mesh.id, wp.uint64(0), "flex_mesh id")
 
