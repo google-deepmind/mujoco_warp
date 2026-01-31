@@ -497,10 +497,6 @@ def _derivative_rne_update_sparse(
   j = qMj[elemid]
 
   # qDeriv[i, j] -= cdof[i] * Dcfrcbody[body(i), j]
-  # We want out = qM - dt * qDeriv_smooth - dt * qDeriv_rne
-  # out already contains qM - dt * qDeriv_smooth.
-  # So we assume term is qDeriv_rne contribution.
-  # We should subtract dt * term.
 
   body_i = dof_bodyid[i]
   dcfrc = Dcfrcbody_in[worldid, body_i, j]
@@ -585,7 +581,6 @@ def rne_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):  # out is qDeriv-l
       outputs=[Dcfrcbody],  # In/Out
     )
 
-  # Update qDeriv
   if m.opt.is_sparse:
     wp.launch(
       _derivative_rne_update_sparse,

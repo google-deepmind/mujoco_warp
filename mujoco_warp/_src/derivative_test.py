@@ -145,22 +145,18 @@ class DerivativeTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian},
     )
 
-    # Randomize state
     rng = np.random.RandomState(0)
     mjd.qpos = rng.randn(mjm.nq)
     mjd.qvel = rng.randn(mjm.nv)
 
     mujoco.mj_normalizeQuat(mjm, mjd.qpos)
 
-    # Use implicit integrator (MuJoCo)
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
     mujoco.mj_step(mjm, mjd)
 
-    # Sync state to Warp
     d.qpos = wp.from_numpy(mjd.qpos.reshape(1, -1), dtype=float, device=d.qpos.device)
     d.qvel = wp.from_numpy(mjd.qvel.reshape(1, -1), dtype=float, device=d.qvel.device)
 
-    # Run Warp forward dynamics
     from mujoco_warp._src import forward
     forward.fwd_position(m, d)
     forward.fwd_velocity(m, d)
@@ -170,10 +166,7 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
 
-    # Run WITHOUT RNE derivatives (flg_rne=False)
-    # This verifies that qM calculation matches MuJoCo mj_fullM
-    # We disable RNE derivatives because MuJoCo's implicit integrator ignores Coriolis terms
-    # while Warp computes them, leading to a mismatch.
+    # Disable RNE to match MuJoCo's implicit integrator (which ignores Coriolis terms).
     mjw.deriv_smooth_vel(m, d, out_smooth_vel, flg_rne=False)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
@@ -183,21 +176,14 @@ class DerivativeTest(parameterized.TestCase):
     else:
       mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
-    # Calculate expected result using MuJoCo (qM)
     mj_qM = np.zeros((m.nv, m.nv))
     mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
 
-    # Since RNE is disabled, result should match qM exactly
     mj_out = mj_qM
 
     _assert_eq(mjw_out, mj_out, "qM match (RNE disabled)")
 
-    # -------------------------------------------------------------------------
-    # RNE Activity Check (Smoke Test)
-    # -------------------------------------------------------------------------
-    # Verify that enabling RNE actually changes the result (calculates derivatives)
-    # This confirms _derivative_rne_forward_level is running and contributing non-zero terms
-    # (Coriolis/Centrifugal) which are expected for this dynamic model.
+    # Smoke test: Verify RNE contributes non-zero Coriolis/Centrifugal terms.
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       out_rne = wp.zeros((1, 1, m.nM), dtype=float)
@@ -213,11 +199,8 @@ class DerivativeTest(parameterized.TestCase):
     else:
       mjw_rne_out = out_rne.numpy()[0, : m.nv, : m.nv]
 
-    # Ensure RNE adds *something* to the derivatives (diff shouldn't be zero)
-    # The difference represents the Coriolis/Centrifugal Jacobian terms.
     diff_norm = np.linalg.norm(mjw_rne_out - mjw_out)
     if diff_norm < 1e-6:
-       # Verify if model is actually static (qvel=0 would mean no Coriolis)
        qvel_norm = np.linalg.norm(mjd.qvel)
        if qvel_norm > 1e-3:
            raise AssertionError(f"RNE enabled but no derivative change detected! (Diff={diff_norm}, qvel={qvel_norm})")
