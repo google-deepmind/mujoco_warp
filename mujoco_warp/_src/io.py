@@ -1543,69 +1543,85 @@ def create_render_context(
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
-  rc = types.RenderContext()
-
   # Mesh BVHs
   nmesh = mjm.nmesh
   geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
-  mesh_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.MESH) & (mjm.geom_dataid >= 0)
+  mesh_geom_mask = (
+      geom_enabled_mask
+      & (mjm.geom_type == types.GeomType.MESH)
+      & (mjm.geom_dataid >= 0)
+  )
   used_mesh_id = set(mjm.geom_dataid[mesh_geom_mask].astype(int))
   geom_enabled_idx = np.nonzero(geom_enabled_mask)[0]
 
-  rc.mesh_registry = {}
+  mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
 
   for mid in used_mesh_id:
     mesh, half = bvh.build_mesh_bvh(mjm, mid)
-    rc.mesh_registry[mesh.id] = mesh
+    mesh_registry[mesh.id] = mesh
     mesh_bvh_id[mid] = mesh.id
     mesh_bounds_size[mid] = half
 
-  rc.mesh_bvh_id = wp.array(mesh_bvh_id, dtype=wp.uint64)
-  rc.mesh_bounds_size = wp.array(mesh_bounds_size, dtype=wp.vec3)
+  mesh_bvh_id_arr = wp.array(mesh_bvh_id, dtype=wp.uint64)
+  mesh_bounds_size_arr = wp.array(mesh_bounds_size, dtype=wp.vec3)
 
   # HField BVHs
   nhfield = mjm.nhfield
-  hfield_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.HFIELD) & (mjm.geom_dataid >= 0)
+  hfield_geom_mask = (
+      geom_enabled_mask
+      & (mjm.geom_type == types.GeomType.HFIELD)
+      & (mjm.geom_dataid >= 0)
+  )
   used_hfield_id = set(mjm.geom_dataid[hfield_geom_mask].astype(int))
-  rc.hfield_registry = {}
+  hfield_registry = {}
   hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]
   hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
 
   for hid in used_hfield_id:
     hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
-    rc.hfield_registry[hmesh.id] = hmesh
+    hfield_registry[hmesh.id] = hmesh
     hfield_bvh_id[hid] = hmesh.id
     hfield_bounds_size[hid] = hhalf
 
-  rc.hfield_bvh_id = wp.array(hfield_bvh_id, dtype=wp.uint64)
-  rc.hfield_bounds_size = wp.array(hfield_bounds_size, dtype=wp.vec3)
+  hfield_bvh_id_arr = wp.array(hfield_bvh_id, dtype=wp.uint64)
+  hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
   # Flex BVHs
-  rc.flex_bvh_id = wp.uint64(0)
-  rc.flex_group_root = wp.zeros(d.nworld, dtype=int)
+  flex_bvh_id = wp.uint64(0)
+  flex_group_root = wp.zeros(d.nworld, dtype=int)
+  flex_mesh = None
+  flex_face_point = None
+  flex_elemdataadr = None
+  flex_shell = None
+  flex_shelldataadr = None
+  flex_faceadr = None
+  flex_nface = 0
+  flex_radius = None
+  flex_workadr = None
+  flex_worknum = None
+  flex_nwork = 0
+
   if mjm.nflex > 0:
     (
       fmesh,
       face_point,
       flex_group_roots,
-      flex_shell,
-      flex_faceadr,
+      flex_shell_data,
+      flex_faceadr_data,
       flex_nface,
     ) = bvh.build_flex_bvh(mjm, m, d)
 
-    rc.flex_mesh = fmesh
-    rc.flex_bvh_id = fmesh.id
-    rc.flex_face_point = face_point
-    rc.flex_group_root = flex_group_roots
-    rc.flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
-    rc.flex_shell = flex_shell
-    rc.flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
-    rc.flex_faceadr = wp.array(flex_faceadr, dtype=int)
-    rc.flex_nface = flex_nface
-    rc.flex_radius = wp.array(mjm.flex_radius, dtype=float)
-    rc.flex_render_smooth = flex_render_smooth
+    flex_mesh = fmesh
+    flex_bvh_id = fmesh.id
+    flex_face_point = face_point
+    flex_group_root = flex_group_roots
+    flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
+    flex_shell = flex_shell_data
+    flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
+    flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
+    flex_radius = wp.array(mjm.flex_radius, dtype=float)
 
     # precompute work item layout for unified refit kernel
     nflex = mjm.nflex
@@ -1619,15 +1635,14 @@ def create_render_context(
       else:
         worknum[f] = mjm.flex_shellnum[f]
       cumsum += worknum[f]
-    rc.flex_workadr = wp.array(workadr, dtype=int)
-    rc.flex_worknum = wp.array(worknum, dtype=int)
-    rc.flex_nwork = int(cumsum)
+    flex_workadr = wp.array(workadr, dtype=int)
+    flex_worknum = wp.array(worknum, dtype=int)
+    flex_nwork = int(cumsum)
 
-  textures = []
+  textures_registry = []
   for i in range(mjm.ntex):
-    textures.append(render_util.create_warp_texture(mjm, i))
-  rc.textures_registry = textures
-  rc.textures = wp.array(textures, dtype=wp.Texture2D)
+    textures_registry.append(render_util.create_warp_texture(mjm, i))
+  textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   # Filter active cameras
   if cam_active is not None:
@@ -1648,7 +1663,7 @@ def create_render_context(
   else:
     active_cam_res = mjm.cam_resolution[active_cam_indices]
 
-  rc.cam_res = wp.array(active_cam_res, dtype=wp.vec2i)
+  cam_res_arr = wp.array(active_cam_res, dtype=wp.vec2i)
 
   if render_rgb and isinstance(render_rgb, bool):
     render_rgb = [render_rgb] * ncam
@@ -1666,7 +1681,7 @@ def create_render_context(
 
   rgb_adr = -1 * np.ones(ncam, dtype=int)
   depth_adr = -1 * np.ones(ncam, dtype=int)
-  cam_res_np = rc.cam_res.numpy()
+  cam_res_np = cam_res_arr.numpy()
   ri = 0
   di = 0
   total = 0
@@ -1681,19 +1696,12 @@ def create_render_context(
 
     total += cam_res_np[idx][0] * cam_res_np[idx][1]
 
-  rc.rgb_adr = wp.array(rgb_adr, dtype=int)
-  rc.depth_adr = wp.array(depth_adr, dtype=int)
-  rc.rgb_data = wp.zeros((d.nworld, ri), dtype=wp.uint32)
-  rc.depth_data = wp.zeros((d.nworld, di), dtype=wp.float32)
-  rc.render_rgb = wp.array(render_rgb, dtype=bool)
-  rc.render_depth = wp.array(render_depth, dtype=bool)
-  rc.znear = mjm.vis.map.znear * mjm.stat.extent
-  rc.total_rays = int(total)
+  znear = mjm.vis.map.znear * mjm.stat.extent
 
   if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
-    rc.ray = None
+    ray = None
   else:
-    rc.ray = wp.zeros(int(total), dtype=wp.vec3)
+    ray = wp.zeros(int(total), dtype=wp.vec3)
 
     offset = 0
     for idx, cam_id in enumerate(active_cam_indices):
@@ -1710,29 +1718,66 @@ def create_render_context(
           m.cam_fovy.numpy()[0, cam_id].item(),
           wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
           wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
-          rc.znear,
+          znear,
         ],
-        outputs=[rc.ray],
+        outputs=[ray],
       )
       offset += img_w * img_h
 
-  rc.nrender = ncam
-  rc.cam_id_map = wp.array(active_cam_indices, dtype=int)
-  rc.use_textures = use_textures
-  rc.use_shadows = use_shadows
-  rc.background_color = render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0)
-  rc.mesh_texcoord = wp.array(mjm.mesh_texcoord, dtype=wp.vec2)
-  rc.mesh_texcoord_offsets = wp.array(mjm.mesh_texcoordadr, dtype=int)
-  rc.mesh_facetexcoord = wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i)
-  rc.flex_rgba = wp.array(mjm.flex_rgba, dtype=wp.vec4)
-  rc.bvh_ngeom = len(geom_enabled_idx)
-  rc.enabled_geom_ids = wp.array(geom_enabled_idx, dtype=int)
-  rc.lower = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=wp.vec3)
-  rc.upper = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=wp.vec3)
-  rc.group = wp.zeros(d.nworld * rc.bvh_ngeom, dtype=int)
-  rc.group_root = wp.zeros(d.nworld, dtype=int)
-  rc.bvh = None
-  rc.bvh_id = None
+  bvh_ngeom = len(geom_enabled_idx)
+
+  rc = types.RenderContext(
+    nrender=ncam,
+    cam_res=cam_res_arr,
+    cam_id_map=wp.array(active_cam_indices, dtype=int),
+    use_textures=use_textures,
+    use_shadows=use_shadows,
+    background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
+    bvh_ngeom=bvh_ngeom,
+    enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
+    mesh_registry=mesh_registry,
+    mesh_bvh_id=mesh_bvh_id_arr,
+    mesh_bounds_size=mesh_bounds_size_arr,
+    mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
+    mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
+    mesh_facetexcoord=wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i),
+    textures=textures,
+    textures_registry=textures_registry,
+    hfield_registry=hfield_registry,
+    hfield_bvh_id=hfield_bvh_id_arr,
+    hfield_bounds_size=hfield_bounds_size_arr,
+    flex_mesh=flex_mesh,
+    flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
+    flex_bvh_id=flex_bvh_id,
+    flex_face_point=flex_face_point,
+    flex_faceadr=flex_faceadr,
+    flex_nface=flex_nface,
+    flex_nwork=flex_nwork,
+    flex_group_root=flex_group_root,
+    flex_elemdataadr=flex_elemdataadr,
+    flex_shell=flex_shell,
+    flex_shelldataadr=flex_shelldataadr,
+    flex_radius=flex_radius,
+    flex_workadr=flex_workadr,
+    flex_worknum=flex_worknum,
+    flex_render_smooth=flex_render_smooth,
+    bvh=None,
+    bvh_id=None,
+    lower=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
+    upper=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
+    group=wp.zeros(d.nworld * bvh_ngeom, dtype=int),
+    group_root=wp.zeros(d.nworld, dtype=int),
+    ray=ray,
+    rgb_data=wp.zeros((d.nworld, ri), dtype=wp.uint32),
+    rgb_adr=wp.array(rgb_adr, dtype=int),
+    depth_data=wp.zeros((d.nworld, di), dtype=wp.float32),
+    depth_adr=wp.array(depth_adr, dtype=int),
+    render_rgb=wp.array(render_rgb, dtype=bool),
+    render_depth=wp.array(render_depth, dtype=bool),
+    znear=znear,
+    total_rays=int(total),
+  )
+
   bvh.build_scene_bvh(m, d, rc)
 
   return rc
