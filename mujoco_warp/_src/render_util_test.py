@@ -17,14 +17,13 @@
 import numpy as np
 import warp as wp
 from absl.testing import absltest
-from absl.testing import parameterized
 
 from mujoco_warp import test_data
 from mujoco_warp._src import render_util
 from mujoco_warp._src import types
 
 
-class RenderUtilTest(parameterized.TestCase):
+class RenderUtilTest(absltest.TestCase):
   def test_create_warp_texture(self):
     """Tests that create_warp_texture creates a valid texture."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")

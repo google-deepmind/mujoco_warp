@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -101,12 +101,14 @@ def compute_ray(
     elif target_aspect < sensor_aspect:
       sensor_w = sensor_h * target_aspect
 
-    left = -znear / fx * (sensor_w * 0.5 - cx)
-    right = znear / fx * (sensor_w * 0.5 + cx)
-    top = znear / fy * (sensor_h * 0.5 - cy)
-    bottom = -znear / fy * (sensor_h * 0.5 + cy)
+    inv_fx_znear = znear / fx
+    inv_fy_znear = znear / fy
+    left = -inv_fx_znear * (sensor_w * 0.5 - cx)
+    right = inv_fx_znear * (sensor_w * 0.5 + cx)
+    top = inv_fy_znear * (sensor_h * 0.5 - cy)
+    bottom = -inv_fy_znear * (sensor_h * 0.5 + cy)
   else:
-    fovy_rad = fovy * wp.pi / 180.0
+    fovy_rad = fovy * wp.static(wp.pi / 180.0)
     half_height = znear * wp.tan(0.5 * fovy_rad)
     half_width = half_height * aspect
     left = -half_width

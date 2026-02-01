@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -357,9 +357,7 @@ def compute_lighting(
     if lighttype == 0:  # spot light
       spot_dir = wp.normalize(lightdir)
       cos_theta = wp.dot(-L, spot_dir)
-      inner = wp.static(0.95)
-      outer = wp.static(0.85)
-      spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - outer) / (inner - outer)))
+      spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - 0.85) / (0.95 - 0.85)))
       attenuation = attenuation * spot_factor
 
   ndotl = wp.max(0.0, wp.dot(normal, L))
@@ -397,7 +395,7 @@ def compute_lighting(
     )
 
     if shadow_hit:
-      visible = wp.static(0.3)
+      visible = 0.3
 
   return ndotl * attenuation * visible
 
@@ -446,7 +444,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     geom_xpos: wp.array2d(dtype=wp.vec3),
     geom_xmat: wp.array2d(dtype=wp.mat33),
     # In:
-    ncam: int,
+    nrender: int,
     use_shadows: bool,
     bvh_ngeom: int,
     cam_res: wp.array(dtype=wp.vec2i),
@@ -477,7 +475,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     cam_idx = int(-1)
     ray_idx_local = int(-1)
     accum = int(0)
-    for i in range(ncam):
+    for i in range(nrender):
       num_i = cam_res[i][0] * cam_res[i][1]
       if ray_idx < accum + num_i:
         cam_idx = i
@@ -600,7 +598,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     n = wp.normalize(n)
     hemispheric = 0.5 * (wp.dot(n, wp.vec3(0.0, 0.0, 1.0)) + 1.0)
     ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
-    result = wp.static(0.5) * wp.cw_mul(base_color, ambient_color)
+    result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
@@ -665,7 +663,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       d.light_xdir,
       d.geom_xpos,
       d.geom_xmat,
-      rc.nacam,
+      rc.nrender,
       rc.use_shadows,
       rc.bvh_ngeom,
       rc.cam_res,

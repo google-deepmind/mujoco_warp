@@ -312,7 +312,7 @@ def _main(argv: Sequence[str]):
         f"  cone: {mjw.ConeType(m.opt.cone).name} integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
         f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
         f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
-        f"Render Context\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nacam} cam_res: {rc.cam_res.numpy()}\n"
+        f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
         f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}..."
       )
 

@@ -503,9 +503,9 @@ def accumulate_flex_vertex_normals(
   flexvert_norm_out: wp.array2d(dtype=wp.vec3),
 ):
   """Accumulate per-vertex normals by summing adjacent face normals."""
-  worldid, elem = wp.tid()
+  worldid, elemid = wp.tid()
 
-  elem_base = elem * 3
+  elem_base = elemid * 3
   i0 = flex_elem[elem_base + 0]
   i1 = flex_elem[elem_base + 1]
   i2 = flex_elem[elem_base + 2]
@@ -747,18 +747,18 @@ def _update_flex_face_points(
       break
 
   dim = flex_dim[f]
-  elem_adr = flex_elemdataadr[f]
-  shell_adr = flex_shelldataadr[f]
   face_offset = flex_faceadr[f]
-  vert_adr = flex_vertadr[f]
-  radius = flex_radius[f]
-  elem_count = flex_elemnum[f]
   world_face_offset = worldid * nfaces
+  vert_adr = flex_vertadr[f]
 
   if dim == 2:
+    radius = flex_radius[f]
+    elem_count = flex_elemnum[f]
+
     if locid < elem_count:
       # 2D element faces
       elemid = locid
+      elem_adr = flex_elemdataadr[f]
       ebase = elem_adr + elemid * 3
       i0 = vert_adr + flex_elem[ebase + 0]
       i1 = vert_adr + flex_elem[ebase + 1]
@@ -768,6 +768,7 @@ def _update_flex_face_points(
       v1 = flexvert_xpos_in[worldid, i1]
       v2 = flexvert_xpos_in[worldid, i2]
 
+      # TODO: Use static conditional
       if smooth:
         n0 = flexvert_norm_in[worldid, i0]
         n1 = flexvert_norm_in[worldid, i1]
@@ -801,6 +802,7 @@ def _update_flex_face_points(
     else:
       # 2D shell faces
       shellid = locid - elem_count
+      shell_adr = flex_shelldataadr[f]
       sbase = shell_adr + 2 * shellid
       i0 = vert_adr + flex_shell_in[sbase + 0]
       i1 = vert_adr + flex_shell_in[sbase + 1]
@@ -826,6 +828,7 @@ def _update_flex_face_points(
   else:
     # 3D shell faces
     shellid = locid
+    shell_adr = flex_shelldataadr[f]
     sbase = shell_adr + shellid * 3
     i0 = vert_adr + flex_shell_in[sbase + 0]
     i1 = vert_adr + flex_shell_in[sbase + 1]

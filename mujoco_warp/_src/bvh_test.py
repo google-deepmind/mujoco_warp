@@ -24,6 +24,12 @@ from mujoco_warp import test_data
 from mujoco_warp._src import bvh
 
 
+def _assert_eq(a, b, name):
+  tol = 5e-4
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
 @dataclasses.dataclass
 class MinimalRenderContext:
   bvh_ngeom: int
@@ -114,7 +120,7 @@ class BvhTest(absltest.TestCase):
     )
 
     self.assertEqual(rc.lower.shape[0], 4 * rc.bvh_ngeom, "lower")
-    np.testing.assert_array_equal(rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), err_msg="group")
+    _assert_eq(rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), "group")
 
   def test_build_scene_bvh(self):
     """Tests that build_scene_bvh creates a valid BVH."""

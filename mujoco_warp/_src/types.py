@@ -1762,12 +1762,13 @@ class Data:
   ncollision: array(1, int)
 
 
+@dataclasses.dataclass
 class RenderContext:
-  """Render context for rendering.
+  """Context for rendering.
 
   Attributes:
-    nacam: number of active cameras that are rendering
-    cam_res: camera resolution
+    nrender: number of active cameras that are rendering
+    cam_res: camera resolution for actively rendering cameras
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
@@ -1778,13 +1779,13 @@ class RenderContext:
     mesh_bounds_size: mesh bounds size
     mesh_texcoord: mesh texture coordinates
     mesh_texcoord_offsets: mesh texture coordinate offsets
-    mesh_facetexcoord: mesh facet texture coordinates
+    mesh_facetexcoord: mesh face texture coordinates
     textures: textures
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
     hfield_bounds_size: hfield bounds size
-    flex: flex mesh
+    flex_mesh: flex mesh
     flex_rgba: flex rgba
     flex_bvh_id: flex BVH id
     flex_face_point: flex face points
@@ -1818,7 +1819,7 @@ class RenderContext:
     total_rays: total number of rays
   """
 
-  nacam: int
+  nrender: int
   cam_res: array("ncam", wp.vec2i)
   cam_id_map: array("ncam", int)
   use_textures: bool
@@ -1837,7 +1838,7 @@ class RenderContext:
   hfield_registry: dict
   hfield_bvh_id: array("nhfield", wp.uint64)
   hfield_bounds_size: array("nhfield", wp.vec3)
-  flex: wp.Mesh
+  flex_mesh: wp.Mesh
   flex_rgba: array("nflex", wp.vec4)
   flex_bvh_id: wp.uint64
   flex_face_point: array("*", wp.vec3)

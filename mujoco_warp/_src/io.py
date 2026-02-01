@@ -1504,9 +1504,9 @@ def _build_rays(
   # Out:
   ray_out: wp.array(dtype=wp.vec3),
 ):
-  px, py = wp.tid()
-  ray_out[offset + px + py * img_w] = render_util.compute_ray(
-    projection, fovy, sensorsize, intrinsic, img_w, img_h, px, py, znear
+  xid, yid = wp.tid()
+  ray_out[offset + xid + yid * img_w] = render_util.compute_ray(
+    projection, fovy, sensorsize, intrinsic, img_w, img_h, xid, yid, znear
   )
 
 
@@ -1547,41 +1547,33 @@ def create_render_context(
 
   # Mesh BVHs
   nmesh = mjm.nmesh
-  geom_enabled_idx = [i for i in range(mjm.ngeom) if mjm.geom_group[i] in enabled_geom_groups]
-  used_mesh_id = set(
-    int(mjm.geom_dataid[g])
-    for g in geom_enabled_idx
-    if mjm.geom_type[g] == types.GeomType.MESH and int(mjm.geom_dataid[g]) >= 0
-  )
+  geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
+  mesh_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.MESH) & (mjm.geom_dataid >= 0)
+  used_mesh_id = set(mjm.geom_dataid[mesh_geom_mask].astype(int))
+  geom_enabled_idx = np.nonzero(geom_enabled_mask)[0]
+
   rc.mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
 
-  for i in range(nmesh):
-    if i not in used_mesh_id:
-      continue
-    mesh, half = bvh.build_mesh_bvh(mjm, i)
+  for mid in used_mesh_id:
+    mesh, half = bvh.build_mesh_bvh(mjm, mid)
     rc.mesh_registry[mesh.id] = mesh
-    mesh_bvh_id[i] = mesh.id
-    mesh_bounds_size[i] = half
+    mesh_bvh_id[mid] = mesh.id
+    mesh_bounds_size[mid] = half
 
   rc.mesh_bvh_id = wp.array(mesh_bvh_id, dtype=wp.uint64)
   rc.mesh_bounds_size = wp.array(mesh_bounds_size, dtype=wp.vec3)
 
   # HField BVHs
   nhfield = mjm.nhfield
-  used_hfield_id = set(
-    int(mjm.geom_dataid[g])
-    for g in geom_enabled_idx
-    if mjm.geom_type[g] == types.GeomType.HFIELD and int(mjm.geom_dataid[g]) >= 0
-  )
+  hfield_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.HFIELD) & (mjm.geom_dataid >= 0)
+  used_hfield_id = set(mjm.geom_dataid[hfield_geom_mask].astype(int))
   rc.hfield_registry = {}
   hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]
   hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
 
-  for hid in range(nhfield):
-    if hid not in used_hfield_id:
-      continue
+  for hid in used_hfield_id:
     hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
     rc.hfield_registry[hmesh.id] = hmesh
     hfield_bvh_id[hid] = hmesh.id
@@ -1603,7 +1595,7 @@ def create_render_context(
       flex_nface,
     ) = bvh.build_flex_bvh(mjm, m, d)
 
-    rc.flex = fmesh
+    rc.flex_mesh = fmesh
     rc.flex_bvh_id = fmesh.id
     rc.flex_face_point = face_point
     rc.flex_group_root = flex_group_roots
@@ -1724,7 +1716,7 @@ def create_render_context(
       )
       offset += img_w * img_h
 
-  rc.nacam = ncam
+  rc.nrender = ncam
   rc.cam_id_map = wp.array(active_cam_indices, dtype=int)
   rc.use_textures = use_textures
   rc.use_shadows = use_shadows
