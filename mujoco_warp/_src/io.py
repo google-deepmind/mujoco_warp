@@ -167,15 +167,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         return True
     return False
 
-  for objtype, objid, reftype, refid in zip(
-    mjm.sensor_objtype[is_collision_sensor],
-    mjm.sensor_objid[is_collision_sensor],
-    mjm.sensor_reftype[is_collision_sensor],
-    mjm.sensor_refid[is_collision_sensor],
-  ):
-    if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
-      raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
-
   def _check_friction(name: str, id_: int, condim: int, friction, checks):
     for min_condim, indices in checks:
       if condim >= min_condim:
