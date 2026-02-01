@@ -1218,8 +1218,12 @@ def _efc_contact_pyramidal(
   opt_impratio_invsqrt: wp.array(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
   dof_bodyid: wp.array(dtype=int),
+  dof_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
@@ -1305,49 +1309,73 @@ def _efc_contact_pyramidal(
       invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
     Jqvel = float(0.0)
-    for i in range(nv):
-      J = float(0.0)
-      Ji = float(0.0)
-      jac1p, jac1r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        con_pos,
-        body1,
-        i,
-        worldid,
-      )
-      jac2p, jac2r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        con_pos,
-        body2,
-        i,
-        worldid,
-      )
-      jacp_dif = jac2p - jac1p
-      for xyz in range(3):
-        J += frame[0, xyz] * jacp_dif[xyz]
+
+    # skip fixed bodies
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
+
+    da1 = body_dofadr[body1] + body_dofnum[body1] - 1
+    da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+    da = wp.max(da1, da2)
+
+    for dofid in range(nv - 1, -1, -1):
+      if dofid == da:
+        # TODO(team): contact_jacobian
+        jac1p, jac1r = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          con_pos,
+          body1,
+          dofid,
+          worldid,
+        )
+        jac2p, jac2r = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          con_pos,
+          body2,
+          dofid,
+          worldid,
+        )
+
+        J = float(0.0)
+        Ji = float(0.0)
+        if condim > 1:
+          dimid2 = dimid / 2 + 1
+
+        for xyz in range(3):
+          jacp_dif = jac2p[xyz] - jac1p[xyz]
+          J += frame[0, xyz] * jacp_dif
+
+          if condim > 1:
+            if dimid2 < 3:
+              Ji += frame[dimid2, xyz] * jacp_dif
+            else:
+              Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
 
         if condim > 1:
-          if dimid2 < 3:
-            Ji += frame[dimid2, xyz] * jacp_dif[xyz]
+          if dimid % 2 == 0:
+            J += Ji * frii
           else:
-            Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+            J -= Ji * frii
 
-      if condim > 1:
-        if dimid % 2 == 0:
-          J += Ji * frii
-        else:
-          J -= Ji * frii
+        efc_J_out[worldid, efcid, dofid] = J
+        Jqvel += J * qvel_in[worldid, dofid]
 
-      efc_J_out[worldid, efcid, i] = J
-      Jqvel += J * qvel_in[worldid, i]
+        # Advance tree pointers and recompute da for next iteration
+        if da1 == da:
+          da1 = dof_parentid[da1]
+        if da2 == da:
+          da2 = dof_parentid[da2]
+        da = wp.max(da1, da2)
+      else:
+        efc_J_out[worldid, efcid, dofid] = 0.0
 
     if condim == 1:
       efc_type = ConstraintType.CONTACT_FRICTIONLESS
@@ -1388,8 +1416,12 @@ def _efc_contact_elliptic(
   opt_impratio_invsqrt: wp.array(dtype=float),
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
   dof_bodyid: wp.array(dtype=int),
+  dof_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
@@ -1453,49 +1485,69 @@ def _efc_contact_elliptic(
     impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
     contact_efc_address_out[conid, dimid] = efcid
 
+    con_pos = pos_in[conid]
+    frame = frame_in[conid]
+
     geom = geom_in[conid]
     body1 = geom_bodyid[geom[0]]
     body2 = geom_bodyid[geom[1]]
 
-    cpos = pos_in[conid]
-    frame = frame_in[conid]
-
-    # TODO(team): parallelize J and Jqvel computation?
     Jqvel = float(0.0)
-    for i in range(nv):
-      J = float(0.0)
-      jac1p, jac1r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        cpos,
-        body1,
-        i,
-        worldid,
-      )
-      jac2p, jac2r = support.jac(
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        subtree_com_in,
-        cdof_in,
-        cpos,
-        body2,
-        i,
-        worldid,
-      )
-      for xyz in range(3):
-        if dimid < 3:
-          jac_dif = jac2p[xyz] - jac1p[xyz]
-          J += frame[dimid, xyz] * jac_dif
-        else:
-          jac_dif = jac2r[xyz] - jac1r[xyz]
-          J += frame[dimid - 3, xyz] * jac_dif
 
-      efc_J_out[worldid, efcid, i] = J
-      Jqvel += J * qvel_in[worldid, i]
+    # skip fixed bodies
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
+
+    da1 = body_dofadr[body1] + body_dofnum[body1] - 1
+    da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+    da = wp.max(da1, da2)
+
+    for dofid in range(nv - 1, -1, -1):
+      if dofid == da:
+        # TODO(team): contact jacobian
+        jac1p, jac1r = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          con_pos,
+          body1,
+          dofid,
+          worldid,
+        )
+        jac2p, jac2r = support.jac(
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          subtree_com_in,
+          cdof_in,
+          con_pos,
+          body2,
+          dofid,
+          worldid,
+        )
+
+        J = float(0.0)
+        for xyz in range(3):
+          if dimid < 3:
+            jac_dif = jac2p[xyz] - jac1p[xyz]
+            J += frame[dimid, xyz] * jac_dif
+          else:
+            jac_dif = jac2r[xyz] - jac1r[xyz]
+            J += frame[dimid - 3, xyz] * jac_dif
+
+        efc_J_out[worldid, efcid, dofid] = J
+        Jqvel += J * qvel_in[worldid, dofid]
+
+        # Advance tree pointers and recompute da for next iteration
+        if da1 == da:
+          da1 = dof_parentid[da1]
+        if da2 == da:
+          da2 = dof_parentid[da2]
+        da = wp.max(da1, da2)
+      else:
+        efc_J_out[worldid, efcid, dofid] = 0.0
 
     body_invweight0_id = worldid % body_invweight0.shape[0]
     invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
@@ -1940,8 +1992,12 @@ def make_constraint(m: types.Model, d: types.Data):
             m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
             m.body_invweight0,
             m.dof_bodyid,
+            m.dof_parentid,
             m.geom_bodyid,
             d.qvel,
             d.subtree_com,
@@ -1985,8 +2041,12 @@ def make_constraint(m: types.Model, d: types.Data):
             m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
             m.body_invweight0,
             m.dof_bodyid,
+            m.dof_parentid,
             m.geom_bodyid,
             d.qvel,
             d.subtree_com,
