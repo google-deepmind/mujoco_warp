@@ -481,23 +481,6 @@ class IOTest(parameterized.TestCase):
       """
       )
 
-  def test_implicit_integrator_fluid_model(self):
-    """Tests for implicit integrator with fluid model."""
-    with self.assertRaises(NotImplementedError):
-      test_data.fixture(
-        xml="""
-        <mujoco>
-          <option viscosity="1" density="1" integrator="implicitfast"/>
-          <worldbody>
-            <body>
-              <geom type="sphere" size=".1"/>
-              <freejoint/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """
-      )
-
   def test_plugin(self):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
