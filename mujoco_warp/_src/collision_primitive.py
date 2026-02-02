@@ -425,12 +425,12 @@ def write_contact(
   contact_type_out: wp.array(dtype=int),
   contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-):
+) -> int:
   active = dist_in < margin_in
 
   # skip contact and no collision sensor
   if (pairid_in[0] == -2 or not active) and pairid_in[1] == -1:
-    return
+    return 0
 
   contact_type = 0
 
@@ -456,6 +456,8 @@ def write_contact(
     contact_solimp_out[cid] = solimp_in
     contact_type_out[cid] = contact_type
     contact_geomcollisionid_out[cid] = id_
+    return int(active)
+  return 0
 
 
 @wp.func

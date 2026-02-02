@@ -705,7 +705,6 @@ def ccd_kernel_builder(
     solimp: vec5,
     x1: wp.vec3,
     x2: wp.vec3,
-    count: int,
     pairid: wp.vec2i,
     # Data out:
     contact_dist_out: wp.array(dtype=float),
@@ -728,12 +727,12 @@ def ccd_kernel_builder(
     witness2 = mat43()
     geom1.margin = margin
     geom2.margin = margin
-    if pairid[1] >= 0:
-      # if collision sensor, set large cutoff to work with various sensor cutoff values
+    is_collision_sensor = pairid[1] >= 0
+    if is_collision_sensor:
       cutoff = 1.0e32
     else:
       cutoff = 0.0
-    dist, ncontact, w1, w2, multiccd_idx = ccd(
+    dist, ncollision, w1, w2, multiccd_idx = ccd(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
@@ -772,7 +771,7 @@ def ccd_kernel_builder(
           multiccd_idx = -1
 
       if multiccd_idx > -1:
-        ncontact, witness1, witness2 = multicontact(
+        ncollision, witness1, witness2 = multicontact(
           multiccd_polygon_in[tid],
           multiccd_clipped_in[tid],
           multiccd_pnormal_in[tid],
@@ -797,7 +796,7 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-    for i in range(ncontact):
+    for i in range(ncollision):
       points[i] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]
     frame = make_frame(normal)
@@ -807,8 +806,9 @@ def ccd_kernel_builder(
       frame *= -1.0
       geoms = wp.vec2i(geoms[1], geoms[0])
 
-    for i in range(ncontact):
-      write_contact(
+    nactive = int(0)  # number of contacts contributing to the physics
+    for i in range(ncollision):
+      active = write_contact(
         naconmax_in,
         i,
         dist,
@@ -839,10 +839,9 @@ def ccd_kernel_builder(
         contact_geomcollisionid_out,
         nacon_out,
       )
-      if count + (i + 1) >= MJ_MAXCONPAIR:
-        return i + 1
+      nactive += active
 
-    return ncontact
+    return nactive
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
   @wp.kernel(module="unique", enable_backward=False)
@@ -1020,7 +1019,6 @@ def ccd_kernel_builder(
       solimp,
       geom1.pos,
       geom2.pos,
-      0,
       collision_pairid_in[tid],
       contact_dist_out,
       contact_pos_out,
