@@ -591,6 +591,44 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "hfield_mesh": """
+        <mujoco>
+          <asset>
+            <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.1 0.1"
+            elevation="0 0 0
+                       0 0 0
+                       0 0 0"/>
+            <mesh name="box"
+              vertex="-1 -1 -1
+                       1 -1 -1
+                       1  1 -1
+                      -1  1 -1
+                      -1 -1  1
+                       1 -1  1
+                       1  1  1
+                      -1  1  1"
+              face="0 3 2
+                    0 2 1
+                    4 5 6
+                    4 6 7
+                    0 1 5
+                    0 5 4
+                    2 3 7
+                    2 7 6
+                    0 4 7
+                    0 7 3
+                    1 2 6
+                    1 6 5"/>
+          </asset>
+          <worldbody>
+            <geom type="hfield" hfield="terrain" pos="0 0 0"/>
+            <body pos=".0 .0 .15">
+              <freejoint/>
+              <geom type="mesh" mesh="box" size=".1 .1 .1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
 
   @parameterized.parameters(_HFIELD_FIXTURES.keys())
