@@ -764,6 +764,7 @@ class Model:
     nbody: number of bodies
     noct: number of total octree cells in all meshes
     njnt: number of joints
+    ntree: number of kinematic trees
     nM: number of non-zeros in sparse inertia matrix
     nC: number of non-zeros in sparse body-dof matrix
     ngeom: number of geoms
@@ -809,6 +810,7 @@ class Model:
     body_jntadr: start addr of joints; -1: no joints         (nbody,)
     body_dofnum: number of motion degrees of freedom         (nbody,)
     body_dofadr: start addr of dofs; -1: no dofs             (nbody,)
+    body_treeid: id of body's tree; -1: static               (nbody,)
     body_geomnum: number of geoms                            (nbody,)
     body_geomadr: start addr of geoms; -1: no geoms          (nbody,)
     body_pos: position offset rel. to parent body            (*, nbody, 3)
@@ -843,6 +845,7 @@ class Model:
     dof_bodyid: id of dof's body                             (nv,)
     dof_jntid: id of dof's joint                             (nv,)
     dof_parentid: id of dof's parent; -1: none               (nv,)
+    dof_treeid: id of dof's tree                             (nv,)
     dof_Madr: dof address in M-diagonal                      (nv,)
     dof_solref: constraint solver reference: frictionloss    (*, nv, NREF)
     dof_solimp: constraint solver impedance: frictionloss    (*, nv, NIMP)
@@ -850,6 +853,9 @@ class Model:
     dof_armature: dof armature inertia/mass                  (*, nv)
     dof_damping: damping coefficient                         (*, nv)
     dof_invweight0: diag. inverse inertia in qpos0           (*, nv)
+    tree_bodynum: number of bodies in tree (incl. root)      (ntree,)
+    tree_dofadr: start address of tree's dofs                (ntree,)
+    tree_dofnum: number of dofs in tree                      (ntree,)
     geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
     geom_conaffinity: geom contact affinity                  (ngeom,)
@@ -1118,6 +1124,7 @@ class Model:
   nbody: int
   noct: int
   njnt: int
+  ntree: int
   nM: int
   nC: int
   ngeom: int
@@ -1163,6 +1170,7 @@ class Model:
   body_jntadr: array("nbody", int)
   body_dofnum: array("nbody", int)
   body_dofadr: array("nbody", int)
+  body_treeid: array("nbody", int)
   body_geomnum: array("nbody", int)
   body_geomadr: array("nbody", int)
   body_pos: array("*", "nbody", wp.vec3)
@@ -1197,6 +1205,7 @@ class Model:
   dof_bodyid: array("nv", int)
   dof_jntid: array("nv", int)
   dof_parentid: array("nv", int)
+  dof_treeid: array("nv", int)
   dof_Madr: array("nv", int)
   dof_solref: array("*", "nv", wp.vec2)
   dof_solimp: array("*", "nv", vec5)
@@ -1204,6 +1213,9 @@ class Model:
   dof_armature: array("*", "nv", float)
   dof_damping: array("*", "nv", float)
   dof_invweight0: array("*", "nv", float)
+  tree_bodynum: array("ntree", int)
+  tree_dofadr: array("ntree", int)
+  tree_dofnum: array("ntree", int)
   geom_type: array("ngeom", int)
   geom_contype: array("ngeom", int)
   geom_conaffinity: array("ngeom", int)
