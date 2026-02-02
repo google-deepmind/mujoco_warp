@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,128 +27,16 @@ from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.ray import ray_sphere
-from mujoco_warp._src.render_context import RenderContext
+from mujoco_warp._src.render_util import compute_ray
+from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import ProjectionType
+from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
-
-MAX_NUM_VIEWS_PER_THREAD = 8
-
-BACKGROUND_COLOR = 255 << 24 | int(0.1 * 255.0) << 16 | int(0.1 * 255.0) << 8 | int(0.2 * 255.0)
-
-SPOT_INNER_COS = float(0.95)
-SPOT_OUTER_COS = float(0.85)
-INV_255 = float(1.0 / 255.0)
-SHADOW_MIN_VISIBILITY = float(0.3)  # reduce shadow darkness (0: full black, 1: no shadow)
-
-AMBIENT_UP = wp.vec3(0.0, 0.0, 1.0)
-AMBIENT_SKY = wp.vec3(0.4, 0.4, 0.45)
-AMBIENT_GROUND = wp.vec3(0.1, 0.1, 0.12)
-AMBIENT_INTENSITY = float(0.5)
-
-TILE_W: int = 16
-TILE_H: int = 16
-THREADS_PER_TILE: int = TILE_W * TILE_H
-
-
-@wp.func
-def _ceil_div(a: int, b: int):
-  return (a + b - 1) // b
-
-
-# Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
-@wp.func
-def _tile_coords(tid: int, W: int, H: int):
-  tile_id = tid // THREADS_PER_TILE
-  local = tid - tile_id * THREADS_PER_TILE
-
-  u = local % TILE_W
-  v = local // TILE_W
-
-  tiles_x = _ceil_div(W, TILE_W)
-  tile_x = (tile_id % tiles_x) * TILE_W
-  tile_y = (tile_id // tiles_x) * TILE_H
-
-  i = tile_x + u
-  j = tile_y + v
-  return i, j
-
-
-@wp.func
-def compute_ray(
-  # In:
-  projection: int,
-  fovy: float,
-  sensorsize: wp.vec2,
-  intrinsic: wp.vec4,
-  img_w: int,
-  img_h: int,
-  px: int,
-  py: int,
-  znear: float,
-) -> wp.vec3:
-  """Compute ray direction for a pixel with per-world camera parameters.
-
-  This combines _camera_frustum_bounds and build_primary_rays logic for use
-  inside a kernel when camera parameters are batched/randomized across worlds.
-  """
-  if projection == ProjectionType.ORTHOGRAPHIC:
-    return wp.vec3(0.0, 0.0, -1.0)
-
-  aspect = float(img_w) / float(img_h)
-  sensor_h = sensorsize[1]
-
-  # Check if we have intrinsics (sensorsize[1] != 0)
-  if sensor_h != 0.0:
-    fx = intrinsic[0]
-    fy = intrinsic[1]
-    cx = intrinsic[2]
-    cy = intrinsic[3]
-    sensor_w = sensorsize[0]
-
-    target_aspect = float(img_w) / float(img_h)
-    sensor_aspect = sensor_w / sensor_h
-    if target_aspect > sensor_aspect:
-      sensor_h = sensor_w / target_aspect
-    elif target_aspect < sensor_aspect:
-      sensor_w = sensor_h * target_aspect
-
-    left = -znear / fx * (sensor_w * 0.5 - cx)
-    right = znear / fx * (sensor_w * 0.5 + cx)
-    top = znear / fy * (sensor_h * 0.5 - cy)
-    bottom = -znear / fy * (sensor_h * 0.5 + cy)
-  else:
-    fovy_rad = fovy * wp.pi / 180.0
-    half_height = znear * wp.tan(0.5 * fovy_rad)
-    half_width = half_height * aspect
-    left = -half_width
-    right = half_width
-    top = half_height
-    bottom = -half_height
-
-  u = (float(px) + 0.5) / float(img_w)
-  v = (float(py) + 0.5) / float(img_h)
-  x = left + (right - left) * u
-  y = top + (bottom - top) * v
-
-  return wp.normalize(wp.vec3(x, y, -znear))
-
-
-@wp.func
-def pack_rgba_to_uint32(r: wp.uint8, g: wp.uint8, b: wp.uint8, a: wp.uint8) -> wp.uint32:
-  """Pack RGBA values into a single uint32 for efficient memory access."""
-  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
-
-
-@wp.func
-def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
-  """Pack RGBA values into a single uint32 for efficient memory access."""
-  return (wp.uint32(a) << wp.uint32(24)) | (wp.uint32(r) << wp.uint32(16)) | (wp.uint32(g) << wp.uint32(8)) | wp.uint32(b)
 
 
 @wp.func
@@ -469,9 +357,7 @@ def compute_lighting(
     if lighttype == 0:  # spot light
       spot_dir = wp.normalize(lightdir)
       cos_theta = wp.dot(-L, spot_dir)
-      inner = SPOT_INNER_COS
-      outer = SPOT_OUTER_COS
-      spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - outer) / (inner - outer)))
+      spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - 0.85) / (0.95 - 0.85)))
       attenuation = attenuation * spot_factor
 
   ndotl = wp.max(0.0, wp.dot(normal, L))
@@ -509,7 +395,7 @@ def compute_lighting(
     )
 
     if shadow_hit:
-      visible = SHADOW_MIN_VISIBILITY
+      visible = 0.3
 
   return ndotl * attenuation * visible
 
@@ -525,7 +411,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     d: The data on device.
     rc: The render context on device.
   """
-  rc.rgb_data.fill_(wp.uint32(BACKGROUND_COLOR))
+  rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
 
   # TODO: Adding "unique" causes kernel re-compilation issues, need to investigate
@@ -558,7 +444,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     geom_xpos: wp.array2d(dtype=wp.vec3),
     geom_xmat: wp.array2d(dtype=wp.mat33),
     # In:
-    ncam: int,
+    nrender: int,
     use_shadows: bool,
     bvh_ngeom: int,
     cam_res: wp.array(dtype=wp.vec2i),
@@ -589,7 +475,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     cam_idx = int(-1)
     ray_idx_local = int(-1)
     accum = int(0)
-    for i in range(ncam):
+    for i in range(nrender):
       num_i = cam_res[i][0] * cam_res[i][1]
       if ray_idx < accum + num_i:
         cam_idx = i
@@ -708,11 +594,11 @@ def render(m: Model, d: Data, rc: RenderContext):
             base_color = wp.cw_mul(base_color, tex_color)
 
     len_n = wp.length(normal)
-    n = normal if len_n > 0.0 else AMBIENT_UP
+    n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
     n = wp.normalize(n)
-    hemispheric = 0.5 * (wp.dot(n, AMBIENT_UP) + 1.0)
-    ambient_color = AMBIENT_SKY * hemispheric + AMBIENT_GROUND * (1.0 - hemispheric)
-    result = AMBIENT_INTENSITY * wp.cw_mul(base_color, ambient_color)
+    hemispheric = 0.5 * (wp.dot(n, wp.vec3(0.0, 0.0, 1.0)) + 1.0)
+    ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
+    result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
@@ -777,7 +663,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       d.light_xdir,
       d.geom_xpos,
       d.geom_xmat,
-      rc.ncam,
+      rc.nrender,
       rc.use_shadows,
       rc.bvh_ngeom,
       rc.cam_res,
@@ -803,5 +689,4 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.rgb_data,
       rc.depth_data,
     ],
-    block_dim=THREADS_PER_TILE,
   )

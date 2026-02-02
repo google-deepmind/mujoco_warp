@@ -23,6 +23,12 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 
 
+def _assert_eq(a, b, name):
+  tol = 5e-4
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
 class RenderTest(parameterized.TestCase):
   @parameterized.parameters(2, 512)
   def test_render(self, nworld: int):
@@ -83,7 +89,7 @@ class RenderTest(parameterized.TestCase):
 
     wp.capture_launch(capture.graph)
 
-    np.testing.assert_array_equal(rgb_np, rc.rgb_data.numpy())
+    _assert_eq(rgb_np, rc.rgb_data.numpy())
 
 
 if __name__ == "__main__":

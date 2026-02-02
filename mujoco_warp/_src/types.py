@@ -1760,3 +1760,111 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+
+@dataclasses.dataclass
+class RenderContext:
+  """Context for rendering.
+
+  Attributes:
+    nrender: number of active cameras that are rendering
+    cam_res: camera resolution for actively rendering cameras
+    cam_id_map: camera id map
+    use_textures: whether to use textures
+    use_shadows: whether to use shadows
+    bvh_ngeom: number of geometries in the BVH
+    enabled_geom_ids: enabled geometry ids
+    mesh_registry: mesh BVH id to warp mesh mapping
+    mesh_bvh_id: mesh BVH ids
+    mesh_bounds_size: mesh bounds size
+    mesh_texcoord: mesh texture coordinates
+    mesh_texcoord_offsets: mesh texture coordinate offsets
+    mesh_facetexcoord: mesh face texture coordinates
+    textures: textures
+    textures_registry: texture registry
+    hfield_registry: hfield BVH id to warp mesh mapping
+    hfield_bvh_id: hfield BVH ids
+    hfield_bounds_size: hfield bounds size
+    flex_mesh: flex mesh
+    flex_rgba: flex rgba
+    flex_bvh_id: flex BVH id
+    flex_face_point: flex face points
+    flex_faceadr: flex face addresses
+    flex_nface: number of flex faces
+    flex_nwork: total flex work items for refit
+    flex_group_root: flex group roots
+    flex_elemdataadr: flex element data addresses
+    flex_shell: flex shell data
+    flex_shelldataadr: flex shell data addresses
+    flex_radius: flex radius
+    flex_workadr: flex work item addresses for refit
+    flex_worknum: flex work item counts for refit
+    flex_render_smooth: whether to render flex meshes smoothly
+    bvh: scene BVH
+    bvh_id: scene BVH id
+    lower: lower bounds
+    upper: upper bounds
+    group: groups
+    group_root: group roots
+    ray: rays
+    rgb_data: RGB data
+    rgb_adr: RGB addresses
+    rgb_size: per-camera RGB buffer sizes
+    depth_data: depth data
+    depth_adr: depth addresses
+    depth_size: per-camera depth buffer sizes
+    render_rgb: per-camera RGB render flags
+    render_depth: per-camera depth render flags
+    znear: near plane distance
+    total_rays: total number of rays
+  """
+
+  nrender: int
+  cam_res: array("ncam", wp.vec2i)
+  cam_id_map: array("ncam", int)
+  use_textures: bool
+  use_shadows: bool
+  background_color: wp.uint32
+  bvh_ngeom: int
+  enabled_geom_ids: array("*", int)
+  mesh_registry: dict
+  mesh_bvh_id: array("nmesh", wp.uint64)
+  mesh_bounds_size: array("nmesh", wp.vec3)
+  mesh_texcoord: array("*", wp.vec2)
+  mesh_texcoord_offsets: array("nmesh", int)
+  mesh_facetexcoord: array("nmeshface", wp.vec3i)
+  textures: array("*", wp.Texture2D)
+  textures_registry: list[wp.Texture2D]
+  hfield_registry: dict
+  hfield_bvh_id: array("nhfield", wp.uint64)
+  hfield_bounds_size: array("nhfield", wp.vec3)
+  flex_mesh: wp.Mesh
+  flex_rgba: array("nflex", wp.vec4)
+  flex_bvh_id: wp.uint64
+  flex_face_point: array("*", wp.vec3)
+  flex_faceadr: array("nflex", int)
+  flex_nface: int
+  flex_nwork: int
+  flex_group_root: array("nworld", int)
+  flex_elemdataadr: array("nflex", int)
+  flex_shell: array("*", int)
+  flex_shelldataadr: array("nflex", int)
+  flex_radius: array("nflex", float)
+  flex_workadr: array("nflex", int)
+  flex_worknum: array("nflex", int)
+  flex_render_smooth: bool
+  bvh: wp.Bvh
+  bvh_id: wp.uint64
+  lower: array("*", wp.vec3)
+  upper: array("*", wp.vec3)
+  group: array("*", int)
+  group_root: array("*", int)
+  ray: array("*", wp.vec3)
+  rgb_data: array("*", wp.uint32)
+  rgb_adr: array("ncam", int)
+  depth_data: array("*", wp.float32)
+  depth_adr: array("ncam", int)
+  render_rgb: array("ncam", bool)
+  render_depth: array("ncam", bool)
+  znear: float
+  total_rays: int

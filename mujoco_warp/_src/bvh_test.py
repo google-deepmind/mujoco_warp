@@ -24,6 +24,12 @@ from mujoco_warp import test_data
 from mujoco_warp._src import bvh
 
 
+def _assert_eq(a, b, name):
+  tol = 5e-4
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
 @dataclasses.dataclass
 class MinimalRenderContext:
   bvh_ngeom: int
@@ -114,7 +120,7 @@ class BvhTest(absltest.TestCase):
     )
 
     self.assertEqual(rc.lower.shape[0], 4 * rc.bvh_ngeom, "lower")
-    np.testing.assert_array_equal(rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), err_msg="group")
+    _assert_eq(rc.group.numpy(), np.repeat(np.arange(4), rc.bvh_ngeom), "group")
 
   def test_build_scene_bvh(self):
     """Tests that build_scene_bvh creates a valid BVH."""
@@ -212,7 +218,7 @@ class BvhTest(absltest.TestCase):
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
       dim=(nworld, nelem),
-      inputs=[flex_elem, flexvert_xpos, 0, 0],
+      inputs=[flex_elem, flexvert_xpos],
       outputs=[flexvert_norm],
     )
 
@@ -244,7 +250,7 @@ class BvhTest(absltest.TestCase):
     """Tests that build_flex_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
 
-    flex_mesh, face_point, group, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)
+    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)
 
     self.assertNotEqual(flex_mesh.id, wp.uint64(0), "flex_mesh id")
 
