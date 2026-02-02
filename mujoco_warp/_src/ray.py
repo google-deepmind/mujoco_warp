@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 import warp as wp
 
 from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -627,10 +628,16 @@ def ray_mesh(
   data_id: int,
   pos: wp.vec3,
   mat: wp.mat33,
+  size: wp.vec3,
   pnt: wp.vec3,
   vec: wp.vec3,
 ) -> Tuple[float, wp.vec3]:
   """Returns the distance and normal for ray mesh intersections."""
+  # bounding box test
+  dist_box, _all, _normal = _ray_box(pos, mat, size, pnt, vec)
+  if dist_box < 0.0:
+    return -1.0, wp.vec3()
+
   pnt, vec = _ray_map(pos, mat, pnt, vec)
 
   # compute orthogonal basis vectors
@@ -771,6 +778,7 @@ def _ray_geom_mesh(
         geom_dataid[geomid],
         pos,
         mat,
+        geom_size[worldid % geom_size.shape[0], geomid],
         pnt,
         vec,
       )
@@ -836,7 +844,7 @@ def _ray(
 
   num_threads = wp.block_dim()
 
-  min_dist = float(wp.inf)
+  min_dist = float(MJ_MAXVAL)
   min_geomid = int(-1)
   min_normal = wp.vec3()
 
@@ -874,9 +882,9 @@ def _ray(
         geomid,
       )
       if dist < 0:
-        dist = wp.inf
+        dist = MJ_MAXVAL
     else:
-      dist = wp.inf
+      dist = MJ_MAXVAL
       normal = wp.vec3()
 
     tile_dist = wp.tile(dist)
@@ -891,7 +899,7 @@ def _ray(
       min_geomid = tile_geomid[local_min_geomid[0]]
       min_normal = tile_normal[local_min_geomid[0]]
 
-  if wp.isinf(min_dist):
+  if min_dist >= MJ_MAXVAL:
     dist_out[worldid, rayid] = -1.0
   else:
     dist_out[worldid, rayid] = min_dist
@@ -915,7 +923,7 @@ def ray(
     d: The data object containing the current state and output arrays (device).
     pnt: Ray origin points.
     vec: Ray directions.
-    geomgroup: Group inclusion/exclusion mask. If all are wp.inf, ignore.
+    geomgroup: Group inclusion/exclusion mask.
     flg_static: If True, allows rays to intersect with static geoms.
     bodyexclude: Ignore geoms on specified body id (-1 to disable).
 
