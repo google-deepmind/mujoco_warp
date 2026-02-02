@@ -1010,4 +1010,4 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     outputs=[rc.flex_face_point],
   )
 
-  rc.flex.refit()
+  rc.flex_mesh.refit()
