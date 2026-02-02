@@ -147,21 +147,24 @@ def _main(argv: Sequence[str]) -> None:
     with wp.ScopedDevice(_DEVICE.value):
       m = mjw.put_model(mjm)
       override_model(m, _OVERRIDE.value)
-      broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
-      solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
-      integrator = mjw.IntegratorType(m.opt.integrator).name
-      iterations, ls_iterations = m.opt.iterations, m.opt.ls_iterations
-      ls_str = f"{'parallel' if m.opt.ls_parallel else 'iterative'} linesearch iterations: {ls_iterations}"
-      print(
-        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
-        f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
-        f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
-        f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
-      )
       d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-      print(f"Data\n  nworld: {d.nworld} nconmax: {int(d.naconmax / d.nworld)} njmax: {d.njmax}\n")
-      graph = _compile_step(m, d)
-      print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
+      graph = _compile_step(m, d) if wp.get_device().is_cuda else None
+      if graph is None:
+        mjw.step(m, d)  # warmup step
+        print("Running without CUDA graph capture (CPU mode).")
+    broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
+    solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
+    integrator = mjw.IntegratorType(m.opt.integrator).name
+    iterations, ls_iterations = m.opt.iterations, m.opt.ls_iterations
+    ls_str = f"{'parallel' if m.opt.ls_parallel else 'iterative'} linesearch iterations: {ls_iterations}"
+    print(
+      f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
+      f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
+      f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
+      f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
+    )
+    print(f"Data\n  nworld: {d.nworld} nconmax: {int(d.naconmax / d.nworld)} njmax: {d.njmax}\n")
+    print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
   with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
     opt = copy.copy(mjm.opt)
@@ -182,22 +185,25 @@ def _main(argv: Sequence[str]) -> None:
         wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
         wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
         wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
-
         # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
         # TODO: update memory tied to option max iterations
         if mjm.opt != opt:
           opt = copy.copy(mjm.opt)
-          m = mjw.put_model(mjm)
-          graph = _compile_step(m, d)
+          with wp.ScopedDevice(_DEVICE.value):
+            m = mjw.put_model(mjm)
+          if graph:
+            with wp.ScopedCapture(_DEVICE.value) as capture:
+              mjw.step(m, d)
+            graph = capture.graph
 
-        if _VIEWER_GLOBAL_STATE["running"]:
-          wp.capture_launch(graph)
-          wp.synchronize()
-        elif _VIEWER_GLOBAL_STATE["step_once"]:
+        if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
-          wp.capture_launch(graph)
-          wp.synchronize()
-
+          if graph is None:
+            with wp.ScopedDevice(_DEVICE.value):
+              mjw.step(m, d)
+          else:
+            wp.capture_launch(graph)
+            wp.synchronize()
         mjw.get_data_into(mjd, mjm, d)
 
       viewer.sync()
