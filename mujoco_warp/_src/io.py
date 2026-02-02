@@ -643,10 +643,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
   # place m on device
-  # TODO(team): remove ntree once field is added to types.Model
-  sizes = dict(
-    {"*": 1, "ntree": mjm.ntree}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}
-  )
+  sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
     if _is_array_spec(f.type):
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes))
@@ -932,7 +929,6 @@ def make_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
-  sizes["ntree"] = mjm.ntree
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1109,7 +1105,6 @@ def put_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
-  sizes["ntree"] = mjm.ntree
 
   if njmax_nnz is None:
     if is_sparse(mjm):
