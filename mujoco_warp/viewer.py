@@ -145,6 +145,7 @@ def _main(argv: Sequence[str]) -> None:
         compute_cache.mkdir()
 
     with wp.ScopedDevice(_DEVICE.value):
+      is_cuda = wp.get_device().is_cuda
       m = mjw.put_model(mjm)
       override_model(m, _OVERRIDE.value)
       broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
@@ -160,7 +161,12 @@ def _main(argv: Sequence[str]) -> None:
       )
       d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
       print(f"Data\n  nworld: {d.nworld} nconmax: {int(d.naconmax / d.nworld)} njmax: {d.njmax}\n")
-      graph = _compile_step(m, d)
+      if is_cuda:
+        graph = _compile_step(m, d)
+      else:
+        graph = None
+        mjw.step(m, d)  # warmup step
+        print("Running without CUDA graph capture (CPU mode).")
       print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
   with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
@@ -176,29 +182,32 @@ def _main(argv: Sequence[str]) -> None:
       if _ENGINE.value == EngineOptions.C:
         mujoco.mj_step(mjm, mjd)
       else:  # mjwarp
-        wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
-        wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
-        wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
-        wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
-        wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
-        wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
+        with wp.ScopedDevice(_DEVICE.value):
+          wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
+          wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
+          wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
+          wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
+          wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
+          wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
 
-        # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
-        # TODO: update memory tied to option max iterations
-        if mjm.opt != opt:
-          opt = copy.copy(mjm.opt)
-          m = mjw.put_model(mjm)
-          graph = _compile_step(m, d)
+          # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
+          # TODO: update memory tied to option max iterations
+          if mjm.opt != opt:
+            opt = copy.copy(mjm.opt)
+            m = mjw.put_model(mjm)
+            if is_cuda:
+              with wp.ScopedCapture() as capture:
+                mjw.step(m, d)
+              graph = capture.graph
 
-        if _VIEWER_GLOBAL_STATE["running"]:
-          wp.capture_launch(graph)
-          wp.synchronize()
-        elif _VIEWER_GLOBAL_STATE["step_once"]:
-          _VIEWER_GLOBAL_STATE["step_once"] = False
-          wp.capture_launch(graph)
-          wp.synchronize()
-
-        mjw.get_data_into(mjd, mjm, d)
+          if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
+            _VIEWER_GLOBAL_STATE["step_once"] = False
+            if is_cuda:
+              wp.capture_launch(graph)
+              wp.synchronize()
+            else:
+              mjw.step(m, d)
+          mjw.get_data_into(mjd, mjm, d)
 
       viewer.sync()
 
