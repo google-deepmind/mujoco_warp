@@ -1293,7 +1293,6 @@ def _efc_contact_jac_tiled(tile_size: int, cone_type: types.ConeType):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    nv: int,
     body_rootid: wp.array(dtype=int),
     geom_bodyid: wp.array(dtype=int),
     dof_affects_body: wp.array2d(dtype=int),
@@ -1322,11 +1321,11 @@ def _efc_contact_jac_tiled(tile_size: int, cone_type: types.ConeType):
     worldid, dof_block_id, tid = wp.tid()
 
     dof_start = dof_block_id * TILE_SIZE
-    dof_end = wp.min(dof_start + TILE_SIZE, nv)
     if dof_start >= nv_padded:
       return
 
     cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
 
     efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid]
     efcid_end = wp.min(nefc_in[worldid], njmax_in)
@@ -1385,12 +1384,11 @@ def _efc_contact_jac_tiled(tile_size: int, cone_type: types.ConeType):
         frame_row = frame_in[conid, frame_idx]
 
         if dimid < 3:
-          J = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
+          J_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
         else:
-          J = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
+          J_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
       else:
-        J = Ji_0p_tile
-
+        J_tile = Ji_0p_tile
         if condim > 1:
           dimid = efcid - base_efcid
           dimid2 = dimid / 2 + 1
@@ -1398,25 +1396,19 @@ def _efc_contact_jac_tiled(tile_size: int, cone_type: types.ConeType):
           frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
 
           if dimid2 == 1:
-            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
+            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
           elif dimid2 == 2:
-            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
+            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
           elif dimid2 == 3:
-            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
+            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
           elif dimid2 == 4:
-            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
+            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
           else:
-            J = wp.tile_map(wp.add, J, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
+            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
-      wp.tile_store(efc_J_out[worldid, efcid], J, offset=dof_start, bounds_check=True)
+      wp.tile_store(efc_J_out[worldid, efcid], J_tile, offset=dof_start, bounds_check=True)
 
-      Jqvel = float(0.0)
-      # This loop has two functions, to no write outside the tile size,
-      # and to work on CPU where block_dim is equal to 1
-      for dofid in range(dof_start + tid, dof_end, wp.block_dim()):
-        Jqvel += efc_J_out[worldid, efcid, dofid] * qvel_in[worldid, dofid]
-
-      Jqvel_tile = wp.tile(Jqvel)
+      Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_tile = wp.tile_reduce(wp.add, Jqvel_tile)
       if tid == 0:
         wp.atomic_add(efc_Jqvel_out, worldid, efcid, Jqvel_tile[0])
@@ -1980,7 +1972,6 @@ def make_constraint(m: types.Model, d: types.Data):
           _efc_contact_jac_tiled(tile_size, m.opt.cone),
           dim=(d.nworld, n_dof_blocks),
           inputs=[
-            m.nv,
             m.body_rootid,
             m.geom_bodyid,
             m.dof_affects_body,
