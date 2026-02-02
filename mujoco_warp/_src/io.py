@@ -17,7 +17,7 @@ import dataclasses
 import importlib.metadata
 import re
 import warnings
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Sequence
 
 import mujoco
 import numpy as np
@@ -46,7 +46,7 @@ def _is_mujoco_dev() -> bool:
 BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
 
 
-def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> Union[wp.array, None]:
+def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
   """Creates a warp array and populates it with data.
 
   The array shape is determined by a field spec referencing MjModel / MjData array sizes.
@@ -398,18 +398,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
   )
 
-  # compute nmaxpolygon and nmaxmeshdeg given the geom pairs for the model
-  nboxbox = m.geom_pair_type_count[geom_trid_index(types.GeomType.BOX, types.GeomType.BOX)]
-  nboxmesh = m.geom_pair_type_count[geom_trid_index(types.GeomType.BOX, types.GeomType.MESH)]
-  nmeshmesh = m.geom_pair_type_count[geom_trid_index(types.GeomType.MESH, types.GeomType.MESH)]
-  # need at least 4 (square sides) if there's a box collision needing multiccd
-  m.nmaxpolygon = 4 * (nboxbox + nboxmesh > 0)
-  m.nmaxmeshdeg = 3 * (nboxbox + nboxmesh > 0)
-  # possibly need to allocate more memory if there's meshes
-  if nmeshmesh + nboxmesh > 0:
-    # TODO(kbayes): remove nboxbox or enable ccd for box-box collisions
-    m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, m.nmaxpolygon).max()
-    m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, m.nmaxmeshdeg).max()
+  m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, 0).max()
+  m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, 0).max()
 
   # filter plugins for only geom plugins, drop the rest
   m.plugin, m.plugin_attr = [], []
@@ -595,18 +585,44 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_fullm_j.append(j)
       j = mjm.dof_parentid[j]
 
-  # indices for sparse qM mul_m (used in support)
-  m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij = [], [], []
+  # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
+  row_elements = [[] for _ in range(mjm.nv)]
+
+  # Add diagonal
+  for i in range(mjm.nv):
+    row_elements[i].append((i, mjm.dof_Madr[i]))
+
+  # Add off-diagonals: ancestors (lower) and descendants (upper)
   for i in range(mjm.nv):
     madr_ij, j = mjm.dof_Madr[i], i
-
     while True:
       madr_ij, j = madr_ij + 1, mjm.dof_parentid[j]
       if j == -1:
         break
-      m.qM_mulm_i.append(i)
-      m.qM_mulm_j.append(j)
-      m.qM_madr_ij.append(madr_ij)
+      row_elements[i].append((j, madr_ij))  # row i gathers M[i,j] * vec[j]
+      row_elements[j].append((i, madr_ij))  # row j gathers M[j,i] * vec[i]
+
+  # Flatten into CSR-like arrays
+  m.qM_mulm_rowadr = [0]
+  m.qM_mulm_col = []
+  m.qM_mulm_madr = []
+  for i in range(mjm.nv):
+    for col, madr in row_elements[i]:
+      m.qM_mulm_col.append(col)
+      m.qM_mulm_madr.append(madr)
+    m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
+
+  # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+  if BLEEDING_EDGE_MUJOCO:
+    m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
+    m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
+    m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
+  else:
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m.flexedge_J_rownnz = mjd.flexedge_J_rownnz
+    m.flexedge_J_rowadr = mjd.flexedge_J_rowadr
+    m.flexedge_J_colind = mjd.flexedge_J_colind.reshape(-1)
 
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
@@ -743,6 +759,8 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
+    # flexedge
+    "flexedge_J": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -757,6 +775,8 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  d.flexedge_J = wp.zeros((nworld, 1, mjd.flexedge_J.size), dtype=float)
 
   return d
 
@@ -892,11 +912,6 @@ def put_data(
     "actuator_moment": None,
     "flexedge_J": None,
     "nacon": None,
-    "ne_connect": None,
-    "ne_weld": None,
-    "ne_jnt": None,
-    "ne_ten": None,
-    "ne_flex": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -922,6 +937,8 @@ def put_data(
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
+  d.flexedge_J = wp.array(np.tile(mjd.flexedge_J.reshape(-1), (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
+
   if mujoco.mj_isSparse(mjm):
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
     mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
@@ -930,31 +947,12 @@ def put_data(
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
     d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
 
-  flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-  if mjd.flexedge_J.size:
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      mujoco.mju_sparse2dense(
-        flexedge_J, mjd.flexedge_J.reshape(-1), mjm.flexedge_J_rownnz, mjm.flexedge_J_rowadr, mjm.flexedge_J_colind.reshape(-1)
-      )
-    else:
-      mujoco.mju_sparse2dense(
-        flexedge_J, mjd.flexedge_J.reshape(-1), mjd.flexedge_J_rownnz, mjd.flexedge_J_rowadr, mjd.flexedge_J_colind.reshape(-1)
-      )
-  d.flexedge_J = wp.array(np.full((nworld, mjm.nflexedge, mjm.nv), flexedge_J), dtype=float)
-
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
   mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
   d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
-
-  d.ne_connect = wp.full(nworld, 3 * int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_CONNECT) & mjd.eq_active)), dtype=int)
-  d.ne_weld = wp.full(nworld, 6 * int(np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_WELD) & mjd.eq_active)), dtype=int)
-  d.ne_jnt = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_JOINT) & mjd.eq_active), dtype=int)
-  d.ne_ten = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_TENDON) & mjd.eq_active), dtype=int)
-  d.ne_flex = wp.full(nworld, np.sum((mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX) & mjd.eq_active), dtype=int)
 
   return d
 
@@ -1055,25 +1053,13 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
-  flexedge_J = d.flexedge_J.numpy()[world_id]
-  if result.flexedge_J.size:
+  if mjm.nflexedge > 0:
+    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      mujoco.mju_dense2sparse(
-        result.flexedge_J.reshape(-1),
-        flexedge_J,
-        mjm.flexedge_J_rownnz,
-        mjm.flexedge_J_rowadr,
-        mjm.flexedge_J_colind.reshape(-1),
-      )
-    else:
-      mujoco.mju_dense2sparse(
-        result.flexedge_J.reshape(-1),
-        flexedge_J,
-        result.flexedge_J_rownnz,
-        result.flexedge_J_rowadr,
-        result.flexedge_J_colind.reshape(-1),
-      )
+    if not BLEEDING_EDGE_MUJOCO:
+      result.flexedge_J_rownnz[:] = d.flexedge_J_rownnz.numpy()[world_id]
+      result.flexedge_J_rowadr[:] = d.flexedge_J_rowadr.numpy()[world_id]
+      result.flexedge_J_colind[:] = d.flexedge_J_colind.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -1228,11 +1214,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     act_dot_out: wp.array2d(dtype=float),
     sensordata_out: wp.array2d(dtype=float),
     nacon_out: wp.array(dtype=int),
-    ne_connect_out: wp.array(dtype=int),
-    ne_weld_out: wp.array(dtype=int),
-    ne_jnt_out: wp.array(dtype=int),
-    ne_ten_out: wp.array(dtype=int),
-    ne_flex_out: wp.array(dtype=int),
   ):
     worldid = wp.tid()
 
@@ -1244,11 +1225,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     if worldid == 0:
       nacon_out[0] = 0
     ne_out[worldid] = 0
-    ne_connect_out[worldid] = 0
-    ne_weld_out[worldid] = 0
-    ne_jnt_out[worldid] = 0
-    ne_ten_out[worldid] = 0
-    ne_flex_out[worldid] = 0
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
@@ -1410,11 +1386,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.act_dot,
       d.sensordata,
       d.nacon,
-      d.ne_connect,
-      d.ne_weld,
-      d.ne_jnt,
-      d.ne_ten,
-      d.ne_flex,
     ],
   )
 
@@ -1976,7 +1947,7 @@ def set_const(m: types.Model, d: types.Data):
   set_const_0(m, d)
 
 
-def override_model(model: Union[types.Model, mujoco.MjModel], overrides: Union[dict[str, Any], Sequence[str]]):
+def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any] | Sequence[str]):
   """Overrides model parameters.
 
   Overrides are of the format:

@@ -311,11 +311,6 @@ class SmoothTest(parameterized.TestCase):
 
     d.cfrc_ext.zero_()
 
-    # clear equality constraint counts
-    d.ne_connect.zero_()
-    d.ne_weld.zero_()
-    d.ne_jnt.zero_()
-
     mjw.rne_postconstraint(m, d)
 
     _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (contact)")
@@ -481,6 +476,8 @@ class SmoothTest(parameterized.TestCase):
 
   def test_flex(self):
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
+    assert m.opt.is_sparse
+
     d.flexvert_xpos.fill_(wp.inf)
     d.flexedge_length.fill_(wp.inf)
     d.flexedge_velocity.fill_(wp.inf)
@@ -493,32 +490,35 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_comPos(mjm, mjd)
     mujoco.mj_flex(mjm, mjd)
 
-    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
-
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
     from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
 
     if BLEEDING_EDGE_MUJOCO:
-      mujoco.mju_sparse2dense(
-        flexedge_J,
-        mjd.flexedge_J.reshape(-1),
-        mjm.flexedge_J_rownnz,
-        mjm.flexedge_J_rowadr,
-        mjm.flexedge_J_colind.reshape(-1),
-      )
+      rownnz = mjm.flexedge_J_rownnz
+      rowadr = mjm.flexedge_J_rowadr
+      colind = mjm.flexedge_J_colind.reshape(-1)
     else:
-      mujoco.mju_sparse2dense(
-        flexedge_J,
-        mjd.flexedge_J.reshape(-1),
-        mjd.flexedge_J_rownnz,
-        mjd.flexedge_J_rowadr,
-        mjd.flexedge_J_colind.reshape(-1),
-      )
+      rownnz = mjd.flexedge_J_rownnz
+      rowadr = mjd.flexedge_J_rowadr
+      colind = mjd.flexedge_J_colind.reshape(-1)
+
+    mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)
 
     _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
     _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
     _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
-    _assert_eq(d.flexedge_J.numpy()[0], flexedge_J, "flexedge_J")
+
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+    mujoco.mju_sparse2dense(
+      flexedge_J,
+      d.flexedge_J.numpy()[0, 0].reshape(-1),
+      m.flexedge_J_rownnz.numpy(),
+      m.flexedge_J_rowadr.numpy(),
+      m.flexedge_J_colind.numpy(),
+    )
+
+    _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
 
 
 if __name__ == "__main__":

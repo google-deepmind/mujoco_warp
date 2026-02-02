@@ -88,6 +88,9 @@ jobs:
       - name: Test with pytest
         run: |
           pytest -n 2
+      - name: Out-of-bounds check for batched model fields
+        run: |
+          pytest -k io_test --debug_mode
 
   kernel_analyzer:
     name: Kernel analyzer
