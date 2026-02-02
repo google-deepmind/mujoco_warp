@@ -493,7 +493,7 @@ def render(m: Model, d: Data, rc: RenderContext):
 
     # TODO: Making this static can cause errors for downstream
     # if domain randomization is enabled after an initial compilation
-    if rc.ray is None:
+    if ray.shape[0] == 0:
       img_w = cam_res[cam_idx][0]
       img_h = cam_res[cam_idx][1]
       px = ray_idx_local % img_w
