@@ -459,7 +459,7 @@ def linesearch_parallel_best_alpha(
     return
 
   bestid = int(0)
-  best_cost = float(wp.inf)
+  best_cost = float(types.MJ_MAXVAL)
   for i in range(opt_ls_iterations):
     cost = cost_in[worldid, i]
     if cost < best_cost:
@@ -1654,7 +1654,7 @@ def solve_init_efc(
   ctx_done_out: wp.array(dtype=bool),
 ):
   worldid = wp.tid()
-  ctx_cost_out[worldid] = wp.inf
+  ctx_cost_out[worldid] = types.MJ_MAXVAL
   solver_niter_out[worldid] = 0
   ctx_done_out[worldid] = False
   ctx_search_dot_out[worldid] = 0.0
