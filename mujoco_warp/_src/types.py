@@ -167,7 +167,8 @@ class DisableBit(enum.IntFlag):
   REFSAFE = mujoco.mjtDisableBit.mjDSBL_REFSAFE
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-  # unsupported: MIDPHASE, AUTORESET, NATIVECCD, ISLAND
+  NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+  # unsupported: MIDPHASE, AUTORESET, ISLAND
 
 
 class EnableBit(enum.IntFlag):
@@ -358,6 +359,20 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
+
+
+class CollisionType(enum.IntEnum):
+  """Type of narrowphase collision.
+
+  Attributes:
+    PRIMITIVE: primitive collision
+    CONVEX: convex collision (CCD)
+    SDF: sdf collision
+  """
+
+  PRIMITIVE = 0
+  CONVEX = 1
+  SDF = 2
 
 
 class SolverType(enum.IntEnum):
@@ -790,6 +805,7 @@ class Model:
     nbody: number of bodies
     noct: number of total octree cells in all meshes
     njnt: number of joints
+    ntree: number of kinematic trees
     nM: number of non-zeros in sparse inertia matrix
     nC: number of non-zeros in sparse body-dof matrix
     ngeom: number of geoms
@@ -835,6 +851,7 @@ class Model:
     body_jntadr: start addr of joints; -1: no joints         (nbody,)
     body_dofnum: number of motion degrees of freedom         (nbody,)
     body_dofadr: start addr of dofs; -1: no dofs             (nbody,)
+    body_treeid: id of body's tree; -1: static               (nbody,)
     body_geomnum: number of geoms                            (nbody,)
     body_geomadr: start addr of geoms; -1: no geoms          (nbody,)
     body_pos: position offset rel. to parent body            (*, nbody, 3)
@@ -869,6 +886,7 @@ class Model:
     dof_bodyid: id of dof's body                             (nv,)
     dof_jntid: id of dof's joint                             (nv,)
     dof_parentid: id of dof's parent; -1: none               (nv,)
+    dof_treeid: id of dof's tree                             (nv,)
     dof_Madr: dof address in M-diagonal                      (nv,)
     dof_solref: constraint solver reference: frictionloss    (*, nv, NREF)
     dof_solimp: constraint solver impedance: frictionloss    (*, nv, NIMP)
@@ -877,6 +895,9 @@ class Model:
     dof_damping: damping coefficient                         (*, nv)
     dof_invweight0: diag. inverse inertia in qpos0           (*, nv)
     dof_length: dof length for weighting velocity norm       (nv,)
+    tree_bodynum: number of bodies in tree (incl. root)      (ntree,)
+    tree_dofadr: start address of tree's dofs                (ntree,)
+    tree_dofnum: number of dofs in tree                      (ntree,)
     tree_sleep_policy: tree sleep policy (SleepPolicy)       (ntree,)
     geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
@@ -946,6 +967,9 @@ class Model:
     flex_stiffness: finite element stiffness matrix          (nflexelem, 21)
     flex_bending: bending stiffness                          (nflexedge, 17)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
+    flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
+    flexedge_J_rowadr: row start address in colind array     (nflexedge,)
+    flexedge_J_colind: column indices in sparse Jacobian     (nJfe,)
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_faceadr: first face address                         (nmesh,)
@@ -1131,9 +1155,9 @@ class Model:
     qLD_updates: tuple of index triples for sparse factorization
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
-    qM_mulm_i: sparse matmul addressing
-    qM_mulm_j: sparse matmul addressing
-    qM_madr_ij: sparse matmul addressing
+    qM_mulm_rowadr: sparse matmul row pointers
+    qM_mulm_col: sparse matmul column indices
+    qM_mulm_madr: sparse matmul matrix addresses
   """
 
   nq: int
@@ -1143,6 +1167,7 @@ class Model:
   nbody: int
   noct: int
   njnt: int
+  ntree: int
   nM: int
   nC: int
   ngeom: int
@@ -1188,6 +1213,7 @@ class Model:
   body_jntadr: array("nbody", int)
   body_dofnum: array("nbody", int)
   body_dofadr: array("nbody", int)
+  body_treeid: array("nbody", int)
   body_geomnum: array("nbody", int)
   body_geomadr: array("nbody", int)
   body_pos: array("*", "nbody", wp.vec3)
@@ -1222,6 +1248,7 @@ class Model:
   dof_bodyid: array("nv", int)
   dof_jntid: array("nv", int)
   dof_parentid: array("nv", int)
+  dof_treeid: array("nv", int)
   dof_Madr: array("nv", int)
   dof_solref: array("*", "nv", wp.vec2)
   dof_solimp: array("*", "nv", vec5)
@@ -1230,6 +1257,9 @@ class Model:
   dof_damping: array("*", "nv", float)
   dof_invweight0: array("*", "nv", float)
   dof_length: array("nv", float)
+  tree_bodynum: array("ntree", int)
+  tree_dofadr: array("ntree", int)
+  tree_dofnum: array("ntree", int)
   tree_sleep_policy: array("ntree", int)
   geom_type: array("ngeom", int)
   geom_contype: array("ngeom", int)
@@ -1299,6 +1329,9 @@ class Model:
   flex_stiffness: array("nflexelem", 21, float)
   flex_bending: array("nflexedge", 17, float)
   flex_damping: array("nflex", float)
+  flexedge_J_rownnz: array("nflexedge", int)
+  flexedge_J_rowadr: array("nflexedge", int)
+  flexedge_J_colind: wp.array(dtype=int)
   mesh_vertadr: array("nmesh", int)
   mesh_vertnum: array("nmesh", int)
   mesh_faceadr: array("nmesh", int)
@@ -1473,9 +1506,10 @@ class Model:
   qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]
   qM_fullm_i: wp.array(dtype=int)
   qM_fullm_j: wp.array(dtype=int)
-  qM_mulm_i: wp.array(dtype=int)
-  qM_mulm_j: wp.array(dtype=int)
-  qM_madr_ij: wp.array(dtype=int)
+  # Gather-based sparse mul_m indices (thread per DOF, no atomics)
+  qM_mulm_rowadr: wp.array(dtype=int)  # start address for each row [nv+1]
+  qM_mulm_col: wp.array(dtype=int)  # column index to gather from
+  qM_mulm_madr: wp.array(dtype=int)  # matrix address to read
 
 
 class ContactType(enum.IntFlag):
@@ -1543,26 +1577,9 @@ class Constraint:
     aref: reference pseudo-acceleration               (nworld, njmax)
     frictionloss: frictionloss (friction)             (nworld, njmax)
     force: constraint force in constraint space       (nworld, njmax)
-    Jaref: Jac*qacc - aref                            (nworld, njmax)
-    Ma: M*qacc                                        (nworld, nv)
-    grad: gradient of master cost                     (nworld, nv_pad)
-    grad_dot: dot(grad, grad)                         (nworld,)
-    Mgrad: M / grad                                   (nworld, nv_pad)
-    search: linesearch vector                         (nworld, nv)
-    search_dot: dot(search, search)                   (nworld,)
-    gauss: Gauss Cost                                 (nworld,)
-    cost: constraint + Gauss cost                     (nworld,)
-    prev_cost: cost from previous iter                (nworld,)
     state: constraint state                           (nworld, njmax_pad)
-    mv: qM @ search                                   (nworld, nv)
-    jv: efc_J @ search                                (nworld, njmax)
-    quad: quadratic cost coefficients                 (nworld, njmax, 3)
-    quad_gauss: quadratic cost Gauss coefficients     (nworld, 3)
-    alpha: line search step size                      (nworld,)
-    prev_grad: previous grad                          (nworld, nv)
-    prev_Mgrad: previous Mgrad                        (nworld, nv)
-    beta: Polak-Ribiere beta                          (nworld,)
-    done: solver done                                 (nworld,)
+  warp only fields:
+    Ma: M*qacc                                        (nworld, nv)
   """
 
   type: array("nworld", "njmax", int)
@@ -1575,26 +1592,8 @@ class Constraint:
   aref: array("nworld", "njmax", float)
   frictionloss: array("nworld", "njmax", float)
   force: array("nworld", "njmax", float)
-  Jaref: array("nworld", "njmax", float)
-  Ma: array("nworld", "nv", float)
-  grad: array("nworld", "nv_pad", float)
-  grad_dot: array("nworld", float)
-  Mgrad: array("nworld", "nv_pad", float)
-  search: array("nworld", "nv", float)
-  search_dot: array("nworld", float)
-  gauss: array("nworld", float)
-  cost: array("nworld", float)
-  prev_cost: array("nworld", float)
   state: array("nworld", "njmax_pad", int)
-  mv: array("nworld", "nv", float)
-  jv: array("nworld", "njmax", float)
-  quad: array("nworld", "njmax", wp.vec3)  # parallel, or iterative+elliptic
-  quad_gauss: array("nworld", wp.vec3)  # parallel linesearch only
-  alpha: array("nworld", float)  # parallel linesearch only
-  prev_grad: array("nworld", "nv", float)
-  prev_Mgrad: array("nworld", "nv", float)
-  beta: array("nworld", float)
-  done: array("nworld", bool)
+  Ma: array("nworld", "nv", float)
 
 
 @dataclasses.dataclass
@@ -1645,7 +1644,7 @@ class Data:
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
-    flexedge_J: edge length Jacobian                            (nworld, nflexedge, nv)
+    flexedge_J: edge length Jacobian                            (nworld, 1, nflexedge*6)
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
@@ -1697,11 +1696,6 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     njmax: maximum number of constraints per world
     nacon: number of detected contacts (across all worlds)      (1,)
-    ne_connect: number of equality connect constraints          (nworld,)
-    ne_weld: number of equality weld constraints                (nworld,)
-    ne_jnt: number of equality joint constraints                (nworld,)
-    ne_ten: number of equality tendon constraints               (nworld,)
-    ne_flex: number of flex edge equality constraints           (nworld,)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
@@ -1751,7 +1745,7 @@ class Data:
   cdof: array("nworld", "nv", wp.spatial_vector)
   cinert: array("nworld", "nbody", vec10)
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
-  flexedge_J: array("nworld", "nflexedge", "nv", float)
+  flexedge_J: wp.array3d(dtype=float)
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
@@ -1799,11 +1793,6 @@ class Data:
   naconmax: int
   njmax: int
   nacon: array(1, int)
-  ne_connect: array("nworld", int)
-  ne_weld: array("nworld", int)
-  ne_jnt: array("nworld", int)
-  ne_ten: array("nworld", int)
-  ne_flex: array("nworld", int)
 
   # warp only: collision driver
   collision_pair: array("naconmax", wp.vec2i)

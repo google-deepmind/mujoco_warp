@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import math
 from typing import Tuple
 
 import warp as wp
@@ -30,9 +31,8 @@ FLOAT_MAX = 1e30
 MINVAL = 1e-15
 MIN_DIST = 1e-10
 
-# TODO(kbayes): write out formulas to derive these constants
-FACE_TOL = 0.99999872
-EDGE_TOL = 0.00159999931
+FACE_TOL = wp.static(math.cos(0.0016))
+EDGE_TOL = wp.static(math.sin(0.0016))
 
 # tolarance used by multicontact for intersecting a plane and a line segment
 INTERSECT_TOL = 0.0000003
@@ -110,9 +110,9 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     tmp = wp.sign(local_dir)
     res = wp.cw_mul(tmp, geom.size)
     sp.point = geom.rot @ res + geom.pos
-    sp.vertex_index = wp.where(tmp[0] > 0, 1, 0)
-    sp.vertex_index += wp.where(tmp[1] > 0, 2, 0)
-    sp.vertex_index += wp.where(tmp[2] > 0, 4, 0)
+    sp.vertex_index = wp.where(tmp[0] > 0.0, 1, 0)
+    sp.vertex_index += wp.where(tmp[1] > 0.0, 2, 0)
+    sp.vertex_index += wp.where(tmp[2] > 0.0, 4, 0)
   elif geomtype == GeomType.CAPSULE:
     res = local_dir * geom.size[0]
     # add cylinder contribution
@@ -180,7 +180,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     # TODO(kbayes): Support edge prisms
-    sp.vertex_index = wp.where(dir[2] < 0, -2, -3)
+    sp.vertex_index = wp.where(dir[2] < 0.0, -2, -3)
     for i in range(6):
       vert = geom.hfprism[i]
       dist = wp.dot(vert, dir)
@@ -268,9 +268,9 @@ def _det3(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> float:
 
 @wp.func
 def _same_sign(a: float, b: float) -> int:
-  if a > 0 and b > 0:
+  if a > 0.0 and b > 0.0:
     return 1
-  if a < 0 and b < 0:
+  if a < 0.0 and b < 0.0:
     return -1
   return 0
 
@@ -293,28 +293,25 @@ def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> Tuple[wp.vec
   n = wp.cross(diff32, diff21)
   nv = wp.dot(n, v2)
   nn = wp.dot(n, n)
-  if nn == 0:
+  if nn == 0.0:
     return z, 1
-  if nv != 0 and nn > MINVAL:
-    v = (nv / nn) * n
-    return v, 0
+  if nv != 0.0 and nn > MINVAL:
+    return (nv / nn) * n, 0
 
   # n = (v2 - v1) x (v3 - v1)
   n = wp.cross(diff21, diff31)
   nv = wp.dot(n, v1)
   nn = wp.dot(n, n)
-  if nn == 0:
+  if nn == 0.0:
     return z, 1
-  if nv != 0 and nn > MINVAL:
-    v = (nv / nn) * n
-    return v, 0
+  if nv != 0.0 and nn > MINVAL:
+    return (nv / nn) * n, 0
 
   # n = (v1 - v3) x (v2 - v3)
   n = wp.cross(diff31, diff32)
   nv = wp.dot(n, v3)
   nn = wp.dot(n, n)
-  v = (nv / nn) * n
-  return v, 0
+  return (nv / nn) * n, 0
 
 
 @wp.func
@@ -613,14 +610,14 @@ def gjk(
     simplex[n] = simplex1[n] - simplex2[n]
 
     if cutoff == 0.0:
-      if wp.dot(x_k, simplex[n]) > 0:
+      if wp.dot(x_k, simplex[n]) > 0.0:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      if wp.dot(x_k, simplex[n]) > 0 and (vs * vs / xnorm) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
@@ -638,7 +635,7 @@ def gjk(
     # remove vertices from the simplex no longer needed
     n = int(0)
     for i in range(4):
-      if coordinates[i] == 0:
+      if coordinates[i] == 0.0:
         continue
 
       simplex[n] = simplex[i]
@@ -695,7 +692,7 @@ def _same_side(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3) -> bool:
   n = wp.cross(p1 - p0, p2 - p0)
   dot1 = wp.dot(n, p3 - p0)
   dot2 = wp.dot(n, -p0)
-  return (dot1 > 0 and dot2 > 0) or (dot1 < 0 and dot2 < 0)
+  return (dot1 > 0.0 and dot2 > 0.0) or (dot1 < 0.0 and dot2 < 0.0)
 
 
 @wp.func
@@ -753,7 +750,7 @@ def _tri_point_intersect(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> b
   l2 = coordinates[1]
   l3 = coordinates[2]
 
-  if l1 < 0 or l2 < 0 or l3 < 0:
+  if l1 < 0.0 or l2 < 0.0 or l3 < 0.0:
     return False
 
   pr = wp.vec3()
@@ -830,9 +827,9 @@ def _ray_triangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec
   vol2 = _det3(v4 - v1, v5 - v1, v2 - v1)
   vol3 = _det3(v5 - v1, v3 - v1, v2 - v1)
 
-  if vol1 >= 0 and vol2 >= 0 and vol3 >= 0:
+  if vol1 >= 0.0 and vol2 >= 0.0 and vol3 >= 0.0:
     return 1
-  if vol1 <= 0 and vol2 <= 0 and vol3 <= 0:
+  if vol1 <= 0.0 and vol2 <= 0.0 and vol3 <= 0.0:
     return -1
   return 0
 
@@ -917,7 +914,7 @@ def _epa_witness(
       x2 = sp.point
 
     coordinates2 = _tri_affine_coord(a, b, c, x2)
-    if coordinates2[0] > 0 and coordinates2[1] > 0 and coordinates2[2] > 0:
+    if coordinates2[0] > 0.0 and coordinates2[1] > 0.0 and coordinates2[2] > 0.0:
       x1 = coordinates2[0] * a + coordinates2[1] * b + coordinates2[2] * c
     else:
       p = c
@@ -1252,7 +1249,7 @@ def _epa(
       break
 
     # check if lower bound is 0
-    if lower2 <= 0:
+    if lower2 <= 0.0:
       break
 
     # compute support point w from the closest face's normal
@@ -1316,7 +1313,7 @@ def _epa(
     for i in range(pt.nhorizon):
       edge = _get_edge(pt.horizon[i])
       dist2 = _attach_face(pt, pt.nface, wi, edge[0], edge[1])
-      if dist2 == 0:
+      if dist2 == 0.0:
         idx = -1
         break
 
@@ -2194,12 +2191,12 @@ def _inflate(
       c = geom1.hfprism[5]
 
       coordinates = _tri_affine_coord(a, b, c, x2)
-      if coordinates[0] > 0 and coordinates[1] > 0 and coordinates[2] > 0:
+      if coordinates[0] > 0.0 and coordinates[1] > 0.0 and coordinates[2] > 0.0:
         x1 = coordinates[0] * a + coordinates[1] * b + coordinates[2] * c
       else:
         p = c
-        p = wp.where(coordinates[1] > 0, b, p)
-        p = wp.where(coordinates[0] > 0, a, p)
+        p = wp.where(coordinates[1] > 0.0, b, p)
+        p = wp.where(coordinates[0] > 0.0, a, p)
         x1 = x2 - wp.dot(x2 - p, n) * n
       dist = -wp.norm_l2(x1 - x2)
       return dist, x1, x2
@@ -2355,4 +2352,13 @@ def ccd(
   dist, x1, x2, idx = _epa(tolerance, gjk_iterations, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
+
+  # multicontact not supported for margin
+  if geom1.margin != 0.0 or geom2.margin != 0.0:
+    idx = -1
+
+  # multicontact only supported for boxes and meshes
+  if (geomtype1 != GeomType.BOX and geomtype1 != GeomType.MESH) or (geomtype2 != GeomType.BOX and geomtype2 != GeomType.MESH):
+    idx = -1
+
   return dist, 1, x1, x2, idx

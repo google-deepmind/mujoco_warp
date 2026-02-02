@@ -122,7 +122,7 @@ for commit in $COMMITS; do
         [[ "$NAME" =~ ^#.*$ || -z "$NAME" ]] && continue
         
         log "Running benchmark: $NAME"
-        
+
         # Build command arguments for mjwarp-testspeed
         CMD=(
             "mjwarp-testspeed"
@@ -130,7 +130,7 @@ for commit in $COMMITS; do
             "--nworld=$NWORLD"
             "--nconmax=$NCONMAX"
             "--njmax=$NJMAX"
-            "--clear_kernel_cache=false"
+            "--clear_warp_cache=true"
             "--format=json"
             "--event_trace=true"
             "--memory=true"
@@ -143,10 +143,12 @@ for commit in $COMMITS; do
         # Run benchmark using uv run (handles venv and dependencies automatically)
         # --prerelease=allow: accept dev/nightly builds
         # --upgrade: always get the latest versions
-        BENCHMARK_JSON=$(UV_NO_CONFIG=1 uv run --prerelease=allow --upgrade "${CMD[@]}")
-        
+        log "Command: UV_NO_CONFIG=1 uv run ${CMD[*]}"
+        BENCHMARK_JSON=$(UV_NO_CONFIG=1 uv run "${CMD[@]}")
+
         # Convert multi-line JSON to single line and add commit metadata
-        RESULT=$(echo "$BENCHMARK_JSON" | python3 -c "
+        # Use tail -n 1 to ignore any log spam before the JSON output
+        RESULT=$(echo "$BENCHMARK_JSON" | tail -n 1 | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 data['commit'] = '$commit'
