@@ -491,7 +491,9 @@ def render(m: Model, d: Data, rc: RenderContext):
     # Map active camera index to MuJoCo camera ID
     mujoco_cam_id = cam_id_map[cam_idx]
 
-    if wp.static(rc.ray is None):
+    # TODO: Making this static can cause errors for downstream
+    # if domain randomization is enabled after an initial compilation
+    if rc.ray is None:
       img_w = cam_res[cam_idx][0]
       img_h = cam_res[cam_idx][1]
       px = ray_idx_local % img_w
