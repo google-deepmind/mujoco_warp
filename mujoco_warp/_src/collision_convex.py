@@ -796,10 +796,6 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-    # collision sensors always evaluate all collisions
-    if is_collision_sensor:
-      ncollision = 4
-
     for i in range(ncollision):
       points[i] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]
