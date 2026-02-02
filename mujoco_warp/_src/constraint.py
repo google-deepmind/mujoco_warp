@@ -58,14 +58,6 @@ def _zero_constraint_counts(
 
 
 @wp.func
-def _active_check(tid: int, threshold: int) -> float:
-  """Return 1.0 if tid < threshold, else 0.0. Used to mask partial tiles."""
-  if tid >= threshold:
-    return 0.0
-  return 1.0
-
-
-@wp.func
 def _update_efc_row(
   # In:
   worldid: int,
