@@ -414,9 +414,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
 
-  # TODO: Adding "unique" causes kernel re-compilation issues, need to investigate
-  # and fix it.
-  @nested_kernel(enable_backward="False")
+  @wp.kernel(module="unique", enable_backward=False)
   def _render_megakernel(
     # Model:
     geom_type: wp.array(dtype=int),
