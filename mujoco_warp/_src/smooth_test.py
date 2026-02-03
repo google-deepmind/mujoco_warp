@@ -476,7 +476,7 @@ class SmoothTest(parameterized.TestCase):
 
   def test_flex(self):
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
-    assert m.opt.is_sparse
+    self.assertTrue(m.is_sparse)
 
     d.flexvert_xpos.fill_(wp.inf)
     d.flexedge_length.fill_(wp.inf)

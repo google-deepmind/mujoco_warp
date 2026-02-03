@@ -284,6 +284,7 @@ def _main(argv: Sequence[str]):
       compute_cache.mkdir()
 
   with wp.ScopedDevice(_DEVICE.value):
+    override_model(mjm, _OVERRIDE.value)
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
@@ -372,9 +373,9 @@ def _main(argv: Sequence[str]):
           f"  disableflags: [{disableflags_str}]\n"
           f"  enableflags: [{enableflags_str}]\n"
           f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
-          f"  is_sparse: {m.opt.is_sparse}\n"
+          f"  is_sparse: {m.is_sparse}\n"
           f"  ls_parallel: {m.opt.ls_parallel} ls_parallel_min_step: {m.opt.ls_parallel_min_step:g}\n"
-          f"  has_fluid: {m.opt.has_fluid}\n"
+          f"  has_fluid: {m.has_fluid}\n"
           f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
           f"  graph_conditional: {m.opt.graph_conditional}\n"
           f"  run_collision_detection: {m.opt.run_collision_detection}\n"
@@ -386,7 +387,7 @@ def _main(argv: Sequence[str]):
           f"  integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
           f"  cone: {mjw.ConeType(m.opt.cone).name}\n"
           f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations}\n"
-          f"  is_sparse: {m.opt.is_sparse}\n"
+          f"  is_sparse: {m.is_sparse}\n"
           f"  ls_parallel: {m.opt.ls_parallel}\n"
           f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
         )
