@@ -29,9 +29,9 @@ def _find_tree_edges(
   efc_id_in: wp.array2d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   njmax_in: int,
-  # Out:
-  edges_out: wp.array2d(dtype=int),
-  nedge_out: wp.array(dtype=int),
+  # Out (per-world):
+  edges_out: wp.array3d(dtype=int),  # (nworld, njmax, 2)
+  nedge_out: wp.array(dtype=int),  # (nworld,)
 ):
   worldid, efcid = wp.tid()
 
@@ -62,58 +62,58 @@ def _find_tree_edges(
       elif tree != prev_tree and tree >= 0:
         # found a new tree, add edge between prev_tree and tree
         if prev_tree >= 0:
-          idx = wp.atomic_add(nedge_out, 0, 1)
+          idx = wp.atomic_add(nedge_out, worldid, 1)
           if idx < njmax_in:
             # store as ordered pair for deduplication
             t1 = wp.min(prev_tree, tree)
             t2 = wp.max(prev_tree, tree)
-            edges_out[idx, 0] = t1
-            edges_out[idx, 1] = t2
+            edges_out[worldid, idx, 0] = t1
+            edges_out[worldid, idx, 1] = t2
         prev_tree = tree
 
   # add self-edge if only one tree found (constrained to itself)
   if first_tree >= 0 and prev_tree == first_tree:
-    idx = wp.atomic_add(nedge_out, 0, 1)
+    idx = wp.atomic_add(nedge_out, worldid, 1)
     if idx < njmax_in:
-      edges_out[idx, 0] = first_tree
-      edges_out[idx, 1] = first_tree
+      edges_out[worldid, idx, 0] = first_tree
+      edges_out[worldid, idx, 1] = first_tree
 
 
 @wp.kernel
 def _compute_keys_and_indices(
   ntree: int,
-  nedge_in: wp.array(dtype=int),
-  edges_in: wp.array2d(dtype=int),
+  nedge_in: wp.array(dtype=int),  # (nworld,)
+  edges_in: wp.array3d(dtype=int),  # (nworld, njmax, 2)
   njmax: int,
-  keys_out: wp.array(dtype=int),
-  indices_out: wp.array(dtype=int),
+  keys_out: wp.array2d(dtype=int),  # (nworld, 2*njmax)
+  indices_out: wp.array2d(dtype=int),  # (nworld, 2*njmax)
 ):
-  """Compute sort keys and initialize indices. Launch: 2 * njmax."""
-  i = wp.tid()
+  """Compute sort keys and initialize indices per world. Launch: (nworld, 2*njmax)."""
+  worldid, i = wp.tid()
 
   # Always init index
-  indices_out[i] = i
+  indices_out[worldid, i] = i
 
   # Only compute keys for first njmax elements
   if i >= njmax:
     return
-  if i >= nedge_in[0]:
-    keys_out[i] = 2147483647  # sort to end
+  if i >= nedge_in[worldid]:
+    keys_out[worldid, i] = 2147483647  # sort to end
   else:
-    keys_out[i] = edges_in[i, 0] * ntree + edges_in[i, 1]
+    keys_out[worldid, i] = edges_in[worldid, i, 0] * ntree + edges_in[worldid, i, 1]
 
 
 @wp.kernel
 def _deduplicate_edges(
-  nedge_in: wp.array(dtype=int),
-  sorted_indices_in: wp.array(dtype=int),
-  edges_in: wp.array2d(dtype=int),
-  edges_out: wp.array2d(dtype=int),
-  nedge_out: wp.array(dtype=int),
+  nedge_in: wp.array(dtype=int),  # (nworld,)
+  sorted_indices_in: wp.array2d(dtype=int),  # (nworld, 2*njmax)
+  edges_in: wp.array3d(dtype=int),  # (nworld, njmax, 2)
+  edges_out: wp.array3d(dtype=int),  # (nworld, njmax, 2)
+  nedge_out: wp.array(dtype=int),  # (nworld,)
 ):
-  """Mark unique and compact in one pass using atomics. Launch: njmax."""
-  i = wp.tid()
-  n = nedge_in[0]
+  """Mark unique and compact in one pass using atomics. Launch: (nworld, njmax)."""
+  worldid, i = wp.tid()
+  n = nedge_in[worldid]
 
   if i >= n:
     return
@@ -123,19 +123,19 @@ def _deduplicate_edges(
   if i == 0:
     is_unique = 1
   else:
-    idx = sorted_indices_in[i]
-    prev_idx = sorted_indices_in[i - 1]
-    if edges_in[idx, 0] != edges_in[prev_idx, 0]:
+    idx = sorted_indices_in[worldid, i]
+    prev_idx = sorted_indices_in[worldid, i - 1]
+    if edges_in[worldid, idx, 0] != edges_in[worldid, prev_idx, 0]:
       is_unique = 1
-    elif edges_in[idx, 1] != edges_in[prev_idx, 1]:
+    elif edges_in[worldid, idx, 1] != edges_in[worldid, prev_idx, 1]:
       is_unique = 1
 
   if is_unique == 1:
     # Atomic add to get output index
-    dst = wp.atomic_add(nedge_out, 0, 1)
-    src = sorted_indices_in[i]
-    edges_out[dst, 0] = edges_in[src, 0]
-    edges_out[dst, 1] = edges_in[src, 1]
+    dst = wp.atomic_add(nedge_out, worldid, 1)
+    src = sorted_indices_in[worldid, i]
+    edges_out[worldid, dst, 0] = edges_in[worldid, src, 0]
+    edges_out[worldid, dst, 1] = edges_in[worldid, src, 1]
 
 
 def find_tree_edges(
@@ -150,14 +150,14 @@ def find_tree_edges(
 
   Returns:
     Tuple of (edges, nedge) arrays on device.
-    edges has shape (njmax, 2) where each row is an ordered (t1, t2) pair.
-    nedge is a (1,) array with the number of unique edges.
+    edges has shape (nworld, njmax, 2) where each row is an ordered (t1, t2) pair.
+    nedge is a (nworld,) array with the number of unique edges per world.
   """
-  # allocate outputs
-  edges = wp.zeros((d.njmax, 2), dtype=int)
-  nedge = wp.zeros(1, dtype=int)
+  # allocate per-world outputs
+  edges = wp.zeros((d.nworld, d.njmax, 2), dtype=int)
+  nedge = wp.zeros(d.nworld, dtype=int)
 
-  # find edges
+  # find edges (per-world)
   wp.launch(
     kernel=_find_tree_edges,
     dim=(d.nworld, d.njmax),
@@ -174,25 +174,29 @@ def find_tree_edges(
     ],
   )
 
-  # compute sort keys and init indices (fused)
-  keys = wp.zeros(2 * d.njmax, dtype=int)
-  sorted_indices = wp.empty(2 * d.njmax, dtype=int)
+  # compute sort keys and init indices (per-world, fused)
+  keys = wp.zeros((d.nworld, 2 * d.njmax), dtype=int)
+  sorted_indices = wp.empty((d.nworld, 2 * d.njmax), dtype=int)
   wp.launch(
     kernel=_compute_keys_and_indices,
-    dim=2 * d.njmax,
+    dim=(d.nworld, 2 * d.njmax),
     inputs=[m.ntree, nedge, edges, d.njmax, keys, sorted_indices],
   )
 
-  # sort by keys using Warp's radix sort
-  wp.utils.radix_sort_pairs(keys, sorted_indices, count=d.njmax)
+  # sort by keys using Warp's radix sort (per-world)
+  # radix_sort_pairs requires 1D arrays, so we need to sort each world separately
+  for w in range(d.nworld):
+    keys_w = keys[w]
+    indices_w = sorted_indices[w]
+    wp.utils.radix_sort_pairs(keys_w, indices_w, count=d.njmax)
   del keys
 
-  # deduplicate edges (fused, no prefix sum)
-  edges_unique = wp.zeros((d.njmax, 2), dtype=int)
-  nedge_unique = wp.zeros(1, dtype=int)
+  # deduplicate edges (per-world, fused, no prefix sum)
+  edges_unique = wp.zeros((d.nworld, d.njmax, 2), dtype=int)
+  nedge_unique = wp.zeros(d.nworld, dtype=int)
   wp.launch(
     kernel=_deduplicate_edges,
-    dim=d.njmax,
+    dim=(d.nworld, d.njmax),
     inputs=[nedge, sorted_indices, edges, edges_unique, nedge_unique],
   )
 
