@@ -80,96 +80,62 @@ def _find_tree_edges(
 
 
 @wp.kernel
-def _compute_edge_keys(
-  # Model:
+def _compute_keys_and_indices(
   ntree: int,
-  # In:
   nedge_in: wp.array(dtype=int),
   edges_in: wp.array2d(dtype=int),
-  # Out:
+  njmax: int,
   keys_out: wp.array(dtype=int),
-):
-  """Compute sort keys for edges: t1 * ntree + t2."""
-  i = wp.tid()
-  if i >= nedge_in[0]:
-    keys_out[i] = 2147483647  # max int, sort to end
-    return
-  keys_out[i] = edges_in[i, 0] * ntree + edges_in[i, 1]
-
-
-@wp.kernel
-def _init_indices(
-  # Out:
   indices_out: wp.array(dtype=int),
 ):
-  """Initialize indices to [0, 1, 2, ...]."""
+  """Compute sort keys and initialize indices. Launch: 2 * njmax."""
   i = wp.tid()
+
+  # Always init index
   indices_out[i] = i
 
-
-@wp.kernel
-def _mark_unique_edges(
-  # In:
-  nedge_in: wp.array(dtype=int),
-  sorted_indices_in: wp.array(dtype=int),
-  edges_in: wp.array2d(dtype=int),
-  # Out:
-  unique_mask_out: wp.array(dtype=int),
-):
-  """Mark unique edges after sorting."""
-  i = wp.tid()
-  n = nedge_in[0]
-  if i >= n:
-    unique_mask_out[i] = 0
+  # Only compute keys for first njmax elements
+  if i >= njmax:
     return
-
-  if i == 0:
-    unique_mask_out[i] = 1
-    return
-
-  idx = sorted_indices_in[i]
-  prev_idx = sorted_indices_in[i - 1]
-
-  # check if different from previous
-  if edges_in[idx, 0] != edges_in[prev_idx, 0] or edges_in[idx, 1] != edges_in[prev_idx, 1]:
-    unique_mask_out[i] = 1
+  if i >= nedge_in[0]:
+    keys_out[i] = 2147483647  # sort to end
   else:
-    unique_mask_out[i] = 0
+    keys_out[i] = edges_in[i, 0] * ntree + edges_in[i, 1]
 
 
 @wp.kernel
-def _compact_edges(
-  # In:
+def _deduplicate_edges(
   nedge_in: wp.array(dtype=int),
   sorted_indices_in: wp.array(dtype=int),
-  unique_prefix_in: wp.array(dtype=int),
-  unique_mask_in: wp.array(dtype=int),
   edges_in: wp.array2d(dtype=int),
-  # Out:
   edges_out: wp.array2d(dtype=int),
   nedge_out: wp.array(dtype=int),
 ):
-  """Compact edges using prefix sum of unique mask."""
+  """Mark unique and compact in one pass using atomics. Launch: njmax."""
   i = wp.tid()
   n = nedge_in[0]
+
   if i >= n:
     return
 
-  if unique_mask_in[i] == 1:
-    # exclusive prefix sum gives destination index
-    dst = unique_prefix_in[i]
+  # Check if this edge is unique (different from previous)
+  is_unique = int(0)
+  if i == 0:
+    is_unique = 1
+  else:
+    idx = sorted_indices_in[i]
+    prev_idx = sorted_indices_in[i - 1]
+    if edges_in[idx, 0] != edges_in[prev_idx, 0]:
+      is_unique = 1
+    elif edges_in[idx, 1] != edges_in[prev_idx, 1]:
+      is_unique = 1
+
+  if is_unique == 1:
+    # Atomic add to get output index
+    dst = wp.atomic_add(nedge_out, 0, 1)
     src = sorted_indices_in[i]
     edges_out[dst, 0] = edges_in[src, 0]
     edges_out[dst, 1] = edges_in[src, 1]
-
-    # last unique element writes the count
-    if i == n - 1 or unique_mask_in[i + 1] == 0:
-      # count is prefix + 1 for this element
-      pass
-
-  # the last thread writes the unique count
-  if i == n - 1:
-    nedge_out[0] = unique_prefix_in[n - 1] + unique_mask_in[n - 1]
 
 
 def find_tree_edges(
@@ -208,52 +174,26 @@ def find_tree_edges(
     ],
   )
 
-  # compute sort keys (need 2x size for radix sort scratch space)
+  # compute sort keys and init indices (fused)
   keys = wp.zeros(2 * d.njmax, dtype=int)
+  sorted_indices = wp.empty(2 * d.njmax, dtype=int)
   wp.launch(
-    kernel=_compute_edge_keys,
-    dim=d.njmax,
-    inputs=[m.ntree, nedge, edges, keys],
+    kernel=_compute_keys_and_indices,
+    dim=2 * d.njmax,
+    inputs=[m.ntree, nedge, edges, d.njmax, keys, sorted_indices],
   )
 
   # sort by keys using Warp's radix sort
-  # radix_sort_pairs sorts (keys, values) pairs - values must be initialized to indices
-  sorted_indices = wp.empty(2 * d.njmax, dtype=int)
-  wp.launch(
-    kernel=_init_indices,
-    dim=2 * d.njmax,
-    inputs=[sorted_indices],
-  )
   wp.utils.radix_sort_pairs(keys, sorted_indices, count=d.njmax)
   del keys
 
-  # mark unique edges
-  unique_mask = wp.zeros(d.njmax, dtype=int)
-  wp.launch(
-    kernel=_mark_unique_edges,
-    dim=d.njmax,
-    inputs=[nedge, sorted_indices, edges, unique_mask],
-  )
-
-  # prefix sum for compaction addresses
-  unique_prefix = wp.zeros(d.njmax, dtype=int)
-  wp.utils.array_scan(unique_mask, unique_prefix, inclusive=False)
-
-  # compact edges
+  # deduplicate edges (fused, no prefix sum)
   edges_unique = wp.zeros((d.njmax, 2), dtype=int)
   nedge_unique = wp.zeros(1, dtype=int)
   wp.launch(
-    kernel=_compact_edges,
+    kernel=_deduplicate_edges,
     dim=d.njmax,
-    inputs=[
-      nedge,
-      sorted_indices,
-      unique_prefix,
-      unique_mask,
-      edges,
-      edges_unique,
-      nedge_unique,
-    ],
+    inputs=[nedge, sorted_indices, edges, edges_unique, nedge_unique],
   )
 
   return edges_unique, nedge_unique
