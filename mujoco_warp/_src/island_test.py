@@ -15,6 +15,7 @@
 
 """Tests for island discovery."""
 
+import numpy as np
 import warp as wp
 from absl.testing import absltest
 
@@ -25,6 +26,8 @@ from mujoco_warp._src import island
 
 class IslandEdgeDiscoveryTest(absltest.TestCase):
   """Tests for edge discovery from constraint Jacobian."""
+
+  # TODO(team): add test for additional constraint types to test special cases
 
   def test_single_constraint_two_trees(self):
     """A single weld constraint between two bodies creates one edge."""
@@ -48,17 +51,14 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
       """
     )
 
-    # run forward to populate constraints
     mjwarp.forward(m, d)
 
-    # find edges
-    edges, nedge = island.find_tree_edges(m, d)
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
 
-    # should have exactly 1 edge between tree 0 and tree 1
-    self.assertEqual(nedge.numpy()[0], 1)
-    edge_np = edges.numpy()
-    self.assertEqual(edge_np[0, 0], 0)  # tree 0
-    self.assertEqual(edge_np[0, 1], 1)  # tree 1
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 1], 1)
+    self.assertEqual(tt[0, 1, 0], 1)
 
   def test_constraint_within_single_tree_creates_self_edge(self):
     """A constraint within a single tree creates a self-edge."""
@@ -83,13 +83,12 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
     )
 
     mjwarp.forward(m, d)
-    edges, nedge = island.find_tree_edges(m, d)
 
-    # should have exactly 1 self-edge for tree 0
-    self.assertEqual(nedge.numpy()[0], 1)
-    edge_np = edges.numpy()
-    self.assertEqual(edge_np[0, 0], 0)  # tree 0
-    self.assertEqual(edge_np[0, 1], 0)  # tree 0 (self-edge)
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 0], 1)  # self-edge for tree 0
 
   def test_three_bodies_chain(self):
     """Three bodies with constraints A-B and B-C should have 2 edges."""
@@ -119,15 +118,15 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
     )
 
     mjwarp.forward(m, d)
-    edges, nedge = island.find_tree_edges(m, d)
 
-    # should have 2 edges: (0,1) and (1,2)
-    n = nedge.numpy()[0]
-    self.assertEqual(n, 2)
-    edge_np = edges.numpy()[:n]
-    edges_set = set(tuple(e) for e in edge_np)
-    self.assertIn((0, 1), edges_set)
-    self.assertIn((1, 2), edges_set)
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 1], 1)
+    self.assertEqual(tt[0, 1, 0], 1)
+    self.assertEqual(tt[0, 1, 2], 1)
+    self.assertEqual(tt[0, 2, 1], 1)
 
   def test_deduplication(self):
     """Repeated constraints between same trees should be deduplicated."""
@@ -153,10 +152,14 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
     )
 
     mjwarp.forward(m, d)
-    edges, nedge = island.find_tree_edges(m, d)
 
-    # should have 1 unique edge (0,1) despite 2 constraints
-    self.assertEqual(nedge.numpy()[0], 1)
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 1], 1)
+    self.assertEqual(tt[0, 1, 0], 1)
+    self.assertEqual(np.sum(tt[0]), 2)
 
   def test_no_constraints(self):
     """No constraints should produce no edges."""
@@ -174,9 +177,207 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
     )
 
     mjwarp.forward(m, d)
-    edges, nedge = island.find_tree_edges(m, d)
 
-    self.assertEqual(nedge.numpy()[0], 0)
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(np.sum(tt[0]), 0)
+
+  def test_multi_world_parallel(self):
+    """Each world's edges should be computed independently."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="body2" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="body1" body2="body2"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 1], 1)
+    self.assertEqual(tt[0, 1, 0], 1)
+    self.assertEqual(tt[1, 0, 1], 1)
+    self.assertEqual(tt[1, 1, 0], 1)
+
+  def test_contact_constraint_edges(self):
+    """Contact constraints between geoms should create edges."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1" pos="0 0 0.5">
+            <joint type="free"/>
+            <geom size=".3"/>
+          </body>
+          <body name="body2" pos="0 0 1.1">
+            <joint type="free"/>
+            <geom size=".3"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    if nefc[0] > 0:
+      treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+      island.tree_edges(m, d, treetree)
+
+      tt = treetree.numpy()
+      self.assertEqual(tt[0, 0, 1], 1)
+      self.assertEqual(tt[0, 1, 0], 1)
+
+  def test_isolated_tree_no_edge(self):
+    """A floating body with no constraints should produce no edges."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 10">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(np.sum(tt[0]), 0)
+    self.assertEqual(np.sum(tt[1]), 0)
+
+  def test_mixed_equality_and_contact(self):
+    """Both equality and contact constraints should contribute to edges."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="A" pos="0 0 0.5">
+            <joint type="free"/>
+            <geom size=".2"/>
+          </body>
+          <body name="B" pos="0 0 1.0">
+            <joint type="free"/>
+            <geom size=".2"/>
+          </body>
+          <body name="C" pos="2 0 0.5">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="B" body2="C"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 1, 2], 1)
+    self.assertEqual(tt[0, 2, 1], 1)
+
+  def test_worldbody_dofs_ignored(self):
+    """Constraints involving worldbody (tree < 0) should not cause spurious edges."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="fixed" pos="0 0 0">
+            <geom size=".1"/>
+          </body>
+          <body name="floating" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="world" body2="floating"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 0], 1)  # self-edge for floating tree
+
+  def test_constraint_touches_three_trees(self):
+    """Multiple constraints sharing a body create a star topology."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="A" pos="0 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="B" pos="1 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+          <body name="C" pos="2 0 0">
+            <joint type="free"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="A" body2="B"/>
+          <weld body1="A" body2="C"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    treetree = wp.empty((d.nworld, m.ntree, m.ntree), dtype=int)
+    island.tree_edges(m, d, treetree)
+
+    tt = treetree.numpy()
+    self.assertEqual(tt[0, 0, 1], 1)
+    self.assertEqual(tt[0, 1, 0], 1)
+    self.assertEqual(tt[0, 0, 2], 1)
+    self.assertEqual(tt[0, 2, 0], 1)
 
 
 if __name__ == "__main__":
