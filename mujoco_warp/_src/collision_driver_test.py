@@ -594,10 +594,7 @@ class CollisionTest(parameterized.TestCase):
     "hfield_mesh": """
         <mujoco>
           <asset>
-            <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.1 0.1"
-            elevation="0 0 0
-                       0 0 0
-                       0 0 0"/>
+            <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.1 0.1"/>
             <mesh name="box"
               vertex="-1 -1 -1
                        1 -1 -1
@@ -606,19 +603,7 @@ class CollisionTest(parameterized.TestCase):
                       -1 -1  1
                        1 -1  1
                        1  1  1
-                      -1  1  1"
-              face="0 3 2
-                    0 2 1
-                    4 5 6
-                    4 6 7
-                    0 1 5
-                    0 5 4
-                    2 3 7
-                    2 7 6
-                    0 4 7
-                    0 7 3
-                    1 2 6
-                    1 6 5"/>
+                      -1  1  1"/>
           </asset>
           <worldbody>
             <geom type="hfield" hfield="terrain" pos="0 0 0"/>
