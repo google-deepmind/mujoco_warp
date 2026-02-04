@@ -99,7 +99,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d(dtype=float)):
       outputs=[qfrc],
     )
   elif m.opt.integrator == IntegratorType.IMPLICITFAST:
-    if m.opt.is_sparse:
+    if m.is_sparse:
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
     else:
       qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)

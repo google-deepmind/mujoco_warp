@@ -2419,7 +2419,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    if m.opt.is_sparse:
+    if m.is_sparse:
       num_blocks_ceil = ceil(m.nv / types.TILE_SIZE_JTDAJ_SPARSE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch_tiled(

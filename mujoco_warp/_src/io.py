@@ -194,11 +194,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.tolerance = max(opt.tolerance, 1e-6)
 
   # warp only fields
-  opt.is_sparse = is_sparse(mjm)
   ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
   opt.ls_parallel = (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1)
   opt.ls_parallel_min_step = 1.0e-6  # TODO(team): determine good default setting
-  opt.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
   opt.broadphase = types.BroadphaseType.NXN
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
@@ -236,6 +234,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
+  m.is_sparse = is_sparse(mjm)
+  m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -1942,9 +1942,16 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.integrator": types.IntegratorType,
     "opt.solver": types.SolverType,
   }
+  # MuJoCo pybind11 enums don't support iteration, so we provide explicit mappings
+  mj_enum_fields = {
+    "opt.jacobian": {
+      "DENSE": mujoco.mjtJacobian.mjJAC_DENSE,
+      "SPARSE": mujoco.mjtJacobian.mjJAC_SPARSE,
+      "AUTO": mujoco.mjtJacobian.mjJAC_AUTO,
+    },
+  }
   mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
   mj_only_fields = {"opt.jacobian"}
-  readonly_fields = {"opt.is_sparse"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}
@@ -1962,9 +1969,6 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     if key in mj_only_fields and isinstance(model, types.Model):
       continue
 
-    if key in readonly_fields and isinstance(model, types.Model):
-      raise ValueError(f"Cannot override {key} on mjw.Model: field affects model initialization and has side effects")
-
     obj, attrs = model, key.split(".")
     for i, attr in enumerate(attrs):
       if not hasattr(obj, attr):
@@ -1975,7 +1979,12 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
 
       typ = type(getattr(obj, attr))
 
-      if key in enum_fields and isinstance(val, str):
+      if key in mj_enum_fields and isinstance(val, str):
+        enum_member = val.strip().upper()
+        if enum_member not in mj_enum_fields[key]:
+          raise ValueError(f"Unrecognized enum value for {key}: {enum_member}")
+        val = mj_enum_fields[key][enum_member]
+      elif key in enum_fields and isinstance(val, str):
         # special case: enum value
         enum_members = val.split("|")
         val = 0

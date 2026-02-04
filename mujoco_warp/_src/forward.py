@@ -327,7 +327,7 @@ def euler(m: Model, d: Data):
   # integrate damping implicitly
   if not m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
-    if m.opt.is_sparse:
+    if m.is_sparse:
       qM = wp.clone(d.qM)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
       qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
@@ -481,7 +481,7 @@ def rungekutta4(m: Model, d: Data):
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
   if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
-    if m.opt.is_sparse:
+    if m.is_sparse:
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
     else:

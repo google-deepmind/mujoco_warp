@@ -680,10 +680,8 @@ class Option:
 
   warp only fields:
     impratio_invsqrt: ratio of friction-to-normal contact impedance (stored as inverse square root)
-    is_sparse: whether to use sparse representations
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
-    has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
     graph_conditional: flag to use cuda graph conditional
@@ -715,10 +713,8 @@ class Option:
   sdf_iterations: int
   # warp only fields:
   impratio_invsqrt: array("*", float)
-  is_sparse: bool
   ls_parallel: bool
   ls_parallel_min_step: float
-  has_fluid: bool
   broadphase: BroadphaseType
   broadphase_filter: BroadphaseFilter
   graph_conditional: bool
@@ -1044,6 +1040,8 @@ class Model:
     nmaxpyramid: maximum number of pyramid directions
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
+    is_sparse: whether to use sparse representations
+    has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1402,6 +1400,8 @@ class Model:
   nmaxpyramid: int
   nmaxpolygon: int
   nmaxmeshdeg: int
+  is_sparse: bool
+  has_fluid: bool
   has_sdf_geom: bool
   block_dim: BlockDim
   body_tree: tuple[wp.array(dtype=int), ...]
