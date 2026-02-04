@@ -89,7 +89,7 @@ class RenderTest(parameterized.TestCase):
 
     wp.capture_launch(capture.graph)
 
-    _assert_eq(rgb_np, rc.rgb_data.numpy())
+    _assert_eq(rgb_np, rc.rgb_data.numpy(), "rgb_data")
 
 
 if __name__ == "__main__":

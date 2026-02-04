@@ -1137,7 +1137,7 @@ def _ray_bvh(
       min_geomid = geomid
       min_normal = normal
 
-  if wp.isinf(min_dist):
+  if min_dist >= MJ_MAXVAL:
     dist_out[worldid, rayid] = -1.0
   else:
     dist_out[worldid, rayid] = min_dist
