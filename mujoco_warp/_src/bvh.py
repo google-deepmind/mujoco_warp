@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
@@ -45,8 +46,8 @@ def _compute_box_bounds(
   rot: wp.mat33,
   size: wp.vec3,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  min_bound = wp.vec3(wp.inf, wp.inf, wp.inf)
-  max_bound = wp.vec3(-wp.inf, -wp.inf, -wp.inf)
+  min_bound = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
+  max_bound = wp.vec3(-MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL)
 
   for i in range(2):
     for j in range(2):
@@ -83,10 +84,9 @@ def _compute_capsule_bounds(
 ) -> Tuple[wp.vec3, wp.vec3]:
   radius = size[0]
   half_length = size[1]
-  local_end1 = wp.vec3(0.0, 0.0, -half_length)
-  local_end2 = wp.vec3(0.0, 0.0, half_length)
-  world_end1 = pos + rot @ local_end1
-  world_end2 = pos + rot @ local_end2
+  z = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
+  world_end1 = pos - z * half_length
+  world_end2 = pos + z * half_length
 
   seg_min = wp.min(world_end1, world_end2)
   seg_max = wp.max(world_end1, world_end2)
@@ -106,8 +106,8 @@ def _compute_plane_bounds(
   size_scale = wp.max(size[0], size[1]) * 2.0
   if size[0] <= 0.0 or size[1] <= 0.0:
     size_scale = 1000.0
-  min_bound = wp.vec3(wp.inf, wp.inf, wp.inf)
-  max_bound = wp.vec3(-wp.inf, -wp.inf, -wp.inf)
+  min_bound = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
+  max_bound = wp.vec3(-MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL)
 
   for i in range(2):
     for j in range(2):

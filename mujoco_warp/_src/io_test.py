@@ -1187,6 +1187,12 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), "render_rgb")
     _assert_eq(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
+  def test_render_context_with_textures(self):
+    mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
+    rc = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True, use_textures=True)
+    self.assertTrue(rc.use_textures, "use_textures")
+    self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
+
 
 if __name__ == "__main__":
   wp.init()

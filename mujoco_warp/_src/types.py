@@ -900,7 +900,7 @@ class Model:
     cam_pos0: global position rel. to body in qpos0          (*, ncam, 3)
     cam_mat0: global orientation in qpos0                    (*, ncam, 3, 3)
     cam_projection: projection type (ProjectionType)         (ncam,)
-    cam_fovy: y field-of-view (ortho ? len : deg)            (*, ncam,)
+    cam_fovy: y field-of-view (ortho ? len : deg)            (*, ncam)
     cam_resolution: resolution: pixels [width, height]       (ncam, 2)
     cam_sensorsize: sensor size: length [width, height]      (ncam, 2)
     cam_intrinsic: [focal length; principal point]           (*, ncam, 4)
@@ -1759,7 +1759,7 @@ class RenderContext:
   """Context for rendering.
 
   Attributes:
-    nrender: number of active cameras that are rendering
+    nrender: number of actively rendering cameras
     cam_res: camera resolution for actively rendering cameras
     cam_id_map: camera id map
     use_textures: whether to use textures

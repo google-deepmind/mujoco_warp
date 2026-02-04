@@ -2068,13 +2068,13 @@ def create_render_context(
   mjm: mujoco.MjModel,
   m: types.Model,
   d: types.Data,
-  cam_res: Optional[Union[list[tuple[int, int]] | tuple[int, int]]] = None,
-  render_rgb: Optional[Union[list[bool] | bool]] = None,
-  render_depth: Optional[Union[list[bool] | bool]] = None,
+  cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
+  render_rgb: list[bool] | bool | None = None,
+  render_depth: list[bool] | bool | None = None,
   use_textures: bool = True,
   use_shadows: bool = False,
   enabled_geom_groups: list[int] = [0, 1, 2],
-  cam_active: Optional[list[bool]] = None,
+  cam_active: list[bool] | None = None,
   flex_render_smooth: bool = True,
 ) -> types.RenderContext:
   """Creates a render context on device.
@@ -2100,11 +2100,7 @@ def create_render_context(
   # Mesh BVHs
   nmesh = mjm.nmesh
   geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
-  mesh_geom_mask = (
-      geom_enabled_mask
-      & (mjm.geom_type == types.GeomType.MESH)
-      & (mjm.geom_dataid >= 0)
-  )
+  mesh_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.MESH) & (mjm.geom_dataid >= 0)
   used_mesh_id = set(mjm.geom_dataid[mesh_geom_mask].astype(int))
   geom_enabled_idx = np.nonzero(geom_enabled_mask)[0]
 
@@ -2123,11 +2119,7 @@ def create_render_context(
 
   # HField BVHs
   nhfield = mjm.nhfield
-  hfield_geom_mask = (
-      geom_enabled_mask
-      & (mjm.geom_type == types.GeomType.HFIELD)
-      & (mjm.geom_dataid >= 0)
-  )
+  hfield_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.HFIELD) & (mjm.geom_dataid >= 0)
   used_hfield_id = set(mjm.geom_dataid[hfield_geom_mask].astype(int))
   hfield_registry = {}
   hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]

@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import warp as wp
 
@@ -1097,7 +1097,7 @@ def _ray_bvh(
   ray_dir = vec[worldid, rayid]
   body_exclude = bodyexclude[rayid]
 
-  min_dist = float(wp.inf)
+  min_dist = float(MJ_MAXVAL)
   min_geomid = int(-1)
   min_normal = wp.vec3()
 
@@ -1150,10 +1150,10 @@ def ray(
   d: Data,
   pnt: wp.array2d(dtype=wp.vec3),
   vec: wp.array2d(dtype=wp.vec3),
-  geomgroup: Optional[vec6] = None,
+  geomgroup: vec6 | None = None,
   flg_static: bool = True,
   bodyexclude: int = -1,
-  rc: Optional[RenderContext] = None,
+  rc: RenderContext | None = None,
 ) -> Tuple[wp.array, wp.array, wp.array]:
   """Returns the distance at which rays intersect with primitive geoms.
 
@@ -1200,7 +1200,7 @@ def rays(
   dist: wp.array2d(dtype=float),
   geomid: wp.array2d(dtype=int),
   normal: wp.array2d(dtype=wp.vec3),
-  rc: Optional[RenderContext] = None,
+  rc: RenderContext | None = None,
 ):
   """Ray intersection for multiple worlds and multiple rays.
 

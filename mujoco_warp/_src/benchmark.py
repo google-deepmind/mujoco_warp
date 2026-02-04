@@ -16,7 +16,7 @@
 """Utilities for benchmarking MuJoCo Warp."""
 
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Tuple
 
 import numpy as np
 import warp as wp
@@ -88,11 +88,11 @@ def benchmark(
   m: Model,
   d: Data,
   nstep: int,
-  ctrls: Optional[np.ndarray] = None,
+  ctrls: np.ndarray | None = None,
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
-  render_context: Optional[RenderContext] = None,
+  render_context: RenderContext | None = None,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
 

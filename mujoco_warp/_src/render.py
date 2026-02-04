@@ -29,12 +29,12 @@ from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.ray import ray_sphere
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -70,9 +70,9 @@ def sample_texture(
       return wp.vec3(0.0, 0.0, 0.0)
 
     face_adr = mesh_faceadr[mesh_id] + f
-    uv0 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr].x]
-    uv1 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr].y]
-    uv2 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr].z]
+    uv0 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][0]]
+    uv1 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][1]]
+    uv2 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][2]]
     uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
 
   u = uv[0] * tex_repeat[0]
@@ -83,6 +83,7 @@ def sample_texture(
   return wp.vec3(tex_color[0], tex_color[1], tex_color[2])
 
 
+# TODO: Investigate combining cast_ray and cast_ray_first_hit
 @wp.func
 def cast_ray(
   # Model:
@@ -103,7 +104,7 @@ def cast_ray(
   ray_origin_world: wp.vec3,
   ray_dir_world: wp.vec3,
 ) -> Tuple[int, float, wp.vec3, float, float, int, int]:
-  dist = float(wp.inf)
+  dist = float(MJ_MAXVAL)
   normal = wp.vec3(0.0, 0.0, 0.0)
   geom_id = int(-1)
   bary_u = float(0.0)
@@ -346,7 +347,7 @@ def compute_lighting(
     return light_contribution
 
   L = wp.vec3(0.0, 0.0, 0.0)
-  dist_to_light = float(wp.inf)
+  dist_to_light = float(MJ_MAXVAL)
   attenuation = float(1.0)
 
   if lighttype == 1:  # directional light
@@ -422,25 +423,24 @@ def render(m: Model, d: Data, rc: RenderContext):
     geom_matid: wp.array2d(dtype=int),
     geom_size: wp.array2d(dtype=wp.vec3),
     geom_rgba: wp.array2d(dtype=wp.vec4),
-    mesh_faceadr: wp.array(dtype=int),
-    mesh_facetexcoord: wp.array(dtype=wp.vec3i),
-    mat_texid: wp.array3d(dtype=int),
-    mat_texrepeat: wp.array2d(dtype=wp.vec2),
-    mat_rgba: wp.array2d(dtype=wp.vec4),
-    light_active: wp.array2d(dtype=bool),
-    light_type: wp.array2d(dtype=int),
-    light_castshadow: wp.array2d(dtype=bool),
     cam_projection: wp.array(dtype=int),
     cam_fovy: wp.array2d(dtype=float),
     cam_sensorsize: wp.array(dtype=wp.vec2),
     cam_intrinsic: wp.array2d(dtype=wp.vec4),
+    light_type: wp.array2d(dtype=int),
+    light_castshadow: wp.array2d(dtype=bool),
+    light_active: wp.array2d(dtype=bool),
+    mesh_faceadr: wp.array(dtype=int),
+    mat_texid: wp.array3d(dtype=int),
+    mat_texrepeat: wp.array2d(dtype=wp.vec2),
+    mat_rgba: wp.array2d(dtype=wp.vec4),
     # Data in:
-    cam_xpos: wp.array2d(dtype=wp.vec3),
-    cam_xmat: wp.array2d(dtype=wp.mat33),
-    light_xpos: wp.array2d(dtype=wp.vec3),
-    light_xdir: wp.array2d(dtype=wp.vec3),
-    geom_xpos: wp.array2d(dtype=wp.vec3),
-    geom_xmat: wp.array2d(dtype=wp.mat33),
+    geom_xpos_in: wp.array2d(dtype=wp.vec3),
+    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    cam_xpos_in: wp.array2d(dtype=wp.vec3),
+    cam_xmat_in: wp.array2d(dtype=wp.mat33),
+    light_xpos_in: wp.array2d(dtype=wp.vec3),
+    light_xdir_in: wp.array2d(dtype=wp.vec3),
     # In:
     nrender: int,
     use_shadows: bool,
@@ -458,6 +458,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     flex_group_root: wp.array(dtype=int),
     enabled_geom_ids: wp.array(dtype=int),
     mesh_bvh_id: wp.array(dtype=wp.uint64),
+    mesh_facetexcoord: wp.array(dtype=wp.vec3i),
     mesh_texcoord: wp.array(dtype=wp.vec2),
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_id: wp.array(dtype=wp.uint64),
@@ -508,15 +509,15 @@ def render(m: Model, d: Data, rc: RenderContext):
     else:
       ray_dir_local_cam = ray[ray_idx]
 
-    ray_dir_world = cam_xmat[world_idx, mujoco_cam_id] @ ray_dir_local_cam
-    ray_origin_world = cam_xpos[world_idx, mujoco_cam_id]
+    ray_dir_world = cam_xmat_in[world_idx, mujoco_cam_id] @ ray_dir_local_cam
+    ray_origin_world = cam_xpos_in[world_idx, mujoco_cam_id]
 
     geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
       geom_type,
       geom_dataid,
       geom_size,
-      geom_xpos,
-      geom_xmat,
+      geom_xpos_in,
+      geom_xmat_in,
       bvh_id,
       group_root[world_idx],
       world_idx,
@@ -578,8 +579,8 @@ def render(m: Model, d: Data, rc: RenderContext):
               geom_id,
               mat_texrepeat[world_idx, mat_id],
               textures[tex_id],
-              geom_xpos[world_idx, geom_id],
-              geom_xmat[world_idx, geom_id],
+              geom_xpos_in[world_idx, geom_id],
+              geom_xmat_in[world_idx, geom_id],
               mesh_facetexcoord,
               mesh_texcoord,
               mesh_texcoord_offsets,
@@ -594,7 +595,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     len_n = wp.length(normal)
     n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
     n = wp.normalize(n)
-    hemispheric = 0.5 * (wp.dot(n, wp.vec3(0.0, 0.0, 1.0)) + 1.0)
+    hemispheric = 0.5 * (n[2] + 1.0)
     ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
     result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
@@ -604,8 +605,8 @@ def render(m: Model, d: Data, rc: RenderContext):
         geom_type,
         geom_dataid,
         geom_size,
-        geom_xpos,
-        geom_xmat,
+        geom_xpos_in,
+        geom_xmat_in,
         use_shadows,
         bvh_id,
         group_root[world_idx],
@@ -617,8 +618,8 @@ def render(m: Model, d: Data, rc: RenderContext):
         light_active[world_idx, l],
         light_type[world_idx, l],
         light_castshadow[world_idx, l],
-        light_xpos[world_idx, l],
-        light_xdir[world_idx, l],
+        light_xpos_in[world_idx, l],
+        light_xdir_in[world_idx, l],
         normal,
         hit_point,
       )
@@ -643,24 +644,23 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.geom_matid,
       m.geom_size,
       m.geom_rgba,
-      m.mesh_faceadr,
-      rc.mesh_facetexcoord,
-      m.mat_texid,
-      m.mat_texrepeat,
-      m.mat_rgba,
-      m.light_active,
-      m.light_type,
-      m.light_castshadow,
       m.cam_projection,
       m.cam_fovy,
       m.cam_sensorsize,
       m.cam_intrinsic,
+      m.light_type,
+      m.light_castshadow,
+      m.light_active,
+      m.mesh_faceadr,
+      m.mat_texid,
+      m.mat_texrepeat,
+      m.mat_rgba,
+      d.geom_xpos,
+      d.geom_xmat,
       d.cam_xpos,
       d.cam_xmat,
       d.light_xpos,
       d.light_xdir,
-      d.geom_xpos,
-      d.geom_xmat,
       rc.nrender,
       rc.use_shadows,
       rc.bvh_ngeom,
@@ -677,6 +677,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.flex_group_root,
       rc.enabled_geom_ids,
       rc.mesh_bvh_id,
+      rc.mesh_facetexcoord,
       rc.mesh_texcoord,
       rc.mesh_texcoord_offsets,
       rc.hfield_bvh_id,

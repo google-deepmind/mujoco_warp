@@ -24,7 +24,6 @@ except metadata.PackageNotFoundError:
 
 # isort: off
 from mujoco_warp._src.forward import step as step
-from mujoco_warp._src.render import render as render
 from mujoco_warp._src.types import Model as Model
 from mujoco_warp._src.types import Data as Data
 # isort: on
@@ -60,6 +59,7 @@ from mujoco_warp._src.io import set_const_fixed as set_const_fixed
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
+from mujoco_warp._src.render import render as render
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
