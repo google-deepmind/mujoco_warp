@@ -2097,7 +2097,6 @@ def create_render_context(
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
-
   # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
   if use_textures and not hasattr(wp, "Texture2D"):
     warnings.warn("Textures require warp >= 1.12. Disabling textures.")

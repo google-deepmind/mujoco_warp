@@ -125,8 +125,8 @@ class ProjectionType(enum.IntEnum):
     ORTHOGRAPHIC: orthographic projection
   """
 
-  # TODO(team): remove after mjwarp depends on mujoco > 3.4.1 in pyproject.toml
-  if hasattr(mujoco.mjtProjection, "mjPROJ_PERSPECTIVE"):
+  # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+  if hasattr(mujoco, "mjtProjection"):
     PERSPECTIVE = mujoco.mjtProjection.mjPROJ_PERSPECTIVE
     ORTHOGRAPHIC = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
   else:
