@@ -590,8 +590,10 @@ def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
   nconmax: Optional[int] = None,
+  nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  naccdmax: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -600,9 +602,11 @@ def make_data(
     nworld: Number of worlds.
     nconmax: Number of contacts to allocate per world. Contacts exist in large
              heterogeneous arrays: one world may have more than nconmax contacts.
+    nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -610,6 +614,9 @@ def make_data(
   # TODO(team): move nconmax, njmax to Model?
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
+
+  if nccdmax is None:
+    nccdmax = nconmax
 
   if njmax is None:
     njmax = _default_njmax(mjm)
@@ -623,6 +630,13 @@ def make_data(
     naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
+
+  if naccdmax is None:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    naccdmax = nworld * nccdmax
+  elif naccdmax < 0:
+    raise ValueError("naccdmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -655,6 +669,7 @@ def make_data(
     "efc": efc,
     "nworld": nworld,
     "naconmax": naconmax,
+    "naccdmax": naccdmax,
     "njmax": njmax,
     "qM": None,
     "qLD": None,
@@ -695,8 +710,10 @@ def put_data(
   mjd: mujoco.MjData,
   nworld: int = 1,
   nconmax: Optional[int] = None,
+  nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  naccdmax: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -706,9 +723,11 @@ def put_data(
     nworld: The number of worlds.
     nconmax: Number of contacts to allocate per world.  Contacts exist in large
              heterogenous arrays: one world may have more than nconmax contacts.
+    nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -719,6 +738,9 @@ def put_data(
 
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
+
+  if nccdmax is None:
+    nccdmax = nconmax
 
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
@@ -734,6 +756,13 @@ def put_data(
     naconmax = nworld * nconmax
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
+
+  if naccdmax is None:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    naccdmax = nworld * nccdmax
+  elif naccdmax < 0:
+    raise ValueError("naccdmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -812,6 +841,7 @@ def put_data(
     "efc": efc,
     "nworld": nworld,
     "naconmax": naconmax,
+    "naccdmax": naccdmax,
     "njmax": njmax,
     # fields set after initialization:
     "solver_niter": None,

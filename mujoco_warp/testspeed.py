@@ -48,6 +48,7 @@ _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
 _NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts for all worlds")
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
+_NCCDMAX = flags.DEFINE_integer("nccdmax", None, "override maximum number of CCD contacts per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "clear kernel cache (to calculate full JIT time)")
@@ -176,7 +177,7 @@ def _main(argv: Sequence[str]):
       f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
       f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"
     )
-    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value, nccdmax=_NCCDMAX.value)
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n")
 
     print(f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}...")
