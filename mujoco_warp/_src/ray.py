@@ -636,7 +636,7 @@ def ray_mesh(
 ) -> Tuple[float, wp.vec3]:
   """Returns the distance and normal for ray mesh intersections."""
   # bounding box test
-  dist_box, _all, _normal = _ray_box(pos, mat, size, pnt, vec)
+  dist_box, _all, _normal = ray_box(pos, mat, size, pnt, vec)
   if dist_box < 0.0:
     return -1.0, wp.vec3()
 
