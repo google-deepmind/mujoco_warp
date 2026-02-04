@@ -15,15 +15,14 @@
 
 import warp as wp
 
-from . import math
-from . import support
-from . import types
-from .types import ConstraintType
-from .types import ContactType
-from .types import vec5
-from .types import vec11
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -35,40 +34,14 @@ def _zero_constraint_counts(
   nf_out: wp.array(dtype=int),
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
-  ne_connect_out: wp.array(dtype=int),
-  ne_weld_out: wp.array(dtype=int),
-  ne_jnt_out: wp.array(dtype=int),
-  ne_ten_out: wp.array(dtype=int),
-  ne_flex_out: wp.array(dtype=int),
 ):
   worldid = wp.tid()
 
   # Zero all constraint counters
   ne_out[worldid] = 0
-  ne_connect_out[worldid] = 0
-  ne_weld_out[worldid] = 0
-  ne_jnt_out[worldid] = 0
-  ne_ten_out[worldid] = 0
-  ne_flex_out[worldid] = 0
   nf_out[worldid] = 0
   nl_out[worldid] = 0
   nefc_out[worldid] = 0
-
-
-@wp.kernel
-def _num_equality(
-  # Data in:
-  ne_connect_in: wp.array(dtype=int),
-  ne_weld_in: wp.array(dtype=int),
-  ne_jnt_in: wp.array(dtype=int),
-  ne_ten_in: wp.array(dtype=int),
-  ne_flex_in: wp.array(dtype=int),
-  # Data out:
-  ne_out: wp.array(dtype=int),
-):
-  worldid = wp.tid()
-  ne = ne_connect_in[worldid] + ne_weld_in[worldid] + ne_jnt_in[worldid] + ne_ten_in[worldid] + ne_flex_in[worldid]
-  ne_out[worldid] = ne
 
 
 @event_scope
@@ -144,7 +117,7 @@ def make_constraint(m: types.Model, d: types.Data):
     type_out[worldid, efcid] = type
     id_out[worldid, efcid] = id
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def efc_J_initialize(
     # Data out:
     efc_J_rownnz_out: wp.array2d(dtype=int),
@@ -163,7 +136,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_J_colind_out[worldid, sparseid] = dofid
     efc_J_out[worldid, 0, sparseid] = 0.0
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def equality_connect(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -191,6 +164,7 @@ def make_constraint(m: types.Model, d: types.Data):
     subtree_com_in: wp.array2d(dtype=wp.vec3),
     cdof_in: wp.array2d(dtype=wp.spatial_vector),
     # Data out:
+    ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
     efc_type_out: wp.array2d(dtype=int),
     efc_id_out: wp.array2d(dtype=int),
@@ -204,7 +178,6 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_vel_out: wp.array2d(dtype=float),
     efc_aref_out: wp.array2d(dtype=float),
     efc_frictionloss_out: wp.array2d(dtype=float),
-    ne_connect_out: wp.array(dtype=int),
   ):
     """Calculates constraint rows for connect equality constraints."""
     worldid, eqconnectid = wp.tid()
@@ -213,7 +186,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if not eq_active_in[worldid, eqid]:
       return
 
-    wp.atomic_add(ne_connect_out, worldid, 3)
+    wp.atomic_add(ne_out, worldid, 3)
     efcid = wp.atomic_add(nefc_out, worldid, 3)
 
     if efcid >= wp.static(d.njmax - 3):
@@ -384,7 +357,7 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def equality_joint(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -403,6 +376,7 @@ def make_constraint(m: types.Model, d: types.Data):
     qvel_in: wp.array2d(dtype=float),
     eq_active_in: wp.array2d(dtype=bool),
     # Data out:
+    ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
     efc_type_out: wp.array2d(dtype=int),
     efc_id_out: wp.array2d(dtype=int),
@@ -416,7 +390,6 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_vel_out: wp.array2d(dtype=float),
     efc_aref_out: wp.array2d(dtype=float),
     efc_frictionloss_out: wp.array2d(dtype=float),
-    ne_jnt_out: wp.array(dtype=int),
   ):
     worldid, eqjntid = wp.tid()
     eqid = eq_jnt_adr[eqjntid]
@@ -424,7 +397,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if not eq_active_in[worldid, eqid]:
       return
 
-    wp.atomic_add(ne_jnt_out, worldid, 1)
+    wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
     if efcid >= wp.static(d.njmax):
@@ -504,7 +477,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def equality_tendon(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -522,6 +495,7 @@ def make_constraint(m: types.Model, d: types.Data):
     ten_J_in: wp.array3d(dtype=float),
     ten_length_in: wp.array2d(dtype=float),
     # Data out:
+    ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
     efc_type_out: wp.array2d(dtype=int),
     efc_id_out: wp.array2d(dtype=int),
@@ -532,7 +506,6 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_vel_out: wp.array2d(dtype=float),
     efc_aref_out: wp.array2d(dtype=float),
     efc_frictionloss_out: wp.array2d(dtype=float),
-    ne_ten_out: wp.array(dtype=int),
   ):
     worldid, eqtenid = wp.tid()
     eqid = eq_ten_adr[eqtenid]
@@ -540,7 +513,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if not eq_active_in[worldid, eqid]:
       return
 
-    wp.atomic_add(ne_ten_out, worldid, 1)
+    wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
     if efcid >= wp.static(d.njmax):
@@ -613,7 +586,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def equality_flex(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -627,6 +600,7 @@ def make_constraint(m: types.Model, d: types.Data):
     flexedge_J_in: wp.array3d(dtype=float),
     flexedge_length_in: wp.array2d(dtype=float),
     # Data out:
+    ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
     efc_type_out: wp.array2d(dtype=int),
     efc_id_out: wp.array2d(dtype=int),
@@ -637,12 +611,11 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_vel_out: wp.array2d(dtype=float),
     efc_aref_out: wp.array2d(dtype=float),
     efc_frictionloss_out: wp.array2d(dtype=float),
-    ne_flex_out: wp.array(dtype=int),
   ):
     worldid, eqflexid, edgeid = wp.tid()
     eqid = eq_flex_adr[eqflexid]
 
-    wp.atomic_add(ne_flex_out, worldid, 1)
+    wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
     if efcid >= wp.static(d.njmax):
@@ -688,7 +661,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def equality_weld(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -718,6 +691,7 @@ def make_constraint(m: types.Model, d: types.Data):
     subtree_com_in: wp.array2d(dtype=wp.vec3),
     cdof_in: wp.array2d(dtype=wp.spatial_vector),
     # Data out:
+    ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
     efc_type_out: wp.array2d(dtype=int),
     efc_id_out: wp.array2d(dtype=int),
@@ -731,7 +705,6 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_vel_out: wp.array2d(dtype=float),
     efc_aref_out: wp.array2d(dtype=float),
     efc_frictionloss_out: wp.array2d(dtype=float),
-    ne_weld_out: wp.array(dtype=int),
   ):
     worldid, eqweldid = wp.tid()
     eqid = eq_wld_adr[eqweldid]
@@ -739,7 +712,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if not eq_active_in[worldid, eqid]:
       return
 
-    wp.atomic_add(ne_weld_out, worldid, 6)
+    wp.atomic_add(ne_out, worldid, 6)
     efcid = wp.atomic_add(nefc_out, worldid, 6)
 
     if efcid >= wp.static(d.njmax - 6):
@@ -987,7 +960,7 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def friction_dof(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -1066,7 +1039,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def friction_tendon(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -1144,7 +1117,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def limit_slide_hinge(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -1238,7 +1211,7 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def limit_ball(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -1352,7 +1325,7 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def limit_tendon(
     # Model:
     opt_timestep: wp.array(dtype=float),
@@ -1459,21 +1432,26 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def contact_pyramidal(
     # Model:
     opt_timestep: wp.array(dtype=float),
     opt_impratio_invsqrt: wp.array(dtype=float),
     body_parentid: wp.array(dtype=int),
     body_rootid: wp.array(dtype=int),
+    body_weldid: wp.array(dtype=int),
+    body_dofnum: wp.array(dtype=int),
+    body_dofadr: wp.array(dtype=int),
     body_invweight0: wp.array2d(dtype=wp.vec2),
     dof_bodyid: wp.array(dtype=int),
+    dof_parentid: wp.array(dtype=int),
     geom_bodyid: wp.array(dtype=int),
     # Data in:
     qvel_in: wp.array2d(dtype=float),
     subtree_com_in: wp.array2d(dtype=wp.vec3),
     cdof_in: wp.array2d(dtype=wp.spatial_vector),
     nacon_in: wp.array(dtype=int),
+    # In:
     dist_in: wp.array(dtype=float),
     condim_in: wp.array(dtype=int),
     includemargin_in: wp.array(dtype=float),
@@ -1558,55 +1536,81 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
       Jqvel = float(0.0)
-      for i in range(wp.static(m.nv)):
-        J = float(0.0)
-        Ji = float(0.0)
-        jac1p, jac1r = support.jac(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          con_pos,
-          body1,
-          i,
-          worldid,
-        )
-        jac2p, jac2r = support.jac(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          con_pos,
-          body2,
-          i,
-          worldid,
-        )
-        jacp_dif = jac2p - jac1p
-        for xyz in range(3):
-          J += frame[0, xyz] * jacp_dif[xyz]
+
+      # skip fixed bodies
+      body1 = body_weldid[body1]
+      body2 = body_weldid[body2]
+
+      da1 = body_dofadr[body1] + body_dofnum[body1] - 1
+      da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+      da = wp.max(da1, da2)
+
+      for dofid in range(wp.static(m.nv - 1), -1, -1):
+        if dofid == da:
+          # TODO(team): contact_jacobian
+          jac1p, jac1r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body1,
+            dofid,
+            worldid,
+          )
+          jac2p, jac2r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body2,
+            dofid,
+            worldid,
+          )
+
+          J = float(0.0)
+          Ji = float(0.0)
+          if condim > 1:
+            dimid2 = dimid / 2 + 1
+
+          for xyz in range(3):
+            jacp_dif = jac2p[xyz] - jac1p[xyz]
+            J += frame[0, xyz] * jacp_dif
+
+            if condim > 1:
+              if dimid2 < 3:
+                Ji += frame[dimid2, xyz] * jacp_dif
+              else:
+                Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
 
           if condim > 1:
-            if dimid2 < 3:
-              Ji += frame[dimid2, xyz] * jacp_dif[xyz]
+            if dimid % 2 == 0:
+              J += Ji * frii
             else:
-              Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+              J -= Ji * frii
 
-        if condim > 1:
-          if dimid % 2 == 0:
-            J += Ji * frii
+          if wp.static(m.opt.is_sparse):
+            sparseid = rowadr + dofid
+            efc_J_out[worldid, 0, sparseid] = J
           else:
-            J -= Ji * frii
+            efc_J_out[worldid, efcid, dofid] = J
+          Jqvel += J * qvel_in[worldid, dofid]
 
-        if wp.static(m.opt.is_sparse):
-          sparseid = rowadr + i
-          efc_J_colind_out[worldid, sparseid] = i
-          efc_J_out[worldid, 0, sparseid] = J
+          # Advance tree pointers and recompute da for next iteration
+          if da1 == da:
+            da1 = dof_parentid[da1]
+          if da2 == da:
+            da2 = dof_parentid[da2]
+          da = wp.max(da1, da2)
         else:
-          efc_J_out[worldid, efcid, i] = J
-
-        Jqvel += J * qvel_in[worldid, i]
+          if wp.static(m.opt.is_sparse):
+            sparseid = rowadr + dofid
+            efc_J_out[worldid, 0, sparseid] = 0.0
+          else:
+            efc_J_out[worldid, efcid, dofid] = 0.0
 
       if condim == 1:
         efc_type = ConstraintType.CONTACT_FRICTIONLESS
@@ -1637,21 +1641,26 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def contact_elliptic(
     # Model:
     opt_timestep: wp.array(dtype=float),
     opt_impratio_invsqrt: wp.array(dtype=float),
     body_parentid: wp.array(dtype=int),
     body_rootid: wp.array(dtype=int),
+    body_weldid: wp.array(dtype=int),
+    body_dofnum: wp.array(dtype=int),
+    body_dofadr: wp.array(dtype=int),
     body_invweight0: wp.array2d(dtype=wp.vec2),
     dof_bodyid: wp.array(dtype=int),
+    dof_parentid: wp.array(dtype=int),
     geom_bodyid: wp.array(dtype=int),
     # Data in:
     qvel_in: wp.array2d(dtype=float),
     subtree_com_in: wp.array2d(dtype=wp.vec3),
     cdof_in: wp.array2d(dtype=wp.spatial_vector),
     nacon_in: wp.array(dtype=int),
+    # In:
     dist_in: wp.array(dtype=float),
     condim_in: wp.array(dtype=int),
     includemargin_in: wp.array(dtype=float),
@@ -1713,7 +1722,7 @@ def make_constraint(m: types.Model, d: types.Data):
       body1 = geom_bodyid[geom[0]]
       body2 = geom_bodyid[geom[1]]
 
-      cpos = pos_in[conid]
+      con_pos = pos_in[conid]
       frame = frame_in[conid]
 
       if wp.static(m.opt.is_sparse):
@@ -1721,48 +1730,70 @@ def make_constraint(m: types.Model, d: types.Data):
         rowadr = efcid * wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
-      # TODO(team): parallelize J and Jqvel computation?
       Jqvel = float(0.0)
-      for i in range(wp.static(m.nv)):
-        J = float(0.0)
-        jac1p, jac1r = support.jac(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          cpos,
-          body1,
-          i,
-          worldid,
-        )
-        jac2p, jac2r = support.jac(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          cpos,
-          body2,
-          i,
-          worldid,
-        )
-        for xyz in range(3):
-          if dimid < 3:
-            jac_dif = jac2p[xyz] - jac1p[xyz]
-            J += frame[dimid, xyz] * jac_dif
+
+      # skip fixed bodies
+      body1 = body_weldid[body1]
+      body2 = body_weldid[body2]
+
+      da1 = body_dofadr[body1] + body_dofnum[body1] - 1
+      da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+      da = wp.max(da1, da2)
+
+      for dofid in range(wp.static(m.nv - 1), -1, -1):
+        if dofid == da:
+          # TODO(team): contact jacobian
+          jac1p, jac1r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body1,
+            dofid,
+            worldid,
+          )
+          jac2p, jac2r = support.jac(
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            subtree_com_in,
+            cdof_in,
+            con_pos,
+            body2,
+            dofid,
+            worldid,
+          )
+
+          J = float(0.0)
+          for xyz in range(3):
+            if dimid < 3:
+              jac_dif = jac2p[xyz] - jac1p[xyz]
+              J += frame[dimid, xyz] * jac_dif
+            else:
+              jac_dif = jac2r[xyz] - jac1r[xyz]
+              J += frame[dimid - 3, xyz] * jac_dif
+
+          if wp.static(m.opt.is_sparse):
+            sparseid = rowadr + dofid
+            efc_J_out[worldid, 0, sparseid] = J
           else:
-            jac_dif = jac2r[xyz] - jac1r[xyz]
-            J += frame[dimid - 3, xyz] * jac_dif
+            efc_J_out[worldid, efcid, dofid] = J
+          Jqvel += J * qvel_in[worldid, dofid]
 
-        if wp.static(m.opt.is_sparse):
-          sparseid = rowadr + i
-          efc_J_colind_out[worldid, sparseid] = i
-          efc_J_out[worldid, 0, sparseid] = J
+          # Advance tree pointers and recompute da for next iteration
+          if da1 == da:
+            da1 = dof_parentid[da1]
+          if da2 == da:
+            da2 = dof_parentid[da2]
+          da = wp.max(da1, da2)
         else:
-          efc_J_out[worldid, efcid, i] = J
-
-        Jqvel += J * qvel_in[worldid, i]
+          if wp.static(m.opt.is_sparse):
+            sparseid = rowadr + dofid
+            efc_J_out[worldid, 0, sparseid] = 0.0
+          else:
+            efc_J_out[worldid, efcid, dofid] = 0.0
 
       body_invweight0_id = worldid % body_invweight0.shape[0]
       invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
@@ -1820,7 +1851,7 @@ def make_constraint(m: types.Model, d: types.Data):
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
-    inputs=[d.ne, d.nf, d.nl, d.nefc, d.ne_connect, d.ne_weld, d.ne_jnt, d.ne_ten, d.ne_flex],
+    inputs=[d.ne, d.nf, d.nl, d.nefc],
   )
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
@@ -1862,6 +1893,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.cdof,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1875,7 +1907,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_connect,
         ],
       )
       wp.launch(
@@ -1909,6 +1940,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.cdof,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1922,7 +1954,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_weld,
         ],
       )
       wp.launch(
@@ -1945,6 +1976,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.eq_active,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1958,7 +1990,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_jnt,
         ],
       )
       wp.launch(
@@ -1980,6 +2011,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ten_length,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -1990,7 +2022,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_ten,
         ],
       )
 
@@ -2001,6 +2032,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.timestep,
           m.flexedge_length0,
           m.flexedge_invweight0,
+          m.flexedge_J_rownnz,
+          m.flexedge_J_rowadr,
+          m.flexedge_J_colind,
           m.eq_solref,
           m.eq_solimp,
           m.eq_flex_adr,
@@ -2009,6 +2043,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.flexedge_length,
         ],
         outputs=[
+          d.ne,
           d.nefc,
           d.efc.type,
           d.efc.id,
@@ -2019,15 +2054,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
-          d.ne_flex,
         ],
-      )
-
-      wp.launch(
-        _num_equality,
-        dim=d.nworld,
-        inputs=[d.ne_connect, d.ne_weld, d.ne_jnt, d.ne_ten, d.ne_flex],
-        outputs=[d.ne],
       )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
@@ -2203,8 +2230,12 @@ def make_constraint(m: types.Model, d: types.Data):
             m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
             m.body_invweight0,
             m.dof_bodyid,
+            m.dof_parentid,
             m.geom_bodyid,
             d.qvel,
             d.subtree_com,
@@ -2248,8 +2279,12 @@ def make_constraint(m: types.Model, d: types.Data):
             m.opt.impratio_invsqrt,
             m.body_parentid,
             m.body_rootid,
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
             m.body_invweight0,
             m.dof_bodyid,
+            m.dof_parentid,
             m.geom_bodyid,
             d.qvel,
             d.subtree_com,

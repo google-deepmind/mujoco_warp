@@ -17,33 +17,33 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive_core import box_box
-from .collision_primitive_core import capsule_box
-from .collision_primitive_core import capsule_capsule
-from .collision_primitive_core import plane_box
-from .collision_primitive_core import plane_capsule
-from .collision_primitive_core import plane_cylinder
-from .collision_primitive_core import plane_ellipsoid
-from .collision_primitive_core import plane_sphere
-from .collision_primitive_core import sphere_box
-from .collision_primitive_core import sphere_capsule
-from .collision_primitive_core import sphere_cylinder
-from .collision_primitive_core import sphere_sphere
-from .math import make_frame
-from .math import safe_div
-from .math import upper_trid_index
-from .types import MJ_MINMU
-from .types import MJ_MINVAL
-from .types import ContactType
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import mat43
-from .types import mat63
-from .types import vec5
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src.collision_primitive_core import box_box
+from mujoco_warp._src.collision_primitive_core import capsule_box
+from mujoco_warp._src.collision_primitive_core import capsule_capsule
+from mujoco_warp._src.collision_primitive_core import plane_box
+from mujoco_warp._src.collision_primitive_core import plane_capsule
+from mujoco_warp._src.collision_primitive_core import plane_cylinder
+from mujoco_warp._src.collision_primitive_core import plane_ellipsoid
+from mujoco_warp._src.collision_primitive_core import plane_sphere
+from mujoco_warp._src.collision_primitive_core import sphere_box
+from mujoco_warp._src.collision_primitive_core import sphere_capsule
+from mujoco_warp._src.collision_primitive_core import sphere_cylinder
+from mujoco_warp._src.collision_primitive_core import sphere_sphere
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAXVAL
+from mujoco_warp._src.types import MJ_MINMU
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat43
+from mujoco_warp._src.types import mat63
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -173,13 +173,13 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     convex: Convex geometry object containing position, rotation, and mesh data.
 
   Returns:
-    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
   _HUGE_VAL = 1e6
 
-  contact_dist = wp.vec4(wp.inf)
+  contact_dist = wp.vec4(MJ_MAXVAL)
   contact_pos = mat43()
   contact_count = int(0)
 
@@ -426,12 +426,12 @@ def write_contact(
   contact_type_out: wp.array(dtype=int),
   contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-):
+) -> int:
   active = dist_in < margin_in
 
   # skip contact and no collision sensor
   if (pairid_in[0] == -2 or not active) and pairid_in[1] == -1:
-    return
+    return 0
 
   contact_type = 0
 
@@ -457,6 +457,8 @@ def write_contact(
     contact_solimp_out[cid] = solimp_in
     contact_type_out[cid] = contact_type
     contact_geomcollisionid_out[cid] = id_
+    return int(active)
+  return 0
 
 
 @wp.func
@@ -535,11 +537,11 @@ def contact_params(
       max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
 
     friction = vec5(
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[0]),
-      wp.max(MJ_MINMU, max_geom_friction[1]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
-      wp.max(MJ_MINMU, max_geom_friction[2]),
+      max_geom_friction[0],
+      max_geom_friction[0],
+      max_geom_friction[1],
+      max_geom_friction[2],
+      max_geom_friction[2],
     )
 
     if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
@@ -552,6 +554,14 @@ def contact_params(
     # geom priority is ignored
     margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
     gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
+
+  friction = vec5(
+    wp.max(MJ_MINMU, friction[0]),
+    wp.max(MJ_MINMU, friction[1]),
+    wp.max(MJ_MINMU, friction[2]),
+    wp.max(MJ_MINMU, friction[3]),
+    wp.max(MJ_MINMU, friction[4]),
+  )
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
 
@@ -814,39 +824,41 @@ def capsule_capsule_wrapper(
     cap2_axis,
     cap2.size[0],  # radius2
     cap2.size[1],  # half_length2
+    margin,
   )
 
-  write_contact(
-    naconmax_in,
-    0,
-    dist,
-    pos,
-    make_frame(normal),
-    margin,
-    gap,
-    condim,
-    friction,
-    solref,
-    solreffriction,
-    solimp,
-    geoms,
-    pairid,
-    worldid,
-    contact_dist_out,
-    contact_pos_out,
-    contact_frame_out,
-    contact_includemargin_out,
-    contact_friction_out,
-    contact_solref_out,
-    contact_solreffriction_out,
-    contact_solimp_out,
-    contact_dim_out,
-    contact_geom_out,
-    contact_worldid_out,
-    contact_type_out,
-    contact_geomcollisionid_out,
-    nacon_out,
-  )
+  for i in range(2):
+    write_contact(
+      naconmax_in,
+      i,
+      dist[i],
+      wp.vec3(pos[i, 0], pos[i, 1], pos[i, 2]),
+      make_frame(wp.vec3(normal[i, 0], normal[i, 1], normal[i, 2])),
+      margin,
+      gap,
+      condim,
+      friction,
+      solref,
+      solreffriction,
+      solimp,
+      geoms,
+      pairid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.func
@@ -1530,6 +1542,7 @@ def box_box_wrapper(
     )
 
 
+# Map of supported primitive collision functions
 _PRIMITIVE_COLLISIONS = {
   (GeomType.PLANE, GeomType.SPHERE): plane_sphere_wrapper,
   (GeomType.PLANE, GeomType.CAPSULE): plane_capsule_wrapper,
@@ -1547,23 +1560,9 @@ _PRIMITIVE_COLLISIONS = {
 }
 
 
-# TODO(team): _check_collisions shared utility
-def _check_primitive_collisions():
-  prev_idx = -1
-  for types in _PRIMITIVE_COLLISIONS.keys():
-    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
-    if types[1] < types[0] or idx <= prev_idx:
-      return False
-    prev_idx = idx
-  return True
-
-
-assert _check_primitive_collisions(), "_PRIMITIVE_COLLISIONS is in invalid order"
-
-
 @cache_kernel
 def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def primitive_narrowphase(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -1720,7 +1719,7 @@ _PRIMITIVE_COLLISION_FUNC = []
 
 
 @event_scope
-def primitive_narrowphase(m: Model, d: Data):
+def primitive_narrowphase(m: Model, d: Data, collision_table: list[tuple[GeomType, GeomType]]):
   """Runs collision detection on primitive geom pairs discovered during broadphase.
 
   This function processes collision pairs involving primitive shapes that were
@@ -1739,6 +1738,8 @@ def primitive_narrowphase(m: Model, d: Data):
   # for pair types without collisions, as well as updating the launch dimensions.
 
   for types, func in _PRIMITIVE_COLLISIONS.items():
+    if types not in collision_table:
+      continue
     idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx] and types not in _PRIMITIVE_COLLISION_TYPES:
       _PRIMITIVE_COLLISION_TYPES.append(types)

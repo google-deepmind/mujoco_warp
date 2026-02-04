@@ -17,32 +17,31 @@ from typing import Optional
 
 import warp as wp
 
-from . import collision_driver
-from . import constraint
-from . import derivative
-from . import math
-from . import passive
-from . import sensor
-from . import smooth
-from . import solver
-from . import util_misc
-from .support import xfrc_accumulate
-from .types import MJ_MINVAL
-from .types import BiasType
-from .types import Data
-from .types import DisableBit
-from .types import DynType
-from .types import EnableBit
-from .types import GainType
-from .types import IntegratorType
-from .types import JointType
-from .types import Model
-from .types import TileSet
-from .types import TrnType
-from .types import vec10f
-from .warp_util import cache_kernel
-from .warp_util import event_scope
-from .warp_util import nested_kernel
+from mujoco_warp._src import collision_driver
+from mujoco_warp._src import constraint
+from mujoco_warp._src import derivative
+from mujoco_warp._src import math
+from mujoco_warp._src import passive
+from mujoco_warp._src import sensor
+from mujoco_warp._src import smooth
+from mujoco_warp._src import solver
+from mujoco_warp._src import util_misc
+from mujoco_warp._src.support import xfrc_accumulate
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import GainType
+from mujoco_warp._src.types import IntegratorType
+from mujoco_warp._src.types import JointType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -291,17 +290,17 @@ def _euler_damp_qfrc_sparse(
 
 @cache_kernel
 def _tile_euler_dense(tile: TileSet):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def euler_dense(
     # Model:
-    dof_damping: wp.array2d(dtype=float),
     opt_timestep: wp.array(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
     # Data in:
     qM_in: wp.array3d(dtype=float),
     efc_Ma_in: wp.array2d(dtype=float),
     # In:
     adr_in: wp.array(dtype=int),
-    # Out:
+    # Data out:
     qacc_out: wp.array2d(dtype=float),
   ):
     worldid, nodeid = wp.tid()
@@ -344,7 +343,7 @@ def euler(m: Model, d: Data):
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
-          inputs=[m.dof_damping, m.opt.timestep, d.qM, d.efc.Ma, tile.adr],
+          inputs=[m.opt.timestep, m.dof_damping, d.qM, d.efc.Ma, tile.adr],
           outputs=[qacc],
           block_dim=m.block_dim.euler_dense,
         )
@@ -486,8 +485,8 @@ def implicit(m: Model, d: Data):
       qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
     else:
-      qDeriv = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
-      qLD = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
+      qDeriv = wp.empty(d.qM.shape, dtype=float)
+      qLD = wp.empty(d.qM.shape, dtype=float)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
@@ -524,7 +523,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 # TODO(team): sparse actuator_moment version
 @cache_kernel
 def _actuator_velocity(nv: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def actuator_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
@@ -544,7 +543,7 @@ def _actuator_velocity(nv: int):
 
 @cache_kernel
 def _tendon_velocity(nv: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def tendon_velocity(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
@@ -956,6 +955,7 @@ def step1(m: Model, d: Data):
   # TODO(team): mj_checkPos
   # TODO(team): mj_checkVel
   fwd_position(m, d)
+  d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 
   if energy:
