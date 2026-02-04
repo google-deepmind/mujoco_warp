@@ -23,12 +23,14 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
+from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src import types
+from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
+from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
-
-from . import types
 
 _TOLERANCE = 5e-5
 
@@ -278,6 +280,20 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "capsule_capsule_parallel_axes": """
+        <mujoco>
+          <worldbody>
+            <body pos="-0.09 0 0">
+              <joint type="free"/>
+              <geom size="0.1 1" type="capsule"/>
+            </body>
+            <body pos="0.09 0 0">
+              <joint type="free"/>
+              <geom size="0.1 1" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "sphere_sphere": """
         <mujoco>
           <worldbody>
@@ -495,6 +511,17 @@ class CollisionTest(parameterized.TestCase):
   def setUpClass(cls):
     register_sdf_plugins(mjw)
 
+  def test_collision_func_table(self):
+    """Tests that the collision table is in order."""
+    in_order = True
+    prev_idx = -1
+    for pair in MJ_COLLISION_TABLE.keys():
+      idx = upper_trid_index(len(GeomType), pair[0].value, pair[1].value)
+      if pair[1] < pair[0] or idx <= prev_idx:
+        in_order = False
+      prev_idx = idx
+    self.assertTrue(in_order)
+
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):
     """Tests collisions with different geometries."""
@@ -521,15 +548,6 @@ class CollisionTest(parameterized.TestCase):
     """Tests collisions with different geometries."""
     mjm, mjd, m, d = test_data.fixture(xml=self._FIXTURES[fixture])
 
-    # Exempt GJK collisions from exact contact count check
-    # because GJK generates more contacts
-    allow_different_contact_count = False
-
-    # Note: MuJoCo has a bug in box-box face-to-face penetration depth calculation
-    # where it reports half the correct depth. For box-box collisions, we need to
-    # account for this when comparing distances.
-    is_box_box = fixture.startswith("box_box")
-
     mujoco.mj_collision(mjm, mjd)
     mjw.collision(m, d)
 
@@ -546,18 +564,7 @@ class CollisionTest(parameterized.TestCase):
         test_pos = d.contact.pos.numpy()[j, :]
         test_frame = d.contact.frame.numpy()[j].flatten()
 
-        # For box-box collisions, check if the distance matches when accounting
-        # for MuJoCo's bug (it reports half the correct penetration depth for face-face contacts)
-        # Note: Edge-edge collisions don't have this bug, so we check both possibilities
-        if is_box_box and actual_dist < 0:
-          # Check if values match directly (e.g., edge-edge collisions)
-          check_dist_direct = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
-          # Check if MuJoCo's half depth (multiplied by 2) matches (face-face collisions)
-          check_dist_corrected = np.allclose(actual_dist * 2.0, test_dist, rtol=5e-2, atol=1.0e-2)
-          check_dist = check_dist_direct or check_dist_corrected
-        else:
-          check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
-
+        check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-2)
         check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-2)
         check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-2)
         if check_dist and check_pos and check_frame:
@@ -565,8 +572,7 @@ class CollisionTest(parameterized.TestCase):
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
-    if not allow_different_contact_count:
-      self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """
@@ -581,6 +587,29 @@ class CollisionTest(parameterized.TestCase):
             <body pos=".0 .0 .1">
               <freejoint/>
               <geom type="box" size=".1 .1 .11"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "hfield_mesh": """
+        <mujoco>
+          <asset>
+            <hfield name="terrain" nrow="3" ncol="3" size="1 1 0.1 0.1"/>
+            <mesh name="box"
+              vertex="-1 -1 -1
+                       1 -1 -1
+                       1  1 -1
+                      -1  1 -1
+                      -1 -1  1
+                       1 -1  1
+                       1  1  1
+                      -1  1  1"/>
+          </asset>
+          <worldbody>
+            <geom type="hfield" hfield="terrain" pos="0 0 0"/>
+            <body pos=".0 .0 .15">
+              <freejoint/>
+              <geom type="mesh" mesh="box" size=".1 .1 .1"/>
             </body>
           </worldbody>
         </mujoco>
@@ -882,26 +911,27 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
 
   def test_min_friction(self):
-    _, _, _, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body>
-          <geom type="sphere" size=".1" friction="0 0 0"/>
-          <joint type="slide"/>
-        </body>
-        <body>
-          <geom type="sphere" size=".1" friction="0 0 0"/>
-          <joint type="slide"/>
-        </body>
-      </worldbody>
-      <keyframe>
-        <key qpos="0 .1"/>
-      </keyframe>
-    </mujoco>
-    """,
-      keyframe=0,
-    )
+    with self.assertWarns(UserWarning):
+      _, _, _, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size=".1" friction="0 0 0"/>
+            <joint type="slide"/>
+          </body>
+          <body>
+            <geom type="sphere" size=".1" friction="0 0 0"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 .1"/>
+        </keyframe>
+      </mujoco>
+      """,
+        keyframe=0,
+      )
 
     self.assertEqual(d.nacon.numpy()[0], 1)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)

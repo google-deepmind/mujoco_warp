@@ -18,6 +18,7 @@ from typing import Any, Tuple
 import warp as wp
 
 MJ_MINVAL = 1e-15
+MJ_MAXVAL = 1e10
 
 
 wp.set_module_options({"enable_backward": False})
@@ -188,7 +189,8 @@ def capsule_capsule(
   cap2_axis: wp.vec3,
   cap2_radius: float,
   cap2_half_length: float,
-) -> Tuple[float, wp.vec3, wp.vec3]:
+  margin: float,
+) -> Tuple[wp.vec2, mat23f, mat23f]:
   """Core contact geometry calculation for capsule-capsule collision.
 
   Args:
@@ -200,28 +202,110 @@ def capsule_capsule(
     cap2_axis: Axis direction of the second capsule.
     cap2_radius: Radius of the second capsule.
     cap2_half_length: Half length of the second capsule.
+    margin: Collision margin for filtering contacts.
 
   Returns:
-    - Vector of contact distances.
+    - Vector of contact distances (wp.inf for invalid contacts).
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-  # TODO(team): parallel axes case
+  contact_dist = wp.vec2(wp.inf, wp.inf)
+  contact_pos = mat23f()
+  contact_normal = mat23f()
 
-  # Calculate capsule segments
-  seg1 = cap1_axis * cap1_half_length
-  seg2 = cap2_axis * cap2_half_length
+  # calculate scaled axes and center difference
+  axis1 = cap1_axis * cap1_half_length
+  axis2 = cap2_axis * cap2_half_length
+  dif = cap1_pos - cap2_pos
 
-  # Find closest points between capsule centerlines
-  pt1, pt2 = closest_segment_to_segment_points(
-    cap1_pos - seg1,
-    cap1_pos + seg1,
-    cap2_pos - seg2,
-    cap2_pos + seg2,
-  )
+  # compute matrix coefficients and determinant
+  ma = wp.dot(axis1, axis1)
+  mb = -wp.dot(axis1, axis2)
+  mc = wp.dot(axis2, axis2)
+  u = -wp.dot(axis1, dif)
+  v = wp.dot(axis2, dif)
+  det = ma * mc - mb * mb
 
-  # Use sphere-sphere collision between closest points
-  return sphere_sphere(pt1, cap1_radius, pt2, cap2_radius)
+  # non-parallel axes: 1 contact
+  if wp.abs(det) >= MJ_MINVAL:
+    inv_det = 1.0 / det
+    x1 = (mc * u - mb * v) * inv_det
+    x2 = (ma * v - mb * u) * inv_det
+
+    if x1 > 1.0:
+      x1 = 1.0
+      x2 = (v - mb) / mc
+    elif x1 < -1.0:
+      x1 = -1.0
+      x2 = (v + mb) / mc
+
+    if x2 > 1.0:
+      x2 = 1.0
+      x1 = wp.clamp((u - mb) / ma, -1.0, 1.0)
+    elif x2 < -1.0:
+      x2 = -1.0
+      x1 = wp.clamp((u + mb) / ma, -1.0, 1.0)
+
+    # find nearest points
+    vec1 = cap1_pos + axis1 * x1
+    vec2 = cap2_pos + axis2 * x2
+
+    dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+    if dist <= margin:
+      contact_dist[0] = dist
+      contact_pos[0] = pos
+      contact_normal[0] = normal
+
+  # parallel axes: test all 4 endpoint pairs, keep first 2 that pass margin check
+  else:
+    contact_count = 0
+
+    # x1 = 1: test positive end of capsule 1
+    vec1 = cap1_pos + axis1
+    x2 = wp.clamp((v - mb) / mc, -1.0, 1.0)
+    vec2 = cap2_pos + axis2 * x2
+    dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+    if dist <= margin:
+      contact_dist[contact_count] = dist
+      contact_pos[contact_count] = pos
+      contact_normal[contact_count] = normal
+      contact_count += 1
+
+    # x1 = -1: test negative end of capsule 1
+    vec1 = cap1_pos - axis1
+    x2 = wp.clamp((v + mb) / mc, -1.0, 1.0)
+    vec2 = cap2_pos + axis2 * x2
+    dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+    if dist <= margin:
+      contact_dist[contact_count] = dist
+      contact_pos[contact_count] = pos
+      contact_normal[contact_count] = normal
+      contact_count += 1
+
+    # x2 = 1: test positive end of capsule 2
+    if contact_count < 2:
+      vec2 = cap2_pos + axis2
+      x1 = wp.clamp((u - mb) / ma, -1.0, 1.0)
+      vec1 = cap1_pos + axis1 * x1
+      dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+      if dist <= margin:
+        contact_dist[contact_count] = dist
+        contact_pos[contact_count] = pos
+        contact_normal[contact_count] = normal
+        contact_count += 1
+
+    # x2 = -1: test negative end of capsule 2
+    if contact_count < 2:
+      vec2 = cap2_pos - axis2
+      x1 = wp.clamp((u + mb) / ma, -1.0, 1.0)
+      vec1 = cap1_pos + axis1 * x1
+      dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+      if dist <= margin:
+        contact_dist[contact_count] = dist
+        contact_pos[contact_count] = pos
+        contact_normal[contact_count] = normal
+
+  return contact_dist, contact_pos, contact_normal
 
 
 @wp.func
@@ -328,13 +412,13 @@ def plane_box(
     margin: Collision tolerance.
 
   Returns:
-    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
     - Contact normal vector.
   """
   center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
-  dist = vec8f(wp.inf)
+  dist = vec8f(MJ_MAXVAL)
   pos = mat83f()
 
   # test all corners, pick bottom 4
@@ -457,7 +541,7 @@ def plane_cylinder(
     - Matrix of contact normal vectors (one per row).
   """
   # Initialize output matrices
-  contact_dist = wp.vec4(wp.inf)
+  contact_dist = wp.vec4(MJ_MAXVAL)
   contact_pos = mat43f()
   contact_count = 0
 
@@ -583,14 +667,14 @@ def box_box(
     margin: Collision tolerance.
 
   Returns:
-    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
   # Initialize output matrices
   contact_dist = vec8f()
   for i in range(8):
-    contact_dist[i] = wp.inf
+    contact_dist[i] = MJ_MAXVAL
   contact_pos = mat83f()
   contact_normals = mat83f()
   contact_count = 0
@@ -1093,7 +1177,7 @@ def capsule_box(
     box_size: Half-extents of the box along each axis.
 
   Returns:
-    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
@@ -1265,7 +1349,7 @@ def capsule_box(
     c1 = wp.where((ee2 > 0) == w_neg, 1, 2)
 
   if cltype == -4:  # invalid type
-    return wp.vec2(wp.inf), mat23f(), mat23f()
+    return wp.vec2(MJ_MAXVAL), mat23f(), mat23f()
 
   if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
     c1 = axisdir ^ clcorner
@@ -1396,7 +1480,7 @@ def capsule_box(
     # collide with sphere using core function
     dist2, pos2, normal2 = sphere_box(s2_pos_g, capsule_radius, box_pos, box_rot, box_size)
   else:
-    dist2 = wp.inf
+    dist2 = MJ_MAXVAL
     pos2 = wp.vec3()
     normal2 = wp.vec3()
 

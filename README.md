@@ -1,24 +1,11 @@
-<p>
-  <a href="https://github.com/google-deepmind/mujoco_warp/actions/workflows/ci.yml?query=branch%3Amain" alt="GitHub Actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_warp/ci.yml?branch=main">
-  </a>
-  <a href="https://mujoco.readthedocs.io/en/latest/mjwarp/index.html" alt="Documentation">
-    <img src="https://readthedocs.org/projects/mujoco/badge/?version=latest">
-  </a>
-  <a href="https://github.com/google-deepmind/mujoco_warp/blob/main/LICENSE" alt="License">
-    <img src="https://img.shields.io/github/license/google-deepmind/mujoco_warp">
-  </a>
-</p>
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/google-deepmind/mujoco_warp/ci.yml?branch=main)](https://github.com/google-deepmind/mujoco_warp/actions/workflows/ci.yml?query=branch%3Amain)
+[![Documentation](https://readthedocs.org/projects/mujoco/badge/?version=latest)](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html)
+[![License](https://img.shields.io/github/license/google-deepmind/mujoco_warp)](https://github.com/google-deepmind/mujoco_warp/blob/main/LICENSE)
+[![Nightly Benchmarks](https://img.shields.io/badge/Nightly-Benchmarks-blue)](https://google-deepmind.github.io/mujoco_warp/nightly/)
 
 # MuJoCo Warp (MJWarp)
 
 MJWarp is a GPU-optimized version of the [MuJoCo](https://github.com/google-deepmind/mujoco) physics simulator, designed for NVIDIA hardware.
-
-> [!NOTE]
-> MJWarp is in Beta and under active development:
-> * MJWarp developers will triage and respond to [bug report and feature requests](https://github.com/google-deepmind/mujoco_warp/issues).
-> * MJWarp is mostly feature complete but requires performance optimization, documentation, and testing.
-> * The intended audience during Beta are physics engine enthusiasts and learning framework integrators.
 
 MJWarp uses [NVIDIA Warp](https://github.com/NVIDIA/warp) to circumvent many of the [sharp bits](https://mujoco.readthedocs.io/en/stable/mjx.html#mjx-the-sharp-bits) in [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html#). MJWarp is integrated into both [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) and [Newton](https://github.com/newton-physics/newton).
 
@@ -37,49 +24,27 @@ If you would like to train robot policies using MJWarp, consider using a robotic
 * [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) integrates MJWarp via [Newton](https://github.com/newton-physics/newton)
 * [mjlab](https://github.com/mujocolab/mjlab) integrates MJWarp directly
 
-# Installing for development
+# Installing
 
-MuJoCo Warp is currently supported on Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon).
+**From PyPI:**
 
-**CUDA**
+```bash
+pip install mujoco-warp
+```
 
-The minimum supported CUDA version is `12.4`.
+**From source:**
 
-**Linux**
 ```bash
 git clone https://github.com/google-deepmind/mujoco_warp.git
 cd mujoco_warp
-python3 -m venv env
-source env/bin/activate
-pip install --upgrade pip
-pip install uv
-```
-**Windows**
-(native Python only, not MSYS2 or WSL)
-
-```powershell
-git clone https://github.com/google-deepmind/mujoco_warp.git
-cd mujoco_warp
-python -m venv env
-.\env\Scripts\Activate.ps1  # For MSYS2 Python: env\bin\activate
-pip install --upgrade pip
-pip install uv
+uv sync --all-extras
 ```
 
-
-Then install MJWarp in editable mode for local development:
-
-```
-uv pip install -e .[dev,cuda]
-```
-
-Now make sure everything is working:
+To make sure everything is working:
 
 ```bash
-pytest
+uv run pytest -n 8
 ```
-
-Should print out something like `XX passed in XX.XXs` at the end!
 
 If you plan to write Warp kernels for MJWarp, please use the `kernel_analyzer` vscode plugin located in `contrib/kernel_analyzer`.
 Please see the `README.md` there for details on how to install it and use it.  The same kernel analyzer will be run on any PR
@@ -110,7 +75,7 @@ The following features are implemented:
 | Mass matrix format | Sparse and Dense                                                                                        |
 | Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
 
-[Differentiability via Warp](https://nvidia.github.io/warp/modules/differentiability.html#differentiability) is not currently
+[Differentiability via Warp](https://nvidia.github.io/warp/user_guide/differentiability.html) is not currently
 available.
 
 # Viewing simulations
@@ -118,7 +83,7 @@ available.
 Explore MuJoCo Warp simulations using an interactive viewer:
 
 ```bash
-mjwarp-viewer benchmark/humanoid/humanoid.xml
+mjwarp-viewer benchmarks/humanoid/humanoid.xml
 ```
 
 This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
@@ -128,13 +93,13 @@ This will open a window on your local machine that uses the [MuJoCo native visua
 Benchmark as follows:
 
 ```bash
-mjwarp-testspeed benchmark/humanoid/humanoid.xml
+mjwarp-testspeed benchmarks/humanoid/humanoid.xml
 ```
 
 To get a full trace of the physics steps (e.g. timings of the subcomponents) run the following:
 
 ```bash
-mjwarp-testspeed benchmark/humanoid/humanoid.xml --event_trace=True
+mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
