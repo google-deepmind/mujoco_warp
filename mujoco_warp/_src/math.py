@@ -208,6 +208,14 @@ def orthonormal_to_z(normal: wp.vec3) -> wp.vec3:
 
 @wp.func
 def gjk_normalize(a: wp.vec3):
+  """Normalizes a 3D vector with bounds checking for GJK algorithm.
+
+  Args:
+    a: 3D vector to normalize.
+
+  Returns:
+    Tuple of (normalized vector, success flag). Success is True if norm is in valid range.
+  """
   norm = wp.length(a)
   if norm > 1e-8 and norm < 1e12:
     return a / norm, True
