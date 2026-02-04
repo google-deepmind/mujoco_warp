@@ -363,8 +363,7 @@ def ccd_hfield_kernel_builder(
     min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     min_id = int(-1)
 
-    # TODO(team): height field margin?
-    geom1.margin = margin
+    # geom1 margin added to z-axis of hfield prism top points below
     geom2.margin = margin
 
     # EPA memory
