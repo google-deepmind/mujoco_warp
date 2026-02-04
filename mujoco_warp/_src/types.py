@@ -32,6 +32,9 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+# TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
+TEXTURE_DTYPE = wp.Texture2D if hasattr(wp, "Texture2D") else int
+
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -122,8 +125,13 @@ class ProjectionType(enum.IntEnum):
     ORTHOGRAPHIC: orthographic projection
   """
 
-  PERSPECTIVE = mujoco.mjtProjection.mjPROJ_PERSPECTIVE
-  ORTHOGRAPHIC = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
+  # TODO(team): remove after mjwarp depends on mujoco > 3.4.1 in pyproject.toml
+  if hasattr(mujoco.mjtProjection, "mjPROJ_PERSPECTIVE"):
+    PERSPECTIVE = mujoco.mjtProjection.mjPROJ_PERSPECTIVE
+    ORTHOGRAPHIC = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
+  else:
+    PERSPECTIVE = 0
+    ORTHOGRAPHIC = 1
 
 
 class DataType(enum.IntFlag):
@@ -1825,8 +1833,9 @@ class RenderContext:
   mesh_texcoord: array("*", wp.vec2)
   mesh_texcoord_offsets: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
-  textures: array("*", wp.Texture2D)
-  textures_registry: list[wp.Texture2D]
+  # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
+  textures: array("*", TEXTURE_DTYPE)
+  textures_registry: list[TEXTURE_DTYPE]
   hfield_registry: dict
   hfield_bvh_id: array("nhfield", wp.uint64)
   hfield_bounds_size: array("nhfield", wp.vec3)
