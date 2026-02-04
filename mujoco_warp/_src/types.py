@@ -1524,7 +1524,11 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
-    J: constraint Jacobian                            (nworld, njmax_pad, nv_pad)
+    J_rownnz: number of non-zeros in J row            (nworld, njmax)
+    J_rowadr: row start address in colind array       (nworld, njmax)
+    J_colind: column indices in J                     (nworld, njmax * nv)
+    J: constraint Jacobian                            (nworld, njmax_pad, nv_pad) if dense
+                                                      (nworld, 1, njmax * nv) if sparse
     pos: constraint position (equality, contact)      (nworld, njmax)
     margin: inclusion margin (contact)                (nworld, njmax)
     D: constraint mass                                (nworld, njmax_pad)
@@ -1539,7 +1543,10 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
-  J: array("nworld", "njmax_pad", "nv_pad", float)
+  J_rownnz: wp.array2d(dtype=int)
+  J_rowadr: wp.array2d(dtype=int)
+  J_colind: wp.array2d(dtype=int)
+  J: wp.array3d(dtype=float)
   pos: array("nworld", "njmax", float)
   margin: array("nworld", "njmax", float)
   D: array("nworld", "njmax_pad", float)
@@ -1642,6 +1649,7 @@ class Data:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
     njmax: maximum number of constraints per world
+    njmax_pad: maximum number of constraints per world +
     nacon: number of detected contacts (across all worlds)      (1,)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
@@ -1731,6 +1739,7 @@ class Data:
   nworld: int
   naconmax: int
   njmax: int
+  njmax_pad: int
   nacon: array(1, int)
 
   # warp only: collision driver

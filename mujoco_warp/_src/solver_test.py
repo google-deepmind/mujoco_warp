@@ -120,7 +120,17 @@ class SolverTest(parameterized.TestCase):
       # Calculate target values
       nefc = d.nefc.numpy()[0]
       ctx_search_np = ctx.search.numpy()[0]
-      efc_J_np = d.efc.J.numpy()[0][:nefc, : m.nv]
+      if m.opt.is_sparse:
+        efc_J_np = np.zeros((nefc, m.nv))
+        mujoco.mju_sparse2dense(
+          efc_J_np,
+          d.efc.J.numpy()[0, 0],
+          d.efc.J_rownnz.numpy()[0, :nefc],
+          d.efc.J_rowadr.numpy()[0, :nefc],
+          d.efc.J_colind.numpy()[0],
+        )
+      else:
+        efc_J_np = d.efc.J.numpy()[0, :nefc, : m.nv]
       ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
       ctx_Jaref_np = ctx.Jaref.numpy()[0][:nefc]
@@ -382,10 +392,10 @@ class SolverTest(parameterized.TestCase):
     efc_J1 = mjd1.efc_J.reshape((mjd1.nefc, mjm1.nv))
     efc_J2 = mjd2.efc_J.reshape((mjd2.nefc, mjm2.nv))
 
-    efc_J_fill = np.zeros((3, d.njmax, m.nv))
-    efc_J_fill[0, : mjd0.nefc, :] = efc_J0
-    efc_J_fill[1, : mjd1.nefc, :] = efc_J1
-    efc_J_fill[2, : mjd2.nefc, :] = efc_J2
+    efc_J_fill = np.zeros((3, d.njmax_pad, m.nv_pad))
+    efc_J_fill[0, : mjd0.nefc, : mjm0.nv] = efc_J0
+    efc_J_fill[1, : mjd1.nefc, : mjm1.nv] = efc_J1
+    efc_J_fill[2, : mjd2.nefc, : mjm2.nv] = efc_J2
 
     # Similarly for D and aref values
     efc_D0 = mjd0.efc_D[: mjd0.nefc]
