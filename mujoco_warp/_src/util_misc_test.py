@@ -27,12 +27,12 @@ from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec10
+from mujoco_warp.conftest import assert_allclose
 
 
 def _assert_eq(a, b, name):
-  tol = 1e-3  # avoid test noise
-  err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+  """Wrapper with custom tolerance for util_misc_test."""
+  assert_allclose(a, b, name, tolerance_multiplier=20)
 
 
 def _is_intersect(p1: np.array, p2: np.array, p3: np.array, p4: np.array) -> bool:
