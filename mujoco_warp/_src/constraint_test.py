@@ -63,7 +63,7 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
       d.efc.J.numpy()[0, 0],
       d.efc.J_rownnz.numpy()[0, :nefc],
       d.efc.J_rowadr.numpy()[0, :nefc],
-      d.efc.J_colind.numpy()[0],
+      d.efc.J_colind.numpy()[0, 0],
     )
   else:
     efc_J = d.efc.J.numpy()[0]

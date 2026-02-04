@@ -706,12 +706,12 @@ def make_data(
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
-    efc.J_colind = wp.zeros((nworld, njmax * mjm.nv), dtype=int)
+    efc.J_colind = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=int)
     efc.J = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
-    efc.J_colind = wp.zeros((nworld, njmax * sizes["nv_pad"]), dtype=int)
+    efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
 
   # world body and static geom (attached to the world) poses are precomputed
@@ -883,7 +883,7 @@ def put_data(
     efc.J_rowadr = wp.array(
       np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
     )
-    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, -1)), dtype=int)
+    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1)), dtype=int)
 
     if mujoco.mj_isSparse(mjm):
       mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
@@ -902,11 +902,7 @@ def put_data(
       else np.zeros((nworld, njmax), dtype=int),
       dtype=int,
     )
-    efc_J_colind = np.zeros((nworld, njmax * sizes["nv_pad"]), dtype=int)
-    efc_J_colind = np.tile(np.concatenate([np.arange(mjm.nv), np.zeros(sizes["nv_pad"] - mjm.nv)]), (nworld, njmax)).reshape(
-      (nworld, -1)
-    )
-    efc.J_colind = wp.array(efc_J_colind, dtype=int)
+    efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
 
     if mujoco.mj_isSparse(mjm):
       mj_efc_J = np.zeros((mjd.nefc, mjm.nv))

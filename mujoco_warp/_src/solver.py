@@ -1389,7 +1389,7 @@ def linesearch_jv_fused(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
     nefc_in: wp.array(dtype=int),
     efc_J_rownnz_in: wp.array2d(dtype=int),
     efc_J_rowadr_in: wp.array2d(dtype=int),
-    efc_J_colind_in: wp.array2d(dtype=int),
+    efc_J_colind_in: wp.array3d(dtype=int),
     efc_J_in: wp.array3d(dtype=float),
     # In:
     ctx_search_in: wp.array2d(dtype=float),
@@ -1414,7 +1414,7 @@ def linesearch_jv_fused(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
         rowadr = efc_J_rowadr_in[worldid, efcid]
         for k in range(rownnz):
           sparseid = rowadr + k
-          colind = efc_J_colind_in[worldid, sparseid]
+          colind = efc_J_colind_in[worldid, 0, sparseid]
           jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
       else:
         for i in range(wp.static(min(dofs_per_thread, nv))):
@@ -1429,7 +1429,7 @@ def linesearch_jv_fused(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
           rowadr = efc_J_rowadr_in[worldid, efcid]
           for k in range(rownnz):
             sparseid = rowadr + k
-            colind = efc_J_colind_in[worldid, sparseid]
+            colind = efc_J_colind_in[worldid, 0, sparseid]
             jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
           ctx_jv_out[worldid, efcid] = jv_out
       else:
@@ -1699,7 +1699,7 @@ def solve_init_jaref(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
     qacc_in: wp.array2d(dtype=float),
     efc_J_rownnz_in: wp.array2d(dtype=int),
     efc_J_rowadr_in: wp.array2d(dtype=int),
-    efc_J_colind_in: wp.array2d(dtype=int),
+    efc_J_colind_in: wp.array3d(dtype=int),
     efc_J_in: wp.array3d(dtype=float),
     efc_aref_in: wp.array2d(dtype=float),
     # Out:
@@ -1716,7 +1716,7 @@ def solve_init_jaref(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
       for i in range(rownnz):
         rowadr = efc_J_rowadr_in[worldid, efcid]
         sparseid = rowadr + i
-        colind = efc_J_colind_in[worldid, sparseid]
+        colind = efc_J_colind_in[worldid, 0, sparseid]
         jaref += efc_J_in[worldid, 0, sparseid] * qacc_in[worldid, colind]
     else:
       if wp.static(dofs_per_thread >= nv):
@@ -1907,7 +1907,7 @@ def update_constraint_init_qfrc_constraint_sparse(
   nefc_in: wp.array(dtype=int),
   efc_J_rownnz_in: wp.array2d(dtype=int),
   efc_J_rowadr_in: wp.array2d(dtype=int),
-  efc_J_colind_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_force_in: wp.array2d(dtype=float),
   # In:
@@ -1929,7 +1929,7 @@ def update_constraint_init_qfrc_constraint_sparse(
   rowadr = efc_J_rowadr_in[worldid, efcid]
   for i in range(rownnz):
     sparseid = rowadr + i
-    colind = efc_J_colind_in[worldid, sparseid]
+    colind = efc_J_colind_in[worldid, 0, sparseid]
     efc_J = efc_J_in[worldid, 0, sparseid]
     wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
 
@@ -2289,7 +2289,7 @@ def update_gradient_JTCJ_sparse(
   contact_worldid_in: wp.array(dtype=int),
   efc_J_rownnz_in: wp.array2d(dtype=int),
   efc_J_rowadr_in: wp.array2d(dtype=int),
-  efc_J_colind_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_state_in: wp.array2d(dtype=int),
@@ -2373,7 +2373,7 @@ def update_gradient_JTCJ_sparse(
       efc_J12 = float(0.0)
       for i1 in range(rownnz1):
         sparseid1 = rowadr1 + i1
-        colind1 = efc_J_colind_in[worldid, sparseid1]
+        colind1 = efc_J_colind_in[worldid, 0, sparseid1]
         if dof1id == colind1:
           efc_J11 = efc_J_in[worldid, 0, sparseid1]
         if dof2id == colind1:
@@ -2396,7 +2396,7 @@ def update_gradient_JTCJ_sparse(
         efc_J22 = float(0.0)
         for i2 in range(rownnz2):
           sparseid2 = rowadr2 + i2
-          colind2 = efc_J_colind_in[worldid, sparseid2]
+          colind2 = efc_J_colind_in[worldid, 0, sparseid2]
           if dof1id == colind2:
             efc_J21 = efc_J_in[worldid, 0, sparseid2]
           if dof2id == colind2:
@@ -2673,7 +2673,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         nefc_in: wp.array(dtype=int),
         efc_J_rownnz_in: wp.array2d(dtype=int),
         efc_J_rowadr_in: wp.array2d(dtype=int),
-        efc_J_colind_in: wp.array2d(dtype=int),
+        efc_J_colind_in: wp.array3d(dtype=int),
         efc_J_in: wp.array3d(dtype=float),
         efc_D_in: wp.array2d(dtype=float),
         efc_state_in: wp.array2d(dtype=int),
@@ -2702,7 +2702,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         for i in range(rownnz):
           sparseidi = rowadr + i
           Ji = efc_J_in[worldid, 0, sparseidi]
-          colindi = efc_J_colind_in[worldid, sparseidi]
+          colindi = efc_J_colind_in[worldid, 0, sparseidi]
           for j in range(i, rownnz):
             if j == i:
               sparseidj = sparseidi
@@ -2711,7 +2711,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
             else:
               sparseidj = rowadr + j
               Jj = efc_J_in[worldid, 0, sparseidj]
-              colindj = efc_J_colind_in[worldid, sparseidj]
+              colindj = efc_J_colind_in[worldid, 0, sparseidj]
 
             h = Ji * Jj * efc_D
             wp.atomic_add(h_out[worldid, colindi], colindj, h)

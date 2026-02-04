@@ -1526,7 +1526,8 @@ class Constraint:
     id: id of object of specific type                 (nworld, njmax)
     J_rownnz: number of non-zeros in J row            (nworld, njmax)
     J_rowadr: row start address in colind array       (nworld, njmax)
-    J_colind: column indices in J                     (nworld, njmax * nv)
+    J_colind: column indices in J                     (nworld, 0, 0) dense
+                                                      (nworld, 1, njmax * nv) sparse
     J: constraint Jacobian                            (nworld, njmax_pad, nv_pad) if dense
                                                       (nworld, 1, njmax * nv) if sparse
     pos: constraint position (equality, contact)      (nworld, njmax)
@@ -1545,7 +1546,7 @@ class Constraint:
   id: array("nworld", "njmax", int)
   J_rownnz: wp.array2d(dtype=int)
   J_rowadr: wp.array2d(dtype=int)
-  J_colind: wp.array2d(dtype=int)
+  J_colind: wp.array3d(dtype=int)
   J: wp.array3d(dtype=float)
   pos: array("nworld", "njmax", float)
   margin: array("nworld", "njmax", float)

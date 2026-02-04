@@ -127,7 +127,7 @@ class SolverTest(parameterized.TestCase):
           d.efc.J.numpy()[0, 0],
           d.efc.J_rownnz.numpy()[0, :nefc],
           d.efc.J_rowadr.numpy()[0, :nefc],
-          d.efc.J_colind.numpy()[0],
+          d.efc.J_colind.numpy()[0, 0],
         )
       else:
         efc_J_np = d.efc.J.numpy()[0, :nefc, : m.nv]

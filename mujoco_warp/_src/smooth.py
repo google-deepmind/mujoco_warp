@@ -2284,7 +2284,7 @@ def transmission(m: Model, d: Data):
       contact_worldid_in: wp.array(dtype=int),
       efc_J_rownnz_in: wp.array2d(dtype=int),
       efc_J_rowadr_in: wp.array2d(dtype=int),
-      efc_J_colind_in: wp.array2d(dtype=int),
+      efc_J_colind_in: wp.array3d(dtype=int),
       efc_J_in: wp.array3d(dtype=float),
       nacon_in: wp.array(dtype=int),
       # Data out:
@@ -2335,7 +2335,7 @@ def transmission(m: Model, d: Data):
             if dofid < rownnz:
               rowadr = efc_J_rowadr_in[worldid, efcid0]
               sparseid = rowadr + dofid
-              colind = efc_J_colind_in[worldid, sparseid]
+              colind = efc_J_colind_in[worldid, 0, sparseid]
               # TODO(team): sparse actuator_moment
               wp.atomic_add(actuator_moment_out[worldid, actid], colind, efc_J_in[worldid, 0, sparseid])
             else:
@@ -2353,7 +2353,7 @@ def transmission(m: Model, d: Data):
               if dofid < rownnz:
                 rowadr = efc_J_rowadr_in[worldid, efcid]
                 sparseid = rowadr + dofid
-                colind = efc_J_colind_in[worldid, sparseid]
+                colind = efc_J_colind_in[worldid, 0, sparseid]
                 # TODO(team): sparse actuator_moment
                 wp.atomic_add(actuator_moment_out[worldid, actid], colind, efc_J_in[worldid, 0, sparseid] * efc_force)
               else:
@@ -2373,7 +2373,7 @@ def transmission(m: Model, d: Data):
           if dofid >= efc_J_rownnz_in[worldid, efcid0]:
             return
           sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
-          colind = efc_J_colind_in[worldid, sparseid]
+          colind = efc_J_colind_in[worldid, 0, sparseid]
 
           jacp1, _ = support.jac(
             body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, colind, worldid

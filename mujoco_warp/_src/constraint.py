@@ -122,7 +122,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # Data out:
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
   ):
     worldid, efcid, dofid = wp.tid()
@@ -133,7 +133,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
     sparseid = rowadr + dofid
-    efc_J_colind_out[worldid, sparseid] = dofid
+    efc_J_colind_out[worldid, 0, sparseid] = dofid
     efc_J_out[worldid, 0, sparseid] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -170,7 +170,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -274,9 +274,9 @@ def make_constraint(m: types.Model, d: types.Data):
         sparseid1 = rowadr1 + rownnz
         sparseid2 = rowadr2 + rownnz
 
-        efc_J_colind_out[worldid, sparseid0] = da
-        efc_J_colind_out[worldid, sparseid1] = da
-        efc_J_colind_out[worldid, sparseid2] = da
+        efc_J_colind_out[worldid, 0, sparseid0] = da
+        efc_J_colind_out[worldid, 0, sparseid1] = da
+        efc_J_colind_out[worldid, 0, sparseid2] = da
 
         efc_J_out[worldid, 0, sparseid0] = j1mj2[0]
         efc_J_out[worldid, 0, sparseid1] = j1mj2[1]
@@ -382,7 +382,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -419,7 +419,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_J_rownnz_out[worldid, efcid] = rownnz
       rowadr = efcid * wp.static(m.nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
-      efc_J_colind_out[worldid, rowadr] = dofadr1
+      efc_J_colind_out[worldid, 0, rowadr] = dofadr1
       efc_J_out[worldid, 0, rowadr] = 1.0
     else:
       for i in range(wp.static(m.nv)):
@@ -442,7 +442,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       if wp.static(m.opt.is_sparse):
         sparseid = rowadr + 1
-        efc_J_colind_out[worldid, sparseid] = dofadr2
+        efc_J_colind_out[worldid, 0, sparseid] = dofadr2
         efc_J_out[worldid, 0, sparseid] = -deriv_2
       else:
         efc_J_out[worldid, efcid, dofadr2] = -deriv_2
@@ -697,7 +697,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -827,12 +827,12 @@ def make_constraint(m: types.Model, d: types.Data):
         sparseid4 = rowadr4 + rownnz
         sparseid5 = rowadr5 + rownnz
 
-        efc_J_colind_out[worldid, sparseid0] = da
-        efc_J_colind_out[worldid, sparseid1] = da
-        efc_J_colind_out[worldid, sparseid2] = da
-        efc_J_colind_out[worldid, sparseid3] = da
-        efc_J_colind_out[worldid, sparseid4] = da
-        efc_J_colind_out[worldid, sparseid5] = da
+        efc_J_colind_out[worldid, 0, sparseid0] = da
+        efc_J_colind_out[worldid, 0, sparseid1] = da
+        efc_J_colind_out[worldid, 0, sparseid2] = da
+        efc_J_colind_out[worldid, 0, sparseid3] = da
+        efc_J_colind_out[worldid, 0, sparseid4] = da
+        efc_J_colind_out[worldid, 0, sparseid5] = da
 
         efc_J_out[worldid, 0, sparseid0] = jacdifp[0]
         efc_J_out[worldid, 0, sparseid1] = jacdifp[1]
@@ -977,7 +977,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -1003,7 +1003,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_J_rownnz_out[worldid, efcid] = 1
       rowadr = efcid * wp.static(m.nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
-      efc_J_colind_out[worldid, rowadr] = dofid
+      efc_J_colind_out[worldid, 0, rowadr] = dofid
       efc_J_out[worldid, 0, rowadr] = 1.0
     else:
       for i in range(wp.static(m.nv)):
@@ -1139,7 +1139,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -1175,7 +1175,7 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_J_rownnz_out[worldid, efcid] = 1
         rowadr = efcid * wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
-        efc_J_colind_out[worldid, rowadr] = dofadr
+        efc_J_colind_out[worldid, 0, rowadr] = dofadr
         efc_J_out[worldid, 0, rowadr] = J
       else:
         for i in range(wp.static(m.nv)):
@@ -1233,7 +1233,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -1280,9 +1280,9 @@ def make_constraint(m: types.Model, d: types.Data):
         sparseid1 = rowadr + 1
         sparseid2 = rowadr + 2
 
-        efc_J_colind_out[worldid, sparseid0] = dof0
-        efc_J_colind_out[worldid, sparseid1] = dof1
-        efc_J_colind_out[worldid, sparseid2] = dof2
+        efc_J_colind_out[worldid, 0, sparseid0] = dof0
+        efc_J_colind_out[worldid, 0, sparseid1] = dof1
+        efc_J_colind_out[worldid, 0, sparseid2] = dof2
 
         efc_J_out[worldid, 0, sparseid0] = -axis[0]
         efc_J_out[worldid, 0, sparseid1] = -axis[1]
@@ -1470,7 +1470,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
@@ -1680,7 +1680,7 @@ def make_constraint(m: types.Model, d: types.Data):
     efc_id_out: wp.array2d(dtype=int),
     efc_J_rownnz_out: wp.array2d(dtype=int),
     efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_J_colind_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
     efc_J_out: wp.array3d(dtype=float),
     efc_pos_out: wp.array2d(dtype=float),
     efc_margin_out: wp.array2d(dtype=float),
