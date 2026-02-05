@@ -16,6 +16,7 @@
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
 from mujoco_warp import Data
 from mujoco_warp import GeomType
@@ -23,9 +24,11 @@ from mujoco_warp import Model
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import mat63
 
 
 def _geom_dist(
@@ -290,7 +293,7 @@ def _geom_dist(
   return dist_out.numpy()[0], ncon_out.numpy()[0], pos_out.numpy()[0], pos_out.numpy()[1]
 
 
-class GJKTest(absltest.TestCase):
+class GJKTest(parameterized.TestCase):
   """Tests for GJK/EPA."""
 
   def test_spheres_distance(self):
@@ -726,6 +729,77 @@ class GJKTest(absltest.TestCase):
     dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -1.5778851595232846e-05)
     self.assertEqual(ncon, 4)
+
+  @parameterized.parameters(0.0, 0.1)
+  def test_hfield_support(self, margin: float):
+    """Test support function for height field geoms."""
+    eps = 1e-3
+
+    # Bottom triangle (z = 0)
+    # Top triangle (z = 1 + margin, following collision_convex.py pattern)
+    # fmt: off
+    prism = mat63(
+      0.0, 0.0, 0.0,           # bottom vertex 0
+      1.0, 0.0, 0.0,           # bottom vertex 1
+      0.5, 1.0, 0.0,           # bottom vertex 2
+      0.0, 0.0, 1.0 + margin,  # top vertex 3
+      1.0, 0.0, 1.0 + margin,  # top vertex 4
+      0.5, 1.0, 1.0 + margin,  # top vertex 5
+    )
+    # fmt: on
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _support_kernel(
+      hfprism_in: mat63,
+      eps_in: float,
+      support_point: wp.array(dtype=wp.vec3),
+    ):
+      geom = Geom()
+      geom.pos = wp.vec3(0.0, 0.0, 0.0)
+      geom.rot = wp.identity(n=3, dtype=float)
+      geom.hfprism = hfprism_in
+      geom.margin = 0.0  # margin added to prism
+
+      # Test directions with eps offsets for unique support points
+
+      # dir = (eps, eps, 1): selects prism[5] (top, highest z, breaks tie with x,y)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(eps_in, eps_in, 1.0))
+      support_point[0] = sp.point
+
+      # dir = (-eps, -eps, -1): selects prism[0] (bottom, lowest z)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(-eps_in, -eps_in, -1.0))
+      support_point[1] = sp.point
+
+      # dir = (1, eps, eps): selects prism[4] (top, x=1, eps breaks ties)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(1.0, eps_in, eps_in))
+      support_point[2] = sp.point
+
+      # dir = (eps, 1, eps): selects prism[5] (top, y=1, eps breaks ties)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(eps_in, 1.0, eps_in))
+      support_point[3] = sp.point
+
+    support_point = wp.empty(4, dtype=wp.vec3)
+
+    wp.launch(
+      _support_kernel,
+      dim=1,
+      inputs=[prism, eps],
+      outputs=[support_point],
+    )
+
+    result = support_point.numpy()
+
+    # dir = (eps, eps, 1): expect prism[5] + margin offset
+    np.testing.assert_allclose(result[0], prism[5], rtol=1e-5)
+
+    # dir = (-eps, -eps, -1): expect prism[0] + margin offset
+    np.testing.assert_allclose(result[1], prism[0], rtol=1e-5)
+
+    # dir = (1, 0, eps): expect prism[4] + margin offset
+    np.testing.assert_allclose(result[2], prism[4], rtol=1e-5)
+
+    # dir = (0, 1, eps): expect prism[5] + margin offset
+    np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
 
 
 if __name__ == "__main__":
