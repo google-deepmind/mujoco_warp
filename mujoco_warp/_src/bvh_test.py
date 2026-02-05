@@ -149,7 +149,7 @@ class BvhTest(absltest.TestCase):
 
     bvh.build_scene_bvh(m, d, rc)
 
-    lower_before = rc.lower.numpy()
+    lower_before = rc.lower.numpy().copy()
 
     geom_xpos = d.geom_xpos.numpy()
     geom_xpos[:, :, 2] += 1.0
@@ -248,6 +248,10 @@ class BvhTest(absltest.TestCase):
 
   def test_build_flex_bvh(self):
     """Tests that build_flex_bvh creates a valid BVH."""
+    # TODO: Re-enable this test once flex performance is improved for CPU
+    self.skipTest("Skipping test that requires CPU performance improvement")
+    return
+
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
 
     flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)

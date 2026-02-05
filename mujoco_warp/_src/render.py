@@ -135,7 +135,7 @@ def cast_ray(
       d, n = ray_plane(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -152,7 +152,7 @@ def cast_ray(
     if geom_type[gi] == GeomType.SPHERE:
       d, n = ray_sphere(
         geom_xpos_in[world_id, gi],
-        geom_size[world_id, gi][0] * geom_size[world_id, gi][0],
+        geom_size[world_id % geom_size.shape[0], gi][0] * geom_size[world_id % geom_size.shape[0], gi][0],
         ray_origin_world,
         ray_dir_world,
       )
@@ -160,7 +160,7 @@ def cast_ray(
       d, n = ray_ellipsoid(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -168,7 +168,7 @@ def cast_ray(
       d, n = ray_capsule(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -176,7 +176,7 @@ def cast_ray(
       d, n = ray_cylinder(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -184,7 +184,7 @@ def cast_ray(
       d, all, n = ray_box(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -246,7 +246,7 @@ def cast_ray_first_hit(
       d, n = ray_plane(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -263,7 +263,7 @@ def cast_ray_first_hit(
     if geom_type[gi] == GeomType.SPHERE:
       d, n = ray_sphere(
         geom_xpos_in[world_id, gi],
-        geom_size[world_id, gi][0] * geom_size[world_id, gi][0],
+        geom_size[world_id % geom_size.shape[0], gi][0] * geom_size[world_id % geom_size.shape[0], gi][0],
         ray_origin_world,
         ray_dir_world,
       )
@@ -271,7 +271,7 @@ def cast_ray_first_hit(
       d, n = ray_ellipsoid(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -279,7 +279,7 @@ def cast_ray_first_hit(
       d, n = ray_capsule(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -287,7 +287,7 @@ def cast_ray_first_hit(
       d, n = ray_cylinder(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -295,7 +295,7 @@ def cast_ray_first_hit(
       d, all, n = ray_box(
         geom_xpos_in[world_id, gi],
         geom_xmat_in[world_id, gi],
-        geom_size[world_id, gi],
+        geom_size[world_id % geom_size.shape[0], gi],
         ray_origin_world,
         ray_dir_world,
       )
@@ -502,9 +502,9 @@ def render(m: Model, d: Data, rc: RenderContext):
       py = ray_idx_local // img_w
       ray_dir_local_cam = compute_ray(
         cam_projection[mujoco_cam_id],
-        cam_fovy[world_idx, mujoco_cam_id],
+        cam_fovy[world_idx % cam_fovy.shape[0], mujoco_cam_id],
         cam_sensorsize[mujoco_cam_id],
-        cam_intrinsic[world_idx, mujoco_cam_id],
+        cam_intrinsic[world_idx % cam_intrinsic.shape[0], mujoco_cam_id],
         img_w,
         img_h,
         px,
@@ -564,25 +564,25 @@ def render(m: Model, d: Data, rc: RenderContext):
       # TODO: Currently flex textures are not supported, and only the first rgba value
       # is used until further flex support is added.
       color = flex_rgba[0]
-    elif geom_matid[world_idx, geom_id] == -1:
-      color = geom_rgba[world_idx, geom_id]
+    elif geom_matid[world_idx % geom_matid.shape[0], geom_id] == -1:
+      color = geom_rgba[world_idx % geom_rgba.shape[0], geom_id]
     else:
-      color = mat_rgba[world_idx, geom_matid[world_idx, geom_id]]
+      color = mat_rgba[world_idx % mat_rgba.shape[0], geom_matid[world_idx % geom_matid.shape[0], geom_id]]
 
     base_color = wp.vec3(color[0], color[1], color[2])
     hit_color = base_color
 
     if wp.static(rc.use_textures):
       if geom_id != -2:
-        mat_id = geom_matid[world_idx, geom_id]
+        mat_id = geom_matid[world_idx % geom_matid.shape[0], geom_id]
         if mat_id >= 0:
-          tex_id = mat_texid[world_idx, mat_id, 1]
+          tex_id = mat_texid[world_idx % mat_texid.shape[0], mat_id, 1]
           if tex_id >= 0:
             tex_color = sample_texture(
               geom_type,
               mesh_faceadr,
               geom_id,
-              mat_texrepeat[world_idx, mat_id],
+              mat_texrepeat[world_idx % mat_texrepeat.shape[0], mat_id],
               textures[tex_id],
               geom_xpos_in[world_idx, geom_id],
               geom_xmat_in[world_idx, geom_id],
@@ -620,9 +620,9 @@ def render(m: Model, d: Data, rc: RenderContext):
         world_idx,
         mesh_bvh_id,
         hfield_bvh_id,
-        light_active[world_idx, l],
-        light_type[world_idx, l],
-        light_castshadow[world_idx, l],
+        light_active[world_idx % light_active.shape[0], l],
+        light_type[world_idx % light_type.shape[0], l],
+        light_castshadow[world_idx % light_castshadow.shape[0], l],
         light_xpos_in[world_idx, l],
         light_xdir_in[world_idx, l],
         normal,

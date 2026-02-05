@@ -138,8 +138,8 @@ def _cam_projection(
   refid: int,
 ) -> wp.vec2:
   sensorsize = cam_sensorsize[refid]
-  intrinsic = cam_intrinsic[worldid, refid]
-  fovy = cam_fovy[worldid, refid]
+  intrinsic = cam_intrinsic[worldid % cam_intrinsic.shape[0], refid]
+  fovy = cam_fovy[worldid % cam_fovy.shape[0], refid]
   res = cam_resolution[refid]
 
   target_xpos = site_xpos_in[worldid, objid]
@@ -2152,7 +2152,15 @@ def _sensor_tactile(
   contact_type = geom_type[geom]
 
   plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
+    oct_child,
+    oct_aabb,
+    oct_coeff,
+    plugin,
+    plugin_attr,
+    contact_type,
+    geom_size[worldid % geom_size.shape[0], geom],
+    plugin_id,
+    mesh_id,
   )
 
   depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)

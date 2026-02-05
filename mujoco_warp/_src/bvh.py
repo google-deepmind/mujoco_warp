@@ -195,7 +195,7 @@ def _compute_bvh_bounds(
 
   pos = geom_xpos_in[world_id, geom_id]
   rot = geom_xmat_in[world_id, geom_id]
-  size = geom_size[world_id, geom_id]
+  size = geom_size[world_id % geom_size.shape[0], geom_id]
   type = geom_type[geom_id]
 
   # TODO: Investigate branch elimination with static loop unrolling
