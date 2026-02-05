@@ -29,6 +29,7 @@ from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
@@ -55,6 +56,11 @@ def _hfield_filter(
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
+  mesh_vertadr: wp.array(dtype=int),
+  mesh_vertnum: wp.array(dtype=int),
+  mesh_graphadr: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
+  mesh_graph: wp.array(dtype=int),
   hfield_size: wp.array(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -90,14 +96,14 @@ def _hfield_filter(
   # box-sphere test: horizontal plane
   for i in range(2):
     if (size1[i] < pos[i] - r2 - margin) or (-size1[i] > pos[i] + r2 + margin):
-      return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+      return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
   # box-sphere test: vertical direction
   if size1[2] < pos[2] - r2 - margin:  # up
-    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+    return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
   if -size1[3] > pos[2] + r2 + margin:  # down
-    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+    return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
   mat2 = geom_xmat_in[worldid, g2]
   mat = mat1T @ mat2
@@ -111,6 +117,15 @@ def _hfield_filter(
   geom2.index = -1
 
   geomtype2 = geom_type[g2]
+
+  # load mesh vertex data for support function queries
+  if geomtype2 == GeomType.MESH:
+    dataid = geom_dataid[g2]
+    geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
+    geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
+    geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
+    geom2.vert = mesh_vert
+    geom2.graph = mesh_graph
 
   # use support functions for tight AABB bounds
   xmax = support(geom2, geomtype2, wp.vec3(1.0, 0.0, 0.0)).point[0]
@@ -129,7 +144,7 @@ def _hfield_filter(
     or (zmin - margin > size1[2])
     or (zmax + margin < -size1[3])
   ):
-    return True, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf
+    return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
   else:
     return False, xmin, xmax, ymin, ymax, zmin, zmax
 
@@ -238,7 +253,22 @@ def ccd_hfield_kernel_builder(
 
     # height field filter
     no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-      geom_type, geom_dataid, geom_size, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+      geom_type,
+      geom_dataid,
+      geom_size,
+      geom_rbound,
+      geom_margin,
+      mesh_vertadr,
+      mesh_vertnum,
+      mesh_graphadr,
+      mesh_vert,
+      mesh_graph,
+      hfield_size,
+      geom_xpos_in,
+      geom_xmat_in,
+      worldid,
+      g1,
+      g2,
     )
     if no_hf_collision:
       return
@@ -333,9 +363,9 @@ def ccd_hfield_kernel_builder(
     hfield_contact_dist = vec_maxconpair()
     hfield_contact_pos = mat_maxconpair()
     hfield_contact_normal = mat_maxconpair()
-    min_dist = float(wp.inf)
-    min_normal = wp.vec3(wp.inf, wp.inf, wp.inf)
-    min_pos = wp.vec3(wp.inf, wp.inf, wp.inf)
+    min_dist = float(MJ_MAXVAL)
+    min_normal = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
+    min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     min_id = int(-1)
 
     # TODO(team): height field margin?
@@ -504,7 +534,7 @@ def ccd_hfield_kernel_builder(
 
       # contact 1: furthest from minimum distance contact
       id1 = int(-1)
-      dist1 = float(-wp.inf)
+      dist1 = float(-MJ_MAXVAL)
       for i in range(count):
         if i == min_id:
           continue
@@ -558,7 +588,7 @@ def ccd_hfield_kernel_builder(
       dist_min1 = wp.cross(min_normal, min_pos - pos1)
 
       id2 = int(-1)
-      dist_12 = float(-wp.inf)
+      dist_12 = float(-MJ_MAXVAL)
       for i in range(count):
         if i == min_id or i == id1:
           continue
@@ -613,7 +643,7 @@ def ccd_hfield_kernel_builder(
       vec_12 = wp.cross(min_normal, pos1 - pos2)
 
       id3 = int(-1)
-      dist3 = float(-wp.inf)
+      dist3 = float(-MJ_MAXVAL)
       for i in range(count):
         if i == min_id or i == id1 or i == id2:
           continue
@@ -717,7 +747,6 @@ def ccd_kernel_builder(
     solimp: vec5,
     x1: wp.vec3,
     x2: wp.vec3,
-    count: int,
     pairid: wp.vec2i,
     # Data out:
     contact_dist_out: wp.array(dtype=float),
@@ -743,12 +772,12 @@ def ccd_kernel_builder(
     witness2 = mat43()
     geom1.margin = margin
     geom2.margin = margin
-    if pairid[1] >= 0:
-      # if collision sensor, set large cutoff to work with various sensor cutoff values
+    is_collision_sensor = pairid[1] >= 0
+    if is_collision_sensor:
       cutoff = 1.0e32
     else:
       cutoff = 0.0
-    dist, ncontact, w1, w2, multiccd_idx = ccd(
+    dist, ncollision, w1, w2, multiccd_idx = ccd(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
@@ -790,7 +819,7 @@ def ccd_kernel_builder(
           multiccd_idx = -1
 
       if multiccd_idx > -1:
-        ncontact, witness1, witness2 = multicontact(
+        ncollision, witness1, witness2 = multicontact(
           multiccd_polygon_in[tid],
           multiccd_clipped_in[tid],
           multiccd_pnormal_in[tid],
@@ -815,7 +844,7 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-    for i in range(ncontact):
+    for i in range(ncollision):
       points[i] = 0.5 * (witness1[i] + witness2[i])
     normal = witness1[0] - witness2[0]
     frame = make_frame(normal)
@@ -825,8 +854,9 @@ def ccd_kernel_builder(
       frame *= -1.0
       geoms = wp.vec2i(geoms[1], geoms[0])
 
-    for i in range(ncontact):
-      write_contact(
+    nactive = int(0)  # number of contacts contributing to the physics
+    for i in range(ncollision):
+      active = write_contact(
         naconmax_in,
         i,
         dist,
@@ -857,10 +887,9 @@ def ccd_kernel_builder(
         contact_geomcollisionid_out,
         nacon_out,
       )
-      if count + (i + 1) >= MJ_MAXCONPAIR:
-        return i + 1
+      nactive += active
 
-    return ncontact
+    return nactive
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
   @wp.kernel(module="unique", enable_backward=False)
@@ -1041,7 +1070,6 @@ def ccd_kernel_builder(
       solimp,
       geom1.pos,
       geom2.pos,
-      0,
       collision_pairid_in[tid],
       contact_dist_out,
       contact_pos_out,

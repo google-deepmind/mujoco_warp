@@ -19,11 +19,13 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
@@ -238,7 +240,6 @@ def _flex_vertices(
 @wp.kernel
 def _flex_edges(
   # Model:
-  nv: int,
   nflex: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
@@ -249,6 +250,8 @@ def _flex_edges(
   flex_edgenum: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
+  flexedge_J_rowadr: wp.array(dtype=int),
+  flexedge_J_colind: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
@@ -265,28 +268,81 @@ def _flex_edges(
     if locid >= 0 and locid < flex_edgenum[i]:
       f = i
       break
+
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
-  pos1 = flexvert_xpos_in[worldid, vbase + v[0]]
-  pos2 = flexvert_xpos_in[worldid, vbase + v[1]]
+  vbase0 = vbase + v[0]
+  vbase1 = vbase + v[1]
+
+  pos1 = flexvert_xpos_in[worldid, vbase0]
+  pos2 = flexvert_xpos_in[worldid, vbase1]
   vec = pos2 - pos1
-  vecnorm = wp.length(vec)
-  flexedge_length_out[worldid, edgeid] = vecnorm
+  edge, edge_length = math.normalize_with_norm(vec)
+  flexedge_length_out[worldid, edgeid] = edge_length
   # TODO(quaglino): use Jacobian
-  b1 = flex_vertbodyid[vbase + v[0]]
-  b2 = flex_vertbodyid[vbase + v[1]]
-  i = body_dofadr[b1]
-  j = body_dofadr[b2]
-  vel1 = wp.vec3(qvel_in[worldid, i], qvel_in[worldid, i + 1], qvel_in[worldid, i + 2])
-  vel2 = wp.vec3(qvel_in[worldid, j], qvel_in[worldid, j + 1], qvel_in[worldid, j + 2])
-  edge = wp.normalize(vec)
+  b1 = flex_vertbodyid[vbase0]
+  b2 = flex_vertbodyid[vbase1]
+
+  dofi = body_dofadr[b1]
+  dofj = body_dofadr[b2]
+  dofi0 = dofi + 0
+  dofi1 = dofi + 1
+  dofi2 = dofi + 2
+  dofj0 = dofj + 0
+  dofj1 = dofj + 1
+  dofj2 = dofj + 2
+
+  vel1 = wp.vec3(qvel_in[worldid, dofi0], qvel_in[worldid, dofi1], qvel_in[worldid, dofi2])
+  vel2 = wp.vec3(qvel_in[worldid, dofj0], qvel_in[worldid, dofj1], qvel_in[worldid, dofj2])
   flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, edge)
-  # Edge jacobian
-  for k in range(nv):
-    jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, k, worldid)
-    jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, k, worldid)
-    jacdif = jacp2 - jacp1
-    flexedge_J_out[worldid, edgeid, k] = wp.dot(jacdif, edge)
+
+  rowadr = flexedge_J_rowadr[edgeid]
+
+  sparseid0 = rowadr + 0
+  sparseid1 = rowadr + 1
+  sparseid2 = rowadr + 2
+  sparseid3 = rowadr + 3
+  sparseid4 = rowadr + 4
+  sparseid5 = rowadr + 5
+
+  # TODO(team): jacdif
+
+  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi0, worldid)
+  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi0, worldid)
+  jacdif = jacp2 - jacp1
+  Ji0 = wp.dot(jacdif, edge)
+
+  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi1, worldid)
+  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi1, worldid)
+  jacdif = jacp2 - jacp1
+  Ji1 = wp.dot(jacdif, edge)
+
+  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi2, worldid)
+  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi2, worldid)
+  jacdif = jacp2 - jacp1
+  Ji2 = wp.dot(jacdif, edge)
+
+  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj0, worldid)
+  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj0, worldid)
+  jacdif = jacp2 - jacp1
+  Jj0 = wp.dot(jacdif, edge)
+
+  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj1, worldid)
+  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj1, worldid)
+  jacdif = jacp2 - jacp1
+  Jj1 = wp.dot(jacdif, edge)
+
+  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj2, worldid)
+  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj2, worldid)
+  jacdif = jacp2 - jacp1
+  Jj2 = wp.dot(jacdif, edge)
+
+  flexedge_J_out[worldid, 0, sparseid0] = Ji0
+  flexedge_J_out[worldid, 0, sparseid1] = Ji1
+  flexedge_J_out[worldid, 0, sparseid2] = Ji2
+  flexedge_J_out[worldid, 0, sparseid3] = Jj0
+  flexedge_J_out[worldid, 0, sparseid4] = Jj1
+  flexedge_J_out[worldid, 0, sparseid5] = Jj2
 
 
 @event_scope
@@ -357,7 +413,6 @@ def flex(m: Model, d: Data):
     _flex_edges,
     dim=(d.nworld, m.nflexedge),
     inputs=[
-      m.nv,
       m.nflex,
       m.body_parentid,
       m.body_rootid,
@@ -368,12 +423,18 @@ def flex(m: Model, d: Data):
       m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
+      m.flexedge_J_rowadr,
+      m.flexedge_J_colind,
       d.qvel,
       d.subtree_com,
       d.cdof,
       d.flexvert_xpos,
     ],
-    outputs=[d.flexedge_J, d.flexedge_length, d.flexedge_velocity],
+    outputs=[
+      d.flexedge_J,
+      d.flexedge_length,
+      d.flexedge_velocity,
+    ],
   )
 
 
@@ -816,7 +877,7 @@ def crb(m: Model, d: Data):
     wp.launch(_crb_accumulate, dim=(d.nworld, body_tree.size), inputs=[m.body_parentid, d.crb, body_tree], outputs=[d.crb])
 
   d.qM.zero_()
-  if m.opt.is_sparse:
+  if m.is_sparse:
     wp.launch(
       _qM_sparse,
       dim=(d.nworld, m.nv),
@@ -832,10 +893,10 @@ def crb(m: Model, d: Data):
 @wp.kernel
 def _tendon_armature(
   # Model:
-  opt_is_sparse: bool,
   dof_parentid: wp.array(dtype=int),
   dof_Madr: wp.array(dtype=int),
   tendon_armature: wp.array2d(dtype=float),
+  is_sparse: bool,
   # Data in:
   ten_J_in: wp.array3d(dtype=float),
   # Data out:
@@ -843,7 +904,7 @@ def _tendon_armature(
 ):
   worldid, tenid, dofid = wp.tid()
 
-  if opt_is_sparse:  # opt_is_sparse is not batched
+  if is_sparse:  # is_sparse is not batched
     madr_ij = dof_Madr[dofid]
 
   armature = tendon_armature[worldid, tenid]
@@ -866,7 +927,7 @@ def _tendon_armature(
 
     qMij = armature * ten_Jj * ten_Ji
 
-    if opt_is_sparse:
+    if is_sparse:
       wp.atomic_add(qM_out[worldid, 0], madr_ij, qMij)
       madr_ij += 1
     else:
@@ -883,7 +944,7 @@ def tendon_armature(m: Model, d: Data):
   wp.launch(
     _tendon_armature,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[m.opt.is_sparse, m.dof_parentid, m.dof_Madr, m.tendon_armature, d.ten_J],
+    inputs=[m.dof_parentid, m.dof_Madr, m.tendon_armature, m.is_sparse, d.ten_J],
     outputs=[d.qM],
   )
 
@@ -991,7 +1052,7 @@ def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
 @event_scope
 def factor_m(m: Model, d: Data):
   """Factorization of inertia-like matrix M, assumed spd."""
-  if m.opt.is_sparse:
+  if m.is_sparse:
     _factor_i_sparse(m, d, d.qM, d.qLD, d.qLDiagInv)
   else:
     _factor_i_dense(m, d, d.qM, d.qLD)
@@ -1184,6 +1245,36 @@ def _cfrc_ext(
 
 
 @wp.kernel
+def _count_equality_constraints(
+  # Model:
+  eq_type: wp.array(dtype=int),
+  # Data in:
+  ne_in: wp.array(dtype=int),
+  efc_type_in: wp.array2d(dtype=int),
+  efc_id_in: wp.array2d(dtype=int),
+  # Out:
+  ne_connect_out: wp.array(dtype=int),
+  ne_weld_out: wp.array(dtype=int),
+):
+  """Counts connect and weld equality constraints from efc data."""
+  worldid, efcid = wp.tid()
+
+  # Only process rows within the equality constraint range
+  if efcid >= ne_in[worldid]:
+    return
+
+  # Get the equality constraint ID and its type
+  eq_id = efc_id_in[worldid, efcid]
+  eq_constraint_type = eq_type[eq_id]
+
+  # Count by type (each connect has 3 rows, each weld has 6 rows)
+  if eq_constraint_type == EqType.CONNECT:
+    wp.atomic_add(ne_connect_out, worldid, 1)
+  elif eq_constraint_type == EqType.WELD:
+    wp.atomic_add(ne_weld_out, worldid, 1)
+
+
+@wp.kernel
 def _cfrc_ext_equality(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -1199,6 +1290,7 @@ def _cfrc_ext_equality(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   efc_id_in: wp.array2d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  # In:
   ne_connect_in: wp.array(dtype=int),
   ne_weld_in: wp.array(dtype=int),
   # Data out:
@@ -1369,27 +1461,40 @@ def rne_postconstraint(m: Model, d: Data):
     outputs=[d.cfrc_ext],
   )
 
-  wp.launch(
-    _cfrc_ext_equality,
-    dim=(d.nworld, m.neq),
-    inputs=[
-      m.body_rootid,
-      m.site_bodyid,
-      m.site_pos,
-      m.eq_obj1id,
-      m.eq_obj2id,
-      m.eq_objtype,
-      m.eq_data,
-      d.xpos,
-      d.xmat,
-      d.subtree_com,
-      d.efc.id,
-      d.efc.force,
-      d.ne_connect,
-      d.ne_weld,
-    ],
-    outputs=[d.cfrc_ext],
-  )
+  # Equality constraint forces - only if model has equality constraints
+  if m.neq > 0:
+    # Allocate inline counters and count from efc data
+    ne_connect = wp.zeros((d.nworld,), dtype=int)
+    ne_weld = wp.zeros((d.nworld,), dtype=int)
+
+    wp.launch(
+      _count_equality_constraints,
+      dim=(d.nworld, d.njmax),  # TODO(team): launch over max equality constraints
+      inputs=[m.eq_type, d.ne, d.efc.type, d.efc.id],
+      outputs=[ne_connect, ne_weld],
+    )
+
+    wp.launch(
+      _cfrc_ext_equality,
+      dim=(d.nworld, m.neq),
+      inputs=[
+        m.body_rootid,
+        m.site_bodyid,
+        m.site_pos,
+        m.eq_obj1id,
+        m.eq_obj2id,
+        m.eq_objtype,
+        m.eq_data,
+        d.xpos,
+        d.xmat,
+        d.subtree_com,
+        d.efc.id,
+        d.efc.force,
+        ne_connect,
+        ne_weld,
+      ],
+      outputs=[d.cfrc_ext],
+    )
 
   # cfrc_ext += contacts
   wp.launch(
@@ -2399,7 +2504,7 @@ def solve_LD(
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.opt.is_sparse:
+  if m.is_sparse:
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _solve_LD_dense(m, d, L, x, y)
@@ -2482,7 +2587,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.opt.is_sparse:
+  if m.is_sparse:
     _factor_i_sparse(m, d, M, L, D)
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
@@ -2791,7 +2896,7 @@ def _spatial_geom_tendon(
   if sideid >= 0:
     side = site_xpos_in[worldid, sideid]
   else:
-    side = wp.vec3(wp.inf)
+    side = wp.vec3(MJ_MAXVAL)
 
   # compute geom wrap length and connect points (if wrap occurs)
   length_geomgeom, geom_pnt0, geom_pnt1 = util_misc.wrap(site_pnt0, site_pnt1, geom_xpos, geom_xmat, geomsize, geom_type, side)
@@ -2949,7 +3054,7 @@ def _spatial_tendon_wrap(
 
         wrapid = id1
         id1 = wrap_objid[adr + j + 2]
-        if wp.norm_l2(wpnt_geom0) < wp.inf:
+        if wp.norm_l2(wpnt_geom0) < MJ_MAXVAL:
           wpnt_geom1 = wp.spatial_bottom(wrap_geom_xpos)
           wpnt_site1 = site_xpos_in[worldid, id1]
 

@@ -262,7 +262,7 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
 
     np.testing.assert_allclose(m.geom_fluid.numpy(), mjm.geom_fluid)
-    self.assertTrue(m.opt.has_fluid)
+    self.assertTrue(m.has_fluid)
 
     body_has = m.body_fluid_ellipsoid.numpy()
     self.assertTrue(body_has[mjm.geom_bodyid[0]])
@@ -463,23 +463,6 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(len(m.oct_aabb.shape), 2)
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
-
-  def test_collision_sensor_box_box(self):
-    """Tests for collision sensors that are not implemented."""
-    with self.assertRaises(NotImplementedError):
-      test_data.fixture(
-        xml=f"""
-      <mujoco>
-        <worldbody>
-          <geom name="box1" type="box" size=".1 .1 .1"/>
-          <geom name="box2" type="box" size=".1 .1 .1"/>
-        </worldbody>
-        <sensor>
-          <distance geom1="box1" geom2="box2"/>
-        </sensor>
-      </mujoco>
-      """
-      )
 
   def test_implicit_integrator_fluid_model(self):
     """Tests for implicit integrator with fluid model."""
@@ -823,6 +806,18 @@ class IOTest(parameterized.TestCase):
       d = mjwarp.make_data(mjm)
 
     _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
+
+  def test_tree_structure_fields(self):
+    """Tests that tree structure fields match between types.Model and mjModel."""
+    mjm, _, m, _ = test_data.fixture("pendula.xml")
+
+    # verify fields match MuJoCo
+    for field in ["ntree", "tree_dofadr", "tree_dofnum", "tree_bodynum", "body_treeid", "dof_treeid"]:
+      m_val = getattr(m, field)
+      mjm_val = getattr(mjm, field)
+      if isinstance(m_val, wp.array):
+        m_val = m_val.numpy()
+      np.testing.assert_array_equal(m_val, mjm_val, err_msg=f"mismatch: {field}")
 
   def test_model_batched_fields(self):
     """Test Model batched fields."""

@@ -23,6 +23,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec10
@@ -345,19 +346,21 @@ class UtilMiscTest(parameterized.TestCase):
 
   def test_wrap_circle(self):
     # no wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([np.inf, np.inf]), 0.1)
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 0.1)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     # no wrap
     wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([0.0, 0.0]), 0.1)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     # wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([np.inf, np.inf]), 1.0 + 5e-4)
+    wlen, wpnt0, wpnt1 = _wrap_circle(
+      np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 1.0 + 5e-4
+    )
     _assert_eq(wlen, 0.0, "wlen")
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
@@ -397,38 +400,38 @@ class UtilMiscTest(parameterized.TestCase):
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([0, 0, 1, 0]), 1.0)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 0]), 1.0)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([0, 0, 0, 0]), 1.0)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 0]), 2.0)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([0, 0, 1, 0]), 2.0)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 1, 1, 1]), 0.1 * MJ_MINVAL)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([-1, 0, 1, 0]), 0.1)
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([-1, 0.2, 1, 0.2]), 0.1)
     _assert_eq(wlen, 0.0, "wlen")
@@ -443,13 +446,13 @@ class UtilMiscTest(parameterized.TestCase):
     xpos = np.array([0, 0, 0])
     xmat = np.eye(3)
     radius = 0.1
-    side = np.array([np.inf, np.inf, np.inf])
+    side = np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL])
 
     wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
 
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     # wrap
     x0 = np.array([0.1, -1.0, 0.0])
@@ -457,7 +460,7 @@ class UtilMiscTest(parameterized.TestCase):
     xpos = np.array([0, 0, 0])
     xmat = np.eye(3)
     radius = 0.1
-    side = np.array([np.inf, np.inf, np.inf])
+    side = np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL])
 
     wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
 
@@ -492,8 +495,8 @@ class UtilMiscTest(parameterized.TestCase):
     wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
 
     _assert_eq(wlen, -1.0, "wlen")
-    _assert_eq(wpnt0, np.array([np.inf, np.inf, np.inf]), "wpnt0")
-    _assert_eq(wpnt1, np.array([np.inf, np.inf, np.inf]), "wpnt1")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
     # inside wrap w/ sidesite
     x0 = np.array([1.0, -1.0, 0.0])
