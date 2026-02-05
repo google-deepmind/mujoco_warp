@@ -99,3 +99,7 @@ from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
 from mujoco_warp._src.types import Statistic as Statistic
 from mujoco_warp._src.types import TrnType as TrnType
+from mujoco_warp._src.types import WarningType as WarningType
+from mujoco_warp._src.warning import check_warnings as check_warnings
+from mujoco_warp._src.warning import clear_warnings as clear_warnings
+from mujoco_warp._src.warning import get_warnings as get_warnings

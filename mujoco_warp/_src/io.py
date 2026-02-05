@@ -207,6 +207,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   else:
     opt.contact_sensor_maxmatch = 64
 
+  # warning_printf: emit overflow warnings via printf (default True)
+  opt.warning_printf = True
+
   # place opt on device
   for f in dataclasses.fields(types.Option):
     if isinstance(f.type, wp.array):
@@ -691,7 +694,10 @@ def make_data(
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
 
-  sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  sizes = dict(
+    {"*": 1, "NUM_WARNINGS": types.NUM_WARNINGS},
+    **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int},
+  )
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -809,7 +815,10 @@ def put_data(
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
-  sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  sizes = dict(
+    {"*": 1, "NUM_WARNINGS": types.NUM_WARNINGS},
+    **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int},
+  )
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -890,8 +899,13 @@ def put_data(
     "flexedge_J": None,
     "nacon": None,
   }
+  # Skip fields that shouldn't be copied from MuJoCo data
+  skip_mjd_fields = {"warning", "warning_info"}
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
+      continue
+    if f.name in skip_mjd_fields:
+      d_kwargs[f.name] = _create_array(None, f.type, sizes)
       continue
     val = getattr(mjd, f.name, None)
     if val is not None:

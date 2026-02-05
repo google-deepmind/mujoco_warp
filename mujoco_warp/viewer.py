@@ -43,6 +43,7 @@ import mujoco_warp as mjw
 from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
+from mujoco_warp._src.warning import check_warnings
 
 
 class EngineOptions(enum.IntEnum):
@@ -147,6 +148,7 @@ def _main(argv: Sequence[str]) -> None:
     with wp.ScopedDevice(_DEVICE.value):
       override_model(mjm, _OVERRIDE.value)
       m = mjw.put_model(mjm)
+      m.opt.warning_printf = False  # use check_warnings instead
       override_model(m, _OVERRIDE.value)
       broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
       solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
@@ -189,15 +191,18 @@ def _main(argv: Sequence[str]) -> None:
         if mjm.opt != opt:
           opt = copy.copy(mjm.opt)
           m = mjw.put_model(mjm)
+          m.opt.warning_printf = False  # use check_warnings instead
           graph = _compile_step(m, d)
 
         if _VIEWER_GLOBAL_STATE["running"]:
           wp.capture_launch(graph)
           wp.synchronize()
+          check_warnings(d)
         elif _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
           wp.capture_launch(graph)
           wp.synchronize()
+          check_warnings(d)
 
         mjw.get_data_into(mjd, mjm, d)
 

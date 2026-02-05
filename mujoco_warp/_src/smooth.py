@@ -1985,11 +1985,9 @@ def _transmission(
       actuator_length_out[worldid, actid] = wp.dot(axis_angle, gearaxis)
       for i in range(3):
         actuator_moment_out[worldid, actid, vadr + i] = gearaxis[i]
-    elif jnt_typ == JointType.SLIDE or jnt_typ == JointType.HINGE:
+    else:  # SLIDE or HINGE
       actuator_length_out[worldid, actid] = qpos[qadr] * gear[0]
       actuator_moment_out[worldid, actid, vadr] = gear[0]
-    else:
-      wp.printf("unrecognized joint type")
   elif trntype == TrnType.SLIDERCRANK:
     # get data
     trnid = actuator_trnid[actid]
@@ -2194,8 +2192,6 @@ def _transmission(
           moment += wp.dot(jacrdif, wrench_rotation)
 
         actuator_moment_out[worldid, actid, i] = moment
-  else:
-    wp.printf("unhandled transmission type %d\n", trntype)
 
 
 @wp.kernel

@@ -66,6 +66,31 @@ class BlockDim:
   qderiv_actuator_dense: int = 32
 
 
+class WarningType(enum.IntEnum):
+  """Warning types for kernel-side overflow detection.
+
+  Attributes:
+    NEFC_OVERFLOW: constraint count exceeded njmax
+    BROADPHASE_OVERFLOW: broadphase collision count exceeded naconmax
+    NARROWPHASE_OVERFLOW: narrowphase contact count exceeded naconmax
+    CONTACT_MATCH_OVERFLOW: contact sensor match count exceeded maxmatch
+    GJK_ITERATIONS: GJK algorithm did not converge within iteration limit
+    EPA_HORIZON: EPA horizon buffer overflow
+    HFIELD_OVERFLOW: heightfield collision count exceeded MJ_MAXCONPAIR
+  """
+
+  NEFC_OVERFLOW = 0
+  BROADPHASE_OVERFLOW = 1
+  NARROWPHASE_OVERFLOW = 2
+  CONTACT_MATCH_OVERFLOW = 3
+  GJK_ITERATIONS = 4
+  EPA_HORIZON = 5
+  HFIELD_OVERFLOW = 6
+
+
+NUM_WARNINGS = len(WarningType)
+
+
 class BroadphaseType(enum.IntEnum):
   """Type of broadphase algorithm.
 
@@ -690,6 +715,9 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    warning_printf: if True, emit overflow warnings via printf to stdout in addition to setting
+                    warning flags. Default True. Set to False and use check_warnings(d) for
+                    programmatic access to warnings without stdout output.
   """
 
   timestep: array("*", float)
@@ -720,6 +748,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  warning_printf: bool
 
 
 @dataclasses.dataclass
@@ -1647,6 +1676,8 @@ class Data:
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
+    warning: warning flags (accumulated across steps)           (NUM_WARNINGS,)
+    warning_info: warning info (suggested values)               (NUM_WARNINGS, 2)
   """
 
   solver_niter: array("nworld", int)
@@ -1738,3 +1769,7 @@ class Data:
   collision_pairid: array("naconmax", wp.vec2i)
   collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+  # warp only: warning flags (accumulated across steps, checked on host)
+  warning: array("NUM_WARNINGS", int)  # flag per warning type
+  warning_info: array("NUM_WARNINGS", 2, int)  # suggested values

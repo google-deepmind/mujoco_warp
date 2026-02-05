@@ -286,6 +286,7 @@ def _main(argv: Sequence[str]):
   with wp.ScopedDevice(_DEVICE.value):
     override_model(mjm, _OVERRIDE.value)
     m = mjw.put_model(mjm)
+    m.opt.warning_printf = False  # use check_warnings instead
     override_model(m, _OVERRIDE.value)
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
     if _FORMAT.value == "human":

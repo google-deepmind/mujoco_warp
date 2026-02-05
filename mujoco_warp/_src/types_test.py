@@ -45,6 +45,8 @@ class TypesTest(parameterized.TestCase):
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
       mj_fields.insert(0, mj_fields.pop(mj_fields.index("solver_niter")))
+      # MuJoCo's "warning" field is different from our warp-only warning system
+      mj_fields.remove("warning")
 
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
