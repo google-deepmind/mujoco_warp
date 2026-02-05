@@ -2224,12 +2224,20 @@ def create_render_context(
   if render_rgb and isinstance(render_rgb, bool):
     render_rgb = [render_rgb] * ncam
   elif render_rgb is None:
-    render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
+    else:
+      render_rgb = [True] * ncam
 
   if render_depth and isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
   elif render_depth is None:
-    render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+    else:
+      render_depth = [True] * ncam
 
   assert len(render_rgb) == ncam and len(render_depth) == ncam, (
     f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"

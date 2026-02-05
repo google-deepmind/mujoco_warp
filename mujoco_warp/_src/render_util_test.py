@@ -25,6 +25,11 @@ from mujoco_warp._src import types
 
 class RenderUtilTest(absltest.TestCase):
   def test_create_warp_texture(self):
+    # TODO: remove after mjwarp depends on warp >= 1.12 in pyproject.toml
+    if not hasattr(wp, "Texture2D"):
+      self.skipTest("Skipping test that requires warp >= 1.12")
+      return
+
     """Tests that create_warp_texture creates a valid texture."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
     texture = render_util.create_warp_texture(mjm, 0)

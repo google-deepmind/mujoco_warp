@@ -1087,7 +1087,7 @@ class IOTest(parameterized.TestCase):
   def test_bvh_creation(self, nworld):
     """Test that the BVH is created correctly for single world and multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
-    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(64, 64))
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(64, 64), use_textures=False)
 
     self.assertIsNotNone(rc)
     self.assertEqual(rc.nrender, mjm.ncam)
@@ -1105,6 +1105,13 @@ class IOTest(parameterized.TestCase):
 
   def test_output_buffers(self):
     """Test that the output rgb and depth buffers have correct shapes and addresses."""
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 24
     rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), render_rgb=True, render_depth=True)
@@ -1121,6 +1128,13 @@ class IOTest(parameterized.TestCase):
     _assert_eq(depth_adr, [0, width * height, 2 * width * height], "depth_adr")
 
   def test_heterogeneous_camera(self):
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
     """Tests render context with different resolutions and output."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     cam_res = [(64, 64), (32, 32), (16, 16)]
@@ -1146,6 +1160,13 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), "depth_adr")
 
   def test_cam_active_filtering(self):
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
 
@@ -1158,6 +1179,13 @@ class IOTest(parameterized.TestCase):
 
   def test_rgb_only_and_depth_only(self):
     """Test that disabling rgb or depth correctly reduces the shape and invalidates the address."""
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
     pixels = width * height
@@ -1188,6 +1216,11 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
   def test_render_context_with_textures(self):
+    # TODO: remove after mjwarp depends on warp >= 1.12 in pyproject.toml
+    if not hasattr(wp, "Texture2D"):
+      self.skipTest("Skipping test that requires warp >= 1.12")
+      return
+
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
     rc = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")

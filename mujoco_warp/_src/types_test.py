@@ -68,6 +68,8 @@ class TypesTest(parameterized.TestCase):
     if not BLEEDING_EDGE_MUJOCO:
       _remove_fields(actual_fields, _FLEXEDGE_J_FIELDS)
       _remove_fields(desired_fields, _FLEXEDGE_J_FIELDS)
+      _remove_fields(actual_fields, ["cam_projection",])
+      _remove_fields(desired_fields, ["cam_projection",])
 
     self.assertListEqual(actual_fields, desired_fields)
 
