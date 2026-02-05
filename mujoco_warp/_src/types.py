@@ -1023,6 +1023,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    ten_J_rowadr: row start address for sparse ten_J         (ntendon,)
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
@@ -1373,6 +1374,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  ten_J_rowadr: array("ntendon", int)
   nbranch: int
   nv_pad: int
   nacttrnbody: int
@@ -1615,7 +1617,11 @@ class Data:
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
-    ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
+    ten_J_rownnz: number of non-zeros in each tendon row        (nworld, ntendon)
+    ten_J_colind: column indices in sparse Jacobian             (nworld, ntendon, nv) if dense
+                                                                (nworld, 1, ntendon*nv) if sparse
+    ten_J: tendon Jacobian                                      (nworld, ntendon, nv) if dense
+                                                                (nworld, 1, ntendon*nv) if sparse
     ten_length: tendon lengths                                  (nworld, ntendon)
     wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
@@ -1708,7 +1714,9 @@ class Data:
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
-  ten_J: array("nworld", "ntendon", "nv", float)
+  ten_J_rownnz: array("nworld", "ntendon", int)
+  ten_J_colind: wp.array3d(dtype=int)
+  ten_J: wp.array3d(dtype=float)
   ten_length: array("nworld", "ntendon", float)
   wrap_obj: array("nworld", "nwrap", wp.vec2i)
   wrap_xpos: array("nworld", "nwrap", wp.spatial_vector)

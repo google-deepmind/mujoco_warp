@@ -23,6 +23,7 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -179,59 +180,75 @@ def _spring_damper_dof_passive(
       qfrc_damper_out[worldid, dofid] = -damping * qvel_in[worldid, dofid]
 
 
-@wp.kernel
-def _spring_damper_tendon_passive(
-  # Model:
-  tendon_stiffness: wp.array2d(dtype=float),
-  tendon_damping: wp.array2d(dtype=float),
-  tendon_lengthspring: wp.array2d(dtype=wp.vec2),
-  # Data in:
-  ten_J_in: wp.array3d(dtype=float),
-  ten_length_in: wp.array2d(dtype=float),
-  ten_velocity_in: wp.array2d(dtype=float),
-  # In:
-  dsbl_spring: bool,
-  dsbl_damper: bool,
-  # Data out:
-  qfrc_spring_out: wp.array2d(dtype=float),
-  qfrc_damper_out: wp.array2d(dtype=float),
-):
-  worldid, tenid, dofid = wp.tid()
+@cache_kernel
+def _spring_damper_tendon_passive(opt_is_sparse: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def spring_damper_tendon_passive(
+    # Model:
+    tendon_stiffness: wp.array2d(dtype=float),
+    tendon_damping: wp.array2d(dtype=float),
+    tendon_lengthspring: wp.array2d(dtype=wp.vec2),
+    ten_J_rowadr: wp.array(dtype=int),
+    # Data in:
+    ten_J_rownnz_in: wp.array2d(dtype=int),
+    ten_J_colind_in: wp.array3d(dtype=int),
+    ten_J_in: wp.array3d(dtype=float),
+    ten_length_in: wp.array2d(dtype=float),
+    ten_velocity_in: wp.array2d(dtype=float),
+    # In:
+    dsbl_spring: bool,
+    dsbl_damper: bool,
+    # Data out:
+    qfrc_spring_out: wp.array2d(dtype=float),
+    qfrc_damper_out: wp.array2d(dtype=float),
+  ):
+    worldid, tenid, dofid = wp.tid()
 
-  stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
-  damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
+    stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
+    damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
 
-  has_stiffness = stiffness != 0.0 and not dsbl_spring
-  has_damping = damping != 0.0 and not dsbl_damper
+    has_stiffness = stiffness != 0.0 and not dsbl_spring
+    has_damping = damping != 0.0 and not dsbl_damper
 
-  if not has_stiffness and not has_damping:
-    return
+    if not has_stiffness and not has_damping:
+      return
 
-  J = ten_J_in[worldid, tenid, dofid]
-
-  if has_stiffness:
-    # compute spring force along tendon
-    length = ten_length_in[worldid, tenid]
-    lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
-    lower = lengthspring[0]
-    upper = lengthspring[1]
-
-    if length > upper:
-      frc_spring = stiffness * (upper - length)
-    elif length < lower:
-      frc_spring = stiffness * (lower - length)
+    if wp.static(opt_is_sparse):
+      rownnz = ten_J_rownnz_in[worldid, tenid]
+      if dofid >= rownnz:
+        return
+      rowadr = ten_J_rowadr[tenid]
+      sparseid = rowadr + dofid
+      J = ten_J_in[worldid, 0, sparseid]
+      dofid = ten_J_colind_in[worldid, 0, sparseid]
     else:
-      frc_spring = 0.0
+      J = ten_J_in[worldid, tenid, dofid]
 
-    # transform to joint torque
-    wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
+    if has_stiffness:
+      # compute spring force along tendon
+      length = ten_length_in[worldid, tenid]
+      lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
+      lower = lengthspring[0]
+      upper = lengthspring[1]
 
-  if has_damping:
-    # compute damper linear force along tendon
-    frc_damper = -damping * ten_velocity_in[worldid, tenid]
+      if length > upper:
+        frc_spring = stiffness * (upper - length)
+      elif length < lower:
+        frc_spring = stiffness * (lower - length)
+      else:
+        frc_spring = 0.0
 
-    # transform to joint torque
-    wp.atomic_add(qfrc_damper_out[worldid], dofid, J * frc_damper)
+      # transform to joint torque
+      wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
+
+    if has_damping:
+      # compute damper linear force along tendon
+      frc_damper = -damping * ten_velocity_in[worldid, tenid]
+
+      # transform to joint torque
+      wp.atomic_add(qfrc_damper_out[worldid], dofid, J * frc_damper)
+
+  return spring_damper_tendon_passive
 
 
 @wp.kernel
@@ -741,12 +758,15 @@ def passive(m: Model, d: Data):
 
   if m.ntendon:
     wp.launch(
-      _spring_damper_tendon_passive,
+      _spring_damper_tendon_passive(m.opt.is_sparse),
       dim=(d.nworld, m.ntendon, m.nv),
       inputs=[
         m.tendon_stiffness,
         m.tendon_damping,
         m.tendon_lengthspring,
+        m.ten_J_rowadr,
+        d.ten_J_rownnz,
+        d.ten_J_colind,
         d.ten_J,
         d.ten_length,
         d.ten_velocity,

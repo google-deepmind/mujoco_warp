@@ -26,6 +26,7 @@ import warp as wp
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
+from mujoco_warp._src.warp_util import cache_kernel
 
 
 def _is_mujoco_dev() -> bool:
@@ -78,6 +79,21 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
       return False
   else:
     return bool(mujoco.mj_isSparse(mjm))
+
+
+def ten_J_rowsize(mjm: mujoco.MjModel) -> tuple[int, np.ndarray]:
+  """Returns (nnz, rowadr) for ten_J based on tendon type."""
+  rowsize = np.zeros(mjm.ntendon, dtype=int)
+  for i in range(mjm.ntendon):
+    adr = mjm.tendon_adr[i]
+    if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+      rowsize[i] = mjm.tendon_num[i]  # fixed tendon
+    else:
+      # TODO(team): spatial tendon sparsity
+      rowsize[i] = mjm.nv  # spatial tendon (dense)
+  nnz = int(np.sum(rowsize))
+  rowadr = np.concatenate([[0], np.cumsum(rowsize[:-1])]) if mjm.ntendon else np.zeros(0, dtype=int)
+  return nnz, rowadr
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
@@ -584,6 +600,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_j.append(j)
       m.qM_madr_ij.append(madr_ij)
 
+  _, m.ten_J_rowadr = ten_J_rowsize(mjm)
+
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
@@ -734,6 +752,20 @@ def make_data(
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
+  if mjm.ntendon > 0:
+    ten_J_nnz, _ = ten_J_rowsize(mjm)
+    d.ten_J_rownnz = wp.zeros((nworld, mjm.ntendon), dtype=int)
+    if is_sparse(mjm):
+      d.ten_J_colind = wp.zeros((nworld, 1, ten_J_nnz), dtype=int)
+      d.ten_J = wp.zeros((nworld, 1, ten_J_nnz), dtype=float)
+    else:
+      d.ten_J_colind = wp.zeros((nworld, 1, 0), dtype=int)
+      d.ten_J = wp.zeros((nworld, mjm.ntendon, mjm.nv), dtype=float)
+  else:
+    d.ten_J_rownnz = wp.zeros((nworld, 0), dtype=int)
+    d.ten_J_colind = wp.zeros((nworld, 0, mjm.nv), dtype=int)
+    d.ten_J = wp.zeros((nworld, 0, mjm.nv), dtype=float)
+
   return d
 
 
@@ -865,6 +897,8 @@ def put_data(
     "qM": None,
     "qLD": None,
     "ten_J": None,
+    "ten_J_rownnz": None,
+    "ten_J_colind": None,
     "actuator_moment": None,
     "flexedge_J": None,
     "nacon": None,
@@ -893,13 +927,63 @@ def put_data(
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
-  if mujoco.mj_isSparse(mjm):
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
-    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+  if mjm.ntendon > 0:
+    ten_J_nnz, ten_J_rowadr = ten_J_rowsize(mjm)
+
+    ten_J_rownnz = np.zeros((nworld, mjm.ntendon), dtype=int)
+    ten_J_colind = np.zeros((nworld, 1, ten_J_nnz), dtype=int)
+    ten_J = np.zeros((nworld, 1, ten_J_nnz), dtype=float)
+
+    for i in range(mjm.ntendon):
+      rowadr = ten_J_rowadr[i]
+      if mujoco.mj_isSparse(mjm):
+        rownnz = mjd.ten_J_rownnz[i]
+        mj_colind = mjd.ten_J_colind.reshape(-1)
+        mj_ten_J = mjd.ten_J.reshape(-1)
+        for k in range(rownnz):
+          src = mjd.ten_J_rowadr[i] + k
+          ten_J_colind[:, 0, rowadr + k] = mj_colind[src]
+          ten_J[:, 0, rowadr + k] = mj_ten_J[src]
+      else:
+        adr = mjm.tendon_adr[i]
+        # fixed tendon: only tendon_num joints contribute
+        if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+          rownnz = mjm.tendon_num[i]
+          ten_J_dense = mjd.ten_J.reshape(mjm.ntendon, mjm.nv)
+          for k in range(rownnz):
+            wrap_adr = mjm.tendon_adr[i] + k
+            jnt = mjm.wrap_objid[wrap_adr]
+            dof_adr = mjm.jnt_dofadr[jnt]
+            ten_J_colind[:, 0, rowadr + k] = dof_adr
+            ten_J[:, 0, rowadr + k] = ten_J_dense[i, dof_adr]
+        else:
+          # spatial tendon: all nv columns
+          rownnz = mjm.nv
+          ten_J_dense = mjd.ten_J.reshape(mjm.ntendon, mjm.nv)
+          for k in range(mjm.nv):
+            ten_J_colind[:, 0, rowadr + k] = k
+            ten_J[:, 0, rowadr + k] = ten_J_dense[i, k]
+      ten_J_rownnz[:, i] = rownnz
+
+    if is_sparse(mjm):
+      d.ten_J = wp.array(ten_J, dtype=float)
+      d.ten_J_colind = wp.array(ten_J_colind, dtype=int)
+    else:
+      # Reshape for dense storage format
+      ten_J_2d = np.zeros((mjm.ntendon, mjm.nv), dtype=float)
+      for i in range(mjm.ntendon):
+        rowadr = ten_J_rowadr[i]
+        rownnz = ten_J_rownnz[0, i]
+        for k in range(rownnz):
+          col = ten_J_colind[0, 0, rowadr + k]
+          ten_J_2d[i, col] = ten_J[0, 0, rowadr + k]
+      d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J_2d), dtype=float)
+      d.ten_J_colind = wp.zeros((nworld, 1, 0), dtype=int)
+    d.ten_J_rownnz = wp.array(ten_J_rownnz, dtype=int)
   else:
-    ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+    d.ten_J = wp.zeros((nworld, 0, mjm.nv), dtype=float)
+    d.ten_J_rownnz = wp.zeros((nworld, 0), dtype=int)
+    d.ten_J_colind = wp.zeros((nworld, 0, mjm.nv), dtype=int)
 
   flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
   if mjd.flexedge_J.size:
@@ -1120,7 +1204,14 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if mjm.ntendon > 0:
+    if is_sparse(mjm):
+      result.ten_J[:] = d.ten_J.numpy()[world_id].reshape(mjm.ntendon, mjm.nv)
+      result.ten_J_rownnz[:] = d.ten_J_rownnz.numpy()[world_id]
+      result.ten_J_rowadr[:] = m.ten_J_rowadr.numpy()
+      result.ten_J_colind[:] = d.ten_J_colind.numpy()[world_id].reshape(mjm.ntendon, mjm.nv)
+    else:
+      result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
@@ -1368,6 +1459,10 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ],
   )
 
+  if m.ntendon > 0 and m.opt.is_sparse:
+    d.ten_J_rownnz.zero_()
+    d.ten_J_colind.zero_()
+
 
 # kernel_analyzer: off
 @wp.kernel
@@ -1597,32 +1692,68 @@ def _finalize_body_invweight0(
   body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
 
 
-@wp.kernel
-def _copy_tendon_jacobian(
-  tenid_target: int,
-  ten_J_in: wp.array3d(dtype=float),
-  ten_J_vec_out: wp.array2d(dtype=float),
-):
-  worldid = wp.tid()
-  nv = ten_J_in.shape[2]
-  for i in range(nv):
-    ten_J_vec_out[worldid, i] = ten_J_in[worldid, tenid_target, i]
+@cache_kernel
+def _copy_tendon_jacobian(nv: int, opt_is_sparse: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def copy_tendon_jacobian(
+    # Model:
+    ten_J_rowadr: wp.array(dtype=int),
+    # In:
+    tenid_target: int,
+    ten_J_rownnz_in: wp.array2d(dtype=int),
+    ten_J_colind_in: wp.array3d(dtype=int),
+    ten_J_in: wp.array3d(dtype=float),
+    # Out:
+    ten_J_vec_out: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+
+    if wp.static(opt_is_sparse):
+      rownnz = ten_J_rownnz_in[worldid, tenid_target]
+      rowadr = ten_J_rowadr[tenid_target]
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        colind = ten_J_colind_in[worldid, 0, sparseid]
+        ten_J_vec_out[worldid, colind] = ten_J_in[worldid, tenid_target, sparseid]
+    else:
+      for i in range(wp.static(nv)):
+        ten_J_vec_out[worldid, i] = ten_J_in[worldid, tenid_target, i]
+
+  return copy_tendon_jacobian
 
 
-@wp.kernel
-def _compute_tendon_dot_product(
-  tenid_target: int,
-  nv: int,
-  ten_J_in: wp.array3d(dtype=float),
-  result_vec_in: wp.array2d(dtype=float),
-  tendon_invweight0_out: wp.array2d(dtype=float),
-):
-  worldid = wp.tid()
-  tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
-  dot_prod = float(0.0)
-  for i in range(nv):
-    dot_prod += ten_J_in[worldid, tenid_target, i] * result_vec_in[worldid, i]
-  tendon_invweight0_out[tendon_invweight0_id, tenid_target] = dot_prod
+@cache_kernel
+def _compute_tendon_dot_product(nv: int, opt_is_sparse: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def compute_tendon_dot_product(
+    # Model:
+    ten_J_rowadr: wp.array(dtype=int),
+    # In:
+    tenid_target: int,
+    ten_J_rownnz_in: wp.array2d(dtype=int),
+    ten_J_colind_in: wp.array3d(dtype=int),
+    ten_J_in: wp.array3d(dtype=float),
+    result_vec_in: wp.array2d(dtype=float),
+    # Out:
+    tendon_invweight0_out: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+    tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
+    dot_prod = float(0.0)
+
+    if wp.static(opt_is_sparse):
+      rownnz = ten_J_rownnz_in[worldid, tenid_target]
+      rowadr = ten_J_rowadr[tenid_target]
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        colind = ten_J_colind_in[worldid, 0, sparseid]
+        dot_prod += ten_J_in[worldid, 0, sparseid] * result_vec_in[worldid, colind]
+    else:
+      for i in range(nv):
+        dot_prod += ten_J_in[worldid, tenid_target, i] * result_vec_in[worldid, i]
+    tendon_invweight0_out[tendon_invweight0_id, tenid_target] = dot_prod
+
+  return compute_tendon_dot_product
 
 
 @wp.kernel
@@ -1836,12 +1967,17 @@ def set_const_0(m: types.Model, d: types.Data):
     ten_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
 
     for tenid in range(m.ntendon):
-      wp.launch(_copy_tendon_jacobian, dim=d.nworld, inputs=[tenid, d.ten_J], outputs=[ten_J_vec])
+      wp.launch(
+        _copy_tendon_jacobian(m.nv, m.opt.is_sparse),
+        dim=d.nworld,
+        inputs=[m.ten_J_rowadr, tenid, d.ten_J_rownnz, d.ten_J_colind, d.ten_J],
+        outputs=[ten_J_vec],
+      )
       smooth.solve_m(m, d, ten_result_vec, ten_J_vec)
       wp.launch(
-        _compute_tendon_dot_product,
+        _compute_tendon_dot_product(m.nv, m.opt.is_sparse),
         dim=d.nworld,
-        inputs=[tenid, m.nv, d.ten_J, ten_result_vec],
+        inputs=[m.ten_J_rowadr, tenid, d.ten_J_rownnz, d.ten_J_colind, d.ten_J, ten_result_vec],
         outputs=[m.tendon_invweight0],
       )
 

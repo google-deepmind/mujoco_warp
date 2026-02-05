@@ -1074,6 +1074,8 @@ class IOTest(parameterized.TestCase):
 
     wp.capture_launch(capture.graph)
 
+  # TODO(team): test set_const_0 sparse
+
 
 if __name__ == "__main__":
   wp.init()

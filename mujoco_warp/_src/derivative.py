@@ -175,38 +175,64 @@ def _qderiv_actuator_passive(
 
 
 # TODO(team): improve performance with tile operations?
-@wp.kernel
-def _qderiv_tendon_damping(
-  # Model:
-  ntendon: int,
-  opt_timestep: wp.array(dtype=float),
-  opt_is_sparse: bool,
-  tendon_damping: wp.array2d(dtype=float),
-  # Data in:
-  ten_J_in: wp.array3d(dtype=float),
-  # In:
-  qMi: wp.array(dtype=int),
-  qMj: wp.array(dtype=int),
-  # Out:
-  qDeriv_out: wp.array3d(dtype=float),
-):
-  worldid, elemid = wp.tid()
-  dofiid = qMi[elemid]
-  dofjid = qMj[elemid]
+@cache_kernel
+def _qderiv_tendon_damping(opt_is_sparse: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def qderiv_tendon_damping(
+    # Model:
+    ntendon: int,
+    opt_timestep: wp.array(dtype=float),
+    tendon_damping: wp.array2d(dtype=float),
+    ten_J_rowadr: wp.array(dtype=int),
+    # Data in:
+    ten_J_rownnz_in: wp.array2d(dtype=int),
+    ten_J_colind_in: wp.array3d(dtype=int),
+    ten_J_in: wp.array3d(dtype=float),
+    # In:
+    qMi: wp.array(dtype=int),
+    qMj: wp.array(dtype=int),
+    # Out:
+    qDeriv_out: wp.array3d(dtype=float),
+  ):
+    worldid, elemid = wp.tid()
+    dofiid = qMi[elemid]
+    dofjid = qMj[elemid]
 
-  qderiv = float(0.0)
-  tendon_damping_id = worldid % tendon_damping.shape[0]
-  for tenid in range(ntendon):
-    qderiv -= ten_J_in[worldid, tenid, dofiid] * ten_J_in[worldid, tenid, dofjid] * tendon_damping[tendon_damping_id, tenid]
+    qderiv = float(0.0)
+    tendon_damping_id = worldid % tendon_damping.shape[0]
+    for tenid in range(ntendon):
+      damping = tendon_damping[tendon_damping_id, tenid]
+      if damping == 0.0:
+        continue
 
-  qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
+      if wp.static(opt_is_sparse):
+        rownnz = ten_J_rownnz_in[worldid, tenid]
+        rowadr = ten_J_rowadr[tenid]
+        Ji = float(0.0)
+        Jj = float(0.0)
+        for k in range(rownnz):
+          if Ji != 0.0 and Jj != 0.0:
+            break
+          sparseid = rowadr + k
+          colind = ten_J_colind_in[worldid, 0, sparseid]
+          if colind == dofiid:
+            Ji = ten_J_in[worldid, 0, sparseid]
+          if colind == dofjid:
+            Jj = ten_J_in[worldid, 0, sparseid]
+        qderiv -= Ji * Jj * damping
+      else:
+        qderiv -= ten_J_in[worldid, tenid, dofiid] * ten_J_in[worldid, tenid, dofjid] * damping
 
-  if opt_is_sparse:
-    qDeriv_out[worldid, 0, elemid] -= qderiv
-  else:
-    qDeriv_out[worldid, dofiid, dofjid] -= qderiv
-    if dofiid != dofjid:
-      qDeriv_out[worldid, dofjid, dofiid] -= qderiv
+    qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
+
+    if wp.static(opt_is_sparse):
+      qDeriv_out[worldid, 0, elemid] -= qderiv
+    else:
+      qDeriv_out[worldid, dofiid, dofjid] -= qderiv
+      if dofiid != dofjid:
+        qDeriv_out[worldid, dofjid, dofiid] -= qderiv
+
+  return qderiv_tendon_damping
 
 
 @event_scope
@@ -282,9 +308,19 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
 
   if not m.opt.disableflags & DisableBit.DAMPER:
     wp.launch(
-      _qderiv_tendon_damping,
+      _qderiv_tendon_damping(m.opt.is_sparse),
       dim=(d.nworld, qMi.size),
-      inputs=[m.ntendon, m.opt.timestep, m.opt.is_sparse, m.tendon_damping, d.ten_J, qMi, qMj],
+      inputs=[
+        m.ntendon,
+        m.opt.timestep,
+        m.tendon_damping,
+        m.ten_J_rowadr,
+        d.ten_J_rownnz,
+        d.ten_J_colind,
+        d.ten_J,
+        qMi,
+        qMj,
+      ],
       outputs=[out],
     )
 

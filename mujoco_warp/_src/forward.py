@@ -542,21 +542,37 @@ def _actuator_velocity(nv: int):
 
 
 @cache_kernel
-def _tendon_velocity(nv: int):
+def _tendon_velocity(nv: int, opt_is_sparse: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def tendon_velocity(
+    # Model:
+    ten_J_rowadr: wp.array(dtype=int),
     # Data in:
     qvel_in: wp.array2d(dtype=float),
+    ten_J_rownnz_in: wp.array2d(dtype=int),
+    ten_J_colind_in: wp.array3d(dtype=int),
     ten_J_in: wp.array3d(dtype=float),
     # Data out:
     ten_velocity_out: wp.array2d(dtype=float),
   ):
     worldid, tenid = wp.tid()
-    ten_J_tile = wp.tile_load(ten_J_in[worldid, tenid], shape=wp.static(nv))
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
-    ten_J_qvel_tile = wp.tile_map(wp.mul, ten_J_tile, qvel_tile)
-    ten_velocity_tile = wp.tile_reduce(wp.add, ten_J_qvel_tile)
-    ten_velocity_out[worldid, tenid] = ten_velocity_tile[0]
+    if wp.static(opt_is_sparse):
+      velocity = float(0.0)
+      rownnz = ten_J_rownnz_in[worldid, tenid]
+      rowadr = ten_J_rowadr[tenid]
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        J = ten_J_in[worldid, 0, sparseid]
+        colind = ten_J_colind_in[worldid, 0, sparseid]
+        velocity += J * qvel_in[worldid, colind]
+    else:
+      ten_J_tile = wp.tile_load(ten_J_in[worldid, tenid], shape=wp.static(nv))
+      qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
+      ten_J_qvel_tile = wp.tile_map(wp.mul, ten_J_tile, qvel_tile)
+      ten_velocity_tile = wp.tile_reduce(wp.add, ten_J_qvel_tile)
+      velocity = ten_velocity_tile[0]
+
+    ten_velocity_out[worldid, tenid] = velocity
 
   return tendon_velocity
 
@@ -574,9 +590,9 @@ def fwd_velocity(m: Model, d: Data):
 
   # TODO(team): sparse version
   wp.launch_tiled(
-    _tendon_velocity(m.nv),
+    _tendon_velocity(m.nv, m.opt.is_sparse),
     dim=(d.nworld, m.ntendon),
-    inputs=[d.qvel, d.ten_J],
+    inputs=[m.ten_J_rowadr, d.qvel, d.ten_J_rownnz, d.ten_J_colind, d.ten_J],
     outputs=[d.ten_velocity],
     block_dim=m.block_dim.tendon_velocity,
   )
