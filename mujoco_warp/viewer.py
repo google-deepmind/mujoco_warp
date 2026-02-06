@@ -135,6 +135,16 @@ def _main(argv: Sequence[str]) -> None:
   else:
     wp.config.quiet = flags.FLAGS["verbosity"].value < 1
     wp.init()
+    # ---- CUDA guard ----
+    if not wp.is_cuda_available():
+      raise RuntimeError(
+          "\n mjwarp-viewer requires an NVIDIA CUDA device.\n"
+          "No CUDA GPU was detected.\n\n"
+          "Possible fixes:\n"
+          "  • Install NVIDIA drivers + CUDA\n"
+          "  • Run on a GPU machine\n"
+          "  • Use standard MuJoCo viewer instead\n"
+      )
     if _CLEAR_WARP_CACHE.value:
       wp.clear_kernel_cache()
       wp.clear_lto_cache()
