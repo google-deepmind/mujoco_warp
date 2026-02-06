@@ -28,6 +28,7 @@ from mujoco_warp._src.types import Model as Model
 from mujoco_warp._src.types import Data as Data
 # isort: on
 
+from mujoco_warp._src.bvh import refit_bvh as refit_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
 from mujoco_warp._src.collision_driver import sap_broadphase as sap_broadphase
@@ -46,6 +47,7 @@ from mujoco_warp._src.forward import rungekutta4 as rungekutta4
 from mujoco_warp._src.forward import step1 as step1
 from mujoco_warp._src.forward import step2 as step2
 from mujoco_warp._src.inverse import inverse as inverse
+from mujoco_warp._src.io import create_render_context as create_render_context
 from mujoco_warp._src.io import get_data_into as get_data_into
 from mujoco_warp._src.io import make_data as make_data
 from mujoco_warp._src.io import put_data as put_data
@@ -57,6 +59,7 @@ from mujoco_warp._src.io import set_const_fixed as set_const_fixed
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
+from mujoco_warp._src.render import render as render
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
