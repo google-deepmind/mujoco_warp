@@ -529,7 +529,7 @@ requires-dist = [
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda'" },
     { name = "lsprotocol", marker = "extra == 'dev'", specifier = ">=2023.0.1,<2024.0.0" },
     { name = "mujoco", specifier = ">=3.4.0", index = "https://py.mujoco.org/" },
-    { name = "mujoco", marker = "extra == 'dev'", specifier = ">=3.3.7.dev0", index = "https://py.mujoco.org/" },
+    { name = "mujoco", marker = "extra == 'dev'", specifier = ">=3.4.1.dev0", index = "https://py.mujoco.org/" },
     { name = "numpy" },
     { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "pygls", marker = "extra == 'dev'", specifier = ">=1.0.0,<2.0.0" },
