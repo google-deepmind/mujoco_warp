@@ -166,10 +166,10 @@ for commit in $COMMITS; do
         # Run benchmark using uv run from WORK_DIR (historical commit + HEAD's testspeed.py)
         # Send uv's stderr to /dev/null (or log), capture only stdout (JSON)
         cd "$WORK_DIR"
-        log "Command: UV_NO_CONFIG=1 uv run --prerelease=allow --upgrade ${CMD[*]}"
-        if ! BENCHMARK_JSON=$(UV_NO_CONFIG=1 uv run --prerelease=allow --upgrade "${CMD[@]}" 2>/dev/null); then
+        log "Command: UV_NO_CONFIG=1 uv run ${CMD[*]}"
+        if ! BENCHMARK_JSON=$(UV_NO_CONFIG=1 uv run "${CMD[@]}" 2>/dev/null); then
             log "WARNING: Benchmark $NAME failed for commit $commit, retrying with verbose output..."
-            UV_NO_CONFIG=1 uv run --prerelease=allow --upgrade "${CMD[@]}" 2>&1 | log
+            UV_NO_CONFIG=1 uv run "${CMD[@]}" 2>&1 | log
             continue
         fi
 

@@ -141,8 +141,8 @@ def _qderiv_actuator_passive(
   # Model:
   opt_timestep: wp.array(dtype=float),
   opt_disableflags: int,
-  opt_is_sparse: bool,
   dof_damping: wp.array2d(dtype=float),
+  is_sparse: bool,
   # Data in:
   qM_in: wp.array3d(dtype=float),
   # In:
@@ -157,7 +157,7 @@ def _qderiv_actuator_passive(
   dofiid = qMi[elemid]
   dofjid = qMj[elemid]
 
-  if opt_is_sparse:
+  if is_sparse:
     qderiv = qDeriv_in[worldid, 0, elemid]
   else:
     qderiv = qDeriv_in[worldid, dofiid, dofjid]
@@ -167,7 +167,7 @@ def _qderiv_actuator_passive(
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
-  if opt_is_sparse:
+  if is_sparse:
     qDeriv_out[worldid, 0, elemid] = qM_in[worldid, 0, elemid] - qderiv
   else:
     qM = qM_in[worldid, dofiid, dofjid] - qderiv
@@ -182,8 +182,8 @@ def _qderiv_tendon_damping(
   # Model:
   ntendon: int,
   opt_timestep: wp.array(dtype=float),
-  opt_is_sparse: bool,
   tendon_damping: wp.array2d(dtype=float),
+  is_sparse: bool,
   # Data in:
   ten_J_in: wp.array3d(dtype=float),
   # In:
@@ -203,7 +203,7 @@ def _qderiv_tendon_damping(
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
-  if opt_is_sparse:
+  if is_sparse:
     qDeriv_out[worldid, 0, elemid] -= qderiv
   else:
     qDeriv_out[worldid, dofiid, dofjid] -= qderiv
@@ -247,7 +247,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float), flg_rne: b
         ],
         outputs=[vel],
       )
-      if m.opt.is_sparse:
+      if m.is_sparse:
         wp.launch(
           _qderiv_actuator_passive_actuation_sparse,
           dim=(d.nworld, qMi.size),
@@ -270,8 +270,8 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float), flg_rne: b
       inputs=[
         m.opt.timestep,
         m.opt.disableflags,
-        m.opt.is_sparse,
         m.dof_damping,
+        m.is_sparse,
         d.qM,
         qMi,
         qMj,
@@ -287,7 +287,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float), flg_rne: b
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
-      inputs=[m.ntendon, m.opt.timestep, m.opt.is_sparse, m.tendon_damping, d.ten_J, qMi, qMj],
+      inputs=[m.ntendon, m.opt.timestep, m.tendon_damping, m.is_sparse, d.ten_J, qMi, qMj],
       outputs=[out],
     )
 
