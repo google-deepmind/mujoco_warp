@@ -215,7 +215,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       setattr(opt, f.name, f.type(getattr(opt, f.name)))
 
   # create stat
-  stat = types.Statistic(meaninertia=mjm.stat.meaninertia)
+  stat = types.Statistic(
+    meaninertia=_create_array([mjm.stat.meaninertia], types.array("*", float), {"*": 1})
+  )
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
@@ -1414,6 +1416,34 @@ def _copy_tendon_length0(
 
 
 @wp.kernel
+def _compute_meaninertia(
+  nv: int,
+  is_sparse: bool,
+  dof_Madr_in: wp.array(dtype=int),
+  qM_in: wp.array3d(dtype=float),
+  meaninertia_out: wp.array(dtype=float),
+):
+  """Compute mean diagonal inertia from qM at qpos0."""
+  worldid = wp.tid()
+
+  if nv == 0:
+    meaninertia_out[worldid % meaninertia_out.shape[0]] = 1.0  # Default from MuJoCo
+    return
+
+  total = float(0.0)
+  for i in range(nv):
+    if is_sparse:
+      # Sparse: qM is flattened lower triangular, diagonal at dof_Madr[i]
+      madr = dof_Madr_in[i]
+      total += qM_in[worldid, 0, madr]
+    else:
+      # Dense: qM is 2D matrix, diagonal at [i,i]
+      total += qM_in[worldid, i, i]
+
+  meaninertia_out[worldid % meaninertia_out.shape[0]] = total / float(nv)
+
+
+@wp.kernel
 def _set_unit_vector(
   dofid_target: int,
   unit_vec_out: wp.array2d(dtype=float),
@@ -1758,6 +1788,14 @@ def set_const_0(m: types.Model, d: types.Data):
   smooth.tendon_armature(m, d)
   smooth.factor_m(m, d)
   smooth.transmission(m, d)
+
+  # Compute meaninertia from qM diagonal at qpos0
+  wp.launch(
+    _compute_meaninertia,
+    dim=d.nworld,
+    inputs=[m.nv, m.is_sparse, m.dof_Madr, d.qM],
+    outputs=[m.stat.meaninertia],
+  )
 
   wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
