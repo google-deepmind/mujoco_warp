@@ -294,28 +294,42 @@ class IOTest(parameterized.TestCase):
     if xml == "flex/floppy.xml":
       from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
 
-      flexedge_J_dense = np.zeros((mjm.nflexedge, mjm.nv))
       if BLEEDING_EDGE_MUJOCO:
-        mujoco.mju_sparse2dense(
-          flexedge_J_dense,
+        _assert_eq(
           mjd_result.flexedge_J.reshape(-1),
-          mjm.flexedge_J_rownnz,
-          mjm.flexedge_J_rowadr,
-          mjm.flexedge_J_colind.reshape(-1),
+          d.flexedge_J.numpy()[0].reshape(-1),
+          "flexedge_J",
         )
       else:
-        mujoco.mju_sparse2dense(
-          flexedge_J_dense,
-          mjd_result.flexedge_J.reshape(-1),
+        m = mjwarp.put_model(mjm)
+        _assert_eq(
           mjd_result.flexedge_J_rownnz,
-          mjd_result.flexedge_J_rowadr,
-          mjd_result.flexedge_J_colind.reshape(-1),
+          m.flexedge_J_rownnz.numpy(),
+          "flexedge_J_rownnz",
         )
-      _assert_eq(
-        d.flexedge_J.numpy()[0].reshape(-1),
-        flexedge_J_dense.reshape(-1),
-        "flexedge_J",
-      )
+        _assert_eq(
+          mjd_result.flexedge_J_rowadr,
+          m.flexedge_J_rowadr.numpy(),
+          "flexedge_J_rowadr",
+        )
+        _assert_eq(
+          mjd_result.flexedge_J_colind,
+          m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv)),
+          "flexedge_J_colind",
+        )
+        flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+        mujoco.mju_sparse2dense(
+          flexedge_J,
+          d.flexedge_J.numpy().reshape(-1),
+          m.flexedge_J_rownnz.numpy(),
+          m.flexedge_J_rowadr.numpy(),
+          m.flexedge_J_colind.numpy().reshape(-1),
+        )
+        _assert_eq(
+          mjd_result.flexedge_J,
+          flexedge_J,
+          "flexedge_J",
+        )
 
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
