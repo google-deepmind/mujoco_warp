@@ -476,7 +476,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost
 
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
+    ctx.quad_gauss.zero_()
 
   wp.launch(
     linesearch_prepare_gauss(m.nv, dofs_per_thread),
