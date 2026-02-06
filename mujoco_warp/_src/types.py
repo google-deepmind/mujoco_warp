@@ -1641,6 +1641,7 @@ class Data:
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
+    naccdmax: Maximum number of CCD contacts for any collider (all worlds)
     njmax: maximum number of constraints per world
     nacon: number of detected contacts (across all worlds)      (1,)
     collision_pair: collision pairs from broadphase             (naconmax, 2)
@@ -1730,6 +1731,7 @@ class Data:
   # warp only fields:
   nworld: int
   naconmax: int
+  naccdmax: int
   njmax: int
   nacon: array(1, int)
 
