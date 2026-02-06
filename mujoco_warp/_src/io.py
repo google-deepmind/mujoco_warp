@@ -1031,12 +1031,21 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   if mjm.nflexedge > 0:
-    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
     if not BLEEDING_EDGE_MUJOCO:
-      result.flexedge_J_rownnz[:] = d.flexedge_J_rownnz.numpy()[world_id]
-      result.flexedge_J_rowadr[:] = d.flexedge_J_rowadr.numpy()[world_id]
-      result.flexedge_J_colind[:] = d.flexedge_J_colind.numpy()[world_id].reshape(-1)
+      m = put_model(mjm)
+      result.flexedge_J_rownnz[:] = m.flexedge_J_rownnz.numpy()
+      result.flexedge_J_rowadr[:] = m.flexedge_J_rowadr.numpy()
+      result.flexedge_J_colind[:, :] = m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv))
+      mujoco.mju_sparse2dense(
+        result.flexedge_J,
+        d.flexedge_J.numpy()[world_id].reshape(-1),
+        m.flexedge_J_rownnz.numpy(),
+        m.flexedge_J_rowadr.numpy(),
+        m.flexedge_J_colind.numpy(),
+      )
+    else:
+      result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
