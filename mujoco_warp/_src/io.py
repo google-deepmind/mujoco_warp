@@ -401,9 +401,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           current = []
       else:
         current.append(v)
-    # Pad with zeros if less than 3
-    attr_values += [0.0] * (3 - len(attr_values))
-    m.plugin_attr.append(attr_values[:3])
+    if len(attr_values) > types._NPLUGINATTR:
+      raise ValueError(f"Plugin has {len(attr_values)} attributes, which exceeds the maximum of {types._NPLUGINATTR}. ")
+    # pad with zeros to _NPLUGINATTR
+    attr_values += [0.0] * (types._NPLUGINATTR - len(attr_values))
+    m.plugin_attr.append(attr_values[: types._NPLUGINATTR])
 
   # equality constraint addresses
   m.eq_connect_adr = np.nonzero(mjm.eq_type == types.EqType.CONNECT)[0]

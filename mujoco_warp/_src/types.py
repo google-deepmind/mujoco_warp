@@ -32,6 +32,9 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+# maximum number of plugin attributes
+_NPLUGINATTR = 128
+
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -617,6 +620,10 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
   pass
 
 
+class vec_pluginattr(wp.types.vector(length=_NPLUGINATTR, dtype=float)):
+  pass
+
+
 class mat23f(wp.types.matrix(shape=(2, 3), dtype=float)):
   pass
 
@@ -634,6 +641,7 @@ vec6 = vec6f
 vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
+vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
 mat63 = mat63f
@@ -1021,7 +1029,7 @@ class Model:
     sensor_adr: address in sensor array                      (nsensor,)
     sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
     plugin: globally registered plugin slot number           (nplugin,)
-    plugin_attr: config attributes of geom plugin            (nplugin, 3)
+    plugin_attr: config attributes of geom plugin            (nplugin, _NPLUGINATTR)
     M_rownnz: number of non-zeros in each row of qM          (nv,)
     M_rowadr: index of each row in qM                        (nv,)
     M_colind: column indices of non-zeros in qM              (nM,)
@@ -1383,7 +1391,7 @@ class Model:
   sensor_adr: array("nsensor", int)
   sensor_cutoff: array("nsensor", float)
   plugin: array("nplugin", int)
-  plugin_attr: array("nplugin", wp.vec3f)
+  plugin_attr: array("nplugin", vec_pluginattr)
   M_rownnz: array("nv", int)
   M_rowadr: array("nv", int)
   M_colind: array("nC", int)

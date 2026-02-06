@@ -28,6 +28,7 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec8
 from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import halton
 from mujoco_warp._src.warp_util import event_scope
 
@@ -38,8 +39,8 @@ wp.set_module_options({"enable_backward": False})
 class OptimizationParams:
   rel_mat: wp.mat33
   rel_pos: wp.vec3
-  attr1: wp.vec3
-  attr2: wp.vec3
+  attr1: vec_pluginattr
+  attr2: vec_pluginattr
 
 
 @wp.struct
@@ -81,14 +82,18 @@ def get_sdf_params(
   oct_aabb: wp.array2d(dtype=wp.vec3),
   oct_coeff: wp.array(dtype=vec8),
   plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
+  plugin_attr: wp.array(dtype=vec_pluginattr),
   # In:
   g_type: int,
   g_size: wp.vec3,
   plugin_id: int,
   mesh_id: int,
-) -> Tuple[wp.vec3, int, VolumeData, MeshData]:
-  attributes = g_size
+) -> Tuple[vec_pluginattr, int, VolumeData, MeshData]:
+  # default attributes from geom size, first 3 values copied
+  attributes = vec_pluginattr()
+  attributes[0] = g_size[0]
+  attributes[1] = g_size[1]
+  attributes[2] = g_size[2]
   plugin_index = -1
   volume_data = VolumeData()
 
@@ -211,13 +216,21 @@ def grad_ellipsoid(p: wp.vec3, size: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def user_sdf(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
+def user_sdf(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> float:
+  """User-defined SDF function.
+
+  Access attributes via attr[i] where i is the attribute index (0 to _NPLUGINATTR-1).
+  """
   wp.printf("ERROR: user_sdf function must be implemented by user code\n")
   return 0.0
 
 
 @wp.func
-def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
+def user_sdf_grad(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> wp.vec3:
+  """User-defined SDF gradient function.
+
+  Access attributes via attr[i] where i is the attribute index (0 to _NPLUGINATTR-1).
+  """
   wp.printf("ERROR: user_sdf_grad function must be implemented by user code\n")
   return wp.vec3(0.0)
 
@@ -355,15 +368,17 @@ def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
 
 
 @wp.func
-def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> float:
+def sdf(type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> float:
+  # extract first 3 elements as vec3 for primitive sdf functions
+  attr_vec3 = wp.vec3(attr[0], attr[1], attr[2])
   if type == GeomType.PLANE:
     return p[2]
   elif type == GeomType.SPHERE:
-    return sphere(p, attr)
+    return sphere(p, attr_vec3)
   elif type == GeomType.BOX:
-    return box(p, attr)
+    return box(p, attr_vec3)
   elif type == GeomType.ELLIPSOID:
-    return ellipsoid(p, attr)
+    return ellipsoid(p, attr_vec3)
   elif type == GeomType.MESH and mesh_data.valid:
     mesh_data.pnt = p
     mesh_data.vec = -wp.normalize(p)
@@ -406,16 +421,20 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
 
 
 @wp.func
-def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> wp.vec3:
+def sdf_grad(
+  type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData
+) -> wp.vec3:
+  # extract first 3 elements as vec3 for primitive sdf functions
+  attr_vec3 = wp.vec3(attr[0], attr[1], attr[2])
   if type == GeomType.PLANE:
     grad = wp.vec3(0.0, 0.0, 1.0)
     return grad
   elif type == GeomType.SPHERE:
     return grad_sphere(p)
   elif type == GeomType.BOX:
-    return grad_box(p, attr)
+    return grad_box(p, attr_vec3)
   elif type == GeomType.ELLIPSOID:
-    return grad_ellipsoid(p, attr)
+    return grad_ellipsoid(p, attr_vec3)
   elif type == GeomType.MESH and mesh_data.valid:
     mesh_data.pnt = p
     mesh_data.vec = -wp.normalize(p)
@@ -452,8 +471,8 @@ def clearance(
   type1: int,
   p1: wp.vec3,
   p2: wp.vec3,
-  s1: wp.vec3,
-  s2: wp.vec3,
+  s1: vec_pluginattr,
+  s2: vec_pluginattr,
   sdf_type1: int,
   sdf_type2: int,
   sfd_intersection: bool,
@@ -582,8 +601,8 @@ def gradient_descent(
   # In:
   type1: int,
   x0_initial: wp.vec3,
-  attr1: wp.vec3,
-  attr2: wp.vec3,
+  attr1: vec_pluginattr,
+  attr2: vec_pluginattr,
   pos1: wp.vec3,
   rot1: wp.mat33,
   pos2: wp.vec3,
@@ -662,7 +681,7 @@ def _sdf_narrowphase(
   pair_gap: wp.array2d(dtype=float),
   pair_friction: wp.array2d(dtype=vec5),
   plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
+  plugin_attr: wp.array(dtype=vec_pluginattr),
   geom_plugin_index: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
