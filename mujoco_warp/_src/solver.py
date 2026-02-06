@@ -138,8 +138,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
 
 @wp.func
-def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
-  return value / (stat_meaninertia * float(nv))
+def _rescale(nv: int, meaninertia: float, value: float) -> float:
+  return value / (meaninertia * float(nv))
 
 
 @wp.func

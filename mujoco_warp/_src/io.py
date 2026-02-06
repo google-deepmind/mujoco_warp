@@ -215,9 +215,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       setattr(opt, f.name, f.type(getattr(opt, f.name)))
 
   # create stat
-  stat = types.Statistic(
-    meaninertia=_create_array([mjm.stat.meaninertia], types.array("*", float), {"*": 1})
-  )
+  stat = types.Statistic(meaninertia=_create_array([mjm.stat.meaninertia], types.array("*", float), {"*": 1}))
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
