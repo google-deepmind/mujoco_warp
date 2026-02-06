@@ -32,6 +32,7 @@ from mujoco_warp._src.collision_primitive_core import sphere_sphere
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
@@ -172,13 +173,13 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     convex: Convex geometry object containing position, rotation, and mesh data.
 
   Returns:
-    - Vector of contact distances (wp.inf for unpopulated contacts).
+    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
   _HUGE_VAL = 1e6
 
-  contact_dist = wp.vec4(wp.inf)
+  contact_dist = wp.vec4(MJ_MAXVAL)
   contact_pos = mat43()
   contact_count = int(0)
 
@@ -425,12 +426,12 @@ def write_contact(
   contact_type_out: wp.array(dtype=int),
   contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
-):
+) -> int:
   active = dist_in < margin_in
 
   # skip contact and no collision sensor
   if (pairid_in[0] == -2 or not active) and pairid_in[1] == -1:
-    return
+    return 0
 
   contact_type = 0
 
@@ -456,6 +457,8 @@ def write_contact(
     contact_solimp_out[cid] = solimp_in
     contact_type_out[cid] = contact_type
     contact_geomcollisionid_out[cid] = id_
+    return int(active)
+  return 0
 
 
 @wp.func

@@ -114,6 +114,7 @@ class IOTest(parameterized.TestCase):
 
     # keyframe=2: ncon=0, nefc=0
     mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
+    d.time.fill_(0.12345)
 
     # check that mujoco._functions._realloc_con_efc allocates for contact and efc
     mjwarp.get_data_into(mjd, mjm, d, world_id=world_id)
@@ -126,6 +127,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
+    _assert_eq(d.time.numpy()[world_id], mjd.time, "time")
 
     for field in [
       "energy",
@@ -163,7 +165,6 @@ class IOTest(parameterized.TestCase):
       "flexedge_length",
       "flexedge_velocity",
       "actuator_length",
-      # TODO(team): actuator_moment mjd sparse2dense
       "crb",
       # TODO(team): qLDiagInv sparse factorization
       "ten_velocity",
@@ -202,6 +203,15 @@ class IOTest(parameterized.TestCase):
         getattr(mjd, field).reshape(-1),
         field,
       )
+
+    # actuator_moment
+    actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment_dense, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    _assert_eq(
+      d.actuator_moment.numpy()[world_id].reshape(-1),
+      actuator_moment_dense.reshape(-1),
+      "actuator_moment",
+    )
 
     # contact
     ncon = int(d.nacon.numpy()[0] / nworld)
@@ -244,6 +254,69 @@ class IOTest(parameterized.TestCase):
         field,
       )
 
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_get_data_into_io_test_models(self, xml):
+    """Tests get_data_into for field coverage across diverse model types."""
+    mjm, mjd, _, d = test_data.fixture(xml)
+
+    # Create fresh MjData to verify get_data_into populates it correctly
+    mjd_result = mujoco.MjData(mjm)
+
+    mjwarp.get_data_into(mjd_result, mjm, d)
+
+    # Compare key fields, including flex/tendon data not covered by humanoid.xml
+    for field in [
+      "qpos",
+      "qvel",
+      "qacc",
+      "ctrl",
+      "act",
+      "flexvert_xpos",
+      "flexedge_length",
+      "flexedge_velocity",
+      "ten_length",
+      "ten_velocity",
+      "actuator_length",
+      "actuator_velocity",
+      "actuator_force",
+      "xpos",
+      "xquat",
+      "geom_xpos",
+    ]:
+      if getattr(mjd, field).size > 0:
+        _assert_eq(
+          getattr(mjd_result, field).reshape(-1),
+          getattr(mjd, field).reshape(-1),
+          f"{field} (model: {xml})",
+        )
+
+    # flexedge_J
+    if xml == "flex/floppy.xml":
+      from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+      flexedge_J_dense = np.zeros((mjm.nflexedge, mjm.nv))
+      if BLEEDING_EDGE_MUJOCO:
+        mujoco.mju_sparse2dense(
+          flexedge_J_dense,
+          mjd_result.flexedge_J.reshape(-1),
+          mjm.flexedge_J_rownnz,
+          mjm.flexedge_J_rowadr,
+          mjm.flexedge_J_colind.reshape(-1),
+        )
+      else:
+        mujoco.mju_sparse2dense(
+          flexedge_J_dense,
+          mjd_result.flexedge_J.reshape(-1),
+          mjd_result.flexedge_J_rownnz,
+          mjd_result.flexedge_J_rowadr,
+          mjd_result.flexedge_J_colind.reshape(-1),
+        )
+      _assert_eq(
+        d.flexedge_J.numpy()[0].reshape(-1),
+        flexedge_J_dense.reshape(-1),
+        "flexedge_J",
+      )
+
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
       """
@@ -262,7 +335,7 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
 
     np.testing.assert_allclose(m.geom_fluid.numpy(), mjm.geom_fluid)
-    self.assertTrue(m.opt.has_fluid)
+    self.assertTrue(m.has_fluid)
 
     body_has = m.body_fluid_ellipsoid.numpy()
     self.assertTrue(body_has[mjm.geom_bodyid[0]])
@@ -463,23 +536,6 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(len(m.oct_aabb.shape), 2)
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
-
-  def test_collision_sensor_box_box(self):
-    """Tests for collision sensors that are not implemented."""
-    with self.assertRaises(NotImplementedError):
-      test_data.fixture(
-        xml=f"""
-      <mujoco>
-        <worldbody>
-          <geom name="box1" type="box" size=".1 .1 .1"/>
-          <geom name="box2" type="box" size=".1 .1 .1"/>
-        </worldbody>
-        <sensor>
-          <distance geom1="box1" geom2="box2"/>
-        </sensor>
-      </mujoco>
-      """
-      )
 
   def test_implicit_integrator_fluid_model(self):
     """Tests for implicit integrator with fluid model."""
@@ -823,6 +879,18 @@ class IOTest(parameterized.TestCase):
       d = mjwarp.make_data(mjm)
 
     _assert_eq(d.eq_active.numpy()[0], mjd.eq_active, "eq_active")
+
+  def test_tree_structure_fields(self):
+    """Tests that tree structure fields match between types.Model and mjModel."""
+    mjm, _, m, _ = test_data.fixture("pendula.xml")
+
+    # verify fields match MuJoCo
+    for field in ["ntree", "tree_dofadr", "tree_dofnum", "tree_bodynum", "body_treeid", "dof_treeid"]:
+      m_val = getattr(m, field)
+      mjm_val = getattr(mjm, field)
+      if isinstance(m_val, wp.array):
+        m_val = m_val.numpy()
+      np.testing.assert_array_equal(m_val, mjm_val, err_msg=f"mismatch: {field}")
 
   def test_model_batched_fields(self):
     """Test Model batched fields."""
