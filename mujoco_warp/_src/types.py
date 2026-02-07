@@ -46,6 +46,8 @@ class BlockDim:
 
   # collision_driver
   segmented_sort: int = 128
+  # constraint
+  contact_jac_tiled: int = 32
   # forward
   euler_dense: int = 32
   actuator_velocity: int = 32
@@ -1074,6 +1076,7 @@ class Model:
     jnt_limited_ball_adr: limited/ball jntadr
     dof_tri_row: dof lower triangle row (used in solver)
     dof_tri_col: dof lower triangle col (used in solver)
+    dof_affects_body: precomputed mask: does DOF affect body (nbody, nv)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1435,6 +1438,7 @@ class Model:
   jnt_limited_ball_adr: wp.array(dtype=int)
   dof_tri_row: wp.array(dtype=int)
   dof_tri_col: wp.array(dtype=int)
+  dof_affects_body: array("nbody", "nv_pad", int)
   nxn_geom_pair: wp.array(dtype=wp.vec2i)
   nxn_geom_pair_filtered: wp.array(dtype=wp.vec2i)
   nxn_pairid: wp.array(dtype=wp.vec2i)
@@ -1546,7 +1550,9 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
+    conid: contact id for each efc row                (nworld, njmax)
     J: constraint Jacobian                            (nworld, njmax_pad, nv_pad)
+    Jqvel: J @ qvel for contacts                      (nworld, njmax)
     pos: constraint position (equality, contact)      (nworld, njmax)
     margin: inclusion margin (contact)                (nworld, njmax)
     D: constraint mass                                (nworld, njmax_pad)
@@ -1561,7 +1567,9 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
+  conid: array("nworld", "njmax", int)
   J: array("nworld", "njmax_pad", "nv_pad", float)
+  Jqvel: array("nworld", "njmax", float)
   pos: array("nworld", "njmax", float)
   margin: array("nworld", "njmax", float)
   D: array("nworld", "njmax_pad", float)

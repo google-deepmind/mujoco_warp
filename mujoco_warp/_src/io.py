@@ -274,6 +274,20 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
   m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
 
+  dof_affects_body = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
+  for bodyid in range(mjm.nbody):
+    for dofid in range(mjm.nv):
+      dof_bodyid_ = mjm.dof_bodyid[dofid]
+      in_tree = int(dof_bodyid_ == 0)
+      parentid = bodyid
+      while parentid != 0:
+        if parentid == dof_bodyid_:
+          in_tree = 1
+          break
+        parentid = mjm.body_parentid[parentid]
+      dof_affects_body[bodyid, dofid] = in_tree
+  m.dof_affects_body = dof_affects_body
+
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
 
