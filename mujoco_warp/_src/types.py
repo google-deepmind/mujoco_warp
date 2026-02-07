@@ -747,10 +747,10 @@ class Statistic:
   """Model statistics (in qpos0).
 
   Attributes:
-    meaninertia: mean diagonal inertia
+    meaninertia: mean diagonal inertia (per-world)
   """
 
-  meaninertia: float
+  meaninertia: array("*", float)
 
 
 @dataclasses.dataclass

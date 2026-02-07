@@ -742,6 +742,57 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
 
+  @parameterized.named_parameters(
+    dict(testcase_name="dense", jacobian="dense"),
+    dict(testcase_name="sparse", jacobian="sparse"),
+  )
+  def test_set_const_meaninertia(self, jacobian):
+    """Test meaninertia computation matches MuJoCo after qpos0/mass changes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <option jacobian="{jacobian}"/>
+      <worldbody>
+        <body name="link1">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    # Test initial value matches
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia initial")
+
+    # Modify qpos0 and verify meaninertia updates
+    new_qpos0 = np.array([0.5, 0.3])
+    mjm.qpos0[:] = new_qpos0
+    qpos0_np = m.qpos0.numpy()
+    qpos0_np[0, :] = new_qpos0
+    wp.copy(m.qpos0, wp.array(qpos0_np, dtype=m.qpos0.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia after qpos0 change")
+
+    # Modify body mass and verify meaninertia updates
+    new_mass = 3.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia after mass change")
+
   def test_set_const_freejoint(self):
     """Test set_const with freejoint (6 DOFs with special averaging)."""
     mjm, mjd, m, d = test_data.fixture(
