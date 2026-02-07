@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
+from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
@@ -517,6 +518,8 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
+  if not (m.opt.disableflags & DisableBit.ISLAND):
+    island.island(m, d)
   smooth.transmission(m, d)
 
 
