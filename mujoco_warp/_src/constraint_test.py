@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp.conftest import assert_allclose
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -31,9 +32,8 @@ _TOLERANCE = 5e-5
 
 
 def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
-  err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+  """Wrapper for backward compatibility."""
+  assert_allclose(a, b, name)
 
 
 def _assert_efc_eq(d, mjd, nefc, name, nv):

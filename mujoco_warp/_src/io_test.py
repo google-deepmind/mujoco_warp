@@ -25,12 +25,12 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
+from mujoco_warp.conftest import assert_allclose
 
 
 def _assert_eq(a, b, name):
-  tol = 5e-4
-  err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+  """Wrapper with custom tolerance for io_test."""
+  assert_allclose(a, b, name, tolerance_multiplier=8)
 
 
 # NOTE: modify io_jax_test _IO_TEST_MODELS if changed here.

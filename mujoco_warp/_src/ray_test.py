@@ -22,6 +22,7 @@ from absl.testing import absltest
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src.types import vec6
+from mujoco_warp.conftest import assert_allclose
 
 # tolerance for difference between MuJoCo and MJX ray calculations - mostly
 # due to float precision
@@ -29,9 +30,8 @@ _TOLERANCE = 5e-5
 
 
 def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
-  err_msg = f"mismatch: {name}"
-  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+  """Wrapper for backward compatibility."""
+  assert_allclose(a, b, name)
 
 
 # TODO: Add tests comparing normal to engine implementation once available.
