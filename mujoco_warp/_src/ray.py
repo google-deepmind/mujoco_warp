@@ -1265,7 +1265,7 @@ def rays(
       _ray_bvh,
       dim=(d.nworld, pnt.shape[1]),
       inputs=[
-        m.ngeom,
+        rc.bvh_ngeom,
         m.body_weldid,
         m.geom_type,
         m.geom_bodyid,
