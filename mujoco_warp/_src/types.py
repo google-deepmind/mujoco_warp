@@ -314,7 +314,6 @@ class IntegratorType(enum.IntEnum):
   IMPLICITFAST = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
   # unsupported: IMPLICIT
 
-
 class GeomType(enum.IntEnum):
   """Type of geometry.
 
