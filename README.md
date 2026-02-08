@@ -88,6 +88,18 @@ mjwarp-viewer benchmarks/humanoid/humanoid.xml
 
 This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
 
+# Batch Rendering
+
+MJWarp includes a **high-throughput** GPU batch renderer designed for simultaneous rendering of cameras across many parallel simulation worlds. The renderer uses ray-tracing to render MuJoCo primitives using Warp's BVH API.
+
+Key capabilities:
+- Mesh rendering
+- Texture support
+- Heightfield rendering
+- Flex deformable rendering
+- Heterogeneous multi-camera support (different resolutions/FOV/intrinsics for each camera)
+- Lighting and shadow support
+
 # Benchmarking
 
 Benchmark as follows:
@@ -103,3 +115,9 @@ mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
+
+Rendering can also be benchmarked with:
+
+```bash
+mjwarp-testspeed benchmarks/primitives.xml --function=render
+```
