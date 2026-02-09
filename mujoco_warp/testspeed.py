@@ -43,7 +43,11 @@ from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
 
-_FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
+_FUNCS = {
+  n: f
+  for n, f in inspect.getmembers(mjw, inspect.isfunction)
+  if inspect.signature(f).parameters.keys() == {"m", "d"} or inspect.signature(f).parameters.keys() == {"m", "d", "rc"}
+}
 
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
@@ -62,6 +66,14 @@ _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyf
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 _FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format for results")
 _INFO = flags.DEFINE_bool("info", False, "print Model and Data info")
+
+# Render
+_WIDTH = flags.DEFINE_integer("width", 64, "render width (pixels)")
+_HEIGHT = flags.DEFINE_integer("height", 64, "render height (pixels)")
+_RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
+_RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
+_USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
+_USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
@@ -291,6 +303,19 @@ def _main(argv: Sequence[str]):
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    rc = None
+    if "rc" in inspect.signature(_FUNCS[_FUNCTION.value]).parameters.keys():
+      rc = mjw.create_render_context(
+        mjm,
+        m,
+        d,
+        (_WIDTH.value, _HEIGHT.value),
+        _RENDER_RGB.value,
+        _RENDER_DEPTH.value,
+        _USE_TEXTURES.value,
+        _USE_SHADOWS.value,
+      )
+
     if _FORMAT.value == "human":
       # Model sizes
       if _INFO.value:
@@ -451,12 +476,13 @@ def _main(argv: Sequence[str]):
 
       print(
         f"Model\n{sizes_str}{opt_str}{collider_str}"
-        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n\n"
+        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
+        f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
         f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
       )
 
     fn = _FUNCS[_FUNCTION.value]
-    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
+    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
 
     match _FORMAT.value:
       case "short":
