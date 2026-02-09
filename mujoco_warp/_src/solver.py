@@ -138,8 +138,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
 
 @wp.func
-def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
-  return value / (stat_meaninertia * float(nv))
+def _rescale(nv: int, meaninertia: float, value: float) -> float:
+  return value / (meaninertia * float(nv))
 
 
 @wp.func
@@ -476,7 +476,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost
 
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
+    ctx.quad_gauss.zero_()
 
   wp.launch(
     linesearch_prepare_gauss(m.nv, dofs_per_thread),
@@ -909,7 +909,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     opt_tolerance: wp.array(dtype=float),
     opt_ls_tolerance: wp.array(dtype=float),
     opt_impratio_invsqrt: wp.array(dtype=float),
-    stat_meaninertia: float,
+    stat_meaninertia: wp.array(dtype=float),
     # Data in:
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
@@ -1030,7 +1030,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
     ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
     snorm = wp.sqrt(ctx_search_dot_in[worldid])
-    scale = stat_meaninertia * wp.float(nv)
+    meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
+    scale = meaninertia * wp.float(nv)
     gtol = tolerance * ls_tolerance * snorm * scale
 
     # p0 via parallel reduction
@@ -2631,7 +2632,7 @@ def solve_done(
   nv: int,
   opt_tolerance: wp.array(dtype=float),
   opt_iterations: int,
-  stat_meaninertia: float,
+  stat_meaninertia: wp.array(dtype=float),
   # In:
   ctx_grad_dot_in: wp.array(dtype=float),
   ctx_cost_in: wp.array(dtype=float),
@@ -2650,9 +2651,10 @@ def solve_done(
 
   solver_niter_out[worldid] += 1
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+  meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
 
-  improvement = _rescale(nv, stat_meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
-  gradient = _rescale(nv, stat_meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
+  improvement = _rescale(nv, meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
+  gradient = _rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
   done = (improvement < tolerance) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then

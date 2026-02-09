@@ -498,6 +498,59 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
+  def test_parallel_linesearch_threads_per_efc_gt_1(self):
+    """Test parallel linesearch with threads_per_efc > 1."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    self.assertEqual(mjm.nv, 54)  # 9 freejoints * 6 dofs each
+
+    # parallel linesearch path with nv > 50 -> threads_per_efc > 1
+    m.opt.ls_parallel = True
+    m.opt.iterations = 1
+    m.opt.ls_iterations = 1
+    mjw.step(m, d)
+
 
 if __name__ == "__main__":
   wp.init()
