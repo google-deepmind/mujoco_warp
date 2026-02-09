@@ -24,6 +24,7 @@ from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -72,6 +73,15 @@ MJ_COLLISION_TABLE = {
   (GeomType.BOX, GeomType.MESH): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.MESH): CollisionType.CONVEX,
 }
+
+
+def create_collision_context(naconmax: int) -> CollisionContext:
+  """Create a CollisionContext with allocated arrays."""
+  return CollisionContext(
+    collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
+    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
+    collision_worldid=wp.empty(naconmax, dtype=int),
+  )
 
 
 @wp.kernel
@@ -331,10 +341,11 @@ def _add_geom_pair(
   worldid: int,
   nxnid: int,
   # Data out:
+  ncollision_out: wp.array(dtype=int),
+  # Out:
   collision_pair_out: wp.array(dtype=wp.vec2i),
   collision_pairid_out: wp.array(dtype=wp.vec2i),
   collision_worldid_out: wp.array(dtype=int),
-  ncollision_out: wp.array(dtype=int),
 ):
   pairid = wp.atomic_add(ncollision_out, 0, 1)
 
@@ -459,10 +470,11 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     cumulative_sum_in: wp.array(dtype=int),
     nsweep_in: int,
     # Data out:
+    ncollision_out: wp.array(dtype=int),
+    # Out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
     collision_pairid_out: wp.array(dtype=wp.vec2i),
     collision_worldid_out: wp.array(dtype=int),
-    ncollision_out: wp.array(dtype=int),
   ):
     worldgeomid = wp.tid()
 
@@ -510,10 +522,10 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
           geom2,
           worldid,
           idx,
+          ncollision_out,
           collision_pair_out,
           collision_pairid_out,
           collision_worldid_out,
-          ncollision_out,
         )
 
   return kernel
@@ -546,7 +558,7 @@ def _segmented_sort(tile_size: int):
 
 
 @event_scope
-def sap_broadphase(m: Model, d: Data):
+def sap_broadphase(m: Model, d: Data, ctx: CollisionContext):
   """Runs broadphase collision detection using a sweep-and-prune (SAP) algorithm.
 
   This method is more efficient than the N-squared approach for large numbers of
@@ -634,7 +646,7 @@ def sap_broadphase(m: Model, d: Data):
       cumulative_sum.reshape(-1),
       nsweep,
     ],
-    outputs=[d.collision_pair, d.collision_pairid, d.collision_worldid, d.ncollision],
+    outputs=[d.ncollision, ctx.collision_pair, ctx.collision_pairid, ctx.collision_worldid],
   )
 
 
@@ -654,10 +666,11 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     geom_xmat_in: wp.array2d(dtype=wp.mat33),
     naconmax_in: int,
     # Data out:
+    ncollision_out: wp.array(dtype=int),
+    # Out:
     collision_pair_out: wp.array(dtype=wp.vec2i),
     collision_pairid_out: wp.array(dtype=wp.vec2i),
     collision_worldid_out: wp.array(dtype=int),
-    ncollision_out: wp.array(dtype=int),
   ):
     worldid, elementid = wp.tid()
 
@@ -679,17 +692,17 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
         geom2,
         worldid,
         elementid,
+        ncollision_out,
         collision_pair_out,
         collision_pairid_out,
         collision_worldid_out,
-        ncollision_out,
       )
 
   return kernel
 
 
 @event_scope
-def nxn_broadphase(m: Model, d: Data):
+def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext):
   """Runs broadphase collision detection using a brute-force N-squared approach.
 
   This function iterates through a pre-filtered list of all possible geometry pairs and
@@ -717,15 +730,15 @@ def nxn_broadphase(m: Model, d: Data):
       d.naconmax,
     ],
     outputs=[
-      d.collision_pair,
-      d.collision_pairid,
-      d.collision_worldid,
       d.ncollision,
+      ctx.collision_pair,
+      ctx.collision_pairid,
+      ctx.collision_worldid,
     ],
   )
 
 
-def _narrowphase(m, d):
+def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
   collision_table = MJ_COLLISION_TABLE
   if m.opt.disableflags & DisableBit.NATIVECCD:
     collision_table[(GeomType.BOX, GeomType.BOX)] = CollisionType.PRIMITIVE
@@ -735,11 +748,11 @@ def _narrowphase(m, d):
 
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
-  convex_narrowphase(m, d, convex_pairs)
-  primitive_narrowphase(m, d, primitive_pairs)
+  convex_narrowphase(m, d, ctx, convex_pairs)
+  primitive_narrowphase(m, d, ctx, primitive_pairs)
 
   if m.has_sdf_geom:
-    sdf_narrowphase(m, d)
+    sdf_narrowphase(m, d, ctx)
 
 
 @event_scope
@@ -760,15 +773,18 @@ def collision(m: Model, d: Data):
   This function will do nothing except zero out arrays if collision detection is disabled
   via `m.opt.disableflags` or if `d.nacon` is 0.
   """
-  # zero contact and collision counters
-  wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
-
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
+    d.nacon.zero_()
     return
 
-  if m.opt.broadphase == BroadphaseType.NXN:
-    nxn_broadphase(m, d)
-  else:
-    sap_broadphase(m, d)
+  ctx = create_collision_context(d.naconmax)
 
-  _narrowphase(m, d)
+  # zero counters
+  wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
+
+  if m.opt.broadphase == BroadphaseType.NXN:
+    nxn_broadphase(m, d, ctx)
+  else:
+    sap_broadphase(m, d, ctx)
+
+  _narrowphase(m, d, ctx)

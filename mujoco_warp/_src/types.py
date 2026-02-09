@@ -1665,9 +1665,6 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     njmax: maximum number of constraints per world
     nacon: number of detected contacts (across all worlds)      (1,)
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
   """
 
@@ -1754,12 +1751,22 @@ class Data:
   naconmax: int
   njmax: int
   nacon: array(1, int)
-
-  # warp only: collision driver
-  collision_pair: array("naconmax", wp.vec2i)
-  collision_pairid: array("naconmax", wp.vec2i)
-  collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+
+@dataclasses.dataclass
+class CollisionContext:
+  """Collision driver intermediate arrays.
+
+  Attributes:
+    collision_pair: collision pairs from broadphase             (naconmax, 2)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
+    collision_worldid: collision world ids from broadphase      (naconmax,)
+  """
+
+  collision_pair: wp.array
+  collision_pairid: wp.array
+  collision_worldid: wp.array
 
 
 @dataclasses.dataclass
