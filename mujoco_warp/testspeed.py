@@ -24,6 +24,7 @@ Example:
 import dataclasses
 import inspect
 import json
+import shutil
 import sys
 from typing import Sequence
 
@@ -42,7 +43,11 @@ from mujoco_warp._src.io import find_keys
 from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import override_model
 
-_FUNCS = {n: f for n, f in inspect.getmembers(mjw, inspect.isfunction) if inspect.signature(f).parameters.keys() == {"m", "d"}}
+_FUNCS = {
+  n: f
+  for n, f in inspect.getmembers(mjw, inspect.isfunction)
+  if inspect.signature(f).parameters.keys() == {"m", "d"} or inspect.signature(f).parameters.keys() == {"m", "d", "rc"}
+}
 
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
 _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
@@ -51,7 +56,7 @@ _NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of con
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
-_CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "clear kernel cache (to calculate full JIT time)")
+_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
 _EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "print an event trace report")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "print a report of contacts and constraints per step")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of solver iterations per step")
@@ -60,6 +65,15 @@ _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device"
 _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 _FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format for results")
+_INFO = flags.DEFINE_bool("info", False, "print Model and Data info")
+
+# Render
+_WIDTH = flags.DEFINE_integer("width", 64, "render width (pixels)")
+_HEIGHT = flags.DEFINE_integer("height", 64, "render height (pixels)")
+_RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
+_RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
+_USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
+_USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
@@ -98,12 +112,12 @@ def _collect_metrics(
 ) -> dict[str, float]:
   """Collect all metrics into a dictionary."""
   steps = _NWORLD.value * _NSTEP.value
-  model_name = path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem
   metrics = {
-    f"{model_name}:jit_duration": jit_time,
-    f"{model_name}:run_time": run_time,
-    f"{model_name}:steps_per_second": steps / run_time,
-    f"{model_name}:converged_worlds": int(nsuccess),
+    "benchmark": path.parent.name + path.stem.replace("scene", "") if path.name.startswith("scene") else path.stem,
+    "jit_duration": jit_time,
+    "run_time": run_time,
+    "steps_per_second": steps / run_time,
+    "converged_worlds": int(nsuccess),
   }
 
   def flatten_trace(prefix: str, trace, metrics):
@@ -113,32 +127,32 @@ def _collect_metrics(
         metrics[f"{prefix}{k}{f'[{i}]' if len(times) > 1 else ''}"] = 1e6 * t / steps
       flatten_trace(f"{prefix}{k}.", sub_trace, metrics)
 
-  flatten_trace(model_name + ":", trace, metrics)
+  flatten_trace("", trace, metrics)
 
   if _MEMORY.value:
     metrics.update(
       {
-        f"{model_name}:model_memory": sum(c for _, c in _dataclass_memory(m)),
-        f"{model_name}:data_memory": sum(c for _, c in _dataclass_memory(d)),
-        f"{model_name}:total_memory": wp.get_device(_DEVICE.value).total_memory - free_mem_at_init,
+        "model_memory": sum(c for _, c in _dataclass_memory(m)),
+        "data_memory": sum(c for _, c in _dataclass_memory(d)),
+        "total_memory": free_mem_at_init - wp.get_device(_DEVICE.value).free_memory,
       }
     )
 
   if nacon and nefc:
     metrics.update(
       {
-        f"{model_name}:ncon_mean": np.mean(nacon) / _NWORLD.value,
-        f"{model_name}:ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
-        f"{model_name}:nefc_mean": np.mean(nefc),
-        f"{model_name}:nefc_p95": np.percentile(nefc, 95),
+        "ncon_mean": np.mean(nacon) / _NWORLD.value,
+        "ncon_p95": np.percentile(nacon, 95) / _NWORLD.value,
+        "nefc_mean": np.mean(nefc),
+        "nefc_p95": np.percentile(nefc, 95),
       }
     )
 
   if solver_niter:
     metrics.update(
       {
-        f"{model_name}:solver_niter_mean": np.mean(solver_niter),
-        f"{model_name}:solver_niter_p95": np.percentile(solver_niter, 95),
+        "solver_niter_mean": np.mean(solver_niter),
+        "solver_niter_p95": np.percentile(solver_niter, 95),
       }
     )
 
@@ -148,15 +162,17 @@ def _collect_metrics(
 def _output_short(*args):
   """Output metrics in a short format."""
   metrics = _collect_metrics(*args)
-  max_key_len = max(len(key) for key in metrics.keys())
+  benchmark = metrics.pop("benchmark")
+  max_key_len = max(len(key) for key in metrics.keys()) + len(benchmark)
   for key, value in metrics.items():
-    print(f"{key:<{max_key_len}} {value}")
+    print(f"{benchmark}:{key:<{max_key_len}} {value}")
 
 
 def _output_json(*args):
   """Output metrics in a JSON format."""
   metrics = _collect_metrics(*args)
-  print(json.dumps(metrics, indent=2))
+  del metrics["benchmark"]
+  print(json.dumps(metrics))
 
 
 def _output_human(m, d, path: epath.Path, free_mem_at_init, jit_time, run_time, trace, nacon, nefc, solver_niter, nsuccess):
@@ -234,14 +250,14 @@ Total converged worlds: {nsuccess} / {d.nworld}""")
       mem = _dataclass_memory(dataclass)
       other_mem -= sum(c for _, c in mem)
       other_mem_total = sum(c for _, c in mem)
-      print(f"{name} memory {other_mem_total / 1024**2:.2f} MB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
+      print(f"{name} memory {other_mem_total / 1024**2:.2f} MiB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
       fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
       for field, capacity in fields:
-        print(f" {field}: {capacity / 1024**2:.2f} MB ({100 * capacity / used_mem:.2f}%)")
+        print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / used_mem:.2f}%)")
       if not fields:
         print(" (no field >= 1% of used memory)")
-    print(f"Other memory: {other_mem / 1024**2:.2f} MB ({100 * other_mem / used_mem:.2f}% of used memory)")
-    print(f"Total memory: {used_mem / 1024**2:.2f} MB ({100 * used_mem / total_mem:.2f}% of total device memory)")
+    print(f"Other memory: {other_mem / 1024**2:.2f} MiB ({100 * other_mem / used_mem:.2f}% of used memory)")
+    print(f"Total memory: {used_mem / 1024**2:.2f} MiB ({100 * used_mem / total_mem:.2f}% of total device memory)")
 
 
 def _main(argv: Sequence[str]):
@@ -252,7 +268,7 @@ def _main(argv: Sequence[str]):
 
   path = epath.Path(argv[1])
   if _FORMAT.value == "human":
-    print(f"Loading model from: {path}...")
+    print(f"Loading model from: {path}...\n")
   mjm = _load_model(path)
   mjd = mujoco.MjData(mjm)
   ctrls = None
@@ -270,28 +286,203 @@ def _main(argv: Sequence[str]):
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
   free_mem_at_init = wp.get_device(_DEVICE.value).free_memory
-  if _CLEAR_KERNEL_CACHE.value:
+  if _CLEAR_WARP_CACHE.value:
     wp.clear_kernel_cache()
+    wp.clear_lto_cache()
+    # Clear CUDA compute cache for truly cold start JIT
+    compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
+    if compute_cache.exists():
+      shutil.rmtree(compute_cache)
+      compute_cache.mkdir()
+
+  if (_DEVICE.value or wp.get_device()) == "cpu":
+    raise ValueError("testspeed available for gpu only")
 
   with wp.ScopedDevice(_DEVICE.value):
+    override_model(mjm, _OVERRIDE.value)
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
     d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    rc = None
+    if "rc" in inspect.signature(_FUNCS[_FUNCTION.value]).parameters.keys():
+      rc = mjw.create_render_context(
+        mjm,
+        m,
+        d,
+        (_WIDTH.value, _HEIGHT.value),
+        _RENDER_RGB.value,
+        _RENDER_DEPTH.value,
+        _USE_TEXTURES.value,
+        _USE_SHADOWS.value,
+      )
+
     if _FORMAT.value == "human":
+      # Model sizes
+      if _INFO.value:
+        size_fields = [
+          "nq",
+          "nv",
+          "nu",
+          "na",
+          "nbody",
+          "noct",
+          "njnt",
+          "nM",
+          "nC",
+          "ngeom",
+          "nsite",
+          "ncam",
+          "nlight",
+          "nflex",
+          "nflexvert",
+          "nflexedge",
+          "nflexelem",
+          "nflexelemdata",
+          "nflexelemedge",
+          "nmesh",
+          "nmeshvert",
+          "nmeshnormal",
+          "nmeshface",
+          "nmeshgraph",
+          "nmeshpoly",
+          "nmeshpolyvert",
+          "nmeshpolymap",
+          "nhfield",
+          "nhfielddata",
+          "nmat",
+          "npair",
+          "nexclude",
+          "neq",
+          "ntendon",
+          "nwrap",
+          "nsensor",
+          "nmocap",
+          "nplugin",
+          "ngravcomp",
+          "nsensordata",
+        ]
+      else:
+        size_fields = [
+          "nq",
+          "nv",
+          "nu",
+          "nbody",
+          "ngeom",
+        ]
+
+      size_items = [f"{name}: {getattr(m, name)}" for name in size_fields if getattr(m, name) > 0]
+      # Wrap sizes at 10 items per line
+      sizes_lines = []
+      for i in range(0, len(size_items), 5):
+        sizes_lines.append("  " + " ".join(size_items[i : i + 5]))
+      sizes_str = "\n".join(sizes_lines) + "\n"
+
+      # Parse Option.disableflags and Option.enableflags to show individual flag names
+      disable_names = [f.name for f in mjw.DisableBit if m.opt.disableflags & f]
+      enable_names = [f.name for f in mjw.EnableBit if m.opt.enableflags & f]
+      disableflags_str = ", ".join(disable_names) if disable_names else "none"
+      enableflags_str = ", ".join(enable_names) if enable_names else "none"
+
+      # Option fields
+      if _INFO.value:
+        opt_str = (
+          f"Option\n"
+          f"  timestep: {m.opt.timestep.numpy()[0]:g}\n"
+          f"  tolerance: {m.opt.tolerance.numpy()[0]:g} ls_tolerance: {m.opt.ls_tolerance.numpy()[0]:g}\n"
+          f"  ccd_tolerance: {m.opt.ccd_tolerance.numpy()[0]:g}\n"
+          f"  density: {m.opt.density.numpy()[0]:g} viscosity: {m.opt.viscosity.numpy()[0]:g}\n"
+          f"  gravity: {m.opt.gravity.numpy()[0]}\n"
+          f"  wind: {m.opt.wind.numpy()[0]} magnetic: {m.opt.magnetic.numpy()[0]}\n"
+          f"  integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
+          f"  cone: {mjw.ConeType(m.opt.cone).name}\n"
+          f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations}\n"
+          f"  ccd_iterations: {m.opt.ccd_iterations}\n"
+          f"  sdf_initpoints: {m.opt.sdf_initpoints} sdf_iterations: {m.opt.sdf_iterations}\n"
+          f"  disableflags: [{disableflags_str}]\n"
+          f"  enableflags: [{enableflags_str}]\n"
+          f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
+          f"  is_sparse: {m.is_sparse}\n"
+          f"  ls_parallel: {m.opt.ls_parallel} ls_parallel_min_step: {m.opt.ls_parallel_min_step:g}\n"
+          f"  has_fluid: {m.has_fluid}\n"
+          f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
+          f"  graph_conditional: {m.opt.graph_conditional}\n"
+          f"  run_collision_detection: {m.opt.run_collision_detection}\n"
+          f"  contact_sensor_maxmatch: {m.opt.contact_sensor_maxmatch}\n"
+        )
+      else:
+        opt_str = (
+          f"Option\n"
+          f"  integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
+          f"  cone: {mjw.ConeType(m.opt.cone).name}\n"
+          f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations}\n"
+          f"  is_sparse: {m.is_sparse}\n"
+          f"  ls_parallel: {m.opt.ls_parallel}\n"
+          f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
+        )
+
+      if _INFO.value:
+        # Collider types grouped by category
+        from mujoco_warp._src import collision_convex
+        from mujoco_warp._src import collision_primitive
+
+        def trid_to_types(trid):
+          """Convert triangular index back to geom type pair."""
+          n = len(mjw.GeomType)
+          i = 0
+          while (i + 1) * (2 * n - i) // 2 <= trid:
+            i += 1
+          j = trid - i * (2 * n - i - 1) // 2
+          return mjw.GeomType(i), mjw.GeomType(j)
+
+        # Categorize collision pairs
+        primitive_pairs = set(collision_primitive._PRIMITIVE_COLLISIONS.keys())
+        hfield_ccd_pairs = set(collision_convex._HFIELD_COLLISION_PAIRS)
+        ccd_pairs = set(collision_convex._NON_HFIELD_COLLISION_PAIRS)
+
+        primitive_colliders, hfield_ccd_colliders, ccd_colliders = [], [], []
+        for trid, count in enumerate(m.geom_pair_type_count):
+          if count > 0:
+            t1, t2 = trid_to_types(trid)
+            pair = (t1, t2)
+            pair_str = f"{t1.name}-{t2.name}: {count}"
+            if pair in primitive_pairs:
+              primitive_colliders.append(pair_str)
+            elif pair in hfield_ccd_pairs:
+              hfield_ccd_colliders.append(pair_str)
+            elif pair in ccd_pairs:
+              ccd_colliders.append(pair_str)
+
+        collider_lines = []
+        if primitive_colliders:
+          primitives = "  Primitive"
+          for collider in primitive_colliders:
+            primitives += f"\n  {collider}"
+          collider_lines.append(primitives)
+        if hfield_ccd_colliders:
+          hfield = "  HFieldCCD"
+          for collider in hfield_ccd_colliders:
+            hfield += f"\n  {collider}"
+          collider_lines.append(hfield)
+        if ccd_colliders:
+          ccd = "  CCD"
+          for collider in ccd_colliders:
+            ccd += f"\n  {collider}"
+          collider_lines.append(ccd)
+        max_collisions = sum(m.geom_pair_type_count)
+        collider_lines.append(f"  max collisions: {max_collisions}")
+        collider_str = "Colliders\n" + "\n".join(collider_lines) + "\n" if collider_lines else ""
+      else:
+        collider_str = ""
+
       print(
-        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}"
-        f" graph_conditional: {m.opt.graph_conditional}\n"
-        f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
-        f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations}"
-        f" linesearch: {'parallel' if m.opt.ls_parallel else 'iterative'} ls_iterations: {m.opt.ls_iterations}\n"
-        f"  cone: {mjw.ConeType(m.opt.cone).name} integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
-        f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
-        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n\n"
-        f"Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep.numpy()[0]:.3f}..."
+        f"Model\n{sizes_str}{opt_str}{collider_str}"
+        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
+        f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
+        f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
       )
 
     fn = _FUNCS[_FUNCTION.value]
-    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value)
+    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
 
     match _FORMAT.value:
       case "short":

@@ -54,6 +54,33 @@ class TypesTest(parameterized.TestCase):
     desired_fields.extend(f for f in mjw_fields if f not in mj_set)
 
     actual_fields = [f.name for f in dataclasses.fields(mjw_class)]
+
+    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    _FLEXEDGE_J_FIELDS = ("flexedge_J_rownnz", "flexedge_J_rowadr", "flexedge_J_colind")
+
+    def _remove_fields(fields, to_remove):
+      for field in to_remove:
+        if field in fields:
+          fields.remove(field)
+
+    if not BLEEDING_EDGE_MUJOCO:
+      _remove_fields(actual_fields, _FLEXEDGE_J_FIELDS)
+      _remove_fields(desired_fields, _FLEXEDGE_J_FIELDS)
+      _remove_fields(
+        actual_fields,
+        [
+          "cam_projection",
+        ],
+      )
+      _remove_fields(
+        desired_fields,
+        [
+          "cam_projection",
+        ],
+      )
+
     self.assertListEqual(actual_fields, desired_fields)
 
   @parameterized.parameters(Option, Model, Data)

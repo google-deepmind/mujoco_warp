@@ -16,6 +16,7 @@
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
 from mujoco_warp import Data
 from mujoco_warp import GeomType
@@ -23,10 +24,11 @@ from mujoco_warp import Model
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
-from mujoco_warp._src.warp_util import nested_kernel
+from mujoco_warp._src.types import mat63
 
 
 def _geom_dist(
@@ -64,7 +66,7 @@ def _geom_dist(
   multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
   multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
 
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
@@ -291,7 +293,7 @@ def _geom_dist(
   return dist_out.numpy()[0], ncon_out.numpy()[0], pos_out.numpy()[0], pos_out.numpy()[1]
 
 
-class GJKTest(absltest.TestCase):
+class GJKTest(parameterized.TestCase):
   """Tests for GJK/EPA."""
 
   def test_spheres_distance(self):
@@ -650,38 +652,154 @@ class GJKTest(absltest.TestCase):
       xml="""
        <mujoco>
          <worldbody>
-          <geom size=".02 .02 .02" type="box"/>
-          <geom size=".02 .02 .02" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
          </worldbody>
        </mujoco>
        """
     )
 
     pos1 = wp.vec3(
-      0.100000001490116,
-      0.100000001490116,
-      0.002112504327670,
+      0.015344001352787,
+      -0.195344015955925,
+      0.174637570977211,
     )
     rot1 = wp.mat33(
       1.000000000000000,
-      0.000000000000004,
-      -0.000000048104223,
-      0.000000000000005,
+      0.000000000029901,
+      0.000004057303613,
+      -0.000000000062404,
       1.000000000000000,
-      0.000000180167476,
-      0.000000048104223,
-      -0.000000180167476,
+      0.000008010840247,
+      -0.000004057303613,
+      -0.000008010840247,
       1.000000000000000,
     )
 
     pos2 = wp.vec3(
-      0.100000001490116,
-      0.100000001490116,
-      0.040334075689316,
+      0.015344001352787,
+      -0.195344015955925,
+      0.224056228995323,
+    )
+    rot2 = wp.mat33(
+      1.000000000000000,
+      0.000000000029692,
+      -0.000003355821491,
+      -0.000000000057016,
+      1.000000000000000,
+      -0.000008142159459,
+      0.000003355821491,
+      0.000008142159459,
+      1.000000000000000,
     )
 
-    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2)
+    _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertEqual(ncon, 4)
+
+  def test_box_box_diagonal(self):
+    """Test box-box where multiccd has a diagonal edge as a face."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size="0.50 0.50 0.10" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos2 = wp.vec3(
+      0.135535001754761,
+      -0.195535004138947,
+      0.124984227120876,
+    )
+    rot2 = wp.mat33(
+      1.000000000000000,
+      0.000000000048563,
+      -0.000000135524601,
+      -0.000000000048577,
+      1.000000000000000,
+      -0.000000103374248,
+      0.000000135524601,
+      0.000000103374248,
+      1.000000000000000,
+    )
+
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -1.5778851595232846e-05)
+    self.assertEqual(ncon, 4)
+
+  @parameterized.parameters(0.0, 0.1)
+  def test_hfield_support(self, margin: float):
+    """Test support function for height field geoms."""
+    eps = 1e-3
+
+    # Bottom triangle (z = 0)
+    # Top triangle (z = 1 + margin, following collision_convex.py pattern)
+    # fmt: off
+    prism = mat63(
+      0.0, 0.0, 0.0,           # bottom vertex 0
+      1.0, 0.0, 0.0,           # bottom vertex 1
+      0.5, 1.0, 0.0,           # bottom vertex 2
+      0.0, 0.0, 1.0 + margin,  # top vertex 3
+      1.0, 0.0, 1.0 + margin,  # top vertex 4
+      0.5, 1.0, 1.0 + margin,  # top vertex 5
+    )
+    # fmt: on
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _support_kernel(
+      hfprism_in: mat63,
+      eps_in: float,
+      support_point: wp.array(dtype=wp.vec3),
+    ):
+      geom = Geom()
+      geom.pos = wp.vec3(0.0, 0.0, 0.0)
+      geom.rot = wp.identity(n=3, dtype=float)
+      geom.hfprism = hfprism_in
+      geom.margin = 0.0  # margin added to prism
+
+      # Test directions with eps offsets for unique support points
+
+      # dir = (eps, eps, 1): selects prism[5] (top, highest z, breaks tie with x,y)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(eps_in, eps_in, 1.0))
+      support_point[0] = sp.point
+
+      # dir = (-eps, -eps, -1): selects prism[0] (bottom, lowest z)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(-eps_in, -eps_in, -1.0))
+      support_point[1] = sp.point
+
+      # dir = (1, eps, eps): selects prism[4] (top, x=1, eps breaks ties)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(1.0, eps_in, eps_in))
+      support_point[2] = sp.point
+
+      # dir = (eps, 1, eps): selects prism[5] (top, y=1, eps breaks ties)
+      sp = support(geom, GeomType.HFIELD, wp.vec3(eps_in, 1.0, eps_in))
+      support_point[3] = sp.point
+
+    support_point = wp.empty(4, dtype=wp.vec3)
+
+    wp.launch(
+      _support_kernel,
+      dim=1,
+      inputs=[prism, eps],
+      outputs=[support_point],
+    )
+
+    result = support_point.numpy()
+
+    # dir = (eps, eps, 1): expect prism[5] + margin offset
+    np.testing.assert_allclose(result[0], prism[5], rtol=1e-5)
+
+    # dir = (-eps, -eps, -1): expect prism[0] + margin offset
+    np.testing.assert_allclose(result[1], prism[0], rtol=1e-5)
+
+    # dir = (1, 0, eps): expect prism[4] + margin offset
+    np.testing.assert_allclose(result[2], prism[4], rtol=1e-5)
+
+    # dir = (0, 1, eps): expect prism[5] + margin offset
+    np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
 
 
 if __name__ == "__main__":

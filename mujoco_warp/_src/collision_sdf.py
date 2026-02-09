@@ -69,6 +69,7 @@ class MeshData:
   data_id: int
   pos: wp.vec3
   mat: wp.mat33
+  size: wp.vec3
   pnt: wp.vec3
   vec: wp.vec3
   valid: bool = False
@@ -376,6 +377,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
       mesh_data.data_id,
       mesh_data.pos,
       mesh_data.mat,
+      mesh_data.size,
       mesh_data.pnt,
       mesh_data.vec,
     )
@@ -389,6 +391,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
         mesh_data.data_id,
         mesh_data.pos,
         mesh_data.mat,
+        mesh_data.size,
         mesh_data.pnt,
         -mesh_data.vec,
       )
@@ -426,6 +429,7 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
       mesh_data.data_id,
       mesh_data.pos,
       mesh_data.mat,
+      mesh_data.size,
       mesh_data.pnt,
       mesh_data.vec,
     )
@@ -786,6 +790,7 @@ def _sdf_narrowphase(
   mesh_data1.data_id = geom_dataid[g1]
   mesh_data1.pos = geom1.pos
   mesh_data1.mat = geom1.rot
+  mesh_data1.size = geom1.size
   mesh_data1.pnt = wp.vec3(-1.0)
   mesh_data1.vec = wp.vec3(0.0)
   mesh_data1.valid = True
@@ -798,6 +803,7 @@ def _sdf_narrowphase(
   mesh_data2.data_id = geom_dataid[g2]
   mesh_data2.pos = geom2.pos
   mesh_data2.mat = geom2.rot
+  mesh_data2.size = geom2.size
   mesh_data2.pnt = wp.vec3(-1.0)
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
