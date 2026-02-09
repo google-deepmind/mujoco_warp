@@ -212,7 +212,6 @@ class IOTest(parameterized.TestCase):
       "wrap_obj",
       "wrap_xpos",
       "sensordata",
-      "tree_island",
     ]:
       _assert_eq(
         getattr(d, field).numpy()[world_id].reshape(-1),
@@ -298,7 +297,10 @@ class IOTest(parameterized.TestCase):
       "xpos",
       "xquat",
       "geom_xpos",
+      "tree_island",
     ]:
+      if field == "tree_island" and d.nisland.numpy()[0] == 0:
+        continue
       if getattr(mjd, field).size > 0:
         _assert_eq(
           getattr(mjd_result, field).reshape(-1),

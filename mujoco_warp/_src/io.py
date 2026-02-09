@@ -929,8 +929,8 @@ def put_data(
   d.flexedge_J = wp.array(np.tile(mjd.flexedge_J.reshape(-1), (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
 
   # island arrays
-  d.nisland = wp.zeros((nworld,), dtype=int)
-  d.tree_island = wp.zeros((nworld, mjm.ntree), dtype=int)
+  d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
+  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
 
   if mujoco.mj_isSparse(mjm):
     ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -1153,8 +1153,9 @@ def get_data_into(
   result.sensordata[:] = d.sensordata.numpy()[world_id]
 
   # islands
-  if not (mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND) and mjm.ntree:
-    result.nisland = d.nisland.numpy()[world_id]
+  nisland = d.nisland.numpy()[world_id]
+  result.nisland = nisland
+  if nisland:
     result.tree_island[:] = d.tree_island.numpy()[world_id]
 
 

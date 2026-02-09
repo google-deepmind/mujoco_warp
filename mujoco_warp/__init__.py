@@ -56,6 +56,7 @@ from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.io import set_const as set_const
 from mujoco_warp._src.io import set_const_0 as set_const_0
 from mujoco_warp._src.io import set_const_fixed as set_const_fixed
+from mujoco_warp._src.island import island as island
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
