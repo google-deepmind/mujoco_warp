@@ -473,7 +473,7 @@ def _main(argv: Sequence[str]):
 
       bvh_ngeom = "None" if rc is None else rc.bvh_ngeom
       ncam = "None" if rc is None else rc.nrender
-      cam_res = "None"  if rc is None else rc.cam_res.numpy()
+      cam_res = "None" if rc is None else rc.cam_res.numpy()
       print(
         f"Model\n{sizes_str}{opt_str}{collider_str}"
         f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
