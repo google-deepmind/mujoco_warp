@@ -46,8 +46,8 @@ To make sure everything is working:
 uv run pytest -n 8
 ```
 
-If you plan to write Warp kernels for MJWarp, please use the `kernel_analyzer` vscode plugin located in `contrib/kernel_analyzer`.
-Please see the `README.md` there for details on how to install it and use it.  The same kernel analyzer will be run on any PR
+If you plan to write Warp kernels for MJWarp, please use the `kernel_analyzer` vscode plugin located in [`contrib/kernel_analyzer`](https://github.com/google-deepmind/mujoco_warp/tree/main/contrib/kernel_analyzer).
+Please see the [README](https://github.com/google-deepmind/mujoco_warp/blob/main/contrib/kernel_analyzer/README.md) there for details on how to install it and use it.  The same kernel analyzer will be run on any PR
 you open, so it's important to fix any issues it reports.
 
 # Compatibility

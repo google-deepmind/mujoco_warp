@@ -2315,6 +2315,7 @@ def transmission(m: Model, d: Data):
   Updates the actuator length and moments for all actuators in the model, including joint
   and tendon transmissions.
   """
+  d.actuator_moment.zero_()
   wp.launch(
     _transmission,
     dim=[d.nworld, m.nu],
