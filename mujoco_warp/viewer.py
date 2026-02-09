@@ -152,7 +152,7 @@ def _main(argv: Sequence[str]) -> None:
     graph = _compile_step(m, d) if wp.get_device().is_cuda else None
     if graph is None:
       mjw.step(m, d)  # warmup step
-      print("Running without CUDA graph capture (CPU mode).")
+      print("Running Warp unoptimized on CPU.")
     broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
     solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
     integrator = mjw.IntegratorType(m.opt.integrator).name
