@@ -191,11 +191,7 @@ def _main(argv: Sequence[str]) -> None:
         if mjm.opt != opt:
           opt = copy.copy(mjm.opt)
           m = mjw.put_model(mjm)
-          if graph:
-            with wp.ScopedCapture(_DEVICE.value) as capture:
-              mjw.step(m, d)
-            graph = capture.graph
-
+          graph = _compile_step(m, d) if wp.get_device().is_cuda else None
         if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
           if graph is None:
