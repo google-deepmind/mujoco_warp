@@ -42,6 +42,20 @@ _IO_TEST_MODELS = (
   "hfield/hfield.xml",
 )
 
+# TODO: Add more cameras for testing projection and intrinsics
+_CAMERA_TEST_XML = """
+<mujoco>
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <camera name="cam1" pos="0 -3 2" xyaxes="1 0 0 0 0.6 0.8" resolution="64 64" output="rgb"/>
+    <camera name="cam2" pos="0 3 2" xyaxes="-1 0 0 0 0.6 0.8" resolution="32 32" output="depth"/>
+    <camera name="cam3" pos="3 0 2" xyaxes="0 1 0 -0.6 0 0.8" resolution="16 16" output="rgb depth"/>
+    <geom type="plane" size="5 5 0.1"/>
+    <geom type="sphere" size="0.5" pos="0 0 1"/>
+  </worldbody>
+</mujoco>
+"""
+
 
 class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
@@ -114,6 +128,7 @@ class IOTest(parameterized.TestCase):
 
     # keyframe=2: ncon=0, nefc=0
     mujoco.mj_resetDataKeyframe(mjm, mjd, 2)
+    d.time.fill_(0.12345)
 
     # check that mujoco._functions._realloc_con_efc allocates for contact and efc
     mjwarp.get_data_into(mjd, mjm, d, world_id=world_id)
@@ -127,6 +142,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
     self.assertEqual(d.nisland.numpy()[world_id], mjd.nisland)
+    _assert_eq(d.time.numpy()[world_id], mjd.time, "time")
 
     for field in [
       "energy",
@@ -164,7 +180,6 @@ class IOTest(parameterized.TestCase):
       "flexedge_length",
       "flexedge_velocity",
       "actuator_length",
-      # TODO(team): actuator_moment mjd sparse2dense
       "crb",
       # TODO(team): qLDiagInv sparse factorization
       "ten_velocity",
@@ -204,6 +219,15 @@ class IOTest(parameterized.TestCase):
         getattr(mjd, field).reshape(-1),
         field,
       )
+
+    # actuator_moment
+    actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment_dense, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    _assert_eq(
+      d.actuator_moment.numpy()[world_id].reshape(-1),
+      actuator_moment_dense.reshape(-1),
+      "actuator_moment",
+    )
 
     # contact
     ncon = int(d.nacon.numpy()[0] / nworld)
@@ -246,6 +270,83 @@ class IOTest(parameterized.TestCase):
         field,
       )
 
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_get_data_into_io_test_models(self, xml):
+    """Tests get_data_into for field coverage across diverse model types."""
+    mjm, mjd, _, d = test_data.fixture(xml)
+
+    # Create fresh MjData to verify get_data_into populates it correctly
+    mjd_result = mujoco.MjData(mjm)
+
+    mjwarp.get_data_into(mjd_result, mjm, d)
+
+    # Compare key fields, including flex/tendon data not covered by humanoid.xml
+    for field in [
+      "qpos",
+      "qvel",
+      "qacc",
+      "ctrl",
+      "act",
+      "flexvert_xpos",
+      "flexedge_length",
+      "flexedge_velocity",
+      "ten_length",
+      "ten_velocity",
+      "actuator_length",
+      "actuator_velocity",
+      "actuator_force",
+      "xpos",
+      "xquat",
+      "geom_xpos",
+    ]:
+      if getattr(mjd, field).size > 0:
+        _assert_eq(
+          getattr(mjd_result, field).reshape(-1),
+          getattr(mjd, field).reshape(-1),
+          f"{field} (model: {xml})",
+        )
+
+    # flexedge_J
+    if xml == "flex/floppy.xml":
+      from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+      if BLEEDING_EDGE_MUJOCO:
+        _assert_eq(
+          mjd_result.flexedge_J.reshape(-1),
+          d.flexedge_J.numpy()[0].reshape(-1),
+          "flexedge_J",
+        )
+      else:
+        m = mjwarp.put_model(mjm)
+        _assert_eq(
+          mjd_result.flexedge_J_rownnz,
+          m.flexedge_J_rownnz.numpy(),
+          "flexedge_J_rownnz",
+        )
+        _assert_eq(
+          mjd_result.flexedge_J_rowadr,
+          m.flexedge_J_rowadr.numpy(),
+          "flexedge_J_rowadr",
+        )
+        _assert_eq(
+          mjd_result.flexedge_J_colind,
+          m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv)),
+          "flexedge_J_colind",
+        )
+        flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+        mujoco.mju_sparse2dense(
+          flexedge_J,
+          d.flexedge_J.numpy().reshape(-1),
+          m.flexedge_J_rownnz.numpy(),
+          m.flexedge_J_rowadr.numpy(),
+          m.flexedge_J_colind.numpy().reshape(-1),
+        )
+        _assert_eq(
+          mjd_result.flexedge_J,
+          flexedge_J,
+          "flexedge_J",
+        )
+
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
       """
@@ -264,7 +365,7 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
 
     np.testing.assert_allclose(m.geom_fluid.numpy(), mjm.geom_fluid)
-    self.assertTrue(m.opt.has_fluid)
+    self.assertTrue(m.has_fluid)
 
     body_has = m.body_fluid_ellipsoid.numpy()
     self.assertTrue(body_has[mjm.geom_bodyid[0]])
@@ -642,6 +743,57 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
+
+  @parameterized.named_parameters(
+    dict(testcase_name="dense", jacobian="dense"),
+    dict(testcase_name="sparse", jacobian="sparse"),
+  )
+  def test_set_const_meaninertia(self, jacobian):
+    """Test meaninertia computation matches MuJoCo after qpos0/mass changes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <option jacobian="{jacobian}"/>
+      <worldbody>
+        <body name="link1">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    # Test initial value matches
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia initial")
+
+    # Modify qpos0 and verify meaninertia updates
+    new_qpos0 = np.array([0.5, 0.3])
+    mjm.qpos0[:] = new_qpos0
+    qpos0_np = m.qpos0.numpy()
+    qpos0_np[0, :] = new_qpos0
+    wp.copy(m.qpos0, wp.array(qpos0_np, dtype=m.qpos0.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia after qpos0 change")
+
+    # Modify body mass and verify meaninertia updates
+    new_mass = 3.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia after mass change")
 
   def test_set_const_freejoint(self):
     """Test set_const with freejoint (6 DOFs with special averaging)."""
@@ -1070,6 +1222,149 @@ class IOTest(parameterized.TestCase):
       # TODO(team): set_const_fixed
 
     wp.capture_launch(capture.graph)
+
+  @parameterized.parameters(1, 4)
+  def test_bvh_creation(self, nworld):
+    """Test that the BVH is created correctly for single world and multiple worlds."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(64, 64), use_textures=False)
+
+    self.assertIsNotNone(rc)
+    self.assertEqual(rc.nrender, mjm.ncam)
+
+    self.assertEqual(rc.lower.shape, (nworld * rc.bvh_ngeom,), "lower")
+    self.assertEqual(rc.upper.shape, (nworld * rc.bvh_ngeom,), "upper")
+    self.assertEqual(rc.group.shape, (nworld * rc.bvh_ngeom,), "group")
+    self.assertEqual(rc.group_root.shape, (nworld,), "group_root")
+
+    self.assertIsNotNone(rc.bvh_id)
+    self.assertNotEqual(rc.bvh_id, 0, "bvh_id")
+
+    group_np = rc.group.numpy()
+    _assert_eq(group_np, np.repeat(np.arange(nworld), rc.bvh_ngeom), "render context group values")
+
+  def test_output_buffers(self):
+    """Test that the output rgb and depth buffers have correct shapes and addresses."""
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    width, height = 32, 24
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), render_rgb=True, render_depth=True)
+
+    expected_total = 3 * width * height
+
+    self.assertEqual(rc.nrender, 3, "nrender")
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
+
+    rgb_adr = rc.rgb_adr.numpy()
+    depth_adr = rc.depth_adr.numpy()
+    _assert_eq(rgb_adr, [0, width * height, 2 * width * height], "rgb_adr")
+    _assert_eq(depth_adr, [0, width * height, 2 * width * height], "depth_adr")
+
+  def test_heterogeneous_camera(self):
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
+    """Tests render context with different resolutions and output."""
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    cam_res = [(64, 64), (32, 32), (16, 16)]
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=cam_res, render_rgb=True, render_depth=True)
+
+    self.assertEqual(rc.nrender, 3, "nrender")
+    _assert_eq(rc.cam_res.numpy(), cam_res, "cam_res")
+
+    expected_total = 64 * 64 + 32 * 32 + 16 * 16
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
+
+    rgb_adr = rc.rgb_adr.numpy()
+    depth_adr = rc.depth_adr.numpy()
+    _assert_eq(rgb_adr, [0, 64 * 64, 64 * 64 + 32 * 32], "rgb_adr")
+    _assert_eq(depth_adr, [0, 64 * 64, 64 * 64 + 32 * 32], "depth_adr")
+
+    # Test that results are same when reading from mjmodel fields loaded through xml
+    rc_xml = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True)
+    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
+    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
+    _assert_eq(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
+    _assert_eq(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), "depth_adr")
+
+  def test_cam_active_filtering(self):
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    width, height = 32, 32
+
+    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), cam_active=[True, False, True])
+
+    self.assertEqual(rc.nrender, 2, "nrender")
+
+    expected_total = 2 * width * height
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+
+  def test_rgb_only_and_depth_only(self):
+    """Test that disabling rgb or depth correctly reduces the shape and invalidates the address."""
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
+
+    if not BLEEDING_EDGE_MUJOCO:
+      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
+      return
+
+    mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
+    width, height = 32, 32
+    pixels = width * height
+
+    rc = mjwarp.create_render_context(
+      mjm,
+      m,
+      d,
+      cam_res=(width, height),
+      render_rgb=[True, False, True],
+      render_depth=[False, True, True],
+    )
+
+    self.assertEqual(rc.rgb_data.shape, (d.nworld, 2 * pixels), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (d.nworld, 2 * pixels), "depth_data")
+    _assert_eq(rc.rgb_adr.numpy(), [0, -1, pixels], "rgb_adr")
+    _assert_eq(rc.depth_adr.numpy(), [-1, 0, pixels], "depth_adr")
+    _assert_eq(rc.render_rgb.numpy(), [True, False, True], "render_rgb")
+    _assert_eq(rc.render_depth.numpy(), [False, True, True], "render_depth")
+
+    # Test that results are same when reading from mjmodel fields loaded through xml
+    rc_xml = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height))
+    self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
+    self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
+    _assert_eq(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
+    _assert_eq(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), "depth_adr")
+    _assert_eq(rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), "render_rgb")
+    _assert_eq(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
+
+  def test_render_context_with_textures(self):
+    # TODO: remove after mjwarp depends on warp >= 1.12 in pyproject.toml
+    if not hasattr(wp, "Texture2D"):
+      self.skipTest("Skipping test that requires warp >= 1.12")
+      return
+
+    mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
+    rc = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True, use_textures=True)
+    self.assertTrue(rc.use_textures, "use_textures")
+    self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
 
 
 if __name__ == "__main__":

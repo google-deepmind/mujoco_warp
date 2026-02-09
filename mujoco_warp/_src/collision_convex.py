@@ -55,6 +55,11 @@ def _hfield_filter(
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
+  mesh_vertadr: wp.array(dtype=int),
+  mesh_vertnum: wp.array(dtype=int),
+  mesh_graphadr: wp.array(dtype=int),
+  mesh_vert: wp.array(dtype=wp.vec3),
+  mesh_graph: wp.array(dtype=int),
   hfield_size: wp.array(dtype=wp.vec4),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -111,6 +116,15 @@ def _hfield_filter(
   geom2.index = -1
 
   geomtype2 = geom_type[g2]
+
+  # load mesh vertex data for support function queries
+  if geomtype2 == GeomType.MESH:
+    dataid = geom_dataid[g2]
+    geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
+    geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
+    geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
+    geom2.vert = mesh_vert
+    geom2.graph = mesh_graph
 
   # use support functions for tight AABB bounds
   xmax = support(geom2, geomtype2, wp.vec3(1.0, 0.0, 0.0)).point[0]
@@ -234,7 +248,22 @@ def ccd_hfield_kernel_builder(
 
     # height field filter
     no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
-      geom_type, geom_dataid, geom_size, geom_rbound, geom_margin, hfield_size, geom_xpos_in, geom_xmat_in, worldid, g1, g2
+      geom_type,
+      geom_dataid,
+      geom_size,
+      geom_rbound,
+      geom_margin,
+      mesh_vertadr,
+      mesh_vertnum,
+      mesh_graphadr,
+      mesh_vert,
+      mesh_graph,
+      hfield_size,
+      geom_xpos_in,
+      geom_xmat_in,
+      worldid,
+      g1,
+      g2,
     )
     if no_hf_collision:
       return
@@ -334,8 +363,7 @@ def ccd_hfield_kernel_builder(
     min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     min_id = int(-1)
 
-    # TODO(team): height field margin?
-    geom1.margin = margin
+    # geom1 margin added to z-axis of hfield prism top points below
     geom2.margin = margin
 
     # EPA memory

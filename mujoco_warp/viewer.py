@@ -145,6 +145,7 @@ def _main(argv: Sequence[str]) -> None:
         compute_cache.mkdir()
 
     with wp.ScopedDevice(_DEVICE.value):
+      override_model(mjm, _OVERRIDE.value)
       m = mjw.put_model(mjm)
       override_model(m, _OVERRIDE.value)
       broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
@@ -153,7 +154,7 @@ def _main(argv: Sequence[str]) -> None:
       iterations, ls_iterations = m.opt.iterations, m.opt.ls_iterations
       ls_str = f"{'parallel' if m.opt.ls_parallel else 'iterative'} linesearch iterations: {ls_iterations}"
       print(
-        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.opt.is_sparse}\n"
+        f"  nbody: {m.nbody} nv: {m.nv} ngeom: {m.ngeom} nu: {m.nu} is_sparse: {m.is_sparse}\n"
         f"  broadphase: {broadphase} broadphase_filter: {filter}\n"
         f"  solver: {solver} cone: {cone} iterations: {iterations} {ls_str}\n"
         f"  integrator: {integrator} graph_conditional: {m.opt.graph_conditional}"

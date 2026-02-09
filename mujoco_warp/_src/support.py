@@ -120,7 +120,7 @@ def mul_m(
   if M is None:
     M = d.qM
 
-  if m.opt.is_sparse:
+  if m.is_sparse:
     wp.launch(
       mul_m_sparse(check_skip),
       dim=(d.nworld, m.nv),

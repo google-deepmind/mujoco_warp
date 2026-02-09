@@ -138,8 +138,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
 
 @wp.func
-def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
-  return value / (stat_meaninertia * float(nv))
+def _rescale(nv: int, meaninertia: float, value: float) -> float:
+  return value / (meaninertia * float(nv))
 
 
 @wp.func
@@ -476,7 +476,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost
 
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
+    ctx.quad_gauss.zero_()
 
   wp.launch(
     linesearch_prepare_gauss(m.nv, dofs_per_thread),
@@ -909,7 +909,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     opt_tolerance: wp.array(dtype=float),
     opt_ls_tolerance: wp.array(dtype=float),
     opt_impratio_invsqrt: wp.array(dtype=float),
-    stat_meaninertia: float,
+    stat_meaninertia: wp.array(dtype=float),
     # Data in:
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
@@ -1030,7 +1030,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
     ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
     snorm = wp.sqrt(ctx_search_dot_in[worldid])
-    scale = stat_meaninertia * wp.float(nv)
+    meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
+    scale = meaninertia * wp.float(nv)
     gtol = tolerance * ls_tolerance * snorm * scale
 
     # p0 via parallel reduction
@@ -1160,142 +1161,148 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
     lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
-    # initialize bounds
-    lo_less = lo_in[1] < p0[1]
-    lo = wp.where(lo_less, lo_in, p0)
-    lo_alpha = wp.where(lo_less, lo_alpha_in, 0.0)
-    hi = wp.where(lo_less, p0, lo_in)
-    hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
+    # check for initial convergence: if |derivative| < gtol, accept Newton step immediately
+    initial_converged = wp.abs(lo_in[1]) < gtol
 
-    # main iterative loop
-    alpha = float(0.0)
+    # main iterative loop - skip if already converged
+    if not initial_converged:
+      alpha = float(0.0)
 
-    for _ in range(LS_ITERATIONS):
-      lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
-      hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
-      mid_alpha = 0.5 * (lo_alpha + hi_alpha)
+      # initialize bounds
+      lo_less = lo_in[1] < p0[1]
+      lo = wp.where(lo_less, lo_in, p0)
+      lo_alpha = wp.where(lo_less, lo_alpha_in, 0.0)
+      hi = wp.where(lo_less, p0, lo_in)
+      hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
 
-      local_lo = wp.vec3(0.0)
-      local_hi = wp.vec3(0.0)
-      local_mid = wp.vec3(0.0)
+      for _ in range(LS_ITERATIONS):
+        lo_next_alpha = lo_alpha - math.safe_div(lo[1], lo[2])
+        hi_next_alpha = hi_alpha - math.safe_div(hi[1], hi[2])
+        mid_alpha = 0.5 * (lo_alpha + hi_alpha)
 
-      for efcid in range(tid, nefc, wp.block_dim()):
-        if wp.static(IS_ELLIPTIC):
-          efc_type = efc_type_in[worldid, efcid]
-          efc_id = 0
-          contact_friction = types.vec5(0.0)
-          efc_addr0 = int(0)
-          quad1 = wp.vec3(0.0)
-          quad2 = wp.vec3(0.0)
+        local_lo = wp.vec3(0.0)
+        local_hi = wp.vec3(0.0)
+        local_mid = wp.vec3(0.0)
 
-          if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-            efc_id = efc_id_in[worldid, efcid]
-            contact_friction = contact_friction_in[efc_id]
-            efc_addr0 = contact_efc_address_in[efc_id, 0]
-            efc_addr1 = contact_efc_address_in[efc_id, 1]
-            efc_addr2 = contact_efc_address_in[efc_id, 2]
-            quad1 = ctx_quad_in[worldid, efc_addr1]
-            quad2 = ctx_quad_in[worldid, efc_addr2]
+        for efcid in range(tid, nefc, wp.block_dim()):
+          if wp.static(IS_ELLIPTIC):
+            efc_type = efc_type_in[worldid, efcid]
+            efc_id = 0
+            contact_friction = types.vec5(0.0)
+            efc_addr0 = int(0)
+            quad1 = wp.vec3(0.0)
+            quad2 = wp.vec3(0.0)
 
-          # compute all 3 alphas at once, sharing constraint type checking
-          r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
-            efcid,
-            lo_next_alpha,
-            hi_next_alpha,
-            mid_alpha,
-            ne,
-            nf,
-            impratio_invsqrt,
-            efc_type,
-            efc_D_in[worldid],
-            efc_frictionloss_in[worldid],
-            ctx_Jaref_in[worldid, efcid],
-            ctx_jv_in[worldid, efcid],
-            ctx_quad_in[worldid, efcid],
-            contact_friction,
-            efc_addr0,
-            quad1,
-            quad2,
-          )
-        else:
-          # direct evaluation for pyramidal cones (no intermediate quad)
-          r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
-            efcid,
-            lo_next_alpha,
-            hi_next_alpha,
-            mid_alpha,
-            ne,
-            nf,
-            efc_D_in[worldid, efcid],
-            efc_frictionloss_in[worldid],
-            ctx_Jaref_in[worldid, efcid],
-            ctx_jv_in[worldid, efcid],
-          )
-        local_lo += r_lo
-        local_hi += r_hi
-        local_mid += r_mid
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+              efc_id = efc_id_in[worldid, efcid]
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr0 = contact_efc_address_in[efc_id, 0]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              quad1 = ctx_quad_in[worldid, efc_addr1]
+              quad2 = ctx_quad_in[worldid, efc_addr2]
 
-      # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
-      local_combined = wp.mat33(
-        local_lo[0],
-        local_hi[0],
-        local_mid[0],
-        local_lo[1],
-        local_hi[1],
-        local_mid[1],
-        local_lo[2],
-        local_hi[2],
-        local_mid[2],
-      )
+            # compute all 3 alphas at once, sharing constraint type checking
+            r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
+              efcid,
+              lo_next_alpha,
+              hi_next_alpha,
+              mid_alpha,
+              ne,
+              nf,
+              impratio_invsqrt,
+              efc_type,
+              efc_D_in[worldid],
+              efc_frictionloss_in[worldid],
+              ctx_Jaref_in[worldid, efcid],
+              ctx_jv_in[worldid, efcid],
+              ctx_quad_in[worldid, efcid],
+              contact_friction,
+              efc_addr0,
+              quad1,
+              quad2,
+            )
+          else:
+            # direct evaluation for pyramidal cones (no intermediate quad)
+            r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
+              efcid,
+              lo_next_alpha,
+              hi_next_alpha,
+              mid_alpha,
+              ne,
+              nf,
+              efc_D_in[worldid, efcid],
+              efc_frictionloss_in[worldid],
+              ctx_Jaref_in[worldid, efcid],
+              ctx_jv_in[worldid, efcid],
+            )
+          local_lo += r_lo
+          local_hi += r_hi
+          local_mid += r_mid
 
-      # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
-      # this is faster than 3 vec3 reductions because it avoids synchronization barriers
-      combined_tile = wp.tile(local_combined, preserve_type=True)
-      combined_sum = wp.tile_reduce(wp.add, combined_tile)
-      result = combined_sum[0]
+        # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
+        local_combined = wp.mat33(
+          local_lo[0],
+          local_hi[0],
+          local_mid[0],
+          local_lo[1],
+          local_hi[1],
+          local_mid[1],
+          local_lo[2],
+          local_hi[2],
+          local_mid[2],
+        )
 
-      # extract columns back to vec3s and add quad_gauss contributions
-      gauss_lo, gauss_hi, gauss_mid = _eval_pt_3alphas(ctx_quad_gauss, lo_next_alpha, hi_next_alpha, mid_alpha)
-      lo_next = gauss_lo + wp.vec3(result[0, 0], result[1, 0], result[2, 0])
-      hi_next = gauss_hi + wp.vec3(result[0, 1], result[1, 1], result[2, 1])
-      mid = gauss_mid + wp.vec3(result[0, 2], result[1, 2], result[2, 2])
+        # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
+        # this is faster than 3 vec3 reductions because it avoids synchronization barriers
+        combined_tile = wp.tile(local_combined, preserve_type=True)
+        combined_sum = wp.tile_reduce(wp.add, combined_tile)
+        result = combined_sum[0]
 
-      # bracket swapping
-      # swap lo:
-      swap_lo_lo_next = _in_bracket(lo, lo_next)
-      lo = wp.where(swap_lo_lo_next, lo_next, lo)
-      lo_alpha = wp.where(swap_lo_lo_next, lo_next_alpha, lo_alpha)
-      swap_lo_mid = _in_bracket(lo, mid)
-      lo = wp.where(swap_lo_mid, mid, lo)
-      lo_alpha = wp.where(swap_lo_mid, mid_alpha, lo_alpha)
-      swap_lo_hi_next = _in_bracket(lo, hi_next)
-      lo = wp.where(swap_lo_hi_next, hi_next, lo)
-      lo_alpha = wp.where(swap_lo_hi_next, hi_next_alpha, lo_alpha)
-      swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
+        # extract columns back to vec3s and add quad_gauss contributions
+        gauss_lo, gauss_hi, gauss_mid = _eval_pt_3alphas(ctx_quad_gauss, lo_next_alpha, hi_next_alpha, mid_alpha)
+        lo_next = gauss_lo + wp.vec3(result[0, 0], result[1, 0], result[2, 0])
+        hi_next = gauss_hi + wp.vec3(result[0, 1], result[1, 1], result[2, 1])
+        mid = gauss_mid + wp.vec3(result[0, 2], result[1, 2], result[2, 2])
 
-      # swap hi:
-      swap_hi_hi_next = _in_bracket(hi, hi_next)
-      hi = wp.where(swap_hi_hi_next, hi_next, hi)
-      hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
-      swap_hi_mid = _in_bracket(hi, mid)
-      hi = wp.where(swap_hi_mid, mid, hi)
-      hi_alpha = wp.where(swap_hi_mid, mid_alpha, hi_alpha)
-      swap_hi_lo_next = _in_bracket(hi, lo_next)
-      hi = wp.where(swap_hi_lo_next, lo_next, hi)
-      hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
-      swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
+        # bracket swapping
+        # swap lo:
+        swap_lo_lo_next = _in_bracket(lo, lo_next)
+        lo = wp.where(swap_lo_lo_next, lo_next, lo)
+        lo_alpha = wp.where(swap_lo_lo_next, lo_next_alpha, lo_alpha)
+        swap_lo_mid = _in_bracket(lo, mid)
+        lo = wp.where(swap_lo_mid, mid, lo)
+        lo_alpha = wp.where(swap_lo_mid, mid_alpha, lo_alpha)
+        swap_lo_hi_next = _in_bracket(lo, hi_next)
+        lo = wp.where(swap_lo_hi_next, hi_next, lo)
+        lo_alpha = wp.where(swap_lo_hi_next, hi_next_alpha, lo_alpha)
+        swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
 
-      # check for convergence
-      ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
+        # swap hi:
+        swap_hi_hi_next = _in_bracket(hi, hi_next)
+        hi = wp.where(swap_hi_hi_next, hi_next, hi)
+        hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
+        swap_hi_mid = _in_bracket(hi, mid)
+        hi = wp.where(swap_hi_mid, mid, hi)
+        hi_alpha = wp.where(swap_hi_mid, mid_alpha, hi_alpha)
+        swap_hi_lo_next = _in_bracket(hi, lo_next)
+        hi = wp.where(swap_hi_lo_next, lo_next, hi)
+        hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
+        swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
-      # update alpha if improved
-      improved = lo[0] < p0[0] or hi[0] < p0[0]
-      lo_better = lo[0] < hi[0]
-      alpha = wp.where(improved and lo_better, lo_alpha, alpha)
-      alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
+        # check for convergence
+        ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
 
-      if ls_done:
-        break
+        # update alpha if improved
+        improved = lo[0] < p0[0] or hi[0] < p0[0]
+        lo_better = lo[0] < hi[0]
+        alpha = wp.where(improved and lo_better, lo_alpha, alpha)
+        alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
+
+        if ls_done:
+          break
+    else:
+      alpha = lo_alpha_in
 
     # qacc and Ma update
     for dofid in range(tid, nv, wp.block_dim()):
@@ -2413,7 +2420,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    if m.opt.is_sparse:
+    if m.is_sparse:
       num_blocks_ceil = ceil(m.nv / types.TILE_SIZE_JTDAJ_SPARSE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
       wp.launch_tiled(
@@ -2625,7 +2632,7 @@ def solve_done(
   nv: int,
   opt_tolerance: wp.array(dtype=float),
   opt_iterations: int,
-  stat_meaninertia: float,
+  stat_meaninertia: wp.array(dtype=float),
   # In:
   ctx_grad_dot_in: wp.array(dtype=float),
   ctx_cost_in: wp.array(dtype=float),
@@ -2644,9 +2651,10 @@ def solve_done(
 
   solver_niter_out[worldid] += 1
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+  meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
 
-  improvement = _rescale(nv, stat_meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
-  gradient = _rescale(nv, stat_meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
+  improvement = _rescale(nv, meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
+  gradient = _rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
   done = (improvement < tolerance) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then
