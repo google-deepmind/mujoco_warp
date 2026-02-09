@@ -135,6 +135,7 @@ def _main(argv: Sequence[str]) -> None:
   else:
     wp.config.quiet = flags.FLAGS["verbosity"].value < 1
     wp.init()
+    wp.set_device(_DEVICE.value)
     if _CLEAR_WARP_CACHE.value:
       wp.clear_kernel_cache()
       wp.clear_lto_cache()
@@ -144,15 +145,14 @@ def _main(argv: Sequence[str]) -> None:
         shutil.rmtree(compute_cache)
         compute_cache.mkdir()
 
-    with wp.ScopedDevice(_DEVICE.value):
-      override_model(mjm, _OVERRIDE.value)
-      m = mjw.put_model(mjm)
-      override_model(m, _OVERRIDE.value)
-      d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
-      graph = _compile_step(m, d) if wp.get_device().is_cuda else None
-      if graph is None:
-        mjw.step(m, d)  # warmup step
-        print("Running without CUDA graph capture (CPU mode).")
+    override_model(mjm, _OVERRIDE.value)
+    m = mjw.put_model(mjm)
+    override_model(m, _OVERRIDE.value)
+    d = mjw.put_data(mjm, mjd, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    graph = _compile_step(m, d) if wp.get_device().is_cuda else None
+    if graph is None:
+      mjw.step(m, d)  # warmup step
+      print("Running without CUDA graph capture (CPU mode).")
     broadphase, filter = mjw.BroadphaseType(m.opt.broadphase).name, mjw.BroadphaseFilter(m.opt.broadphase_filter).name
     solver, cone = mjw.SolverType(m.opt.solver).name, mjw.ConeType(m.opt.cone).name
     integrator = mjw.IntegratorType(m.opt.integrator).name
@@ -190,8 +190,7 @@ def _main(argv: Sequence[str]) -> None:
         # TODO: update memory tied to option max iterations
         if mjm.opt != opt:
           opt = copy.copy(mjm.opt)
-          with wp.ScopedDevice(_DEVICE.value):
-            m = mjw.put_model(mjm)
+          m = mjw.put_model(mjm)
           if graph:
             with wp.ScopedCapture(_DEVICE.value) as capture:
               mjw.step(m, d)
@@ -200,8 +199,7 @@ def _main(argv: Sequence[str]) -> None:
         if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
           _VIEWER_GLOBAL_STATE["step_once"] = False
           if graph is None:
-            with wp.ScopedDevice(_DEVICE.value):
-              mjw.step(m, d)
+            mjw.step(m, d)
           else:
             wp.capture_launch(graph)
             wp.synchronize()
