@@ -23,6 +23,7 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
@@ -123,10 +124,10 @@ def _magnetometer(
 @wp.func
 def _cam_projection(
   # Model:
-  cam_fovy: wp.array(dtype=float),
+  cam_fovy: wp.array2d(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
-  cam_intrinsic: wp.array(dtype=wp.vec4),
+  cam_intrinsic: wp.array2d(dtype=wp.vec4),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -137,8 +138,8 @@ def _cam_projection(
   refid: int,
 ) -> wp.vec2:
   sensorsize = cam_sensorsize[refid]
-  intrinsic = cam_intrinsic[refid]
-  fovy = cam_fovy[refid]
+  intrinsic = cam_intrinsic[worldid % cam_intrinsic.shape[0], refid]
+  fovy = cam_fovy[worldid % cam_fovy.shape[0], refid]
   res = cam_resolution[refid]
 
   target_xpos = site_xpos_in[worldid, objid]
@@ -469,10 +470,10 @@ def _sensor_pos(
   site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
   cam_quat: wp.array2d(dtype=wp.quat),
-  cam_fovy: wp.array(dtype=float),
+  cam_fovy: wp.array2d(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
-  cam_intrinsic: wp.array(dtype=wp.vec4),
+  cam_intrinsic: wp.array2d(dtype=wp.vec4),
   sensor_type: wp.array(dtype=int),
   sensor_datatype: wp.array(dtype=int),
   sensor_objtype: wp.array(dtype=int),
@@ -781,7 +782,7 @@ def sensor_pos(m: Model, d: Data):
       d,
       rangefinder_pnt,
       rangefinder_vec,
-      vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
+      vec6(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL),
       True,
       m.sensor_rangefinder_bodyid,
       rangefinder_dist,
@@ -2151,7 +2152,15 @@ def _sensor_tactile(
   contact_type = geom_type[geom]
 
   plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
+    oct_child,
+    oct_aabb,
+    oct_coeff,
+    plugin,
+    plugin_attr,
+    contact_type,
+    geom_size[worldid % geom_size.shape[0], geom],
+    plugin_id,
+    mesh_id,
   )
 
   depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)

@@ -526,9 +526,9 @@ def _fluid(m: Model, d: Data):
 @wp.kernel
 def _qfrc_passive(
   # Model:
-  opt_has_fluid: bool,
   jnt_actgravcomp: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
+  has_fluid: bool,
   # Data in:
   qfrc_spring_in: wp.array2d(dtype=float),
   qfrc_damper_in: wp.array2d(dtype=float),
@@ -548,7 +548,7 @@ def _qfrc_passive(
     qfrc_passive += qfrc_gravcomp_in[worldid, dofid]
 
   # add fluid force
-  if opt_has_fluid:
+  if has_fluid:
     qfrc_passive += qfrc_fluid_in[worldid, dofid]
 
   qfrc_passive_out[worldid, dofid] = qfrc_passive
@@ -826,16 +826,16 @@ def passive(m: Model, d: Data):
       outputs=[d.qfrc_gravcomp],
     )
 
-  if m.opt.has_fluid:
+  if m.has_fluid:
     _fluid(m, d)
 
   wp.launch(
     _qfrc_passive,
     dim=(d.nworld, m.nv),
     inputs=[
-      m.opt.has_fluid,
       m.jnt_actgravcomp,
       m.dof_jntid,
+      m.has_fluid,
       d.qfrc_spring,
       d.qfrc_damper,
       d.qfrc_gravcomp,

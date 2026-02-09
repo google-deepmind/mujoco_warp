@@ -332,7 +332,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml)
 
     for arr in (d.actuator_length, d.actuator_moment):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     actuator_moment = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(
@@ -352,8 +352,9 @@ class SmoothTest(parameterized.TestCase):
     """Tests adhesion actuator."""
     mjm, mjd, m, d = test_data.fixture("actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone})
 
-    d.actuator_length.zero_()
-    d.actuator_moment.zero_()
+    for arr in (d.actuator_length, d.actuator_moment):
+      arr.fill_(wp.inf)
+
     mjw._src.collision_driver.collision(m, d)  # compute contact.includemargin
     mjw._src.constraint.make_constraint(m, d)  # compute contact.efc_address
     mjw._src.smooth.transmission(m, d)
@@ -476,7 +477,7 @@ class SmoothTest(parameterized.TestCase):
 
   def test_flex(self):
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
-    assert m.opt.is_sparse
+    self.assertTrue(m.is_sparse)
 
     d.flexvert_xpos.fill_(wp.inf)
     d.flexedge_length.fill_(wp.inf)

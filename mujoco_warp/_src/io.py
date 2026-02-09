@@ -23,6 +23,8 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import bvh
+from mujoco_warp._src import render_util
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
@@ -167,15 +169,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
         return True
     return False
 
-  for objtype, objid, reftype, refid in zip(
-    mjm.sensor_objtype[is_collision_sensor],
-    mjm.sensor_objid[is_collision_sensor],
-    mjm.sensor_reftype[is_collision_sensor],
-    mjm.sensor_refid[is_collision_sensor],
-  ):
-    if not_implemented(objtype, objid, types.GeomType.BOX) and not_implemented(reftype, refid, types.GeomType.BOX):
-      raise NotImplementedError(f"Collision sensors with box-box collisions are not implemented.")
-
   def _check_friction(name: str, id_: int, condim: int, friction, checks):
     for min_condim, indices in checks:
       if condim >= min_condim:
@@ -203,11 +196,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.tolerance = max(opt.tolerance, 1e-6)
 
   # warp only fields
-  opt.is_sparse = is_sparse(mjm)
   ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
   opt.ls_parallel = (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1)
   opt.ls_parallel_min_step = 1.0e-6  # TODO(team): determine good default setting
-  opt.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
   opt.broadphase = types.BroadphaseType.NXN
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
@@ -245,6 +236,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
+  m.is_sparse = is_sparse(mjm)
+  m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -1040,12 +1033,21 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   if mjm.nflexedge > 0:
-    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
     # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
     if not BLEEDING_EDGE_MUJOCO:
-      result.flexedge_J_rownnz[:] = d.flexedge_J_rownnz.numpy()[world_id]
-      result.flexedge_J_rowadr[:] = d.flexedge_J_rowadr.numpy()[world_id]
-      result.flexedge_J_colind[:] = d.flexedge_J_colind.numpy()[world_id].reshape(-1)
+      m = put_model(mjm)
+      result.flexedge_J_rownnz[:] = m.flexedge_J_rownnz.numpy()
+      result.flexedge_J_rowadr[:] = m.flexedge_J_rowadr.numpy()
+      result.flexedge_J_colind[:, :] = m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv))
+      mujoco.mju_sparse2dense(
+        result.flexedge_J,
+        d.flexedge_J.numpy()[world_id].reshape(-1),
+        m.flexedge_J_rownnz.numpy(),
+        m.flexedge_J_rowadr.numpy(),
+        m.flexedge_J_colind.numpy(),
+      )
+    else:
+      result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -1951,9 +1953,16 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.integrator": types.IntegratorType,
     "opt.solver": types.SolverType,
   }
+  # MuJoCo pybind11 enums don't support iteration, so we provide explicit mappings
+  mj_enum_fields = {
+    "opt.jacobian": {
+      "DENSE": mujoco.mjtJacobian.mjJAC_DENSE,
+      "SPARSE": mujoco.mjtJacobian.mjJAC_SPARSE,
+      "AUTO": mujoco.mjtJacobian.mjJAC_AUTO,
+    },
+  }
   mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
   mj_only_fields = {"opt.jacobian"}
-  readonly_fields = {"opt.is_sparse"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}
@@ -1971,9 +1980,6 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     if key in mj_only_fields and isinstance(model, types.Model):
       continue
 
-    if key in readonly_fields and isinstance(model, types.Model):
-      raise ValueError(f"Cannot override {key} on mjw.Model: field affects model initialization and has side effects")
-
     obj, attrs = model, key.split(".")
     for i, attr in enumerate(attrs):
       if not hasattr(obj, attr):
@@ -1984,7 +1990,12 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
 
       typ = type(getattr(obj, attr))
 
-      if key in enum_fields and isinstance(val, str):
+      if key in mj_enum_fields and isinstance(val, str):
+        enum_member = val.strip().upper()
+        if enum_member not in mj_enum_fields[key]:
+          raise ValueError(f"Unrecognized enum value for {key}: {enum_member}")
+        val = mj_enum_fields[key][enum_member]
+      elif key in enum_fields and isinstance(val, str):
         # special case: enum value
         enum_members = val.split("|")
         val = 0
@@ -2040,3 +2051,306 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
     prev_time = time
 
   return np.array(ctrls)
+
+
+@wp.kernel
+def _build_rays(
+  # In:
+  offset: int,
+  img_w: int,
+  img_h: int,
+  projection: int,
+  fovy: float,
+  sensorsize: wp.vec2,
+  intrinsic: wp.vec4,
+  znear: float,
+  # Out:
+  ray_out: wp.array(dtype=wp.vec3),
+):
+  xid, yid = wp.tid()
+  ray_out[offset + xid + yid * img_w] = render_util.compute_ray(
+    projection, fovy, sensorsize, intrinsic, img_w, img_h, xid, yid, znear
+  )
+
+
+def create_render_context(
+  mjm: mujoco.MjModel,
+  m: types.Model,
+  d: types.Data,
+  cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
+  render_rgb: list[bool] | bool | None = None,
+  render_depth: list[bool] | bool | None = None,
+  use_textures: bool = True,
+  use_shadows: bool = False,
+  enabled_geom_groups: list[int] = [0, 1, 2],
+  cam_active: list[bool] | None = None,
+  flex_render_smooth: bool = True,
+) -> types.RenderContext:
+  """Creates a render context on device.
+
+  Args:
+    mjm: The model containing kinematic and dynamic information on host.
+    m: The model on device.
+    d: The data on device.
+    cam_res: The width and height to render each camera image. If None, uses the
+             MuJoCo model values.
+    render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
+    render_depth: Whether to render depth images. If None, uses the MuJoCo model values.
+    use_textures: Whether to use textures.
+    use_shadows: Whether to use shadows.
+    enabled_geom_groups: The geom groups to render.
+    cam_active: List of booleans indicating which cameras to include in rendering.
+                If None, all cameras are included.
+    flex_render_smooth: Whether to render flex meshes smoothly.
+
+  Returns:
+    The render context containing rendering fields and output arrays on device.
+  """
+  # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
+  if use_textures and not hasattr(wp, "Texture2D"):
+    warnings.warn("Textures require warp >= 1.12. Disabling textures.")
+    use_textures = False
+
+  # Mesh BVHs
+  nmesh = mjm.nmesh
+  geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
+  mesh_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.MESH) & (mjm.geom_dataid >= 0)
+  used_mesh_id = set(mjm.geom_dataid[mesh_geom_mask].astype(int))
+  geom_enabled_idx = np.nonzero(geom_enabled_mask)[0]
+
+  mesh_registry = {}
+  mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
+  mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
+
+  for mid in used_mesh_id:
+    mesh, half = bvh.build_mesh_bvh(mjm, mid)
+    mesh_registry[mesh.id] = mesh
+    mesh_bvh_id[mid] = mesh.id
+    mesh_bounds_size[mid] = half
+
+  mesh_bvh_id_arr = wp.array(mesh_bvh_id, dtype=wp.uint64)
+  mesh_bounds_size_arr = wp.array(mesh_bounds_size, dtype=wp.vec3)
+
+  # HField BVHs
+  nhfield = mjm.nhfield
+  hfield_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.HFIELD) & (mjm.geom_dataid >= 0)
+  used_hfield_id = set(mjm.geom_dataid[hfield_geom_mask].astype(int))
+  hfield_registry = {}
+  hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]
+  hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
+
+  for hid in used_hfield_id:
+    hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
+    hfield_registry[hmesh.id] = hmesh
+    hfield_bvh_id[hid] = hmesh.id
+    hfield_bounds_size[hid] = hhalf
+
+  hfield_bvh_id_arr = wp.array(hfield_bvh_id, dtype=wp.uint64)
+  hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
+
+  # Flex BVHs
+  flex_bvh_id = wp.uint64(0)
+  flex_group_root = wp.zeros(d.nworld, dtype=int)
+  flex_mesh = None
+  flex_face_point = None
+  flex_elemdataadr = None
+  flex_shell = None
+  flex_shelldataadr = None
+  flex_faceadr = None
+  flex_nface = 0
+  flex_radius = None
+  flex_workadr = None
+  flex_worknum = None
+  flex_nwork = 0
+
+  if mjm.nflex > 0:
+    (
+      fmesh,
+      face_point,
+      flex_group_roots,
+      flex_shell_data,
+      flex_faceadr_data,
+      flex_nface,
+    ) = bvh.build_flex_bvh(mjm, m, d)
+
+    flex_mesh = fmesh
+    flex_bvh_id = fmesh.id
+    flex_face_point = face_point
+    flex_group_root = flex_group_roots
+    flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
+    flex_shell = flex_shell_data
+    flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
+    flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
+    flex_radius = wp.array(mjm.flex_radius, dtype=float)
+
+    # precompute work item layout for unified refit kernel
+    nflex = mjm.nflex
+    workadr = np.zeros(nflex, dtype=np.int32)
+    worknum = np.zeros(nflex, dtype=np.int32)
+    cumsum = 0
+    for f in range(nflex):
+      workadr[f] = cumsum
+      if mjm.flex_dim[f] == 2:
+        worknum[f] = mjm.flex_elemnum[f] + mjm.flex_shellnum[f]
+      else:
+        worknum[f] = mjm.flex_shellnum[f]
+      cumsum += worknum[f]
+    flex_workadr = wp.array(workadr, dtype=int)
+    flex_worknum = wp.array(worknum, dtype=int)
+    flex_nwork = int(cumsum)
+
+  textures_registry = []
+  # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
+  if hasattr(wp, "Texture2D"):
+    for i in range(mjm.ntex):
+      textures_registry.append(render_util.create_warp_texture(mjm, i))
+    textures = wp.array(textures_registry, dtype=wp.Texture2D)
+  else:
+    # Dummy array when texture support isn't available (warp < 1.12)
+    textures = wp.zeros(1, dtype=int)
+
+  # Filter active cameras
+  if cam_active is not None:
+    assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
+    active_cam_indices = np.nonzero(cam_active)[0]
+  else:
+    active_cam_indices = list(range(mjm.ncam))
+
+  ncam = len(active_cam_indices)
+
+  if cam_res is not None:
+    if isinstance(cam_res, tuple):
+      cam_res = [cam_res] * ncam
+    assert len(cam_res) == ncam, (
+      f"Camera resolutions must be provided for all active cameras (got {len(cam_res)}, expected {ncam})"
+    )
+    active_cam_res = cam_res
+  else:
+    active_cam_res = mjm.cam_resolution[active_cam_indices]
+
+  cam_res_arr = wp.array(active_cam_res, dtype=wp.vec2i)
+
+  if render_rgb and isinstance(render_rgb, bool):
+    render_rgb = [render_rgb] * ncam
+  elif render_rgb is None:
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
+    else:
+      render_rgb = [True] * ncam
+
+  if render_depth and isinstance(render_depth, bool):
+    render_depth = [render_depth] * ncam
+  elif render_depth is None:
+    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+    if BLEEDING_EDGE_MUJOCO:
+      render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+    else:
+      render_depth = [True] * ncam
+
+  assert len(render_rgb) == ncam and len(render_depth) == ncam, (
+    f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
+  )
+
+  rgb_adr = -1 * np.ones(ncam, dtype=int)
+  depth_adr = -1 * np.ones(ncam, dtype=int)
+  cam_res_np = cam_res_arr.numpy()
+  ri = 0
+  di = 0
+  total = 0
+
+  for idx in range(ncam):
+    if render_rgb[idx]:
+      rgb_adr[idx] = ri
+      ri += cam_res_np[idx][0] * cam_res_np[idx][1]
+    if render_depth[idx]:
+      depth_adr[idx] = di
+      di += cam_res_np[idx][0] * cam_res_np[idx][1]
+
+    total += cam_res_np[idx][0] * cam_res_np[idx][1]
+
+  znear = mjm.vis.map.znear * mjm.stat.extent
+
+  if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
+    ray = None
+  else:
+    ray = wp.zeros(int(total), dtype=wp.vec3)
+
+    offset = 0
+    for idx, cam_id in enumerate(active_cam_indices):
+      img_w = cam_res_np[idx][0]
+      img_h = cam_res_np[idx][1]
+      wp.launch(
+        kernel=_build_rays,
+        dim=(img_w, img_h),
+        inputs=[
+          offset,
+          img_w,
+          img_h,
+          m.cam_projection.numpy()[cam_id].item(),
+          m.cam_fovy.numpy()[0, cam_id].item(),
+          wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
+          wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
+          znear,
+        ],
+        outputs=[ray],
+      )
+      offset += img_w * img_h
+
+  bvh_ngeom = len(geom_enabled_idx)
+
+  rc = types.RenderContext(
+    nrender=ncam,
+    cam_res=cam_res_arr,
+    cam_id_map=wp.array(active_cam_indices, dtype=int),
+    use_textures=use_textures,
+    use_shadows=use_shadows,
+    background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
+    bvh_ngeom=bvh_ngeom,
+    enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
+    mesh_registry=mesh_registry,
+    mesh_bvh_id=mesh_bvh_id_arr,
+    mesh_bounds_size=mesh_bounds_size_arr,
+    mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
+    mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
+    mesh_facetexcoord=wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i),
+    textures=textures,
+    textures_registry=textures_registry,
+    hfield_registry=hfield_registry,
+    hfield_bvh_id=hfield_bvh_id_arr,
+    hfield_bounds_size=hfield_bounds_size_arr,
+    flex_mesh=flex_mesh,
+    flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
+    flex_bvh_id=flex_bvh_id,
+    flex_face_point=flex_face_point,
+    flex_faceadr=flex_faceadr,
+    flex_nface=flex_nface,
+    flex_nwork=flex_nwork,
+    flex_group_root=flex_group_root,
+    flex_elemdataadr=flex_elemdataadr,
+    flex_shell=flex_shell,
+    flex_shelldataadr=flex_shelldataadr,
+    flex_radius=flex_radius,
+    flex_workadr=flex_workadr,
+    flex_worknum=flex_worknum,
+    flex_render_smooth=flex_render_smooth,
+    bvh=None,
+    bvh_id=None,
+    lower=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
+    upper=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
+    group=wp.zeros(d.nworld * bvh_ngeom, dtype=int),
+    group_root=wp.zeros(d.nworld, dtype=int),
+    ray=ray,
+    rgb_data=wp.zeros((d.nworld, ri), dtype=wp.uint32),
+    rgb_adr=wp.array(rgb_adr, dtype=int),
+    depth_data=wp.zeros((d.nworld, di), dtype=wp.float32),
+    depth_adr=wp.array(depth_adr, dtype=int),
+    render_rgb=wp.array(render_rgb, dtype=bool),
+    render_depth=wp.array(render_depth, dtype=bool),
+    znear=znear,
+    total_rays=int(total),
+  )
+
+  bvh.build_scene_bvh(m, d, rc)
+
+  return rc
