@@ -145,7 +145,7 @@ def unpack_rgb_kernel(
 
   xid = pixelid % rgb_out.shape[2]
   yid = pixelid // rgb_out.shape[2]
-  
+
   rgb_adr_offset = rgb_adr[camera_index]
   val = packed[worldid, rgb_adr_offset + pixelid]
   b = wp.float32(val & wp.uint32(0xFF)) * wp.static(1.0 / 255.0)
@@ -176,7 +176,7 @@ def extract_depth_kernel(
 
 def get_rgb(rc: RenderContext, camera_index: int, rgb_out: wp.array3d(dtype=wp.vec3)):
   """Get the RGB data output from the render context buffers for a given camera index.
-  
+
   Args:
     rc: The render context on device.
     camera_index: The index of the camera to get the RGB data for.
@@ -192,12 +192,13 @@ def get_rgb(rc: RenderContext, camera_index: int, rgb_out: wp.array3d(dtype=wp.v
 
 def get_depth(rc: RenderContext, camera_index: int, depth_scale: float, depth_out: wp.array3d(dtype=float)):
   """Get the depth data output from the render context buffers for a given camera index.
-  
+
   Args:
     rc: The render context on device.
     camera_index: The index of the camera to get the depth data for.
     depth_scale: The scale factor to apply to the depth data.
-    depth_out: The output array to store the scaled and clamped depth data in, with shape (nworld, height, width).
+    depth_out: The output array to store the scaled and clamped depth data in
+      with shape (nworld, height, width).
   """
   wp.launch(
     extract_depth_kernel,
@@ -205,4 +206,3 @@ def get_depth(rc: RenderContext, camera_index: int, depth_scale: float, depth_ou
     inputs=[rc.depth_data, rc.depth_adr, camera_index, depth_scale],
     outputs=[depth_out],
   )
-
