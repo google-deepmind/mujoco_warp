@@ -17,6 +17,7 @@ import mujoco
 import warp as wp
 
 from mujoco_warp._src.types import ProjectionType
+from mujoco_warp._src.types import RenderContext
 
 wp.set_module_options({"enable_backward": False})
 
@@ -128,3 +129,30 @@ def compute_ray(
 def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
   """Pack RGBA values into a single uint32 for efficient memory access."""
   return wp.uint32((int(a) << int(24)) | (int(r) << int(16)) | (int(g) << int(8)) | int(b))
+
+
+@wp.kernel
+def unpack_rgb_kernel(
+  packed: wp.array2d(dtype=wp.uint32),
+  rgb_out: wp.array2d(dtype=wp.vec3),
+):
+  """Unpack ABGR uint32 packed pixel data into separate R, G, B uint8 channels."""
+  world_idx, pixel_idx = wp.tid()
+  val = packed[world_idx, pixel_idx]
+  b = wp.float32(val & wp.uint32(0xFF)) / 255.0
+  g = wp.float32((val >> wp.uint32(8)) & wp.uint32(0xFF)) / 255.0
+  r = wp.float32((val >> wp.uint32(16)) & wp.uint32(0xFF)) / 255.0
+  rgb_out[world_idx, pixel_idx] = wp.vec3(r, g, b)
+
+
+def get_rgb(rc: RenderContext, camera_index: int) -> wp.array:
+  """Get the RGB data output from the render context buffers for a given camera index."""
+  res = rc.cam_res.numpy()[camera_index]
+  rgb = wp.zeros((rc.rgb_data.shape[0], res[0] * res[1]), dtype=wp.vec3)
+  wp.launch(
+    unpack_rgb_kernel,
+    dim=(rc.rgb_data.shape[0], res[0] * res[1]),
+    inputs=[rc.rgb_data],
+    outputs=[rgb],
+  )
+  return rgb.reshape((rc.rgb_data.shape[0], res[0], res[1]))

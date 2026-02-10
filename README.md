@@ -116,7 +116,7 @@ mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
 
-Rendering can also be benchmarked with:
+Benchmark rendering with:
 
 ```bash
 mjwarp-testspeed benchmarks/primitives.xml --function=render
