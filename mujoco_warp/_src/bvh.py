@@ -551,7 +551,7 @@ def _build_flex_2d_elements(
 ):
   """Create faces from 2D flex elements (triangles).
 
-  Two faces (top/bottom) per element, seperated by the radius of the flex element.
+  Two faces (top/bottom) per element, separated by the radius of the flex element.
   """
   worldid, elemid = wp.tid()
 
