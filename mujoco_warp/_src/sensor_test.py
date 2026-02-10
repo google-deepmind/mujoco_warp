@@ -25,6 +25,9 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
+from mujoco_warp._src.collision_driver import create_collision_context
+from mujoco_warp._src.types import CollisionType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
@@ -102,7 +105,9 @@ class SensorTest(parameterized.TestCase):
       """
       )
 
-      mjw.primitive_narrowphase(m, d)
+      ctx = create_collision_context(d.naconmax)
+      primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == CollisionType.PRIMITIVE]
+      mjw.primitive_narrowphase(m, d, ctx, primitive_pairs)
 
   def test_sensor(self):
     """Test sensors."""
@@ -673,7 +678,7 @@ class SensorTest(parameterized.TestCase):
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
   @parameterized.parameters(
-    # TODO(team): box in type0
+    ("box", "box", "box", "box"),
     ("sphere", "capsule", "ellipsoid", "cylinder"),
     ("capsule", "box", "cylinder", "sphere"),
     ("capsule", "cylinder", "box", "ellipsoid"),

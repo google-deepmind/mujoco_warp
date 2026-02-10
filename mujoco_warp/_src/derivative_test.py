@@ -98,10 +98,10 @@ class DerivativeTest(parameterized.TestCase):
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
     else:
-      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
 
     # necessary to compute actuator_moment sparsity because moment_rowadr is static
-    if m.opt.is_sparse:
+    if m.is_sparse:
       mjw.transmission(m, d)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
@@ -110,7 +110,7 @@ class DerivativeTest(parameterized.TestCase):
       for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
         mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
     else:
-      mjw_out = out_smooth_vel.numpy()[0]
+      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)

@@ -17,19 +17,20 @@ from typing import Tuple
 
 import warp as wp
 
-from .collision_primitive import contact_params
-from .collision_primitive import geom_collision_pair
-from .collision_primitive import write_contact
-from .math import make_frame
-from .ray import ray_mesh
-from .types import Data
-from .types import GeomType
-from .types import Model
-from .types import vec5
-from .types import vec8
-from .types import vec8i
-from .util_misc import halton
-from .warp_util import event_scope
+from mujoco_warp._src.collision_primitive import contact_params
+from mujoco_warp._src.collision_primitive import geom_collision_pair
+from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.ray import ray_mesh
+from mujoco_warp._src.types import CollisionContext
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec8
+from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.util_misc import halton
+from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
@@ -66,9 +67,9 @@ class MeshData:
   mesh_faceadr: wp.array(dtype=int)
   mesh_face: wp.array(dtype=wp.vec3i)
   data_id: int
-  data_id: int
   pos: wp.vec3
   mat: wp.mat33
+  size: wp.vec3
   pnt: wp.vec3
   vec: wp.vec3
   valid: bool = False
@@ -169,7 +170,7 @@ def grad_sphere(p: wp.vec3) -> wp.vec3:
   if c > 1e-9:
     return p / c
   else:
-    wp.vec3(0.0)
+    return wp.vec3(0.0)
 
 
 @wp.func
@@ -367,7 +368,7 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
   elif type == GeomType.MESH and mesh_data.valid:
     mesh_data.pnt = p
     mesh_data.vec = -wp.normalize(p)
-    dist = ray_mesh(
+    dist, normal = ray_mesh(
       mesh_data.nmeshface,
       mesh_data.mesh_vertadr,
       mesh_data.mesh_faceadr,
@@ -376,11 +377,12 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
       mesh_data.data_id,
       mesh_data.pos,
       mesh_data.mat,
+      mesh_data.size,
       mesh_data.pnt,
       mesh_data.vec,
     )
     if dist > wp.norm_l2(p):
-      return -ray_mesh(
+      dist, normal = ray_mesh(
         mesh_data.nmeshface,
         mesh_data.mesh_vertadr,
         mesh_data.mesh_faceadr,
@@ -389,9 +391,11 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
         mesh_data.data_id,
         mesh_data.pos,
         mesh_data.mat,
+        mesh_data.size,
         mesh_data.pnt,
         -mesh_data.vec,
       )
+      return -dist
     return dist
   elif type == GeomType.SDF:
     if sdf_type == -1:
@@ -416,7 +420,7 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
   elif type == GeomType.MESH and mesh_data.valid:
     mesh_data.pnt = p
     mesh_data.vec = -wp.normalize(p)
-    dist = ray_mesh(
+    dist, normal = ray_mesh(
       mesh_data.nmeshface,
       mesh_data.mesh_vertadr,
       mesh_data.mesh_faceadr,
@@ -425,6 +429,7 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
       mesh_data.data_id,
       mesh_data.pos,
       mesh_data.mat,
+      mesh_data.size,
       mesh_data.pnt,
       mesh_data.vec,
     )
@@ -664,11 +669,11 @@ def _sdf_narrowphase(
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   naconmax_in: int,
+  ncollision_in: wp.array(dtype=int),
+  # In:
   collision_pair_in: wp.array(dtype=wp.vec2i),
   collision_pairid_in: wp.array(dtype=wp.vec2i),
   collision_worldid_in: wp.array(dtype=int),
-  ncollision_in: wp.array(dtype=int),
-  # In:
   sdf_initpoints: int,
   sdf_iterations: int,
   # Data out:
@@ -785,6 +790,7 @@ def _sdf_narrowphase(
   mesh_data1.data_id = geom_dataid[g1]
   mesh_data1.pos = geom1.pos
   mesh_data1.mat = geom1.rot
+  mesh_data1.size = geom1.size
   mesh_data1.pnt = wp.vec3(-1.0)
   mesh_data1.vec = wp.vec3(0.0)
   mesh_data1.valid = True
@@ -797,6 +803,7 @@ def _sdf_narrowphase(
   mesh_data2.data_id = geom_dataid[g2]
   mesh_data2.pos = geom2.pos
   mesh_data2.mat = geom2.rot
+  mesh_data2.size = geom2.size
   mesh_data2.pnt = wp.vec3(-1.0)
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
@@ -859,7 +866,7 @@ def _sdf_narrowphase(
 
 
 @event_scope
-def sdf_narrowphase(m: Model, d: Data):
+def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
   wp.launch(
     _sdf_narrowphase,
     dim=(m.opt.sdf_initpoints, d.naconmax),
@@ -909,10 +916,10 @@ def sdf_narrowphase(m: Model, d: Data):
       d.geom_xpos,
       d.geom_xmat,
       d.naconmax,
-      d.collision_pair,
-      d.collision_pairid,
-      d.collision_worldid,
       d.ncollision,
+      ctx.collision_pair,
+      ctx.collision_pairid,
+      ctx.collision_worldid,
       m.opt.sdf_initpoints,
       m.opt.sdf_iterations,
     ],

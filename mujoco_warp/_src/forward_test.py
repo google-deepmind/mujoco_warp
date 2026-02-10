@@ -50,7 +50,7 @@ class ForwardTest(parameterized.TestCase):
       arr.zero_()
 
     # necessary to compute actuator_moment sparsity because moment_rowadr is static
-    if m.opt.is_sparse:
+    if m.is_sparse:
       mjw.transmission(m, d)
     mjw.fwd_velocity(m, d)
 
