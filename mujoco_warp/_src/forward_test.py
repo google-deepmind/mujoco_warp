@@ -49,6 +49,9 @@ class ForwardTest(parameterized.TestCase):
     for arr in (d.actuator_velocity, d.qfrc_bias):
       arr.zero_()
 
+    # necessary to compute actuator_moment sparsity because moment_rowadr is static
+    if m.is_sparse:
+      mjw.transmission(m, d)
     mjw.fwd_velocity(m, d)
 
     _assert_eq(d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity")
