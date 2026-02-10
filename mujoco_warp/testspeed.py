@@ -471,15 +471,12 @@ def _main(argv: Sequence[str]):
       else:
         collider_str = ""
 
-      bvh_ngeom = "None" if rc is None else rc.bvh_ngeom
-      ncam = "None" if rc is None else rc.nrender
-      cam_res = "None" if rc is None else rc.cam_res.numpy()
-      print(
-        f"Model\n{sizes_str}{opt_str}{collider_str}"
-        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
-        f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {bvh_ngeom} ncam: {ncam} cam_res: {cam_res}\n"
-        f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
-      )
+      out = f"Model\n{sizes_str}{opt_str}{collider_str}"
+      out += f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
+      if rc:
+        out += f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
+      out += f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
+      print(out)
 
     fn = _FUNCS[_FUNCTION.value]
     res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
