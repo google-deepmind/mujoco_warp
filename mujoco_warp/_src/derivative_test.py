@@ -122,7 +122,10 @@ class DerivativeTest(parameterized.TestCase):
     <mujoco>
       <compiler angle="radian" autolimits="true"/>
       <option integrator="implicitfast"/>
-      <default><general biastype="affine"/></default>
+      <default>
+        <general biastype="affine"/>
+      </default>
+
       <worldbody>
         <body>
           <inertial mass="1" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>

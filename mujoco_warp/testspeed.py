@@ -474,14 +474,9 @@ def _main(argv: Sequence[str]):
       else:
         collider_str = ""
 
-      rc_str = ""
-      if rc is not None:
-        rc_str = f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
-
       print(
         f"Model\n{sizes_str}{opt_str}{collider_str}"
         f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
-        f"{rc_str}"
         f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
       )
 
