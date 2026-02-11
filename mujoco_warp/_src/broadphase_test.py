@@ -179,7 +179,7 @@ class BroadphaseTest(parameterized.TestCase):
     np.testing.assert_allclose(ctx5.collision_pair.numpy()[0][0], 3)
     np.testing.assert_allclose(ctx5.collision_pair.numpy()[0][1], 2)
 
-  @parameterized.parameters((0, 0, 0), (0, 0.011, 1), (0.011, 0, 1), (0.00999, 0, 0), (0, 0.00999, 0), (0.00999, 0.00999, 0))
+  @parameterized.parameters((0, 0, 0), (0, 0.011, 1), (0.011, 0, 1), (0.00999, 0, 0), (0, 0.00999, 0), (0.00999, 0.00999, 1))
   def test_broadphase_margin(self, margin1, margin2, ncollision):
     _MJCF = f"""
       <mujoco>
