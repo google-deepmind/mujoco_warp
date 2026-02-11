@@ -81,6 +81,7 @@ from mujoco_warp._src.smooth import transmission as transmission
 from mujoco_warp._src.solver import solve as solve
 from mujoco_warp._src.support import contact_force as contact_force
 from mujoco_warp._src.support import get_state as get_state
+from mujoco_warp._src.support import jac as jac
 from mujoco_warp._src.support import mul_m as mul_m
 from mujoco_warp._src.support import set_state as set_state
 from mujoco_warp._src.support import xfrc_accumulate as xfrc_accumulate

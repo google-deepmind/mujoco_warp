@@ -195,7 +195,7 @@ def _efc_equality_connect(
   # compute Jacobian difference (opposite of contact: 0 - 1)
   Jqvel = wp.vec3f(0.0, 0.0, 0.0)
   for dofid in range(nv):  # TODO: parallelize
-    jacp1, _ = support.jac(
+    jacp1, _ = support.jac_dof(
       body_parentid,
       body_rootid,
       dof_bodyid,
@@ -206,7 +206,7 @@ def _efc_equality_connect(
       dofid,
       worldid,
     )
-    jacp2, _ = support.jac(
+    jacp2, _ = support.jac_dof(
       body_parentid,
       body_rootid,
       dof_bodyid,
@@ -811,7 +811,7 @@ def _efc_equality_weld(
   Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
   for dofid in range(nv):  # TODO: parallelize
-    jacp1, jacr1 = support.jac(
+    jacp1, jacr1 = support.jac_dof(
       body_parentid,
       body_rootid,
       dof_bodyid,
@@ -822,7 +822,7 @@ def _efc_equality_weld(
       dofid,
       worldid,
     )
-    jacp2, jacr2 = support.jac(
+    jacp2, jacr2 = support.jac_dof(
       body_parentid,
       body_rootid,
       dof_bodyid,
@@ -1321,7 +1321,7 @@ def _efc_contact_pyramidal(
     for dofid in range(nv - 1, -1, -1):
       if dofid == da:
         # TODO(team): contact_jacobian
-        jac1p, jac1r = support.jac(
+        jac1p, jac1r = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -1332,7 +1332,7 @@ def _efc_contact_pyramidal(
           dofid,
           worldid,
         )
-        jac2p, jac2r = support.jac(
+        jac2p, jac2r = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -1505,7 +1505,7 @@ def _efc_contact_elliptic(
     for dofid in range(nv - 1, -1, -1):
       if dofid == da:
         # TODO(team): contact jacobian
-        jac1p, jac1r = support.jac(
+        jac1p, jac1r = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -1516,7 +1516,7 @@ def _efc_contact_elliptic(
           dofid,
           worldid,
         )
-        jac2p, jac2r = support.jac(
+        jac2p, jac2r = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
