@@ -210,8 +210,7 @@ def ccd_hfield_kernel_builder(
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
-    epa_vert1_in: wp.array2d(dtype=wp.vec3),
-    epa_vert2_in: wp.array2d(dtype=wp.vec3),
+    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
     epa_face_in: wp.array2d(dtype=int),
@@ -368,8 +367,7 @@ def ccd_hfield_kernel_builder(
     geom2.margin = margin
 
     # EPA memory
-    epa_vert1 = epa_vert1_in[tid]
-    epa_vert2 = epa_vert2_in[tid]
+    epa_vert = epa_vert_in[tid]
     epa_vert_index1 = epa_vert_index1_in[tid]
     epa_vert_index2 = epa_vert_index2_in[tid]
     epa_face = epa_face_in[tid]
@@ -445,8 +443,7 @@ def ccd_hfield_kernel_builder(
             geomtype2,
             x1,
             geom2.pos,
-            epa_vert1,
-            epa_vert2,
+            epa_vert,
             epa_vert_index1,
             epa_vert_index2,
             epa_face,
@@ -702,8 +699,7 @@ def ccd_kernel_builder(
     # Data in:
     naconmax_in: int,
     # In:
-    epa_vert1_in: wp.array2d(dtype=wp.vec3),
-    epa_vert2_in: wp.array2d(dtype=wp.vec3),
+    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
     epa_face_in: wp.array2d(dtype=int),
@@ -773,8 +769,7 @@ def ccd_kernel_builder(
       geomtype2,
       x1,
       x2,
-      epa_vert1_in[tid],
-      epa_vert2_in[tid],
+      epa_vert_in[tid],
       epa_vert_index1_in[tid],
       epa_vert_index2_in[tid],
       epa_face_in[tid],
@@ -813,8 +808,7 @@ def ccd_kernel_builder(
           multiccd_endvert_in[tid],
           multiccd_face1_in[tid],
           multiccd_face2_in[tid],
-          epa_vert1_in[tid],
-          epa_vert2_in[tid],
+          epa_vert_in[tid],
           epa_vert_index1_in[tid],
           epa_vert_index2_in[tid],
           epa_face_in[tid, multiccd_idx],
@@ -919,8 +913,7 @@ def ccd_kernel_builder(
     collision_pair_in: wp.array(dtype=wp.vec2i),
     collision_pairid_in: wp.array(dtype=wp.vec2i),
     collision_worldid_in: wp.array(dtype=int),
-    epa_vert1_in: wp.array2d(dtype=wp.vec3),
-    epa_vert2_in: wp.array2d(dtype=wp.vec3),
+    epa_vert_in: wp.array2d(dtype=wp.vec3),
     epa_vert_index1_in: wp.array2d(dtype=int),
     epa_vert_index2_in: wp.array2d(dtype=int),
     epa_face_in: wp.array2d(dtype=int),
@@ -1016,8 +1009,7 @@ def ccd_kernel_builder(
     eval_ccd_write_contact(
       opt_ccd_tolerance,
       naconmax_in,
-      epa_vert1_in,
-      epa_vert2_in,
+      epa_vert_in,
       epa_vert_index1_in,
       epa_vert_index2_in,
       epa_face_in,
@@ -1117,10 +1109,8 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     nmaxpolygon = max(m.nmaxpolygon, minval)
     nmaxmeshdeg = max(m.nmaxmeshdeg, 3)
 
-  # epa_vert1: vertices in EPA polytope in geom 1 space
-  epa_vert1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
-  # epa_vert2: vertices in EPA polytope in geom 2 space
-  epa_vert2 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=wp.vec3)
+  # epa_vert: vertices in EPA polytope
+  epa_vert = wp.empty(shape=(d.naconmax, 10 + 2 * epa_iterations), dtype=wp.vec3)
   # epa_vert_index1: vertex indices in EPA polytope for geom 1
   epa_vert_index1 = wp.empty(shape=(d.naconmax, 5 + epa_iterations), dtype=int)
   # epa_vert_index2: vertex indices in EPA polytope for geom 2  (naconmax, 5 + CCDiter)
@@ -1207,8 +1197,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           ctx.collision_pair,
           ctx.collision_pairid,
           ctx.collision_worldid,
-          epa_vert1,
-          epa_vert2,
+          epa_vert,
           epa_vert_index1,
           epa_vert_index2,
           epa_face,
@@ -1292,8 +1281,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           ctx.collision_pair,
           ctx.collision_pairid,
           ctx.collision_worldid,
-          epa_vert1,
-          epa_vert2,
+          epa_vert,
           epa_vert_index1,
           epa_vert_index2,
           epa_face,
