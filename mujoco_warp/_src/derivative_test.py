@@ -118,6 +118,97 @@ class DerivativeTest(parameterized.TestCase):
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
+  _TENDON_SERIAL_CHAIN_XML = """
+    <mujoco>
+      <compiler angle="radian" autolimits="true"/>
+      <option integrator="implicitfast"/>
+      <default>
+        <general biastype="affine"/>
+      </default>
+
+      <worldbody>
+        <body>
+          <inertial mass="1" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+          <joint name="parent_j" axis="0 1 0"/>
+          <body pos="0 0.03 0.1">
+            <inertial mass="0.01" pos="0 0 0" diaginertia="1e-06 1e-06 1e-06"/>
+            <joint name="j_r" axis="1 0 0" armature="0.005" damping="0.1"/>
+          </body>
+          <body pos="0 -0.03 0.1">
+            <inertial mass="0.01" pos="0 0 0" diaginertia="1e-06 1e-06 1e-06"/>
+            <joint name="j_l" axis="1 0 0" armature="0.005" damping="0.1"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="split">
+          <joint joint="j_r" coef="0.5"/>
+          <joint joint="j_l" coef="0.5"/>
+        </fixed>
+      </tendon>
+      <actuator>
+        <general name="grip" tendon="split" gainprm="80 0 0" biasprm="0 -100 -10"/>
+      </actuator>
+      <keyframe>
+        <key qpos="0 0 0" qvel="0 0 0" ctrl="0"/>
+      </keyframe>
+    </mujoco>
+  """
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_tendon_serial_chain(self, jacobian):
+    """Tests qDeriv for tendon actuator on serial chain.
+
+    Verifies that sibling DOF cross-terms from tendon coupling are dropped
+    (matching MuJoCo CPU's implicitfast approximation) and that no NaN or
+    stale values leak into the result.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._TENDON_SERIAL_CHAIN_XML,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (tendon serial chain)")
+
+  def test_step_tendon_serial_chain_no_nan(self):
+    """Regression: implicitfast + tendon on serial chain must not NaN."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._TENDON_SERIAL_CHAIN_XML,
+      keyframe=0,
+    )
+
+    for _ in range(10):
+      mjw.step(m, d)
+
+    mjw.get_data_into(mjd, mjm, d)
+    self.assertFalse(np.any(np.isnan(mjd.qpos)))
+    self.assertFalse(np.any(np.isnan(mjd.qvel)))
+
 
 if __name__ == "__main__":
   wp.init()
