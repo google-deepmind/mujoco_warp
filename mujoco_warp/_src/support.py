@@ -18,16 +18,50 @@ from typing import Optional, Tuple
 import warp as wp
 
 from mujoco_warp._src.math import motion_cross
+from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import State
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+# TODO(team): kernel analyzer array slice?
+@wp.func
+def next_act(
+  # kernel_analyzer: off
+  # Model:
+  opt_timestep: float,
+  actuator_dyntype: int,
+  actuator_dynprm: vec10f,
+  actuator_actrange: wp.vec2,
+  # Data In:
+  act_in: float,
+  act_dot_in: float,
+  # In:
+  act_dot_scale: float,
+  clamp: bool,
+  # kernel_analyzer: on
+) -> float:
+  # advance actuation
+  if actuator_dyntype == DynType.FILTEREXACT:
+    tau = wp.max(MJ_MINVAL, actuator_dynprm[0])
+    act = act_in + act_dot_scale * act_dot_in * tau * (1.0 - wp.exp(-opt_timestep / tau))
+  else:
+    act = act_in + act_dot_scale * act_dot_in * opt_timestep
+
+  # clamp to actrange
+  if clamp:
+    act = wp.clamp(act, actuator_actrange[0], actuator_actrange[1])
+
+  return act
 
 
 @cache_kernel

@@ -26,6 +26,7 @@ from mujoco_warp._src import sensor
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
@@ -127,35 +128,6 @@ def _next_velocity(
   qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
 
 
-# TODO(team): kernel analyzer array slice?
-@wp.func
-def _next_act(
-  # Model:
-  opt_timestep: float,  # kernel_analyzer: ignore
-  actuator_dyntype: int,  # kernel_analyzer: ignore
-  actuator_dynprm: vec10f,  # kernel_analyzer: ignore
-  actuator_actrange: wp.vec2,  # kernel_analyzer: ignore
-  # Data In:
-  act_in: float,  # kernel_analyzer: ignore
-  act_dot_in: float,  # kernel_analyzer: ignore
-  # In:
-  act_dot_scale: float,
-  clamp: bool,
-) -> float:
-  # advance actuation
-  if actuator_dyntype == DynType.FILTEREXACT:
-    tau = wp.max(MJ_MINVAL, actuator_dynprm[0])
-    act = act_in + act_dot_scale * act_dot_in * tau * (1.0 - wp.exp(-opt_timestep / tau))
-  else:
-    act = act_in + act_dot_scale * act_dot_in * opt_timestep
-
-  # clamp to actrange
-  if clamp:
-    act = wp.clamp(act, actuator_actrange[0], actuator_actrange[1])
-
-  return act
-
-
 @wp.kernel
 def _next_activation(
   # Model:
@@ -177,7 +149,7 @@ def _next_activation(
   opt_timestep_id = worldid % opt_timestep.shape[0]
   actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
   actuator_actrange_id = worldid % actuator_actrange.shape[0]
-  act = _next_act(
+  act = next_act(
     opt_timestep[opt_timestep_id],
     actuator_dyntype[actid],
     actuator_dynprm[actuator_dynprm_id, actid],
@@ -655,7 +627,7 @@ def _actuator_force(
       if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE:
         act = act_in[worldid, act_last]
 
-      ctrl_act = _next_act(
+      ctrl_act = next_act(
         opt_timestep[worldid % opt_timestep.shape[0]],
         dyntype,
         dynprm,

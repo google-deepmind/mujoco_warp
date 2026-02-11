@@ -118,6 +118,60 @@ class DerivativeTest(parameterized.TestCase):
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
+  def test_actearly_derivative(self):
+    """Implicit derivatives should use next activation when actearly is set."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option timestep="1" integrator="implicitfast"/>
+      <worldbody>
+        <body>
+          <joint name="early" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body pos="1 0 0">
+          <joint name="late" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="early" dyntype="integrator" gaintype="affine"
+                 gainprm="1 0 1" actearly="true"/>
+        <general joint="late" dyntype="integrator" gaintype="affine"
+                 gainprm="1 0 1" actearly="false"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="1 1" act="0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    # both should have same act_dot (ctrl = 1 for integrator dynamics)
+    _assert_eq(d.act_dot.numpy()[0, 0], d.act_dot.numpy()[0, 1], "act_dot")
+
+    # compute qDeriv using deriv_smooth_vel
+    out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+
+    # with actearly=true and nonzero act_dot, derivative should differ
+    # because actearly uses next activation: act + act_dot*dt
+    # for our model: next_act = 0 + 1*1 = 1, current_act = 0
+    # derivative adds gain_vel * act to qDeriv diagonal
+    # qDeriv = qM - dt * actuator_vel_derivative
+    # for independent bodies with mass=1: qM diagonal = 1.0
+    # actearly=true: vel = gain_vel * next_act = 1 * 1 = 1, out = 1 - 1*1 = 0
+    # actearly=false: vel = gain_vel * current_act = 1 * 0 = 0, out = 1 - 1*0 = 1
+    self.assertNotAlmostEqual(
+      mjw_out[0, 0],
+      mjw_out[1, 1],
+      msg="actearly=true should use next activation in derivative",
+    )
+    _assert_eq(mjw_out[0, 0], 0.0, "actearly=true: qM - dt*gain_vel*next_act = 1 - 1*1 = 0")
+    _assert_eq(mjw_out[1, 1], 1.0, "actearly=false: qM - dt*gain_vel*current_act = 1 - 1*0 = 1")
+
 
 if __name__ == "__main__":
   wp.init()
