@@ -564,20 +564,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_fullm_j.append(j)
       j = mjm.dof_parentid[j]
 
-  # Indices for dense qDeriv (all lower-triangle pairs within each tile block).
-  # The tiled actuator kernel writes the full tile block including sibling DOF
-  # pairs that are structurally zero in M. These expanded indices let
-  # _qderiv_actuator_passive visit and clear every within-tile position so no
-  # stale actuation values survive into the Cholesky factorization.
-  m.qDeriv_fullm_i, m.qDeriv_fullm_j = [], []
-  for i in range(len(tile_corners)):
-    tile_beg = tile_corners[i]
-    tile_end = mjm.nv if i == len(tile_corners) - 1 else tile_corners[i + 1]
-    for row in range(tile_beg, tile_end):
-      for col in range(tile_beg, row + 1):  # lower triangle within tile
-        m.qDeriv_fullm_i.append(row)
-        m.qDeriv_fullm_j.append(col)
-
   # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
   row_elements = [[] for _ in range(mjm.nv)]
 

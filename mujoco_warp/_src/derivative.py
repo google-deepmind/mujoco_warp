@@ -77,12 +77,21 @@ def _qderiv_actuator_passive_vel(
   vel_out[worldid, actid] = vel
 
 
+@wp.func
+def _nonzero_mask(x: float) -> float:
+  """Returns 1.0 for non-zero input, 0.0 otherwise."""
+  if x != 0.0:
+    return 1.0
+  return 0.0
+
+
 @cache_kernel
 def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
     actuator_moment_in: wp.array3d(dtype=float),
+    qM_in: wp.array3d(dtype=float),
     # In:
     vel_in: wp.array3d(dtype=float),
     adr: wp.array(dtype=int),
@@ -98,6 +107,16 @@ def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
     moment_tile = wp.tile_load(actuator_moment_in[worldid], shape=(NU, TILE_SIZE), offset=(0, dofid), bounds_check=False)
     moment_weighted = wp.tile_map(wp.mul, wp.tile_broadcast(vel_tile, shape=(NU, TILE_SIZE)), moment_tile)
     qderiv_tile = wp.tile_matmul(wp.tile_transpose(moment_tile), moment_weighted)
+
+    # Mask out cross-terms for DOF pairs that are structurally zero in M
+    # (e.g., sibling DOFs coupled only through tendons).  Without this,
+    # stale actuation values at sibling positions make A = M - dt*qDeriv
+    # non-positive-definite, causing the tiled Cholesky to produce NaN.
+    # Dropping these terms matches MuJoCo CPU's implicitfast approximation.
+    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid), bounds_check=False)
+    mask_tile = wp.tile_map(_nonzero_mask, qM_tile)
+    qderiv_tile = wp.tile_map(wp.mul, qderiv_tile, mask_tile)
+
     wp.tile_store(qDeriv_out[worldid], qderiv_tile, offset=(dofid, dofid), bounds_check=False)
 
   return kernel
@@ -168,21 +187,10 @@ def _qderiv_actuator_passive(
   if is_sparse:
     qDeriv_out[worldid, 0, elemid] = qM_in[worldid, 0, elemid] - qderiv
   else:
-    qM_val = qM_in[worldid, dofiid, dofjid]
-    # Drop derivative cross-terms for off-diagonal DOF pairs that are
-    # structurally zero in M (e.g., sibling DOFs coupled only through
-    # tendons).  The tiled actuator kernel writes the full tile block,
-    # but these sibling entries must be cleared so the tiled Cholesky
-    # sees zeros instead of stale actuation values.  Dropping them
-    # matches MuJoCo CPU's implicitfast approximation.
-    if qM_val == 0.0 and dofiid != dofjid:
-      qDeriv_out[worldid, dofiid, dofjid] = 0.0
-      qDeriv_out[worldid, dofjid, dofiid] = 0.0
-    else:
-      qM = qM_val - qderiv
-      qDeriv_out[worldid, dofiid, dofjid] = qM
-      if dofiid != dofjid:
-        qDeriv_out[worldid, dofjid, dofiid] = qM
+    qM = qM_in[worldid, dofiid, dofjid] - qderiv
+    qDeriv_out[worldid, dofiid, dofjid] = qM
+    if dofiid != dofjid:
+      qDeriv_out[worldid, dofjid, dofiid] = qM
 
 
 # TODO(team): improve performance with tile operations?
@@ -231,16 +239,6 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   """
   qMi = m.qM_fullm_i
   qMj = m.qM_fullm_j
-  # In dense mode the tiled actuator kernel writes the full tile block,
-  # including sibling DOF pairs that are structurally zero in M.  We use
-  # expanded within-tile indices for _qderiv_actuator_passive so it visits
-  # (and clears) every position the tiled kernel touched.
-  if not m.is_sparse:
-    qDi = m.qDeriv_fullm_i
-    qDj = m.qDeriv_fullm_j
-  else:
-    qDi = qMi
-    qDj = qMj
 
   # TODO(team): implicit requires different sparsity structure
 
@@ -278,21 +276,21 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
           wp.launch_tiled(
             _qderiv_actuator_passive_actuation_dense(tile, m.nu),
             dim=(d.nworld, tile.adr.size),
-            inputs=[d.actuator_moment, vel_3d, tile.adr],
+            inputs=[d.actuator_moment, d.qM, vel_3d, tile.adr],
             outputs=[out],
             block_dim=m.block_dim.qderiv_actuator_dense,
           )
     wp.launch(
       _qderiv_actuator_passive,
-      dim=(d.nworld, qDi.size),
+      dim=(d.nworld, qMi.size),
       inputs=[
         m.opt.timestep,
         m.opt.disableflags,
         m.dof_damping,
         m.is_sparse,
         d.qM,
-        qDi,
-        qDj,
+        qMi,
+        qMj,
         out,
       ],
       outputs=[out],
@@ -302,8 +300,6 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
     wp.copy(out, d.qM)
 
   if not m.opt.disableflags & DisableBit.DAMPER:
-    # Use qMi/qMj (ancestor pairs only) so tendon damping is not applied
-    # to sibling DOF pairs that were cleared above.
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
