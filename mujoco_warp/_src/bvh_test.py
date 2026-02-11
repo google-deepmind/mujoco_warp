@@ -44,7 +44,7 @@ class MinimalRenderContext:
   bvh_id: wp.uint64 = None
 
 
-def _create_minimal_context(mjm, d, enabled_geom_groups=None):
+def _create_minimal_context(mjm, nworld, enabled_geom_groups=None):
   if enabled_geom_groups is None:
     enabled_geom_groups = [0, 1, 2]
 
@@ -56,10 +56,10 @@ def _create_minimal_context(mjm, d, enabled_geom_groups=None):
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_bounds_size=wp.zeros(max(mjm.nmesh, 1), dtype=wp.vec3),
     hfield_bounds_size=wp.zeros(max(mjm.nhfield, 1), dtype=wp.vec3),
-    lower=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
-    upper=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
-    group=wp.zeros(d.nworld * bvh_ngeom, dtype=int),
-    group_root=wp.zeros(d.nworld, dtype=int),
+    lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
+    upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
+    group=wp.zeros(nworld * bvh_ngeom, dtype=int),
+    group_root=wp.zeros(nworld, dtype=int),
   )
 
 
@@ -67,7 +67,7 @@ class BvhTest(absltest.TestCase):
   def test_compute_bvh_bounds(self):
     """Tests that _compute_bvh_bounds kernel computes valid bounds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, d.nworld)
 
     wp.launch(
       kernel=bvh._compute_bvh_bounds,
@@ -97,7 +97,7 @@ class BvhTest(absltest.TestCase):
   def test_compute_bvh_bounds_multiworld(self):
     """Tests bounds computation with multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=4)
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, d.nworld)
 
     wp.launch(
       kernel=bvh._compute_bvh_bounds,
@@ -125,9 +125,9 @@ class BvhTest(absltest.TestCase):
   def test_build_scene_bvh(self):
     """Tests that build_scene_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, 1)
 
-    bvh.build_scene_bvh(m, d, rc)
+    bvh.build_scene_bvh(mjm, mjd, 1, rc)
 
     self.assertIsNotNone(rc.bvh, "bvh")
     self.assertIsNotNone(rc.bvh_id, "bvh_id")
@@ -135,9 +135,9 @@ class BvhTest(absltest.TestCase):
   def test_build_scene_bvh_multiworld(self):
     """Tests BVH construction with multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=8)
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, 8)
 
-    bvh.build_scene_bvh(m, d, rc)
+    bvh.build_scene_bvh(mjm, mjd, 8, rc)
 
     self.assertEqual(rc.lower.shape, (8 * rc.bvh_ngeom,), "lower")
     self.assertEqual(rc.group_root.shape, (8,), "group_root")
@@ -145,9 +145,9 @@ class BvhTest(absltest.TestCase):
   def test_refit_scene_bvh(self):
     """Tests that refit_scene_bvh updates bounds correctly."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, 1)
 
-    bvh.build_scene_bvh(m, d, rc)
+    bvh.build_scene_bvh(mjm, mjd, 1, rc)
 
     lower_before = rc.lower.numpy().copy()
 
@@ -163,19 +163,19 @@ class BvhTest(absltest.TestCase):
   def test_compute_bvh_group_roots(self):
     """Tests that group roots are computed for each world."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, 1)
 
-    bvh.build_scene_bvh(m, d, rc)
+    bvh.build_scene_bvh(mjm, mjd, 1, rc)
 
     group_root = rc.group_root.numpy()
-    self.assertEqual(len(group_root), d.nworld, "group_root")
+    self.assertEqual(len(group_root), 1, "group_root")
 
   def test_compute_bvh_group_roots_multiworld(self):
     """Tests that each world has a unique group root."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=16)
-    rc = _create_minimal_context(mjm, d)
+    rc = _create_minimal_context(mjm, 16)
 
-    bvh.build_scene_bvh(m, d, rc)
+    bvh.build_scene_bvh(mjm, mjd, 16, rc)
 
     group_root = rc.group_root.numpy()
     self.assertEqual(rc.group_root.shape[0], 16, "group_root")
@@ -254,7 +254,7 @@ class BvhTest(absltest.TestCase):
 
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
 
-    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, m, d)
+    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, mjd)
 
     self.assertNotEqual(flex_mesh.id, wp.uint64(0), "flex_mesh id")
 
