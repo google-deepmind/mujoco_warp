@@ -1926,12 +1926,14 @@ def _polygon_clip(
 
 @wp.func
 def _set_edge(
+  # In:
   vert1: wp.array(dtype=wp.vec3),
   vert2: wp.array(dtype=wp.vec3),
   start: int,
   end: int,
-  face_out: wp.array(dtype=wp.vec3),
   offset: int,
+  # Out:
+  face_out: wp.array(dtype=wp.vec3),
 ) -> int:
   face_out[0] = vert1[2 * start + offset]
   face_out[1] = vert2[end]
@@ -2107,7 +2109,7 @@ def multicontact(
 
   # recover geom1 matching edge or face
   if is_edge_contact_geom1:
-    nface1 = _set_edge(epa_vert, endvert, face[0], i, face1, 0)
+    nface1 = _set_edge(epa_vert, endvert, face[0], i, 0, face1)
   else:
     ind = wp.where(is_edge_contact_geom2, idx1[j], idx1[i])
     if geomtype1 == GeomType.BOX:
@@ -2128,7 +2130,7 @@ def multicontact(
 
   # recover geom2 matching edge or face
   if is_edge_contact_geom2:
-    nface2 = _set_edge(epa_vert, endvert, face[0], i, face2, 1)
+    nface2 = _set_edge(epa_vert, endvert, face[0], i, 1, face2)
   else:
     if geomtype2 == GeomType.BOX:
       nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
