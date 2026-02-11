@@ -1102,7 +1102,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   computations for non-existent pair types.
   """
 
-  def _pair_count(p1: int, p2: int) -> int:
+  def _pair_count(p1: int, p2: int) -> Tuple[int, int]:
     idx = upper_trid_index(len(GeomType), p1, p2)
     return m.geom_pair_type_count[idx], idx
 
@@ -1113,11 +1113,11 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     return
 
   # compute nmaxpolygon and nmaxmeshdeg given the geom pairs for the model
-  nboxbox = _pair_count(GeomType.BOX.value, GeomType.BOX.value)[0]
+  nboxbox, _ = _pair_count(GeomType.BOX.value, GeomType.BOX.value)
   if (GeomType.BOX, GeomType.BOX) not in collision_table:
     nboxbox = 0
-  nboxmesh = _pair_count(GeomType.BOX.value, GeomType.MESH.value)[0]
-  nmeshmesh = _pair_count(GeomType.MESH.value, GeomType.MESH.value)[0]
+  nboxmesh, _ = _pair_count(GeomType.BOX.value, GeomType.MESH.value)
+  nmeshmesh, _ = _pair_count(GeomType.MESH.value, GeomType.MESH.value)
 
   epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
 

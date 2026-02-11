@@ -438,6 +438,28 @@ class IOTest(parameterized.TestCase):
     box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate
     self.assertGreater(box_z, 0.4, msg=f"Box fell through ground plane (z={box_z}, should be > 0.4)")
 
+  def test_make_data_nccdmax_exceeds_nconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    with self.assertRaises(ValueError, msg="nccdmax.*nconmax"):
+      mjwarp.make_data(mjm, nconmax=16, nccdmax=17)
+
+  def test_make_data_naccdmax_exceeds_naconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    with self.assertRaises(ValueError, msg="naccdmax.*naconmax"):
+      mjwarp.make_data(mjm, nconmax=16, naconmax=16, naccdmax=17)
+
+  def test_put_data_nccdmax_exceeds_nconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    mjd = mujoco.MjData(mjm)
+    with self.assertRaises(ValueError, msg="nccdmax.*nconmax"):
+      mjwarp.put_data(mjm, mjd, nconmax=16, nccdmax=17)
+
+  def test_put_data_naccdmax_exceeds_naconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    mjd = mujoco.MjData(mjm)
+    with self.assertRaises(ValueError, msg="naccdmax.*naconmax"):
+      mjwarp.put_data(mjm, mjd, nconmax=16, naconmax=16, naccdmax=17)
+
   def test_noslip_solver(self):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(

@@ -681,31 +681,36 @@ def make_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
 
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
+
   if nccdmax is None:
     nccdmax = nconmax
+  elif nccdmax < 0:
+    raise ValueError("nccdmax must be >= 0")
+  elif nccdmax > nconmax:
+    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   if njmax is None:
     njmax = _default_njmax(mjm)
+
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
-    if nconmax < 0:
-      raise ValueError("nconmax must be >= 0")
     naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
   if naccdmax is None:
-    if nccdmax < 0:
-      raise ValueError("nccdmax must be >= 0")
     naccdmax = nworld * nccdmax
   elif naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
-
-  if njmax < 0:
-    raise ValueError("njmax must be >= 0")
+  elif naccdmax > naconmax:
+    raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
@@ -809,18 +814,26 @@ def put_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
 
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
+
   if nccdmax is None:
     nccdmax = nconmax
+  elif nccdmax < 0:
+    raise ValueError("nccdmax must be >= 0")
+  elif nccdmax > nconmax:
+    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
+
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
-    if nconmax < 0:
-      raise ValueError("nconmax must be >= 0")
     if mjd.ncon > nconmax:
       raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
     naconmax = nworld * nconmax
@@ -828,14 +841,11 @@ def put_data(
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
   if naccdmax is None:
-    if nccdmax < 0:
-      raise ValueError("nccdmax must be >= 0")
     naccdmax = nworld * nccdmax
   elif naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
-
-  if njmax < 0:
-    raise ValueError("njmax must be >= 0")
+  elif naccdmax > naconmax:
+    raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
