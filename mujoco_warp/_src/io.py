@@ -2353,6 +2353,11 @@ def create_render_context(
 
   ray = wp.zeros(int(total), dtype=wp.vec3)
 
+  # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+  cam_projection = np.zeros(mjm.ncam, dtype=int)
+  if BLEEDING_EDGE_MUJOCO:
+    cam_projection = mjm.cam_projection
+
   offset = 0
   for idx, cam_id in enumerate(active_cam_indices):
     img_w = cam_res_np[idx][0]
@@ -2364,7 +2369,7 @@ def create_render_context(
         offset,
         img_w,
         img_h,
-        int(mjm.cam_projection[cam_id]),
+        int(cam_projection[cam_id]),
         float(mjm.cam_fovy[cam_id]),
         wp.vec2(mjm.cam_sensorsize[cam_id]),
         wp.vec4(mjm.cam_intrinsic[cam_id]),
