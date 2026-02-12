@@ -308,8 +308,7 @@ def _main(argv: Sequence[str]):
     if "rc" in inspect.signature(_FUNCS[_FUNCTION.value]).parameters.keys():
       rc = mjw.create_render_context(
         mjm,
-        m,
-        d,
+        _NWORLD.value,
         (_WIDTH.value, _HEIGHT.value),
         _RENDER_RGB.value,
         _RENDER_DEPTH.value,
