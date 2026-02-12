@@ -390,10 +390,28 @@ class ForwardTest(parameterized.TestCase):
     mujoco.mj_step1(mjm, mjd)
     mjw.step1(m, d)
 
+    # Precompute sorting for efc fields to avoid non determinism
+    nefc = d.nefc.numpy()[0]
+    if nefc > 0:
+      nv = m.nv
+      d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
+      if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
+        mjd_efc_J = np.zeros((mjd.nefc, mjm.nv))
+        mujoco.mju_sparse2dense(mjd_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+      else:
+        mjd_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+
+      # Sort by efc_type, then efc_J columns (tiebreaker)
+      d_sort = np.lexsort((*d_efc_J.T, d.efc.type.numpy()[0, :nefc]))
+      mjd_sort = np.lexsort((*mjd_efc_J.T, mjd.efc_type[:nefc]))
+      _assert_eq(d_efc_J[d_sort].reshape(-1), mjd_efc_J[mjd_sort].reshape(-1), "efc_J")
+
+      # Check efc_id here as a contact may have a different id
+      _assert_eq(sorted(d.efc.id.numpy()[0, :nefc]), sorted(mjd.efc_id[:nefc]), "efc_id")
+
     for arr in step1_field:
-      if arr == "efc_J":
-        continue  # efc_J handled below with sorting
-      d_arr, is_nefc = _getattr(arr)
+      d_arr, is_efc = _getattr(arr)
+
       d_arr = d_arr.numpy()[0]
       mjd_arr = getattr(mjd, arr)
       if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
@@ -412,6 +430,9 @@ class ForwardTest(parameterized.TestCase):
         ten_J = np.zeros((mjm.ntendon, mjm.nv))
         mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
         mjd_arr = ten_J
+      elif arr == "efc_J" or arr == "efc_id":
+          # Already checked earlier
+          continue
       elif arr == "qLD":
         vec = np.ones((1, mjm.nv))
         res = np.zeros((1, mjm.nv))
@@ -423,28 +444,15 @@ class ForwardTest(parameterized.TestCase):
 
         d_arr = res_wp.numpy()[0]
         mjd_arr = res[0]
-      if is_nefc:
-        d_arr = d_arr[: d.nefc.numpy()[0]]
+
+      if is_efc:
+        nefc = d.nefc.numpy()[0]
+        nv = m.nv
+        d_arr = d_arr[:nefc]
+        d_arr = d_arr[d_sort].reshape(-1)
+        mjd_arr = mjd_arr[mjd_sort].reshape(-1)
 
       _assert_eq(d_arr, mjd_arr, arr)
-
-    nefc = d.nefc.numpy()[0]
-    nv = m.nv
-    if nefc > 0:
-      nv = m.nv
-      d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
-      if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
-        mjd_efc_J = np.zeros((mjd.nefc, mjm.nv))
-        mujoco.mju_sparse2dense(mjd_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
-      else:
-        mjd_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
-
-      # Sort by efc_type (primary), then efc_J columns (tiebreaker)
-      d_efc_type = d.efc.type.numpy()[0, :nefc]
-      mjd_efc_type = mjd.efc_type[:nefc]
-      d_sort = np.lexsort((*d_efc_J.T, d_efc_type))
-      mjd_sort = np.lexsort((*mjd_efc_J.T, mjd_efc_type))
-      _assert_eq(d_efc_J[d_sort].reshape(-1), mjd_efc_J[mjd_sort].reshape(-1), "efc_J")
 
     # TODO(team): sensor_pos
     # TODO(team): sensor_vel
