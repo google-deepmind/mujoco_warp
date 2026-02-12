@@ -431,8 +431,8 @@ class ForwardTest(parameterized.TestCase):
         mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
         mjd_arr = ten_J
       elif arr == "efc_J" or arr == "efc_id":
-          # Already checked earlier
-          continue
+        # Already checked earlier
+        continue
       elif arr == "qLD":
         vec = np.ones((1, mjm.nv))
         res = np.zeros((1, mjm.nv))
