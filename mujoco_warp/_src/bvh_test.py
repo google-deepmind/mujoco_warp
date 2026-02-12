@@ -78,7 +78,6 @@ class BvhTest(absltest.TestCase):
         m.geom_size,
         d.geom_xpos,
         d.geom_xmat,
-        d.nworld,
         rc.bvh_ngeom,
         rc.enabled_geom_ids,
         rc.mesh_bounds_size,
@@ -108,7 +107,6 @@ class BvhTest(absltest.TestCase):
         m.geom_size,
         d.geom_xpos,
         d.geom_xmat,
-        d.nworld,
         rc.bvh_ngeom,
         rc.enabled_geom_ids,
         rc.mesh_bounds_size,
@@ -127,7 +125,7 @@ class BvhTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
     rc = _create_minimal_context(mjm, 1)
 
-    bvh.build_scene_bvh(mjm, mjd, 1, rc)
+    bvh.build_scene_bvh(mjm, mjd, rc, 1)
 
     self.assertIsNotNone(rc.bvh, "bvh")
     self.assertIsNotNone(rc.bvh_id, "bvh_id")
@@ -137,7 +135,7 @@ class BvhTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=8)
     rc = _create_minimal_context(mjm, 8)
 
-    bvh.build_scene_bvh(mjm, mjd, 8, rc)
+    bvh.build_scene_bvh(mjm, mjd, rc, 8)
 
     self.assertEqual(rc.lower.shape, (8 * rc.bvh_ngeom,), "lower")
     self.assertEqual(rc.group_root.shape, (8,), "group_root")
@@ -147,7 +145,7 @@ class BvhTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
     rc = _create_minimal_context(mjm, 1)
 
-    bvh.build_scene_bvh(mjm, mjd, 1, rc)
+    bvh.build_scene_bvh(mjm, mjd, rc, 1)
 
     lower_before = rc.lower.numpy().copy()
 
@@ -165,7 +163,7 @@ class BvhTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture("primitives.xml")
     rc = _create_minimal_context(mjm, 1)
 
-    bvh.build_scene_bvh(mjm, mjd, 1, rc)
+    bvh.build_scene_bvh(mjm, mjd, rc, 1)
 
     group_root = rc.group_root.numpy()
     self.assertEqual(len(group_root), 1, "group_root")
@@ -175,7 +173,7 @@ class BvhTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=16)
     rc = _create_minimal_context(mjm, 16)
 
-    bvh.build_scene_bvh(mjm, mjd, 16, rc)
+    bvh.build_scene_bvh(mjm, mjd, rc, 16)
 
     group_root = rc.group_root.numpy()
     self.assertEqual(rc.group_root.shape[0], 16, "group_root")
@@ -254,7 +252,7 @@ class BvhTest(absltest.TestCase):
 
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
 
-    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, mjd)
+    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, mjd, 1)
 
     self.assertNotEqual(flex_mesh.id, wp.uint64(0), "flex_mesh id")
 

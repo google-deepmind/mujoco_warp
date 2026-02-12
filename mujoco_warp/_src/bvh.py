@@ -234,7 +234,7 @@ def compute_bvh_group_roots(
   group_root_out[tid] = root
 
 
-def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, nworld: int, rc: RenderContext):
+def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
   """Build a global BVH for all geometries in all worlds."""
   geom_type = wp.array(mjm.geom_type, dtype=int)
   geom_dataid = wp.array(mjm.geom_dataid, dtype=int)
@@ -873,9 +873,9 @@ def build_flex_bvh(
   nface = int(flex_faceadr[-1])
   flex_faceadr = flex_faceadr[:-1]
 
-  face_point = wp.zeros(nface * 3 * nworld, dtype=wp.vec3)
-  face_index = wp.zeros(nface * 3 * nworld, dtype=wp.int32)
-  group = wp.zeros(nface * nworld, dtype=int)
+  face_point = wp.empty(nface * 3 * nworld, dtype=wp.vec3)
+  face_index = wp.empty(nface * 3 * nworld, dtype=wp.int32)
+  group = wp.empty(nface * nworld, dtype=int)
 
   flexvert_norm = wp.zeros((nworld, nflexvert), dtype=wp.vec3)
   flex_shell = wp.array(mjm.flex_shell, dtype=int)
@@ -956,7 +956,7 @@ def build_flex_bvh(
     bvh_leaf_size=leaf_size,
   )
 
-  group_root = wp.zeros(nworld, dtype=int)
+  group_root = wp.empty(nworld, dtype=int)
   wp.launch(
     kernel=compute_bvh_group_roots,
     dim=nworld,

@@ -2178,7 +2178,7 @@ def create_render_context(
                 If None, all cameras are included.
     flex_render_smooth: Whether to render flex meshes smoothly.
     use_precomputed_rays: Use precomputed rays instead of computing during rendering.
-                          When using Domain Randomization for camera intrinsics, set this to False.
+                          When using domain randomization for camera intrinsics, set to False.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -2429,6 +2429,6 @@ def create_render_context(
     total_rays=int(total),
   )
 
-  bvh.build_scene_bvh(mjm, mjd, nworld, rc)
+  bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
   return rc
