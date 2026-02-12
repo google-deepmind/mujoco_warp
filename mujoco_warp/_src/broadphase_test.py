@@ -26,6 +26,7 @@ from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
+from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
 
 
 def broadphase_caller(m, d):
@@ -179,7 +180,14 @@ class BroadphaseTest(parameterized.TestCase):
     np.testing.assert_allclose(ctx5.collision_pair.numpy()[0][0], 3)
     np.testing.assert_allclose(ctx5.collision_pair.numpy()[0][1], 2)
 
-  @parameterized.parameters((0, 0, 0), (0, 0.011, 1), (0.011, 0, 1), (0.00999, 0, 0), (0, 0.00999, 0), (0.00999, 0.00999, 0))
+  @parameterized.parameters(
+    (0, 0, 0),
+    (0, 0.011, 1),
+    (0.011, 0, 1),
+    (0.00999, 0, 0),
+    (0, 0.00999, 0),
+    (0.00999, 0.00999, 1 if BLEEDING_EDGE_MUJOCO else 0),
+  )
   def test_broadphase_margin(self, margin1, margin2, ncollision):
     _MJCF = f"""
       <mujoco>
