@@ -2077,6 +2077,13 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         if val.upper() not in ("TRUE", "FALSE"):
           raise ValueError(f"Unrecognized value for field: {key}")
         val = val.upper() == "TRUE"
+      elif typ is wp.array and isinstance(val, str):
+        arr = getattr(obj, attr)
+        floats = [float(p) for p in val.strip("[]").split()]
+        val = wp.array([arr.dtype(*floats)], dtype=arr.dtype)
+      elif typ is np.ndarray and isinstance(val, str):
+        arr = getattr(obj, attr)
+        val = np.array([float(p) for p in val.strip("[]").split()], dtype=arr.dtype)
       else:
         val = typ(val)
 
