@@ -490,7 +490,7 @@ wheels = [
 
 [[package]]
 name = "mujoco-warp"
-version = "0.0.2"
+version = "3.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "absl-py" },

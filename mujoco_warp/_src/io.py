@@ -15,7 +15,6 @@
 
 import dataclasses
 import importlib.metadata
-import re
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -30,22 +29,15 @@ from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 
 
-def _is_mujoco_dev() -> bool:
-  _DEV_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+.+")  # anything after x.y.z
-
-  version = getattr(__import__("mujoco"), "__version__", None)
-  if version and _DEV_VERSION_PATTERN.match(version):
-    return True
-
-  # fall back to metadata
-  dist_version = importlib.metadata.version("mujoco")
-  if _DEV_VERSION_PATTERN.match(dist_version):
-    return True
-
-  return False
+def _is_mujoco_fresh() -> bool:
+  """Checks if mujoco version is > 3.4.0."""
+  version = importlib.metadata.version("mujoco")
+  version = version.split(".")
+  version = tuple(map(int, version[:3])) + tuple(version[3:])
+  return version > (3, 4, 0)
 
 
-BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
+BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
