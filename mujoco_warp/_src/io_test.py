@@ -306,44 +306,11 @@ class IOTest(parameterized.TestCase):
 
     # flexedge_J
     if xml == "flex/floppy.xml":
-      from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-      if BLEEDING_EDGE_MUJOCO:
-        _assert_eq(
-          mjd_result.flexedge_J.reshape(-1),
-          d.flexedge_J.numpy()[0].reshape(-1),
-          "flexedge_J",
-        )
-      else:
-        m = mjwarp.put_model(mjm)
-        _assert_eq(
-          mjd_result.flexedge_J_rownnz,
-          m.flexedge_J_rownnz.numpy(),
-          "flexedge_J_rownnz",
-        )
-        _assert_eq(
-          mjd_result.flexedge_J_rowadr,
-          m.flexedge_J_rowadr.numpy(),
-          "flexedge_J_rowadr",
-        )
-        _assert_eq(
-          mjd_result.flexedge_J_colind,
-          m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv)),
-          "flexedge_J_colind",
-        )
-        flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
-        mujoco.mju_sparse2dense(
-          flexedge_J,
-          d.flexedge_J.numpy().reshape(-1),
-          m.flexedge_J_rownnz.numpy(),
-          m.flexedge_J_rowadr.numpy(),
-          m.flexedge_J_colind.numpy().reshape(-1),
-        )
-        _assert_eq(
-          mjd_result.flexedge_J,
-          flexedge_J,
-          "flexedge_J",
-        )
+      _assert_eq(
+        mjd_result.flexedge_J.reshape(-1),
+        d.flexedge_J.numpy()[0].reshape(-1),
+        "flexedge_J",
+      )
 
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
@@ -1265,13 +1232,6 @@ class IOTest(parameterized.TestCase):
 
   def test_output_buffers(self):
     """Test that the output rgb and depth buffers have correct shapes and addresses."""
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if not BLEEDING_EDGE_MUJOCO:
-      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
-      return
-
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 24
     rc = mjwarp.create_render_context(mjm, cam_res=(width, height), render_rgb=True, render_depth=True)
@@ -1288,13 +1248,6 @@ class IOTest(parameterized.TestCase):
     _assert_eq(depth_adr, [0, width * height, 2 * width * height], "depth_adr")
 
   def test_heterogeneous_camera(self):
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if not BLEEDING_EDGE_MUJOCO:
-      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
-      return
-
     """Tests render context with different resolutions and output."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     cam_res = [(64, 64), (32, 32), (16, 16)]
@@ -1320,13 +1273,6 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.depth_adr.numpy(), rc_xml.depth_adr.numpy(), "depth_adr")
 
   def test_cam_active_filtering(self):
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if not BLEEDING_EDGE_MUJOCO:
-      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
-      return
-
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
 
@@ -1339,13 +1285,6 @@ class IOTest(parameterized.TestCase):
 
   def test_rgb_only_and_depth_only(self):
     """Test that disabling rgb or depth correctly reduces the shape and invalidates the address."""
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if not BLEEDING_EDGE_MUJOCO:
-      self.skipTest("Skipping test that requires mujoco >= 3.4.1")
-      return
-
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
     pixels = width * height
