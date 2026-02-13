@@ -644,6 +644,14 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
+def _resolve_size(na: int | None, n: int | None, nworld: int, default: int) -> int:
+  if na is not None:
+    return na
+  if n is not None:
+    return n * nworld
+  return default
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -664,27 +672,22 @@ def make_data(
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
-    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax unless nccdmax is explicitly provided.
 
   Returns:
     The data object containing the current state and output arrays (device).
   """
+  # defaults
   # TODO(team): move nconmax, njmax to Model?
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
-
-  if nccdmax is None:
-    nccdmax = nconmax
-  elif nccdmax < 0:
-    raise ValueError("nccdmax must be >= 0")
-  elif nccdmax > nconmax:
-    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
-
   if njmax is None:
     njmax = _default_njmax(mjm)
+
+  # validation
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -692,17 +695,23 @@ def make_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  if naconmax is None:
-    naconmax = nworld * nconmax
-  elif naconmax < 0:
+  naconmax = _resolve_size(naconmax, nconmax, nworld, 0)
+  if naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
-  if naccdmax is None:
-    naccdmax = nworld * nccdmax
-  elif naccdmax < 0:
+  naccdmax = _resolve_size(naccdmax, nccdmax, nworld, naconmax)
+  if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
     raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  else:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    elif nccdmax > nconmax:
+      raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
@@ -794,11 +803,12 @@ def put_data(
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
-    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax unless nccdmax is explicitly provided.
 
   Returns:
     The data object containing the current state and output arrays (device).
   """
+  # defaults
   # TODO(team): move nconmax and njmax to Model?
   # TODO(team): decide what to do about uninitialized warp-only fields created by put_data
   #             we need to ensure these are only workspace fields and don't carry state
@@ -806,18 +816,12 @@ def put_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
-
-  if nccdmax is None:
-    nccdmax = nconmax
-  elif nccdmax < 0:
-    raise ValueError("nccdmax must be >= 0")
-  elif nccdmax > nconmax:
-    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
-
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
+
+  # validation
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -825,19 +829,30 @@ def put_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  if naconmax is None:
-    if mjd.ncon > nconmax:
-      raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
-    naconmax = nworld * nconmax
+  naconmax_is_explicit = naconmax is not None
+  naconmax = _resolve_size(naconmax, nconmax, nworld, 0)
+  if naconmax < 0:
+    raise ValueError("naconmax must be >= 0")
+
+  if not naconmax_is_explicit and mjd.ncon > nconmax:
+    raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
-  if naccdmax is None:
-    naccdmax = nworld * nccdmax
-  elif naccdmax < 0:
+  naccdmax = _resolve_size(naccdmax, nccdmax, nworld, naconmax)
+
+  if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
     raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  else:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    elif nccdmax > nconmax:
+      raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
