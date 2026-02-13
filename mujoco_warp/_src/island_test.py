@@ -22,7 +22,6 @@ from absl.testing import absltest
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import island
-from mujoco_warp._src.types import DisableBit
 
 
 class IslandEdgeDiscoveryTest(absltest.TestCase):
@@ -382,7 +381,7 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
 
 
 class IslandDiscoveryTest(absltest.TestCase):
-  """Tests for full island discovery including label propagation."""
+  """Tests for full island discovery."""
 
   def test_two_trees_one_constraint_one_island(self):
     """Two trees connected by one constraint form one island.
@@ -394,6 +393,9 @@ class IslandDiscoveryTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option>
+          <flag island="disable"/>
+        </option>
         <worldbody>
           <body name="body1">
             <joint type="free"/>
@@ -408,8 +410,7 @@ class IslandDiscoveryTest(absltest.TestCase):
           <weld body1="body1" body2="body2"/>
         </equality>
       </mujoco>
-      """,
-      overrides={"opt.disableflags": DisableBit.ISLAND},
+      """
     )
 
     d.nisland.fill_(-1)
@@ -435,6 +436,9 @@ class IslandDiscoveryTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option>
+          <flag island="disable"/>
+        </option>
         <worldbody>
           <body name="body1">
             <joint type="free"/>
@@ -454,8 +458,7 @@ class IslandDiscoveryTest(absltest.TestCase):
           <weld body1="body2" body2="body3"/>
         </equality>
       </mujoco>
-      """,
-      overrides={"opt.disableflags": DisableBit.ISLAND},
+      """
     )
 
     d.nisland.fill_(-1)
@@ -482,6 +485,9 @@ class IslandDiscoveryTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option>
+          <flag island="disable"/>
+        </option>
         <worldbody>
           <body name="body1">
             <joint type="free"/>
@@ -505,8 +511,7 @@ class IslandDiscoveryTest(absltest.TestCase):
           <weld body1="body3" body2="body4"/>
         </equality>
       </mujoco>
-      """,
-      overrides={"opt.disableflags": DisableBit.ISLAND},
+      """
     )
 
     d.nisland.fill_(-1)
@@ -531,6 +536,9 @@ class IslandDiscoveryTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option>
+          <flag island="disable"/>
+        </option>
         <worldbody>
           <body>
             <joint type="free"/>
@@ -538,8 +546,7 @@ class IslandDiscoveryTest(absltest.TestCase):
           </body>
         </worldbody>
       </mujoco>
-      """,
-      overrides={"opt.disableflags": DisableBit.ISLAND},
+      """
     )
 
     d.nisland.fill_(-1)
@@ -560,6 +567,9 @@ class IslandDiscoveryTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option>
+          <flag island="disable"/>
+        </option>
         <worldbody>
           <body name="body1">
             <joint type="free"/>
@@ -576,7 +586,6 @@ class IslandDiscoveryTest(absltest.TestCase):
       </mujoco>
       """,
       nworld=2,
-      overrides={"opt.disableflags": DisableBit.ISLAND},
     )
 
     d.nisland.fill_(-1)
@@ -606,6 +615,9 @@ class IslandDiscoveryTest(absltest.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option>
+          <flag island="disable"/>
+        </option>
         <worldbody>
           <body name="body1">
             <joint type="free"/>
@@ -625,8 +637,7 @@ class IslandDiscoveryTest(absltest.TestCase):
           <weld body1="body2" body2="body3"/>
         </equality>
       </mujoco>
-      """,
-      overrides={"opt.disableflags": DisableBit.ISLAND},
+      """
     )
 
     d.nisland.fill_(-1)
