@@ -15,6 +15,7 @@
 
 import dataclasses
 import importlib.metadata
+import re
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -29,15 +30,16 @@ from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 
 
-def _is_mujoco_fresh() -> bool:
-  """Checks if mujoco version is > 3.4.0."""
-  version = importlib.metadata.version("mujoco")
-  version = version.split(".")
-  version = tuple(map(int, version[:3])) + tuple(version[3:])
-  return version > (3, 4, 0)
+def _is_pkg_fresh(pkg: str, min_version: str) -> bool:
+  """Checks if the installed version of `pkg` is > `min_version`."""
+  version = importlib.metadata.version(pkg)
+  parts = version.split(".")
+  nums = tuple(int(re.match(r"\d+", p).group()) for p in parts[:3])
+  min_nums = tuple(int(re.match(r"\d+", p).group()) for p in min_version.split(".")[:3])
+  return nums > min_nums
 
 
-BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
+BLEEDING_EDGE_MUJOCO = _is_pkg_fresh("mujoco", "3.4.0")
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
