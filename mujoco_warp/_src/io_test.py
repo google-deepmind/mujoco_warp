@@ -345,6 +345,54 @@ class IOTest(parameterized.TestCase):
           "flexedge_J",
         )
 
+  def test_put_data_into_roundtrip_multiworld(self):
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=2, nworld=2)
+
+    # Capture world 0 before writing world 1.
+    mjd_world0_before = mujoco.MjData(mjm)
+    mjwarp.get_data_into(mjd_world0_before, mjm, d, world_id=0)
+
+    # Deterministically mutate host data, then write into world 1.
+    mjd.time = 0.25
+    if mjm.nq:
+      mjd.qpos[:] = np.linspace(-0.2, 0.2, mjm.nq)
+    if mjm.nv:
+      mjd.qvel[:] = np.linspace(0.1, 0.3, mjm.nv)
+      mjd.qacc[:] = np.linspace(-0.3, -0.1, mjm.nv)
+      mjd.qacc_warmstart[:] = np.linspace(-0.1, 0.1, mjm.nv)
+      mjd.qfrc_applied[:] = np.linspace(0.05, 0.15, mjm.nv)
+    if mjm.nu:
+      mjd.ctrl[:] = np.linspace(0.2, 0.4, mjm.nu)
+      mjd.actuator_force[:] = np.linspace(-0.4, -0.2, mjm.nu)
+    if mjm.na:
+      mjd.act[:] = np.linspace(0.3, 0.6, mjm.na)
+      mjd.act_dot[:] = np.linspace(-0.6, -0.3, mjm.na)
+
+    mjwarp.put_data_into(d, mjm, mjd, world_id=1)
+
+    # Round-trip world 1 and compare selected representative fields.
+    mjd_world1_after = mujoco.MjData(mjm)
+    mjwarp.get_data_into(mjd_world1_after, mjm, d, world_id=1)
+
+    _assert_eq(mjd_world1_after.time, mjd.time, "time")
+    for field in ["qpos", "qvel", "qacc", "qacc_warmstart", "qfrc_applied", "ctrl", "act", "act_dot", "actuator_force"]:
+      if getattr(mjd, field).size > 0:
+        _assert_eq(getattr(mjd_world1_after, field), getattr(mjd, field), field)
+
+    # Ensure world 0 was not modified.
+    mjd_world0_after = mujoco.MjData(mjm)
+    mjwarp.get_data_into(mjd_world0_after, mjm, d, world_id=0)
+    for field in ["time", "qpos", "qvel", "qacc", "ctrl", "act"]:
+      if field == "time":
+        _assert_eq(mjd_world0_after.time, mjd_world0_before.time, field)
+      elif getattr(mjd_world0_before, field).size > 0:
+        _assert_eq(getattr(mjd_world0_after, field), getattr(mjd_world0_before, field), field)
+
+  def test_put_data_into_world_id_bounds(self):
+    mjm, mjd, _, d = test_data.fixture("pendula.xml", nworld=2)
+    with self.assertRaises(ValueError):
+      mjwarp.put_data_into(d, mjm, mjd, world_id=2)
+
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
       """

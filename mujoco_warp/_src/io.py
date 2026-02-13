@@ -1171,6 +1171,236 @@ def get_data_into(
   result.sensordata[:] = d.sensordata.numpy()[world_id]
 
 
+def put_data_into(
+  d: types.Data,
+  mjm: mujoco.MjModel,
+  data: mujoco.MjData,
+  world_id: int = 0,
+) -> None:
+  """Puts data from a host MuJoCo MjData into a device Warp data structure.
+
+  Args:
+    d: The device data object where data will be written (device).
+    mjm: The model containing kinematic and dynamic information (host).
+    data: The host MuJoCo MjData object containing values to copy (host).
+    world_id: The id of the world to put the data into.
+
+  Raises:
+    ValueError: If world_id is outside [0, d.nworld - 1].
+  """
+  if world_id < 0 or world_id >= d.nworld:
+    raise ValueError(f"world_id must be in [0, {d.nworld - 1}] (got {world_id})")
+
+  def _put_world(arr: wp.array, val):
+    arr_np = arr.numpy()
+    arr_np[world_id] = val
+    wp.copy(arr, wp.array(arr_np, dtype=arr.dtype))
+
+  def _put_world_flat(arr: wp.array, val):
+    arr_np = arr.numpy()
+    arr_np[world_id] = np.array(val).reshape(arr_np[world_id].shape)
+    wp.copy(arr, wp.array(arr_np, dtype=arr.dtype))
+
+  # scalar state
+  _put_world(d.solver_niter, data.solver_niter[0])
+  _put_world(d.ne, data.ne)
+  _put_world(d.nf, data.nf)
+  _put_world(d.nl, data.nl)
+  _put_world(d.nefc, min(data.nefc, d.njmax))
+  _put_world(d.time, data.time)
+
+  # dense state arrays by world
+  _put_world(d.energy, data.energy)
+  _put_world(d.qpos, data.qpos)
+  _put_world(d.qvel, data.qvel)
+  _put_world(d.act, data.act)
+  _put_world(d.qacc_warmstart, data.qacc_warmstart)
+  _put_world(d.ctrl, data.ctrl)
+  _put_world(d.qfrc_applied, data.qfrc_applied)
+  _put_world(d.xfrc_applied, data.xfrc_applied)
+  _put_world(d.eq_active, data.eq_active)
+  _put_world(d.mocap_pos, data.mocap_pos)
+  _put_world(d.mocap_quat, data.mocap_quat)
+  _put_world(d.qacc, data.qacc)
+  _put_world(d.act_dot, data.act_dot)
+  _put_world(d.xpos, data.xpos)
+  _put_world(d.xquat, data.xquat)
+  _put_world_flat(d.xmat, data.xmat)
+  _put_world(d.xipos, data.xipos)
+  _put_world_flat(d.ximat, data.ximat)
+  _put_world(d.xanchor, data.xanchor)
+  _put_world(d.xaxis, data.xaxis)
+  _put_world(d.geom_xpos, data.geom_xpos)
+  _put_world_flat(d.geom_xmat, data.geom_xmat)
+  _put_world(d.site_xpos, data.site_xpos)
+  _put_world_flat(d.site_xmat, data.site_xmat)
+  _put_world(d.cam_xpos, data.cam_xpos)
+  _put_world_flat(d.cam_xmat, data.cam_xmat)
+  _put_world(d.light_xpos, data.light_xpos)
+  _put_world(d.light_xdir, data.light_xdir)
+  _put_world(d.subtree_com, data.subtree_com)
+  _put_world(d.cdof, data.cdof)
+  _put_world(d.cinert, data.cinert)
+  _put_world(d.flexvert_xpos, data.flexvert_xpos)
+  if mjm.nflexedge > 0:
+    _put_world_flat(d.flexedge_J, data.flexedge_J)
+  _put_world(d.flexedge_length, data.flexedge_length)
+  _put_world(d.flexedge_velocity, data.flexedge_velocity)
+  _put_world(d.actuator_length, data.actuator_length)
+  _put_world(d.crb, data.crb)
+  _put_world(d.qLDiagInv, data.qLDiagInv)
+  _put_world(d.ten_velocity, data.ten_velocity)
+  _put_world(d.actuator_velocity, data.actuator_velocity)
+  _put_world(d.cvel, data.cvel)
+  _put_world(d.cdof_dot, data.cdof_dot)
+  _put_world(d.qfrc_bias, data.qfrc_bias)
+  _put_world(d.qfrc_spring, data.qfrc_spring)
+  _put_world(d.qfrc_damper, data.qfrc_damper)
+  _put_world(d.qfrc_gravcomp, data.qfrc_gravcomp)
+  _put_world(d.qfrc_fluid, data.qfrc_fluid)
+  _put_world(d.qfrc_passive, data.qfrc_passive)
+  _put_world(d.subtree_linvel, data.subtree_linvel)
+  _put_world(d.subtree_angmom, data.subtree_angmom)
+  _put_world(d.actuator_force, data.actuator_force)
+  _put_world(d.qfrc_actuator, data.qfrc_actuator)
+  _put_world(d.qfrc_smooth, data.qfrc_smooth)
+  _put_world(d.qacc_smooth, data.qacc_smooth)
+  _put_world(d.qfrc_constraint, data.qfrc_constraint)
+  _put_world(d.qfrc_inverse, data.qfrc_inverse)
+  _put_world(d.cacc, data.cacc)
+  _put_world(d.cfrc_int, data.cfrc_int)
+  _put_world(d.cfrc_ext, data.cfrc_ext)
+  _put_world(d.ten_length, data.ten_length)
+  _put_world(d.ten_wrapadr, data.ten_wrapadr)
+  _put_world(d.ten_wrapnum, data.ten_wrapnum)
+  _put_world(d.wrap_obj, data.wrap_obj)
+  _put_world(d.wrap_xpos, data.wrap_xpos)
+  _put_world(d.sensordata, data.sensordata)
+
+  # actuator_moment sparse->dense
+  actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
+  mujoco.mju_sparse2dense(
+    actuator_moment_dense,
+    data.actuator_moment,
+    data.moment_rownnz,
+    data.moment_rowadr,
+    data.moment_colind,
+  )
+  _put_world(d.actuator_moment, actuator_moment_dense)
+
+  # tendon Jacobian sparse->dense if needed
+  if mujoco.mj_isSparse(mjm):
+    ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
+    mujoco.mju_sparse2dense(ten_J_dense, data.ten_J.reshape(-1), data.ten_J_rownnz, data.ten_J_rowadr, data.ten_J_colind)
+    _put_world(d.ten_J, ten_J_dense)
+  else:
+    _put_world(d.ten_J, data.ten_J.reshape((mjm.ntendon, mjm.nv)))
+
+  # qM/qLD
+  if is_sparse(mjm):
+    qM_np = d.qM.numpy()
+    qM_np[world_id, 0, : mjm.nM] = data.qM
+    wp.copy(d.qM, wp.array(qM_np, dtype=d.qM.dtype))
+
+    qLD_np = d.qLD.numpy()
+    qLD_np[world_id, 0, : mjm.nC] = data.qLD
+    wp.copy(d.qLD, wp.array(qLD_np, dtype=d.qLD.dtype))
+  else:
+    qM_full = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mj_fullM(mjm, qM_full, data.qM)
+
+    qM_np = d.qM.numpy()
+    qM_np[world_id, : mjm.nv, : mjm.nv] = qM_full
+    wp.copy(d.qM, wp.array(qM_np, dtype=d.qM.dtype))
+
+    qLD_world = np.linalg.cholesky(qM_full) if (qM_full != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+    qLD_np = d.qLD.numpy()
+    qLD_np[world_id, : mjm.nv, : mjm.nv] = qLD_world
+    wp.copy(d.qLD, wp.array(qLD_np, dtype=d.qLD.dtype))
+
+  # contacts: write this world's segment and update world ids
+  nconmax_world = d.naconmax // d.nworld
+  start = world_id * nconmax_world
+  end = start + nconmax_world
+  ncon = min(data.ncon, nconmax_world)
+
+  old_nacon = int(d.nacon.numpy()[0])
+  worldid_old = d.contact.worldid.numpy()
+  old_world_ncon = int((worldid_old[:old_nacon] == world_id).sum())
+
+  contact_fields = [
+    ("dist", data.contact.dist),
+    ("pos", data.contact.pos),
+    ("frame", data.contact.frame.reshape((-1, 3, 3))),
+    ("includemargin", data.contact.includemargin),
+    ("friction", data.contact.friction),
+    ("solref", data.contact.solref),
+    ("solreffriction", data.contact.solreffriction),
+    ("solimp", data.contact.solimp),
+    ("dim", data.contact.dim),
+    ("geom", data.contact.geom),
+  ]
+  for field, src in contact_fields:
+    arr = getattr(d.contact, field).numpy()
+    if ncon > 0:
+      arr[start : start + ncon] = src[:ncon]
+    if start + ncon < end:
+      arr[start + ncon : end] = 0
+    setattr(d.contact, field, wp.array(arr, dtype=getattr(d.contact, field).dtype))
+
+  efc_address = d.contact.efc_address.numpy()
+  if ncon > 0:
+    efc_address[start : start + ncon] = data.contact.efc_address[:ncon]
+  if start + ncon < end:
+    efc_address[start + ncon : end] = -1
+  wp.copy(d.contact.efc_address, wp.array(efc_address, dtype=d.contact.efc_address.dtype))
+
+  worldid_np = d.contact.worldid.numpy()
+  worldid_np[start : start + ncon] = world_id
+  if start + ncon < end:
+    worldid_np[start + ncon : end] = -1
+  wp.copy(d.contact.worldid, wp.array(worldid_np, dtype=d.contact.worldid.dtype))
+
+  nacon_total = max(0, old_nacon - old_world_ncon + ncon)
+  nacon_total = min(nacon_total, d.naconmax)
+  d.nacon.fill_(nacon_total)
+
+  # constraints
+  nefc = min(data.nefc, d.njmax)
+  _put_world(d.nefc, nefc)
+
+  efc_fields = [
+    ("type", data.efc_type),
+    ("id", data.efc_id),
+    ("pos", data.efc_pos),
+    ("margin", data.efc_margin),
+    ("D", data.efc_D),
+    ("vel", data.efc_vel),
+    ("aref", data.efc_aref),
+    ("frictionloss", data.efc_frictionloss),
+    ("state", data.efc_state),
+    ("force", data.efc_force),
+  ]
+  for field, src in efc_fields:
+    arr = getattr(d.efc, field).numpy()
+    arr[world_id, :nefc] = src[:nefc]
+    if nefc < d.njmax:
+      arr[world_id, nefc:] = 0
+    setattr(d.efc, field, wp.array(arr, dtype=getattr(d.efc, field).dtype))
+
+  if nefc > 0:
+    if mujoco.mj_isSparse(mjm):
+      efc_j_dense = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(efc_j_dense, data.efc_J, data.efc_J_rownnz, data.efc_J_rowadr, data.efc_J_colind)
+      efc_J = d.efc.J.numpy()
+      efc_J[world_id, :nefc, : mjm.nv] = efc_j_dense
+      wp.copy(d.efc.J, wp.array(efc_J, dtype=d.efc.J.dtype))
+    else:
+      efc_J = d.efc.J.numpy()
+      efc_J[world_id, :nefc, : mjm.nv] = data.efc_J[: nefc * mjm.nv].reshape((nefc, mjm.nv))
+      wp.copy(d.efc.J, wp.array(efc_J, dtype=d.efc.J.dtype))
+
+
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   """Clear data, set defaults; optionally by world.
 
