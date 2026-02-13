@@ -1667,11 +1667,9 @@ class Data:
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
+    naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
     nacon: number of detected contacts (across all worlds)      (1,)
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
     ncollision: collision count from broadphase                 (1,)
   """
 
@@ -1758,14 +1756,25 @@ class Data:
   # warp only fields:
   nworld: int
   naconmax: int
+  naccdmax: int
   njmax: int
   nacon: array(1, int)
-
-  # warp only: collision driver
-  collision_pair: array("naconmax", wp.vec2i)
-  collision_pairid: array("naconmax", wp.vec2i)
-  collision_worldid: array("naconmax", int)
   ncollision: array(1, int)
+
+
+@dataclasses.dataclass
+class CollisionContext:
+  """Collision driver intermediate arrays.
+
+  Attributes:
+    collision_pair: collision pairs from broadphase             (naconmax, 2)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
+    collision_worldid: collision world ids from broadphase      (naconmax,)
+  """
+
+  collision_pair: wp.array
+  collision_pairid: wp.array
+  collision_worldid: wp.array
 
 
 @dataclasses.dataclass
@@ -1778,6 +1787,7 @@ class RenderContext:
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
+    use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
     mesh_registry: mesh BVH id to warp mesh mapping
@@ -1831,6 +1841,7 @@ class RenderContext:
   use_textures: bool
   use_shadows: bool
   background_color: wp.uint32
+  use_precomputed_rays: bool
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict

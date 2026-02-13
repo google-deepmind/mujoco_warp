@@ -618,10 +618,10 @@ def _compute_efc_eval_pt_elliptic(
         return wp.vec3(0.0)
       return _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, alpha)
 
-    # Limit/other constraint
+    # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
     if x < 0.0:
-      return _eval_pt(ctx_quad, alpha)
+      return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D_in[efcid], alpha)
     return wp.vec3(0.0)
 
   # Friction constraint - load D and frictionloss only here
@@ -632,8 +632,8 @@ def _compute_efc_eval_pt_elliptic(
     rf = math.safe_div(f, efc_D)
     return _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D)
 
-  # Equality constraint
-  return _eval_pt(ctx_quad, alpha)
+  # Equality constraint — direct eval (no quad read)
+  return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D_in[efcid], alpha)
 
 
 @wp.func
@@ -692,9 +692,9 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
         return wp.vec3(0.0)
       return _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)
 
-    # Limit/other constraint
+    # Limit/other constraint — direct eval (no quad read)
     if ctx_Jaref < 0.0:
-      return wp.vec3(ctx_quad[0], ctx_quad[1], 2.0 * ctx_quad[2])
+      return _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D_in[efcid])
     return wp.vec3(0.0)
 
   # Friction constraint - load D and frictionloss only here
@@ -704,8 +704,8 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
     rf = math.safe_div(f, efc_D)
     return _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)
 
-  # Equality constraint
-  return wp.vec3(ctx_quad[0], ctx_quad[1], 2.0 * ctx_quad[2])
+  # Equality constraint — direct eval (no quad read)
+  return _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D_in[efcid])
 
 
 @wp.func
@@ -795,8 +795,9 @@ def _compute_efc_eval_pt_3alphas_elliptic(
         _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, mid_alpha),
       )
 
-    # Limit/other constraints: active only when x < 0
-    pt_lo, pt_hi, pt_mid = _eval_pt_3alphas(ctx_quad, lo_alpha, hi_alpha, mid_alpha)
+    # Limit/other constraints — direct eval (no quad read)
+    efc_D = efc_D_in[efcid]
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
     r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
     r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
     r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
@@ -809,8 +810,8 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     rf = math.safe_div(f, efc_D)
     return _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
 
-  # Equality constraint: always active
-  return _eval_pt_3alphas(ctx_quad, lo_alpha, hi_alpha, mid_alpha)
+  # Equality constraint — direct eval (no quad read)
+  return _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D_in[efcid], lo_alpha, hi_alpha, mid_alpha)
 
 
 # kernel_analyzer: on
@@ -961,30 +962,28 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
       _syncthreads()  # ensure all jv values are written before reading
 
-    # quad coefficients (elliptic only, requires barrier sync)
+    # quad coefficients (elliptic contacts only, requires barrier sync)
+    # Non-elliptic constraints (equality, friction, limit) now use direct
+    # evaluation from (Jaref, jv, efc_D), avoiding quad reads entirely.
     if wp.static(IS_ELLIPTIC):
       # elliptic-only config values
       impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
       nacon = nacon_in[0]
 
       for efcid in range(tid, nefc, wp.block_dim()):
-        Jaref = ctx_Jaref_in[worldid, efcid]
-        jv = ctx_jv_in[worldid, efcid]
-        efc_D = efc_D_in[worldid, efcid]
-
-        # scalar quadratic coefficients
-        jvD = jv * efc_D
-        quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jvD * Jaref, 0.5 * jv * jvD)
-
-        # non-contact constraints: write quad immediately
-        if efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
-          ctx_quad_out[worldid, efcid] = quad
-        else:
-          # CONTACT_ELLIPTIC: only primary row of active contacts writes
+        # Only compute and store quad for CONTACT_ELLIPTIC (needs inter-row data)
+        if efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
           conid = efc_id_in[worldid, efcid]
           if conid < nacon:
             efcid0 = contact_efc_address_in[conid, 0]
             if efcid == efcid0:
+              Jaref = ctx_Jaref_in[worldid, efcid]
+              jv = ctx_jv_in[worldid, efcid]
+              efc_D = efc_D_in[worldid, efcid]
+
+              jvD = jv * efc_D
+              quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jvD * Jaref, 0.5 * jv * jvD)
+
               # primary row: accumulate secondary rows and write quad, quad1, quad2
               dim = contact_dim_in[conid]
               friction = contact_friction_in[conid]
@@ -1042,6 +1041,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         efc_id = 0
         contact_friction = types.vec5(0.0)
         efc_addr0 = int(0)
+        ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
 
@@ -1051,6 +1051,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
+          ctx_quad = ctx_quad_in[worldid, efcid]
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
@@ -1064,7 +1065,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_frictionloss_in[worldid],
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
-          ctx_quad_in[worldid, efcid],
+          ctx_quad,
           contact_friction,
           efc_addr0,
           quad1,
@@ -1115,6 +1116,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         efc_id = 0
         contact_friction = types.vec5(0.0)
         efc_addr0 = int(0)
+        ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
 
@@ -1124,6 +1126,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
+          ctx_quad = ctx_quad_in[worldid, efcid]
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
@@ -1138,7 +1141,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_frictionloss_in[worldid],
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
-          ctx_quad_in[worldid, efcid],
+          ctx_quad,
           contact_friction,
           efc_addr0,
           quad1,
@@ -1190,6 +1193,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_id = 0
             contact_friction = types.vec5(0.0)
             efc_addr0 = int(0)
+            ctx_quad = wp.vec3(0.0)
             quad1 = wp.vec3(0.0)
             quad2 = wp.vec3(0.0)
 
@@ -1199,10 +1203,10 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
               efc_addr0 = contact_efc_address_in[efc_id, 0]
               efc_addr1 = contact_efc_address_in[efc_id, 1]
               efc_addr2 = contact_efc_address_in[efc_id, 2]
+              ctx_quad = ctx_quad_in[worldid, efcid]
               quad1 = ctx_quad_in[worldid, efc_addr1]
               quad2 = ctx_quad_in[worldid, efc_addr2]
 
-            # compute all 3 alphas at once, sharing constraint type checking
             r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
               efcid,
               lo_next_alpha,
@@ -1216,7 +1220,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
               efc_frictionloss_in[worldid],
               ctx_Jaref_in[worldid, efcid],
               ctx_jv_in[worldid, efcid],
-              ctx_quad_in[worldid, efcid],
+              ctx_quad,
               contact_friction,
               efc_addr0,
               quad1,

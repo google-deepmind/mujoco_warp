@@ -54,6 +54,7 @@ _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
 _NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts per world")
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
+_NCCDMAX = flags.DEFINE_integer("nccdmax", None, "override maximum number of CCD contacts per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
 _CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
@@ -302,13 +303,12 @@ def _main(argv: Sequence[str]):
     override_model(mjm, _OVERRIDE.value)
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
-    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value)
+    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value, nccdmax=_NCCDMAX.value)
     rc = None
     if "rc" in inspect.signature(_FUNCS[_FUNCTION.value]).parameters.keys():
       rc = mjw.create_render_context(
         mjm,
-        m,
-        d,
+        _NWORLD.value,
         (_WIDTH.value, _HEIGHT.value),
         _RENDER_RGB.value,
         _RENDER_DEPTH.value,
@@ -474,12 +474,12 @@ def _main(argv: Sequence[str]):
       else:
         collider_str = ""
 
-      print(
-        f"Model\n{sizes_str}{opt_str}{collider_str}"
-        f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
-        f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
-        f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
-      )
+      out = f"Model\n{sizes_str}{opt_str}{collider_str}"
+      out += f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}\n"
+      if rc:
+        out += f"RenderContext\n  shadows: {_USE_SHADOWS.value} textures: {_USE_TEXTURES.value} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom} ncam: {rc.nrender} cam_res: {rc.cam_res.numpy()}\n"
+      out += f"Rolling out {_NSTEP.value} steps at dt = {f'{m.opt.timestep.numpy()[0]:g}' if m.opt.timestep.numpy()[0] < 0.001 else f'{m.opt.timestep.numpy()[0]:.3f}'}..."
+      print(out)
 
     fn = _FUNCS[_FUNCTION.value]
     res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
