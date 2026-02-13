@@ -1161,7 +1161,17 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if BLEEDING_EDGE_MUJOCO:
+    ten_J = d.ten_J.numpy()[world_id]
+    mujoco.mju_dense2sparse(
+      result.ten_J,
+      ten_J,
+      result.ten_J_rownnz,
+      result.ten_J_rowadr,
+      result.ten_J_colind,
+    )
+  else:
+    result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
