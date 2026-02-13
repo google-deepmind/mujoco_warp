@@ -189,8 +189,8 @@ def _flood_fill(
   stack_in: wp.array2d(dtype=int),
   # Data out:
   nisland_out: wp.array(dtype=int),
+  tree_island_out: wp.array2d(dtype=int),
   # Out:
-  labels_out: wp.array2d(dtype=int),
   stack_out: wp.array2d(dtype=int),
 ):
   """DFS flood fill to discover islands using tree_tree matrix."""
@@ -227,7 +227,7 @@ def _flood_fill(
         continue
 
       # assign to current island
-      labels_out[worldid, v] = nisland
+      tree_island_out[worldid, v] = nisland
 
       # push neighbors
       for neighbor in range(ntree):
