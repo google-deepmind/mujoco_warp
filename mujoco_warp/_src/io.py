@@ -30,11 +30,11 @@ from mujoco_warp._src import warp_util
 
 
 def _is_mujoco_fresh() -> bool:
-  """Checks if mujoco version is > 3.4.0."""
+  """Checks if mujoco version is > 3.5.0."""
   version = importlib.metadata.version("mujoco")
   version = version.split(".")
   version = tuple(map(int, version[:3])) + tuple(version[3:])
-  return version > (3, 4, 0)
+  return version > (3, 5, 0)
 
 
 BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
@@ -583,17 +583,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_madr.append(madr)
     m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
 
-  # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-  if BLEEDING_EDGE_MUJOCO:
-    m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
-    m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
-    m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
-  else:
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m.flexedge_J_rownnz = mjd.flexedge_J_rownnz
-    m.flexedge_J_rowadr = mjd.flexedge_J_rowadr
-    m.flexedge_J_colind = mjd.flexedge_J_colind.reshape(-1)
+  m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
+  m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
+  m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
@@ -1065,21 +1057,7 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   if mjm.nflexedge > 0:
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if not BLEEDING_EDGE_MUJOCO:
-      m = put_model(mjm)
-      result.flexedge_J_rownnz[:] = m.flexedge_J_rownnz.numpy()
-      result.flexedge_J_rowadr[:] = m.flexedge_J_rowadr.numpy()
-      result.flexedge_J_colind[:, :] = m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv))
-      mujoco.mju_sparse2dense(
-        result.flexedge_J,
-        d.flexedge_J.numpy()[world_id].reshape(-1),
-        m.flexedge_J_rownnz.numpy(),
-        m.flexedge_J_rowadr.numpy(),
-        m.flexedge_J_colind.numpy(),
-      )
-    else:
-      result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
+    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -2312,20 +2290,12 @@ def create_render_context(
   if render_rgb and isinstance(render_rgb, bool):
     render_rgb = [render_rgb] * ncam
   elif render_rgb is None:
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
-    else:
-      render_rgb = [True] * ncam
+    render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
 
   if render_depth and isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
   elif render_depth is None:
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
-    else:
-      render_depth = [True] * ncam
+    render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
 
   assert len(render_rgb) == ncam and len(render_depth) == ncam, (
     f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
@@ -2352,10 +2322,7 @@ def create_render_context(
 
   ray = wp.zeros(int(total), dtype=wp.vec3)
 
-  # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-  cam_projection = np.zeros(mjm.ncam, dtype=int)
-  if BLEEDING_EDGE_MUJOCO:
-    cam_projection = mjm.cam_projection
+  cam_projection = mjm.cam_projection
 
   offset = 0
   for idx, cam_id in enumerate(active_cam_indices):
