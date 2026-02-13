@@ -121,3 +121,59 @@ Benchmark rendering with:
 ```bash
 mjwarp-testspeed benchmarks/primitives.xml --function=render
 ```
+
+# Python mesh utility
+
+`mujoco_warp` includes a Python helper for splitting non-convex STL meshes into
+cached convex parts using COACD:
+
+```python
+from pathlib import Path
+import mujoco
+import mujoco_warp as mjwarp
+
+xml_path = Path("models/scene.xml")
+
+xml_processed = mjwarp.split_nonconvex_meshes(
+		str(xml_path),
+		mesh_names=["tool", "housing"],
+		coacd_kwargs={"threshold": 0.05, "max_convex_hull": 32},
+)
+
+model = mujoco.MjModel.from_xml_string(xml_processed)
+data = mujoco.MjData(model)
+```
+
+Synthetic XML transformation example:
+
+Before:
+
+```xml
+<mujoco>
+	<asset>
+		<mesh name="tool" file="meshes/tool.stl"/>
+	</asset>
+	<worldbody>
+		<body>
+			<geom name="tool_geom" type="mesh" mesh="tool"/>
+		</body>
+	</worldbody>
+</mujoco>
+```
+
+After (illustrative):
+
+```xml
+<mujoco>
+	<asset>
+		<mesh name="tool__cvx_000" file=".mujoco_mesh_cache/tool/<hash>/tool__cvx_000.stl"/>
+		<mesh name="tool__cvx_001" file=".mujoco_mesh_cache/tool/<hash>/tool__cvx_001.stl"/>
+	</asset>
+	<worldbody>
+		<body>
+			<geom name="tool_geom" type="mesh" mesh="tool__cvx_000"/>
+			<geom name="tool_geom__cvx_001" type="mesh" mesh="tool__cvx_001"/>
+		</body>
+	</worldbody>
+</mujoco>
+```
