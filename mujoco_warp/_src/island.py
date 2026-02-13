@@ -243,10 +243,7 @@ def _flood_fill(
 
 
 @event_scope
-def island(
-  m: types.Model,
-  d: types.Data,
-) -> None:
+def island(m: types.Model, d: types.Data):
   """Discover constraint islands."""
   if m.ntree == 0:
     d.nisland.zero_()
@@ -258,7 +255,7 @@ def island(
 
   # Step 2: DFS flood fill
   d.tree_island.fill_(-1)
-  stack_scratch = wp.zeros((d.nworld, m.ntree), dtype=int)
+  stack_scratch = wp.empty((d.nworld, m.ntree), dtype=int)
 
   wp.launch(
     _flood_fill,
