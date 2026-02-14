@@ -50,16 +50,16 @@ class DerivativeTest(parameterized.TestCase):
           <geom type="sphere" size=".1"/>
           <joint name="joint0" type="hinge" axis="0 1 0"/>
           <site name="site0" pos="0 0 1"/>
-        </body>
-        <body pos="1 0 0">
-          <geom type="sphere" size=".1"/>
-          <joint name="joint1" type="hinge" axis="0 1 0"/>
-          <site name="site1" pos="0 0 1"/>
-        </body>
-        <body pos="2 0 0">
-          <geom type="sphere" size=".1"/>
-          <joint name="joint2" type="hinge" axis="0 1 0"/>
-          <site name="site2" pos="0 0 1"/>
+          <body pos="1 0 0">
+            <geom type="sphere" size=".1"/>
+            <joint name="joint1" type="hinge" axis="0 1 0"/>
+            <site name="site1" pos="0 0 1"/>
+            <body pos="1 0 0">
+              <geom type="sphere" size=".1"/>
+              <joint name="joint2" type="hinge" axis="0 1 0"/>
+              <site name="site2" pos="0 0 1"/>
+            </body>
+          </body>
         </body>
       </worldbody>
       <tendon>
@@ -101,6 +101,13 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
 
+    from mujoco_warp._src import forward
+
+    # Compute kinematics without factorizing qM to allow direct comparison
+    forward.fwd_position(m, d, factorize=False)
+    forward.fwd_velocity(m, d)
+
+    # 1. Test with RNE Disabled (Matches MuJoCo's ImplicitFast)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel, flg_rne=False)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
@@ -110,6 +117,9 @@ class DerivativeTest(parameterized.TestCase):
     else:
       mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
+    # Symmetrize mjw_out (use lower triangle)
+    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
@@ -118,6 +128,28 @@ class DerivativeTest(parameterized.TestCase):
     mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
+
+    # 2. RNE Smoke Test: Verify Coriolis/Centrifugal terms
+    # Reuse buffers to check if flg_rne=True changes the result
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_rne = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_rne = wp.zeros(d.qM.shape, dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_rne, flg_rne=True)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_rne_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_rne_out[i, j] = out_rne.numpy()[0, 0, elem]
+    else:
+      mjw_rne_out = out_rne.numpy()[0, : m.nv, : m.nv]
+
+    diff_norm = np.linalg.norm(mjw_rne_out - mjw_out)
+    if diff_norm < 1e-6:
+      qvel_norm = np.linalg.norm(mjd.qvel)
+      if qvel_norm > 1e-3:
+        raise AssertionError(f"RNE enabled but no derivative change detected! (Diff={diff_norm}, qvel={qvel_norm})")
 
   def _create_random_model_xml(self):
     # Create a simple chain with Free Joint

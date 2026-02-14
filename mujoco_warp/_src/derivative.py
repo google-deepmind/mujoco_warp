@@ -577,7 +577,7 @@ def rne_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):  # out is qDeriv-l
       outputs=[Dcfrcbody],  # In/Out
     )
 
-  if m.opt.is_sparse:
+  if m.is_sparse:
     wp.launch(
       _derivative_rne_update_sparse,
       dim=(d.nworld, m.qM_fullm_i.size),

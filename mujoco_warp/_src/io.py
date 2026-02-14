@@ -592,7 +592,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
 
   # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-  if BLEEDING_EDGE_MUJOCO:
+  if hasattr(mjm, "flexedge_J_rownnz"):
     m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
     m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
     m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
