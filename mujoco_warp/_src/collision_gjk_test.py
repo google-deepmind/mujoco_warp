@@ -46,10 +46,8 @@ def _geom_dist(
   # we run multiccd on static scenes so these need to be initialized
   nmaxpolygon = 10 if multiccd else 0
   nmaxmeshdeg = 10 if multiccd else 0
-  epa_vert1 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
-  epa_vert2 = wp.empty(5 + m.opt.ccd_iterations, dtype=wp.vec3)
-  epa_vert_index1 = wp.empty(5 + m.opt.ccd_iterations, dtype=int)
-  epa_vert_index2 = wp.empty(5 + m.opt.ccd_iterations, dtype=int)
+  epa_vert = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=wp.vec3)
+  epa_vert_index = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=int)
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
   epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
@@ -92,10 +90,8 @@ def _geom_dist(
     gid2: int,
     iterations: int,
     tolerance: wp.array(dtype=float),
-    vert1: wp.array(dtype=wp.vec3),
-    vert2: wp.array(dtype=wp.vec3),
-    vert_index1: wp.array(dtype=int),
-    vert_index2: wp.array(dtype=int),
+    vert: wp.array(dtype=wp.vec3),
+    vert_index: wp.array(dtype=int),
     face: wp.array(dtype=int),
     face_pr: wp.array(dtype=wp.vec3),
     face_norm2: wp.array(dtype=float),
@@ -195,10 +191,8 @@ def _geom_dist(
       geomtype2,
       geom1.pos,
       geom2.pos,
-      vert1,
-      vert2,
-      vert_index1,
-      vert_index2,
+      vert,
+      vert_index,
       face,
       face_pr,
       face_norm2,
@@ -218,10 +212,8 @@ def _geom_dist(
         endvert,
         face1,
         face2,
-        vert1,
-        vert2,
-        vert_index1,
-        vert_index2,
+        vert,
+        vert_index,
         face[idx],
         x1,
         x2,
@@ -264,10 +256,8 @@ def _geom_dist(
       gid2,
       m.opt.ccd_iterations,
       m.opt.ccd_tolerance,
-      epa_vert1,
-      epa_vert2,
-      epa_vert_index1,
-      epa_vert_index2,
+      epa_vert,
+      epa_vert_index,
       epa_face,
       epa_pr,
       epa_norm2,

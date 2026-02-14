@@ -15,7 +15,6 @@
 
 import dataclasses
 import importlib.metadata
-import re
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -30,22 +29,15 @@ from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 
 
-def _is_mujoco_dev() -> bool:
-  _DEV_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+.+")  # anything after x.y.z
-
-  version = getattr(__import__("mujoco"), "__version__", None)
-  if version and _DEV_VERSION_PATTERN.match(version):
-    return True
-
-  # fall back to metadata
-  dist_version = importlib.metadata.version("mujoco")
-  if _DEV_VERSION_PATTERN.match(dist_version):
-    return True
-
-  return False
+def _is_mujoco_fresh() -> bool:
+  """Checks if mujoco version is > 3.4.0."""
+  version = importlib.metadata.version("mujoco")
+  version = version.split(".")
+  version = tuple(map(int, version[:3])) + tuple(version[3:])
+  return version > (3, 4, 0)
 
 
-BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
+BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -217,7 +209,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       setattr(opt, f.name, f.type(getattr(opt, f.name)))
 
   # create stat
-  stat = types.Statistic(meaninertia=mjm.stat.meaninertia)
+  stat = types.Statistic(meaninertia=_create_array([mjm.stat.meaninertia], types.array("*", float), {"*": 1}))
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
@@ -656,8 +648,10 @@ def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
   nconmax: Optional[int] = None,
+  nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  naccdmax: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -666,9 +660,11 @@ def make_data(
     nworld: Number of worlds.
     nconmax: Number of contacts to allocate per world. Contacts exist in large
              heterogeneous arrays: one world may have more than nconmax contacts.
+    nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -677,21 +673,36 @@ def make_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
 
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  elif nccdmax < 0:
+    raise ValueError("nccdmax must be >= 0")
+  elif nccdmax > nconmax:
+    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
+
   if njmax is None:
     njmax = _default_njmax(mjm)
+
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
-    if nconmax < 0:
-      raise ValueError("nconmax must be >= 0")
     naconmax = nworld * nconmax
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
-  if njmax < 0:
-    raise ValueError("njmax must be >= 0")
+  if naccdmax is None:
+    naccdmax = nworld * nccdmax
+  elif naccdmax < 0:
+    raise ValueError("naccdmax must be >= 0")
+  elif naccdmax > naconmax:
+    raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
@@ -721,6 +732,7 @@ def make_data(
     "efc": efc,
     "nworld": nworld,
     "naconmax": naconmax,
+    "naccdmax": naccdmax,
     "njmax": njmax,
     "qM": None,
     "qLD": None,
@@ -765,8 +777,10 @@ def put_data(
   mjd: mujoco.MjData,
   nworld: int = 1,
   nconmax: Optional[int] = None,
+  nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
   naconmax: Optional[int] = None,
+  naccdmax: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -776,9 +790,11 @@ def put_data(
     nworld: The number of worlds.
     nconmax: Number of contacts to allocate per world.  Contacts exist in large
              heterogenous arrays: one world may have more than nconmax contacts.
+    nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -790,23 +806,38 @@ def put_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
 
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  elif nccdmax < 0:
+    raise ValueError("nccdmax must be >= 0")
+  elif nccdmax > nconmax:
+    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
+
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
+
+  if njmax < 0:
+    raise ValueError("njmax must be >= 0")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
   if naconmax is None:
-    if nconmax < 0:
-      raise ValueError("nconmax must be >= 0")
     if mjd.ncon > nconmax:
       raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
     naconmax = nworld * nconmax
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
-  if njmax < 0:
-    raise ValueError("njmax must be >= 0")
+  if naccdmax is None:
+    naccdmax = nworld * nccdmax
+  elif naccdmax < 0:
+    raise ValueError("naccdmax must be >= 0")
+  elif naccdmax > naconmax:
+    raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
@@ -882,6 +913,7 @@ def put_data(
     "efc": efc,
     "nworld": nworld,
     "naconmax": naconmax,
+    "naccdmax": naccdmax,
     "njmax": njmax,
     # fields set after initialization:
     "solver_niter": None,
@@ -1425,6 +1457,34 @@ def _copy_tendon_length0(
 
 
 @wp.kernel
+def _compute_meaninertia(
+  nv: int,
+  is_sparse: bool,
+  dof_Madr_in: wp.array(dtype=int),
+  qM_in: wp.array3d(dtype=float),
+  meaninertia_out: wp.array(dtype=float),
+):
+  """Compute mean diagonal inertia from qM at qpos0."""
+  worldid = wp.tid()
+
+  if nv == 0:
+    meaninertia_out[worldid % meaninertia_out.shape[0]] = 1.0  # Default from MuJoCo
+    return
+
+  total = float(0.0)
+  for i in range(nv):
+    if is_sparse:
+      # Sparse: qM is flattened lower triangular, diagonal at dof_Madr[i]
+      madr = dof_Madr_in[i]
+      total += qM_in[worldid, 0, madr]
+    else:
+      # Dense: qM is 2D matrix, diagonal at [i,i]
+      total += qM_in[worldid, i, i]
+
+  meaninertia_out[worldid % meaninertia_out.shape[0]] = total / float(nv)
+
+
+@wp.kernel
 def _set_unit_vector(
   dofid_target: int,
   unit_vec_out: wp.array2d(dtype=float),
@@ -1770,6 +1830,14 @@ def set_const_0(m: types.Model, d: types.Data):
   smooth.factor_m(m, d)
   smooth.transmission(m, d)
 
+  # Compute meaninertia from qM diagonal at qpos0
+  wp.launch(
+    _compute_meaninertia,
+    dim=d.nworld,
+    inputs=[m.nv, m.is_sparse, m.dof_Madr, d.qM],
+    outputs=[m.stat.meaninertia],
+  )
+
   wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
   # dof_invweight0: computed per joint with averaging for multi-DOF joints
@@ -2009,6 +2077,13 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         if val.upper() not in ("TRUE", "FALSE"):
           raise ValueError(f"Unrecognized value for field: {key}")
         val = val.upper() == "TRUE"
+      elif typ is wp.array and isinstance(val, str):
+        arr = getattr(obj, attr)
+        floats = [float(p) for p in val.strip("[]").split()]
+        val = wp.array([arr.dtype(*floats)], dtype=arr.dtype)
+      elif typ is np.ndarray and isinstance(val, str):
+        arr = getattr(obj, attr)
+        val = np.array([float(p) for p in val.strip("[]").split()], dtype=arr.dtype)
       else:
         val = typ(val)
 
@@ -2075,8 +2150,7 @@ def _build_rays(
 
 def create_render_context(
   mjm: mujoco.MjModel,
-  m: types.Model,
-  d: types.Data,
+  nworld: int = 1,
   cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
   render_rgb: list[bool] | bool | None = None,
   render_depth: list[bool] | bool | None = None,
@@ -2085,13 +2159,13 @@ def create_render_context(
   enabled_geom_groups: list[int] = [0, 1, 2],
   cam_active: list[bool] | None = None,
   flex_render_smooth: bool = True,
+  use_precomputed_rays: bool = True,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
   Args:
     mjm: The model containing kinematic and dynamic information on host.
-    m: The model on device.
-    d: The data on device.
+    nworld: The number of worlds.
     cam_res: The width and height to render each camera image. If None, uses the
              MuJoCo model values.
     render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
@@ -2102,10 +2176,15 @@ def create_render_context(
     cam_active: List of booleans indicating which cameras to include in rendering.
                 If None, all cameras are included.
     flex_render_smooth: Whether to render flex meshes smoothly.
+    use_precomputed_rays: Use precomputed rays instead of computing during rendering.
+                          When using domain randomization for camera intrinsics, set to False.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+
   # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
   if use_textures and not hasattr(wp, "Texture2D"):
     warnings.warn("Textures require warp >= 1.12. Disabling textures.")
@@ -2150,7 +2229,7 @@ def create_render_context(
 
   # Flex BVHs
   flex_bvh_id = wp.uint64(0)
-  flex_group_root = wp.zeros(d.nworld, dtype=int)
+  flex_group_root = wp.zeros(nworld, dtype=int)
   flex_mesh = None
   flex_face_point = None
   flex_elemdataadr = None
@@ -2171,7 +2250,7 @@ def create_render_context(
       flex_shell_data,
       flex_faceadr_data,
       flex_nface,
-    ) = bvh.build_flex_bvh(mjm, m, d)
+    ) = bvh.build_flex_bvh(mjm, mjd, nworld)
 
     flex_mesh = fmesh
     flex_bvh_id = fmesh.id
@@ -2271,31 +2350,33 @@ def create_render_context(
 
   znear = mjm.vis.map.znear * mjm.stat.extent
 
-  if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
-    ray = None
-  else:
-    ray = wp.zeros(int(total), dtype=wp.vec3)
+  ray = wp.zeros(int(total), dtype=wp.vec3)
 
-    offset = 0
-    for idx, cam_id in enumerate(active_cam_indices):
-      img_w = cam_res_np[idx][0]
-      img_h = cam_res_np[idx][1]
-      wp.launch(
-        kernel=_build_rays,
-        dim=(img_w, img_h),
-        inputs=[
-          offset,
-          img_w,
-          img_h,
-          m.cam_projection.numpy()[cam_id].item(),
-          m.cam_fovy.numpy()[0, cam_id].item(),
-          wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
-          wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
-          znear,
-        ],
-        outputs=[ray],
-      )
-      offset += img_w * img_h
+  # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
+  cam_projection = np.zeros(mjm.ncam, dtype=int)
+  if BLEEDING_EDGE_MUJOCO:
+    cam_projection = mjm.cam_projection
+
+  offset = 0
+  for idx, cam_id in enumerate(active_cam_indices):
+    img_w = cam_res_np[idx][0]
+    img_h = cam_res_np[idx][1]
+    wp.launch(
+      kernel=_build_rays,
+      dim=(img_w, img_h),
+      inputs=[
+        offset,
+        img_w,
+        img_h,
+        int(cam_projection[cam_id]),
+        float(mjm.cam_fovy[cam_id]),
+        wp.vec2(mjm.cam_sensorsize[cam_id]),
+        wp.vec4(mjm.cam_intrinsic[cam_id]),
+        znear,
+      ],
+      outputs=[ray],
+    )
+    offset += img_w * img_h
 
   bvh_ngeom = len(geom_enabled_idx)
 
@@ -2306,6 +2387,7 @@ def create_render_context(
     use_textures=use_textures,
     use_shadows=use_shadows,
     background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
+    use_precomputed_rays=use_precomputed_rays,
     bvh_ngeom=bvh_ngeom,
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_registry=mesh_registry,
@@ -2336,14 +2418,14 @@ def create_render_context(
     flex_render_smooth=flex_render_smooth,
     bvh=None,
     bvh_id=None,
-    lower=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
-    upper=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
-    group=wp.zeros(d.nworld * bvh_ngeom, dtype=int),
-    group_root=wp.zeros(d.nworld, dtype=int),
+    lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
+    upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
+    group=wp.zeros(nworld * bvh_ngeom, dtype=int),
+    group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
-    rgb_data=wp.zeros((d.nworld, ri), dtype=wp.uint32),
+    rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),
     rgb_adr=wp.array(rgb_adr, dtype=int),
-    depth_data=wp.zeros((d.nworld, di), dtype=wp.float32),
+    depth_data=wp.zeros((nworld, di), dtype=wp.float32),
     depth_adr=wp.array(depth_adr, dtype=int),
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
@@ -2351,6 +2433,6 @@ def create_render_context(
     total_rays=int(total),
   )
 
-  bvh.build_scene_bvh(m, d, rc)
+  bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
   return rc

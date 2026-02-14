@@ -52,7 +52,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(normal_np, 0, "normal")
 
     # test that bvh accelerated produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -80,7 +80,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -123,7 +123,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -149,7 +149,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -217,7 +217,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -243,7 +243,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -291,7 +291,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist-tetrahedron")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -352,7 +352,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(geomid_np, mj_geomid[0], "geomid")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -380,7 +380,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -422,7 +422,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(dist_np, -1, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, flg_static=False, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -447,7 +447,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(normal_np, 0, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, bodyexclude=0, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]
@@ -477,7 +477,7 @@ class RayTest(absltest.TestCase):
     _assert_eq(normal_np, 0, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, m, d)
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     wp.synchronize()
     bvh_geomid_np = geomid.numpy()[0, 0]

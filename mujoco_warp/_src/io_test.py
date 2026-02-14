@@ -438,6 +438,28 @@ class IOTest(parameterized.TestCase):
     box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate
     self.assertGreater(box_z, 0.4, msg=f"Box fell through ground plane (z={box_z}, should be > 0.4)")
 
+  def test_make_data_nccdmax_exceeds_nconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    with self.assertRaises(ValueError, msg="nccdmax.*nconmax"):
+      mjwarp.make_data(mjm, nconmax=16, nccdmax=17)
+
+  def test_make_data_naccdmax_exceeds_naconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    with self.assertRaises(ValueError, msg="naccdmax.*naconmax"):
+      mjwarp.make_data(mjm, nconmax=16, naconmax=16, naccdmax=17)
+
+  def test_put_data_nccdmax_exceeds_nconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    mjd = mujoco.MjData(mjm)
+    with self.assertRaises(ValueError, msg="nccdmax.*nconmax"):
+      mjwarp.put_data(mjm, mjd, nconmax=16, nccdmax=17)
+
+  def test_put_data_naccdmax_exceeds_naconmax(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    mjd = mujoco.MjData(mjm)
+    with self.assertRaises(ValueError, msg="naccdmax.*naconmax"):
+      mjwarp.put_data(mjm, mjd, nconmax=16, naconmax=16, naccdmax=17)
+
   def test_noslip_solver(self):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
@@ -741,6 +763,57 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy(), mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
+
+  @parameterized.named_parameters(
+    dict(testcase_name="dense", jacobian="dense"),
+    dict(testcase_name="sparse", jacobian="sparse"),
+  )
+  def test_set_const_meaninertia(self, jacobian):
+    """Test meaninertia computation matches MuJoCo after qpos0/mass changes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <option jacobian="{jacobian}"/>
+      <worldbody>
+        <body name="link1">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint name="j2" type="hinge" axis="0 0 1"/>
+            <geom name="g2" type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    # Test initial value matches
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia initial")
+
+    # Modify qpos0 and verify meaninertia updates
+    new_qpos0 = np.array([0.5, 0.3])
+    mjm.qpos0[:] = new_qpos0
+    qpos0_np = m.qpos0.numpy()
+    qpos0_np[0, :] = new_qpos0
+    wp.copy(m.qpos0, wp.array(qpos0_np, dtype=m.qpos0.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia after qpos0 change")
+
+    # Modify body mass and verify meaninertia updates
+    new_mass = 3.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.stat.meaninertia.numpy()[0], mjm.stat.meaninertia, "meaninertia after mass change")
 
   def test_set_const_freejoint(self):
     """Test set_const with freejoint (6 DOFs with special averaging)."""
@@ -1174,7 +1247,7 @@ class IOTest(parameterized.TestCase):
   def test_bvh_creation(self, nworld):
     """Test that the BVH is created correctly for single world and multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
-    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(64, 64), use_textures=False)
+    rc = mjwarp.create_render_context(mjm, nworld=nworld, cam_res=(64, 64), use_textures=False)
 
     self.assertIsNotNone(rc)
     self.assertEqual(rc.nrender, mjm.ncam)
@@ -1201,13 +1274,13 @@ class IOTest(parameterized.TestCase):
 
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 24
-    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), render_rgb=True, render_depth=True)
+    rc = mjwarp.create_render_context(mjm, cam_res=(width, height), render_rgb=True, render_depth=True)
 
     expected_total = 3 * width * height
 
     self.assertEqual(rc.nrender, 3, "nrender")
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
-    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
+    self.assertEqual(rc.rgb_data.shape, (1, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (1, expected_total), "depth_data")
 
     rgb_adr = rc.rgb_adr.numpy()
     depth_adr = rc.depth_adr.numpy()
@@ -1225,14 +1298,14 @@ class IOTest(parameterized.TestCase):
     """Tests render context with different resolutions and output."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     cam_res = [(64, 64), (32, 32), (16, 16)]
-    rc = mjwarp.create_render_context(mjm, m, d, cam_res=cam_res, render_rgb=True, render_depth=True)
+    rc = mjwarp.create_render_context(mjm, cam_res=cam_res, render_rgb=True, render_depth=True)
 
     self.assertEqual(rc.nrender, 3, "nrender")
     _assert_eq(rc.cam_res.numpy(), cam_res, "cam_res")
 
     expected_total = 64 * 64 + 32 * 32 + 16 * 16
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
-    self.assertEqual(rc.depth_data.shape, (d.nworld, expected_total), "depth_data")
+    self.assertEqual(rc.rgb_data.shape, (1, expected_total), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (1, expected_total), "depth_data")
 
     rgb_adr = rc.rgb_adr.numpy()
     depth_adr = rc.depth_adr.numpy()
@@ -1240,7 +1313,7 @@ class IOTest(parameterized.TestCase):
     _assert_eq(depth_adr, [0, 64 * 64, 64 * 64 + 32 * 32], "depth_adr")
 
     # Test that results are same when reading from mjmodel fields loaded through xml
-    rc_xml = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True)
+    rc_xml = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True)
     self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
     self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
     _assert_eq(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
@@ -1257,12 +1330,12 @@ class IOTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
 
-    rc = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height), cam_active=[True, False, True])
+    rc = mjwarp.create_render_context(mjm, cam_res=(width, height), cam_active=[True, False, True])
 
     self.assertEqual(rc.nrender, 2, "nrender")
 
     expected_total = 2 * width * height
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, expected_total), "rgb_data")
+    self.assertEqual(rc.rgb_data.shape, (1, expected_total), "rgb_data")
 
   def test_rgb_only_and_depth_only(self):
     """Test that disabling rgb or depth correctly reduces the shape and invalidates the address."""
@@ -1279,22 +1352,20 @@ class IOTest(parameterized.TestCase):
 
     rc = mjwarp.create_render_context(
       mjm,
-      m,
-      d,
       cam_res=(width, height),
       render_rgb=[True, False, True],
       render_depth=[False, True, True],
     )
 
-    self.assertEqual(rc.rgb_data.shape, (d.nworld, 2 * pixels), "rgb_data")
-    self.assertEqual(rc.depth_data.shape, (d.nworld, 2 * pixels), "depth_data")
+    self.assertEqual(rc.rgb_data.shape, (1, 2 * pixels), "rgb_data")
+    self.assertEqual(rc.depth_data.shape, (1, 2 * pixels), "depth_data")
     _assert_eq(rc.rgb_adr.numpy(), [0, -1, pixels], "rgb_adr")
     _assert_eq(rc.depth_adr.numpy(), [-1, 0, pixels], "depth_adr")
     _assert_eq(rc.render_rgb.numpy(), [True, False, True], "render_rgb")
     _assert_eq(rc.render_depth.numpy(), [False, True, True], "render_depth")
 
     # Test that results are same when reading from mjmodel fields loaded through xml
-    rc_xml = mjwarp.create_render_context(mjm, m, d, cam_res=(width, height))
+    rc_xml = mjwarp.create_render_context(mjm, cam_res=(width, height))
     self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
     self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
     _assert_eq(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
@@ -1309,7 +1380,7 @@ class IOTest(parameterized.TestCase):
       return
 
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
-    rc = mjwarp.create_render_context(mjm, m, d, render_rgb=True, render_depth=True, use_textures=True)
+    rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
 
