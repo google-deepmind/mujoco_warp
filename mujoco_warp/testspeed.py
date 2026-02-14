@@ -422,8 +422,8 @@ def _main(argv: Sequence[str]):
 
       if _INFO.value:
         # Collider types grouped by category
-        from mujoco_warp._src import collision_convex
-        from mujoco_warp._src import collision_primitive
+        from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
+        from mujoco_warp._src.types import CollisionType
 
         def trid_to_types(trid):
           """Convert triangular index back to geom type pair."""
@@ -434,10 +434,10 @@ def _main(argv: Sequence[str]):
           j = trid - i * (2 * n - i - 1) // 2
           return mjw.GeomType(i), mjw.GeomType(j)
 
-        # Categorize collision pairs
-        primitive_pairs = set(collision_primitive._PRIMITIVE_COLLISIONS.keys())
-        hfield_ccd_pairs = set(collision_convex._HFIELD_COLLISION_PAIRS)
-        ccd_pairs = set(collision_convex._NON_HFIELD_COLLISION_PAIRS)
+        # Categorize collision pairs using MJ_COLLISION_TABLE
+        primitive_pairs = {k for k, v in MJ_COLLISION_TABLE.items() if v == CollisionType.PRIMITIVE}
+        hfield_ccd_pairs = {k for k, v in MJ_COLLISION_TABLE.items() if v == CollisionType.CONVEX and mjw.GeomType.HFIELD in k}
+        ccd_pairs = {k for k, v in MJ_COLLISION_TABLE.items() if v == CollisionType.CONVEX and mjw.GeomType.HFIELD not in k}
 
         primitive_colliders, hfield_ccd_colliders, ccd_colliders = [], [], []
         for trid, count in enumerate(m.geom_pair_type_count):
