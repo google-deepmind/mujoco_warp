@@ -450,30 +450,30 @@ class IOTest(parameterized.TestCase):
 
   def test_make_data_naccdmax_default(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
-    data = mjwarp.make_data(mjm, naconmax=16384, njmax=1024, naccdmax=None)
-    self.assertEqual(data.naccdmax, 16384, "naccdmax=None should default to naconmax when not explicitly set")
+    data = mjwarp.make_data(mjm, naconmax=5, njmax=3, naccdmax=None)
+    self.assertEqual(data.naccdmax, 5, "naccdmax=None should default to naconmax when not explicitly set")
 
   def test_put_data_naccdmax_default(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
     mjd = mujoco.MjData(mjm)
-    data = mjwarp.put_data(mjm, mjd, naconmax=16384, njmax=1024, naccdmax=None)
-    self.assertEqual(data.naccdmax, 16384, "naccdmax=None should default to naconmax when not explicitly set")
+    data = mjwarp.put_data(mjm, mjd, naconmax=5, njmax=3, naccdmax=None)
+    self.assertEqual(data.naccdmax, 5, "naccdmax=None should default to naconmax when not explicitly set")
 
   def test_make_data_naccdmax_from_nccdmax(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
-    data = mjwarp.make_data(mjm, nconmax=100, nccdmax=10)
-    self.assertEqual(data.naccdmax, 10, "naccdmax from  nccdmax")
+    data = mjwarp.make_data(mjm, nconmax=5, nccdmax=3)
+    self.assertEqual(data.naccdmax, 3, "naccdmax from  nccdmax")
 
   def test_put_data_naccdmax_from_nccdmax(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
     mjd = mujoco.MjData(mjm)
-    data = mjwarp.put_data(mjm, mjd, nconmax=100, nccdmax=10)
-    self.assertEqual(data.naccdmax, 10, "naccdmax from nccdmax")
+    data = mjwarp.put_data(mjm, mjd, nconmax=5, nccdmax=3)
+    self.assertEqual(data.naccdmax, 3, "naccdmax from nccdmax")
 
   def test_make_data_naccdmax_from_nccdmax_nworld(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
-    data = mjwarp.make_data(mjm, nworld=2, nconmax=100, nccdmax=10)
-    self.assertEqual(data.naccdmax, 20, "naccdmax from nccdmax and nworld")
+    data = mjwarp.make_data(mjm, nworld=3, nconmax=7, nccdmax=5)
+    self.assertEqual(data.naccdmax, 15, "naccdmax from nccdmax and nworld")
 
   def test_put_data_nccdmax_exceeds_nconmax(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
