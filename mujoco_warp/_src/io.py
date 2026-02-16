@@ -801,7 +801,7 @@ def put_data(
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
-    naccdmax: Maximum number of CCD contacts. Defaults to naconmax unless.
+    naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
   Returns:
     The data object containing the current state and output arrays (device).
