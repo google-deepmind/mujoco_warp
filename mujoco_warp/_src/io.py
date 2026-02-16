@@ -644,7 +644,7 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
-def _resolve_size(na: int | None, n: int | None, nworld: int, default: int) -> int:
+def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int) -> int:
   if na is not None:
     return na
   if n is not None:
@@ -695,11 +695,11 @@ def make_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  naconmax = _resolve_size(naconmax, nconmax, nworld, 0)
+  naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
   if naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
-  naccdmax = _resolve_size(naccdmax, nccdmax, nworld, naconmax)
+  naccdmax = _resolve_batch_size(naccdmax, nccdmax, nworld, naconmax)
   if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
@@ -830,7 +830,7 @@ def put_data(
     raise ValueError(f"nworld must be >= 1")
 
   naconmax_is_explicit = naconmax is not None
-  naconmax = _resolve_size(naconmax, nconmax, nworld, 0)
+  naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
   if naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
@@ -839,7 +839,7 @@ def put_data(
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
-  naccdmax = _resolve_size(naccdmax, nccdmax, nworld, naconmax)
+  naccdmax = _resolve_batch_size(naccdmax, nccdmax, nworld, naconmax)
 
   if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
