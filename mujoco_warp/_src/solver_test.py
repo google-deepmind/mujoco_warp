@@ -487,6 +487,77 @@ class SolverTest(parameterized.TestCase):
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
+  @parameterized.parameters(
+    (mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (mujoco.mjtJacobian.mjJAC_SPARSE, True),
+  )
+  def test_hessian_incremental(self, jacobian, ls_parallel):
+    """Tests that hessian_incremental=True produces identical results to False."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.jacobian": jacobian,
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.iterations": 5,
+        "opt.ls_iterations": 10,
+        "opt.ls_parallel": ls_parallel,
+      },
+    )
+
+    m.opt.hessian_incremental = False
+    mjw.solve(m, d)
+
+    # Solve with hessian_incremental
+    _, _, m_inc, d_inc = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.jacobian": jacobian,
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.iterations": 5,
+        "opt.ls_iterations": 10,
+        "opt.ls_parallel": ls_parallel,
+      },
+    )
+    m_inc.opt.hessian_incremental = True
+    mjw.solve(m_inc, d_inc)
+
+    solver_niter = d_inc.solver_niter.numpy()[0]
+    self.assertEqual(solver_niter, d.solver_niter.numpy()[0])
+    self.assertGreater(solver_niter, 1)
+    _assert_eq(d_inc.qacc.numpy(), d.qacc.numpy(), "qacc_incremental")
+    _assert_eq(d_inc.qfrc_constraint.numpy(), d.qfrc_constraint.numpy(), "qfrc_constraint_incremental")
+    nefc = d.nefc.numpy()[0]
+    _assert_eq(d_inc.efc.force.numpy()[0, :nefc], d.efc.force.numpy()[0, :nefc], "efc_force_incremental")
+
+  def test_hessian_incremental_state_change(self):
+    """Tests that hchange is correctly detected when constraint states change."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.iterations": 5,
+        "opt.ls_iterations": 10,
+        "opt.hessian_incremental": True,
+      },
+    )
+
+    d.qacc.zero_()
+
+    ctx = solver.create_solver_context(m, d)
+
+    # hchange should start as 1 (forcing first Hessian computation)
+    self.assertEqual(ctx.hchange.numpy()[0], 1)
+
+    # After solving, hchange should be 0 (reuse hessian)
+    solver._solve(m, d, ctx)
+    self.assertEqual(ctx.hchange.numpy()[0], 0)
+
   def test_frictionloss(self):
     """Tests solver with frictionloss."""
     for keyframe in range(3):
