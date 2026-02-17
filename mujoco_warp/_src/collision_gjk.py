@@ -18,7 +18,7 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.collision_primitive import Geom
+from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat63

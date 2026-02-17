@@ -1757,21 +1757,6 @@ class Data:
 
 
 @dataclasses.dataclass
-class CollisionContext:
-  """Collision driver intermediate arrays.
-
-  Attributes:
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
-  """
-
-  collision_pair: wp.array
-  collision_pairid: wp.array
-  collision_worldid: wp.array
-
-
-@dataclasses.dataclass
 class RenderContext:
   """Context for rendering.
 

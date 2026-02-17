@@ -17,12 +17,12 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.collision_primitive import contact_params
-from mujoco_warp._src.collision_primitive import geom_collision_pair
-from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.collision_core import CollisionContext
+from mujoco_warp._src.collision_core import contact_params
+from mujoco_warp._src.collision_core import geom_collision_pair
+from mujoco_warp._src.collision_core import write_contact
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.ray import ray_mesh
-from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
