@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
+from mujoco_warp._src import history
 from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
@@ -250,6 +251,9 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     inputs=[m.opt.timestep, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, qvel_in, 1.0],
     outputs=[d.qpos],
   )
+
+  # advance history buffers before time advance
+  history.insert_ctrl_history(m, d)
 
   wp.launch(
     _next_time,
@@ -841,6 +845,13 @@ def fwd_actuation(m: Model, d: Data):
     d.qfrc_actuator.zero_()
     return
 
+  # read delayed ctrl (or direct copy if no delay)
+  if m.nhistory > 0:
+    ctrl = wp.empty((d.nworld, m.nu), dtype=float)
+    history.read_ctrl_delayed(m, d, ctrl)
+  else:
+    ctrl = d.ctrl
+
   wp.launch(
     _actuator_force,
     dim=(d.nworld, m.nu),
@@ -865,7 +876,7 @@ def fwd_actuation(m: Model, d: Data):
       m.actuator_acc0,
       m.actuator_lengthrange,
       d.act,
-      d.ctrl,
+      ctrl,
       d.actuator_length,
       d.actuator_velocity,
       m.opt.disableflags & DisableBit.CLAMPCTRL,

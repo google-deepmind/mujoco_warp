@@ -46,6 +46,10 @@ from mujoco_warp._src.forward import implicit as implicit
 from mujoco_warp._src.forward import rungekutta4 as rungekutta4
 from mujoco_warp._src.forward import step1 as step1
 from mujoco_warp._src.forward import step2 as step2
+from mujoco_warp._src.history import init_ctrl_history as init_ctrl_history
+from mujoco_warp._src.history import init_sensor_history as init_sensor_history
+from mujoco_warp._src.history import read_ctrl as read_ctrl
+from mujoco_warp._src.history import read_sensor as read_sensor
 from mujoco_warp._src.inverse import inverse as inverse
 from mujoco_warp._src.io import create_render_context as create_render_context
 from mujoco_warp._src.io import get_data_into as get_data_into

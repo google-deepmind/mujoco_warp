@@ -17,6 +17,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import history
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
 from mujoco_warp._src import smooth
@@ -901,6 +902,10 @@ def sensor_pos(m: Model, d: Data):
     ],
   )
 
+  # apply sensor delay/interval for position sensors
+  history.apply_sensor_delay(m, d, m.sensor_pos_adr)
+  history.apply_sensor_delay(m, d, m.sensor_limitpos_adr)
+
   if m.callback.sensor:
     m.callback.sensor(m, d, Stage.POS)
 
@@ -1442,6 +1447,10 @@ def sensor_vel(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  # apply sensor delay/interval for velocity sensors
+  history.apply_sensor_delay(m, d, m.sensor_vel_adr)
+  history.apply_sensor_delay(m, d, m.sensor_limitvel_adr)
 
   if m.callback.sensor:
     m.callback.sensor(m, d, Stage.VEL)
@@ -2692,6 +2701,10 @@ def sensor_acc(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  # apply sensor delay/interval for acceleration sensors
+  history.apply_sensor_delay(m, d, m.sensor_acc_adr)
+  history.apply_sensor_delay(m, d, m.sensor_limitfrc_adr)
 
   if m.callback.sensor:
     m.callback.sensor(m, d, Stage.ACC)
