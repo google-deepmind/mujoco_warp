@@ -17,6 +17,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import delay
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
 from mujoco_warp._src import smooth
@@ -898,6 +899,10 @@ def sensor_pos(m: Model, d: Data):
     ],
   )
 
+  # apply sensor delay/interval for position sensors
+  delay.apply_sensor_delay(m, d, m.sensor_pos_adr)
+  delay.apply_sensor_delay(m, d, m.sensor_limitpos_adr)
+
 
 @wp.func
 def _velocimeter(
@@ -1436,6 +1441,10 @@ def sensor_vel(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  # apply sensor delay/interval for velocity sensors
+  delay.apply_sensor_delay(m, d, m.sensor_vel_adr)
+  delay.apply_sensor_delay(m, d, m.sensor_limitvel_adr)
 
 
 @wp.func
@@ -2615,6 +2624,10 @@ def sensor_acc(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  # apply sensor delay/interval for acceleration sensors
+  delay.apply_sensor_delay(m, d, m.sensor_acc_adr)
+  delay.apply_sensor_delay(m, d, m.sensor_limitfrc_adr)
 
 
 @wp.kernel
