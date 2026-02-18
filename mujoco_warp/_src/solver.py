@@ -1718,11 +1718,12 @@ def solve_init_jaref(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
     jaref = float(0.0)
     if wp.static(opt_is_sparse):
       rownnz = efc_J_rownnz_in[worldid, efcid]
+      rowadr = efc_J_rowadr_in[worldid, efcid]
       for i in range(rownnz):
-        rowadr = efc_J_rowadr_in[worldid, efcid]
         sparseid = rowadr + i
         colind = efc_J_colind_in[worldid, 0, sparseid]
         jaref += efc_J_in[worldid, 0, sparseid] * qacc_in[worldid, colind]
+      ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
     else:
       if wp.static(dofs_per_thread >= nv):
         for i in range(wp.static(min(dofs_per_thread, nv))):
@@ -1739,8 +1740,6 @@ def solve_init_jaref(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
           wp.atomic_add(ctx_Jaref_out, worldid, efcid, jaref - efc_aref_in[worldid, efcid])
         else:
           wp.atomic_add(ctx_Jaref_out, worldid, efcid, jaref)
-
-    ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
 
   return kernel
 
@@ -2692,7 +2691,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         if ctx_done_in[worldid]:
           return
 
-        if efcid >= nefc_in[0]:
+        if efcid >= nefc_in[worldid]:
           return
 
         efc_D = efc_D_in[worldid, efcid]
