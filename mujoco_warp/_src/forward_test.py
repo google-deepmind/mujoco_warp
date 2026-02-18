@@ -531,6 +531,95 @@ class ForwardTest(parameterized.TestCase):
     mjw.step(m, d)
     self.assertGreater(d.time.numpy()[0], 0.0)
 
+  def test_control_callback(self):
+    """Tests control_callback is called during forward and skipped when actuation disabled."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom size="1"/>
+          <joint name="hinge"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="hinge"/>
+      </actuator>
+    </mujoco>
+    """
+
+    @wp.kernel
+    def _set_ctrl(ctrl_out: wp.array2d(dtype=float)):
+      worldid = wp.tid()
+      ctrl_out[worldid, 0] = 2.0
+
+    def my_control(m, d):
+      wp.launch(_set_ctrl, dim=(d.nworld,), outputs=[d.ctrl])
+
+    _, _, m, d = test_data.fixture(xml=xml)
+    m.callback.control = my_control
+    mjw.forward(m, d)
+    self.assertEqual(d.ctrl.numpy()[0, 0], 2.0)
+
+    # reset ctrl, disable actuation, verify callback not called
+    d.ctrl.zero_()
+    m.opt.disableflags |= DisableBit.ACTUATION
+    mjw.forward(m, d)
+    self.assertEqual(d.ctrl.numpy()[0, 0], 0.0)
+
+  @parameterized.product(
+    frequency=(1.5, 0.5),
+    timestamp=(0.2, 0.4),
+  )
+  def test_act_dyn_callback(self, frequency, timestamp):
+    """Tests act_dyn_callback with a harmonic oscillator."""
+
+    @wp.kernel
+    def _oscillator_act_dot(
+      act_in: wp.array2d(dtype=float),
+      ctrl_in: wp.array2d(dtype=float),
+      act_dot_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+      frequency = wp.static(2.0 * wp.pi) * ctrl_in[worldid, 0]
+      act_dot_out[worldid, 0] = -act_in[worldid, 1] * frequency
+      act_dot_out[worldid, 1] = act_in[worldid, 0] * frequency
+
+    def oscillator(m, d):
+      wp.launch(
+        _oscillator_act_dot,
+        dim=(d.nworld,),
+        inputs=[d.act, d.ctrl],
+        outputs=[d.act_dot],
+      )
+
+    xml = f"""
+    <mujoco>
+      <option timestep="1e-4"/>
+      <worldbody>
+        <body>
+          <geom size="1"/>
+          <joint name="hinge"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="hinge" dyntype="user" actdim="2"/>
+      </actuator>
+      <keyframe>
+        <key time="{timestamp}" ctrl="{frequency}" act="{np.cos(2 * np.pi * frequency * timestamp)} {np.sin(2 * np.pi * frequency * timestamp)}"/>
+      </keyframe>
+    </mujoco>
+    """
+
+    mjm, _, m, d = test_data.fixture(xml=xml, keyframe=0)
+    m.callback.act_dyn = oscillator
+
+    mjw.step(m, d)
+
+    # verify act after one step matches analytical solution at t + dt
+    t_next = timestamp + mjm.opt.timestep
+    np.testing.assert_allclose(d.act.numpy()[0, 0], np.cos(2 * np.pi * frequency * t_next), atol=1e-3)
+    np.testing.assert_allclose(d.act.numpy()[0, 1], np.sin(2 * np.pi * frequency * t_next), atol=1e-3)
+
 
 if __name__ == "__main__":
   wp.init()

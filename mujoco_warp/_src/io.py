@@ -216,6 +216,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   m.opt = opt
   m.stat = stat
+  m.callback = types.Callback()
 
   m.nv_pad = _get_padded_sizes(
     mjm.nv, 0, is_sparse(mjm), types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE

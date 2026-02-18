@@ -788,3 +788,6 @@ def collision(m: Model, d: Data):
     sap_broadphase(m, d, ctx)
 
   _narrowphase(m, d, ctx)
+
+  if m.callback.contactfilter:
+    m.callback.contactfilter(m, d)

@@ -58,9 +58,9 @@ The following features are implemented:
 | ------------------ | --------------------------------------------------------------------------------------------------------|
 | Dynamics           | Forward, Inverse                                                                                        |
 | Transmission       | All                                                                                                     |
-| Actuator Dynamics  | All except `USER`                                                                                       |
-| Actuator Gain      | All except `USER`                                                                                       |
-| Actuator Bias      | All except `USER`                                                                                       |
+| Actuator Dynamics  | All                                                                                                     |
+| Actuator Gain      | All                                                                                                     |
+| Actuator Bias      | All                                                                                                     |
 | Geom               | All                                                                                                     |
 | Constraint         | All                                                                                                     |
 | Equality           | All                                                                                                     |
@@ -70,7 +70,7 @@ The following features are implemented:
 | Solver             | All except `PGS`, `noslip`                                                                              |
 | Fluid Model        | All                                                                                                     |
 | Tendon Wrap        | All                                                                                                     |
-| Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, and `GEOMFROMTO` with `BOX`-`BOX`; `PLUGIN`, `USER`                |
+| Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, and `GEOMFROMTO` with `BOX`-`BOX`; `PLUGIN`                        |
 | Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
 | Mass matrix format | Sparse and Dense                                                                                        |
 | Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |

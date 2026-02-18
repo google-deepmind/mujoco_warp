@@ -846,3 +846,6 @@ def passive(m: Model, d: Data):
       d.qfrc_passive,
     ],
   )
+
+  if m.callback.passive:
+    m.callback.passive(m, d)

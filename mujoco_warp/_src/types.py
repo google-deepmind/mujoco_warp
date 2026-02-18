@@ -14,6 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
+from typing import Callable
 
 import mujoco
 import warp as wp
@@ -134,6 +135,20 @@ class ProjectionType(enum.IntEnum):
     ORTHOGRAPHIC = 1
 
 
+class Stage(enum.IntEnum):
+  """Computation stage.
+
+  Attributes:
+    POS: position-dependent
+    VEL: velocity-dependent
+    ACC: acceleration/force-dependent
+  """
+
+  POS = mujoco.mjtStage.mjSTAGE_POS
+  VEL = mujoco.mjtStage.mjSTAGE_VEL
+  ACC = mujoco.mjtStage.mjSTAGE_ACC
+
+
 class DataType(enum.IntFlag):
   """Sensor data types.
 
@@ -232,6 +247,7 @@ class DynType(enum.IntEnum):
     FILTER: linear filter: da/dt = (u-a) / tau
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
     MUSCLE: piece-wise linear filter with two time constants
+    USER: user-defined dynamics via act_dyn_callback
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -239,7 +255,7 @@ class DynType(enum.IntEnum):
   FILTER = mujoco.mjtDyn.mjDYN_FILTER
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtDyn.mjDYN_USER
 
 
 class GainType(enum.IntEnum):
@@ -249,12 +265,13 @@ class GainType(enum.IntEnum):
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
+    USER: user-defined gain via act_gain_callback
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtGain.mjGAIN_USER
 
 
 class BiasType(enum.IntEnum):
@@ -264,12 +281,13 @@ class BiasType(enum.IntEnum):
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
+    USER: user-defined bias via act_bias_callback
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtBias.mjBIAS_USER
 
 
 class JointType(enum.IntEnum):
@@ -462,6 +480,7 @@ class SensorType(enum.IntEnum):
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
     TACTILE: tactile sensor
+    USER: user-defined sensor via sensor_callback
   """
 
   MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
@@ -511,6 +530,7 @@ class SensorType(enum.IntEnum):
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
   TACTILE = mujoco.mjtSensor.mjSENS_TACTILE
+  USER = mujoco.mjtSensor.mjSENS_USER
 
 
 class ObjType(enum.IntEnum):
@@ -766,6 +786,29 @@ class TileSet:
 
   adr: wp.array(dtype=int)
   size: int
+
+
+@dataclasses.dataclass
+class Callback:
+  """Callbacks for custom physics behavior.
+
+  Attributes:
+    passive: custom passive forces, writes to ``Data.qfrc_passive``
+    control: custom control laws, writes to ``Data.ctrl``
+    act_dyn: custom actuator dynamics, writes to ``Data.act_dot``
+    act_gain: custom actuator gains, writes to ``Data.actuator_force``
+    act_bias: custom actuator biases, writes to ``Data.actuator_force``
+    sensor: custom sensors, writes to ``Data.sensordata``
+    contactfilter: custom contact filtering, writes to ``Data.contact``
+  """
+
+  passive: Callable | None = None
+  control: Callable | None = None
+  act_dyn: Callable | None = None
+  act_gain: Callable | None = None
+  act_bias: Callable | None = None
+  sensor: Callable | None = None
+  contactfilter: Callable | None = None
 
 
 @dataclasses.dataclass
@@ -1049,6 +1092,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
@@ -1411,6 +1455,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  callback: Callback
   nbranch: int
   nv_pad: int
   nacttrnbody: int
