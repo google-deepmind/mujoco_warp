@@ -58,7 +58,7 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
 
   # convert sparse to dense if necessary
-  if m.opt.is_sparse:
+  if m.is_sparse:
     efc_J = np.zeros((nefc, nv))
     mujoco.mju_sparse2dense(
       efc_J,

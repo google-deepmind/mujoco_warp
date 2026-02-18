@@ -46,8 +46,8 @@ To make sure everything is working:
 uv run pytest -n 8
 ```
 
-If you plan to write Warp kernels for MJWarp, please use the `kernel_analyzer` vscode plugin located in `contrib/kernel_analyzer`.
-Please see the `README.md` there for details on how to install it and use it.  The same kernel analyzer will be run on any PR
+If you plan to write Warp kernels for MJWarp, please use the `kernel_analyzer` vscode plugin located in [`contrib/kernel_analyzer`](https://github.com/google-deepmind/mujoco_warp/tree/main/contrib/kernel_analyzer).
+Please see the [README](https://github.com/google-deepmind/mujoco_warp/blob/main/contrib/kernel_analyzer/README.md) there for details on how to install it and use it.  The same kernel analyzer will be run on any PR
 you open, so it's important to fix any issues it reports.
 
 # Compatibility
@@ -88,6 +88,18 @@ mjwarp-viewer benchmarks/humanoid/humanoid.xml
 
 This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
 
+# Batch Rendering
+
+MJWarp includes a **high-throughput** GPU batch renderer designed for simultaneous rendering of cameras across many parallel simulation worlds. The renderer uses ray-tracing to render MuJoCo primitives using Warp's BVH API.
+
+Key capabilities:
+- Mesh rendering
+- Texture support
+- Heightfield rendering
+- Flex deformable rendering
+- Heterogeneous multi-camera support (different resolutions/FOV/intrinsics for each camera)
+- Lighting and shadow support
+
 # Benchmarking
 
 Benchmark as follows:
@@ -103,3 +115,9 @@ mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
+
+Benchmark rendering with:
+
+```bash
+mjwarp-testspeed benchmarks/primitives.xml --function=render
+```

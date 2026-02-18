@@ -138,8 +138,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
 
 @wp.func
-def _rescale(nv: int, stat_meaninertia: float, value: float) -> float:
-  return value / (stat_meaninertia * float(nv))
+def _rescale(nv: int, meaninertia: float, value: float) -> float:
+  return value / (meaninertia * float(nv))
 
 
 @wp.func
@@ -476,7 +476,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost
 
   # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   if threads_per_efc > 1:
-    d.efc.quad_gauss.zero_()
+    ctx.quad_gauss.zero_()
 
   wp.launch(
     linesearch_prepare_gauss(m.nv, dofs_per_thread),
@@ -618,10 +618,10 @@ def _compute_efc_eval_pt_elliptic(
         return wp.vec3(0.0)
       return _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, alpha)
 
-    # Limit/other constraint
+    # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
     if x < 0.0:
-      return _eval_pt(ctx_quad, alpha)
+      return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D_in[efcid], alpha)
     return wp.vec3(0.0)
 
   # Friction constraint - load D and frictionloss only here
@@ -632,8 +632,8 @@ def _compute_efc_eval_pt_elliptic(
     rf = math.safe_div(f, efc_D)
     return _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D)
 
-  # Equality constraint
-  return _eval_pt(ctx_quad, alpha)
+  # Equality constraint — direct eval (no quad read)
+  return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D_in[efcid], alpha)
 
 
 @wp.func
@@ -692,9 +692,9 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
         return wp.vec3(0.0)
       return _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)
 
-    # Limit/other constraint
+    # Limit/other constraint — direct eval (no quad read)
     if ctx_Jaref < 0.0:
-      return wp.vec3(ctx_quad[0], ctx_quad[1], 2.0 * ctx_quad[2])
+      return _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D_in[efcid])
     return wp.vec3(0.0)
 
   # Friction constraint - load D and frictionloss only here
@@ -704,8 +704,8 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
     rf = math.safe_div(f, efc_D)
     return _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)
 
-  # Equality constraint
-  return wp.vec3(ctx_quad[0], ctx_quad[1], 2.0 * ctx_quad[2])
+  # Equality constraint — direct eval (no quad read)
+  return _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D_in[efcid])
 
 
 @wp.func
@@ -795,8 +795,9 @@ def _compute_efc_eval_pt_3alphas_elliptic(
         _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, mid_alpha),
       )
 
-    # Limit/other constraints: active only when x < 0
-    pt_lo, pt_hi, pt_mid = _eval_pt_3alphas(ctx_quad, lo_alpha, hi_alpha, mid_alpha)
+    # Limit/other constraints — direct eval (no quad read)
+    efc_D = efc_D_in[efcid]
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
     r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
     r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
     r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
@@ -809,8 +810,8 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     rf = math.safe_div(f, efc_D)
     return _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
 
-  # Equality constraint: always active
-  return _eval_pt_3alphas(ctx_quad, lo_alpha, hi_alpha, mid_alpha)
+  # Equality constraint — direct eval (no quad read)
+  return _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D_in[efcid], lo_alpha, hi_alpha, mid_alpha)
 
 
 # kernel_analyzer: on
@@ -909,7 +910,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     opt_tolerance: wp.array(dtype=float),
     opt_ls_tolerance: wp.array(dtype=float),
     opt_impratio_invsqrt: wp.array(dtype=float),
-    stat_meaninertia: float,
+    stat_meaninertia: wp.array(dtype=float),
     # Data in:
     ne_in: wp.array(dtype=int),
     nf_in: wp.array(dtype=int),
@@ -961,30 +962,28 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
 
       _syncthreads()  # ensure all jv values are written before reading
 
-    # quad coefficients (elliptic only, requires barrier sync)
+    # quad coefficients (elliptic contacts only, requires barrier sync)
+    # Non-elliptic constraints (equality, friction, limit) now use direct
+    # evaluation from (Jaref, jv, efc_D), avoiding quad reads entirely.
     if wp.static(IS_ELLIPTIC):
       # elliptic-only config values
       impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
       nacon = nacon_in[0]
 
       for efcid in range(tid, nefc, wp.block_dim()):
-        Jaref = ctx_Jaref_in[worldid, efcid]
-        jv = ctx_jv_in[worldid, efcid]
-        efc_D = efc_D_in[worldid, efcid]
-
-        # scalar quadratic coefficients
-        jvD = jv * efc_D
-        quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jvD * Jaref, 0.5 * jv * jvD)
-
-        # non-contact constraints: write quad immediately
-        if efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
-          ctx_quad_out[worldid, efcid] = quad
-        else:
-          # CONTACT_ELLIPTIC: only primary row of active contacts writes
+        # Only compute and store quad for CONTACT_ELLIPTIC (needs inter-row data)
+        if efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
           conid = efc_id_in[worldid, efcid]
           if conid < nacon:
             efcid0 = contact_efc_address_in[conid, 0]
             if efcid == efcid0:
+              Jaref = ctx_Jaref_in[worldid, efcid]
+              jv = ctx_jv_in[worldid, efcid]
+              efc_D = efc_D_in[worldid, efcid]
+
+              jvD = jv * efc_D
+              quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jvD * Jaref, 0.5 * jv * jvD)
+
               # primary row: accumulate secondary rows and write quad, quad1, quad2
               dim = contact_dim_in[conid]
               friction = contact_friction_in[conid]
@@ -1030,8 +1029,9 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
     ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
     snorm = wp.sqrt(ctx_search_dot_in[worldid])
-    scale = stat_meaninertia * wp.float(nv)
-    gtol = tolerance * ls_tolerance * snorm * scale
+    meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
+    scale = meaninertia * wp.float(nv)
+    gtol = wp.max(tolerance * ls_tolerance * snorm * scale, 1e-6)
 
     # p0 via parallel reduction
     local_p0 = wp.vec3(0.0)
@@ -1041,6 +1041,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         efc_id = 0
         contact_friction = types.vec5(0.0)
         efc_addr0 = int(0)
+        ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
 
@@ -1050,6 +1051,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
+          ctx_quad = ctx_quad_in[worldid, efcid]
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
@@ -1063,7 +1065,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_frictionloss_in[worldid],
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
-          ctx_quad_in[worldid, efcid],
+          ctx_quad,
           contact_friction,
           efc_addr0,
           quad1,
@@ -1114,6 +1116,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         efc_id = 0
         contact_friction = types.vec5(0.0)
         efc_addr0 = int(0)
+        ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
 
@@ -1123,6 +1126,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_addr0 = contact_efc_address_in[efc_id, 0]
           efc_addr1 = contact_efc_address_in[efc_id, 1]
           efc_addr2 = contact_efc_address_in[efc_id, 2]
+          ctx_quad = ctx_quad_in[worldid, efcid]
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
@@ -1137,7 +1141,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
           efc_frictionloss_in[worldid],
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
-          ctx_quad_in[worldid, efcid],
+          ctx_quad,
           contact_friction,
           efc_addr0,
           quad1,
@@ -1160,8 +1164,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
     lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
-    # check for initial convergence: if |derivative| < gtol, accept Newton step immediately
-    initial_converged = wp.abs(lo_in[1]) < gtol
+    # accept Newton step if derivative is small and cost improved
+    initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < p0[0]
 
     # main iterative loop - skip if already converged
     if not initial_converged:
@@ -1189,6 +1193,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
             efc_id = 0
             contact_friction = types.vec5(0.0)
             efc_addr0 = int(0)
+            ctx_quad = wp.vec3(0.0)
             quad1 = wp.vec3(0.0)
             quad2 = wp.vec3(0.0)
 
@@ -1198,10 +1203,10 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
               efc_addr0 = contact_efc_address_in[efc_id, 0]
               efc_addr1 = contact_efc_address_in[efc_id, 1]
               efc_addr2 = contact_efc_address_in[efc_id, 2]
+              ctx_quad = ctx_quad_in[worldid, efcid]
               quad1 = ctx_quad_in[worldid, efc_addr1]
               quad2 = ctx_quad_in[worldid, efc_addr2]
 
-            # compute all 3 alphas at once, sharing constraint type checking
             r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
               efcid,
               lo_next_alpha,
@@ -1215,7 +1220,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
               efc_frictionloss_in[worldid],
               ctx_Jaref_in[worldid, efcid],
               ctx_jv_in[worldid, efcid],
-              ctx_quad_in[worldid, efcid],
+              ctx_quad,
               contact_friction,
               efc_addr0,
               quad1,
@@ -1646,7 +1651,7 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext, cost: wp.arra
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Parallel linesearch always requires jv pre-computed
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
-  fuse_jv = m.nv <= 50 and not m.opt.ls_parallel and not m.opt.is_sparse
+  fuse_jv = m.nv <= 50 and not m.opt.ls_parallel and not m.is_sparse
 
   # jv = J @ search (when not fused into iterative kernel)
   if not fuse_jv:
@@ -1662,7 +1667,7 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext, cost: wp.arra
       )
 
     wp.launch(
-      linesearch_jv_fused(m.opt.is_sparse, m.nv, dofs_per_thread),
+      linesearch_jv_fused(m.is_sparse, m.nv, dofs_per_thread),
       dim=(d.nworld, d.njmax, threads_per_efc),
       inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, ctx.search, ctx.done],
       outputs=[ctx.jv],
@@ -2033,7 +2038,7 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
   )
 
   # qfrc_constraint = efc_J.T @ efc_force
-  if m.opt.is_sparse:
+  if m.is_sparse:
     d.qfrc_constraint.zero_()
     wp.launch(
       update_constraint_init_qfrc_constraint_sparse,
@@ -2665,7 +2670,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    if m.opt.is_sparse:
+    if m.is_sparse:
       # TODO(team): optimize
       @wp.kernel(module="unique", enable_backward=False)
       def _JTDAJ_sparse(
@@ -2772,7 +2777,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
 
       nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
 
-      if m.opt.is_sparse:
+      if m.is_sparse:
         wp.launch(
           update_gradient_JTCJ_sparse,
           dim=(d.naconmax, m.dof_tri_row.size),
@@ -2950,7 +2955,7 @@ def solve_done(
   nv: int,
   opt_tolerance: wp.array(dtype=float),
   opt_iterations: int,
-  stat_meaninertia: float,
+  stat_meaninertia: wp.array(dtype=float),
   # In:
   ctx_grad_dot_in: wp.array(dtype=float),
   ctx_cost_in: wp.array(dtype=float),
@@ -2969,9 +2974,10 @@ def solve_done(
 
   solver_niter_out[worldid] += 1
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+  meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
 
-  improvement = _rescale(nv, stat_meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
-  gradient = _rescale(nv, stat_meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
+  improvement = _rescale(nv, meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
+  gradient = _rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
   done = (improvement < tolerance) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then
@@ -3060,7 +3066,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     ctx.Jaref.zero_()
 
   wp.launch(
-    solve_init_jaref(m.opt.is_sparse, m.nv, dofs_per_thread),
+    solve_init_jaref(m.is_sparse, m.nv, dofs_per_thread),
     dim=(d.nworld, d.njmax, threads_per_efc),
     inputs=[d.nefc, d.qacc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.aref],
     outputs=[ctx.Jaref],

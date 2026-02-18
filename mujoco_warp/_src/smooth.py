@@ -307,33 +307,33 @@ def _flex_edges(
 
   # TODO(team): jacdif
 
-  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi0, worldid)
-  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi0, worldid)
+  jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi0, worldid)
+  jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi0, worldid)
   jacdif = jacp2 - jacp1
   Ji0 = wp.dot(jacdif, edge)
 
-  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi1, worldid)
-  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi1, worldid)
+  jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi1, worldid)
+  jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi1, worldid)
   jacdif = jacp2 - jacp1
   Ji1 = wp.dot(jacdif, edge)
 
-  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi2, worldid)
-  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi2, worldid)
+  jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofi2, worldid)
+  jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofi2, worldid)
   jacdif = jacp2 - jacp1
   Ji2 = wp.dot(jacdif, edge)
 
-  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj0, worldid)
-  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj0, worldid)
+  jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj0, worldid)
+  jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj0, worldid)
   jacdif = jacp2 - jacp1
   Jj0 = wp.dot(jacdif, edge)
 
-  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj1, worldid)
-  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj1, worldid)
+  jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj1, worldid)
+  jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj1, worldid)
   jacdif = jacp2 - jacp1
   Jj1 = wp.dot(jacdif, edge)
 
-  jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj2, worldid)
-  jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj2, worldid)
+  jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos1, b1, dofj2, worldid)
+  jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos2, b2, dofj2, worldid)
   jacdif = jacp2 - jacp1
   Jj2 = wp.dot(jacdif, edge)
 
@@ -877,7 +877,7 @@ def crb(m: Model, d: Data):
     wp.launch(_crb_accumulate, dim=(d.nworld, body_tree.size), inputs=[m.body_parentid, d.crb, body_tree], outputs=[d.crb])
 
   d.qM.zero_()
-  if m.opt.is_sparse:
+  if m.is_sparse:
     wp.launch(
       _qM_sparse,
       dim=(d.nworld, m.nv),
@@ -893,10 +893,10 @@ def crb(m: Model, d: Data):
 @wp.kernel
 def _tendon_armature(
   # Model:
-  opt_is_sparse: bool,
   dof_parentid: wp.array(dtype=int),
   dof_Madr: wp.array(dtype=int),
   tendon_armature: wp.array2d(dtype=float),
+  is_sparse: bool,
   # Data in:
   ten_J_in: wp.array3d(dtype=float),
   # Data out:
@@ -904,7 +904,7 @@ def _tendon_armature(
 ):
   worldid, tenid, dofid = wp.tid()
 
-  if opt_is_sparse:  # opt_is_sparse is not batched
+  if is_sparse:  # is_sparse is not batched
     madr_ij = dof_Madr[dofid]
 
   armature = tendon_armature[worldid, tenid]
@@ -927,7 +927,7 @@ def _tendon_armature(
 
     qMij = armature * ten_Jj * ten_Ji
 
-    if opt_is_sparse:
+    if is_sparse:
       wp.atomic_add(qM_out[worldid, 0], madr_ij, qMij)
       madr_ij += 1
     else:
@@ -944,7 +944,7 @@ def tendon_armature(m: Model, d: Data):
   wp.launch(
     _tendon_armature,
     dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[m.opt.is_sparse, m.dof_parentid, m.dof_Madr, m.tendon_armature, d.ten_J],
+    inputs=[m.dof_parentid, m.dof_Madr, m.tendon_armature, m.is_sparse, d.ten_J],
     outputs=[d.qM],
   )
 
@@ -1052,7 +1052,7 @@ def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
 @event_scope
 def factor_m(m: Model, d: Data):
   """Factorization of inertia-like matrix M, assumed spd."""
-  if m.opt.is_sparse:
+  if m.is_sparse:
     _factor_i_sparse(m, d, d.qM, d.qLD, d.qLDiagInv)
   else:
     _factor_i_dense(m, d, d.qM, d.qLD)
@@ -1632,7 +1632,7 @@ def _tendon_dot(
       # get endpoint Jacobian time derivatives, subtract
       # TODO(team): parallelize?
       for i in range(nv):
-        jac1, _ = support.jac_dot(
+        jac1, _ = support.jac_dot_dof(
           body_parentid,
           body_rootid,
           jnt_type,
@@ -1648,7 +1648,7 @@ def _tendon_dot(
           i,
           worldid,
         )
-        jac2, _ = support.jac_dot(
+        jac2, _ = support.jac_dot_dof(
           body_parentid,
           body_rootid,
           jnt_type,
@@ -1670,7 +1670,7 @@ def _tendon_dot(
         Jdot = wp.dot(jacdif, dpnt)
 
         # get endpoint Jacobians, subtract
-        jac1, _ = support.jac(
+        jac1, _ = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -1681,7 +1681,7 @@ def _tendon_dot(
           i,
           worldid,
         )
-        jac2, _ = support.jac(
+        jac2, _ = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -2032,14 +2032,14 @@ def _transmission(
     for i in range(nv):
       # get Jacobians of axis(jacA) and vec(jac)
       # mj_jacPointAxis
-      jacp, jacr = support.jac(
+      jacp, jacr = support.jac_dof(
         body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_idslider, site_bodyid[idslider], i, worldid
       )
       jacS = jacp
       jacA = wp.cross(jacr, axis)
 
       # mj_jacSite
-      jac, _ = support.jac(
+      jac, _ = support.jac_dof(
         body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_id, site_bodyid[id], i, worldid
       )
       jac -= jacS
@@ -2092,7 +2092,7 @@ def _transmission(
       # moment: global Jacobian projected on wrench
       # TODO(team): parallelize
       for i in range(nv):
-        jacp, jacr = support.jac(
+        jacp, jacr = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -2164,12 +2164,12 @@ def _transmission(
 
       # TODO(team): parallelize
       for i in range(nv):
-        jacp, jacr = support.jac(
+        jacp, jacr = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos, site_bodyid[siteid], i, worldid
         )
 
         # jacref: global Jacobian of reference site
-        jacpref, jacrref = support.jac(
+        jacpref, jacrref = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, ref_xpos, site_bodyid[refid], i, worldid
         )
 
@@ -2223,6 +2223,7 @@ def transmission(m: Model, d: Data):
   Updates the actuator length and moments for all actuators in the model, including joint
   and tendon transmissions.
   """
+  d.actuator_moment.zero_()
   wp.launch(
     _transmission,
     dim=[d.nworld, m.nu],
@@ -2330,7 +2331,7 @@ def transmission(m: Model, d: Data):
 
         if contact_dim == 1 or wp.static(m.opt.cone == ConeType.ELLIPTIC):
           efcid0 = contact_efc_address[0]
-          if wp.static(m.opt.is_sparse):
+          if wp.static(m.is_sparse):
             rownnz = efc_J_rownnz_in[worldid, efcid0]
             if dofid < rownnz:
               rowadr = efc_J_rowadr_in[worldid, efcid0]
@@ -2348,7 +2349,7 @@ def transmission(m: Model, d: Data):
 
           for j in range(2 * npyramid):
             efcid = contact_efc_address[j]
-            if wp.static(m.opt.is_sparse):
+            if wp.static(m.is_sparse):
               rownnz = efc_J_rownnz_in[worldid, efcid]
               if dofid < rownnz:
                 rowadr = efc_J_rowadr_in[worldid, efcid]
@@ -2368,31 +2369,31 @@ def transmission(m: Model, d: Data):
         normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
 
         # get Jacobian difference
-        if wp.static(m.opt.is_sparse):
+        if wp.static(m.is_sparse):
           efcid0 = contact_efc_address_in[conid][0]
           if dofid >= efc_J_rownnz_in[worldid, efcid0]:
             return
           sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
           colind = efc_J_colind_in[worldid, 0, sparseid]
 
-          jacp1, _ = support.jac(
+          jacp1, _ = support.jac_dof(
             body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, colind, worldid
           )
-          jacp2, _ = support.jac(
+          jacp2, _ = support.jac_dof(
             body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b2, colind, worldid
           )
         else:
-          jacp1, _ = support.jac(
+          jacp1, _ = support.jac_dof(
             body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, dofid, worldid
           )
-          jacp2, _ = support.jac(
+          jacp2, _ = support.jac_dof(
             body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b2, dofid, worldid
           )
 
         jacdif = jacp2 - jacp1
 
         # project Jacobian along the normal of the contact frame
-        if wp.static(m.opt.is_sparse):
+        if wp.static(m.is_sparse):
           wp.atomic_add(actuator_moment_out[worldid, actid], colind, wp.dot(normal, jacdif))
         else:
           wp.atomic_add(actuator_moment_out[worldid, actid], dofid, wp.dot(normal, jacdif))
@@ -2554,7 +2555,7 @@ def solve_LD(
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.opt.is_sparse:
+  if m.is_sparse:
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _solve_LD_dense(m, d, L, x, y)
@@ -2637,7 +2638,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.opt.is_sparse:
+  if m.is_sparse:
     _factor_i_sparse(m, d, M, L, D)
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
@@ -2878,8 +2879,8 @@ def _spatial_site_tendon(
   if body0 != body1:
     # TODO(team): parallelize
     for i in range(nv):
-      jacp1, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt0, body0, i, worldid)
-      jacp2, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt1, body1, i, worldid)
+      jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt0, body0, i, worldid)
+      jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt1, body1, i, worldid)
 
       J = wp.dot(jacp2 - jacp1, vec)
       if J:
@@ -2981,11 +2982,11 @@ def _spatial_geom_tendon(
       J = float(0.0)
       # site-geom
       if dif_body_sitegeom:
-        jacp_site0, _ = support.jac(
+        jacp_site0, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt0, bodyid_site0, i, worldid
         )
 
-        jacp_geom0, _ = support.jac(
+        jacp_geom0, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, geom_pnt0, bodyid_geom, i, worldid
         )
 
@@ -2993,11 +2994,11 @@ def _spatial_geom_tendon(
 
       # geom-site
       if dif_body_geomsite:
-        jacp_geom1, _ = support.jac(
+        jacp_geom1, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, geom_pnt1, bodyid_geom, i, worldid
         )
 
-        jacp_site1, _ = support.jac(
+        jacp_site1, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt1, bodyid_site1, i, worldid
         )
 
@@ -3020,10 +3021,10 @@ def _spatial_geom_tendon(
     if bodyid_site0 != bodyid_site1:
       # TODO(team): parallelize
       for i in range(nv):
-        jacp1, _ = support.jac(
+        jacp1, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt0, bodyid_site0, i, worldid
         )
-        jacp2, _ = support.jac(
+        jacp2, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt1, bodyid_site1, i, worldid
         )
 

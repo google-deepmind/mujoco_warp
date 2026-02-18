@@ -46,6 +46,22 @@ jobs:
         run: |
           uvx ruff check --output-format=github .
 
+  pre-commit:
+    name: Pre-commit checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.27"
+          python-version: "3.12"
+      - name: Set up Python
+        run: uv python install
+      - name: Run pre-commit
+        run: |
+          uvx --with absl-py pre-commit run -a
+
   test-locked-deps:
     name: Test with locked uv dependencies
     # Tests against exact versions pinned in uv.lock

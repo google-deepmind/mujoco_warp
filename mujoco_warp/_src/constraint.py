@@ -197,7 +197,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # compute Jacobian difference (opposite of contact: 0 - 1)
     Jqvel = wp.vec3f(0.0, 0.0, 0.0)
 
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       while body1 > 0 and body_dofnum[body1] == 0:
         body1 = body_parentid[body1]
       while body2 > 0 and body_dofnum[body2] == 0:
@@ -227,7 +227,7 @@ def make_constraint(m: types.Model, d: types.Data):
         if da2 == da:
           da2 = dof_parentid[da2]
 
-        jacp1, _ = support.jac(
+        jacp1, _ = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -238,7 +238,7 @@ def make_constraint(m: types.Model, d: types.Data):
           da,
           worldid,
         )
-        jacp2, _ = support.jac(
+        jacp2, _ = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -273,7 +273,7 @@ def make_constraint(m: types.Model, d: types.Data):
     else:
       # TODO(team): dof tree traversal
       for dofid in range(wp.static(m.nv)):
-        jacp1, _ = support.jac(
+        jacp1, _ = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -284,7 +284,7 @@ def make_constraint(m: types.Model, d: types.Data):
           dofid,
           worldid,
         )
-        jacp2, _ = support.jac(
+        jacp2, _ = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -392,7 +392,7 @@ def make_constraint(m: types.Model, d: types.Data):
     qpos0_id = worldid % qpos0.shape[0]
     dof_invweight0_id = worldid % dof_invweight0.shape[0]
 
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       if jntid_2 > -1:
         rownnz = 2
       else:
@@ -421,7 +421,7 @@ def make_constraint(m: types.Model, d: types.Data):
       Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
       invweight = dof_invweight0[dof_invweight0_id, dofadr1] + dof_invweight0[dof_invweight0_id, dofadr2]
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         sparseid = rowadr + 1
         efc_J_colind_out[worldid, 0, sparseid] = dofadr2
         efc_J_out[worldid, 0, sparseid] = -deriv_2
@@ -535,7 +535,7 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvel = float(0.0)
 
     # TODO(team): sparse tendon jacobian
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       rowadr = efcid * wp.static(m.nv)
       efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -545,7 +545,7 @@ def make_constraint(m: types.Model, d: types.Data):
         J = jac1[i] + jac2[i] * -deriv
       else:
         J = jac1[i]
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_colind_out[worldid, 0, rowadr + i] = i
         efc_J_out[worldid, 0, rowadr + i] = J
       else:
@@ -621,7 +621,7 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvel = float(0.0)
 
     # TODO(team): sparse flexedge_J
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       rowadr = efcid * wp.static(m.nv)
       efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -629,7 +629,7 @@ def make_constraint(m: types.Model, d: types.Data):
     for i in range(wp.static(m.nv)):
       # TODO(team): sparse flexedge_J
       J = flexedge_J_in[worldid, edgeid, i]
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_colind_out[worldid, 0, rowadr + i] = i
         efc_J_out[worldid, 0, rowadr + i] = J
       else:
@@ -751,7 +751,7 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvelp = wp.vec3f(0.0, 0.0, 0.0)
     Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       while body1 > 0 and body_dofnum[body1] == 0:
         body1 = body_parentid[body1]
       while body2 > 0 and body_dofnum[body2] == 0:
@@ -790,7 +790,7 @@ def make_constraint(m: types.Model, d: types.Data):
         if da2 == da:
           da2 = dof_parentid[da]
 
-        jacp1, jacr1 = support.jac(
+        jacp1, jacr1 = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -801,7 +801,7 @@ def make_constraint(m: types.Model, d: types.Data):
           da,
           worldid,
         )
-        jacp2, jacr2 = support.jac(
+        jacp2, jacr2 = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -853,7 +853,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_J_rownnz_out[worldid, efcid5] = rownnz
     else:
       for dofid in range(wp.static(m.nv)):
-        jacp1, jacr1 = support.jac(
+        jacp1, jacr1 = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -864,7 +864,7 @@ def make_constraint(m: types.Model, d: types.Data):
           dofid,
           worldid,
         )
-        jacp2, jacr2 = support.jac(
+        jacp2, jacr2 = support.jac_dof(
           body_parentid,
           body_rootid,
           dof_bodyid,
@@ -998,7 +998,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if efcid >= wp.static(d.njmax):
       return
 
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       efc_J_rownnz_out[worldid, efcid] = 1
       rowadr = efcid * wp.static(m.nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -1082,7 +1082,7 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvel = float(0.0)
 
     # TODO(team): sparse tendon jacobian
-    if wp.static(m.opt.is_sparse):
+    if wp.static(m.is_sparse):
       rowadr = efcid * wp.static(m.nv)
       efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -1090,7 +1090,7 @@ def make_constraint(m: types.Model, d: types.Data):
     for i in range(wp.static(m.nv)):
       # TODO(team): sparse ten_J
       J = ten_J_in[worldid, tenid, i]
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_colind_out[worldid, 0, rowadr + i] = i
         efc_J_out[worldid, 0, rowadr + i] = J
       else:
@@ -1179,7 +1179,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       J = float(dist_min < dist_max) * 2.0 - 1.0
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 1
         rowadr = efcid * wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -1279,7 +1279,7 @@ def make_constraint(m: types.Model, d: types.Data):
       dof1 = dofadr + 1
       dof2 = dofadr + 2
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 3
         rowadr = efcid * wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -1391,7 +1391,7 @@ def make_constraint(m: types.Model, d: types.Data):
       scl = float(dist_min < dist_max) * 2.0 - 1.0
 
       # TODO(team): sparse tendon jacobian
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         rowadr = efcid * wp.static(m.nv)
         efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -1401,7 +1401,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       adr = tendon_adr[tenid]
       if wrap_type[adr] == types.WrapType.JOINT:
-        if not wp.static(m.opt.is_sparse):
+        if not wp.static(m.is_sparse):
           for i in range(wp.static(m.nv)):
             efc_J_out[worldid, efcid, i] = 0.0
 
@@ -1410,7 +1410,7 @@ def make_constraint(m: types.Model, d: types.Data):
           dofadr = jnt_dofadr[wrap_objid[adr + i]]
           J = scl * ten_J_in[worldid, tenid, dofadr]
 
-          if wp.static(m.opt.is_sparse):
+          if wp.static(m.is_sparse):
             efc_J_out[worldid, 0, rowadr + dofadr] = J
           else:
             efc_J_out[worldid, efcid, dofadr] = J
@@ -1420,7 +1420,7 @@ def make_constraint(m: types.Model, d: types.Data):
         for i in range(wp.static(m.nv)):
           J = scl * ten_J_in[worldid, tenid, i]
 
-          if wp.static(m.opt.is_sparse):
+          if wp.static(m.is_sparse):
             efc_J_out[worldid, 0, rowadr + i] = J
           else:
             efc_J_out[worldid, efcid, i] = J
@@ -1552,7 +1552,7 @@ def make_constraint(m: types.Model, d: types.Data):
         invweight = invweight + fri0 * fri0 * invweight
         invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         rowadr = efcid * wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
@@ -1566,13 +1566,13 @@ def make_constraint(m: types.Model, d: types.Data):
       da2 = body_dofadr[body2] + body_dofnum[body2] - 1
       da = wp.max(da1, da2)
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         rownnz = int(0)
 
       for dofid in range(wp.static(m.nv - 1), -1, -1):
         if dofid == da:
           # TODO(team): contact_jacobian
-          jac1p, jac1r = support.jac(
+          jac1p, jac1r = support.jac_dof(
             body_parentid,
             body_rootid,
             dof_bodyid,
@@ -1583,7 +1583,7 @@ def make_constraint(m: types.Model, d: types.Data):
             dofid,
             worldid,
           )
-          jac2p, jac2r = support.jac(
+          jac2p, jac2r = support.jac_dof(
             body_parentid,
             body_rootid,
             dof_bodyid,
@@ -1616,7 +1616,7 @@ def make_constraint(m: types.Model, d: types.Data):
             else:
               J -= Ji * frii
 
-          if wp.static(m.opt.is_sparse):
+          if wp.static(m.is_sparse):
             sparseid = rowadr + rownnz
             efc_J_colind_out[worldid, 0, sparseid] = dofid
             efc_J_out[worldid, 0, sparseid] = J
@@ -1632,10 +1632,10 @@ def make_constraint(m: types.Model, d: types.Data):
             da2 = dof_parentid[da2]
           da = wp.max(da1, da2)
         else:
-          if not wp.static(m.opt.is_sparse):
+          if not wp.static(m.is_sparse):
             efc_J_out[worldid, efcid, dofid] = 0.0
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_rownnz_out[worldid, efcid] = rownnz
 
       if condim == 1:
@@ -1751,7 +1751,7 @@ def make_constraint(m: types.Model, d: types.Data):
       con_pos = pos_in[conid]
       frame = frame_in[conid]
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         rowadr = efcid * wp.static(m.nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
@@ -1765,13 +1765,13 @@ def make_constraint(m: types.Model, d: types.Data):
       da2 = body_dofadr[body2] + body_dofnum[body2] - 1
       da = wp.max(da1, da2)
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         rownnz = int(0)
 
       for dofid in range(wp.static(m.nv - 1), -1, -1):
         if dofid == da:
           # TODO(team): contact jacobian
-          jac1p, jac1r = support.jac(
+          jac1p, jac1r = support.jac_dof(
             body_parentid,
             body_rootid,
             dof_bodyid,
@@ -1782,7 +1782,7 @@ def make_constraint(m: types.Model, d: types.Data):
             dofid,
             worldid,
           )
-          jac2p, jac2r = support.jac(
+          jac2p, jac2r = support.jac_dof(
             body_parentid,
             body_rootid,
             dof_bodyid,
@@ -1803,7 +1803,7 @@ def make_constraint(m: types.Model, d: types.Data):
               jac_dif = jac2r[xyz] - jac1r[xyz]
               J += frame[dimid - 3, xyz] * jac_dif
 
-          if wp.static(m.opt.is_sparse):
+          if wp.static(m.is_sparse):
             sparseid = rowadr + rownnz
             efc_J_colind_out[worldid, 0, sparseid] = dofid
             efc_J_out[worldid, 0, sparseid] = J
@@ -1819,10 +1819,10 @@ def make_constraint(m: types.Model, d: types.Data):
             da2 = dof_parentid[da2]
           da = wp.max(da1, da2)
         else:
-          if not wp.static(m.opt.is_sparse):
+          if not wp.static(m.is_sparse):
             efc_J_out[worldid, efcid, dofid] = 0.0
 
-      if wp.static(m.opt.is_sparse):
+      if wp.static(m.is_sparse):
         efc_J_rownnz_out[worldid, efcid] = rownnz
 
       body_invweight0_id = worldid % body_invweight0.shape[0]
