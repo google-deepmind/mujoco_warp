@@ -16,6 +16,7 @@
 """Tests for io functions."""
 
 import dataclasses
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -25,6 +26,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
+from mujoco_warp._src import warp_util
 
 
 def _assert_eq(a, b, name):
@@ -1349,6 +1351,15 @@ class IOTest(parameterized.TestCase):
     rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
+
+  def test_check_toolkit_driver_warns(self):
+    """Tests that check_toolkit_driver warns."""
+    mock_device = mock.MagicMock()
+    mock_device.is_cuda = True
+    with mock.patch("warp.get_device", return_value=mock_device):
+      with mock.patch("warp.is_conditional_graph_supported", return_value=False):
+        with self.assertWarns(UserWarning):
+          warp_util.check_toolkit_driver()
 
 
 if __name__ == "__main__":
