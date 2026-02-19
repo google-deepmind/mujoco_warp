@@ -44,79 +44,78 @@ def _zero_constraint_counts(
   nefc_out[worldid] = 0
 
 
-@event_scope
-def make_constraint(m: types.Model, d: types.Data):
-  """Creates constraint jacobians and other supporting data."""
+@wp.func
+def _efc_row(
+  # In:
+  worldid: int,
+  timestep: float,
+  efcid: int,
+  pos_aref: float,
+  pos_imp: float,
+  invweight: float,
+  solref: wp.vec2,
+  solimp: vec5,
+  margin: float,
+  vel: float,
+  frictionloss: float,
+  type: int,
+  id: int,
+  refsafe: bool,
+  # Out:
+  type_out: wp.array2d(dtype=int),
+  id_out: wp.array2d(dtype=int),
+  pos_out: wp.array2d(dtype=float),
+  margin_out: wp.array2d(dtype=float),
+  D_out: wp.array2d(dtype=float),
+  vel_out: wp.array2d(dtype=float),
+  aref_out: wp.array2d(dtype=float),
+  frictionloss_out: wp.array2d(dtype=float),
+):
+  # calculate kbi
+  timeconst = solref[0]
+  dampratio = solref[1]
+  dmin = solimp[0]
+  dmax = solimp[1]
+  width = solimp[2]
+  mid = solimp[3]
+  power = solimp[4]
 
-  @wp.func
-  def efc_row(
-    # In:
-    worldid: int,
-    timestep: float,
-    efcid: int,
-    pos_aref: float,
-    pos_imp: float,
-    invweight: float,
-    solref: wp.vec2,
-    solimp: vec5,
-    margin: float,
-    vel: float,
-    frictionloss: float,
-    type: int,
-    id: int,
-    # Out:
-    type_out: wp.array2d(dtype=int),
-    id_out: wp.array2d(dtype=int),
-    pos_out: wp.array2d(dtype=float),
-    margin_out: wp.array2d(dtype=float),
-    D_out: wp.array2d(dtype=float),
-    vel_out: wp.array2d(dtype=float),
-    aref_out: wp.array2d(dtype=float),
-    frictionloss_out: wp.array2d(dtype=float),
-  ):
-    # calculate kbi
-    timeconst = solref[0]
-    dampratio = solref[1]
-    dmin = solimp[0]
-    dmax = solimp[1]
-    width = solimp[2]
-    mid = solimp[3]
-    power = solimp[4]
+  if not refsafe:
+    timeconst = wp.max(timeconst, 2.0 * timestep)
 
-    if wp.static(not (m.opt.disableflags & types.DisableBit.REFSAFE)):
-      timeconst = wp.max(timeconst, 2.0 * timestep)
+  dmin = wp.clamp(dmin, types.MJ_MINIMP, types.MJ_MAXIMP)
+  dmax = wp.clamp(dmax, types.MJ_MINIMP, types.MJ_MAXIMP)
+  width = wp.max(types.MJ_MINVAL, width)
+  mid = wp.clamp(mid, types.MJ_MINIMP, types.MJ_MAXIMP)
+  power = wp.max(1.0, power)
 
-    dmin = wp.clamp(dmin, types.MJ_MINIMP, types.MJ_MAXIMP)
-    dmax = wp.clamp(dmax, types.MJ_MINIMP, types.MJ_MAXIMP)
-    width = wp.max(types.MJ_MINVAL, width)
-    mid = wp.clamp(mid, types.MJ_MINIMP, types.MJ_MAXIMP)
-    power = wp.max(1.0, power)
+  # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
+  dmax_sq = dmax * dmax
+  k = 1.0 / (dmax_sq * timeconst * timeconst * dampratio * dampratio)
+  b = 2.0 / (dmax * timeconst)
+  k = wp.where(solref[0] <= 0, -solref[0] / dmax_sq, k)
+  b = wp.where(solref[1] <= 0, -solref[1] / dmax, b)
 
-    # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
-    dmax_sq = dmax * dmax
-    k = 1.0 / (dmax_sq * timeconst * timeconst * dampratio * dampratio)
-    b = 2.0 / (dmax * timeconst)
-    k = wp.where(solref[0] <= 0, -solref[0] / dmax_sq, k)
-    b = wp.where(solref[1] <= 0, -solref[1] / dmax, b)
+  imp_x = wp.abs(pos_imp) / width
+  imp_a = (1.0 / wp.pow(mid, power - 1.0)) * wp.pow(imp_x, power)
+  imp_b = 1.0 - (1.0 / wp.pow(1.0 - mid, power - 1.0)) * wp.pow(1.0 - imp_x, power)
+  imp_y = wp.where(imp_x < mid, imp_a, imp_b)
+  imp = dmin + imp_y * (dmax - dmin)
+  imp = wp.clamp(imp, dmin, dmax)
+  imp = wp.where(imp_x > 1.0, dmax, imp)
 
-    imp_x = wp.abs(pos_imp) / width
-    imp_a = (1.0 / wp.pow(mid, power - 1.0)) * wp.pow(imp_x, power)
-    imp_b = 1.0 - (1.0 / wp.pow(1.0 - mid, power - 1.0)) * wp.pow(1.0 - imp_x, power)
-    imp_y = wp.where(imp_x < mid, imp_a, imp_b)
-    imp = dmin + imp_y * (dmax - dmin)
-    imp = wp.clamp(imp, dmin, dmax)
-    imp = wp.where(imp_x > 1.0, dmax, imp)
+  # set outputs
+  D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)
+  vel_out[worldid, efcid] = vel
+  aref_out[worldid, efcid] = -k * imp * pos_aref - b * vel
+  pos_out[worldid, efcid] = pos_aref + margin
+  margin_out[worldid, efcid] = margin
+  frictionloss_out[worldid, efcid] = frictionloss
+  type_out[worldid, efcid] = type
+  id_out[worldid, efcid] = id
 
-    # set outputs
-    D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)
-    vel_out[worldid, efcid] = vel
-    aref_out[worldid, efcid] = -k * imp * pos_aref - b * vel
-    pos_out[worldid, efcid] = pos_aref + margin
-    margin_out[worldid, efcid] = margin
-    frictionloss_out[worldid, efcid] = frictionloss
-    type_out[worldid, efcid] = type
-    id_out[worldid, efcid] = id
 
+def _equality_connect(is_sparse, nv, njmax, nsite, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def equality_connect(
     # Model:
@@ -170,7 +169,7 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(ne_out, worldid, 3)
     efcid = wp.atomic_add(nefc_out, worldid, 3)
 
-    if efcid >= wp.static(d.njmax - 3):
+    if efcid >= wp.static(njmax - 3):
       return
 
     data = eq_data[worldid % eq_data.shape[0], eqid]
@@ -180,7 +179,7 @@ def make_constraint(m: types.Model, d: types.Data):
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
 
-    if wp.static(m.nsite) and eq_objtype[eqid] == types.ObjType.SITE:
+    if wp.static(nsite) and eq_objtype[eqid] == types.ObjType.SITE:
       body1 = site_bodyid[obj1id]
       body2 = site_bodyid[obj2id]
       pos1 = site_xpos_in[worldid, obj1id]
@@ -197,7 +196,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # compute Jacobian difference (opposite of contact: 0 - 1)
     Jqvel = wp.vec3f(0.0, 0.0, 0.0)
 
-    if wp.static(m.is_sparse):
+    if wp.static(is_sparse):
       while body1 > 0 and body_dofnum[body1] == 0:
         body1 = body_parentid[body1]
       while body2 > 0 and body_dofnum[body2] == 0:
@@ -210,9 +209,9 @@ def make_constraint(m: types.Model, d: types.Data):
       efcid1 = efcid + 1
       efcid2 = efcid + 2
 
-      rowadr0 = efcid0 * wp.static(m.nv)
-      rowadr1 = efcid1 * wp.static(m.nv)
-      rowadr2 = efcid2 * wp.static(m.nv)
+      rowadr0 = efcid0 * wp.static(nv)
+      rowadr1 = efcid1 * wp.static(nv)
+      rowadr2 = efcid2 * wp.static(nv)
 
       efc_J_rowadr_out[worldid, efcid0] = rowadr0
       efc_J_rowadr_out[worldid, efcid1] = rowadr1
@@ -272,7 +271,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_J_rownnz_out[worldid, efcid2] = rownnz
     else:
       # TODO(team): dof tree traversal
-      for dofid in range(wp.static(m.nv)):
+      for dofid in range(wp.static(nv)):
         jacp1, _ = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -314,7 +313,7 @@ def make_constraint(m: types.Model, d: types.Data):
     for i in range(3):
       efcidi = efcid + i
 
-      efc_row(
+      _efc_row(
         worldid,
         timestep,
         efcidi,
@@ -328,6 +327,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         ConstraintType.EQUALITY,
         eqid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -338,6 +338,10 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return equality_connect
+
+
+def _equality_joint(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def equality_joint(
     # Model:
@@ -381,7 +385,7 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-    if efcid >= wp.static(d.njmax):
+    if efcid >= wp.static(njmax):
       return
 
     jntid_1 = eq_obj1id[eqid]
@@ -392,18 +396,18 @@ def make_constraint(m: types.Model, d: types.Data):
     qpos0_id = worldid % qpos0.shape[0]
     dof_invweight0_id = worldid % dof_invweight0.shape[0]
 
-    if wp.static(m.is_sparse):
+    if wp.static(is_sparse):
       if jntid_2 > -1:
         rownnz = 2
       else:
         rownnz = 1
       efc_J_rownnz_out[worldid, efcid] = rownnz
-      rowadr = efcid * wp.static(m.nv)
+      rowadr = efcid * wp.static(nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofadr1
       efc_J_out[worldid, 0, rowadr] = 1.0
     else:
-      for i in range(wp.static(m.nv)):
+      for i in range(wp.static(nv)):
         efc_J_out[worldid, efcid, i] = 0.0
       efc_J_out[worldid, efcid, dofadr1] = 1.0
 
@@ -421,7 +425,7 @@ def make_constraint(m: types.Model, d: types.Data):
       Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
       invweight = dof_invweight0[dof_invweight0_id, dofadr1] + dof_invweight0[dof_invweight0_id, dofadr2]
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         sparseid = rowadr + 1
         efc_J_colind_out[worldid, 0, sparseid] = dofadr2
         efc_J_out[worldid, 0, sparseid] = -deriv_2
@@ -434,7 +438,7 @@ def make_constraint(m: types.Model, d: types.Data):
       invweight = dof_invweight0[dof_invweight0_id, dofadr1]
 
     # Update constraint parameters
-    efc_row(
+    _efc_row(
       worldid,
       opt_timestep[worldid % opt_timestep.shape[0]],
       efcid,
@@ -448,6 +452,7 @@ def make_constraint(m: types.Model, d: types.Data):
       0.0,
       ConstraintType.EQUALITY,
       eqid,
+      wp.static(refsafe),
       efc_type_out,
       efc_id_out,
       efc_pos_out,
@@ -458,6 +463,10 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
+  return equality_joint
+
+
+def _equality_tendon(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def equality_tendon(
     # Model:
@@ -500,7 +509,7 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-    if efcid >= wp.static(d.njmax):
+    if efcid >= wp.static(njmax):
       return
 
     obj1id = eq_obj1id[eqid]
@@ -535,24 +544,24 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvel = float(0.0)
 
     # TODO(team): sparse tendon jacobian
-    if wp.static(m.is_sparse):
-      rowadr = efcid * wp.static(m.nv)
-      efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
+    if wp.static(is_sparse):
+      rowadr = efcid * wp.static(nv)
+      efc_J_rownnz_out[worldid, efcid] = wp.static(nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
-    for i in range(wp.static(m.nv)):
+    for i in range(wp.static(nv)):
       if deriv != 0.0:
         J = jac1[i] + jac2[i] * -deriv
       else:
         J = jac1[i]
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_colind_out[worldid, 0, rowadr + i] = i
         efc_J_out[worldid, 0, rowadr + i] = J
       else:
         efc_J_out[worldid, efcid, i] = J
       Jqvel += J * qvel_in[worldid, i]
 
-    efc_row(
+    _efc_row(
       worldid,
       opt_timestep[worldid % opt_timestep.shape[0]],
       efcid,
@@ -566,6 +575,7 @@ def make_constraint(m: types.Model, d: types.Data):
       0.0,
       ConstraintType.EQUALITY,
       eqid,
+      wp.static(refsafe),
       efc_type_out,
       efc_id_out,
       efc_pos_out,
@@ -576,6 +586,10 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
+  return equality_tendon
+
+
+def _equality_flex(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def equality_flex(
     # Model:
@@ -611,7 +625,7 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-    if efcid >= wp.static(d.njmax):
+    if efcid >= wp.static(njmax):
       return
 
     pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
@@ -621,22 +635,22 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvel = float(0.0)
 
     # TODO(team): sparse flexedge_J
-    if wp.static(m.is_sparse):
-      rowadr = efcid * wp.static(m.nv)
-      efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
+    if wp.static(is_sparse):
+      rowadr = efcid * wp.static(nv)
+      efc_J_rownnz_out[worldid, efcid] = wp.static(nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
-    for i in range(wp.static(m.nv)):
+    for i in range(wp.static(nv)):
       # TODO(team): sparse flexedge_J
       J = flexedge_J_in[worldid, edgeid, i]
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_colind_out[worldid, 0, rowadr + i] = i
         efc_J_out[worldid, 0, rowadr + i] = J
       else:
         efc_J_out[worldid, efcid, i] = J
       Jqvel += J * qvel_in[worldid, i]
 
-    efc_row(
+    _efc_row(
       worldid,
       opt_timestep[worldid % opt_timestep.shape[0]],
       efcid,
@@ -650,6 +664,7 @@ def make_constraint(m: types.Model, d: types.Data):
       0.0,
       ConstraintType.EQUALITY,
       eqid,
+      wp.static(refsafe),
       efc_type_out,
       efc_id_out,
       efc_pos_out,
@@ -660,6 +675,10 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
+  return equality_flex
+
+
+def _equality_weld(is_sparse, nv, njmax, nsite, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def equality_weld(
     # Model:
@@ -714,10 +733,10 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(ne_out, worldid, 6)
     efcid = wp.atomic_add(nefc_out, worldid, 6)
 
-    if efcid >= wp.static(d.njmax - 6):
+    if efcid >= wp.static(njmax - 6):
       return
 
-    is_site = eq_objtype[eqid] == types.ObjType.SITE and wp.static(m.nsite > 0)
+    is_site = eq_objtype[eqid] == types.ObjType.SITE and wp.static(nsite > 0)
 
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
@@ -751,7 +770,7 @@ def make_constraint(m: types.Model, d: types.Data):
     Jqvelp = wp.vec3f(0.0, 0.0, 0.0)
     Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
-    if wp.static(m.is_sparse):
+    if wp.static(is_sparse):
       while body1 > 0 and body_dofnum[body1] == 0:
         body1 = body_parentid[body1]
       while body2 > 0 and body_dofnum[body2] == 0:
@@ -767,12 +786,12 @@ def make_constraint(m: types.Model, d: types.Data):
       efcid4 = efcid + 4
       efcid5 = efcid + 5
 
-      rowadr0 = efcid0 * wp.static(m.nv)
-      rowadr1 = efcid1 * wp.static(m.nv)
-      rowadr2 = efcid2 * wp.static(m.nv)
-      rowadr3 = efcid3 * wp.static(m.nv)
-      rowadr4 = efcid4 * wp.static(m.nv)
-      rowadr5 = efcid5 * wp.static(m.nv)
+      rowadr0 = efcid0 * wp.static(nv)
+      rowadr1 = efcid1 * wp.static(nv)
+      rowadr2 = efcid2 * wp.static(nv)
+      rowadr3 = efcid3 * wp.static(nv)
+      rowadr4 = efcid4 * wp.static(nv)
+      rowadr5 = efcid5 * wp.static(nv)
 
       efc_J_rowadr_out[worldid, efcid0] = rowadr0
       efc_J_rowadr_out[worldid, efcid1] = rowadr1
@@ -852,7 +871,7 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_J_rownnz_out[worldid, efcid4] = rownnz
       efc_J_rownnz_out[worldid, efcid5] = rownnz
     else:
-      for dofid in range(wp.static(m.nv)):
+      for dofid in range(wp.static(nv)):
         jacp1, jacr1 = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -908,7 +927,7 @@ def make_constraint(m: types.Model, d: types.Data):
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
     for i in range(3):
-      efc_row(
+      _efc_row(
         worldid,
         timestep,
         efcid + i,
@@ -922,6 +941,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         ConstraintType.EQUALITY,
         eqid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -935,7 +955,7 @@ def make_constraint(m: types.Model, d: types.Data):
     invweight_r = body_invweight0[body_invweight0_id, body1][1] + body_invweight0[body_invweight0_id, body2][1]
 
     for i in range(3):
-      efc_row(
+      _efc_row(
         worldid,
         timestep,
         efcid + 3 + i,
@@ -949,6 +969,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         ConstraintType.EQUALITY,
         eqid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -959,6 +980,10 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return equality_weld
+
+
+def _friction_dof(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def friction_dof(
     # Model:
@@ -995,17 +1020,17 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(nf_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-    if efcid >= wp.static(d.njmax):
+    if efcid >= wp.static(njmax):
       return
 
-    if wp.static(m.is_sparse):
+    if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = 1
-      rowadr = efcid * wp.static(m.nv)
+      rowadr = efcid * wp.static(nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofid
       efc_J_out[worldid, 0, rowadr] = 1.0
     else:
-      for i in range(wp.static(m.nv)):
+      for i in range(wp.static(nv)):
         efc_J_out[worldid, efcid, i] = 0.0
       efc_J_out[worldid, efcid, dofid] = 1.0
 
@@ -1014,7 +1039,7 @@ def make_constraint(m: types.Model, d: types.Data):
     dof_invweight0_id = worldid % dof_invweight0.shape[0]
     dof_solref_id = worldid % dof_solref.shape[0]
     dof_solimp_id = worldid % dof_solimp.shape[0]
-    efc_row(
+    _efc_row(
       worldid,
       opt_timestep[worldid % opt_timestep.shape[0]],
       efcid,
@@ -1028,6 +1053,7 @@ def make_constraint(m: types.Model, d: types.Data):
       dof_frictionloss[dof_frictionloss_id, dofid],
       ConstraintType.FRICTION_DOF,
       dofid,
+      wp.static(refsafe),
       efc_type_out,
       efc_id_out,
       efc_pos_out,
@@ -1038,6 +1064,10 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
+  return friction_dof
+
+
+def _friction_tendon(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def friction_tendon(
     # Model:
@@ -1076,21 +1106,21 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.atomic_add(nf_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-    if efcid >= wp.static(d.njmax):
+    if efcid >= wp.static(njmax):
       return
 
     Jqvel = float(0.0)
 
     # TODO(team): sparse tendon jacobian
-    if wp.static(m.is_sparse):
-      rowadr = efcid * wp.static(m.nv)
-      efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
+    if wp.static(is_sparse):
+      rowadr = efcid * wp.static(nv)
+      efc_J_rownnz_out[worldid, efcid] = wp.static(nv)
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
-    for i in range(wp.static(m.nv)):
+    for i in range(wp.static(nv)):
       # TODO(team): sparse ten_J
       J = ten_J_in[worldid, tenid, i]
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_colind_out[worldid, 0, rowadr + i] = i
         efc_J_out[worldid, 0, rowadr + i] = J
       else:
@@ -1101,7 +1131,7 @@ def make_constraint(m: types.Model, d: types.Data):
     tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
     tendon_solref_fri_id = worldid % tendon_solref_fri.shape[0]
     tendon_solimp_fri_id = worldid % tendon_solimp_fri.shape[0]
-    efc_row(
+    _efc_row(
       worldid,
       opt_timestep[worldid % opt_timestep.shape[0]],
       efcid,
@@ -1115,6 +1145,7 @@ def make_constraint(m: types.Model, d: types.Data):
       frictionloss,
       ConstraintType.FRICTION_TENDON,
       tenid,
+      wp.static(refsafe),
       efc_type_out,
       efc_id_out,
       efc_pos_out,
@@ -1125,6 +1156,10 @@ def make_constraint(m: types.Model, d: types.Data):
       efc_frictionloss_out,
     )
 
+  return friction_tendon
+
+
+def _limit_slide_hinge(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def limit_slide_hinge(
     # Model:
@@ -1172,21 +1207,21 @@ def make_constraint(m: types.Model, d: types.Data):
       wp.atomic_add(nl_out, worldid, 1)
       efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-      if efcid >= wp.static(d.njmax):
+      if efcid >= wp.static(njmax):
         return
 
       dofadr = jnt_dofadr[jntid]
 
       J = float(dist_min < dist_max) * 2.0 - 1.0
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 1
-        rowadr = efcid * wp.static(m.nv)
+        rowadr = efcid * wp.static(nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
         efc_J_colind_out[worldid, 0, rowadr] = dofadr
         efc_J_out[worldid, 0, rowadr] = J
       else:
-        for i in range(wp.static(m.nv)):
+        for i in range(wp.static(nv)):
           efc_J_out[worldid, efcid, i] = 0.0
         efc_J_out[worldid, efcid, dofadr] = J
 
@@ -1195,7 +1230,7 @@ def make_constraint(m: types.Model, d: types.Data):
       dof_invweight0_id = worldid % dof_invweight0.shape[0]
       jnt_solref_id = worldid % jnt_solref.shape[0]
       jnt_solimp_id = worldid % jnt_solimp.shape[0]
-      efc_row(
+      _efc_row(
         worldid,
         opt_timestep[worldid % opt_timestep.shape[0]],
         efcid,
@@ -1209,6 +1244,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         ConstraintType.LIMIT_JOINT,
         jntid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -1219,6 +1255,10 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return limit_slide_hinge
+
+
+def _limit_ball(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def limit_ball(
     # Model:
@@ -1271,7 +1311,7 @@ def make_constraint(m: types.Model, d: types.Data):
       wp.atomic_add(nl_out, worldid, 1)
       efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-      if efcid >= wp.static(d.njmax):
+      if efcid >= wp.static(njmax):
         return
 
       dofadr = jnt_dofadr[jntid]
@@ -1279,9 +1319,9 @@ def make_constraint(m: types.Model, d: types.Data):
       dof1 = dofadr + 1
       dof2 = dofadr + 2
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 3
-        rowadr = efcid * wp.static(m.nv)
+        rowadr = efcid * wp.static(nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
         sparseid0 = rowadr + 0
@@ -1296,7 +1336,7 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_J_out[worldid, 0, sparseid1] = -axis[1]
         efc_J_out[worldid, 0, sparseid2] = -axis[2]
       else:
-        for i in range(wp.static(m.nv)):
+        for i in range(wp.static(nv)):
           efc_J_out[worldid, efcid, i] = 0.0
         efc_J_out[worldid, efcid, dof0] = -axis[0]
         efc_J_out[worldid, efcid, dof1] = -axis[1]
@@ -1309,7 +1349,7 @@ def make_constraint(m: types.Model, d: types.Data):
       dof_invweight0_id = worldid % dof_invweight0.shape[0]
       jnt_solref_id = worldid % jnt_solref.shape[0]
       jnt_solimp_id = worldid % jnt_solimp.shape[0]
-      efc_row(
+      _efc_row(
         worldid,
         opt_timestep[worldid % opt_timestep.shape[0]],
         efcid,
@@ -1323,6 +1363,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         ConstraintType.LIMIT_JOINT,
         jntid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -1333,6 +1374,10 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return limit_ball
+
+
+def _limit_tendon(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def limit_tendon(
     # Model:
@@ -1384,25 +1429,25 @@ def make_constraint(m: types.Model, d: types.Data):
       wp.atomic_add(nl_out, worldid, 1)
       efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-      if efcid >= wp.static(d.njmax):
+      if efcid >= wp.static(njmax):
         return
 
       Jqvel = float(0.0)
       scl = float(dist_min < dist_max) * 2.0 - 1.0
 
       # TODO(team): sparse tendon jacobian
-      if wp.static(m.is_sparse):
-        rowadr = efcid * wp.static(m.nv)
-        efc_J_rownnz_out[worldid, efcid] = wp.static(m.nv)
+      if wp.static(is_sparse):
+        rowadr = efcid * wp.static(nv)
+        efc_J_rownnz_out[worldid, efcid] = wp.static(nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
-        for i in range(wp.static(m.nv)):
+        for i in range(wp.static(nv)):
           efc_J_colind_out[worldid, 0, rowadr + i] = i
           efc_J_out[worldid, 0, rowadr + i] = 0.0
 
       adr = tendon_adr[tenid]
       if wrap_type[adr] == types.WrapType.JOINT:
-        if not wp.static(m.is_sparse):
-          for i in range(wp.static(m.nv)):
+        if not wp.static(is_sparse):
+          for i in range(wp.static(nv)):
             efc_J_out[worldid, efcid, i] = 0.0
 
         ten_num = tendon_num[tenid]
@@ -1410,17 +1455,17 @@ def make_constraint(m: types.Model, d: types.Data):
           dofadr = jnt_dofadr[wrap_objid[adr + i]]
           J = scl * ten_J_in[worldid, tenid, dofadr]
 
-          if wp.static(m.is_sparse):
+          if wp.static(is_sparse):
             efc_J_out[worldid, 0, rowadr + dofadr] = J
           else:
             efc_J_out[worldid, efcid, dofadr] = J
 
           Jqvel += J * qvel_in[worldid, dofadr]
       else:
-        for i in range(wp.static(m.nv)):
+        for i in range(wp.static(nv)):
           J = scl * ten_J_in[worldid, tenid, i]
 
-          if wp.static(m.is_sparse):
+          if wp.static(is_sparse):
             efc_J_out[worldid, 0, rowadr + i] = J
           else:
             efc_J_out[worldid, efcid, i] = J
@@ -1430,7 +1475,7 @@ def make_constraint(m: types.Model, d: types.Data):
       tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
       tendon_solref_lim_id = worldid % tendon_solref_lim.shape[0]
       tendon_solimp_lim_id = worldid % tendon_solimp_lim.shape[0]
-      efc_row(
+      _efc_row(
         worldid,
         opt_timestep[worldid % opt_timestep.shape[0]],
         efcid,
@@ -1444,6 +1489,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         ConstraintType.LIMIT_TENDON,
         tenid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -1454,6 +1500,10 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return limit_tendon
+
+
+def _contact_pyramidal(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def contact_pyramidal(
     # Model:
@@ -1524,7 +1574,7 @@ def make_constraint(m: types.Model, d: types.Data):
       worldid = worldid_in[conid]
 
       efcid = wp.atomic_add(nefc_out, worldid, 1)
-      if efcid >= wp.static(d.njmax):
+      if efcid >= wp.static(njmax):
         contact_efc_address_out[conid, dimid] = -1
         return
 
@@ -1552,8 +1602,8 @@ def make_constraint(m: types.Model, d: types.Data):
         invweight = invweight + fri0 * fri0 * invweight
         invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
-      if wp.static(m.is_sparse):
-        rowadr = efcid * wp.static(m.nv)
+      if wp.static(is_sparse):
+        rowadr = efcid * wp.static(nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
       Jqvel = float(0.0)
@@ -1566,10 +1616,10 @@ def make_constraint(m: types.Model, d: types.Data):
       da2 = body_dofadr[body2] + body_dofnum[body2] - 1
       da = wp.max(da1, da2)
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         rownnz = int(0)
 
-      for dofid in range(wp.static(m.nv - 1), -1, -1):
+      for dofid in range(wp.static(nv - 1), -1, -1):
         if dofid == da:
           # TODO(team): contact_jacobian
           jac1p, jac1r = support.jac_dof(
@@ -1616,7 +1666,7 @@ def make_constraint(m: types.Model, d: types.Data):
             else:
               J -= Ji * frii
 
-          if wp.static(m.is_sparse):
+          if wp.static(is_sparse):
             sparseid = rowadr + rownnz
             efc_J_colind_out[worldid, 0, sparseid] = dofid
             efc_J_out[worldid, 0, sparseid] = J
@@ -1632,10 +1682,10 @@ def make_constraint(m: types.Model, d: types.Data):
             da2 = dof_parentid[da2]
           da = wp.max(da1, da2)
         else:
-          if not wp.static(m.is_sparse):
+          if not wp.static(is_sparse):
             efc_J_out[worldid, efcid, dofid] = 0.0
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = rownnz
 
       if condim == 1:
@@ -1643,7 +1693,7 @@ def make_constraint(m: types.Model, d: types.Data):
       else:
         efc_type = ConstraintType.CONTACT_PYRAMIDAL
 
-      efc_row(
+      _efc_row(
         worldid,
         timestep,
         efcid,
@@ -1657,6 +1707,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         efc_type,
         conid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -1667,6 +1718,10 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return contact_pyramidal
+
+
+def _contact_elliptic(is_sparse, nv, njmax, refsafe):
   @wp.kernel(module="unique", enable_backward=False)
   def contact_elliptic(
     # Model:
@@ -1736,7 +1791,7 @@ def make_constraint(m: types.Model, d: types.Data):
       worldid = worldid_in[conid]
 
       efcid = wp.atomic_add(nefc_out, worldid, 1)
-      if efcid >= wp.static(d.njmax):
+      if efcid >= wp.static(njmax):
         contact_efc_address_out[conid, dimid] = -1
         return
 
@@ -1751,8 +1806,8 @@ def make_constraint(m: types.Model, d: types.Data):
       con_pos = pos_in[conid]
       frame = frame_in[conid]
 
-      if wp.static(m.is_sparse):
-        rowadr = efcid * wp.static(m.nv)
+      if wp.static(is_sparse):
+        rowadr = efcid * wp.static(nv)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
       Jqvel = float(0.0)
@@ -1765,10 +1820,10 @@ def make_constraint(m: types.Model, d: types.Data):
       da2 = body_dofadr[body2] + body_dofnum[body2] - 1
       da = wp.max(da1, da2)
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         rownnz = int(0)
 
-      for dofid in range(wp.static(m.nv - 1), -1, -1):
+      for dofid in range(wp.static(nv - 1), -1, -1):
         if dofid == da:
           # TODO(team): contact jacobian
           jac1p, jac1r = support.jac_dof(
@@ -1803,7 +1858,7 @@ def make_constraint(m: types.Model, d: types.Data):
               jac_dif = jac2r[xyz] - jac1r[xyz]
               J += frame[dimid - 3, xyz] * jac_dif
 
-          if wp.static(m.is_sparse):
+          if wp.static(is_sparse):
             sparseid = rowadr + rownnz
             efc_J_colind_out[worldid, 0, sparseid] = dofid
             efc_J_out[worldid, 0, sparseid] = J
@@ -1819,10 +1874,10 @@ def make_constraint(m: types.Model, d: types.Data):
             da2 = dof_parentid[da2]
           da = wp.max(da1, da2)
         else:
-          if not wp.static(m.is_sparse):
+          if not wp.static(is_sparse):
             efc_J_out[worldid, efcid, dofid] = 0.0
 
-      if wp.static(m.is_sparse):
+      if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = rownnz
 
       body_invweight0_id = worldid % body_invweight0.shape[0]
@@ -1854,7 +1909,7 @@ def make_constraint(m: types.Model, d: types.Data):
       else:
         efc_type = ConstraintType.CONTACT_ELLIPTIC
 
-      efc_row(
+      _efc_row(
         worldid,
         timestep,
         efcid,
@@ -1868,6 +1923,7 @@ def make_constraint(m: types.Model, d: types.Data):
         0.0,
         efc_type,
         conid,
+        wp.static(refsafe),
         efc_type_out,
         efc_id_out,
         efc_pos_out,
@@ -1878,6 +1934,14 @@ def make_constraint(m: types.Model, d: types.Data):
         efc_frictionloss_out,
       )
 
+  return contact_elliptic
+
+
+@event_scope
+def make_constraint(m: types.Model, d: types.Data):
+  """Creates constraint jacobians and other supporting data."""
+  refsafe = bool(m.opt.disableflags & types.DisableBit.REFSAFE)
+
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
@@ -1887,7 +1951,7 @@ def make_constraint(m: types.Model, d: types.Data):
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
-        equality_connect,
+        _equality_connect(m.is_sparse, m.nv, d.njmax, m.nsite, refsafe),
         dim=(d.nworld, m.eq_connect_adr.size),
         inputs=[
           m.opt.timestep,
@@ -1932,7 +1996,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        equality_weld,
+        _equality_weld(m.is_sparse, m.nv, d.njmax, m.nsite, refsafe),
         dim=(d.nworld, m.eq_wld_adr.size),
         inputs=[
           m.opt.timestep,
@@ -1979,7 +2043,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        equality_joint,
+        _equality_joint(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.eq_jnt_adr.size),
         inputs=[
           m.opt.timestep,
@@ -2015,7 +2079,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        equality_tendon,
+        _equality_tendon(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.eq_ten_adr.size),
         inputs=[
           m.opt.timestep,
@@ -2051,7 +2115,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        equality_flex,
+        _equality_flex(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
         inputs=[
           m.opt.timestep,
@@ -2084,7 +2148,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
       wp.launch(
-        friction_dof,
+        _friction_dof(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.nv),
         inputs=[
           m.opt.timestep,
@@ -2113,7 +2177,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        friction_tendon,
+        _friction_tendon(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.ntendon),
         inputs=[
           m.opt.timestep,
@@ -2145,7 +2209,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # limit
     if not (m.opt.disableflags & types.DisableBit.LIMIT):
       wp.launch(
-        limit_ball,
+        _limit_ball(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.jnt_limited_ball_adr.size),
         inputs=[
           m.opt.timestep,
@@ -2179,7 +2243,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        limit_slide_hinge,
+        _limit_slide_hinge(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[
           m.opt.timestep,
@@ -2213,7 +2277,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        limit_tendon,
+        _limit_tendon(m.is_sparse, m.nv, d.njmax, refsafe),
         dim=(d.nworld, m.tendon_limited_adr.size),
         inputs=[
           m.opt.timestep,
@@ -2254,7 +2318,7 @@ def make_constraint(m: types.Model, d: types.Data):
     if not (m.opt.disableflags & types.DisableBit.CONTACT):
       if m.opt.cone == types.ConeType.PYRAMIDAL:
         wp.launch(
-          contact_pyramidal,
+          _contact_pyramidal(m.is_sparse, m.nv, d.njmax, refsafe),
           dim=(d.naconmax, m.nmaxpyramid),
           inputs=[
             m.opt.timestep,
@@ -2303,7 +2367,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       elif m.opt.cone == types.ConeType.ELLIPTIC:
         wp.launch(
-          contact_elliptic,
+          _contact_elliptic(m.is_sparse, m.nv, d.njmax, refsafe),
           dim=(d.naconmax, m.nmaxcondim),
           inputs=[
             m.opt.timestep,

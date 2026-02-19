@@ -2369,7 +2369,7 @@ def update_gradient_JTCJ_sparse(
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
 
-      # TODO(team): more efficient sparsity
+      # TODO(team): improve performance for sparse code path
       rownnz1 = efc_J_rownnz_in[worldid, efcid1]
       rowadr1 = efc_J_rowadr_in[worldid, efcid1]
 
@@ -2670,7 +2670,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.is_sparse:
-      # TODO(team): optimize
+      # TODO(team): improve performance for sparse code path
       @wp.kernel(module="unique", enable_backward=False)
       def _JTDAJ_sparse(
         # Data in:

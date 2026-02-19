@@ -121,7 +121,7 @@ class ConstraintTest(parameterized.TestCase):
   @parameterized.parameters(
     *itertools.product(
       (ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
-      ((1, 1), (1, 3), (1, 4), (1, 6), (3, 3), (3, 4), (3, 6), (4, 4), (4, 6), (6, 6)),
+      itertools.combinations_with_replacement((1, 3, 4, 6), 2),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
     )
   )

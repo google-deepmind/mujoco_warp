@@ -721,8 +721,8 @@ def make_data(
     efc.J_colind = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=int)
     efc.J = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=float)
   else:
-    efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
-    efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
+    efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
+    efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
 
@@ -914,7 +914,7 @@ def put_data(
   efc = types.Constraint(**efc_kwargs)
 
   if is_sparse(mjm):
-    # TODO(team): mujoco sparsity pattern instead of dense
+    # TODO(team): process efc_J sparsity structure for nv row shift
     efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
     efc.J_rowadr = wp.array(
       np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
@@ -930,14 +930,8 @@ def put_data(
     efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
     efc.J = wp.array(np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1)), dtype=float)
   else:
-    # TODO(team): don't need to allocate sparsity arrays if not sparse
-    efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
-    efc.J_rowadr = wp.array(
-      np.tile(np.arange(0, njmax * sizes["nv_pad"], sizes["nv_pad"]), (nworld, 1))
-      if mjm.nv
-      else np.zeros((nworld, njmax), dtype=int),
-      dtype=int,
-    )
+    efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
+    efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
 
     if mujoco.mj_isSparse(mjm):
@@ -1167,21 +1161,31 @@ def get_data_into(
   if nefc > 0:
     if is_sparse(mjm):
       efc_J = np.zeros((nefc, mjm.nv))
-      if is_sparse(mjm):
-        J_rownnz_wp = d.efc.J_rownnz.numpy()[0]
-        J_rowadr_wp = d.efc.J_rowadr.numpy()[0]
-        J_colind_wp = d.efc.J_colind.numpy()[0]
-        J_wp = d.efc.J.numpy()[0, 0]
-        for i in range(nefc):
-          rownnz = J_rownnz_wp[i]
-          rowadr = J_rowadr_wp[i]
-          for j in range(rownnz):
-            sparseid = rowadr + j
-            colind = J_colind_wp[sparseid]
-            efc_J[i, colind] = J_wp[sparseid]
-      mujoco.mju_dense2sparse(result.efc_J, efc_J[efc_idx], result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
+      J_rownnz_wp = d.efc.J_rownnz.numpy()[0]
+      J_rowadr_wp = d.efc.J_rowadr.numpy()[0]
+      J_colind_wp = d.efc.J_colind.numpy()[0]
+      J_wp = d.efc.J.numpy()[0, 0]
+      for i in range(nefc):
+        rownnz = J_rownnz_wp[i]
+        rowadr = J_rowadr_wp[i]
+        for j in range(rownnz):
+          sparseid = rowadr + j
+          colind = J_colind_wp[sparseid]
+          efc_J[i, colind] = J_wp[sparseid]
     else:
-      result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[world_id, :nefc, : mjm.nv].flatten()
+      efc_J = d.efc.J.numpy()[world_id, :nefc, : mjm.nv]
+
+    # write to mujoco result (format depends on mj_isSparse)
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_dense2sparse(
+        result.efc_J,
+        efc_J[efc_idx],
+        result.efc_J_rownnz,
+        result.efc_J_rowadr,
+        result.efc_J_colind,
+      )
+    else:
+      result.efc_J[: nefc * mjm.nv] = efc_J[efc_idx].flatten()
 
   # efc
   result.efc_type[:] = d.efc.type.numpy()[world_id, efc_idx]

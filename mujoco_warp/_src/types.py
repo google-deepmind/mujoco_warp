@@ -1546,12 +1546,14 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
-    J_rownnz: number of non-zeros in J row            (nworld, njmax)
-    J_rowadr: row start address in colind array       (nworld, njmax)
+    J_rownnz: number of non-zeros in J row            (nworld, 0) dense
+                                                      (nworld, njmax) sparse
+    J_rowadr: row start address in colind array       (nworld, 0) dense
+                                                      (nworld, njmax) sparse
     J_colind: column indices in J                     (nworld, 0, 0) dense
                                                       (nworld, 1, njmax * nv) sparse
-    J: constraint Jacobian                            (nworld, njmax_pad, nv_pad) if dense
-                                                      (nworld, 1, njmax * nv) if sparse
+    J: constraint Jacobian                            (nworld, njmax_pad, nv_pad) dense
+                                                      (nworld, 1, njmax * nv) sparse
     pos: constraint position (equality, contact)      (nworld, njmax)
     margin: inclusion margin (contact)                (nworld, njmax)
     D: constraint mass                                (nworld, njmax_pad)
@@ -1673,7 +1675,7 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
-    njmax_pad: maximum number of constraints per world +
+    njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ (16)
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
   """
