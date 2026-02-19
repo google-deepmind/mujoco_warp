@@ -20,7 +20,6 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
@@ -306,12 +305,8 @@ def contact_params(
     solreffriction = wp.vec2(0.0, 0.0)
     solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
     # geom priority is ignored
-    if BLEEDING_EDGE_MUJOCO:
-      margin = geom_margin[margin_id, g1] + geom_margin[margin_id, g2]
-      gap = geom_gap[gap_id, g1] + geom_gap[gap_id, g2]
-    else:
-      margin = wp.max(geom_margin[margin_id, g1], geom_margin[margin_id, g2])
-      gap = wp.max(geom_gap[gap_id, g1], geom_gap[gap_id, g2])
+    margin = geom_margin[margin_id, g1] + geom_margin[margin_id, g2]
+    gap = geom_gap[gap_id, g1] + geom_gap[gap_id, g2]
 
   friction = vec5(
     wp.max(MJ_MINMU, friction[0]),

@@ -491,17 +491,9 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_comPos(mjm, mjd)
     mujoco.mj_flex(mjm, mjd)
 
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if BLEEDING_EDGE_MUJOCO:
-      rownnz = mjm.flexedge_J_rownnz
-      rowadr = mjm.flexedge_J_rowadr
-      colind = mjm.flexedge_J_colind.reshape(-1)
-    else:
-      rownnz = mjd.flexedge_J_rownnz
-      rowadr = mjd.flexedge_J_rowadr
-      colind = mjd.flexedge_J_colind.reshape(-1)
+    rownnz = mjm.flexedge_J_rownnz
+    rowadr = mjm.flexedge_J_rowadr
+    colind = mjm.flexedge_J_colind.reshape(-1)
 
     mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
     mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)
