@@ -232,7 +232,7 @@ def _flood_fill(
       # push neighbors
       for neighbor in range(ntree):
         if tree_tree_in[worldid, v, neighbor] != 0:
-          if labels_in[worldid, neighbor] == -1 and nstack < ntree:
+          if labels_in[worldid, neighbor] == -1 and nstack < ntree * ntree:
             stack_out[worldid, nstack] = neighbor
             nstack = nstack + 1
 
@@ -255,7 +255,7 @@ def island(m: types.Model, d: types.Data):
 
   # Step 2: DFS flood fill
   d.tree_island.fill_(-1)
-  stack_scratch = wp.empty((d.nworld, m.ntree), dtype=int)
+  stack_scratch = wp.empty((d.nworld, m.ntree * m.ntree), dtype=int)
 
   wp.launch(
     _flood_fill,
