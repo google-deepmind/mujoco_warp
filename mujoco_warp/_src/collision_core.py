@@ -33,6 +33,12 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.struct
 class Geom:
+  """Geom properties for pairwise collision detection.
+
+  Bundles a geometry's pose, size, surface normal, and mesh topology data into
+  a single struct that can be passed to Warp collision kernels.
+  """
+
   pos: wp.vec3
   rot: wp.mat33
   normal: wp.vec3
@@ -94,12 +100,14 @@ def geom_collision_pair(
   geom1.pos = geom_xpos_in[worldid, g1]
   geom1.rot = geom_xmat_in[worldid, g1]
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
-  geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])  # plane
+  # z-axis of the rotation matrix, used as the surface normal for plane collisions
+  geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])
 
   geom2.pos = geom_xpos_in[worldid, g2]
   geom2.rot = geom_xmat_in[worldid, g2]
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
-  geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])  # plane
+  # z-axis of the rotation matrix, used as the surface normal for plane collisions
+  geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])
 
   if geom_type1 == GeomType.MESH:
     dataid = geom_dataid[g1]
@@ -181,6 +189,10 @@ def write_contact(
   contact_geomcollisionid_out: wp.array(dtype=int),
   nacon_out: wp.array(dtype=int),
 ) -> int:
+  """Atomically write a detected contact into the contact output arrays.
+
+  Returns 1 if the contact is active (dist < margin), 0 otherwise.
+  """
   active = dist_in < margin_in
 
   # skip contact and no collision sensor
@@ -239,6 +251,11 @@ def contact_params(
   cid: int,
   worldid: int,
 ):
+  """Resolve contact parameters for a collision pair.
+
+  Uses explicit pair overrides when available, otherwise mixes geom-level
+  properties by priority and solmix weights.
+  """
   geoms = collision_pair_in[cid]
   pairid = collision_pairid_in[cid][0]
 
