@@ -889,7 +889,9 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if mujoco.mj_isSparse(mjm):
+  if mjd.nefc == 0:
+    efc_j = np.zeros((0, mjm.nv))
+  elif mujoco.mj_isSparse(mjm):
     efc_j = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(efc_j, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:
