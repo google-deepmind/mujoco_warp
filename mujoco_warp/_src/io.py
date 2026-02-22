@@ -2194,15 +2194,18 @@ def create_render_context(
   hfield_registry = {}
   hfield_bvh_id = [wp.uint64(0) for _ in range(nhfield)]
   hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
+  hfield_bounds_center = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
 
   for hid in used_hfield_id:
-    hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
+    hmesh, hhalf, hcenter = bvh.build_hfield_bvh(mjm, hid)
     hfield_registry[hmesh.id] = hmesh
     hfield_bvh_id[hid] = hmesh.id
     hfield_bounds_size[hid] = hhalf
+    hfield_bounds_center[hid] = hcenter
 
   hfield_bvh_id_arr = wp.array(hfield_bvh_id, dtype=wp.uint64)
   hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
+  hfield_bounds_center_arr = wp.array(hfield_bounds_center, dtype=wp.vec3)
 
   # Flex BVHs
   flex_bvh_id = wp.uint64(0)
@@ -2367,6 +2370,7 @@ def create_render_context(
     hfield_registry=hfield_registry,
     hfield_bvh_id=hfield_bvh_id_arr,
     hfield_bounds_size=hfield_bounds_size_arr,
+    hfield_bounds_center=hfield_bounds_center_arr,
     flex_mesh=flex_mesh,
     flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
     flex_bvh_id=flex_bvh_id,

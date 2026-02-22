@@ -36,6 +36,7 @@ class MinimalRenderContext:
   enabled_geom_ids: wp.array
   mesh_bounds_size: wp.array
   hfield_bounds_size: wp.array
+  hfield_bounds_center: wp.array
   lower: wp.array
   upper: wp.array
   group: wp.array
@@ -56,6 +57,7 @@ def _create_minimal_context(mjm, nworld, enabled_geom_groups=None):
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_bounds_size=wp.zeros(max(mjm.nmesh, 1), dtype=wp.vec3),
     hfield_bounds_size=wp.zeros(max(mjm.nhfield, 1), dtype=wp.vec3),
+    hfield_bounds_center=wp.zeros(max(mjm.nhfield, 1), dtype=wp.vec3),
     lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
     upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
     group=wp.zeros(nworld * bvh_ngeom, dtype=int),
@@ -82,6 +84,7 @@ class BvhTest(absltest.TestCase):
         rc.enabled_geom_ids,
         rc.mesh_bounds_size,
         rc.hfield_bounds_size,
+        rc.hfield_bounds_center,
         rc.lower,
         rc.upper,
         rc.group,
@@ -111,6 +114,7 @@ class BvhTest(absltest.TestCase):
         rc.enabled_geom_ids,
         rc.mesh_bounds_size,
         rc.hfield_bounds_size,
+        rc.hfield_bounds_center,
         rc.lower,
         rc.upper,
         rc.group,
@@ -192,10 +196,11 @@ class BvhTest(absltest.TestCase):
     """Tests that build_hfield_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
 
-    hmesh, half = bvh.build_hfield_bvh(mjm, 0)
+    hmesh, half, center = bvh.build_hfield_bvh(mjm, 0)
 
     self.assertNotEqual(hmesh.id, wp.uint64(0), "hfield id")
     self.assertFalse(np.array_equal(np.array(half), np.array([0.0, 0.0, 0.0])), "hfield half size")
+    self.assertFalse(np.array_equal(np.array(center), np.array([0.0, 0.0, 0.0])), "hfield center")
 
   def test_accumulate_flex_vertex_normals(self):
     """Tests flex vertex normal accumulation kernel."""

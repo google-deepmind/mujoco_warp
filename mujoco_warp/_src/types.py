@@ -1779,7 +1779,8 @@ class RenderContext:
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
-    hfield_bounds_size: hfield bounds size
+    hfield_bounds_size: hfield bounds half-extents
+    hfield_bounds_center: hfield bounds center offset in local frame
     flex_mesh: flex mesh
     flex_rgba: flex rgba
     flex_bvh_id: flex BVH id
@@ -1835,6 +1836,7 @@ class RenderContext:
   hfield_registry: dict
   hfield_bvh_id: array("nhfield", wp.uint64)
   hfield_bounds_size: array("nhfield", wp.vec3)
+  hfield_bounds_center: array("nhfield", wp.vec3)
   flex_mesh: wp.Mesh
   flex_rgba: array("nflex", wp.vec4)
   flex_bvh_id: wp.uint64

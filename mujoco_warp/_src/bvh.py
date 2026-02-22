@@ -184,6 +184,7 @@ def _compute_bvh_bounds(
   enabled_geom_ids: wp.array(dtype=int),
   mesh_bounds_size: wp.array(dtype=wp.vec3),
   hfield_bounds_size: wp.array(dtype=wp.vec3),
+  hfield_bounds_center: wp.array(dtype=wp.vec3),
   # Out:
   lower_out: wp.array(dtype=wp.vec3),
   upper_out: wp.array(dtype=wp.vec3),
@@ -215,7 +216,8 @@ def _compute_bvh_bounds(
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.HFIELD:
     size = hfield_bounds_size[geom_dataid[geom_id]]
-    lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
+    center = hfield_bounds_center[geom_dataid[geom_id]]
+    lower_bound, upper_bound = _compute_box_bounds(pos + rot @ center, rot, size)
 
   lower_out[world_id * bvh_ngeom + geom_local_id] = lower_bound
   upper_out[world_id * bvh_ngeom + geom_local_id] = upper_bound
@@ -255,6 +257,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       rc.enabled_geom_ids,
       rc.mesh_bounds_size,
       rc.hfield_bounds_size,
+      rc.hfield_bounds_center,
       rc.lower,
       rc.upper,
       rc.group,
@@ -289,6 +292,7 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       rc.enabled_geom_ids,
       rc.mesh_bounds_size,
       rc.hfield_bounds_size,
+      rc.hfield_bounds_center,
       rc.lower,
       rc.upper,
       rc.group,
@@ -457,7 +461,7 @@ def build_hfield_bvh(
   hfieldid: int,
   constructor: str = "sah",
   leaf_size: int = 2,
-) -> tuple[wp.Mesh, wp.vec3]:
+) -> tuple[wp.Mesh, wp.vec3, wp.vec3]:
   """Create a Warp mesh BVH from heightfield data."""
   nr = mjm.hfield_nrow[hfieldid]
   nc = mjm.hfield_ncol[hfieldid]
@@ -482,6 +486,7 @@ def build_hfield_bvh(
   pmin = np.min(points, axis=0)
   pmax = np.max(points, axis=0)
   half = 0.5 * (pmax - pmin)
+  center = 0.5 * (pmin + pmax)
 
   points = wp.array(points, dtype=wp.vec3)
   indices = wp.array(indices, dtype=wp.int32)
@@ -493,7 +498,7 @@ def build_hfield_bvh(
     bvh_leaf_size=leaf_size,
   )
 
-  return mesh, half
+  return mesh, half, center
 
 
 @wp.kernel
