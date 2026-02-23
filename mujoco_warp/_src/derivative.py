@@ -37,11 +37,14 @@ def _qderiv_actuator_passive_vel(
   actuator_biastype: wp.array(dtype=int),
   actuator_actadr: wp.array(dtype=int),
   actuator_actnum: wp.array(dtype=int),
+  actuator_forcelimited: wp.array(dtype=bool),
   actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array2d(dtype=vec10f),
+  actuator_forcerange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
+  actuator_force_in: wp.array2d(dtype=float),
   # Out:
   vel_out: wp.array2d(dtype=float),
 ):
@@ -63,6 +66,14 @@ def _qderiv_actuator_passive_vel(
   if bias == 0.0 and gain == 0.0:
     vel_out[worldid, actid] = 0.0
     return
+
+  # skip if force is clamped by forcerange
+  if actuator_forcelimited[actid]:
+    force = actuator_force_in[worldid, actid]
+    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+    if force <= forcerange[0] or force >= forcerange[1]:
+      vel_out[worldid, actid] = 0.0
+      return
 
   vel = float(bias)
   if actuator_dyntype[actid] != DynType.NONE:
@@ -256,10 +267,13 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
           m.actuator_biastype,
           m.actuator_actadr,
           m.actuator_actnum,
+          m.actuator_forcelimited,
           m.actuator_gainprm,
           m.actuator_biasprm,
+          m.actuator_forcerange,
           d.act,
           d.ctrl,
+          d.actuator_force,
         ],
         outputs=[vel],
       )

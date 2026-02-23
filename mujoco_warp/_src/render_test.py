@@ -36,8 +36,7 @@ class RenderTest(parameterized.TestCase):
 
     rc = mjw.create_render_context(
       mjm,
-      m,
-      d,
+      nworld=nworld,
       cam_res=(32, 32),
       render_rgb=True,
       render_depth=True,
@@ -58,8 +57,6 @@ class RenderTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
     rc = mjw.create_render_context(
       mjm,
-      m,
-      d,
       cam_res=(32, 32),
       render_rgb=True,
       render_depth=True,
@@ -74,8 +71,6 @@ class RenderTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
     rc = mjw.create_render_context(
       mjm,
-      m,
-      d,
       cam_res=(32, 32),
       render_rgb=True,
       render_depth=True,

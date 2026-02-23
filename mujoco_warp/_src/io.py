@@ -14,8 +14,6 @@
 # ==============================================================================
 
 import dataclasses
-import importlib.metadata
-import re
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -24,28 +22,15 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_util
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-
-
-def _is_mujoco_dev() -> bool:
-  _DEV_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+.+")  # anything after x.y.z
-
-  version = getattr(__import__("mujoco"), "__version__", None)
-  if version and _DEV_VERSION_PATTERN.match(version):
-    return True
-
-  # fall back to metadata
-  dist_version = importlib.metadata.version("mujoco")
-  if _DEV_VERSION_PATTERN.match(dist_version):
-    return True
-
-  return False
-
-
-BLEEDING_EDGE_MUJOCO = _is_mujoco_dev()
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec10
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -591,17 +576,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_madr.append(madr)
     m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
 
-  # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-  if BLEEDING_EDGE_MUJOCO:
-    m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
-    m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
-    m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
-  else:
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m.flexedge_J_rownnz = mjd.flexedge_J_rownnz
-    m.flexedge_J_rowadr = mjd.flexedge_J_rowadr
-    m.flexedge_J_colind = mjd.flexedge_J_colind.reshape(-1)
+  m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
+  m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
+  m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
@@ -652,6 +629,14 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
+def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int) -> int:
+  if na is not None:
+    return na
+  if n is not None:
+    return n * nworld
+  return default
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -681,18 +666,11 @@ def make_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
-
-  if nccdmax is None:
-    nccdmax = nconmax
-  elif nccdmax < 0:
-    raise ValueError("nccdmax must be >= 0")
-  elif nccdmax > nconmax:
-    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
-
   if njmax is None:
     njmax = _default_njmax(mjm)
+
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -700,17 +678,23 @@ def make_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  if naconmax is None:
-    naconmax = nworld * nconmax
-  elif naconmax < 0:
+  naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
+  if naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
-  if naccdmax is None:
-    naccdmax = nworld * nccdmax
-  elif naccdmax < 0:
+  naccdmax = _resolve_batch_size(naccdmax, nccdmax, nworld, naconmax)
+  if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
     raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  else:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    elif nccdmax > nconmax:
+      raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
@@ -814,18 +798,11 @@ def put_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
-
-  if nccdmax is None:
-    nccdmax = nconmax
-  elif nccdmax < 0:
-    raise ValueError("nccdmax must be >= 0")
-  elif nccdmax > nconmax:
-    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
-
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
+
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -833,19 +810,30 @@ def put_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  if naconmax is None:
-    if mjd.ncon > nconmax:
-      raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
-    naconmax = nworld * nconmax
+  naconmax_is_input = naconmax is not None
+  naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
+  if naconmax < 0:
+    raise ValueError("naconmax must be >= 0")
+
+  if not naconmax_is_input and mjd.ncon > nconmax:
+    raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
-  if naccdmax is None:
-    naccdmax = nworld * nccdmax
-  elif naccdmax < 0:
+  naccdmax = _resolve_batch_size(naccdmax, nccdmax, nworld, naconmax)
+
+  if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
     raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  else:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    elif nccdmax > nconmax:
+      raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
@@ -906,7 +894,9 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if mujoco.mj_isSparse(mjm):
+  if mjd.nefc == 0:
+    efc_j = np.zeros((0, mjm.nv))
+  elif mujoco.mj_isSparse(mjm):
     efc_j = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(efc_j, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:
@@ -1073,21 +1063,7 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   if mjm.nflexedge > 0:
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if not BLEEDING_EDGE_MUJOCO:
-      m = put_model(mjm)
-      result.flexedge_J_rownnz[:] = m.flexedge_J_rownnz.numpy()
-      result.flexedge_J_rowadr[:] = m.flexedge_J_rowadr.numpy()
-      result.flexedge_J_colind[:, :] = m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv))
-      mujoco.mju_sparse2dense(
-        result.flexedge_J,
-        d.flexedge_J.numpy()[world_id].reshape(-1),
-        m.flexedge_J_rownnz.numpy(),
-        m.flexedge_J_rowadr.numpy(),
-        m.flexedge_J_colind.numpy(),
-      )
-    else:
-      result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
+    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -1781,13 +1757,109 @@ def _compute_actuator_acc0(
   actid_target: int,
   nv: int,
   result_vec_in: wp.array2d(dtype=float),
-  actuator_acc0_out: wp.array(dtype=float),
+  actuator_acc0_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   norm_sq = float(0.0)
   for i in range(nv):
     norm_sq += result_vec_in[worldid, i] * result_vec_in[worldid, i]
-  actuator_acc0_out[actid_target] = wp.sqrt(norm_sq)
+  actuator_acc0_out[worldid, actid_target] = wp.sqrt(norm_sq)
+
+
+@wp.kernel
+def _compute_dof_M0(
+  dof_bodyid: wp.array(dtype=int),
+  dof_armature: wp.array2d(dtype=float),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  crb_in: wp.array2d(dtype=vec10),
+  dof_M0_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  bodyid = dof_bodyid[dofid]
+  armature = dof_armature[worldid % dof_armature.shape[0], dofid]
+  buf = mjmath.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
+  dof_M0_out[worldid, dofid] = armature + wp.dot(cdof_in[worldid, dofid], buf)
+
+
+@wp.kernel
+def _resolve_dampratio(
+  actuator_biastype: wp.array(dtype=int),
+  actuator_gainprm: wp.array2d(dtype=types.vec10f),
+  actuator_moment_in: wp.array3d(dtype=float),
+  dof_M0_in: wp.array2d(dtype=float),
+  nv: int,
+  actuator_biasprm: wp.array2d(dtype=types.vec10f),
+):
+  worldid, actid = wp.tid()
+  biastype = actuator_biastype[actid]
+
+  # only affine bias (position actuators)
+  if biastype != BiasType.AFFINE:
+    return
+
+  gainprm_id = worldid % actuator_gainprm.shape[0]
+  biasprm_id = worldid % actuator_biasprm.shape[0]
+  kp = actuator_gainprm[gainprm_id, actid][0]
+
+  biasprm = actuator_biasprm[biasprm_id, actid]
+  # dampratio condition: gainprm[0] == -biasprm[1] and biasprm[2] > 0
+  if wp.abs(kp + biasprm[1]) > MJ_MINVAL:
+    return
+  if biasprm[2] <= 0.0:
+    return
+
+  dampratio = biasprm[2]
+
+  # compute reflected mass: sum(dof_M0[j] / moment[i,j]^2) for active DOFs
+  mass = float(0.0)
+  for j in range(nv):
+    moment = actuator_moment_in[worldid, actid, j]
+    if wp.abs(moment) > MJ_MINVAL:
+      mass += dof_M0_in[worldid, j] / (moment * moment)
+
+  damping = dampratio * 2.0 * wp.sqrt(kp * mass)
+
+  # write -damping to biasprm[2]
+  new_biasprm = biasprm
+  new_biasprm[2] = -damping
+  actuator_biasprm[biasprm_id, actid] = new_biasprm
+
+
+@wp.kernel
+def _set_length_range(
+  actuator_trntype: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
+  actuator_gear: wp.array2d(dtype=wp.spatial_vector),
+  jnt_limited: wp.array(dtype=int),
+  jnt_range: wp.array2d(dtype=wp.vec2),
+  tendon_limited: wp.array(dtype=int),
+  tendon_range: wp.array2d(dtype=wp.vec2),
+  ntendon: int,
+  actuator_lengthrange_out: wp.array2d(dtype=wp.vec2),
+):
+  worldid, actid = wp.tid()
+  trntype = actuator_trntype[actid]
+  id0 = actuator_trnid[actid][0]
+  gear0 = actuator_gear[worldid % actuator_gear.shape[0], actid][0]
+
+  lr = wp.vec2(0.0, 0.0)
+
+  if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
+    if jnt_limited[id0]:
+      rng = jnt_range[worldid % jnt_range.shape[0], id0]
+      if gear0 > 0.0:
+        lr = wp.vec2(rng[0] * gear0, rng[1] * gear0)
+      else:
+        lr = wp.vec2(rng[1] * gear0, rng[0] * gear0)
+  elif trntype == TrnType.TENDON:
+    if ntendon > 0 and tendon_limited[id0]:
+      rng = tendon_range[worldid % tendon_range.shape[0], id0]
+      if gear0 > 0.0:
+        lr = wp.vec2(rng[0] * gear0, rng[1] * gear0)
+      else:
+        lr = wp.vec2(rng[1] * gear0, rng[0] * gear0)
+
+  actuator_lengthrange_out[worldid, actid] = lr
 
 
 # kernel_analyzer: on
@@ -1829,6 +1901,9 @@ def set_const_0(m: types.Model, d: types.Data):
     - cam_pos0, cam_poscom0, cam_mat0: camera references
     - light_pos0, light_poscom0, light_dir0: light references
     - actuator_acc0: acceleration from unit actuator force
+    - actuator_biasprm[2] (dampratio resolution): for position actuators where
+      gainprm[0] == -biasprm[1] and biasprm[2] > 0, converts dampratio to
+      damping via biasprm[2] = -dampratio * 2 * sqrt(kp * reflected_mass)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -1964,6 +2039,28 @@ def set_const_0(m: types.Model, d: types.Data):
       smooth.solve_m(m, d, act_result_vec, act_moment_vec)
       wp.launch(_compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
 
+  # resolve dampratio: compute dof_M0, then convert dampratio to damping
+  if m.nu > 0 and m.nv > 0:
+    dof_M0 = wp.zeros((d.nworld, m.nv), dtype=float)
+    wp.launch(
+      _compute_dof_M0,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_bodyid, m.dof_armature, d.cdof, d.crb],
+      outputs=[dof_M0],
+    )
+    wp.launch(
+      _resolve_dampratio,
+      dim=(d.nworld, m.nu),
+      inputs=[
+        m.actuator_biastype,
+        m.actuator_gainprm,
+        d.actuator_moment,
+        dof_M0,
+        m.nv,
+      ],
+      outputs=[m.actuator_biasprm],
+    )
+
   wp.copy(d.qpos, qpos_saved)
 
 
@@ -2010,8 +2107,9 @@ def set_const(m: types.Model, d: types.Data):
       - cam_pos0, cam_poscom0, cam_mat0: camera references
       - light_pos0, light_poscom0, light_dir0: light references
       - actuator_acc0: acceleration from unit actuator force
+      - actuator_biasprm[2] (dampratio resolution)
 
-  Skips: dof_M0, actuator_length0 (not in mjwarp).
+  Skips: actuator_length0 (not in mjwarp).
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -2019,6 +2117,39 @@ def set_const(m: types.Model, d: types.Data):
   """
   set_const_fixed(m, d)
   set_const_0(m, d)
+
+
+def set_length_range(m: types.Model, d: types.Data, index: int = -1):
+  """Compute feasible actuator length ranges from joint/tendon limits.
+
+  For joint and tendon transmissions with limits, copies the range directly
+  from jnt_range or tendon_range scaled by gear. Actuators without limits
+  keep (0, 0). This covers the common robotics use case; simulation-based
+  computation for general transmissions is not yet implemented.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object (unused, kept for API compatibility with MuJoCo C).
+    index: Actuator index to compute for, or -1 for all actuators.
+  """
+  if m.nu == 0:
+    return
+
+  wp.launch(
+    _set_length_range,
+    dim=(d.nworld, m.nu),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_gear,
+      m.jnt_limited,
+      m.jnt_range,
+      m.tendon_limited,
+      m.tendon_range,
+      m.ntendon,
+    ],
+    outputs=[m.actuator_lengthrange],
+  )
 
 
 def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any] | Sequence[str]):
@@ -2095,6 +2226,13 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         if val.upper() not in ("TRUE", "FALSE"):
           raise ValueError(f"Unrecognized value for field: {key}")
         val = val.upper() == "TRUE"
+      elif typ is wp.array and isinstance(val, str):
+        arr = getattr(obj, attr)
+        floats = [float(p) for p in val.strip("[]").split()]
+        val = wp.array([arr.dtype(*floats)], dtype=arr.dtype)
+      elif typ is np.ndarray and isinstance(val, str):
+        arr = getattr(obj, attr)
+        val = np.array([float(p) for p in val.strip("[]").split()], dtype=arr.dtype)
       else:
         val = typ(val)
 
@@ -2161,8 +2299,7 @@ def _build_rays(
 
 def create_render_context(
   mjm: mujoco.MjModel,
-  m: types.Model,
-  d: types.Data,
+  nworld: int = 1,
   cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
   render_rgb: list[bool] | bool | None = None,
   render_depth: list[bool] | bool | None = None,
@@ -2171,13 +2308,13 @@ def create_render_context(
   enabled_geom_groups: list[int] = [0, 1, 2],
   cam_active: list[bool] | None = None,
   flex_render_smooth: bool = True,
+  use_precomputed_rays: bool = True,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
   Args:
     mjm: The model containing kinematic and dynamic information on host.
-    m: The model on device.
-    d: The data on device.
+    nworld: The number of worlds.
     cam_res: The width and height to render each camera image. If None, uses the
              MuJoCo model values.
     render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
@@ -2188,10 +2325,15 @@ def create_render_context(
     cam_active: List of booleans indicating which cameras to include in rendering.
                 If None, all cameras are included.
     flex_render_smooth: Whether to render flex meshes smoothly.
+    use_precomputed_rays: Use precomputed rays instead of computing during rendering.
+                          When using domain randomization for camera intrinsics, set to False.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+
   # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
   if use_textures and not hasattr(wp, "Texture2D"):
     warnings.warn("Textures require warp >= 1.12. Disabling textures.")
@@ -2236,7 +2378,7 @@ def create_render_context(
 
   # Flex BVHs
   flex_bvh_id = wp.uint64(0)
-  flex_group_root = wp.zeros(d.nworld, dtype=int)
+  flex_group_root = wp.zeros(nworld, dtype=int)
   flex_mesh = None
   flex_face_point = None
   flex_elemdataadr = None
@@ -2257,7 +2399,7 @@ def create_render_context(
       flex_shell_data,
       flex_faceadr_data,
       flex_nface,
-    ) = bvh.build_flex_bvh(mjm, m, d)
+    ) = bvh.build_flex_bvh(mjm, mjd, nworld)
 
     flex_mesh = fmesh
     flex_bvh_id = fmesh.id
@@ -2319,20 +2461,12 @@ def create_render_context(
   if render_rgb and isinstance(render_rgb, bool):
     render_rgb = [render_rgb] * ncam
   elif render_rgb is None:
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
-    else:
-      render_rgb = [True] * ncam
+    render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
 
   if render_depth and isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
   elif render_depth is None:
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
-    else:
-      render_depth = [True] * ncam
+    render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
 
   assert len(render_rgb) == ncam and len(render_depth) == ncam, (
     f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
@@ -2357,31 +2491,30 @@ def create_render_context(
 
   znear = mjm.vis.map.znear * mjm.stat.extent
 
-  if m.cam_fovy.shape[0] > 1 or m.cam_intrinsic.shape[0] > 1:
-    ray = None
-  else:
-    ray = wp.zeros(int(total), dtype=wp.vec3)
+  ray = wp.zeros(int(total), dtype=wp.vec3)
 
-    offset = 0
-    for idx, cam_id in enumerate(active_cam_indices):
-      img_w = cam_res_np[idx][0]
-      img_h = cam_res_np[idx][1]
-      wp.launch(
-        kernel=_build_rays,
-        dim=(img_w, img_h),
-        inputs=[
-          offset,
-          img_w,
-          img_h,
-          m.cam_projection.numpy()[cam_id].item(),
-          m.cam_fovy.numpy()[0, cam_id].item(),
-          wp.vec2(m.cam_sensorsize.numpy()[cam_id]),
-          wp.vec4(m.cam_intrinsic.numpy()[0, cam_id]),
-          znear,
-        ],
-        outputs=[ray],
-      )
-      offset += img_w * img_h
+  cam_projection = mjm.cam_projection
+
+  offset = 0
+  for idx, cam_id in enumerate(active_cam_indices):
+    img_w = cam_res_np[idx][0]
+    img_h = cam_res_np[idx][1]
+    wp.launch(
+      kernel=_build_rays,
+      dim=(img_w, img_h),
+      inputs=[
+        offset,
+        img_w,
+        img_h,
+        int(cam_projection[cam_id]),
+        float(mjm.cam_fovy[cam_id]),
+        wp.vec2(mjm.cam_sensorsize[cam_id]),
+        wp.vec4(mjm.cam_intrinsic[cam_id]),
+        znear,
+      ],
+      outputs=[ray],
+    )
+    offset += img_w * img_h
 
   bvh_ngeom = len(geom_enabled_idx)
 
@@ -2392,6 +2525,7 @@ def create_render_context(
     use_textures=use_textures,
     use_shadows=use_shadows,
     background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
+    use_precomputed_rays=use_precomputed_rays,
     bvh_ngeom=bvh_ngeom,
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_registry=mesh_registry,
@@ -2422,14 +2556,14 @@ def create_render_context(
     flex_render_smooth=flex_render_smooth,
     bvh=None,
     bvh_id=None,
-    lower=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
-    upper=wp.zeros(d.nworld * bvh_ngeom, dtype=wp.vec3),
-    group=wp.zeros(d.nworld * bvh_ngeom, dtype=int),
-    group_root=wp.zeros(d.nworld, dtype=int),
+    lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
+    upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
+    group=wp.zeros(nworld * bvh_ngeom, dtype=int),
+    group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
-    rgb_data=wp.zeros((d.nworld, ri), dtype=wp.uint32),
+    rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),
     rgb_adr=wp.array(rgb_adr, dtype=int),
-    depth_data=wp.zeros((d.nworld, di), dtype=wp.float32),
+    depth_data=wp.zeros((nworld, di), dtype=wp.float32),
     depth_adr=wp.array(depth_adr, dtype=int),
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
@@ -2437,6 +2571,6 @@ def create_render_context(
     total_rays=int(total),
   )
 
-  bvh.build_scene_bvh(m, d, rc)
+  bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
   return rc

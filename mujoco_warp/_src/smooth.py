@@ -1935,7 +1935,7 @@ def _transmission(
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
   actuator_gear: wp.array2d(dtype=wp.spatial_vector),
-  actuator_cranklength: wp.array(dtype=float),
+  actuator_cranklength: wp.array2d(dtype=float),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -1996,7 +1996,7 @@ def _transmission(
     id = trnid[0]
     idslider = trnid[1]
     gear0 = gear[0]
-    rod = actuator_cranklength[actid]
+    rod = actuator_cranklength[worldid % actuator_cranklength.shape[0], actid]
     site_xmat = site_xmat_in[worldid, idslider]
     axis = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
     site_xpos_id = site_xpos_in[worldid, id]

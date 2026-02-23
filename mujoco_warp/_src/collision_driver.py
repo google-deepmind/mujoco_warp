@@ -18,13 +18,14 @@ from typing import Any
 import warp as wp
 
 from mujoco_warp._src.collision_convex import convex_narrowphase
+from mujoco_warp._src.collision_core import CollisionContext
+from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
-from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -75,15 +76,6 @@ MJ_COLLISION_TABLE = {
 }
 
 
-def create_collision_context(naconmax: int) -> CollisionContext:
-  """Create a CollisionContext with allocated arrays."""
-  return CollisionContext(
-    collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_worldid=wp.empty(naconmax, dtype=int),
-  )
-
-
 @wp.kernel
 def _zero_nacon_ncollision(
   # Data out:
@@ -101,18 +93,18 @@ def _plane_filter(
   if size1 == 0.0:
     # geom1 is a plane
     dist = wp.dot(xpos2 - xpos1, wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2]))
-    return dist <= size2 + wp.max(margin1, margin2)
+    return dist <= size2 + margin1 + margin2
   elif size2 == 0.0:
     # geom2 is a plane
     dist = wp.dot(xpos1 - xpos2, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
-    return dist <= size1 + wp.max(margin1, margin2)
+    return dist <= size1 + margin1 + margin2
 
   return True
 
 
 @wp.func
 def _sphere_filter(size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3) -> bool:
-  bound = size1 + size2 + wp.max(margin1, margin2)
+  bound = size1 + size2 + margin1 + margin2
   dif = xpos2 - xpos1
   dist_sq = wp.dot(dif, dif)
   return dist_sq <= bound * bound
@@ -141,7 +133,7 @@ def _aabb_filter(
   center1 = xmat1 @ center1 + xpos1
   center2 = xmat2 @ center2 + xpos2
 
-  margin = wp.max(margin1, margin2)
+  margin = margin1 + margin2
 
   max_x1 = -MJ_MAXVAL
   max_y1 = -MJ_MAXVAL
@@ -236,7 +228,7 @@ def _obb_filter(
   xmat2: wp.mat33,
 ) -> bool:
   """Oriented bounding boxes collision (see Gottschalk et al.), see mj_collideOBB."""
-  margin = wp.max(margin1, margin2)
+  margin = margin1 + margin2
 
   xcenter = mat23()
   normal = mat63()

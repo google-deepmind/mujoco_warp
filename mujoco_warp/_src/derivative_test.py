@@ -209,6 +209,76 @@ class DerivativeTest(parameterized.TestCase):
     self.assertFalse(np.any(np.isnan(mjd.qpos)))
     self.assertFalse(np.any(np.isnan(mjd.qvel)))
 
+  def test_forcerange_clamped_derivative(self):
+    """Implicit integration is more accurate than Euler with active forcerange clamping."""
+    xml = """
+    <mujoco>
+      <option timestep="0.01" integrator="implicitfast"/>
+      <worldbody>
+        <geom type="plane" size="10 10 0.001"/>
+        <body pos="0 0 1">
+          <joint name="slide" type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <position joint="slide" kp="10000" kv="1000" forcerange="-10 10"/>
+      </actuator>
+    </mujoco>
+    """
+
+    dt_small = 5e-4
+    dt_large = 5e-2
+    duration = 1.0
+    nsteps_large = int(duration / dt_large)
+    nsubstep = int(dt_large / dt_small)
+
+    # ground truth: Euler with small timestep
+    mjm_gt = mujoco.MjModel.from_xml_string(xml)
+    mjd_gt = mujoco.MjData(mjm_gt)
+    mjm_gt.opt.timestep = dt_small
+    mjm_gt.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+    mujoco.mj_resetData(mjm_gt, mjd_gt)
+    mjd_gt.ctrl[0] = 0.5
+
+    # implicitfast at large timestep
+    mjm_impl, mjd_impl, m_impl, d_impl = test_data.fixture(xml=xml)
+    m_impl.opt.timestep.fill_(dt_large)
+    m_impl.opt.integrator = int(mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
+    d_impl.ctrl.fill_(0.5)
+
+    # euler at large timestep
+    mjm_euler, mjd_euler, m_euler, d_euler = test_data.fixture(xml=xml)
+    m_euler.opt.timestep.fill_(dt_large)
+    m_euler.opt.integrator = int(mujoco.mjtIntegrator.mjINT_EULER)
+    d_euler.ctrl.fill_(0.5)
+
+    error_implicit = 0.0
+    error_euler = 0.0
+
+    for _ in range(nsteps_large):
+      # ground truth: small steps with Euler
+      mujoco.mj_step(mjm_gt, mjd_gt, nsubstep)
+
+      # implicit at large timestep
+      mjw.step(m_impl, d_impl)
+
+      # euler at large timestep
+      mjw.step(m_euler, d_euler)
+
+      # accumulate errors
+      gt_qpos = mjd_gt.qpos[0]
+      diff_implicit = gt_qpos - d_impl.qpos.numpy()[0, 0]
+      diff_euler = gt_qpos - d_euler.qpos.numpy()[0, 0]
+      error_implicit += diff_implicit * diff_implicit
+      error_euler += diff_euler * diff_euler
+
+    self.assertLess(
+      error_implicit,
+      error_euler,
+      "implicitfast should be more accurate than Euler at large timestep when forcerange derivatives are correctly handled",
+    )
+
 
 if __name__ == "__main__":
   wp.init()
