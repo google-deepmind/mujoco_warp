@@ -1781,7 +1781,7 @@ class RenderContext:
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
-    hfield_bounds_size: hfield bounds size
+    hfield_bounds_size: hfield bounds half-extents
     flex_mesh: flex mesh
     flex_rgba: flex rgba
     flex_bvh_id: flex BVH id
