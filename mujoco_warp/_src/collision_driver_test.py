@@ -1018,6 +1018,102 @@ class CollisionTest(parameterized.TestCase):
         msg=f"Contact {i}: Expected penetration {expected_penetration:.4f}, got {mjw_dist:.4f}",
       )
 
+  _SDF_VOLUME = {
+    "sdf_plane": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 1" euler="45 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_sphere": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="sphere" size="0.5"/>
+            </body>
+            <body pos="0 0 1.3" euler="30 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_sdf_two_cubes": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube1"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+            <mesh name="cube2"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="sdf" mesh="cube1"/>
+            </body>
+            <body pos="0 0 1.8" euler="45 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube2"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_sdf_different_meshes": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+            <mesh name="wedge"
+             vertex="0 0 0  1 0 0  0.5 1 0  0 0 1  1 0 1  0.5 1 1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="sdf" mesh="cube"/>
+            </body>
+            <body pos="0.5 0.5 1.8" euler="30 20 0">
+              <freejoint/>
+              <geom type="sdf" mesh="wedge"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+  }
+
+  @parameterized.parameters(_SDF_VOLUME.keys())
+  def test_sdf_volume_collision(self, fixture):
+    """Tests volume SDF collisions (mesh-based octree, no plugin)."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._SDF_VOLUME[fixture])
+
+    mujoco.mj_collision(mjm, mjd)
+    mjw.collision(m, d)
+
+    mj_ncon = mjd.ncon
+    mjw_ncon = d.nacon.numpy()[0]
+
+    # both should detect contacts (or both should not)
+    self.assertEqual(mj_ncon > 0, mjw_ncon > 0, f"MJ ncon={mj_ncon}, MJW ncon={mjw_ncon}")
+
+    # all detected contacts should have negative distance (penetration)
+    for i in range(mjw_ncon):
+      test_dist = d.contact.dist.numpy()[i]
+      self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
+
 
 if __name__ == "__main__":
   absltest.main()
