@@ -31,6 +31,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.util_pkg import check_version
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -1145,7 +1146,7 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  if BLEEDING_EDGE_MUJOCO:
+  if check_version("mujoco>=3.5.1.dev869712136"):
     ten_J = d.ten_J.numpy()[world_id]
     mujoco.mju_dense2sparse(
       result.ten_J,
