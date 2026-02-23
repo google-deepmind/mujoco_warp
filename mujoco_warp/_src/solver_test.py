@@ -551,6 +551,58 @@ class SolverTest(parameterized.TestCase):
     m.opt.ls_iterations = 1
     mjw.step(m, d)
 
+  def test_incremental_vs_full_hessian(self):
+    """Tests that incremental Hessian updates produce same result as full recomputation."""
+    total_any_changes = False
+    for keyframe in range(3):
+      mjm, mjd, m, d = test_data.fixture(
+        "humanoid/humanoid.xml",
+        keyframe=keyframe,
+        overrides={
+          "opt.cone": ConeType.PYRAMIDAL,
+          "opt.solver": SolverType.NEWTON,
+          "opt.iterations": 5,
+          "opt.ls_iterations": 10,
+        },
+      )
+
+      def _run_solver(d, update_fn, track=False):
+        """Run solver iterations with a given gradient update function."""
+        d.qacc.zero_()
+        d.qfrc_constraint.zero_()
+        d.efc.force.zero_()
+        ctx = solver.create_solver_context(m, d)
+        solver.init_context(m, d, ctx, grad=True)
+        wp.launch(solver.solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
+        step_size_cost = wp.empty((d.nworld, 0), dtype=float)
+        any_changes = False
+        for _ in range(m.opt.iterations):
+          solver._linesearch(m, d, ctx, step_size_cost)
+          if track:
+            ctx.changed_efc_count.zero_()
+          solver._update_constraint(m, d, ctx, track_changes=track)
+          if track:
+            wp.synchronize()
+            if np.any(ctx.changed_efc_count.numpy() > 0):
+              any_changes = True
+          update_fn(m, d, ctx)
+          wp.launch(solver.solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
+          wp.launch(
+            solver.solve_search_update,
+            dim=(d.nworld, m.nv),
+            inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            outputs=[ctx.search, ctx.search_dot],
+          )
+        return d.qacc.numpy().copy(), any_changes
+
+      qacc_full, _ = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient)
+      qacc_inc, any_changes = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient_incremental, track=True)
+      total_any_changes = total_any_changes or any_changes
+
+      _assert_eq(qacc_inc, qacc_full, f"qacc keyframe={keyframe}")
+
+    self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
+
 
 if __name__ == "__main__":
   wp.init()

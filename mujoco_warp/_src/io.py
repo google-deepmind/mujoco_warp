@@ -14,7 +14,6 @@
 # ==============================================================================
 
 import dataclasses
-import importlib.metadata
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -27,17 +26,6 @@ from mujoco_warp._src import render_util
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-
-
-def _is_mujoco_fresh() -> bool:
-  """Checks if mujoco version is > 3.5.0."""
-  version = importlib.metadata.version("mujoco")
-  version = version.split(".")
-  version = tuple(map(int, version[:3])) + tuple(version[3:])
-  return version > (3, 5, 0)
-
-
-BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -901,7 +889,9 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if mujoco.mj_isSparse(mjm):
+  if mjd.nefc == 0:
+    efc_j = np.zeros((0, mjm.nv))
+  elif mujoco.mj_isSparse(mjm):
     efc_j = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(efc_j, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:

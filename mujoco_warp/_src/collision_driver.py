@@ -18,13 +18,14 @@ from typing import Any
 import warp as wp
 
 from mujoco_warp._src.collision_convex import convex_narrowphase
+from mujoco_warp._src.collision_core import CollisionContext
+from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
-from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -73,15 +74,6 @@ MJ_COLLISION_TABLE = {
   (GeomType.BOX, GeomType.MESH): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.MESH): CollisionType.CONVEX,
 }
-
-
-def create_collision_context(naconmax: int) -> CollisionContext:
-  """Create a CollisionContext with allocated arrays."""
-  return CollisionContext(
-    collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_worldid=wp.empty(naconmax, dtype=int),
-  )
 
 
 @wp.kernel

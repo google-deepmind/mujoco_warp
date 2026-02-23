@@ -26,8 +26,8 @@ from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import types
+from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
-from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
