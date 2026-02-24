@@ -947,6 +947,7 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_faceadr: first face address                         (nmesh,)
+    mesh_octadr: octree address for each mesh                (nmesh,)
     mesh_normaladr: first normal address                     (nmesh,)
     mesh_graphadr: graph data address; -1: no graph          (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -1028,9 +1029,9 @@ class Model:
     actuator_forcerange: range of forces                     (*, nu, 2)
     actuator_actrange: range of activations                  (*, nu, 2)
     actuator_gear: scale length and transmitted force        (*, nu, 6)
-    actuator_cranklength: crank length for slider-crank      (nu,)
-    actuator_acc0: acceleration from unit force in qpos0     (nu,)
-    actuator_lengthrange: feasible actuator length range     (nu, 2)
+    actuator_cranklength: crank length for slider-crank      (*, nu)
+    actuator_acc0: acceleration from unit force in qpos0     (*, nu)
+    actuator_lengthrange: feasible actuator length range     (*, nu, 2)
     sensor_type: sensor type (SensorType)                    (nsensor,)
     sensor_datatype: numeric data type (DataType)            (nsensor,)
     sensor_objtype: type of sensorized object (ObjType)      (nsensor,)
@@ -1310,6 +1311,7 @@ class Model:
   mesh_vertadr: array("nmesh", int)
   mesh_vertnum: array("nmesh", int)
   mesh_faceadr: array("nmesh", int)
+  mesh_octadr: array("nmesh", int)
   mesh_normaladr: array("nmesh", int)
   mesh_graphadr: array("nmesh", int)
   mesh_vert: array("nmeshvert", wp.vec3)
@@ -1391,9 +1393,9 @@ class Model:
   actuator_forcerange: array("*", "nu", wp.vec2)
   actuator_actrange: array("*", "nu", wp.vec2)
   actuator_gear: array("*", "nu", wp.spatial_vector)
-  actuator_cranklength: array("nu", float)
-  actuator_acc0: array("nu", float)
-  actuator_lengthrange: array("nu", wp.vec2)
+  actuator_cranklength: array("*", "nu", float)
+  actuator_acc0: array("*", "nu", float)
+  actuator_lengthrange: array("*", "nu", wp.vec2)
   sensor_type: array("nsensor", int)
   sensor_datatype: array("nsensor", int)
   sensor_objtype: array("nsensor", int)
@@ -1769,21 +1771,6 @@ class Data:
 
 
 @dataclasses.dataclass
-class CollisionContext:
-  """Collision driver intermediate arrays.
-
-  Attributes:
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
-  """
-
-  collision_pair: wp.array
-  collision_pairid: wp.array
-  collision_worldid: wp.array
-
-
-@dataclasses.dataclass
 class RenderContext:
   """Context for rendering.
 
@@ -1806,7 +1793,7 @@ class RenderContext:
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
-    hfield_bounds_size: hfield bounds size
+    hfield_bounds_size: hfield bounds half-extents
     flex_mesh: flex mesh
     flex_rgba: flex rgba
     flex_bvh_id: flex BVH id

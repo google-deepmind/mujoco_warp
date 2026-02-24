@@ -22,10 +22,10 @@ from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
-from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import mat63

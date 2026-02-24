@@ -607,8 +607,8 @@ def _actuator_force(
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   actuator_forcerange: wp.array2d(dtype=wp.vec2),
   actuator_actrange: wp.array2d(dtype=wp.vec2),
-  actuator_acc0: wp.array(dtype=float),
-  actuator_lengthrange: wp.array(dtype=wp.vec2),
+  actuator_acc0: wp.array2d(dtype=float),
+  actuator_lengthrange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
@@ -681,8 +681,8 @@ def _actuator_force(
   elif gaintype == GainType.AFFINE:
     gain = gainprm[0] + gainprm[1] * length + gainprm[2] * velocity
   elif gaintype == GainType.MUSCLE:
-    acc0 = actuator_acc0[uid]
-    lengthrange = actuator_lengthrange[uid]
+    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
     gain = util_misc.muscle_gain(length, velocity, lengthrange, acc0, gainprm)
 
   # bias
@@ -693,8 +693,8 @@ def _actuator_force(
   if biastype == BiasType.AFFINE:
     bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
   elif biastype == BiasType.MUSCLE:
-    acc0 = actuator_acc0[uid]
-    lengthrange = actuator_lengthrange[uid]
+    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
     bias = util_misc.muscle_bias(length, lengthrange, acc0, biasprm)
 
   force = gain * ctrl_act + bias

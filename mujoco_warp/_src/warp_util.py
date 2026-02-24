@@ -15,6 +15,7 @@
 
 import functools
 import inspect
+import warnings
 
 import warp as wp
 
@@ -144,4 +145,12 @@ def check_toolkit_driver():
   wp.init()
   if wp.get_device().is_cuda:
     if not wp.is_conditional_graph_supported():
-      raise RuntimeError("Minimum supported CUDA version: 12.4.")
+      warnings.warn(
+        """
+        CUDA version < 12.4 detected
+        - graph capture may be unreliable for < 12.3
+        - conditional graph nodes are not available for < 12.4
+          Model.opt.graph_conditional should be set to False
+        """,
+        stacklevel=2,
+      )

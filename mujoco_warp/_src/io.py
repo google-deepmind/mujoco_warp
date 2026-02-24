@@ -14,7 +14,6 @@
 # ==============================================================================
 
 import dataclasses
-import importlib.metadata
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -23,21 +22,16 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_util
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-
-
-def _is_mujoco_fresh() -> bool:
-  """Checks if mujoco version is > 3.5.0."""
-  version = importlib.metadata.version("mujoco")
-  version = version.split(".")
-  version = tuple(map(int, version[:3])) + tuple(version[3:])
-  return version > (3, 5, 0)
-
-
-BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec10
+from mujoco_warp._src.util_pkg import check_version
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -921,7 +915,9 @@ def put_data(
     )
     efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1)), dtype=int)
 
-    if mujoco.mj_isSparse(mjm):
+    if mjd.nefc == 0:
+      mj_efc_J = np.zeros((0, mjm.nv))
+    elif mujoco.mj_isSparse(mjm):
       mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
       mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
     else:
@@ -1206,7 +1202,17 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if check_version("mujoco>=3.5.1.dev869712136"):
+    ten_J = d.ten_J.numpy()[world_id]
+    mujoco.mju_dense2sparse(
+      result.ten_J,
+      ten_J,
+      result.ten_J_rownnz,
+      result.ten_J_rowadr,
+      result.ten_J_colind,
+    )
+  else:
+    result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
@@ -1808,13 +1814,109 @@ def _compute_actuator_acc0(
   actid_target: int,
   nv: int,
   result_vec_in: wp.array2d(dtype=float),
-  actuator_acc0_out: wp.array(dtype=float),
+  actuator_acc0_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   norm_sq = float(0.0)
   for i in range(nv):
     norm_sq += result_vec_in[worldid, i] * result_vec_in[worldid, i]
-  actuator_acc0_out[actid_target] = wp.sqrt(norm_sq)
+  actuator_acc0_out[worldid, actid_target] = wp.sqrt(norm_sq)
+
+
+@wp.kernel
+def _compute_dof_M0(
+  dof_bodyid: wp.array(dtype=int),
+  dof_armature: wp.array2d(dtype=float),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  crb_in: wp.array2d(dtype=vec10),
+  dof_M0_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  bodyid = dof_bodyid[dofid]
+  armature = dof_armature[worldid % dof_armature.shape[0], dofid]
+  buf = mjmath.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
+  dof_M0_out[worldid, dofid] = armature + wp.dot(cdof_in[worldid, dofid], buf)
+
+
+@wp.kernel
+def _resolve_dampratio(
+  actuator_biastype: wp.array(dtype=int),
+  actuator_gainprm: wp.array2d(dtype=types.vec10f),
+  actuator_moment_in: wp.array3d(dtype=float),
+  dof_M0_in: wp.array2d(dtype=float),
+  nv: int,
+  actuator_biasprm: wp.array2d(dtype=types.vec10f),
+):
+  worldid, actid = wp.tid()
+  biastype = actuator_biastype[actid]
+
+  # only affine bias (position actuators)
+  if biastype != BiasType.AFFINE:
+    return
+
+  gainprm_id = worldid % actuator_gainprm.shape[0]
+  biasprm_id = worldid % actuator_biasprm.shape[0]
+  kp = actuator_gainprm[gainprm_id, actid][0]
+
+  biasprm = actuator_biasprm[biasprm_id, actid]
+  # dampratio condition: gainprm[0] == -biasprm[1] and biasprm[2] > 0
+  if wp.abs(kp + biasprm[1]) > MJ_MINVAL:
+    return
+  if biasprm[2] <= 0.0:
+    return
+
+  dampratio = biasprm[2]
+
+  # compute reflected mass: sum(dof_M0[j] / moment[i,j]^2) for active DOFs
+  mass = float(0.0)
+  for j in range(nv):
+    moment = actuator_moment_in[worldid, actid, j]
+    if wp.abs(moment) > MJ_MINVAL:
+      mass += dof_M0_in[worldid, j] / (moment * moment)
+
+  damping = dampratio * 2.0 * wp.sqrt(kp * mass)
+
+  # write -damping to biasprm[2]
+  new_biasprm = biasprm
+  new_biasprm[2] = -damping
+  actuator_biasprm[biasprm_id, actid] = new_biasprm
+
+
+@wp.kernel
+def _set_length_range(
+  actuator_trntype: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
+  actuator_gear: wp.array2d(dtype=wp.spatial_vector),
+  jnt_limited: wp.array(dtype=int),
+  jnt_range: wp.array2d(dtype=wp.vec2),
+  tendon_limited: wp.array(dtype=int),
+  tendon_range: wp.array2d(dtype=wp.vec2),
+  ntendon: int,
+  actuator_lengthrange_out: wp.array2d(dtype=wp.vec2),
+):
+  worldid, actid = wp.tid()
+  trntype = actuator_trntype[actid]
+  id0 = actuator_trnid[actid][0]
+  gear0 = actuator_gear[worldid % actuator_gear.shape[0], actid][0]
+
+  lr = wp.vec2(0.0, 0.0)
+
+  if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
+    if jnt_limited[id0]:
+      rng = jnt_range[worldid % jnt_range.shape[0], id0]
+      if gear0 > 0.0:
+        lr = wp.vec2(rng[0] * gear0, rng[1] * gear0)
+      else:
+        lr = wp.vec2(rng[1] * gear0, rng[0] * gear0)
+  elif trntype == TrnType.TENDON:
+    if ntendon > 0 and tendon_limited[id0]:
+      rng = tendon_range[worldid % tendon_range.shape[0], id0]
+      if gear0 > 0.0:
+        lr = wp.vec2(rng[0] * gear0, rng[1] * gear0)
+      else:
+        lr = wp.vec2(rng[1] * gear0, rng[0] * gear0)
+
+  actuator_lengthrange_out[worldid, actid] = lr
 
 
 # kernel_analyzer: on
@@ -1856,6 +1958,9 @@ def set_const_0(m: types.Model, d: types.Data):
     - cam_pos0, cam_poscom0, cam_mat0: camera references
     - light_pos0, light_poscom0, light_dir0: light references
     - actuator_acc0: acceleration from unit actuator force
+    - actuator_biasprm[2] (dampratio resolution): for position actuators where
+      gainprm[0] == -biasprm[1] and biasprm[2] > 0, converts dampratio to
+      damping via biasprm[2] = -dampratio * 2 * sqrt(kp * reflected_mass)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -1991,6 +2096,28 @@ def set_const_0(m: types.Model, d: types.Data):
       smooth.solve_m(m, d, act_result_vec, act_moment_vec)
       wp.launch(_compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
 
+  # resolve dampratio: compute dof_M0, then convert dampratio to damping
+  if m.nu > 0 and m.nv > 0:
+    dof_M0 = wp.zeros((d.nworld, m.nv), dtype=float)
+    wp.launch(
+      _compute_dof_M0,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_bodyid, m.dof_armature, d.cdof, d.crb],
+      outputs=[dof_M0],
+    )
+    wp.launch(
+      _resolve_dampratio,
+      dim=(d.nworld, m.nu),
+      inputs=[
+        m.actuator_biastype,
+        m.actuator_gainprm,
+        d.actuator_moment,
+        dof_M0,
+        m.nv,
+      ],
+      outputs=[m.actuator_biasprm],
+    )
+
   wp.copy(d.qpos, qpos_saved)
 
 
@@ -2037,8 +2164,9 @@ def set_const(m: types.Model, d: types.Data):
       - cam_pos0, cam_poscom0, cam_mat0: camera references
       - light_pos0, light_poscom0, light_dir0: light references
       - actuator_acc0: acceleration from unit actuator force
+      - actuator_biasprm[2] (dampratio resolution)
 
-  Skips: dof_M0, actuator_length0 (not in mjwarp).
+  Skips: actuator_length0 (not in mjwarp).
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -2046,6 +2174,39 @@ def set_const(m: types.Model, d: types.Data):
   """
   set_const_fixed(m, d)
   set_const_0(m, d)
+
+
+def set_length_range(m: types.Model, d: types.Data, index: int = -1):
+  """Compute feasible actuator length ranges from joint/tendon limits.
+
+  For joint and tendon transmissions with limits, copies the range directly
+  from jnt_range or tendon_range scaled by gear. Actuators without limits
+  keep (0, 0). This covers the common robotics use case; simulation-based
+  computation for general transmissions is not yet implemented.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object (unused, kept for API compatibility with MuJoCo C).
+    index: Actuator index to compute for, or -1 for all actuators.
+  """
+  if m.nu == 0:
+    return
+
+  wp.launch(
+    _set_length_range,
+    dim=(d.nworld, m.nu),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_gear,
+      m.jnt_limited,
+      m.jnt_range,
+      m.tendon_limited,
+      m.tendon_range,
+      m.ntendon,
+    ],
+    outputs=[m.actuator_lengthrange],
+  )
 
 
 def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any] | Sequence[str]):
