@@ -647,15 +647,17 @@ def _equality_flex(
   Jqvel = float(0.0)
 
   rownnz = flexedge_J_rownnz[edgeid]
-  rowadr = flexedge_J_rowadr[edgeid]
+  flex_rowadr = flexedge_J_rowadr[edgeid]
   efc_J_rownnz_out[worldid, efcid] = rownnz
-  efc_J_rowadr_out[worldid, efcid] = rowadr
+  efc_rowadr = efcid * nv
+  efc_J_rowadr_out[worldid, efcid] = efc_rowadr
   for i in range(rownnz):
-    sparseid = rowadr + i
-    colind = flexedge_J_colind[sparseid]
-    J = flexedge_J_in[worldid, 0, sparseid]
-    efc_J_colind_out[worldid, 0, sparseid] = colind
-    efc_J_out[worldid, 0, sparseid] = J
+    flex_sparseid = flex_rowadr + i
+    efc_sparseid = efc_rowadr + i
+    colind = flexedge_J_colind[flex_sparseid]
+    J = flexedge_J_in[worldid, 0, flex_sparseid]
+    efc_J_colind_out[worldid, 0, efc_sparseid] = colind
+    efc_J_out[worldid, 0, efc_sparseid] = J
     Jqvel += J * qvel_in[worldid, colind]
 
   _efc_row(
