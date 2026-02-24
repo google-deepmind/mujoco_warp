@@ -1675,7 +1675,7 @@ class Data:
     naconmax: maximum number of contacts (shared across all worlds)
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
-    njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ (16)
+    njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
   """
