@@ -1,4 +1,4 @@
-<mujoco model="n Humanoids">
+<mujoco model="Three Humanoids">
   <option timestep="0.005"/>
 
   <size memory="100M"/>

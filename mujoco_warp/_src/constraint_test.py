@@ -15,6 +15,8 @@
 
 """Tests for constraint functions."""
 
+import itertools
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -56,14 +58,14 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
 
   # convert sparse to dense if necessary
-  if m.opt.is_sparse:
+  if m.is_sparse:
     efc_J = np.zeros((nefc, nv))
     mujoco.mju_sparse2dense(
       efc_J,
       d.efc.J.numpy()[0, 0],
       d.efc.J_rownnz.numpy()[0, :nefc],
       d.efc.J_rowadr.numpy()[0, :nefc],
-      d.efc.J_colind.numpy()[0],
+      d.efc.J_colind.numpy()[0, 0],
     )
   else:
     efc_J = d.efc.J.numpy()[0]
@@ -117,29 +119,15 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
 
 class ConstraintTest(parameterized.TestCase):
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, 1, 1),
-    (ConeType.PYRAMIDAL, 1, 3),
-    (ConeType.PYRAMIDAL, 1, 4),
-    (ConeType.PYRAMIDAL, 1, 6),
-    (ConeType.PYRAMIDAL, 3, 3),
-    (ConeType.PYRAMIDAL, 3, 4),
-    (ConeType.PYRAMIDAL, 3, 6),
-    (ConeType.PYRAMIDAL, 4, 4),
-    (ConeType.PYRAMIDAL, 4, 6),
-    (ConeType.PYRAMIDAL, 6, 6),
-    (ConeType.ELLIPTIC, 1, 1),
-    (ConeType.ELLIPTIC, 1, 3),
-    (ConeType.ELLIPTIC, 1, 4),
-    (ConeType.ELLIPTIC, 1, 6),
-    (ConeType.ELLIPTIC, 3, 3),
-    (ConeType.ELLIPTIC, 3, 4),
-    (ConeType.ELLIPTIC, 3, 6),
-    (ConeType.ELLIPTIC, 4, 4),
-    (ConeType.ELLIPTIC, 4, 6),
-    (ConeType.ELLIPTIC, 6, 6),
+    *itertools.product(
+      (ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+      itertools.combinations_with_replacement((1, 3, 4, 6), 2),
+      (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    )
   )
-  def test_condim(self, cone, condim1, condim2):
+  def test_condim(self, cone, condims, jacobian):
     """Test condim."""
+    condim1, condim2 = condims
     xml = f"""
       <mujoco>
         <worldbody>
@@ -160,7 +148,7 @@ class ConstraintTest(parameterized.TestCase):
       </mujoco>
     """
 
-    _, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.cone": cone})
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
     # fill with nan to check whether we are not reading uninitialized values
     for arr in (d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
@@ -169,25 +157,25 @@ class ConstraintTest(parameterized.TestCase):
     mjw.make_constraint(m, d)
 
     _assert_eq(d.nacon.numpy()[0], mjd.ncon, "nacon")
-    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, : m.nv].reshape(-1), mjd.efc_J, "efc_J")
-    _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
-    _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
-    _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
-    _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   @parameterized.parameters(
-    mujoco.mjtCone.mjCONE_PYRAMIDAL,
-    mujoco.mjtCone.mjCONE_ELLIPTIC,
+    *itertools.product(
+      (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
+      (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    )
   )
-  def test_constraints(self, cone):
+  def test_constraints(self, cone, jacobian):
     """Test constraints."""
     for key in range(3):
-      mjm, mjd, m, d = test_data.fixture("constraints.xml", keyframe=key, overrides={"opt.cone": cone})
+      mjm, mjd, m, d = test_data.fixture(
+        "constraints.xml", keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
+      )
 
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)
       for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
-        arr.fill_(wp.nan)
+        arr.fill_(wp.inf)
 
       mjw.make_constraint(m, d)
 
@@ -197,10 +185,14 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
-  def test_limit_tendon(self):
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_limit_tendon(self, jacobian):
     """Test limit tendon constraints."""
     for keyframe in range(-1, 1):
-      mjm, mjd, m, d = test_data.fixture("tendon/tendon_limit.xml", keyframe=keyframe)
+      mjm, mjd, m, d = test_data.fixture("tendon/tendon_limit.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian})
 
       for arr in (d.nefc, d.nl, d.efc.type):
         arr.fill_(-1)
@@ -213,7 +205,11 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
-  def test_equality_tendon(self):
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_equality_tendon(self, jacobian):
     """Test equality tendon constraints."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -256,6 +252,7 @@ class ConstraintTest(parameterized.TestCase):
       </mujoco>
     """,
       keyframe=0,
+      overrides={"opt.jacobian": jacobian},
     )
 
     for arr in (d.nefc, d.ne, d.efc.type):

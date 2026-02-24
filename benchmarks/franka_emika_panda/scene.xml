@@ -22,6 +22,7 @@
   </asset>
 
   <worldbody>
+    <camera name="front" pos="1.4 0 0.6" fovy="58" mode="fixed" euler="0 1.2 1.5708"/>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" contype="1"/>
   </worldbody>
