@@ -161,16 +161,17 @@ class ConstraintTest(parameterized.TestCase):
 
   @parameterized.parameters(
     *itertools.product(
+      ("constraints.xml", "flex/floppy.xml"),
       (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
     )
   )
-  def test_constraints(self, cone, jacobian):
+  def test_constraints(self, xml, cone, jacobian):
     """Test constraints."""
+    if xml == "flex/floppy.xml" and jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
+      self.skipTest("flex/floppy.xml with dense jacobian not supported")
     for key in range(3):
-      mjm, mjd, m, d = test_data.fixture(
-        "constraints.xml", keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
-      )
+      mjm, mjd, m, d = test_data.fixture(xml, keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)

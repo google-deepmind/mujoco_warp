@@ -28,6 +28,7 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -426,10 +427,14 @@ class ForwardTest(parameterized.TestCase):
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
         mjd_arr = actuator_moment
-      elif arr == "ten_J" and mjm.ntendon:
-        ten_J = np.zeros((mjm.ntendon, mjm.nv))
-        mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
-        mjd_arr = ten_J
+      elif arr == "ten_J":
+        if check_version("mujoco>=3.5.1.dev872479828"):
+          ten_J = np.zeros((mjm.ntendon, mjm.nv))
+          if mjm.ntendon:
+            mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
+          mjd_arr = ten_J
+        else:
+          mjd_arr = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
       elif arr == "efc_J" or arr == "efc_id":
         # Already checked earlier
         continue
