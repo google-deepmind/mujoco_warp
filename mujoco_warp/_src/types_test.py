@@ -22,9 +22,9 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
-from .types import Data
-from .types import Model
-from .types import Option
+from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import Option
 
 
 class TypesTest(parameterized.TestCase):
@@ -54,6 +54,7 @@ class TypesTest(parameterized.TestCase):
     desired_fields.extend(f for f in mjw_fields if f not in mj_set)
 
     actual_fields = [f.name for f in dataclasses.fields(mjw_class)]
+
     self.assertListEqual(actual_fields, desired_fields)
 
   @parameterized.parameters(Option, Model, Data)

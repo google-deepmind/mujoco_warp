@@ -25,10 +25,8 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
-
-from .block_cholesky import create_blocked_cholesky_func
-from .block_cholesky import create_blocked_cholesky_solve_func
-from .warp_util import nested_kernel
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -204,7 +202,7 @@ class SupportTest(parameterized.TestCase):
     nworld = d.nworld
 
     # Create combined factor and solve kernel as in solver.py
-    @nested_kernel(module="unique", enable_backward=False)
+    @wp.kernel(module="unique", enable_backward=False)
     def combined_cholesky_kernel(
       grad_in: wp.array3d(dtype=float),
       h_in: wp.array3d(dtype=float),
@@ -240,11 +238,10 @@ class SupportTest(parameterized.TestCase):
       h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
     h = wp.array(h_np, dtype=float)
 
-    # 3. Reuse built-in arrays from data structure to fill d.efc.grad with test data
-    grad_np = d.efc.grad.numpy()
-    grad_np.fill(0)  # Zero out first
+    # 3. Create inline arrays for grad, Mgrad, and done (no longer in d.efc)
+    grad_np = np.zeros((nworld, nv_pad))
     grad_np[0, :nv] = b
-    d.efc.grad.assign(grad_np)
+    grad = wp.array(grad_np, dtype=float)
 
     # Zero out the temporary arrays to ensure clean state
     L_init = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
@@ -253,25 +250,23 @@ class SupportTest(parameterized.TestCase):
 
     hfactor = wp.array(L_init, dtype=float)
 
-    d.efc.Mgrad.zero_()
+    Mgrad = wp.zeros((nworld, nv_pad), dtype=float)
 
     # Ensure done is False so kernel executes
-    d.efc.done.zero_()
+    done = wp.zeros((nworld,), dtype=bool)
 
-    # Launch with same dimensions as solver.py, using built-in arrays
-    grad_shape_1 = d.efc.grad.shape[1]
+    # Launch with same dimensions as solver.py, using inline arrays
     wp.launch_tiled(
       combined_cholesky_kernel,
       dim=nworld,
-      inputs=[d.efc.grad.reshape(shape=(nworld, grad_shape_1, 1)), h, d.efc.done, hfactor],
-      outputs=[d.efc.Mgrad.reshape(shape=(nworld, d.efc.Mgrad.shape[1], 1))],
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor],
+      outputs=[Mgrad.reshape(shape=(nworld, nv_pad, 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
     wp.synchronize()
 
-    # Get results from built-in arrays
     L_result = hfactor.numpy()[0]
-    x_result = d.efc.Mgrad.numpy()[0]
+    x_result = Mgrad.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
@@ -328,6 +323,78 @@ class SupportTest(parameterized.TestCase):
       atol=1e-3,
       err_msg="Solution mismatch with numpy",
     )
+
+  @parameterized.parameters(
+    ("pendula.xml", 1),
+    ("pendula.xml", 2),
+    ("humanoid/n_humanoid.xml", 1),
+    ("humanoid/n_humanoid.xml", 5),
+    ("constraints.xml", 1),
+  )
+  def test_jac(self, xml, bodyid):
+    """Tests jac against mj_jac."""
+    mjm, mjd, m, d = test_data.fixture(xml)
+
+    point = mjd.xipos[bodyid]
+
+    jacp_mj = np.zeros((3, mjm.nv))
+    jacr_mj = np.zeros((3, mjm.nv))
+    mujoco.mj_jac(mjm, mjd, jacp_mj, jacr_mj, point, bodyid)
+
+    point_wp = wp.array([point], dtype=wp.vec3)
+    bodyid_wp = wp.array([bodyid], dtype=int)
+    jacp_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+    jacr_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+
+    mjwarp.jac(m, d, jacp_wp, jacr_wp, point_wp, bodyid_wp)
+
+    _assert_eq(jacp_wp.numpy()[0], jacp_mj, f"jacp ({xml}, body {bodyid})")
+    _assert_eq(jacr_wp.numpy()[0], jacr_mj, f"jacr ({xml}, body {bodyid})")
+
+  def test_jac_optional_outputs(self):
+    """Tests jac with None outputs."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml")
+
+    point = mjd.xipos[1]
+    point_wp = wp.array([point], dtype=wp.vec3)
+    bodyid_wp = wp.array([1], dtype=int)
+
+    jacp_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+    jacr_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+
+    jacp_mj = np.zeros((3, mjm.nv))
+    jacr_mj = np.zeros((3, mjm.nv))
+    mujoco.mj_jac(mjm, mjd, jacp_mj, jacr_mj, point, 1)
+
+    mjwarp.jac(m, d, jacp_wp, None, point_wp, bodyid_wp)
+    _assert_eq(jacp_wp.numpy()[0], jacp_mj, "jacp (optional jacr)")
+
+    mjwarp.jac(m, d, None, jacr_wp, point_wp, bodyid_wp)
+    _assert_eq(jacr_wp.numpy()[0], jacr_mj, "jacr (optional jacp)")
+
+    mjwarp.jac(m, d, None, None, point_wp, bodyid_wp)
+
+  def test_jac_nworld(self):
+    """Tests jac with multiple worlds."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=2)
+
+    bodyid = 1
+    point = mjd.xipos[bodyid]
+
+    jacp_mj = np.zeros((3, mjm.nv))
+    jacr_mj = np.zeros((3, mjm.nv))
+    mujoco.mj_jac(mjm, mjd, jacp_mj, jacr_mj, point, bodyid)
+
+    point_wp = wp.array([point, point], dtype=wp.vec3)
+    bodyid_wp = wp.array([bodyid, bodyid], dtype=int)
+    jacp_wp = wp.zeros((2, 3, mjm.nv), dtype=float)
+    jacr_wp = wp.zeros((2, 3, mjm.nv), dtype=float)
+
+    mjwarp.jac(m, d, jacp_wp, jacr_wp, point_wp, bodyid_wp)
+
+    for w in range(2):
+      _assert_eq(jacp_wp.numpy()[w], jacp_mj, f"jacp world {w}")
+      _assert_eq(jacr_wp.numpy()[w], jacr_mj, f"jacr world {w}")
 
 
 if __name__ == "__main__":
