@@ -1634,8 +1634,18 @@ def _contact_pyramidal(
 
     if is_sparse:
       rownnz = int(0)
+      dofid = int(da)
+    else:
+      dofid = int(nv - 1)
 
-    for dofid in range(nv - 1, -1, -1):
+    while True:
+      if is_sparse:
+        if da1 < 0 and da2 < 0:
+          break
+      else:
+        if dofid < 0:
+          break
+
       if dofid == da:
         # TODO(team): contact_jacobian
         jac1p, jac1r = support.jac_dof(
@@ -1697,9 +1707,14 @@ def _contact_pyramidal(
         if da2 == da:
           da2 = dof_parentid[da2]
         da = wp.max(da1, da2)
+        if is_sparse:
+          dofid = da
+        else:
+          dofid -= 1
       else:
         if not is_sparse:
           efc_J_out[worldid, efcid, dofid] = 0.0
+          dofid -= 1
 
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = rownnz
@@ -1839,8 +1854,18 @@ def _contact_elliptic(
 
     if is_sparse:
       rownnz = int(0)
+      dofid = int(da)
+    else:
+      dofid = int(nv - 1)
 
-    for dofid in range(nv - 1, -1, -1):
+    while True:
+      if is_sparse:
+        if da1 < 0 and da2 < 0:
+          break
+      else:
+        if dofid < 0:
+          break
+
       if dofid == da:
         # TODO(team): contact jacobian
         jac1p, jac1r = support.jac_dof(
@@ -1890,9 +1915,14 @@ def _contact_elliptic(
         if da2 == da:
           da2 = dof_parentid[da2]
         da = wp.max(da1, da2)
+        if is_sparse:
+          dofid = da
+        else:
+          dofid -= 1
       else:
         if not is_sparse:
           efc_J_out[worldid, efcid, dofid] = 0.0
+          dofid -= 1
 
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = rownnz
