@@ -25,6 +25,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -1421,7 +1422,7 @@ def linesearch_jv_fused(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
     jv_out = float(0.0)
 
     if wp.static(dofs_per_thread >= nv):
-      if wp.static(opt_is_sparse):
+      if wp.static(SPARSE_CONSTRAINT_JACOBIAN):
         # Sparse: iterate over non-zero entries in the row
         rownnz = efc_J_rownnz_in[worldid, efcid]
         rowadr = efc_J_rowadr_in[worldid, efcid]
@@ -1435,7 +1436,7 @@ def linesearch_jv_fused(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
       ctx_jv_out[worldid, efcid] = jv_out
 
     else:
-      if wp.static(opt_is_sparse):
+      if wp.static(SPARSE_CONSTRAINT_JACOBIAN):
         # Sparse: thread 0 handles entire row (sparse entries << nv typically)
         if dofstart == 0:
           rownnz = efc_J_rownnz_in[worldid, efcid]
@@ -1724,7 +1725,7 @@ def solve_init_jaref(opt_is_sparse: bool, nv: int, dofs_per_thread: int):
       return
 
     jaref = float(0.0)
-    if wp.static(opt_is_sparse):
+    if wp.static(SPARSE_CONSTRAINT_JACOBIAN):
       rownnz = efc_J_rownnz_in[worldid, efcid]
       rowadr = efc_J_rowadr_in[worldid, efcid]
       for i in range(rownnz):
@@ -2116,7 +2117,7 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
   )
 
   # qfrc_constraint = efc_J.T @ efc_force
-  if m.is_sparse:
+  if SPARSE_CONSTRAINT_JACOBIAN:
     d.qfrc_constraint.zero_()
     wp.launch(
       update_constraint_init_qfrc_constraint_sparse,
@@ -2775,7 +2776,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    if m.is_sparse:
+    if m.is_sparse and SPARSE_CONSTRAINT_JACOBIAN:
       # TODO(team): improve performance for sparse code path
       @wp.kernel(module="unique", enable_backward=False)
       def _JTDAJ_sparse(
@@ -2842,6 +2843,29 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
         outputs=[ctx.h],
       )
+    elif m.is_sparse:
+      num_blocks_ceil = ceil(m.nv / types.TILE_SIZE_JTDAJ_SPARSE)
+      lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
+      wp.launch_tiled(
+        update_gradient_JTDAJ_sparse_tiled(types.TILE_SIZE_JTDAJ_SPARSE, d.njmax),
+        dim=(d.nworld, lower_triangle_dim),
+        inputs=[
+          d.nefc,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
+      )
+
+      wp.launch(
+        update_gradient_set_h_qM_lower_sparse,
+        dim=(d.nworld, m.qM_fullm_i.size),
+        inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
+        outputs=[ctx.h],
+      )
     else:
       wp.launch_tiled(
         update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
@@ -2882,7 +2906,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
 
       nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
 
-      if m.is_sparse:
+      if SPARSE_CONSTRAINT_JACOBIAN:
         wp.launch(
           update_gradient_JTCJ_sparse,
           dim=(d.naconmax, m.dof_tri_row.size),

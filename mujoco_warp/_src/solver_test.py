@@ -26,6 +26,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import solver
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -129,7 +130,7 @@ class SolverTest(parameterized.TestCase):
       # Calculate target values
       nefc = d.nefc.numpy()[0]
       ctx_search_np = ctx.search.numpy()[0]
-      if m.is_sparse:
+      if SPARSE_CONSTRAINT_JACOBIAN:
         efc_J_np = np.zeros((nefc, m.nv))
         mujoco.mju_sparse2dense(
           efc_J_np,

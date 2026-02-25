@@ -28,6 +28,7 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
@@ -709,7 +710,7 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
-  if is_sparse(mjm):
+  if SPARSE_CONSTRAINT_JACOBIAN:
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
     efc.J_colind = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=int)
@@ -907,7 +908,7 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if is_sparse(mjm):
+  if SPARSE_CONSTRAINT_JACOBIAN:
     # TODO(team): process efc_J sparsity structure for nv row shift
     efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
     efc.J_rowadr = wp.array(
@@ -1155,7 +1156,7 @@ def get_data_into(
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
-    if is_sparse(mjm):
+    if SPARSE_CONSTRAINT_JACOBIAN:
       efc_J = np.zeros((nefc, mjm.nv))
       J_rownnz_wp = d.efc.J_rownnz.numpy()[0]
       J_rowadr_wp = d.efc.J_rowadr.numpy()[0]

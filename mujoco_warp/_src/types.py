@@ -32,6 +32,9 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+# TODO(team): remove after improving performance for sparse constraint jacobian
+SPARSE_CONSTRAINT_JACOBIAN = False
+
 # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
 TEXTURE_DTYPE = wp.Texture2D if hasattr(wp, "Texture2D") else int
 

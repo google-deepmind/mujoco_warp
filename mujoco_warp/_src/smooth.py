@@ -21,6 +21,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -2416,7 +2417,7 @@ def transmission(m: Model, d: Data):
         m.dof_bodyid,
         m.geom_bodyid,
         m.actuator_trnid,
-        m.is_sparse,
+        SPARSE_CONSTRAINT_JACOBIAN,
         m.actuator_trntype_body_adr,
         d.subtree_com,
         d.cdof,
