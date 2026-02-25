@@ -649,17 +649,35 @@ def _equality_flex(
 
   rownnz = flexedge_J_rownnz[edgeid]
   flex_rowadr = flexedge_J_rowadr[edgeid]
-  efc_J_rownnz_out[worldid, efcid] = rownnz
-  efc_rowadr = efcid * nv
-  efc_J_rowadr_out[worldid, efcid] = efc_rowadr
-  for i in range(rownnz):
-    flex_sparseid = flex_rowadr + i
-    efc_sparseid = efc_rowadr + i
-    colind = flexedge_J_colind[flex_sparseid]
-    J = flexedge_J_in[worldid, 0, flex_sparseid]
-    efc_J_colind_out[worldid, 0, efc_sparseid] = colind
-    efc_J_out[worldid, 0, efc_sparseid] = J
-    Jqvel += J * qvel_in[worldid, colind]
+
+  if is_sparse:
+    efc_J_rownnz_out[worldid, efcid] = rownnz
+    efc_rowadr = efcid * nv
+    efc_J_rowadr_out[worldid, efcid] = efc_rowadr
+    for i in range(rownnz):
+      flex_sparseid = flex_rowadr + i
+      efc_sparseid = efc_rowadr + i
+      colind = flexedge_J_colind[flex_sparseid]
+      J = flexedge_J_in[worldid, 0, flex_sparseid]
+      efc_J_colind_out[worldid, 0, efc_sparseid] = colind
+      efc_J_out[worldid, 0, efc_sparseid] = J
+      Jqvel += J * qvel_in[worldid, colind]
+  else:
+    sparseid = int(0)
+    colind = -1
+    if rownnz > 0:
+      colind = flexedge_J_colind[flex_rowadr]
+    for dofid in range(nv):
+      if dofid == colind:
+        flex_sparseid = flex_rowadr + sparseid
+        J = flexedge_J_in[worldid, 0, flex_sparseid]
+        efc_J_out[worldid, efcid, colind] = J
+        Jqvel += J * qvel_in[worldid, colind]
+        sparseid += 1
+        if sparseid < rownnz:
+          colind = flexedge_J_colind[flex_rowadr + sparseid]
+      else:
+        efc_J_out[worldid, efcid, dofid] = 0.0
 
   _efc_row(
     opt_disableflags,
