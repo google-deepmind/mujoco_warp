@@ -66,7 +66,7 @@ class Geom:
 def geom_collision_pair(
   # Model:
   geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
+  geom_dataid: wp.array2d(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
   mesh_vertnum: wp.array(dtype=int),
@@ -109,8 +109,10 @@ def geom_collision_pair(
   # z-axis of the rotation matrix, used as the surface normal for plane collisions
   geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])
 
+  dataid_setid = worldid % geom_dataid.shape[0]
+
   if geom_type1 == GeomType.MESH:
-    dataid = geom_dataid[g1]
+    dataid = geom_dataid[dataid_setid, g1]
     geom1.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
     geom1.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
     geom1.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
@@ -128,7 +130,7 @@ def geom_collision_pair(
     geom1.mesh_polymap = mesh_polymap
 
   if geom_type2 == GeomType.MESH:
-    dataid = geom_dataid[g2]
+    dataid = geom_dataid[dataid_setid, g2]
     geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
     geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
     geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)

@@ -174,7 +174,7 @@ def _compute_cylinder_bounds(
 def _compute_bvh_bounds(
   # Model:
   geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
+  geom_dataid: wp.array2d(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -205,7 +205,7 @@ def _compute_bvh_bounds(
   elif type == GeomType.PLANE:
     lower_bound, upper_bound = _compute_plane_bounds(pos, rot, size)
   elif type == GeomType.MESH:
-    size = mesh_bounds_size[geom_dataid[geom_id]]
+    size = mesh_bounds_size[geom_dataid[world_id % geom_dataid.shape[0], geom_id]]
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.ELLIPSOID:
     lower_bound, upper_bound = _compute_ellipsoid_bounds(pos, rot, size)
@@ -214,7 +214,7 @@ def _compute_bvh_bounds(
   elif type == GeomType.BOX:
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.HFIELD:
-    size = hfield_bounds_size[geom_dataid[geom_id]]
+    size = hfield_bounds_size[geom_dataid[world_id % geom_dataid.shape[0], geom_id]]
     hfield_center = pos + rot[:, 2] * size[2]
     lower_bound, upper_bound = _compute_box_bounds(hfield_center, rot, size)
 
@@ -238,7 +238,7 @@ def compute_bvh_group_roots(
 def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
   """Build a global BVH for all geometries in all worlds."""
   geom_type = wp.array(mjm.geom_type, dtype=int)
-  geom_dataid = wp.array(mjm.geom_dataid, dtype=int)
+  geom_dataid = wp.array(mjm.geom_dataid.reshape(1, -1), dtype=int)
   geom_size = wp.array(np.tile(mjm.geom_size[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xmat = wp.array(np.tile(mjd.geom_xmat.reshape(mjm.ngeom, 3, 3)[np.newaxis, :, :, :], (nworld, 1, 1, 1)), dtype=wp.mat33)

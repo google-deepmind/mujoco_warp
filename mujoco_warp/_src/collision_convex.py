@@ -56,7 +56,7 @@ mat_maxconpair = wp.types.matrix(shape=(MJ_MAXCONPAIR, 3), dtype=float)
 def _hfield_filter(
   # Model:
   geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
+  geom_dataid: wp.array2d(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   geom_rbound: wp.array2d(dtype=float),
   geom_margin: wp.array2d(dtype=float),
@@ -79,7 +79,8 @@ def _hfield_filter(
   See MuJoCo mjc_ConvexHField.
   """
   # height field info
-  hfdataid = geom_dataid[g1]
+  dataid_setid = worldid % geom_dataid.shape[0]
+  hfdataid = geom_dataid[dataid_setid, g1]
   size1 = hfield_size[hfdataid]
 
   # geom info
@@ -124,7 +125,7 @@ def _hfield_filter(
 
   # load mesh vertex data for support function queries
   if geomtype2 == GeomType.MESH:
-    dataid = geom_dataid[g2]
+    dataid = geom_dataid[dataid_setid, g2]
     geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
     geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
     geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
@@ -170,7 +171,7 @@ def ccd_hfield_kernel_builder(
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
+    geom_dataid: wp.array2d(dtype=int),
     geom_priority: wp.array(dtype=int),
     geom_solmix: wp.array2d(dtype=float),
     geom_solref: wp.array2d(dtype=wp.vec2),
@@ -338,7 +339,7 @@ def ccd_hfield_kernel_builder(
     geom1.rot = wp.identity(n=3, dtype=float)
 
     # see MuJoCo mjc_ConvexHField
-    geom1_dataid = geom_dataid[g1]
+    geom1_dataid = geom_dataid[worldid % geom_dataid.shape[0], g1]
 
     # height field subgrid
     nrow = hfield_nrow[geom1_dataid]
@@ -881,7 +882,7 @@ def ccd_kernel_builder(
     opt_ccd_tolerance: wp.array(dtype=float),
     geom_type: wp.array(dtype=int),
     geom_condim: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
+    geom_dataid: wp.array2d(dtype=int),
     geom_priority: wp.array(dtype=int),
     geom_solmix: wp.array2d(dtype=float),
     geom_solref: wp.array2d(dtype=wp.vec2),
