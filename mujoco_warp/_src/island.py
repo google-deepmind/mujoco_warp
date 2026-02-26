@@ -232,7 +232,7 @@ def _flood_fill(
       # push neighbors
       for neighbor in range(ntree):
         if tree_tree_in[worldid, v, neighbor] != 0:
-          if labels_in[worldid, neighbor] == -1 and nstack < ntree * ntree:
+          if labels_in[worldid, neighbor] == -1:
             stack_out[worldid, nstack] = neighbor
             nstack = nstack + 1
 
