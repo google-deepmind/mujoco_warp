@@ -27,6 +27,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import warp_util
+from mujoco_warp._src.io import _allocate_worlds
 from mujoco_warp._src.io import set_length_range
 
 
@@ -56,6 +57,50 @@ _CAMERA_TEST_XML = """
     <geom type="plane" size="5 5 0.1"/>
     <geom type="sphere" size="0.5" pos="0 0 1"/>
   </worldbody>
+</mujoco>
+"""
+
+_MESH_RANDOMIZE_XML = """
+<mujoco>
+  <asset>
+    <mesh name="cube_small" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
+    <mesh name="cube_large" vertex="0 0 0  2 0 0  0 2 0  0 0 2"/>
+    <mesh name="object_A_0" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
+    <mesh name="object_A_1" vertex="1 0 0  2 0 0  1 1 0  1 0 1"/>
+    <mesh name="object_A_2" vertex="0 1 0  1 1 0  0 2 0  0 1 1"/>
+    <mesh name="object_B_0" vertex="0 0 0  3 0 0  0 3 0  0 0 3"/>
+    <mesh name="object_B_1" vertex="3 0 0  6 0 0  3 3 0  3 0 3"/>
+  </asset>
+  <worldbody>
+    <body pos="0 0 2">
+      <freejoint/>
+      <geom name="cube" type="mesh" mesh="cube_small"/>
+    </body>
+    <body name="object" pos="0 0 1">
+      <freejoint/>
+      <geom name="object_col_0" type="mesh" mesh="object_B_0"/>
+      <geom name="object_col_1" type="mesh" mesh="object_B_1"/>
+    </body>
+  </worldbody>
+  <custom>
+    <tuple name="cube">
+      <element objtype="mesh" objname="cube_small" prm="0.5"/>
+      <element objtype="mesh" objname="cube_large" prm="0.5"/>
+    </tuple>
+    <tuple name="object_A">
+      <element objtype="mesh" objname="object_A_0" prm="0"/>
+      <element objtype="mesh" objname="object_A_1" prm="0"/>
+      <element objtype="mesh" objname="object_A_2" prm="0"/>
+    </tuple>
+    <tuple name="object_B">
+      <element objtype="mesh" objname="object_B_0" prm="0"/>
+      <element objtype="mesh" objname="object_B_1" prm="0"/>
+    </tuple>
+    <tuple name="object">
+      <element objtype="tuple" objname="object_A" prm="0.6"/>
+      <element objtype="tuple" objname="object_B" prm="0.4"/>
+    </tuple>
+  </custom>
 </mujoco>
 """
 
@@ -1594,6 +1639,299 @@ class IOTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd)
 
     self.assertEqual(d.efc.J.shape[2], m.nv_pad)
+
+  def test_mesh_randomize_geom_level(self):
+    """Test per-world mesh assignment for geom-level tuples."""
+    nworld = 4
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld)
+
+    cube_geom_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "cube")
+    cube_s_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MESH, "cube_small")
+    cube_l_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MESH, "cube_large")
+
+    dataid = m.geom_dataid.numpy()
+
+    self.assertEqual(dataid.shape, (nworld, m.ngeom))
+    self.assertEqual(dataid[0, cube_geom_id], cube_s_id)
+    self.assertEqual(dataid[1, cube_geom_id], cube_s_id)
+    self.assertEqual(dataid[2, cube_geom_id], cube_l_id)
+    self.assertEqual(dataid[3, cube_geom_id], cube_l_id)
+
+  def test_mesh_randomize_dependent_fields(self):
+    """Test that dependent per-world fields match compiled variant values."""
+    nworld = 4
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld)
+
+    cube_geom_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "cube")
+    cube_body_id = mjm.geom_bodyid[cube_geom_id]
+
+    geom = next(g for g in spec.geoms if g.name == "cube")
+    geom.meshname = "cube_small"
+    ref_s = spec.compile()
+    geom.meshname = "cube_large"
+    ref_l = spec.compile()
+
+    geom_size = m.geom_size.numpy()
+    geom_rbound = m.geom_rbound.numpy()
+    body_mass = m.body_mass.numpy()
+
+    np.testing.assert_allclose(geom_size[0, cube_geom_id], ref_s.geom_size[cube_geom_id], atol=1e-6)
+    np.testing.assert_allclose(geom_rbound[0, cube_geom_id], ref_s.geom_rbound[cube_geom_id], atol=1e-6)
+    np.testing.assert_allclose(body_mass[0, cube_body_id], ref_s.body_mass[cube_body_id], atol=1e-6)
+
+    np.testing.assert_allclose(geom_size[2, cube_geom_id], ref_l.geom_size[cube_geom_id], atol=1e-6)
+    np.testing.assert_allclose(geom_rbound[2, cube_geom_id], ref_l.geom_rbound[cube_geom_id], atol=1e-6)
+    np.testing.assert_allclose(body_mass[2, cube_body_id], ref_l.body_mass[cube_body_id], atol=1e-6)
+
+    self.assertNotAlmostEqual(
+      float(geom_rbound[0, cube_geom_id]),
+      float(geom_rbound[2, cube_geom_id]),
+    )
+
+  def test_mesh_randomize_body_level(self):
+    """Test per-world mesh assignment for body-level tuples with padding."""
+    nworld = 10
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    # default object has 2 geoms (variant B), ngeom = 3
+    self.assertEqual(mjm.ngeom, 3)
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld)
+
+    # per_world_mesh pads object to 3 geoms (variant A max), ngeom = 4
+    self.assertEqual(m.ngeom, 4)
+
+    # use padded model for ID lookups
+    padded_mjm = spec.compile()
+
+    dataid = m.geom_dataid.numpy()
+
+    object_A_0_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_A_0")
+    object_A_1_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_A_1")
+    object_A_2_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_A_2")
+    object_B_0_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_B_0")
+    object_B_1_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_B_1")
+
+    object_col_0 = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_GEOM, "object_col_0")
+    object_col_1 = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_GEOM, "object_col_1")
+    # object_col_2 is the padded geom (unnamed, last geom)
+    object_col_2 = m.ngeom - 1
+
+    # prm=[0.6, 0.4], nworld=10 → worlds 0-5 get variant A, 6-9 get variant B
+    for w in range(6):
+      self.assertEqual(dataid[w, object_col_0], object_A_0_id)
+      self.assertEqual(dataid[w, object_col_1], object_A_1_id)
+      self.assertEqual(dataid[w, object_col_2], object_A_2_id)
+
+    # Variant B: 2 pieces → geom slot 2 disabled (dataid = -1)
+    for w in range(6, 10):
+      self.assertEqual(dataid[w, object_col_0], object_B_0_id)
+      self.assertEqual(dataid[w, object_col_1], object_B_1_id)
+      self.assertEqual(dataid[w, object_col_2], -1)
+
+  def test_mesh_randomize_backward_compat(self):
+    """Models without tuples: per_world_mesh is a no-op."""
+    spec = mujoco.MjSpec.from_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjm = spec.compile()
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld=4)
+
+    dataid = m.geom_dataid.numpy()
+    self.assertEqual(dataid.shape[0], 1)
+    self.assertEqual(dataid.shape[1], mjm.ngeom)
+
+  # --- _allocate_worlds unit tests ---
+
+  def test_allocate_worlds_rounding(self):
+    """Largest remainder: prm=[0.5, 0.5], nworld=3 sums to exactly 3."""
+    candidates = [(0, 0.5), (1, 0.5)]
+    assignment = _allocate_worlds(candidates, nworld=3)
+    self.assertEqual(len(assignment), 3)
+    # each candidate should get at least 1 world
+    self.assertGreaterEqual(assignment.count(0), 1)
+    self.assertGreaterEqual(assignment.count(1), 1)
+
+  def test_allocate_worlds_uniform(self):
+    """Uniform fallback: prm=[0, 0, 0] assigns each at least 1 world."""
+    candidates = [(0, 0.0), (1, 0.0), (2, 0.0)]
+    assignment = _allocate_worlds(candidates, nworld=5)
+    self.assertEqual(len(assignment), 5)
+    for idx in range(3):
+      self.assertGreaterEqual(assignment.count(idx), 1)
+
+  def test_allocate_worlds_single_candidate(self):
+    """Single candidate gets all worlds."""
+    candidates = [(0, 1.0)]
+    assignment = _allocate_worlds(candidates, nworld=10)
+    self.assertEqual(len(assignment), 10)
+    self.assertTrue(all(a == 0 for a in assignment))
+
+  # --- per_world_mesh edge case tests ---
+
+  def test_mesh_randomize_nworld_1(self):
+    """Body-level randomization with nworld=1 doesn't crash."""
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld=1)
+
+    dataid = m.geom_dataid.numpy()
+    self.assertEqual(dataid.shape[0], 1)
+    # check it doesn't crash on forward
+    d = mjwarp.make_data(mjm)
+    mjwarp.forward(m, d)
+
+  def test_mesh_randomize_equal_variant_geoms(self):
+    """No padding when all body variants have the same geom count."""
+    xml = """
+    <mujoco>
+      <asset>
+        <mesh name="a0" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
+        <mesh name="a1" vertex="1 0 0  2 0 0  1 1 0  1 0 1"/>
+        <mesh name="b0" vertex="0 0 0  3 0 0  0 3 0  0 0 3"/>
+        <mesh name="b1" vertex="3 0 0  6 0 0  3 3 0  3 0 3"/>
+      </asset>
+      <worldbody>
+        <body name="obj" pos="0 0 1">
+          <freejoint/>
+          <geom name="obj_0" type="mesh" mesh="a0"/>
+          <geom name="obj_1" type="mesh" mesh="a1"/>
+        </body>
+      </worldbody>
+      <custom>
+        <tuple name="var_a">
+          <element objtype="mesh" objname="a0" prm="0"/>
+          <element objtype="mesh" objname="a1" prm="0"/>
+        </tuple>
+        <tuple name="var_b">
+          <element objtype="mesh" objname="b0" prm="0"/>
+          <element objtype="mesh" objname="b1" prm="0"/>
+        </tuple>
+        <tuple name="obj">
+          <element objtype="tuple" objname="var_a" prm="0.5"/>
+          <element objtype="tuple" objname="var_b" prm="0.5"/>
+        </tuple>
+      </custom>
+    </mujoco>
+    """
+    spec = mujoco.MjSpec.from_string(xml)
+    mjm = spec.compile()
+    original_ngeom = mjm.ngeom
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld=4)
+
+    # no padding should have occurred
+    self.assertEqual(m.ngeom, original_ngeom)
+
+  def test_mesh_randomize_mixed_geom_and_body(self):
+    """Both geom-level and body-level tuples in the same model."""
+    nworld = 10
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld)
+
+    dataid = m.geom_dataid.numpy()
+    self.assertEqual(dataid.shape[0], nworld)
+
+    # use padded model for ID lookups
+    padded_mjm = spec.compile()
+
+    # geom-level cube should have both small and large across worlds
+    cube_geom_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_GEOM, "cube")
+    cube_s_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "cube_small")
+    cube_l_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "cube_large")
+    cube_variants = set(dataid[:, cube_geom_id])
+    self.assertIn(cube_s_id, cube_variants)
+    self.assertIn(cube_l_id, cube_variants)
+
+    # body-level object should have variant A and B across worlds
+    object_col_0 = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_GEOM, "object_col_0")
+    object_A_0_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_A_0")
+    object_B_0_id = mujoco.mj_name2id(padded_mjm, mujoco.mjtObj.mjOBJ_MESH, "object_B_0")
+    object_variants = set(dataid[:, object_col_0])
+    self.assertIn(object_A_0_id, object_variants)
+    self.assertIn(object_B_0_id, object_variants)
+
+  def test_mesh_randomize_idempotent(self):
+    """Calling per_world_mesh twice on the same spec produces same result."""
+    nworld = 4
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    m1 = mjwarp.put_model(mjm)
+    m1 = mjwarp.per_world_mesh(m1, spec, nworld)
+    dataid1 = m1.geom_dataid.numpy().copy()
+
+    # reset spec and do it again
+    spec2 = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm2 = spec2.compile()
+
+    m2 = mjwarp.put_model(mjm2)
+    m2 = mjwarp.per_world_mesh(m2, spec2, nworld)
+    dataid2 = m2.geom_dataid.numpy()
+
+    np.testing.assert_array_equal(dataid1, dataid2)
+
+  def test_mesh_randomize_spec_not_mutated(self):
+    """Spec is restored to original state after per_world_mesh."""
+    nworld = 4
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    # record original mesh assignments
+    orig_meshnames = {g.name: g.meshname for g in spec.geoms if g.name}
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld)
+
+    # verify spec geoms were restored
+    for g in spec.geoms:
+      if g.name and g.name in orig_meshnames:
+        self.assertEqual(g.meshname, orig_meshnames[g.name], f"meshname for geom {g.name} was mutated")
+
+  def test_mesh_randomize_body_ipos_iquat(self):
+    """Per-world body_ipos, body_iquat, geom_pos are propagated."""
+    nworld = 4
+    spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
+    mjm = spec.compile()
+
+    m = mjwarp.put_model(mjm)
+    m = mjwarp.per_world_mesh(m, spec, nworld)
+
+    # body_ipos should be (nworld, nbody, 3)
+    body_ipos = m.body_ipos.numpy()
+    self.assertEqual(body_ipos.shape[0], nworld)
+
+    # body_iquat should be (nworld, nbody, 4)
+    body_iquat = m.body_iquat.numpy()
+    self.assertEqual(body_iquat.shape[0], nworld)
+
+    # geom_pos should be (nworld, ngeom, 3)
+    geom_pos = m.geom_pos.numpy()
+    self.assertEqual(geom_pos.shape[0], nworld)
 
 
 if __name__ == "__main__":

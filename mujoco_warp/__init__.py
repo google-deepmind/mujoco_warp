@@ -50,6 +50,7 @@ from mujoco_warp._src.inverse import inverse as inverse
 from mujoco_warp._src.io import create_render_context as create_render_context
 from mujoco_warp._src.io import get_data_into as get_data_into
 from mujoco_warp._src.io import make_data as make_data
+from mujoco_warp._src.io import per_world_mesh as per_world_mesh
 from mujoco_warp._src.io import put_data as put_data
 from mujoco_warp._src.io import put_model as put_model
 from mujoco_warp._src.io import reset_data as reset_data
