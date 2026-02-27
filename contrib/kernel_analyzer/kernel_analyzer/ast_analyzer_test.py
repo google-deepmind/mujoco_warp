@@ -302,7 +302,7 @@ class TestAnalyzer(absltest.TestCase):
   def test_multiline_ignore(self):
     """Test that multiline ignore works."""
     issues = _analyze_str(_MULTILINE_IGNORE_CODE)
-    self.assertEqual(len(issues), 1, issues)
+    self.assertEqual(len(issues), 2, issues)
 
   def test_nested_kernel_missing_module_unique(self):
     """Test that nested kernels without module='unique' raise an issue."""
@@ -322,6 +322,73 @@ class TestAnalyzer(absltest.TestCase):
     # Filter out other issue types - we only care about MissingModuleUnique
     unique_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
     self.assertEqual(len(unique_issues), 0, unique_issues)
+
+
+_BATCH_MODULO_INCORRECT_ACCESS_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_incorrect_access(dof_armature: wp.array2d(dtype=float)):
+    worldid = wp.tid()
+    x = dof_armature[worldid, 0]
+"""
+
+_BATCH_MODULO_INLINE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_inline_modulo(dof_armature: wp.array2d(dtype=float)):
+    worldid = wp.tid()
+    x = dof_armature[worldid % dof_armature.shape[0], 0]
+"""
+
+_BATCH_MODULO_PRECOMPUTED_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_precomputed_modulo(dof_armature: wp.array2d(dtype=float)):
+    worldid = wp.tid()
+    dof_armature_id = worldid % dof_armature.shape[0]
+    x = dof_armature[dof_armature_id, 0]
+"""
+
+_BATCH_MODULO_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_ignore_modulo(dof_armature: wp.array2d(dtype=float)):
+    worldid = wp.tid()
+    x = dof_armature[worldid, 0]  # kernel_analyzer: ignore
+"""
+
+
+class TestBatchModulo(absltest.TestCase):
+  """Tests for the *-dimensioned batch modulo check."""
+
+  def test_incorrect_access_raises_issue(self):
+    """A *-dimensioned field accessed with incorrect worldid should raise an issue."""
+    issues = _analyze_str(_BATCH_MODULO_INCORRECT_ACCESS_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 1, modulo_issues)
+    self.assertIn("dof_armature", str(modulo_issues[0]))
+
+  def test_inline_modulo_no_issue(self):
+    """Inline % shape[0] should not raise an issue."""
+    issues = _analyze_str(_BATCH_MODULO_INLINE_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 0, modulo_issues)
+
+  def test_precomputed_modulo_no_issue(self):
+    """Precomputed modulo variable should not raise an issue."""
+    issues = _analyze_str(_BATCH_MODULO_PRECOMPUTED_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 0, modulo_issues)
+
+  def test_ignore_suppresses_issue(self):
+    """The kernel_analyzer: ignore annotation should suppress the issue."""
+    issues = _analyze_str(_BATCH_MODULO_IGNORE_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 0, modulo_issues)
 
 
 if __name__ == "__main__":
