@@ -36,8 +36,10 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
-def _assert_efc_eq(d, mjd, nefc, name, nv):
+def _assert_efc_eq(mjm, mjd, d, nefc, name, nv):
   """Assert equality of efc fields after sorting both sides."""
+  if nv == 0:
+    return
   # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref, efc_d for MJWarp
   efc_type = d.efc.type.numpy()[0, :nefc]
   efc_pos = d.efc.pos.numpy()[0, :nefc]
@@ -59,13 +61,13 @@ def _assert_efc_eq(d, mjd, nefc, name, nv):
   d_sorted = d.efc.J.numpy()[0, d_sort_indices, :nv].reshape(-1)
 
   # Sort MuJoCo efc fields
-  # For J matrix, need to reshape to 2D, sort rows, then flatten
   nefc = len(mjd_sort_indices)
-  if nv > 0:
-    mjd_J_2d = mjd.efc_J.reshape(nefc, nv)
-    mjd_sorted_J = mjd_J_2d[mjd_sort_indices].reshape(-1)
+  mjd_J_2d = np.zeros((nefc, nv))
+  if mujoco.mj_isSparse(mjm):
+    mujoco.mju_sparse2dense(mjd_J_2d, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:
-    mjd_sorted_J = mjd.efc_J
+    mjd_J_2d[:] = mjd.efc_J.reshape(mjd.nefc, nv)[:nefc, :]
+  mjd_sorted_J = mjd_J_2d[mjd_sort_indices].reshape(-1)
 
   mjd_sorted_D = mjd.efc_D[mjd_sort_indices]
   mjd_sorted_vel = mjd.efc_vel[mjd_sort_indices]
@@ -157,13 +159,17 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
 
   @parameterized.parameters(
-    mujoco.mjtCone.mjCONE_PYRAMIDAL,
-    mujoco.mjtCone.mjCONE_ELLIPTIC,
+    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtJacobian.mjJAC_DENSE),
+    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtJacobian.mjJAC_SPARSE),
+    (mujoco.mjtCone.mjCONE_ELLIPTIC, mujoco.mjtJacobian.mjJAC_DENSE),
+    (mujoco.mjtCone.mjCONE_ELLIPTIC, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  def test_constraints(self, cone):
+  def test_constraints(self, cone, jacobian):
     """Test constraints."""
     for key in range(3):
-      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=key, overrides={"opt.cone": cone})
+      mjm, mjd, m, d = test_data.fixture(
+        "constraints.xml", keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
+      )
 
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)
@@ -176,12 +182,16 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_efc_eq(d, mjd, mjd.nefc, "efc", m.nv)
+      _assert_efc_eq(mjm, mjd, d, mjd.nefc, "efc", m.nv)
 
-  def test_limit_tendon(self):
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_limit_tendon(self, jacobian):
     """Test limit tendon constraints."""
     for keyframe in range(-1, 1):
-      _, mjd, m, d = test_data.fixture("tendon/tendon_limit.xml", keyframe=keyframe)
+      mjm, mjd, m, d = test_data.fixture("tendon/tendon_limit.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian})
 
       for arr in (d.nefc, d.nl, d.efc.type):
         arr.fill_(-1)
@@ -192,11 +202,15 @@ class ConstraintTest(parameterized.TestCase):
 
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_efc_eq(d, mjd, mjd.nefc, "efc", m.nv)
+      _assert_efc_eq(mjm, mjd, d, mjd.nefc, "efc", m.nv)
 
-  def test_equality_tendon(self):
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_equality_tendon(self, jacobian):
     """Test equality tendon constraints."""
-    _, mjd, m, d = test_data.fixture(
+    mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option>
@@ -237,6 +251,7 @@ class ConstraintTest(parameterized.TestCase):
       </mujoco>
     """,
       keyframe=0,
+      overrides={"opt.jacobian": jacobian},
     )
 
     for arr in (d.nefc, d.ne, d.efc.type):
@@ -248,7 +263,7 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
-    _assert_efc_eq(d, mjd, mjd.nefc, "efc", m.nv)
+    _assert_efc_eq(mjm, mjd, d, mjd.nefc, "efc", m.nv)
 
 
 if __name__ == "__main__":

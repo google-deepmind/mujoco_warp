@@ -181,9 +181,12 @@ def _qderiv_tendon_damping(
   ntendon: int,
   opt_timestep: wp.array(dtype=float),
   opt_is_sparse: bool,
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_damping: wp.array2d(dtype=float),
   # Data in:
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
@@ -197,7 +200,24 @@ def _qderiv_tendon_damping(
   qderiv = float(0.0)
   tendon_damping_id = worldid % tendon_damping.shape[0]
   for tenid in range(ntendon):
-    qderiv -= ten_J_in[worldid, tenid, dofiid] * ten_J_in[worldid, tenid, dofjid] * tendon_damping[tendon_damping_id, tenid]
+    damping = tendon_damping[tendon_damping_id, tenid]
+    if damping == 0.0:
+      continue
+
+    rownnz = ten_J_rownnz[tenid]
+    rowadr = ten_J_rowadr[tenid]
+    Ji = float(0.0)
+    Jj = float(0.0)
+    for k in range(rownnz):
+      if Ji != 0.0 and Jj != 0.0:
+        break
+      sparseid = rowadr + k
+      colind = ten_J_colind[sparseid]
+      if colind == dofiid:
+        Ji = ten_J_in[worldid, sparseid]
+      if colind == dofjid:
+        Jj = ten_J_in[worldid, sparseid]
+    qderiv -= Ji * Jj * damping
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -284,7 +304,18 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
-      inputs=[m.ntendon, m.opt.timestep, m.opt.is_sparse, m.tendon_damping, d.ten_J, qMi, qMj],
+      inputs=[
+        m.ntendon,
+        m.opt.timestep,
+        m.opt.is_sparse,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_damping,
+        d.ten_J,
+        qMi,
+        qMj,
+      ],
       outputs=[out],
     )
 

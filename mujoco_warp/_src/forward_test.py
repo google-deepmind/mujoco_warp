@@ -54,8 +54,9 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity")
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
-  def test_fwd_velocity_tendon(self):
-    _, mjd, m, d = test_data.fixture("tendon/fixed.xml")
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_fwd_velocity_tendon(self, jacobian):
+    _, mjd, m, d = test_data.fixture("tendon/fixed.xml", overrides={"opt.jacobian": jacobian})
 
     d.ten_velocity.zero_()
     mjw.fwd_velocity(m, d)
@@ -251,13 +252,14 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
-  def test_implicit_tendon_damping(self):
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(
       "tendon/damping.xml",
       keyframe=0,
       qvel_noise=0.01,
       ctrl_noise=0.1,
-      overrides={"opt.integrator": IntegratorType.IMPLICITFAST},
+      overrides={"opt.integrator": IntegratorType.IMPLICITFAST, "opt.jacobian": jacobian},
     )
 
     mujoco.mj_implicit(mjm, mjd)
@@ -294,9 +296,12 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.energy.numpy()[0][0], mjd.energy[0], "potential energy")
     _assert_eq(d.energy.numpy()[0][1], mjd.energy[1], "kinetic energy")
 
-  def test_tendon_actuator_force_limits(self):
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_tendon_actuator_force_limits(self, jacobian):
     for keyframe in range(7):
-      _, mjd, m, d = test_data.fixture("actuation/tendon_force_limit.xml", keyframe=keyframe)
+      _, mjd, m, d = test_data.fixture(
+        "actuation/tendon_force_limit.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian}
+      )
 
       d.actuator_force.zero_()
 
@@ -406,10 +411,19 @@ class ForwardTest(parameterized.TestCase):
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
         mjd_arr = actuator_moment
+      elif arr == "ten_J" and not mjm.ntendon:
+        continue
       elif arr == "ten_J" and mjm.ntendon:
-        ten_J = np.zeros((mjm.ntendon, mjm.nv))
-        mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
-        mjd_arr = ten_J
+        mj_ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
+        mujoco.mju_sparse2dense(
+          mj_ten_J_dense, mjd.ten_J.reshape(-1), mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind.reshape(-1)
+        )
+        mjd_arr = mj_ten_J_dense
+        mjw_ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
+        mujoco.mju_sparse2dense(
+          mjw_ten_J_dense, d_arr.reshape(-1), m.ten_J_rownnz.numpy(), m.ten_J_rowadr.numpy(), m.ten_J_colind.numpy().reshape(-1)
+        )
+        d_arr = mjw_ten_J_dense
       elif arr == "efc_J":
         d_arr = d_arr[:, : m.nv]  # efc_J is padded up to the next multiple of the tile size
         if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:

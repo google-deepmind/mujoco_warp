@@ -864,7 +864,6 @@ def put_data(
     "solver_niter": None,
     "qM": None,
     "qLD": None,
-    "ten_J": None,
     "actuator_moment": None,
     "flexedge_J": None,
     "nacon": None,
@@ -892,14 +891,6 @@ def put_data(
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
-
-  if mujoco.mj_isSparse(mjm):
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
-    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-  else:
-    ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
 
   flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
   if mjd.flexedge_J.size:
@@ -1120,7 +1111,8 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if mjm.ntendon > 0:
+    result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
@@ -1600,28 +1592,45 @@ def _finalize_body_invweight0(
 @wp.kernel
 def _copy_tendon_jacobian(
   tenid_target: int,
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  ten_J_in: wp.array2d(dtype=float),
   ten_J_vec_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   nv = ten_J_in.shape[2]
-  for i in range(nv):
-    ten_J_vec_out[worldid, i] = ten_J_in[worldid, tenid_target, i]
+  rownnz = ten_J_rownnz[tenid_target]
+  rowadr = ten_J_rowadr[tenid_target]
+  for i in range(rownnz):
+    colind = ten_J_colind[rowadr + i]
+    ten_J_vec_out[worldid, colind] = ten_J_in[worldid, rowadr + i]
 
 
 @wp.kernel
 def _compute_tendon_dot_product(
+  # Model:
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  # In:
   tenid_target: int,
-  nv: int,
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   result_vec_in: wp.array2d(dtype=float),
+  # Out:
   tendon_invweight0_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
   dot_prod = float(0.0)
-  for i in range(nv):
-    dot_prod += ten_J_in[worldid, tenid_target, i] * result_vec_in[worldid, i]
+
+  rownnz = ten_J_rownnz[tenid_target]
+  rowadr = ten_J_rowadr[tenid_target]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    colind = ten_J_colind[sparseid]
+    dot_prod += ten_J_in[worldid, sparseid] * result_vec_in[worldid, colind]
+
   tendon_invweight0_out[tendon_invweight0_id, tenid_target] = dot_prod
 
 
@@ -1836,12 +1845,17 @@ def set_const_0(m: types.Model, d: types.Data):
     ten_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
 
     for tenid in range(m.ntendon):
-      wp.launch(_copy_tendon_jacobian, dim=d.nworld, inputs=[tenid, d.ten_J], outputs=[ten_J_vec])
+      wp.launch(
+        _copy_tendon_jacobian,
+        dim=d.nworld,
+        inputs=[tenid, m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J],
+        outputs=[ten_J_vec],
+      )
       smooth.solve_m(m, d, ten_result_vec, ten_J_vec)
       wp.launch(
         _compute_tendon_dot_product,
         dim=d.nworld,
-        inputs=[tenid, m.nv, d.ten_J, ten_result_vec],
+        inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, tenid, d.ten_J, ten_result_vec],
         outputs=[m.tendon_invweight0],
       )
 
