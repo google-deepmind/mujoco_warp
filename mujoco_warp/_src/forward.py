@@ -647,7 +647,7 @@ def _actuator_force(
       act = act_in[worldid, act_last]
       act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
     elif dyntype == DynType.MUSCLE:
-      dynprm = actuator_dynprm[worldid, uid]
+      dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
       act = act_in[worldid, act_last]
       act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
     else:  # DynType.NONE

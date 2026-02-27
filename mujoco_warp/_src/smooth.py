@@ -1321,7 +1321,7 @@ def _cfrc_ext_equality(
   )
 
   id = efc_id_in[worldid, efcid]
-  eq_data_ = eq_data[worldid, id]
+  eq_data_ = eq_data[worldid % eq_data.shape[0], id]
   body_semantic = eq_objtype[id] == ObjType.BODY
 
   obj1 = eq_obj1id[id]
@@ -1342,7 +1342,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
     else:
-      offset = site_pos[worldid, obj1]
+      offset = site_pos[worldid % site_pos.shape[0], obj1]
 
     # transform point on body1: local -> global
     pos = xmat_in[worldid, bodyid1] @ offset + xpos_in[worldid, bodyid1]
@@ -1364,7 +1364,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
     else:
-      offset = site_pos[worldid, obj2]
+      offset = site_pos[worldid % site_pos.shape[0], obj2]
 
     # transform point on body2: local -> global
     pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
@@ -2078,7 +2078,7 @@ def _transmission(
     siteid = trnid[0]
     refid = trnid[1]
 
-    gear = actuator_gear[worldid, actid]
+    gear = actuator_gear[actuator_gear_id, actid]
     site_quat_id = worldid % site_quat.shape[0]
     gear_translation = wp.spatial_top(gear)
     gear_rotational = wp.spatial_bottom(gear)
@@ -2943,7 +2943,7 @@ def _spatial_geom_tendon(
   # get geom information
   geom_xpos = geom_xpos_in[worldid, wrap_objid_geom]
   geom_xmat = geom_xmat_in[worldid, wrap_objid_geom]
-  geomsize = geom_size[worldid, wrap_objid_geom][0]
+  geomsize = geom_size[worldid % geom_size.shape[0], wrap_objid_geom][0]
   geom_type = wrap_type[wrap_adr]
 
   # get body ids for site-geom-site instances
