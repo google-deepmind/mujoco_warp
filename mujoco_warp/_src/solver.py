@@ -1555,7 +1555,7 @@ def linesearch_prepare_quad(
 
     dim = contact_dim_in[conid]
     friction = contact_friction_in[conid]
-    mu = friction[0] * opt_impratio_invsqrt[worldid]
+    mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
     u0 = Jaref * mu
     v0 = jv * mu
@@ -1876,7 +1876,7 @@ def update_constraint_efc(track_changes: bool):
 
       dim = contact_dim_in[conid]
       friction = contact_friction_in[conid]
-      mu = friction[0] * opt_impratio_invsqrt[worldid]
+      mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
       efcid0 = contact_efc_address_in[conid, 0]
       if efcid0 < 0:
@@ -2416,7 +2416,7 @@ def update_gradient_JTCJ_sparse(
       return
 
     fri = contact_friction_in[conid]
-    mu = fri[0] * opt_impratio_invsqrt[worldid]
+    mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
     mu2 = mu * mu
     dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
@@ -2581,7 +2581,7 @@ def update_gradient_JTCJ_dense(
       continue
 
     fri = contact_friction_in[conid]
-    mu = fri[0] * opt_impratio_invsqrt[worldid]
+    mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
     mu2 = mu * mu
     dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
