@@ -908,7 +908,7 @@ def _tendon_armature(
   if is_sparse:  # is_sparse is not batched
     madr_ij = dof_Madr[dofid]
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
 
   if armature == 0.0:
     return
@@ -1559,7 +1559,7 @@ def _tendon_dot(
 ):
   worldid, tenid = wp.tid()
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
@@ -1717,7 +1717,7 @@ def _tendon_bias_coef(
 ):
   worldid, tenid, dofid = wp.tid()
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
@@ -1741,7 +1741,7 @@ def _tendon_bias_qfrc(
 ):
   worldid, tenid, dofid = wp.tid()
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
