@@ -14,7 +14,6 @@
 # ==============================================================================
 
 import dataclasses
-import importlib.metadata
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -23,21 +22,17 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_util
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
-
-
-def _is_mujoco_fresh() -> bool:
-  """Checks if mujoco version is > 3.4.0."""
-  version = importlib.metadata.version("mujoco")
-  version = version.split(".")
-  version = tuple(map(int, version[:3])) + tuple(version[3:])
-  return version > (3, 4, 0)
-
-
-BLEEDING_EDGE_MUJOCO = _is_mujoco_fresh()
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
+from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import vec10
+from mujoco_warp._src.util_pkg import check_version
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -583,17 +578,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_mulm_madr.append(madr)
     m.qM_mulm_rowadr.append(len(m.qM_mulm_col))
 
-  # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-  if BLEEDING_EDGE_MUJOCO:
-    m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
-    m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
-    m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
-  else:
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m.flexedge_J_rownnz = mjd.flexedge_J_rownnz
-    m.flexedge_J_rowadr = mjd.flexedge_J_rowadr
-    m.flexedge_J_colind = mjd.flexedge_J_colind.reshape(-1)
+  m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
+  m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
+  m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
@@ -644,6 +631,14 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
+def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int) -> int:
+  if na is not None:
+    return na
+  if n is not None:
+    return n * nworld
+  return default
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -673,18 +668,11 @@ def make_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm)
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
-
-  if nccdmax is None:
-    nccdmax = nconmax
-  elif nccdmax < 0:
-    raise ValueError("nccdmax must be >= 0")
-  elif nccdmax > nconmax:
-    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
-
   if njmax is None:
     njmax = _default_njmax(mjm)
+
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -692,17 +680,23 @@ def make_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  if naconmax is None:
-    naconmax = nworld * nconmax
-  elif naconmax < 0:
+  naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
+  if naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
-  if naccdmax is None:
-    naccdmax = nworld * nccdmax
-  elif naccdmax < 0:
+  naccdmax = _resolve_batch_size(naccdmax, nccdmax, nworld, naconmax)
+  if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
     raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  else:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    elif nccdmax > nconmax:
+      raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
@@ -715,6 +709,17 @@ def make_data(
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
+
+  if SPARSE_CONSTRAINT_JACOBIAN:
+    efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
+    efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
+    efc.J_colind = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=int)
+    efc.J = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=float)
+  else:
+    efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
+    efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
+    efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
+    efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
 
   # world body and static geom (attached to the world) poses are precomputed
   # this speeds up scenes with many static geoms (e.g. terrains)
@@ -734,6 +739,7 @@ def make_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
+    "njmax_pad": sizes["njmax_pad"],
     "qM": None,
     "qLD": None,
     # world body
@@ -813,18 +819,11 @@ def put_data(
   if nconmax is None:
     nconmax = _default_nconmax(mjm, mjd)
 
-  if nconmax < 0:
-    raise ValueError("nconmax must be >= 0")
-
-  if nccdmax is None:
-    nccdmax = nconmax
-  elif nccdmax < 0:
-    raise ValueError("nccdmax must be >= 0")
-  elif nccdmax > nconmax:
-    raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
-
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
+
+  if nconmax < 0:
+    raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
@@ -832,19 +831,30 @@ def put_data(
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
 
-  if naconmax is None:
-    if mjd.ncon > nconmax:
-      raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
-    naconmax = nworld * nconmax
+  naconmax_is_input = naconmax is not None
+  naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
+  if naconmax < 0:
+    raise ValueError("naconmax must be >= 0")
+
+  if not naconmax_is_input and mjd.ncon > nconmax:
+    raise ValueError(f"nconmax overflow (nconmax must be >= {mjd.ncon})")
   elif naconmax < mjd.ncon * nworld:
     raise ValueError(f"naconmax overflow (naconmax must be >= {mjd.ncon * nworld})")
 
-  if naccdmax is None:
-    naccdmax = nworld * nccdmax
-  elif naccdmax < 0:
+  naccdmax = _resolve_batch_size(naccdmax, nccdmax, nworld, naconmax)
+
+  if naccdmax < 0:
     raise ValueError("naccdmax must be >= 0")
   elif naccdmax > naconmax:
     raise ValueError(f"naccdmax ({naccdmax}) must be <= naconmax ({naconmax})")
+
+  if nccdmax is None:
+    nccdmax = nconmax
+  else:
+    if nccdmax < 0:
+      raise ValueError("nccdmax must be >= 0")
+    elif nccdmax > nconmax:
+      raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
@@ -892,7 +902,7 @@ def put_data(
   contact.geomcollisionid = wp.empty((naconmax,), dtype=int)  # TODO(team): set values
 
   # create efc
-  efc_kwargs = {"J": None}
+  efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
 
   for f in dataclasses.fields(types.Constraint):
     if f.name in efc_kwargs:
@@ -905,14 +915,37 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if mujoco.mj_isSparse(mjm):
-    efc_j = np.zeros((mjd.nefc, mjm.nv))
-    mujoco.mju_sparse2dense(efc_j, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+  if SPARSE_CONSTRAINT_JACOBIAN:
+    # TODO(team): process efc_J sparsity structure for nv row shift
+    efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
+    efc.J_rowadr = wp.array(
+      np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
+    )
+    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1)), dtype=int)
+
+    mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
+    if mjd.nefc:
+      if mujoco.mj_isSparse(mjm):
+        mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+      else:
+        mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+    efc_J = np.zeros((njmax, mjm.nv), dtype=float)
+    efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
+    efc.J = wp.array(np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1)), dtype=float)
   else:
-    efc_j = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
-  efc.J = np.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=f.type.dtype)
-  efc.J[:, : mjd.nefc, : mjm.nv] = np.tile(efc_j, (nworld, 1, 1))
-  efc.J = wp.array(efc.J, dtype=float)
+    efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
+    efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
+    efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
+
+    mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
+    if mjd.nefc:
+      if mujoco.mj_isSparse(mjm):
+        mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+      else:
+        mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+    efc_J = np.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
+    efc_J[:, : mjd.nefc, : mjm.nv] = np.tile(mj_efc_J, (nworld, 1, 1))
+    efc.J = wp.array(efc_J, dtype=float)
 
   # create data
   d_kwargs = {
@@ -922,6 +955,7 @@ def put_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
+    "njmax_pad": sizes["njmax_pad"],
     # fields set after initialization:
     "solver_niter": None,
     "qM": None,
@@ -964,13 +998,13 @@ def put_data(
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
   d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
 
-  if mujoco.mj_isSparse(mjm):
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
-    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+  ten_J = np.zeros((mjm.ntendon, mjm.nv))
+  if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
+    if mjm.ntendon:
+      mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+  d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -1079,21 +1113,7 @@ def get_data_into(
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
   if mjm.nflexedge > 0:
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    if not BLEEDING_EDGE_MUJOCO:
-      m = put_model(mjm)
-      result.flexedge_J_rownnz[:] = m.flexedge_J_rownnz.numpy()
-      result.flexedge_J_rowadr[:] = m.flexedge_J_rowadr.numpy()
-      result.flexedge_J_colind[:, :] = m.flexedge_J_colind.numpy().reshape((mjm.nflexedge, mjm.nv))
-      mujoco.mju_sparse2dense(
-        result.flexedge_J,
-        d.flexedge_J.numpy()[world_id].reshape(-1),
-        m.flexedge_J_rownnz.numpy(),
-        m.flexedge_J_rowadr.numpy(),
-        m.flexedge_J_colind.numpy(),
-      )
-    else:
-      result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
+    result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
@@ -1150,11 +1170,33 @@ def get_data_into(
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
-    if mujoco.mj_isSparse(mjm):
-      efc_J = d.efc.J.numpy()[world_id, efc_idx, : mjm.nv]
-      mujoco.mju_dense2sparse(result.efc_J, efc_J, result.efc_J_rownnz, result.efc_J_rowadr, result.efc_J_colind)
+    if SPARSE_CONSTRAINT_JACOBIAN:
+      efc_J = np.zeros((nefc, mjm.nv))
+      J_rownnz_wp = d.efc.J_rownnz.numpy()[0]
+      J_rowadr_wp = d.efc.J_rowadr.numpy()[0]
+      J_colind_wp = d.efc.J_colind.numpy()[0]
+      J_wp = d.efc.J.numpy()[0, 0]
+      for i in range(nefc):
+        rownnz = J_rownnz_wp[i]
+        rowadr = J_rowadr_wp[i]
+        for j in range(rownnz):
+          sparseid = rowadr + j
+          colind = J_colind_wp[sparseid]
+          efc_J[i, colind] = J_wp[sparseid]
     else:
-      result.efc_J[: nefc * mjm.nv] = d.efc.J.numpy()[world_id, :nefc, : mjm.nv].flatten()
+      efc_J = d.efc.J.numpy()[world_id, :nefc, : mjm.nv]
+
+    # write to mujoco result (format depends on mj_isSparse)
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_dense2sparse(
+        result.efc_J,
+        efc_J[efc_idx],
+        result.efc_J_rownnz,
+        result.efc_J_rowadr,
+        result.efc_J_colind,
+      )
+    else:
+      result.efc_J[: nefc * mjm.nv] = efc_J[efc_idx].flatten()
 
   # efc
   result.efc_type[:] = d.efc.type.numpy()[world_id, efc_idx]
@@ -1175,7 +1217,17 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if check_version("mujoco>=3.5.1.dev869712136"):
+    ten_J = d.ten_J.numpy()[world_id]
+    mujoco.mju_dense2sparse(
+      result.ten_J,
+      ten_J,
+      result.ten_J_rownnz,
+      result.ten_J_rowadr,
+      result.ten_J_colind,
+    )
+  else:
+    result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
@@ -1783,13 +1835,109 @@ def _compute_actuator_acc0(
   actid_target: int,
   nv: int,
   result_vec_in: wp.array2d(dtype=float),
-  actuator_acc0_out: wp.array(dtype=float),
+  actuator_acc0_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   norm_sq = float(0.0)
   for i in range(nv):
     norm_sq += result_vec_in[worldid, i] * result_vec_in[worldid, i]
-  actuator_acc0_out[actid_target] = wp.sqrt(norm_sq)
+  actuator_acc0_out[worldid, actid_target] = wp.sqrt(norm_sq)
+
+
+@wp.kernel
+def _compute_dof_M0(
+  dof_bodyid: wp.array(dtype=int),
+  dof_armature: wp.array2d(dtype=float),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  crb_in: wp.array2d(dtype=vec10),
+  dof_M0_out: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  bodyid = dof_bodyid[dofid]
+  armature = dof_armature[worldid % dof_armature.shape[0], dofid]
+  buf = mjmath.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
+  dof_M0_out[worldid, dofid] = armature + wp.dot(cdof_in[worldid, dofid], buf)
+
+
+@wp.kernel
+def _resolve_dampratio(
+  actuator_biastype: wp.array(dtype=int),
+  actuator_gainprm: wp.array2d(dtype=types.vec10f),
+  actuator_moment_in: wp.array3d(dtype=float),
+  dof_M0_in: wp.array2d(dtype=float),
+  nv: int,
+  actuator_biasprm: wp.array2d(dtype=types.vec10f),
+):
+  worldid, actid = wp.tid()
+  biastype = actuator_biastype[actid]
+
+  # only affine bias (position actuators)
+  if biastype != BiasType.AFFINE:
+    return
+
+  gainprm_id = worldid % actuator_gainprm.shape[0]
+  biasprm_id = worldid % actuator_biasprm.shape[0]
+  kp = actuator_gainprm[gainprm_id, actid][0]
+
+  biasprm = actuator_biasprm[biasprm_id, actid]
+  # dampratio condition: gainprm[0] == -biasprm[1] and biasprm[2] > 0
+  if wp.abs(kp + biasprm[1]) > MJ_MINVAL:
+    return
+  if biasprm[2] <= 0.0:
+    return
+
+  dampratio = biasprm[2]
+
+  # compute reflected mass: sum(dof_M0[j] / moment[i,j]^2) for active DOFs
+  mass = float(0.0)
+  for j in range(nv):
+    moment = actuator_moment_in[worldid, actid, j]
+    if wp.abs(moment) > MJ_MINVAL:
+      mass += dof_M0_in[worldid, j] / (moment * moment)
+
+  damping = dampratio * 2.0 * wp.sqrt(kp * mass)
+
+  # write -damping to biasprm[2]
+  new_biasprm = biasprm
+  new_biasprm[2] = -damping
+  actuator_biasprm[biasprm_id, actid] = new_biasprm
+
+
+@wp.kernel
+def _set_length_range(
+  actuator_trntype: wp.array(dtype=int),
+  actuator_trnid: wp.array(dtype=wp.vec2i),
+  actuator_gear: wp.array2d(dtype=wp.spatial_vector),
+  jnt_limited: wp.array(dtype=int),
+  jnt_range: wp.array2d(dtype=wp.vec2),
+  tendon_limited: wp.array(dtype=int),
+  tendon_range: wp.array2d(dtype=wp.vec2),
+  ntendon: int,
+  actuator_lengthrange_out: wp.array2d(dtype=wp.vec2),
+):
+  worldid, actid = wp.tid()
+  trntype = actuator_trntype[actid]
+  id0 = actuator_trnid[actid][0]
+  gear0 = actuator_gear[worldid % actuator_gear.shape[0], actid][0]
+
+  lr = wp.vec2(0.0, 0.0)
+
+  if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
+    if jnt_limited[id0]:
+      rng = jnt_range[worldid % jnt_range.shape[0], id0]
+      if gear0 > 0.0:
+        lr = wp.vec2(rng[0] * gear0, rng[1] * gear0)
+      else:
+        lr = wp.vec2(rng[1] * gear0, rng[0] * gear0)
+  elif trntype == TrnType.TENDON:
+    if ntendon > 0 and tendon_limited[id0]:
+      rng = tendon_range[worldid % tendon_range.shape[0], id0]
+      if gear0 > 0.0:
+        lr = wp.vec2(rng[0] * gear0, rng[1] * gear0)
+      else:
+        lr = wp.vec2(rng[1] * gear0, rng[0] * gear0)
+
+  actuator_lengthrange_out[worldid, actid] = lr
 
 
 # kernel_analyzer: on
@@ -1831,6 +1979,9 @@ def set_const_0(m: types.Model, d: types.Data):
     - cam_pos0, cam_poscom0, cam_mat0: camera references
     - light_pos0, light_poscom0, light_dir0: light references
     - actuator_acc0: acceleration from unit actuator force
+    - actuator_biasprm[2] (dampratio resolution): for position actuators where
+      gainprm[0] == -biasprm[1] and biasprm[2] > 0, converts dampratio to
+      damping via biasprm[2] = -dampratio * 2 * sqrt(kp * reflected_mass)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -1966,6 +2117,28 @@ def set_const_0(m: types.Model, d: types.Data):
       smooth.solve_m(m, d, act_result_vec, act_moment_vec)
       wp.launch(_compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
 
+  # resolve dampratio: compute dof_M0, then convert dampratio to damping
+  if m.nu > 0 and m.nv > 0:
+    dof_M0 = wp.zeros((d.nworld, m.nv), dtype=float)
+    wp.launch(
+      _compute_dof_M0,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_bodyid, m.dof_armature, d.cdof, d.crb],
+      outputs=[dof_M0],
+    )
+    wp.launch(
+      _resolve_dampratio,
+      dim=(d.nworld, m.nu),
+      inputs=[
+        m.actuator_biastype,
+        m.actuator_gainprm,
+        d.actuator_moment,
+        dof_M0,
+        m.nv,
+      ],
+      outputs=[m.actuator_biasprm],
+    )
+
   wp.copy(d.qpos, qpos_saved)
 
 
@@ -2012,8 +2185,9 @@ def set_const(m: types.Model, d: types.Data):
       - cam_pos0, cam_poscom0, cam_mat0: camera references
       - light_pos0, light_poscom0, light_dir0: light references
       - actuator_acc0: acceleration from unit actuator force
+      - actuator_biasprm[2] (dampratio resolution)
 
-  Skips: dof_M0, actuator_length0 (not in mjwarp).
+  Skips: actuator_length0 (not in mjwarp).
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -2021,6 +2195,39 @@ def set_const(m: types.Model, d: types.Data):
   """
   set_const_fixed(m, d)
   set_const_0(m, d)
+
+
+def set_length_range(m: types.Model, d: types.Data, index: int = -1):
+  """Compute feasible actuator length ranges from joint/tendon limits.
+
+  For joint and tendon transmissions with limits, copies the range directly
+  from jnt_range or tendon_range scaled by gear. Actuators without limits
+  keep (0, 0). This covers the common robotics use case; simulation-based
+  computation for general transmissions is not yet implemented.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object (unused, kept for API compatibility with MuJoCo C).
+    index: Actuator index to compute for, or -1 for all actuators.
+  """
+  if m.nu == 0:
+    return
+
+  wp.launch(
+    _set_length_range,
+    dim=(d.nworld, m.nu),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_gear,
+      m.jnt_limited,
+      m.jnt_range,
+      m.tendon_limited,
+      m.tendon_range,
+      m.ntendon,
+    ],
+    outputs=[m.actuator_lengthrange],
+  )
 
 
 def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any] | Sequence[str]):
@@ -2332,20 +2539,12 @@ def create_render_context(
   if render_rgb and isinstance(render_rgb, bool):
     render_rgb = [render_rgb] * ncam
   elif render_rgb is None:
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
-    else:
-      render_rgb = [True] * ncam
+    render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
 
   if render_depth and isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
   elif render_depth is None:
-    # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-    if BLEEDING_EDGE_MUJOCO:
-      render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
-    else:
-      render_depth = [True] * ncam
+    render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
 
   assert len(render_rgb) == ncam and len(render_depth) == ncam, (
     f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
@@ -2372,10 +2571,7 @@ def create_render_context(
 
   ray = wp.zeros(int(total), dtype=wp.vec3)
 
-  # TODO: remove after mjwarp depends on mujoco >= 3.4.1 in pyproject.toml
-  cam_projection = np.zeros(mjm.ncam, dtype=int)
-  if BLEEDING_EDGE_MUJOCO:
-    cam_projection = mjm.cam_projection
+  cam_projection = mjm.cam_projection
 
   offset = 0
   for idx, cam_id in enumerate(active_cam_indices):

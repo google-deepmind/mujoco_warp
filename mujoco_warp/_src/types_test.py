@@ -25,6 +25,7 @@ from absl.testing import parameterized
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import Option
+from mujoco_warp._src.util_pkg import check_version
 
 
 class TypesTest(parameterized.TestCase):
@@ -45,6 +46,11 @@ class TypesTest(parameterized.TestCase):
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
       mj_fields.insert(0, mj_fields.pop(mj_fields.index("solver_niter")))
+    elif mjw_class is Option:
+      if check_version("mujoco<3.5.1.dev869760513"):
+        # density/viscosity moved after magnetic in mujoco 3.5.1.dev869760513
+        for f in ("viscosity", "density"):
+          mj_fields.insert(mj_fields.index("magnetic") + 1, mj_fields.pop(mj_fields.index(f)))
 
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
@@ -54,32 +60,6 @@ class TypesTest(parameterized.TestCase):
     desired_fields.extend(f for f in mjw_fields if f not in mj_set)
 
     actual_fields = [f.name for f in dataclasses.fields(mjw_class)]
-
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    _FLEXEDGE_J_FIELDS = ("flexedge_J_rownnz", "flexedge_J_rowadr", "flexedge_J_colind")
-
-    def _remove_fields(fields, to_remove):
-      for field in to_remove:
-        if field in fields:
-          fields.remove(field)
-
-    if not BLEEDING_EDGE_MUJOCO:
-      _remove_fields(actual_fields, _FLEXEDGE_J_FIELDS)
-      _remove_fields(desired_fields, _FLEXEDGE_J_FIELDS)
-      _remove_fields(
-        actual_fields,
-        [
-          "cam_projection",
-        ],
-      )
-      _remove_fields(
-        desired_fields,
-        [
-          "cam_projection",
-        ],
-      )
 
     self.assertListEqual(actual_fields, desired_fields)
 

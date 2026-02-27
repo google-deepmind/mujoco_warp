@@ -25,8 +25,8 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
-from mujoco_warp._src.collision_driver import create_collision_context
 from mujoco_warp._src.types import CollisionType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
