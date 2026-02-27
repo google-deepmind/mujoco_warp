@@ -307,7 +307,7 @@ class IOTest(parameterized.TestCase):
         "xpos",
         "xquat",
         "geom_xpos",
-      "tree_island",
+        "tree_island",
       ]:
         if field == "tree_island" and d.nisland.numpy()[0] == 0:
           continue
