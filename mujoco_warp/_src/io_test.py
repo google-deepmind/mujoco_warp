@@ -146,6 +146,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
+    self.assertEqual(d.nisland.numpy()[world_id], mjd.nisland)
     _assert_eq(d.time.numpy()[world_id], mjd.time, "time")
 
     for field in [
@@ -306,7 +307,10 @@ class IOTest(parameterized.TestCase):
         "xpos",
         "xquat",
         "geom_xpos",
+      "tree_island",
       ]:
+        if field == "tree_island" and d.nisland.numpy()[0] == 0:
+          continue
         if getattr(mjd, field).size > 0:
           _assert_eq(
             getattr(mjd, field).reshape(-1),

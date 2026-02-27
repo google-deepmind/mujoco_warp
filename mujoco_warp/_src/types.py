@@ -170,6 +170,7 @@ class DisableBit(enum.IntFlag):
     SENSOR:       sensors
     EULERDAMP:    implicit damping for Euler integration
     NATIVECCD:    native convex collision detection (ignored in MJWarp)
+    ISLAND:       constraint islands
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
@@ -188,7 +189,8 @@ class DisableBit(enum.IntFlag):
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
-  # unsupported: MIDPHASE, AUTORESET, ISLAND
+  ISLAND = mujoco.mjtDisableBit.mjDSBL_ISLAND
+  # unsupported: MIDPHASE, AUTORESET
 
 
 class EnableBit(enum.IntFlag):
@@ -1598,6 +1600,7 @@ class Data:
     nf: number of friction constraints                          (nworld,)
     nl: number of limit constraints                             (nworld,)
     nefc: number of constraints                                 (nworld,)
+    nisland: number of constraint islands                       (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1674,6 +1677,7 @@ class Data:
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
     contact: contact data
     efc: constraint data
+    tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
 
   warp only fields:
     nworld: number of worlds
@@ -1690,6 +1694,7 @@ class Data:
   nf: array("nworld", int)
   nl: array("nworld", int)
   nefc: array("nworld", int)
+  nisland: array("nworld", int)
   time: array("nworld", float)
   energy: array("nworld", wp.vec2)
   qpos: array("nworld", "nq", float)
@@ -1762,6 +1767,7 @@ class Data:
   cfrc_ext: array("nworld", "nbody", wp.spatial_vector)
   contact: Contact
   efc: Constraint
+  tree_island: array("nworld", "ntree", int)
 
   # warp only fields:
   nworld: int
