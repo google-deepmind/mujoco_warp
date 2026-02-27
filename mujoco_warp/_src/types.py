@@ -817,6 +817,7 @@ class Model:
     nplugin: number of plugin instances
     ngravcomp: number of bodies with nonzero gravcomp
     nsensordata: number of elements in sensor data vector
+    nhistory: number of history buffer entries
     opt: physics options
     stat: model statistics
     qpos0: qpos values at default pose                       (*, nq)
@@ -1021,6 +1022,9 @@ class Model:
     actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
     actuator_actadr: first activation address; -1: stateless (nu,)
     actuator_actnum: number of activation variables          (nu,)
+    actuator_history: history buffer sizes                   (nu, 2)
+    actuator_historyadr: history buffer address              (nu,)
+    actuator_delay: delay in seconds                         (nu,)
     actuator_ctrllimited: is control limited                 (nu,)
     actuator_forcelimited: is force limited                  (nu,)
     actuator_actlimited: is activation limited               (nu,)
@@ -1045,6 +1049,10 @@ class Model:
     sensor_dim: number of scalar outputs                     (nsensor,)
     sensor_adr: address in sensor array                      (nsensor,)
     sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
+    sensor_history: history buffer sizes                     (nsensor, 2)
+    sensor_historyadr: history buffer address                (nsensor,)
+    sensor_delay: delay in seconds                           (nsensor,)
+    sensor_interval: sensor interval and phase               (nsensor, 2)
     plugin: globally registered plugin slot number           (nplugin,)
     plugin_attr: config attributes of geom plugin            (nplugin, 3)
     M_rownnz: number of non-zeros in each row of qM          (nv,)
@@ -1181,6 +1189,7 @@ class Model:
   nplugin: int
   ngravcomp: int
   nsensordata: int
+  nhistory: int
   opt: Option
   stat: Statistic
   qpos0: array("*", "nq", float)
@@ -1385,6 +1394,9 @@ class Model:
   actuator_trnid: array("nu", wp.vec2i)
   actuator_actadr: array("nu", int)
   actuator_actnum: array("nu", int)
+  actuator_history: array("nu", wp.vec2i)
+  actuator_historyadr: array("nu", int)
+  actuator_delay: array("nu", float)
   actuator_ctrllimited: array("nu", bool)
   actuator_forcelimited: array("nu", bool)
   actuator_actlimited: array("nu", bool)
@@ -1409,6 +1421,10 @@ class Model:
   sensor_dim: array("nsensor", int)
   sensor_adr: array("nsensor", int)
   sensor_cutoff: array("nsensor", float)
+  sensor_history: array("nsensor", wp.vec2i)
+  sensor_historyadr: array("nsensor", int)
+  sensor_delay: array("nsensor", float)
+  sensor_interval: array("nsensor", wp.vec2)
   plugin: array("nplugin", int)
   plugin_attr: array("nplugin", wp.vec3f)
   M_rownnz: array("nv", int)
@@ -1603,6 +1619,7 @@ class Data:
     qpos: position                                              (nworld, nq)
     qvel: velocity                                              (nworld, nv)
     act: actuator activation                                    (nworld, na)
+    history: history buffer for delays                          (nworld, nhistory)
     qacc_warmstart: acceleration used for warmstart             (nworld, nv)
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
@@ -1695,6 +1712,7 @@ class Data:
   qpos: array("nworld", "nq", float)
   qvel: array("nworld", "nv", float)
   act: array("nworld", "na", float)
+  history: array("nworld", "nhistory", float)
   qacc_warmstart: array("nworld", "nv", float)
   ctrl: array("nworld", "nu", float)
   qfrc_applied: array("nworld", "nv", float)
