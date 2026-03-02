@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
+from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
@@ -294,7 +295,7 @@ def _euler_damp_qfrc_sparse(
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
+  qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid % dof_damping.shape[0], tid]
 
 
 @cache_kernel
@@ -538,6 +539,9 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
+  # TODO(team): remove False after island features are more complete
+  if False and not (m.opt.disableflags & DisableBit.ISLAND):
+    island.island(m, d)
   smooth.transmission(m, d)
 
 
@@ -628,8 +632,8 @@ def _actuator_force(
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   actuator_forcerange: wp.array2d(dtype=wp.vec2),
   actuator_actrange: wp.array2d(dtype=wp.vec2),
-  actuator_acc0: wp.array(dtype=float),
-  actuator_lengthrange: wp.array(dtype=wp.vec2),
+  actuator_acc0: wp.array2d(dtype=float),
+  actuator_lengthrange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
@@ -664,7 +668,7 @@ def _actuator_force(
       act = act_in[worldid, act_last]
       act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
     elif dyntype == DynType.MUSCLE:
-      dynprm = actuator_dynprm[worldid, uid]
+      dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
       act = act_in[worldid, act_last]
       act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
     elif dyntype == DynType.USER:
@@ -704,8 +708,8 @@ def _actuator_force(
   elif gaintype == GainType.AFFINE:
     gain = gainprm[0] + gainprm[1] * length + gainprm[2] * velocity
   elif gaintype == GainType.MUSCLE:
-    acc0 = actuator_acc0[uid]
-    lengthrange = actuator_lengthrange[uid]
+    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
     gain = util_misc.muscle_gain(length, velocity, lengthrange, acc0, gainprm)
   # GainType.USER: gain stays 0, modified by act_gain_callback
 
@@ -717,8 +721,8 @@ def _actuator_force(
   if biastype == BiasType.AFFINE:
     bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
   elif biastype == BiasType.MUSCLE:
-    acc0 = actuator_acc0[uid]
-    lengthrange = actuator_lengthrange[uid]
+    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
     bias = util_misc.muscle_bias(length, lengthrange, acc0, biasprm)
 
   force = gain * ctrl_act + bias

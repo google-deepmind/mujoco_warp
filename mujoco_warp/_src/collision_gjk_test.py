@@ -22,10 +22,10 @@ from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
-from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import mat63
@@ -112,18 +112,20 @@ def _geom_dist(
     ncon_out: wp.array(dtype=int),
     pos_out: wp.array(dtype=wp.vec3),
   ):
+    worldid = wp.tid()
+
     geom1 = Geom()
     geom1.index = -1
     geomtype1 = geom_type[gid1]
     if wp.static(pos1 == None):
-      geom1.pos = geom_xpos_in[0, gid1]
+      geom1.pos = geom_xpos_in[worldid, gid1]
     else:
       geom1.pos = pos1
     if wp.static(mat1 == None):
-      geom1.rot = geom_xmat_in[0, gid1]
+      geom1.rot = geom_xmat_in[worldid, gid1]
     else:
       geom1.rot = mat1
-    geom1.size = geom_size[0, gid1]
+    geom1.size = geom_size[worldid % geom_size.shape[0], gid1]
     geom1.margin = margin
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
@@ -147,14 +149,14 @@ def _geom_dist(
     geom2.index = -1
     geomtype2 = geom_type[gid2]
     if wp.static(pos2 == None):
-      geom2.pos = geom_xpos_in[0, gid2]
+      geom2.pos = geom_xpos_in[worldid, gid2]
     else:
       geom2.pos = pos2
     if wp.static(mat2 == None):
-      geom2.rot = geom_xmat_in[0, gid2]
+      geom2.rot = geom_xmat_in[worldid, gid2]
     else:
       geom2.rot = mat2
-    geom2.size = geom_size[0, gid2]
+    geom2.size = geom_size[worldid % geom_size.shape[0], gid2]
     geom2.margin = margin
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1

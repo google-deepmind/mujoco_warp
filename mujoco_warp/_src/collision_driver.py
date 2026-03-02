@@ -18,13 +18,14 @@ from typing import Any
 import warp as wp
 
 from mujoco_warp._src.collision_convex import convex_narrowphase
+from mujoco_warp._src.collision_core import CollisionContext
+from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
-from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -73,15 +74,6 @@ MJ_COLLISION_TABLE = {
   (GeomType.BOX, GeomType.MESH): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.MESH): CollisionType.CONVEX,
 }
-
-
-def create_collision_context(naconmax: int) -> CollisionContext:
-  """Create a CollisionContext with allocated arrays."""
-  return CollisionContext(
-    collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_worldid=wp.empty(naconmax, dtype=int),
-  )
 
 
 @wp.kernel
@@ -299,13 +291,13 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
     # 8: obb
 
     aabb_id = worldid % ngeom_aabb if wp.static(ngeom_aabb > 1) else 0
-    center1, center2 = geom_aabb[aabb_id, geom1, 0], geom_aabb[aabb_id, geom2, 0]
-    size1, size2 = geom_aabb[aabb_id, geom1, 1], geom_aabb[aabb_id, geom2, 1]
+    center1, center2 = geom_aabb[aabb_id, geom1, 0], geom_aabb[aabb_id, geom2, 0]  # kernel_analyzer: ignore
+    size1, size2 = geom_aabb[aabb_id, geom1, 1], geom_aabb[aabb_id, geom2, 1]  # kernel_analyzer: ignore
 
     rbound_id = worldid % ngeom_rbound if wp.static(ngeom_rbound > 1) else 0
-    rbound1, rbound2 = geom_rbound[rbound_id, geom1], geom_rbound[rbound_id, geom2]
+    rbound1, rbound2 = geom_rbound[rbound_id, geom1], geom_rbound[rbound_id, geom2]  # kernel_analyzer: ignore
     margin_id = worldid % ngeom_margin if wp.static(ngeom_margin > 1) else 0
-    margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]
+    margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]  # kernel_analyzer: ignore
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
     xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
 

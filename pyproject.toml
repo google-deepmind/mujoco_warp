@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name="mujoco-warp"
-version = "3.5.0"
+version = "3.5.0.2"
 # TODO(team): create a distribution list
 authors = [
     {name = "Newton Developers", email = "mujoco@deepmind.com"},
@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
 ]
 requires-python = ">=3.10"
