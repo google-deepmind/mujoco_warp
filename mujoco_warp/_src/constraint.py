@@ -128,6 +128,7 @@ def _equality_connect(
   opt_disableflags: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -205,10 +206,8 @@ def _equality_connect(
   Jqvel = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
-    while body1 > 0 and body_dofnum[body1] == 0:
-      body1 = body_parentid[body1]
-    while body2 > 0 and body_dofnum[body2] == 0:
-      body2 = body_parentid[body2]
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
 
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -711,6 +710,7 @@ def _equality_weld(
   opt_disableflags: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -799,10 +799,8 @@ def _equality_weld(
   Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
-    while body1 > 0 and body_dofnum[body1] == 0:
-      body1 = body_parentid[body1]
-    while body2 > 0 and body_dofnum[body2] == 0:
-      body2 = body_parentid[body2]
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
 
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -2021,6 +2019,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.body_parentid,
           m.body_rootid,
+          m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
@@ -2071,6 +2070,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.body_parentid,
           m.body_rootid,
+          m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
