@@ -408,12 +408,22 @@ class SmoothTest(parameterized.TestCase):
     if check_version("mujoco>=3.5.1.dev875093374"):
       _assert_eq(d.ten_J.numpy()[0], mjd.ten_J, "ten_J")
     else:
-      if check_version("mujoco>=3.5.1.dev872479828"):
-        ten_J = np.zeros((mjm.ntendon, mjm.nv))
-        mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+      ten_J_mj = np.zeros((mjm.ntendon, mjm.nv))
+      if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
+        mujoco.mju_sparse2dense(
+          ten_J_mj, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1)
+        )
       else:
-        ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-      _assert_eq(d.ten_J.numpy()[0], ten_J, "ten_J")
+        ten_J_mj[:] = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+      ten_J_wp = np.zeros((mjm.ntendon, mjm.nv))
+      mujoco.mju_sparse2dense(
+        ten_J_wp,
+        d.ten_J.numpy()[0].reshape(-1),
+        m.ten_J_rownnz.numpy(),
+        m.ten_J_rowadr.numpy(),
+        m.ten_J_colind.numpy().reshape(-1),
+      )
+      _assert_eq(ten_J_wp, ten_J_mj, "ten_J")
     _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
     _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
     _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")

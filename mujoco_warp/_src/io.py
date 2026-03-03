@@ -69,6 +69,47 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
     return bool(mujoco.mj_isSparse(mjm))
 
 
+def _make_tendon_sparse(mjm: mujoco.MjModel):
+  """Compute sparse tendon Jacobian structure (nJten, rownnz, rowadr, colind).
+
+  Ports MuJoCo C's makeTendonSparse from engine_setconst.c.
+  """
+  rownnz = np.zeros(mjm.ntendon, dtype=np.int32)
+  colind_list = []
+  for i in range(mjm.ntendon):
+    adr = mjm.tendon_adr[i]
+    num = mjm.tendon_num[i]
+    if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+      # joint tendon: each wrap object is a joint, colind is its dofadr
+      cols = [int(mjm.jnt_dofadr[mjm.wrap_objid[adr + j]]) for j in range(num)]
+      rownnz[i] = num
+    else:
+      # spatial tendon: collect ancestor DOFs from wrap-object bodies
+      dof_set = set()
+      for j in range(num):
+        wtype = mjm.wrap_type[adr + j]
+        bodyid = -1
+        if wtype == mujoco.mjtWrap.mjWRAP_SITE:
+          bodyid = mjm.site_bodyid[mjm.wrap_objid[adr + j]]
+        elif wtype in (mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER):
+          bodyid = mjm.geom_bodyid[mjm.wrap_objid[adr + j]]
+        if bodyid > 0:
+          bid = bodyid
+          while bid > 0:
+            bdofadr = mjm.body_dofadr[bid]
+            bdofnum = mjm.body_dofnum[bid]
+            for k in range(bdofnum):
+              dof_set.add(bdofadr + k)
+            bid = mjm.body_parentid[bid]
+      cols = sorted(dof_set)
+      rownnz[i] = len(cols)
+    colind_list.extend(cols)
+  nJten = int(sum(rownnz))
+  rowadr = np.concatenate([[0], np.cumsum(rownnz[:-1])]).astype(np.int32) if mjm.ntendon else np.array([], dtype=np.int32)
+  colind = np.array(colind_list, dtype=np.int32)
+  return nJten, rownnz, rowadr, colind
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -226,6 +267,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.block_dim = types.BlockDim()
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
+
+  if check_version("mujoco<3.5.1.dev875093374"):
+    m.nJten, m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind = _make_tendon_sparse(mjm)
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -700,6 +744,8 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  if check_version("mujoco<3.5.1.dev875093374"):
+    sizes["nJten"] = _make_tendon_sparse(mjm)[0]
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -861,6 +907,8 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  if check_version("mujoco<3.5.1.dev875093374"):
+    sizes["nJten"] = _make_tendon_sparse(mjm)[0]
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -968,6 +1016,8 @@ def put_data(
     "nisland": None,
     "tree_island": None,
   }
+  if check_version("mujoco<3.5.1.dev875093374"):
+    d_kwargs["ten_J"] = None
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
       continue
@@ -998,14 +1048,22 @@ def put_data(
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
   d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
 
-  if not check_version("mujoco>=3.5.1.dev875093374"):
-    ten_J = np.zeros((mjm.ntendon, mjm.nv))
+  if check_version("mujoco<3.5.1.dev875093374"):
+    ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
     if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
       if mjm.ntendon:
-        mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+        mujoco.mju_sparse2dense(
+          ten_J_dense, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1)
+        )
     else:
-      ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
+      ten_J_dense = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+    # convert dense to sparse using model's sparse structure
+    nJten = sizes["nJten"]
+    ten_J_sparse = np.zeros(nJten)
+    if nJten > 0:
+      _, _rownnz, _rowadr, _colind = _make_tendon_sparse(mjm)
+      mujoco.mju_dense2sparse(ten_J_sparse, ten_J_dense, _rownnz, _rowadr, _colind)
+    d.ten_J = wp.array(np.tile(ten_J_sparse, (nworld, 1)), dtype=float)
 
   # TODO(taylorhowell): sparse actuator_moment
   actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -1221,17 +1279,24 @@ def get_data_into(
   if mjm.ntendon > 0:
     if check_version("mujoco>=3.5.1.dev875093374"):
       result.ten_J[:] = d.ten_J.numpy()[world_id]
-    elif check_version("mujoco>=3.5.1.dev869712136"):
-      ten_J = d.ten_J.numpy()[world_id]
-      mujoco.mju_dense2sparse(
-        result.ten_J,
-        ten_J,
-        result.ten_J_rownnz,
-        result.ten_J_rowadr,
-        result.ten_J_colind,
-      )
     else:
-      result.ten_J[:] = d.ten_J.numpy()[world_id]
+      _, _rownnz, _rowadr, _colind = _make_tendon_sparse(mjm)
+
+      # convert sparse ten_J to dense
+      ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
+      ten_J_sparse = d.ten_J.numpy()[world_id]
+      mujoco.mju_sparse2dense(ten_J_dense, ten_J_sparse, _rownnz, _rowadr, _colind)
+
+      if check_version("mujoco>=3.5.1.dev869712136"):
+        mujoco.mju_dense2sparse(
+          result.ten_J,
+          ten_J_dense,
+          result.ten_J_rownnz,
+          result.ten_J_rowadr,
+          result.ten_J_colind,
+        )
+      else:
+        result.ten_J[:] = ten_J_dense
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
