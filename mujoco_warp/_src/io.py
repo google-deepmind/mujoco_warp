@@ -2101,10 +2101,11 @@ def set_const_0(m: types.Model, d: types.Data):
 
   # tendon_invweight0[t] = J_t * inv(M) * J_t'
   if m.ntendon > 0:
-    ten_J_vec = wp.zeros((d.nworld, m.nv), dtype=float)
-    ten_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    ten_J_vec = wp.empty((d.nworld, m.nv), dtype=float)
+    ten_result_vec = wp.empty((d.nworld, m.nv), dtype=float)
 
     for tenid in range(m.ntendon):
+      ten_J_vec.zero_()
       wp.launch(
         _copy_tendon_jacobian,
         dim=d.nworld,
