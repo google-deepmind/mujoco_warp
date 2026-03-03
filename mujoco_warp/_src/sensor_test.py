@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.types import CollisionType
 
@@ -104,8 +105,9 @@ class SensorTest(parameterized.TestCase):
       """
       )
 
+      ctx = create_collision_context(d.naconmax)
       primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == CollisionType.PRIMITIVE]
-      mjw.primitive_narrowphase(m, d, primitive_pairs)
+      mjw.primitive_narrowphase(m, d, ctx, primitive_pairs)
 
   def test_sensor(self):
     """Test sensors."""
@@ -676,7 +678,7 @@ class SensorTest(parameterized.TestCase):
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
   @parameterized.parameters(
-    # TODO(team): box in type0
+    ("box", "box", "box", "box"),
     ("sphere", "capsule", "ellipsoid", "cylinder"),
     ("capsule", "box", "cylinder", "sphere"),
     ("capsule", "cylinder", "box", "ellipsoid"),
@@ -860,6 +862,35 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_sensor_callback(self):
+    """Tests sensor_callback populates user sensor data."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="myplane" type="plane" size="10 10 1"/>
+      </worldbody>
+      <sensor>
+        <user objtype="geom" objname="myplane"
+              datatype="real" needstage="vel" dim="1"/>
+      </sensor>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    @wp.kernel
+    def _set_sensordata(sensordata_out: wp.array2d(dtype=float)):
+      worldid = wp.tid()
+      sensordata_out[worldid, 0] = 17.0
+
+    def my_sensor(m, d, stage):
+      if stage == 1:  # VEL
+        wp.launch(_set_sensordata, dim=(d.nworld,), outputs=[d.sensordata])
+
+    m.callback.sensor = my_sensor
+    mjw.forward(m, d)
+
+    self.assertEqual(d.sensordata.numpy()[0, 0], 17.0)
 
 
 if __name__ == "__main__":

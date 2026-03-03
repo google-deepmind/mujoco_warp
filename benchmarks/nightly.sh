@@ -105,6 +105,9 @@ COMMITS=$(git rev-list --reverse "${LAST_COMMIT}..HEAD")
 for commit in $COMMITS; do
     log "Processing commit $commit"
     
+    # Reset working tree (uv run may modify uv.lock)
+    git restore .
+
     # Checkout the commit
     git checkout "$commit" 2>&1 | log
     
@@ -143,8 +146,8 @@ for commit in $COMMITS; do
         # Run benchmark using uv run (handles venv and dependencies automatically)
         # --prerelease=allow: accept dev/nightly builds
         # --upgrade: always get the latest versions
-        log "Command: UV_NO_CONFIG=1 uv run --prerelease=allow --upgrade ${CMD[*]}"
-        BENCHMARK_JSON=$(UV_NO_CONFIG=1 uv run --prerelease=allow --upgrade "${CMD[@]}")
+        log "Command: UV_NO_CONFIG=1 uv run ${CMD[*]}"
+        BENCHMARK_JSON=$(UV_NO_CONFIG=1 uv run "${CMD[@]}")
 
         # Convert multi-line JSON to single line and add commit metadata
         # Use tail -n 1 to ignore any log spam before the JSON output

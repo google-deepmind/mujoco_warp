@@ -15,6 +15,8 @@
 
 """Tests for constraint functions."""
 
+import itertools
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -24,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -36,7 +39,7 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
-def _assert_efc_eq(mjm, mjd, d, nefc, name, nv):
+def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   """Assert equality of efc fields after sorting both sides."""
   if nv == 0:
     return
@@ -57,17 +60,35 @@ def _assert_efc_eq(mjm, mjd, d, nefc, name, nv):
   d_sort_indices = np.lexsort((efc_pos, efc_type, efc_vel, efc_aref, efc_d))
   mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
 
+  # convert sparse to dense if necessary
+  if SPARSE_CONSTRAINT_JACOBIAN:
+    efc_J = np.zeros((nefc, nv))
+    mujoco.mju_sparse2dense(
+      efc_J,
+      d.efc.J.numpy()[0, 0],
+      d.efc.J_rownnz.numpy()[0, :nefc],
+      d.efc.J_rowadr.numpy()[0, :nefc],
+      d.efc.J_colind.numpy()[0, 0],
+    )
+  else:
+    efc_J = d.efc.J.numpy()[0]
+
   # Sort MJWarp efc fields
-  d_sorted = d.efc.J.numpy()[0, d_sort_indices, :nv].reshape(-1)
+  d_sorted = efc_J[d_sort_indices, :nv].reshape(-1)
 
   # Sort MuJoCo efc fields
   nefc = len(mjd_sort_indices)
-  mjd_J_2d = np.zeros((nefc, nv))
+
   if mujoco.mj_isSparse(mjm):
-    mujoco.mju_sparse2dense(mjd_J_2d, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
+    mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:
-    mjd_J_2d[:] = mjd.efc_J.reshape(mjd.nefc, nv)[:nefc, :]
-  mjd_sorted_J = mjd_J_2d[mjd_sort_indices].reshape(-1)
+    mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+
+  if nv > 0:
+    mjd_sorted_J = mj_efc_J[mjd_sort_indices].reshape(-1)
+  else:
+    mjd_sorted_J = mj_efc_J
 
   mjd_sorted_D = mjd.efc_D[mjd_sort_indices]
   mjd_sorted_vel = mjd.efc_vel[mjd_sort_indices]
@@ -100,29 +121,15 @@ def _assert_efc_eq(mjm, mjd, d, nefc, name, nv):
 
 class ConstraintTest(parameterized.TestCase):
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, 1, 1),
-    (ConeType.PYRAMIDAL, 1, 3),
-    (ConeType.PYRAMIDAL, 1, 4),
-    (ConeType.PYRAMIDAL, 1, 6),
-    (ConeType.PYRAMIDAL, 3, 3),
-    (ConeType.PYRAMIDAL, 3, 4),
-    (ConeType.PYRAMIDAL, 3, 6),
-    (ConeType.PYRAMIDAL, 4, 4),
-    (ConeType.PYRAMIDAL, 4, 6),
-    (ConeType.PYRAMIDAL, 6, 6),
-    (ConeType.ELLIPTIC, 1, 1),
-    (ConeType.ELLIPTIC, 1, 3),
-    (ConeType.ELLIPTIC, 1, 4),
-    (ConeType.ELLIPTIC, 1, 6),
-    (ConeType.ELLIPTIC, 3, 3),
-    (ConeType.ELLIPTIC, 3, 4),
-    (ConeType.ELLIPTIC, 3, 6),
-    (ConeType.ELLIPTIC, 4, 4),
-    (ConeType.ELLIPTIC, 4, 6),
-    (ConeType.ELLIPTIC, 6, 6),
+    *itertools.product(
+      (ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+      itertools.combinations_with_replacement((1, 3, 4, 6), 2),
+      (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    )
   )
-  def test_condim(self, cone, condim1, condim2):
+  def test_condim(self, cone, condims, jacobian):
     """Test condim."""
+    condim1, condim2 = condims
     xml = f"""
       <mujoco>
         <worldbody>
@@ -143,7 +150,7 @@ class ConstraintTest(parameterized.TestCase):
       </mujoco>
     """
 
-    _, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.cone": cone})
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
     # fill with nan to check whether we are not reading uninitialized values
     for arr in (d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
@@ -152,29 +159,26 @@ class ConstraintTest(parameterized.TestCase):
     mjw.make_constraint(m, d)
 
     _assert_eq(d.nacon.numpy()[0], mjd.ncon, "nacon")
-    _assert_eq(d.efc.J.numpy()[0, : mjd.nefc, : m.nv].reshape(-1), mjd.efc_J, "efc_J")
-    _assert_eq(d.efc.D.numpy()[0, : mjd.nefc], mjd.efc_D, "efc_D")
-    _assert_eq(d.efc.aref.numpy()[0, : mjd.nefc], mjd.efc_aref, "efc_aref")
-    _assert_eq(d.efc.pos.numpy()[0, : mjd.nefc], mjd.efc_pos, "efc_pos")
-    _assert_eq(d.efc.margin.numpy()[0, : mjd.nefc], mjd.efc_margin, "efc_margin")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   @parameterized.parameters(
-    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtJacobian.mjJAC_DENSE),
-    (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtJacobian.mjJAC_SPARSE),
-    (mujoco.mjtCone.mjCONE_ELLIPTIC, mujoco.mjtJacobian.mjJAC_DENSE),
-    (mujoco.mjtCone.mjCONE_ELLIPTIC, mujoco.mjtJacobian.mjJAC_SPARSE),
+    *itertools.product(
+      ("constraints.xml", "flex/floppy.xml"),
+      (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
+      (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    )
   )
-  def test_constraints(self, cone, jacobian):
+  def test_constraints(self, xml, cone, jacobian):
     """Test constraints."""
+    if xml == "flex/floppy.xml" and jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
+      self.skipTest("flex/floppy.xml with dense jacobian not supported")
     for key in range(3):
-      mjm, mjd, m, d = test_data.fixture(
-        "constraints.xml", keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
-      )
+      mjm, mjd, m, d = test_data.fixture(xml, keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)
       for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
-        arr.fill_(wp.nan)
+        arr.fill_(wp.inf)
 
       mjw.make_constraint(m, d)
 
@@ -182,7 +186,7 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_efc_eq(mjm, mjd, d, mjd.nefc, "efc", m.nv)
+      _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
@@ -202,7 +206,7 @@ class ConstraintTest(parameterized.TestCase):
 
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
-      _assert_efc_eq(mjm, mjd, d, mjd.nefc, "efc", m.nv)
+      _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
@@ -263,7 +267,7 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
-    _assert_efc_eq(mjm, mjd, d, mjd.nefc, "efc", m.nv)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
 
 if __name__ == "__main__":

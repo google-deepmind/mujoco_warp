@@ -28,6 +28,7 @@ from mujoco_warp._src.types import Model as Model
 from mujoco_warp._src.types import Data as Data
 # isort: on
 
+from mujoco_warp._src.bvh import refit_bvh as refit_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
 from mujoco_warp._src.collision_driver import sap_broadphase as sap_broadphase
@@ -46,6 +47,7 @@ from mujoco_warp._src.forward import rungekutta4 as rungekutta4
 from mujoco_warp._src.forward import step1 as step1
 from mujoco_warp._src.forward import step2 as step2
 from mujoco_warp._src.inverse import inverse as inverse
+from mujoco_warp._src.io import create_render_context as create_render_context
 from mujoco_warp._src.io import get_data_into as get_data_into
 from mujoco_warp._src.io import make_data as make_data
 from mujoco_warp._src.io import put_data as put_data
@@ -54,9 +56,14 @@ from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.io import set_const as set_const
 from mujoco_warp._src.io import set_const_0 as set_const_0
 from mujoco_warp._src.io import set_const_fixed as set_const_fixed
+from mujoco_warp._src.io import set_length_range as set_length_range
+from mujoco_warp._src.island import island as island
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
+from mujoco_warp._src.render import render as render
+from mujoco_warp._src.render_util import get_depth as get_depth
+from mujoco_warp._src.render_util import get_rgb as get_rgb
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
@@ -78,6 +85,7 @@ from mujoco_warp._src.smooth import transmission as transmission
 from mujoco_warp._src.solver import solve as solve
 from mujoco_warp._src.support import contact_force as contact_force
 from mujoco_warp._src.support import get_state as get_state
+from mujoco_warp._src.support import jac as jac
 from mujoco_warp._src.support import mul_m as mul_m
 from mujoco_warp._src.support import set_state as set_state
 from mujoco_warp._src.support import xfrc_accumulate as xfrc_accumulate
@@ -95,6 +103,7 @@ from mujoco_warp._src.types import GeomType as GeomType
 from mujoco_warp._src.types import IntegratorType as IntegratorType
 from mujoco_warp._src.types import JointType as JointType
 from mujoco_warp._src.types import Option as Option
+from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
 from mujoco_warp._src.types import Statistic as Statistic

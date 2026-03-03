@@ -26,6 +26,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import solver
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -39,14 +40,18 @@ def _assert_eq(a, b, name):
 
 
 class SolverTest(parameterized.TestCase):
-  @parameterized.product(cone=tuple(ConeType), solver_=tuple(SolverType))
-  def test_constraint_update(self, cone, solver_):
+  @parameterized.product(
+    cone=tuple(ConeType),
+    solver_=tuple(SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_constraint_update(self, cone, solver_, jacobian):
     """Tests _update_constraint function is correct."""
     for keyframe in range(3):
       mjm, mjd, m, d = test_data.fixture(
         "constraints.xml",
         keyframe=keyframe,
-        overrides={"opt.solver": solver_, "opt.cone": cone, "opt.iterations": 0},
+        overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 0},
       )
 
       def cost(qacc):
@@ -61,7 +66,8 @@ class SolverTest(parameterized.TestCase):
       # solve with 0 iterations just initializes constraints and costs and then exits
       d.efc.force.zero_()
       d.qfrc_constraint.zero_()
-      mjw.solve(m, d)
+      ctx = solver.create_solver_context(m, d)
+      solver._solve(m, d, ctx)
 
       # Get the ordering indices based on efc_force, efc_state for MJWarp
       nefc = d.nefc.numpy()[0]
@@ -75,7 +81,8 @@ class SolverTest(parameterized.TestCase):
       d_sort_indices = np.lexsort((efc_force, efc_state))
       mjd_sort_indices = np.lexsort((mjd_efc_force, mjd_efc_state))
 
-      efc_cost = d.efc.cost.numpy()[0] - d.efc.gauss.numpy()[0]
+      solver.init_context(m, d, ctx, grad=False)
+      ctx_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
       qfrc_constraint = d.qfrc_constraint.numpy()[0]
 
       efc_sorted_force = efc_force[d_sort_indices]
@@ -85,11 +92,15 @@ class SolverTest(parameterized.TestCase):
 
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
-      _assert_eq(efc_cost, mjd_cost, "cost")
+      _assert_eq(ctx_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
-  @parameterized.product(ls_parallel=(True, False), cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC))
-  def test_init_linesearch(self, ls_parallel, cone):
+  @parameterized.product(
+    ls_parallel=(True, False),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_init_linesearch(self, ls_parallel, cone, jacobian):
     """Test linesearch initialization.
 
     Parallel linesearch has separate prep kernels that write quad, quad_gauss, jv.
@@ -105,66 +116,81 @@ class SolverTest(parameterized.TestCase):
           "opt.ls_iterations": 1,
           "opt.ls_parallel": ls_parallel,
           "opt.cone": cone,
+          "opt.jacobian": jacobian,
         },
       )
 
       # One step to obtain more non-zeros results
       mjw.step(m, d)
 
+      # Create a SolverContext to access internal solver arrays
+      ctx = solver.create_solver_context(m, d)
+      solver._solve(m, d, ctx)
+
       # Calculate target values
       nefc = d.nefc.numpy()[0]
-      efc_search_np = d.efc.search.numpy()[0]
-      efc_J_np = d.efc.J.numpy()[0][: d.njmax, : m.nv]
-      efc_gauss_np = d.efc.gauss.numpy()[0]
+      ctx_search_np = ctx.search.numpy()[0]
+      if SPARSE_CONSTRAINT_JACOBIAN:
+        efc_J_np = np.zeros((nefc, m.nv))
+        mujoco.mju_sparse2dense(
+          efc_J_np,
+          d.efc.J.numpy()[0, 0],
+          d.efc.J_rownnz.numpy()[0, :nefc],
+          d.efc.J_rowadr.numpy()[0, :nefc],
+          d.efc.J_colind.numpy()[0, 0],
+        )
+      else:
+        efc_J_np = d.efc.J.numpy()[0, :nefc, : m.nv]
+      ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
-      efc_Jaref_np = d.efc.Jaref.numpy()[0]
-      efc_D_np = d.efc.D.numpy()[0][: d.njmax]
+      ctx_Jaref_np = ctx.Jaref.numpy()[0][:nefc]
+      efc_D_np = d.efc.D.numpy()[0][:nefc]
       qfrc_smooth_np = d.qfrc_smooth.numpy()[0]
 
       target_mv = np.zeros(mjm.nv)
-      mujoco.mj_mulM(mjm, mjd, target_mv, efc_search_np)
-      target_jv = efc_J_np @ efc_search_np
+      mujoco.mj_mulM(mjm, mjd, target_mv, ctx_search_np)
+      target_jv = efc_J_np @ ctx_search_np
       target_quad_gauss = np.array(
         [
-          efc_gauss_np,
-          np.dot(efc_search_np, efc_Ma_np - qfrc_smooth_np),
-          0.5 * np.dot(efc_search_np, target_mv),
+          ctx_gauss_np,
+          np.dot(ctx_search_np, efc_Ma_np - qfrc_smooth_np),
+          0.5 * np.dot(ctx_search_np, target_mv),
         ]
       )
       target_quad = np.transpose(
         np.vstack(
           [
-            0.5 * efc_Jaref_np * efc_Jaref_np * efc_D_np,
-            target_jv * efc_Jaref_np * efc_D_np,
+            0.5 * ctx_Jaref_np * ctx_Jaref_np * efc_D_np,
+            target_jv * ctx_Jaref_np * efc_D_np,
             0.5 * target_jv * target_jv * efc_D_np,
           ]
         )
       )
 
       # Reset and launch linesearch
-      d.efc.jv.zero_()
-      d.efc.quad.zero_()
-      d.efc.quad_gauss.zero_()
+      ctx.jv.zero_()
+      ctx.quad.zero_()
+      ctx.quad_gauss.zero_()
       step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
-      solver._linesearch(m, d, step_size_cost)
+      solver._linesearch(m, d, ctx, step_size_cost)
 
       # mv and jv are always written
-      efc_mv = d.efc.mv.numpy()[0]
-      efc_jv = d.efc.jv.numpy()[0]
-      _assert_eq(efc_mv, target_mv, "mv")
-      _assert_eq(efc_jv[:nefc], target_jv[:nefc], "jv")
+      ctx_mv = ctx.mv.numpy()[0]
+      ctx_jv = ctx.jv.numpy()[0]
+      _assert_eq(ctx_mv, target_mv, "mv")
+      _assert_eq(ctx_jv[:nefc], target_jv[:nefc], "jv")
 
       if ls_parallel and cone == ConeType.PYRAMIDAL:
         # Parallel pyramidal has separate prep kernels that write quad_gauss and quad
         # (Elliptic quad uses special quad1/quad2 format that target_quad doesn't compute)
-        efc_quad_gauss = d.efc.quad_gauss.numpy()[0]
-        efc_quad = d.efc.quad.numpy()[0]
-        _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
-        _assert_eq(efc_quad[:nefc], target_quad[:nefc], "quad")
+        ctx_quad_gauss = ctx.quad_gauss.numpy()[0]
+        ctx_quad = ctx.quad.numpy()[0]
+        _assert_eq(ctx_quad_gauss, target_quad_gauss, "quad_gauss")
+        _assert_eq(ctx_quad[:nefc], target_quad[:nefc], "quad")
       elif ls_parallel and cone == ConeType.ELLIPTIC:
         # Parallel elliptic: only check quad_gauss (quad uses special format)
-        efc_quad_gauss = d.efc.quad_gauss.numpy()[0]
-        _assert_eq(efc_quad_gauss, target_quad_gauss, "quad_gauss")
+        ctx_quad_gauss = ctx.quad_gauss.numpy()[0]
+        _assert_eq(ctx_quad_gauss, target_quad_gauss, "quad_gauss")
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -177,24 +203,28 @@ class SolverTest(parameterized.TestCase):
       overrides={"opt.cone": cone, "opt.solver": SolverType.CG, "opt.jacobian": jacobian, "opt.iterations": 0},
     )
 
-    # Solve with 0 iterations just initializes and exit
-    mjw.solve(m, d)
+    # Create SolverContext and initialize
+    ctx = solver.create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
 
     # Calculate Mgrad with Mujoco C
     mj_Mgrad = np.zeros(shape=(1, mjm.nv), dtype=float)
-    mj_grad = np.tile(d.efc.grad.numpy()[:, : mjm.nv], (1, 1))
+    mj_grad = np.tile(ctx.grad.numpy()[:, : mjm.nv], (1, 1))
     mujoco.mj_solveM(mjm, mjd, mj_Mgrad, mj_grad)
 
-    efc_Mgrad = d.efc.Mgrad.numpy()[0, : mjm.nv]
-    _assert_eq(efc_Mgrad, mj_Mgrad[0], name="Mgrad")
+    ctx_Mgrad = ctx.Mgrad.numpy()[0, : mjm.nv]
+    _assert_eq(ctx_Mgrad, mj_Mgrad[0], name="Mgrad")
 
-  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
-  def test_parallel_linesearch(self, cone):
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_parallel_linesearch(self, cone, jacobian):
     """Test that iterative and parallel linesearch leads to equivalent results."""
     _, _, m, d = test_data.fixture(
       "humanoid/humanoid.xml",
       qpos_noise=0.01,
-      overrides={"opt.cone": cone, "opt.iterations": 50, "opt.ls_iterations": 50},
+      overrides={"opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 50, "opt.ls_iterations": 50},
     )
 
     # One step to obtain more non-zeros results
@@ -204,33 +234,34 @@ class SolverTest(parameterized.TestCase):
     m.opt.iterations = 0
     mjw.fwd_velocity(m, d)
     mjw.fwd_acceleration(m, d, factorize=True)
-    solver.solve(m, d)
+    ctx = solver.create_solver_context(m, d)
+    solver._solve(m, d, ctx)
 
     # Storing some initial values
     d_efc_Ma = d.efc.Ma.numpy().copy()
-    d_efc_Jaref = d.efc.Jaref.numpy().copy()
+    ctx_Jaref = ctx.Jaref.numpy().copy()
     d_qacc = d.qacc.numpy().copy()
 
     # Launching iterative linesearch
     m.opt.ls_parallel = False
     step_size_cost = wp.empty((d.nworld, 0), dtype=float)
-    solver._linesearch(m, d, step_size_cost)
+    solver._linesearch(m, d, ctx, step_size_cost)
     # Iterative computes alpha internally and directly updates outputs
     qacc_iterative = d.qacc.numpy().copy()
     Ma_iterative = d.efc.Ma.numpy().copy()
-    Jaref_iterative = d.efc.Jaref.numpy().copy()
+    Jaref_iterative = ctx.Jaref.numpy().copy()
 
     # Launching parallel linesearch with 50 testing points
     m.opt.ls_parallel = True
     m.opt.ls_iterations = 50
     d.efc.Ma = wp.array2d(d_efc_Ma)
-    d.efc.Jaref = wp.array(d_efc_Jaref)
+    ctx.Jaref = wp.array2d(ctx_Jaref)
     d.qacc = wp.array2d(d_qacc)
     step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
-    solver._linesearch(m, d, step_size_cost)
+    solver._linesearch(m, d, ctx, step_size_cost)
     qacc_parallel = d.qacc.numpy().copy()
     Ma_parallel = d.efc.Ma.numpy().copy()
-    Jaref_parallel = d.efc.Jaref.numpy().copy()
+    Jaref_parallel = ctx.Jaref.numpy().copy()
 
     # Check that iterative and parallel linesearch produce equivalent outputs
     _assert_eq(qacc_iterative, qacc_parallel, name="qacc")
@@ -240,8 +271,12 @@ class SolverTest(parameterized.TestCase):
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
     (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True),
     (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True),
   )
@@ -374,10 +409,10 @@ class SolverTest(parameterized.TestCase):
     efc_J1 = mjd1.efc_J.reshape((mjd1.nefc, mjm1.nv))
     efc_J2 = mjd2.efc_J.reshape((mjd2.nefc, mjm2.nv))
 
-    efc_J_fill = np.zeros((3, d.njmax, m.nv))
-    efc_J_fill[0, : mjd0.nefc, :] = efc_J0
-    efc_J_fill[1, : mjd1.nefc, :] = efc_J1
-    efc_J_fill[2, : mjd2.nefc, :] = efc_J2
+    efc_J_fill = np.zeros((3, d.njmax_pad, m.nv_pad))
+    efc_J_fill[0, : mjd0.nefc, : mjm0.nv] = efc_J0
+    efc_J_fill[1, : mjd1.nefc, : mjm1.nv] = efc_J1
+    efc_J_fill[2, : mjd2.nefc, : mjm2.nv] = efc_J2
 
     # Similarly for D and aref values
     efc_D0 = mjd0.efc_D[: mjd0.nefc]
@@ -479,16 +514,125 @@ class SolverTest(parameterized.TestCase):
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
-  def test_frictionloss(self):
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_frictionloss(self, jacobian):
     """Tests solver with frictionloss."""
     for keyframe in range(3):
-      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=keyframe)
+      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian})
       mjw.solve(m, d)
 
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
       _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
+  def test_parallel_linesearch_threads_per_efc_gt_1(self):
+    """Test parallel linesearch with threads_per_efc > 1."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    self.assertEqual(mjm.nv, 54)  # 9 freejoints * 6 dofs each
+
+    # parallel linesearch path with nv > 50 -> threads_per_efc > 1
+    m.opt.ls_parallel = True
+    m.opt.iterations = 1
+    m.opt.ls_iterations = 1
+    mjw.step(m, d)
+
+  def test_incremental_vs_full_hessian(self):
+    """Tests that incremental Hessian updates produce same result as full recomputation."""
+    total_any_changes = False
+    for keyframe in range(3):
+      mjm, mjd, m, d = test_data.fixture(
+        "humanoid/humanoid.xml",
+        keyframe=keyframe,
+        overrides={
+          "opt.cone": ConeType.PYRAMIDAL,
+          "opt.solver": SolverType.NEWTON,
+          "opt.iterations": 5,
+          "opt.ls_iterations": 10,
+        },
+      )
+
+      def _run_solver(d, update_fn, track=False):
+        """Run solver iterations with a given gradient update function."""
+        d.qacc.zero_()
+        d.qfrc_constraint.zero_()
+        d.efc.force.zero_()
+        ctx = solver.create_solver_context(m, d)
+        solver.init_context(m, d, ctx, grad=True)
+        wp.launch(solver.solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
+        step_size_cost = wp.empty((d.nworld, 0), dtype=float)
+        any_changes = False
+        for _ in range(m.opt.iterations):
+          solver._linesearch(m, d, ctx, step_size_cost)
+          if track:
+            ctx.changed_efc_count.zero_()
+          solver._update_constraint(m, d, ctx, track_changes=track)
+          if track:
+            wp.synchronize()
+            if np.any(ctx.changed_efc_count.numpy() > 0):
+              any_changes = True
+          update_fn(m, d, ctx)
+          wp.launch(solver.solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
+          wp.launch(
+            solver.solve_search_update,
+            dim=(d.nworld, m.nv),
+            inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            outputs=[ctx.search, ctx.search_dot],
+          )
+        return d.qacc.numpy().copy(), any_changes
+
+      qacc_full, _ = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient)
+      qacc_inc, any_changes = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient_incremental, track=True)
+      total_any_changes = total_any_changes or any_changes
+
+      _assert_eq(qacc_inc, qacc_full, f"qacc keyframe={keyframe}")
+
+    self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
 
 if __name__ == "__main__":

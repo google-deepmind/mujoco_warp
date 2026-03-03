@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -332,7 +333,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml)
 
     for arr in (d.actuator_length, d.actuator_moment):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     actuator_moment = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(
@@ -352,8 +353,9 @@ class SmoothTest(parameterized.TestCase):
     """Tests adhesion actuator."""
     mjm, mjd, m, d = test_data.fixture("actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone})
 
-    d.actuator_length.zero_()
-    d.actuator_moment.zero_()
+    for arr in (d.actuator_length, d.actuator_moment):
+      arr.fill_(wp.inf)
+
     mjw._src.collision_driver.collision(m, d)  # compute contact.includemargin
     mjw._src.constraint.make_constraint(m, d)  # compute contact.efc_address
     mjw._src.smooth.transmission(m, d)
@@ -402,7 +404,16 @@ class SmoothTest(parameterized.TestCase):
     mjw.transmission(m, d)
 
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
-    _assert_eq(d.ten_J.numpy()[0], mjd.ten_J, "ten_J")
+
+    if check_version("mujoco>=3.5.1.dev875093374"):
+      _assert_eq(d.ten_J.numpy()[0], mjd.ten_J, "ten_J")
+    else:
+      if check_version("mujoco>=3.5.1.dev872479828"):
+        ten_J = np.zeros((mjm.ntendon, mjm.nv))
+        mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+      else:
+        ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+      _assert_eq(d.ten_J.numpy()[0], ten_J, "ten_J")
     _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
     _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
     _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
@@ -479,6 +490,8 @@ class SmoothTest(parameterized.TestCase):
 
   def test_flex(self):
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
+    self.assertTrue(m.is_sparse)
+
     d.flexvert_xpos.fill_(wp.inf)
     d.flexedge_length.fill_(wp.inf)
     d.flexedge_velocity.fill_(wp.inf)
@@ -491,32 +504,27 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_comPos(mjm, mjd)
     mujoco.mj_flex(mjm, mjd)
 
-    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    rownnz = mjm.flexedge_J_rownnz
+    rowadr = mjm.flexedge_J_rowadr
+    colind = mjm.flexedge_J_colind.reshape(-1)
 
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if BLEEDING_EDGE_MUJOCO:
-      mujoco.mju_sparse2dense(
-        flexedge_J,
-        mjd.flexedge_J.reshape(-1),
-        mjm.flexedge_J_rownnz,
-        mjm.flexedge_J_rowadr,
-        mjm.flexedge_J_colind.reshape(-1),
-      )
-    else:
-      mujoco.mju_sparse2dense(
-        flexedge_J,
-        mjd.flexedge_J.reshape(-1),
-        mjd.flexedge_J_rownnz,
-        mjd.flexedge_J_rowadr,
-        mjd.flexedge_J_colind.reshape(-1),
-      )
+    mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)
 
     _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
     _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
     _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
-    _assert_eq(d.flexedge_J.numpy()[0], flexedge_J, "flexedge_J")
+
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+    mujoco.mju_sparse2dense(
+      flexedge_J,
+      d.flexedge_J.numpy()[0, 0].reshape(-1),
+      m.flexedge_J_rownnz.numpy(),
+      m.flexedge_J_rowadr.numpy(),
+      m.flexedge_J_colind.numpy(),
+    )
+
+    _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
 
 
 if __name__ == "__main__":
