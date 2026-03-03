@@ -364,7 +364,7 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
 
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "acutator_moment")
+    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
   def test_subtree_vel(self):
     """Tests subtree_vel."""
