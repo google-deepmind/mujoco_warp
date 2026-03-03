@@ -1172,17 +1172,13 @@ def get_data_into(
   if nefc > 0:
     if SPARSE_CONSTRAINT_JACOBIAN:
       efc_J = np.zeros((nefc, mjm.nv))
-      J_rownnz_wp = d.efc.J_rownnz.numpy()[0]
-      J_rowadr_wp = d.efc.J_rowadr.numpy()[0]
-      J_colind_wp = d.efc.J_colind.numpy()[0]
-      J_wp = d.efc.J.numpy()[0, 0]
-      for i in range(nefc):
-        rownnz = J_rownnz_wp[i]
-        rowadr = J_rowadr_wp[i]
-        for j in range(rownnz):
-          sparseid = rowadr + j
-          colind = J_colind_wp[sparseid]
-          efc_J[i, colind] = J_wp[sparseid]
+      mujoco.mju_sparse2dense(
+        efc_J,
+        d.efc.J.numpy()[world_id, 0],
+        d.efc.J_rownnz.numpy()[world_id, :nefc],
+        d.efc.J_rowadr.numpy()[world_id, :nefc],
+        d.efc.J_colind.numpy()[world_id, 0],
+      )
     else:
       efc_J = d.efc.J.numpy()[world_id, :nefc, : mjm.nv]
 

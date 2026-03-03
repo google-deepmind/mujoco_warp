@@ -2309,10 +2309,15 @@ def _transmission_body_moment(
     if is_sparse:
       # get Jacobian difference
       efcid0 = contact_efc_address_in[conid][0]
-      if dofid >= efc_J_rownnz_in[worldid, efcid0]:
-        return
-      sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
-      colind = efc_J_colind_in[worldid, 0, sparseid]
+      if efcid0 >= 0:
+        # contact has valid efc row: use sparse pattern
+        if dofid >= efc_J_rownnz_in[worldid, efcid0]:
+          return
+        sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
+        colind = efc_J_colind_in[worldid, 0, sparseid]
+      else:
+        # excluded contact with no efc row: use dofid directly
+        colind = dofid
 
       jacp1, _ = support.jac_dof(
         body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, colind, worldid

@@ -28,6 +28,7 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
@@ -395,7 +396,18 @@ class ForwardTest(parameterized.TestCase):
     nefc = d.nefc.numpy()[0]
     if nefc > 0:
       nv = m.nv
-      d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
+      if SPARSE_CONSTRAINT_JACOBIAN:
+        # Reconstruct dense J from sparse representation
+        d_efc_J = np.zeros((nefc, nv))
+        mujoco.mju_sparse2dense(
+          d_efc_J,
+          d.efc.J.numpy()[0, 0],
+          d.efc.J_rownnz.numpy()[0, :nefc],
+          d.efc.J_rowadr.numpy()[0, :nefc],
+          d.efc.J_colind.numpy()[0, 0],
+        )
+      else:
+        d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
       if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
         mjd_efc_J = np.zeros((mjd.nefc, mjm.nv))
         mujoco.mju_sparse2dense(mjd_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
