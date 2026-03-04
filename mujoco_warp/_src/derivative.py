@@ -138,9 +138,9 @@ def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
 def _qderiv_actuator_passive_actuation_sparse(
   # Model:
   nu: int,
-  moment_rowadr: wp.array(dtype=int),
   # Data in:
   moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
   moment_colind_in: wp.array3d(dtype=int),
   actuator_moment_in: wp.array3d(dtype=float),
   # In:
@@ -165,7 +165,7 @@ def _qderiv_actuator_passive_actuation_sparse(
     moment_j = float(0.0)
 
     rownnz = moment_rownnz_in[worldid, actid]
-    rowadr = moment_rowadr[actid]
+    rowadr = moment_rowadr_in[worldid, actid]
     for i in range(rownnz):
       sparseid = rowadr + i
       colind = moment_colind_in[worldid, 0, sparseid]
@@ -301,7 +301,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         wp.launch(
           _qderiv_actuator_passive_actuation_sparse,
           dim=(d.nworld, qMi.size),
-          inputs=[m.nu, m.moment_rowadr, d.moment_rownnz, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
+          inputs=[m.nu, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
           outputs=[out],
         )
       else:

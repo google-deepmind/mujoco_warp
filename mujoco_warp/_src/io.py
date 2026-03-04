@@ -607,8 +607,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
-  m.moment_rowadr = _moment_nnz_rowadr(mjm)[1]
-
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
@@ -768,6 +766,7 @@ def make_data(
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
     "moment_rownnz": None,
+    "moment_rowadr": None,
     "moment_colind": None,
     "actuator_moment": None,
     "qM": None,
@@ -806,6 +805,7 @@ def make_data(
     rownnz = _moment_nnz_rowadr(mjm)[0]
     maxnnz = np.sum(rownnz)
     d.moment_rownnz = wp.zeros((d.nworld, mjm.nu), dtype=int)
+    d.moment_rowadr = wp.zeros((d.nworld, mjm.nu), dtype=int)
     d.moment_colind = wp.zeros((d.nworld, 1, maxnnz), dtype=int)
     d.actuator_moment = wp.zeros((d.nworld, 1, maxnnz), dtype=float)
   else:
@@ -813,6 +813,7 @@ def make_data(
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
     d.moment_rownnz = wp.zeros((nworld, 0), dtype=int)
+    d.moment_rowadr = wp.zeros((nworld, 0), dtype=int)
     d.moment_colind = wp.zeros((d.nworld, 0, 0), dtype=int)
     d.actuator_moment = wp.zeros((d.nworld, mjm.nu, mjm.nv), dtype=float)
 
@@ -1002,6 +1003,7 @@ def put_data(
     "qLD": None,
     "ten_J": None,
     "moment_rownnz": None,
+    "moment_rowadr": None,
     "moment_colind": None,
     "actuator_moment": None,
     "flexedge_J": None,
@@ -1028,6 +1030,11 @@ def put_data(
 
     nnz = _moment_nnz_rowadr(mjm)[0]
     d.moment_rownnz = wp.array(np.tile(np.array(nnz) if mjm.nu else np.zeros(mjm.nu), (nworld, 1)), dtype=int)
+    d.moment_rowadr = (
+      wp.array(np.tile(np.array(_moment_nnz_rowadr(mjm)[1]), (nworld, 1)), dtype=int)
+      if mjm.nu
+      else wp.zeros((nworld, 0), dtype=int)
+    )
     if mjm.nu:
       colind_row = []
       moment_row = []
@@ -1060,6 +1067,7 @@ def put_data(
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
     d.moment_rownnz = wp.zeros((nworld, 0), dtype=int)
+    d.moment_rowadr = wp.zeros((nworld, 0), dtype=int)
     d.moment_colind = wp.zeros((nworld, 0, 0), dtype=int)
 
     actuator_moment = np.zeros((mjm.nu, mjm.nv))
@@ -1188,7 +1196,7 @@ def get_data_into(
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
   if is_sparse(mjm):
     result.moment_rownnz[:] = d.moment_rownnz.numpy()[world_id]
-    result.moment_rowadr[:] = _moment_nnz_rowadr(mjm)[1]
+    result.moment_rowadr[:] = d.moment_rowadr.numpy()[world_id]
     result.moment_colind[:] = d.moment_colind.numpy()[world_id, 0]
     result.actuator_moment[:] = d.actuator_moment.numpy()[world_id, 0]
   else:

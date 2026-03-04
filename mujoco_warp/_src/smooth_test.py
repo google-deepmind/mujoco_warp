@@ -352,7 +352,7 @@ class SmoothTest(parameterized.TestCase):
         actuator_moment,
         d.actuator_moment.numpy()[0, 0],
         d.moment_rownnz.numpy()[0],
-        m.moment_rowadr.numpy(),
+        d.moment_rowadr.numpy()[0],
         d.moment_colind.numpy()[0, 0],
       )
     else:

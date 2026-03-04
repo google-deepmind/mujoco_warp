@@ -1938,7 +1938,6 @@ def _transmission(
   actuator_gear: wp.array2d(dtype=wp.spatial_vector),
   actuator_cranklength: wp.array2d(dtype=float),
   is_sparse: bool,
-  moment_rowadr: wp.array(dtype=int),
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -1948,9 +1947,12 @@ def _transmission(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   ten_J_in: wp.array3d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
+  # In:
+  moment_nnz: wp.array(dtype=int),
   # Data out:
   actuator_length_out: wp.array2d(dtype=float),
   moment_rownnz_out: wp.array2d(dtype=int),
+  moment_rowadr_out: wp.array2d(dtype=int),
   moment_colind_out: wp.array3d(dtype=int),
   actuator_moment_out: wp.array3d(dtype=float),
 ):
@@ -1967,7 +1969,8 @@ def _transmission(
     if jnt_typ == JointType.FREE:
       if is_sparse:
         moment_rownnz_out[worldid, actid] = 6
-        rowadr = moment_rowadr[actid]
+        rowadr = wp.atomic_add(moment_nnz, worldid, 6)
+        moment_rowadr_out[worldid, actid] = rowadr
         moment_colind_out[worldid, 0, rowadr + 0] = vadr + 0
         moment_colind_out[worldid, 0, rowadr + 1] = vadr + 1
         moment_colind_out[worldid, 0, rowadr + 2] = vadr + 2
@@ -2019,8 +2022,10 @@ def _transmission(
       actuator_length_out[worldid, actid] = wp.dot(axis_angle, gearaxis)
 
       if is_sparse:
-        moment_rownnz_out[worldid, actid] = 3
-        rowadr = moment_rowadr[actid]
+        nnz = 3
+        moment_rownnz_out[worldid, actid] = nnz
+        rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
+        moment_rowadr_out[worldid, actid] = rowadr
 
       for i in range(3):
         if is_sparse:
@@ -2033,8 +2038,10 @@ def _transmission(
       actuator_length_out[worldid, actid] = qpos[qadr] * gear[0]
 
       if is_sparse:
-        moment_rownnz_out[worldid, actid] = 1
-        rowadr = moment_rowadr[actid]
+        nnz = 1
+        moment_rownnz_out[worldid, actid] = nnz
+        rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
+        moment_rowadr_out[worldid, actid] = rowadr
         moment_colind_out[worldid, 0, rowadr] = vadr
         actuator_moment_out[worldid, 0, rowadr] = gear[0]
       else:
@@ -2079,7 +2086,8 @@ def _transmission(
       dlda = vec
 
     if is_sparse:
-      rowadr = moment_rowadr[actid]
+      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      moment_rowadr_out[worldid, actid] = rowadr
       nnz = int(0)
 
     # apply chain rule
@@ -2120,8 +2128,10 @@ def _transmission(
     adr = tendon_adr[tenid]
     if wrap_type[adr] == WrapType.JOINT:
       if is_sparse:
+        ten_num = tendon_num[tenid]
         nnz = int(0)
-        rowadr = moment_rowadr[actid]
+        rowadr = wp.atomic_add(moment_nnz, worldid, ten_num)
+        moment_rowadr_out[worldid, actid] = rowadr
 
       ten_num = tendon_num[tenid]
       for i in range(ten_num):
@@ -2139,7 +2149,8 @@ def _transmission(
     else:  # spatial
       if is_sparse:
         nnz = int(0)
-        rowadr = moment_rowadr[actid]
+        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+        moment_rowadr_out[worldid, actid] = rowadr
       for dofadr in range(nv):
         if is_sparse:
           sparseid = rowadr + dofadr
@@ -2157,7 +2168,8 @@ def _transmission(
     # initialize moment
     if is_sparse:
       moment_rownnz_out[worldid, actid] = nv
-      rowadr = moment_rowadr[actid]
+      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      moment_rowadr_out[worldid, actid] = rowadr
       for i in range(nv):
         sparseid = rowadr + i
         moment_colind_out[worldid, 0, sparseid] = i
@@ -2186,7 +2198,8 @@ def _transmission(
 
       if is_sparse:
         nnz = int(0)
-        rowadr = moment_rowadr[actid]
+        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+        moment_rowadr_out[worldid, actid] = rowadr
 
       # moment: global Jacobian projected on wrench
       # TODO(team): parallelize or dof traversal?
@@ -2270,7 +2283,8 @@ def _transmission(
 
       if is_sparse:
         nnz = int(0)
-        rowadr = moment_rowadr[actid]
+        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+        moment_rowadr_out[worldid, actid] = rowadr
 
       # TODO(team): parallelize or dof traversal?
       for i in range(nv):
@@ -2489,6 +2503,9 @@ def transmission(m: Model, d: Data):
   if m.is_sparse:
     d.moment_colind.zero_()
     d.actuator_moment.zero_()
+    moment_nnz = wp.zeros((d.nworld,), dtype=int)
+  else:
+    moment_nnz = wp.zeros((0,), dtype=int)
 
   wp.launch(
     _transmission,
@@ -2516,7 +2533,6 @@ def transmission(m: Model, d: Data):
       m.actuator_gear,
       m.actuator_cranklength,
       m.is_sparse,
-      m.moment_rowadr,
       d.qpos,
       d.xquat,
       d.site_xpos,
@@ -2525,8 +2541,9 @@ def transmission(m: Model, d: Data):
       d.cdof,
       d.ten_J,
       d.ten_length,
+      moment_nnz,
     ],
-    outputs=[d.actuator_length, d.moment_rownnz, d.moment_colind, d.actuator_moment],
+    outputs=[d.actuator_length, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
   )
 
   if m.nacttrnbody:

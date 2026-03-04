@@ -1184,8 +1184,6 @@ class Model:
     qM_mulm_rowadr: sparse matmul row pointers
     qM_mulm_col: sparse matmul column indices
     qM_mulm_madr: sparse matmul matrix addresses
-    moment_rowadr: row start address in actuator moment      (nu,)
-                   for max row fill in
   """
 
   nq: int
@@ -1541,7 +1539,6 @@ class Model:
   qM_mulm_rowadr: wp.array(dtype=int)  # start address for each row [nv+1]
   qM_mulm_col: wp.array(dtype=int)  # column index to gather from
   qM_mulm_madr: wp.array(dtype=int)  # matrix address to read
-  moment_rowadr: wp.array(dtype=int)
 
 
 class ContactType(enum.IntFlag):
@@ -1694,6 +1691,8 @@ class Data:
     actuator_length: actuator lengths                           (nworld, nu)
     moment_rownnz: number of non-zeros in actuator_moment row   (nworld, 0) if dense
                                                                 (nworld, nu) if sparse
+    moment_rowadr: row start address in actuator_moment         (nworld, 0) if dense
+                                                                (nworld, nu) if sparse
     moment_colind: column indices in sparse actuator_moment     (nworld, 0, 0) if dense
                                                                 (nworld, 1, sum(rownnz)) if sparse
     actuator_moment: actuator moments                           (nworld, nu, nv) if dense
@@ -1792,6 +1791,7 @@ class Data:
   wrap_xpos: array("nworld", "nwrap", wp.spatial_vector)
   actuator_length: array("nworld", "nu", float)
   moment_rownnz: wp.array2d(dtype=int)
+  moment_rowadr: wp.array2d(dtype=int)
   moment_colind: wp.array3d(dtype=int)
   actuator_moment: wp.array3d(dtype=float)
   crb: array("nworld", "nbody", vec10)

@@ -547,11 +547,10 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 
 @wp.kernel
 def _actuator_velocity_sparse(
-  # Model:
-  moment_rowadr: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
   moment_colind_in: wp.array3d(dtype=int),
   actuator_moment_in: wp.array3d(dtype=float),
   # Data out:
@@ -560,7 +559,7 @@ def _actuator_velocity_sparse(
   worldid, actid = wp.tid()
 
   rownnz = moment_rownnz_in[worldid, actid]
-  rowadr = moment_rowadr[actid]
+  rowadr = moment_rowadr_in[worldid, actid]
 
   vel = float(0.0)
   for i in range(rownnz):
@@ -618,7 +617,7 @@ def fwd_velocity(m: Model, d: Data):
     wp.launch_tiled(
       _actuator_velocity_sparse,
       dim=(d.nworld, m.nu),
-      inputs=[m.moment_rowadr, d.qvel, d.moment_rownnz, d.moment_colind, d.actuator_moment],
+      inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
       outputs=[d.actuator_velocity],
       block_dim=m.block_dim.actuator_velocity,
     )
@@ -814,10 +813,9 @@ def _tendon_actuator_force_clamp(
 
 @wp.kernel
 def _qfrc_actuator_sparse(
-  # Model:
-  moment_rowadr: wp.array(dtype=int),
   # Data in:
   moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
   moment_colind_in: wp.array3d(dtype=int),
   actuator_moment_in: wp.array3d(dtype=float),
   actuator_force_in: wp.array2d(dtype=float),
@@ -827,7 +825,7 @@ def _qfrc_actuator_sparse(
   worldid, actid = wp.tid()
 
   rownnz = moment_rownnz_in[worldid, actid]
-  rowadr = moment_rowadr[actid]
+  rowadr = moment_rowadr_in[worldid, actid]
 
   for i in range(rownnz):
     sparseid = rowadr + i
@@ -973,8 +971,8 @@ def fwd_actuation(m: Model, d: Data):
       _qfrc_actuator_sparse,
       dim=(d.nworld, m.nu),
       inputs=[
-        m.moment_rowadr,
         d.moment_rownnz,
+        d.moment_rowadr,
         d.moment_colind,
         d.actuator_moment,
         d.actuator_force,
