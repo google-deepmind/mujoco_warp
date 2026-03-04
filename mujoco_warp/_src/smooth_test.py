@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -377,7 +378,7 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
 
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "acutator_moment")
+    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
 
   def test_subtree_vel(self):
     """Tests subtree_vel."""
@@ -414,7 +415,12 @@ class SmoothTest(parameterized.TestCase):
     mjw.transmission(m, d)
 
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
-    _assert_eq(d.ten_J.numpy()[0], mjd.ten_J.reshape((mjm.ntendon, mjm.nv)), "ten_J")
+    if check_version("mujoco>=3.5.1.dev872479828"):
+      ten_J = np.zeros((mjm.ntendon, mjm.nv))
+      mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+    else:
+      ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+    _assert_eq(d.ten_J.numpy()[0], ten_J, "ten_J")
     _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
     _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
     _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
@@ -505,17 +511,9 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_comPos(mjm, mjd)
     mujoco.mj_flex(mjm, mjd)
 
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if BLEEDING_EDGE_MUJOCO:
-      rownnz = mjm.flexedge_J_rownnz
-      rowadr = mjm.flexedge_J_rowadr
-      colind = mjm.flexedge_J_colind.reshape(-1)
-    else:
-      rownnz = mjd.flexedge_J_rownnz
-      rowadr = mjd.flexedge_J_rowadr
-      colind = mjd.flexedge_J_colind.reshape(-1)
+    rownnz = mjm.flexedge_J_rownnz
+    rowadr = mjm.flexedge_J_rowadr
+    colind = mjm.flexedge_J_colind.reshape(-1)
 
     mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
     mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)

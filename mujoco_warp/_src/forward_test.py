@@ -28,6 +28,8 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
+from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -393,8 +395,39 @@ class ForwardTest(parameterized.TestCase):
     mujoco.mj_step1(mjm, mjd)
     mjw.step1(m, d)
 
+    # Precompute sorting for efc fields to avoid non determinism
+    nefc = d.nefc.numpy()[0]
+    if nefc > 0:
+      nv = m.nv
+      if SPARSE_CONSTRAINT_JACOBIAN:
+        # Reconstruct dense J from sparse representation
+        d_efc_J = np.zeros((nefc, nv))
+        mujoco.mju_sparse2dense(
+          d_efc_J,
+          d.efc.J.numpy()[0, 0],
+          d.efc.J_rownnz.numpy()[0, :nefc],
+          d.efc.J_rowadr.numpy()[0, :nefc],
+          d.efc.J_colind.numpy()[0, 0],
+        )
+      else:
+        d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
+      if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
+        mjd_efc_J = np.zeros((mjd.nefc, mjm.nv))
+        mujoco.mju_sparse2dense(mjd_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+      else:
+        mjd_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+
+      # Sort by efc_type, then efc_J columns (tiebreaker)
+      d_sort = np.lexsort((*d_efc_J.T, d.efc.type.numpy()[0, :nefc]))
+      mjd_sort = np.lexsort((*mjd_efc_J.T, mjd.efc_type[:nefc]))
+      _assert_eq(d_efc_J[d_sort].reshape(-1), mjd_efc_J[mjd_sort].reshape(-1), "efc_J")
+
+      # Check efc_id here as a contact may have a different id
+      _assert_eq(sorted(d.efc.id.numpy()[0, :nefc]), sorted(mjd.efc_id[:nefc]), "efc_id")
+
     for arr in step1_field:
-      d_arr, is_nefc = _getattr(arr)
+      d_arr, is_efc = _getattr(arr)
+
       d_arr = d_arr.numpy()[0]
       mjd_arr = getattr(mjd, arr)
       if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
@@ -409,18 +442,17 @@ class ForwardTest(parameterized.TestCase):
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
         mjd_arr = actuator_moment
-      elif arr == "ten_J" and mjm.ntendon:
-        ten_J = np.zeros((mjm.ntendon, mjm.nv))
-        mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
-        mjd_arr = ten_J
-      elif arr == "efc_J":
-        d_arr = d_arr[:, : m.nv]  # efc_J is padded up to the next multiple of the tile size
-        if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
-          efc_J = np.zeros((mjd.nefc, mjm.nv))
-          mujoco.mju_sparse2dense(efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
-          mjd_arr = efc_J
+      elif arr == "ten_J":
+        if check_version("mujoco>=3.5.1.dev872479828"):
+          ten_J = np.zeros((mjm.ntendon, mjm.nv))
+          if mjm.ntendon:
+            mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
+          mjd_arr = ten_J
         else:
-          mjd_arr = mjd_arr.reshape((mjd.nefc, mjm.nv))
+          mjd_arr = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+      elif arr == "efc_J" or arr == "efc_id":
+        # Already checked earlier
+        continue
       elif arr == "qLD":
         vec = np.ones((1, mjm.nv))
         res = np.zeros((1, mjm.nv))
@@ -432,8 +464,13 @@ class ForwardTest(parameterized.TestCase):
 
         d_arr = res_wp.numpy()[0]
         mjd_arr = res[0]
-      if is_nefc:
-        d_arr = d_arr[: d.nefc.numpy()[0]]
+
+      if is_efc:
+        nefc = d.nefc.numpy()[0]
+        nv = m.nv
+        d_arr = d_arr[:nefc]
+        d_arr = d_arr[d_sort].reshape(-1)
+        mjd_arr = mjd_arr[mjd_sort].reshape(-1)
 
       _assert_eq(d_arr, mjd_arr, arr)
 
@@ -513,6 +550,95 @@ class ForwardTest(parameterized.TestCase):
     )
     mjw.step(m, d)
     self.assertGreater(d.time.numpy()[0], 0.0)
+
+  def test_control_callback(self):
+    """Tests control_callback is called during forward and skipped when actuation disabled."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom size="1"/>
+          <joint name="hinge"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="hinge"/>
+      </actuator>
+    </mujoco>
+    """
+
+    @wp.kernel
+    def _set_ctrl(ctrl_out: wp.array2d(dtype=float)):
+      worldid = wp.tid()
+      ctrl_out[worldid, 0] = 2.0
+
+    def my_control(m, d):
+      wp.launch(_set_ctrl, dim=(d.nworld,), outputs=[d.ctrl])
+
+    _, _, m, d = test_data.fixture(xml=xml)
+    m.callback.control = my_control
+    mjw.forward(m, d)
+    self.assertEqual(d.ctrl.numpy()[0, 0], 2.0)
+
+    # reset ctrl, disable actuation, verify callback not called
+    d.ctrl.zero_()
+    m.opt.disableflags |= DisableBit.ACTUATION
+    mjw.forward(m, d)
+    self.assertEqual(d.ctrl.numpy()[0, 0], 0.0)
+
+  @parameterized.product(
+    frequency=(1.5, 0.5),
+    timestamp=(0.2, 0.4),
+  )
+  def test_act_dyn_callback(self, frequency, timestamp):
+    """Tests act_dyn_callback with a harmonic oscillator."""
+
+    @wp.kernel
+    def _oscillator_act_dot(
+      act_in: wp.array2d(dtype=float),
+      ctrl_in: wp.array2d(dtype=float),
+      act_dot_out: wp.array2d(dtype=float),
+    ):
+      worldid = wp.tid()
+      frequency = wp.static(2.0 * wp.pi) * ctrl_in[worldid, 0]
+      act_dot_out[worldid, 0] = -act_in[worldid, 1] * frequency
+      act_dot_out[worldid, 1] = act_in[worldid, 0] * frequency
+
+    def oscillator(m, d):
+      wp.launch(
+        _oscillator_act_dot,
+        dim=(d.nworld,),
+        inputs=[d.act, d.ctrl],
+        outputs=[d.act_dot],
+      )
+
+    xml = f"""
+    <mujoco>
+      <option timestep="1e-4"/>
+      <worldbody>
+        <body>
+          <geom size="1"/>
+          <joint name="hinge"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="hinge" dyntype="user" actdim="2"/>
+      </actuator>
+      <keyframe>
+        <key time="{timestamp}" ctrl="{frequency}" act="{np.cos(2 * np.pi * frequency * timestamp)} {np.sin(2 * np.pi * frequency * timestamp)}"/>
+      </keyframe>
+    </mujoco>
+    """
+
+    mjm, _, m, d = test_data.fixture(xml=xml, keyframe=0)
+    m.callback.act_dyn = oscillator
+
+    mjw.step(m, d)
+
+    # verify act after one step matches analytical solution at t + dt
+    t_next = timestamp + mjm.opt.timestep
+    np.testing.assert_allclose(d.act.numpy()[0, 0], np.cos(2 * np.pi * frequency * t_next), atol=1e-3)
+    np.testing.assert_allclose(d.act.numpy()[0, 1], np.sin(2 * np.pi * frequency * t_next), atol=1e-3)
 
 
 if __name__ == "__main__":

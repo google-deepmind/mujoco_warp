@@ -58,9 +58,9 @@ The following features are implemented:
 | ------------------ | --------------------------------------------------------------------------------------------------------|
 | Dynamics           | Forward, Inverse                                                                                        |
 | Transmission       | All                                                                                                     |
-| Actuator Dynamics  | All except `USER`                                                                                       |
-| Actuator Gain      | All except `USER`                                                                                       |
-| Actuator Bias      | All except `USER`                                                                                       |
+| Actuator Dynamics  | All                                                                                                     |
+| Actuator Gain      | All                                                                                                     |
+| Actuator Bias      | All                                                                                                     |
 | Geom               | All                                                                                                     |
 | Constraint         | All                                                                                                     |
 | Equality           | All                                                                                                     |
@@ -70,7 +70,7 @@ The following features are implemented:
 | Solver             | All except `PGS`, `noslip`                                                                              |
 | Fluid Model        | All                                                                                                     |
 | Tendon Wrap        | All                                                                                                     |
-| Sensors            | All except `GEOMDIST`, `GEOMNORMAL`, and `GEOMFROMTO` with `BOX`-`BOX`; `PLUGIN`, `USER`                |
+| Sensors            | All except `PLUGIN`                                                                                     |
 | Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
 | Mass matrix format | Sparse and Dense                                                                                        |
 | Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
@@ -88,6 +88,18 @@ mjwarp-viewer benchmarks/humanoid/humanoid.xml
 
 This will open a window on your local machine that uses the [MuJoCo native visualizer](https://mujoco.readthedocs.io/en/stable/programming/visualization.html).
 
+# Batch Rendering
+
+MJWarp includes a **high-throughput** GPU batch renderer designed for simultaneous rendering of cameras across many parallel simulation worlds. The renderer uses ray-tracing to render MuJoCo primitives using Warp's BVH API.
+
+Key capabilities:
+- Mesh rendering
+- Texture support
+- Heightfield rendering
+- Flex deformable rendering
+- Heterogeneous multi-camera support (different resolutions/FOV/intrinsics for each camera)
+- Lighting and shadow support
+
 # Benchmarking
 
 Benchmark as follows:
@@ -103,3 +115,9 @@ mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.
+
+Benchmark rendering with:
+
+```bash
+mjwarp-testspeed benchmarks/primitives.xml --function=render
+```

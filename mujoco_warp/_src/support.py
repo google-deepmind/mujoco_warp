@@ -364,7 +364,7 @@ def transform_force(frc: wp.spatial_vector, offset: wp.vec3) -> wp.spatial_vecto
 
 
 @wp.func
-def jac(
+def jac_dof(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
@@ -402,8 +402,77 @@ def jac(
   return jacp, jacr
 
 
+@cache_kernel
+def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def _jac(
+    # Model:
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    dof_bodyid: wp.array(dtype=int),
+    # Data in:
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cdof_in: wp.array2d(dtype=wp.spatial_vector),
+    # In:
+    point_in: wp.array(dtype=wp.vec3),
+    bodyid_in: wp.array(dtype=int),
+    # Out:
+    jacp_out: wp.array3d(dtype=float),
+    jacr_out: wp.array3d(dtype=float),
+  ):
+    worldid, dofid = wp.tid()
+
+    jacp_val, jacr_val = jac_dof(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, point_in[worldid], bodyid_in[worldid], dofid, worldid
+    )
+
+    if wp.static(has_jacp):
+      jacp_out[worldid, 0, dofid] = jacp_val[0]
+      jacp_out[worldid, 1, dofid] = jacp_val[1]
+      jacp_out[worldid, 2, dofid] = jacp_val[2]
+
+    if wp.static(has_jacr):
+      jacr_out[worldid, 0, dofid] = jacr_val[0]
+      jacr_out[worldid, 1, dofid] = jacr_val[1]
+      jacr_out[worldid, 2, dofid] = jacr_val[2]
+
+  return _jac
+
+
+@event_scope
+def jac(
+  m: Model,
+  d: Data,
+  jacp: wp.array | None,  # wp.array3d(dtype=float)
+  jacr: wp.array | None,  # wp.array3d(dtype=float)
+  point: wp.array(dtype=wp.vec3),
+  body: wp.array(dtype=int),
+):
+  """Compute translational and rotational Jacobian for point on body.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state (device).
+    jacp: Output translational Jacobian (optional).
+    jacr: Output rotational Jacobian (optional).
+    point: 3D point in global coordinates.
+    body: Body ID for each world.
+  """
+  kernel = _make_jac_kernel(jacp is not None, jacr is not None)
+
+  jacp_arr = jacp or wp.empty((0, 0, 0), dtype=float)
+  jacr_arr = jacr or wp.empty((0, 0, 0), dtype=float)
+
+  wp.launch(
+    kernel,
+    dim=(d.nworld, m.nv),
+    inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, d.subtree_com, d.cdof, point, body],
+    outputs=[jacp_arr, jacr_arr],
+  )
+
+
 @wp.func
-def jac_dot(
+def jac_dot_dof(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),

@@ -324,6 +324,78 @@ class SupportTest(parameterized.TestCase):
       err_msg="Solution mismatch with numpy",
     )
 
+  @parameterized.parameters(
+    ("pendula.xml", 1),
+    ("pendula.xml", 2),
+    ("humanoid/n_humanoid.xml", 1),
+    ("humanoid/n_humanoid.xml", 5),
+    ("constraints.xml", 1),
+  )
+  def test_jac(self, xml, bodyid):
+    """Tests jac against mj_jac."""
+    mjm, mjd, m, d = test_data.fixture(xml)
+
+    point = mjd.xipos[bodyid]
+
+    jacp_mj = np.zeros((3, mjm.nv))
+    jacr_mj = np.zeros((3, mjm.nv))
+    mujoco.mj_jac(mjm, mjd, jacp_mj, jacr_mj, point, bodyid)
+
+    point_wp = wp.array([point], dtype=wp.vec3)
+    bodyid_wp = wp.array([bodyid], dtype=int)
+    jacp_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+    jacr_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+
+    mjwarp.jac(m, d, jacp_wp, jacr_wp, point_wp, bodyid_wp)
+
+    _assert_eq(jacp_wp.numpy()[0], jacp_mj, f"jacp ({xml}, body {bodyid})")
+    _assert_eq(jacr_wp.numpy()[0], jacr_mj, f"jacr ({xml}, body {bodyid})")
+
+  def test_jac_optional_outputs(self):
+    """Tests jac with None outputs."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml")
+
+    point = mjd.xipos[1]
+    point_wp = wp.array([point], dtype=wp.vec3)
+    bodyid_wp = wp.array([1], dtype=int)
+
+    jacp_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+    jacr_wp = wp.zeros((1, 3, mjm.nv), dtype=float)
+
+    jacp_mj = np.zeros((3, mjm.nv))
+    jacr_mj = np.zeros((3, mjm.nv))
+    mujoco.mj_jac(mjm, mjd, jacp_mj, jacr_mj, point, 1)
+
+    mjwarp.jac(m, d, jacp_wp, None, point_wp, bodyid_wp)
+    _assert_eq(jacp_wp.numpy()[0], jacp_mj, "jacp (optional jacr)")
+
+    mjwarp.jac(m, d, None, jacr_wp, point_wp, bodyid_wp)
+    _assert_eq(jacr_wp.numpy()[0], jacr_mj, "jacr (optional jacp)")
+
+    mjwarp.jac(m, d, None, None, point_wp, bodyid_wp)
+
+  def test_jac_nworld(self):
+    """Tests jac with multiple worlds."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=2)
+
+    bodyid = 1
+    point = mjd.xipos[bodyid]
+
+    jacp_mj = np.zeros((3, mjm.nv))
+    jacr_mj = np.zeros((3, mjm.nv))
+    mujoco.mj_jac(mjm, mjd, jacp_mj, jacr_mj, point, bodyid)
+
+    point_wp = wp.array([point, point], dtype=wp.vec3)
+    bodyid_wp = wp.array([bodyid, bodyid], dtype=int)
+    jacp_wp = wp.zeros((2, 3, mjm.nv), dtype=float)
+    jacr_wp = wp.zeros((2, 3, mjm.nv), dtype=float)
+
+    mjwarp.jac(m, d, jacp_wp, jacr_wp, point_wp, bodyid_wp)
+
+    for w in range(2):
+      _assert_eq(jacp_wp.numpy()[w], jacp_mj, f"jacp world {w}")
+      _assert_eq(jacr_wp.numpy()[w], jacr_mj, f"jacr world {w}")
+
 
 if __name__ == "__main__":
   wp.init()

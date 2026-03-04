@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
+from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
@@ -146,6 +147,8 @@ def _next_act(
   if actuator_dyntype == DynType.FILTEREXACT:
     tau = wp.max(MJ_MINVAL, actuator_dynprm[0])
     act = act_in + act_dot_scale * act_dot_in * tau * (1.0 - wp.exp(-opt_timestep / tau))
+  elif actuator_dyntype == DynType.USER:
+    return act_in
   else:
     act = act_in + act_dot_scale * act_dot_in * opt_timestep
 
@@ -161,6 +164,8 @@ def _next_activation(
   # Model:
   opt_timestep: wp.array(dtype=float),
   actuator_dyntype: wp.array(dtype=int),
+  actuator_actadr: wp.array(dtype=int),
+  actuator_actnum: wp.array(dtype=int),
   actuator_actlimited: wp.array(dtype=bool),
   actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_actrange: wp.array2d(dtype=wp.vec2),
@@ -173,21 +178,24 @@ def _next_activation(
   # Data out:
   act_out: wp.array2d(dtype=float),
 ):
-  worldid, actid = wp.tid()
+  worldid, uid = wp.tid()
   opt_timestep_id = worldid % opt_timestep.shape[0]
   actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
   actuator_actrange_id = worldid % actuator_actrange.shape[0]
-  act = _next_act(
-    opt_timestep[opt_timestep_id],
-    actuator_dyntype[actid],
-    actuator_dynprm[actuator_dynprm_id, actid],
-    actuator_actrange[actuator_actrange_id, actid],
-    act_in[worldid, actid],
-    act_dot_in[worldid, actid],
-    act_dot_scale,
-    limit and actuator_actlimited[actid],
-  )
-  act_out[worldid, actid] = act
+  actadr = actuator_actadr[uid]
+  actnum = actuator_actnum[uid]
+  for j in range(actadr, actadr + actnum):
+    act = _next_act(
+      opt_timestep[opt_timestep_id],
+      actuator_dyntype[uid],
+      actuator_dynprm[actuator_dynprm_id, uid],
+      actuator_actrange[actuator_actrange_id, uid],
+      act_in[worldid, j],
+      act_dot_in[worldid, j],
+      act_dot_scale,
+      limit and actuator_actlimited[uid],
+    )
+    act_out[worldid, j] = act
 
 
 @wp.kernel
@@ -230,10 +238,12 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   # advance activations
   wp.launch(
     _next_activation,
-    dim=(d.nworld, m.na),
+    dim=(d.nworld, m.nu),
     inputs=[
       m.opt.timestep,
       m.actuator_dyntype,
+      m.actuator_actadr,
+      m.actuator_actnum,
       m.actuator_actlimited,
       m.actuator_dynprm,
       m.actuator_actrange,
@@ -285,7 +295,7 @@ def _euler_damp_qfrc_sparse(
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid, tid]
+  qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid % dof_damping.shape[0], tid]
 
 
 @cache_kernel
@@ -380,8 +390,20 @@ def _rk_perturb_state(
   if m.na and act_t0 is not None:
     wp.launch(
       _next_activation,
-      dim=(d.nworld, m.na),
-      inputs=[m.opt.timestep, act_t0, d.act_dot, scale, False],
+      dim=(d.nworld, m.nu),
+      inputs=[
+        m.opt.timestep,
+        m.actuator_dyntype,
+        m.actuator_actadr,
+        m.actuator_actnum,
+        m.actuator_actlimited,
+        m.actuator_dynprm,
+        m.actuator_actrange,
+        act_t0,
+        d.act_dot,
+        scale,
+        False,
+      ],
       outputs=[d.act],
     )
 
@@ -517,6 +539,9 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
+  # TODO(team): remove False after island features are more complete
+  if False and not (m.opt.disableflags & DisableBit.ISLAND):
+    island.island(m, d)
   smooth.transmission(m, d)
 
 
@@ -641,8 +666,8 @@ def _actuator_force(
   actuator_ctrlrange: wp.array2d(dtype=wp.vec2),
   actuator_forcerange: wp.array2d(dtype=wp.vec2),
   actuator_actrange: wp.array2d(dtype=wp.vec2),
-  actuator_acc0: wp.array(dtype=float),
-  actuator_lengthrange: wp.array(dtype=wp.vec2),
+  actuator_acc0: wp.array2d(dtype=float),
+  actuator_lengthrange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
@@ -677,9 +702,11 @@ def _actuator_force(
       act = act_in[worldid, act_last]
       act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
     elif dyntype == DynType.MUSCLE:
-      dynprm = actuator_dynprm[worldid, uid]
+      dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
       act = act_in[worldid, act_last]
       act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
+    elif dyntype == DynType.USER:
+      act_dot = 0.0  # set by act_dyn_callback
     else:  # DynType.NONE
       act_dot = 0.0
 
@@ -715,20 +742,21 @@ def _actuator_force(
   elif gaintype == GainType.AFFINE:
     gain = gainprm[0] + gainprm[1] * length + gainprm[2] * velocity
   elif gaintype == GainType.MUSCLE:
-    acc0 = actuator_acc0[uid]
-    lengthrange = actuator_lengthrange[uid]
+    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
     gain = util_misc.muscle_gain(length, velocity, lengthrange, acc0, gainprm)
+  # GainType.USER: gain stays 0, modified by act_gain_callback
 
   # bias
   biastype = actuator_biastype[uid]
   biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
 
-  bias = 0.0  # BiasType.NONE
+  bias = 0.0  # BiasType.NONE or BiasType.USER (modified by act_bias_callback)
   if biastype == BiasType.AFFINE:
     bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
   elif biastype == BiasType.MUSCLE:
-    acc0 = actuator_acc0[uid]
-    lengthrange = actuator_lengthrange[uid]
+    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
     bias = util_misc.muscle_bias(length, lengthrange, acc0, biasprm)
 
   force = gain * ctrl_act + bias
@@ -914,6 +942,13 @@ def fwd_actuation(m: Model, d: Data):
     outputs=[d.act_dot, d.actuator_force],
   )
 
+  if m.callback.act_dyn:
+    m.callback.act_dyn(m, d)
+  if m.callback.act_gain:
+    m.callback.act_gain(m, d)
+  if m.callback.act_bias:
+    m.callback.act_bias(m, d)
+
   if m.ntendon:
     # total actuator force at tendon
     ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
@@ -1042,6 +1077,9 @@ def forward(m: Model, d: Data):
     if m.sensor_e_kinetic == 0:  # not computed by sensor
       sensor.energy_vel(m, d)
 
+  if not (m.opt.disableflags & DisableBit.ACTUATION):
+    if m.callback.control:
+      m.callback.control(m, d)
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
 
@@ -1089,6 +1127,10 @@ def step1(m: Model, d: Data):
   if energy:
     if m.sensor_e_kinetic == 0:  # not computed by sensor
       sensor.energy_vel(m, d)
+
+  if not (m.opt.disableflags & DisableBit.ACTUATION):
+    if m.callback.control:
+      m.callback.control(m, d)
 
 
 @event_scope

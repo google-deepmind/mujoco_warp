@@ -258,7 +258,7 @@ def _gravity_force(
   if gravcomp:
     force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
     pos = xipos_in[worldid, bodyid]
-    jac, _ = support.jac(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
+    jac, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
 
     wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
 
@@ -266,9 +266,9 @@ def _gravity_force(
 @wp.kernel
 def _fluid_force(
   # Model:
+  opt_wind: wp.array(dtype=wp.vec3),
   opt_density: wp.array(dtype=float),
   opt_viscosity: wp.array(dtype=float),
-  opt_wind: wp.array(dtype=wp.vec3),
   body_rootid: wp.array(dtype=int),
   body_geomnum: wp.array(dtype=int),
   body_geomadr: wp.array(dtype=int),
@@ -498,9 +498,9 @@ def _fluid(m: Model, d: Data):
     _fluid_force,
     dim=(d.nworld, m.nbody),
     inputs=[
+      m.opt.wind,
       m.opt.density,
       m.opt.viscosity,
-      m.opt.wind,
       m.body_rootid,
       m.body_geomnum,
       m.body_geomadr,
@@ -846,3 +846,6 @@ def passive(m: Model, d: Data):
       d.qfrc_passive,
     ],
   )
+
+  if m.callback.passive:
+    m.callback.passive(m, d)

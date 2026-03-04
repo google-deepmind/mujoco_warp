@@ -35,6 +35,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SensorType
+from mujoco_warp._src.types import Stage
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec6
@@ -898,6 +899,9 @@ def sensor_pos(m: Model, d: Data):
     ],
   )
 
+  if m.callback.sensor:
+    m.callback.sensor(m, d, Stage.POS)
+
 
 @wp.func
 def _velocimeter(
@@ -1436,6 +1440,9 @@ def sensor_vel(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  if m.callback.sensor:
+    m.callback.sensor(m, d, Stage.VEL)
 
 
 @wp.func
@@ -2084,6 +2091,7 @@ def _sensor_tactile(
   geom_bodyid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
+  mesh_octadr: wp.array(dtype=int),
   mesh_normaladr: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_normal: wp.array(dtype=wp.vec3),
@@ -2155,6 +2163,7 @@ def _sensor_tactile(
     oct_child,
     oct_aabb,
     oct_coeff,
+    mesh_octadr,
     plugin,
     plugin_attr,
     contact_type,
@@ -2434,6 +2443,7 @@ def sensor_acc(m: Model, d: Data):
       m.geom_bodyid,
       m.geom_size,
       m.mesh_vertadr,
+      m.mesh_octadr,
       m.mesh_normaladr,
       m.mesh_vert,
       m.mesh_normal,
@@ -2615,6 +2625,9 @@ def sensor_acc(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  if m.callback.sensor:
+    m.callback.sensor(m, d, Stage.ACC)
 
 
 @wp.kernel

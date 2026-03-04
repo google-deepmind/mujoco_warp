@@ -105,6 +105,9 @@ COMMITS=$(git rev-list --reverse "${LAST_COMMIT}..HEAD")
 for commit in $COMMITS; do
     log "Processing commit $commit"
     
+    # Reset working tree (uv run may modify uv.lock)
+    git restore .
+
     # Checkout the commit
     git checkout "$commit" 2>&1 | log
     

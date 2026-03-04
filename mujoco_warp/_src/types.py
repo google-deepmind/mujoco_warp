@@ -14,6 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
+from typing import Callable
 
 import mujoco
 import warp as wp
@@ -31,6 +32,9 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
+
+# TODO(team): remove after improving performance for sparse constraint jacobian
+SPARSE_CONSTRAINT_JACOBIAN = False
 
 # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
 TEXTURE_DTYPE = wp.Texture2D if hasattr(wp, "Texture2D") else int
@@ -134,6 +138,20 @@ class ProjectionType(enum.IntEnum):
     ORTHOGRAPHIC = 1
 
 
+class Stage(enum.IntEnum):
+  """Computation stage.
+
+  Attributes:
+    POS: position-dependent
+    VEL: velocity-dependent
+    ACC: acceleration/force-dependent
+  """
+
+  POS = mujoco.mjtStage.mjSTAGE_POS
+  VEL = mujoco.mjtStage.mjSTAGE_VEL
+  ACC = mujoco.mjtStage.mjSTAGE_ACC
+
+
 class DataType(enum.IntFlag):
   """Sensor data types.
 
@@ -167,6 +185,7 @@ class DisableBit(enum.IntFlag):
     SENSOR:       sensors
     EULERDAMP:    implicit damping for Euler integration
     NATIVECCD:    native convex collision detection (ignored in MJWarp)
+    ISLAND:       constraint islands
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
@@ -185,7 +204,8 @@ class DisableBit(enum.IntFlag):
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
-  # unsupported: MIDPHASE, AUTORESET, ISLAND
+  ISLAND = mujoco.mjtDisableBit.mjDSBL_ISLAND
+  # unsupported: MIDPHASE, AUTORESET
 
 
 class EnableBit(enum.IntFlag):
@@ -232,6 +252,7 @@ class DynType(enum.IntEnum):
     FILTER: linear filter: da/dt = (u-a) / tau
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
     MUSCLE: piece-wise linear filter with two time constants
+    USER: user-defined dynamics via act_dyn_callback
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -239,7 +260,7 @@ class DynType(enum.IntEnum):
   FILTER = mujoco.mjtDyn.mjDYN_FILTER
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtDyn.mjDYN_USER
 
 
 class GainType(enum.IntEnum):
@@ -249,12 +270,13 @@ class GainType(enum.IntEnum):
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
+    USER: user-defined gain via act_gain_callback
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtGain.mjGAIN_USER
 
 
 class BiasType(enum.IntEnum):
@@ -264,12 +286,13 @@ class BiasType(enum.IntEnum):
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
+    USER: user-defined bias via act_bias_callback
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtBias.mjBIAS_USER
 
 
 class JointType(enum.IntEnum):
@@ -462,6 +485,7 @@ class SensorType(enum.IntEnum):
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
     TACTILE: tactile sensor
+    USER: user-defined sensor via sensor_callback
   """
 
   MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
@@ -511,6 +535,7 @@ class SensorType(enum.IntEnum):
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
   TACTILE = mujoco.mjtSensor.mjSENS_TACTILE
+  USER = mujoco.mjtSensor.mjSENS_USER
 
 
 class ObjType(enum.IntEnum):
@@ -682,11 +707,11 @@ class Option:
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
     ccd_tolerance: convex collision detection tolerance
-    density: density of medium
-    viscosity: viscosity of medium
     gravity: gravitational acceleration
     wind: wind (for lift, drag, and viscosity)
     magnetic: global magnetic flux
+    density: density of medium
+    viscosity: viscosity of medium
     integrator: integration mode (IntegratorType)
     cone: type of friction cone (ConeType)
     solver: solver algorithm (SolverType)
@@ -716,11 +741,11 @@ class Option:
   tolerance: array("*", float)
   ls_tolerance: array("*", float)
   ccd_tolerance: array("*", float)
-  density: array("*", float)
-  viscosity: array("*", float)
   gravity: array("*", wp.vec3)
   wind: array("*", wp.vec3)
   magnetic: array("*", wp.vec3)
+  density: array("*", float)
+  viscosity: array("*", float)
   integrator: int
   cone: int
   solver: int
@@ -766,6 +791,29 @@ class TileSet:
 
   adr: wp.array(dtype=int)
   size: int
+
+
+@dataclasses.dataclass
+class Callback:
+  """Callbacks for custom physics behavior.
+
+  Attributes:
+    passive: custom passive forces, writes to ``Data.qfrc_passive``
+    control: custom control laws, writes to ``Data.ctrl``
+    act_dyn: custom actuator dynamics, writes to ``Data.act_dot``
+    act_gain: custom actuator gains, writes to ``Data.actuator_force``
+    act_bias: custom actuator biases, writes to ``Data.actuator_force``
+    sensor: custom sensors, writes to ``Data.sensordata``
+    contactfilter: custom contact filtering, writes to ``Data.contact``
+  """
+
+  passive: Callable | None = None
+  control: Callable | None = None
+  act_dyn: Callable | None = None
+  act_gain: Callable | None = None
+  act_bias: Callable | None = None
+  sensor: Callable | None = None
+  contactfilter: Callable | None = None
 
 
 @dataclasses.dataclass
@@ -947,6 +995,7 @@ class Model:
     mesh_vertadr: first vertex address                       (nmesh,)
     mesh_vertnum: number of vertices                         (nmesh,)
     mesh_faceadr: first face address                         (nmesh,)
+    mesh_octadr: octree address for each mesh                (nmesh,)
     mesh_normaladr: first normal address                     (nmesh,)
     mesh_graphadr: graph data address; -1: no graph          (nmesh,)
     mesh_vert: vertex positions for all meshes               (nmeshvert, 3)
@@ -1028,9 +1077,9 @@ class Model:
     actuator_forcerange: range of forces                     (*, nu, 2)
     actuator_actrange: range of activations                  (*, nu, 2)
     actuator_gear: scale length and transmitted force        (*, nu, 6)
-    actuator_cranklength: crank length for slider-crank      (nu,)
-    actuator_acc0: acceleration from unit force in qpos0     (nu,)
-    actuator_lengthrange: feasible actuator length range     (nu, 2)
+    actuator_cranklength: crank length for slider-crank      (*, nu)
+    actuator_acc0: acceleration from unit force in qpos0     (*, nu)
+    actuator_lengthrange: feasible actuator length range     (*, nu, 2)
     sensor_type: sensor type (SensorType)                    (nsensor,)
     sensor_datatype: numeric data type (DataType)            (nsensor,)
     sensor_objtype: type of sensorized object (ObjType)      (nsensor,)
@@ -1049,6 +1098,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
@@ -1312,6 +1362,7 @@ class Model:
   mesh_vertadr: array("nmesh", int)
   mesh_vertnum: array("nmesh", int)
   mesh_faceadr: array("nmesh", int)
+  mesh_octadr: array("nmesh", int)
   mesh_normaladr: array("nmesh", int)
   mesh_graphadr: array("nmesh", int)
   mesh_vert: array("nmeshvert", wp.vec3)
@@ -1393,9 +1444,9 @@ class Model:
   actuator_forcerange: array("*", "nu", wp.vec2)
   actuator_actrange: array("*", "nu", wp.vec2)
   actuator_gear: array("*", "nu", wp.spatial_vector)
-  actuator_cranklength: array("nu", float)
-  actuator_acc0: array("nu", float)
-  actuator_lengthrange: array("nu", wp.vec2)
+  actuator_cranklength: array("*", "nu", float)
+  actuator_acc0: array("*", "nu", float)
+  actuator_lengthrange: array("*", "nu", wp.vec2)
   sensor_type: array("nsensor", int)
   sensor_datatype: array("nsensor", int)
   sensor_objtype: array("nsensor", int)
@@ -1413,6 +1464,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  callback: Callback
   nbranch: int
   nv_pad: int
   nacttrnbody: int
@@ -1549,7 +1601,14 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
-    J: constraint Jacobian                            (nworld, njmax_pad, nv_pad)
+    J_rownnz: number of non-zeros in J row            (nworld, 0) dense
+                                                      (nworld, njmax) sparse
+    J_rowadr: row start address in colind array       (nworld, 0) dense
+                                                      (nworld, njmax) sparse
+    J_colind: column indices in J                     (nworld, 0, 0) dense
+                                                      (nworld, 1, njmax * nv) sparse
+    J: constraint Jacobian                            (nworld, njmax_pad, nv_pad) dense
+                                                      (nworld, 1, njmax * nv) sparse
     pos: constraint position (equality, contact)      (nworld, njmax)
     margin: inclusion margin (contact)                (nworld, njmax)
     D: constraint mass                                (nworld, njmax_pad)
@@ -1564,7 +1623,10 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
-  J: array("nworld", "njmax_pad", "nv_pad", float)
+  J_rownnz: wp.array2d(dtype=int)
+  J_rowadr: wp.array2d(dtype=int)
+  J_colind: wp.array3d(dtype=int)
+  J: wp.array3d(dtype=float)
   pos: array("nworld", "njmax", float)
   margin: array("nworld", "njmax", float)
   D: array("nworld", "njmax_pad", float)
@@ -1586,6 +1648,7 @@ class Data:
     nf: number of friction constraints                          (nworld,)
     nl: number of limit constraints                             (nworld,)
     nefc: number of constraints                                 (nworld,)
+    nisland: number of constraint islands                       (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1667,11 +1730,14 @@ class Data:
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
     contact: contact data
     efc: constraint data
+    tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
 
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
+    naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
+    njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
   """
@@ -1681,6 +1747,7 @@ class Data:
   nf: array("nworld", int)
   nl: array("nworld", int)
   nefc: array("nworld", int)
+  nisland: array("nworld", int)
   time: array("nworld", float)
   energy: array("nworld", wp.vec2)
   qpos: array("nworld", "nq", float)
@@ -1755,28 +1822,16 @@ class Data:
   cfrc_ext: array("nworld", "nbody", wp.spatial_vector)
   contact: Contact
   efc: Constraint
+  tree_island: array("nworld", "ntree", int)
 
   # warp only fields:
   nworld: int
   naconmax: int
+  naccdmax: int
   njmax: int
+  njmax_pad: int
   nacon: array(1, int)
   ncollision: array(1, int)
-
-
-@dataclasses.dataclass
-class CollisionContext:
-  """Collision driver intermediate arrays.
-
-  Attributes:
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
-  """
-
-  collision_pair: wp.array
-  collision_pairid: wp.array
-  collision_worldid: wp.array
 
 
 @dataclasses.dataclass
@@ -1789,6 +1844,7 @@ class RenderContext:
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
+    use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
     mesh_registry: mesh BVH id to warp mesh mapping
@@ -1801,7 +1857,7 @@ class RenderContext:
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
-    hfield_bounds_size: hfield bounds size
+    hfield_bounds_size: hfield bounds half-extents
     flex_mesh: flex mesh
     flex_rgba: flex rgba
     flex_bvh_id: flex BVH id
@@ -1842,6 +1898,7 @@ class RenderContext:
   use_textures: bool
   use_shadows: bool
   background_color: wp.uint32
+  use_precomputed_rays: bool
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict

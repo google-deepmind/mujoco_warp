@@ -203,8 +203,7 @@ def _main(argv: Sequence[str]):
 
     rc = mjw.create_render_context(
       mjm,
-      m,
-      d,
+      nworld,
       (render_width, render_height),
       _RENDER_RGB.value,
       _RENDER_DEPTH.value,

@@ -495,7 +495,9 @@ def render(m: Model, d: Data, rc: RenderContext):
     # Map active camera index to MuJoCo camera ID
     mujoco_cam_id = cam_id_map[cam_idx]
 
-    if wp.static(rc.ray is None):
+    if wp.static(rc.use_precomputed_rays):
+      ray_dir_local_cam = ray[ray_idx]
+    else:
       img_w = cam_res[cam_idx][0]
       img_h = cam_res[cam_idx][1]
       px = ray_idx_local % img_w
@@ -511,8 +513,6 @@ def render(m: Model, d: Data, rc: RenderContext):
         py,
         wp.static(rc.znear),
       )
-    else:
-      ray_dir_local_cam = ray[ray_idx]
 
     ray_dir_world = cam_xmat_in[world_idx, mujoco_cam_id] @ ray_dir_local_cam
     ray_origin_world = cam_xpos_in[world_idx, mujoco_cam_id]
@@ -552,7 +552,11 @@ def render(m: Model, d: Data, rc: RenderContext):
       return
 
     if render_depth[cam_idx]:
-      depth_out[world_idx, depth_adr[cam_idx] + ray_idx_local] = dist
+      # Planar depth: project Euclidean distance onto the camera's optical axis.
+      # In camera-local coordinates, the optical axis is -Z. The Z-component of the
+      # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
+      # between the ray and the optical axis.
+      depth_out[world_idx, depth_adr[cam_idx] + ray_idx_local] = dist * (-ray_dir_local_cam[2])
 
     if not render_rgb[cam_idx]:
       return

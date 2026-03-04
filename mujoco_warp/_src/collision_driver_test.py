@@ -26,8 +26,8 @@ from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import types
+from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
-from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
@@ -1017,6 +1017,156 @@ class CollisionTest(parameterized.TestCase):
         places=2,
         msg=f"Contact {i}: Expected penetration {expected_penetration:.4f}, got {mjw_dist:.4f}",
       )
+
+  _SDF_VOLUME = {
+    "sdf_plane": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 1" euler="45 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_sphere": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="sphere" size="0.5"/>
+            </body>
+            <body pos="0 0 1.3" euler="30 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_sdf_two_cubes": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube1"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+            <mesh name="cube2"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="sdf" mesh="cube1"/>
+            </body>
+            <body pos="0 0 1.8" euler="45 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube2"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_sdf_different_meshes": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+            <mesh name="wedge"
+             vertex="0 0 0  1 0 0  0.5 1 0  0 0 1  1 0 1  0.5 1 1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="sdf" mesh="cube"/>
+            </body>
+            <body pos="0.5 0.5 1.8" euler="30 20 0">
+              <freejoint/>
+              <geom type="sdf" mesh="wedge"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+  }
+
+  @parameterized.parameters(_SDF_VOLUME.keys())
+  def test_sdf_volume_collision(self, fixture):
+    """Tests volume SDF collisions (mesh-based octree, no plugin)."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._SDF_VOLUME[fixture])
+
+    mujoco.mj_collision(mjm, mjd)
+    mjw.collision(m, d)
+
+    mj_ncon = mjd.ncon
+    mjw_ncon = d.nacon.numpy()[0]
+
+    # both should detect contacts (or both should not)
+    self.assertEqual(mj_ncon > 0, mjw_ncon > 0, f"MJ ncon={mj_ncon}, MJW ncon={mjw_ncon}")
+
+    # all detected contacts should have negative distance (penetration)
+    for i in range(mjw_ncon):
+      test_dist = d.contact.dist.numpy()[i]
+      self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
+
+  def test_ccd_margin_dist(self):
+    """Tests that CCD contact dist matches MuJoCo when margin > 0.
+
+    Two boxes are placed 0.05 m apart (not touching).  With margin=0.1 on
+    each geom the pair margin is 0.2, so contacts are detected within the
+    speculative envelope.  The reported dist must equal the true geometric
+    separation (≈0.05), not the margin-biased value that the inflated
+    GJK/EPA would produce.
+    """
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 0">
+          <freejoint/>
+          <geom type="box" size="0.15 0.15 0.25" margin="0.1" gap="0.1"/>
+        </body>
+        <body pos="0 0 0.35">
+          <freejoint/>
+          <geom type="box" size="0.1 0.1 0.05" margin="0.1" gap="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    mj_ncon = mjd.ncon
+    mjw_ncon = d.nacon.numpy()[0]
+
+    self.assertGreater(mj_ncon, 0, "Classic MuJoCo should detect speculative contacts")
+    self.assertGreater(mjw_ncon, 0, "MuJoCo Warp should detect speculative contacts")
+
+    # All classic MuJoCo contacts should have positive dist (separated)
+    for i in range(mj_ncon):
+      self.assertGreater(mjd.contact.dist[i], 0.0)
+
+    # Check that mujoco-warp dist matches classic MuJoCo dist
+    for i in range(mj_ncon):
+      mj_dist = mjd.contact.dist[i]
+      # Find the matching contact in mujoco-warp
+      found = False
+      for j in range(mjw_ncon):
+        mjw_dist = d.contact.dist.numpy()[j]
+        if np.allclose(mj_dist, mjw_dist, atol=1e-2, rtol=5e-2):
+          found = True
+          break
+      self.assertTrue(found, f"MJ contact {i} dist={mj_dist:.4f} not matched in MJW")
+
+    # Verify no constraint forces are generated (includemargin=0, dist > 0)
+    self.assertEqual(mjd.nefc, 0, "Classic MuJoCo should have no active constraints")
+    self.assertEqual(d.nefc.numpy()[0], 0, "MuJoCo Warp should have no active constraints")
 
 
 if __name__ == "__main__":
