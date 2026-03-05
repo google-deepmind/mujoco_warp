@@ -3207,6 +3207,7 @@ def _spatial_tendon_wrap(
     ten_wrapnum_out[worldid, i] = wrapnum
 
 
+@event_scope
 def tendon(m: Model, d: Data):
   """Computes tendon lengths and moments.
 
