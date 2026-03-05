@@ -443,7 +443,10 @@ class ForwardTest(parameterized.TestCase):
         if check_version("mujoco>=3.5.1.dev872479828"):
           ten_J = np.zeros((mjm.ntendon, mjm.nv))
           if mjm.ntendon:
-            mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
+            if check_version("mujoco>=3.5.1.dev875093374"):
+              mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind)
+            else:
+              mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
           mjd_arr = ten_J
         else:
           mjd_arr = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))

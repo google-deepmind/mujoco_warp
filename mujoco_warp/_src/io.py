@@ -995,7 +995,10 @@ def put_data(
   ten_J = np.zeros((mjm.ntendon, mjm.nv))
   if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
     if mjm.ntendon:
-      mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+      if check_version("mujoco>=3.5.1.dev875093374"):
+        mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind.reshape(-1))
+      else:
+        mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
   else:
     ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
   d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
@@ -1209,12 +1212,20 @@ def get_data_into(
   result.ten_length[:] = d.ten_length.numpy()[world_id]
   if check_version("mujoco>=3.5.1.dev869712136"):
     ten_J = d.ten_J.numpy()[world_id]
+    if check_version("mujoco>=3.5.1.dev875093374"):
+      ten_J_rownnz = mjm.ten_J_rownnz
+      ten_J_rowadr = mjm.ten_J_rowadr
+      ten_J_colind = mjm.ten_J_colind.reshape(-1)
+    else:
+      ten_J_rownnz = result.ten_J_rownnz
+      ten_J_rowadr = result.ten_J_rowadr
+      ten_J_colind = result.ten_J_colind.reshape(-1)
     mujoco.mju_dense2sparse(
       result.ten_J,
       ten_J,
-      result.ten_J_rownnz,
-      result.ten_J_rowadr,
-      result.ten_J_colind,
+      ten_J_rownnz,
+      ten_J_rowadr,
+      ten_J_colind,
     )
   else:
     result.ten_J[:] = d.ten_J.numpy()[world_id]
