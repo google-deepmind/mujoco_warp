@@ -614,7 +614,7 @@ def _equality_flex(is_sparse: bool):
     eq_flex_adr: wp.array(dtype=int),
     # Data in:
     qvel_in: wp.array2d(dtype=float),
-    flexedge_J_in: wp.array3d(dtype=float),
+    flexedge_J_in: wp.array2d(dtype=float),
     flexedge_length_in: wp.array2d(dtype=float),
     njmax_in: int,
     # Data out:
@@ -659,7 +659,7 @@ def _equality_flex(is_sparse: bool):
         flex_sparseid = flex_rowadr + i
         efc_sparseid = efc_rowadr + i
         colind = flexedge_J_colind[flex_sparseid]
-        J = flexedge_J_in[worldid, 0, flex_sparseid]
+        J = flexedge_J_in[worldid, flex_sparseid]
         efc_J_colind_out[worldid, 0, efc_sparseid] = colind
         efc_J_out[worldid, 0, efc_sparseid] = J
         Jqvel += J * qvel_in[worldid, colind]
@@ -669,7 +669,7 @@ def _equality_flex(is_sparse: bool):
       for i in range(rownnz):
         flex_sparseid = flex_rowadr + i
         colind = flexedge_J_colind[flex_sparseid]
-        J = flexedge_J_in[worldid, 0, flex_sparseid]
+        J = flexedge_J_in[worldid, flex_sparseid]
         efc_J_out[worldid, efcid, colind] = J
         Jqvel += J * qvel_in[worldid, colind]
 

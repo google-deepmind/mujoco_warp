@@ -841,6 +841,7 @@ class Model:
     nflexelem: number of elements in all flexes
     nflexelemdata: number of element vertex ids in all flexes
     nflexelemedge: number of element edge ids in all flexes
+    nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
     nmeshnormal: number of normals in all meshes
@@ -1207,6 +1208,7 @@ class Model:
   nflexelem: int
   nflexelemdata: int
   nflexelemedge: int
+  nJfe: int
   nmesh: int
   nmeshvert: int
   nmeshnormal: int
@@ -1358,7 +1360,7 @@ class Model:
   flex_damping: array("nflex", float)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
-  flexedge_J_colind: wp.array(dtype=int)
+  flexedge_J_colind: array("nJfe", int)
   mesh_vertadr: array("nmesh", int)
   mesh_vertnum: array("nmesh", int)
   mesh_faceadr: array("nmesh", int)
@@ -1682,7 +1684,7 @@ class Data:
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
-    flexedge_J: edge length Jacobian                            (nworld, 1, nflexedge*6)
+    flexedge_J: edge length Jacobian                            (nworld, nJfe)
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
@@ -1779,7 +1781,7 @@ class Data:
   cdof: array("nworld", "nv", wp.spatial_vector)
   cinert: array("nworld", "nbody", vec10)
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
-  flexedge_J: wp.array3d(dtype=float)
+  flexedge_J: array("nworld", "nJfe", float)
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)

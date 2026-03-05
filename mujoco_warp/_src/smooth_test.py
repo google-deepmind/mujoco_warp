@@ -539,7 +539,7 @@ class SmoothTest(parameterized.TestCase):
     flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
     mujoco.mju_sparse2dense(
       flexedge_J,
-      d.flexedge_J.numpy()[0, 0].reshape(-1),
+      d.flexedge_J.numpy()[0].reshape(-1),
       m.flexedge_J_rownnz.numpy(),
       m.flexedge_J_rowadr.numpy(),
       m.flexedge_J_colind.numpy(),
