@@ -14,6 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
+from typing import Callable
 
 import mujoco
 import warp as wp
@@ -31,6 +32,9 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
+
+# TODO(team): remove after improving performance for sparse constraint jacobian
+SPARSE_CONSTRAINT_JACOBIAN = False
 
 # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
 TEXTURE_DTYPE = wp.Texture2D if hasattr(wp, "Texture2D") else int
@@ -134,6 +138,20 @@ class ProjectionType(enum.IntEnum):
     ORTHOGRAPHIC = 1
 
 
+class Stage(enum.IntEnum):
+  """Computation stage.
+
+  Attributes:
+    POS: position-dependent
+    VEL: velocity-dependent
+    ACC: acceleration/force-dependent
+  """
+
+  POS = mujoco.mjtStage.mjSTAGE_POS
+  VEL = mujoco.mjtStage.mjSTAGE_VEL
+  ACC = mujoco.mjtStage.mjSTAGE_ACC
+
+
 class DataType(enum.IntFlag):
   """Sensor data types.
 
@@ -167,6 +185,7 @@ class DisableBit(enum.IntFlag):
     SENSOR:       sensors
     EULERDAMP:    implicit damping for Euler integration
     NATIVECCD:    native convex collision detection (ignored in MJWarp)
+    ISLAND:       constraint islands
   """
 
   CONSTRAINT = mujoco.mjtDisableBit.mjDSBL_CONSTRAINT
@@ -185,7 +204,8 @@ class DisableBit(enum.IntFlag):
   SENSOR = mujoco.mjtDisableBit.mjDSBL_SENSOR
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
-  # unsupported: MIDPHASE, AUTORESET, ISLAND
+  ISLAND = mujoco.mjtDisableBit.mjDSBL_ISLAND
+  # unsupported: MIDPHASE, AUTORESET
 
 
 class EnableBit(enum.IntFlag):
@@ -232,6 +252,7 @@ class DynType(enum.IntEnum):
     FILTER: linear filter: da/dt = (u-a) / tau
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
     MUSCLE: piece-wise linear filter with two time constants
+    USER: user-defined dynamics via act_dyn_callback
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -239,7 +260,7 @@ class DynType(enum.IntEnum):
   FILTER = mujoco.mjtDyn.mjDYN_FILTER
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtDyn.mjDYN_USER
 
 
 class GainType(enum.IntEnum):
@@ -249,12 +270,13 @@ class GainType(enum.IntEnum):
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
+    USER: user-defined gain via act_gain_callback
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtGain.mjGAIN_USER
 
 
 class BiasType(enum.IntEnum):
@@ -264,12 +286,13 @@ class BiasType(enum.IntEnum):
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
+    USER: user-defined bias via act_bias_callback
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
-  # unsupported: USER
+  USER = mujoco.mjtBias.mjBIAS_USER
 
 
 class JointType(enum.IntEnum):
@@ -462,6 +485,7 @@ class SensorType(enum.IntEnum):
     FRAMELINACC: 3D linear acceleration
     FRAMEANGACC: 3D angular acceleration
     TACTILE: tactile sensor
+    USER: user-defined sensor via sensor_callback
   """
 
   MAGNETOMETER = mujoco.mjtSensor.mjSENS_MAGNETOMETER
@@ -511,6 +535,7 @@ class SensorType(enum.IntEnum):
   FRAMELINACC = mujoco.mjtSensor.mjSENS_FRAMELINACC
   FRAMEANGACC = mujoco.mjtSensor.mjSENS_FRAMEANGACC
   TACTILE = mujoco.mjtSensor.mjSENS_TACTILE
+  USER = mujoco.mjtSensor.mjSENS_USER
 
 
 class ObjType(enum.IntEnum):
@@ -769,6 +794,29 @@ class TileSet:
 
 
 @dataclasses.dataclass
+class Callback:
+  """Callbacks for custom physics behavior.
+
+  Attributes:
+    passive: custom passive forces, writes to ``Data.qfrc_passive``
+    control: custom control laws, writes to ``Data.ctrl``
+    act_dyn: custom actuator dynamics, writes to ``Data.act_dot``
+    act_gain: custom actuator gains, writes to ``Data.actuator_force``
+    act_bias: custom actuator biases, writes to ``Data.actuator_force``
+    sensor: custom sensors, writes to ``Data.sensordata``
+    contactfilter: custom contact filtering, writes to ``Data.contact``
+  """
+
+  passive: Callable | None = None
+  control: Callable | None = None
+  act_dyn: Callable | None = None
+  act_gain: Callable | None = None
+  act_bias: Callable | None = None
+  sensor: Callable | None = None
+  contactfilter: Callable | None = None
+
+
+@dataclasses.dataclass
 class Model:
   """Model definition and parameters.
 
@@ -793,6 +841,7 @@ class Model:
     nflexelem: number of elements in all flexes
     nflexelemdata: number of element vertex ids in all flexes
     nflexelemedge: number of element edge ids in all flexes
+    nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
     nmeshnormal: number of normals in all meshes
@@ -1050,6 +1099,7 @@ class Model:
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
 
   warp only fields:
+    callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
     nacttrnbody: number of actuators with body transmission
@@ -1157,6 +1207,7 @@ class Model:
   nflexelem: int
   nflexelemdata: int
   nflexelemedge: int
+  nJfe: int
   nmesh: int
   nmeshvert: int
   nmeshnormal: int
@@ -1307,7 +1358,7 @@ class Model:
   flex_damping: array("nflex", float)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
-  flexedge_J_colind: wp.array(dtype=int)
+  flexedge_J_colind: array("nJfe", int)
   mesh_vertadr: array("nmesh", int)
   mesh_vertnum: array("nmesh", int)
   mesh_faceadr: array("nmesh", int)
@@ -1413,6 +1464,7 @@ class Model:
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
   # warp only fields:
+  callback: Callback
   nbranch: int
   nv_pad: int
   nacttrnbody: int
@@ -1595,6 +1647,7 @@ class Data:
     nf: number of friction constraints                          (nworld,)
     nl: number of limit constraints                             (nworld,)
     nefc: number of constraints                                 (nworld,)
+    nisland: number of constraint islands                       (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1629,7 +1682,7 @@ class Data:
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
-    flexedge_J: edge length Jacobian                            (nworld, 1, nflexedge*6)
+    flexedge_J: edge length Jacobian                            (nworld, nJfe)
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
@@ -1671,6 +1724,7 @@ class Data:
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
     contact: contact data
     efc: constraint data
+    tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
 
   warp only fields:
     nworld: number of worlds
@@ -1688,6 +1742,7 @@ class Data:
   nf: array("nworld", int)
   nl: array("nworld", int)
   nefc: array("nworld", int)
+  nisland: array("nworld", int)
   time: array("nworld", float)
   energy: array("nworld", wp.vec2)
   qpos: array("nworld", "nq", float)
@@ -1722,7 +1777,7 @@ class Data:
   cdof: array("nworld", "nv", wp.spatial_vector)
   cinert: array("nworld", "nbody", vec10)
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
-  flexedge_J: wp.array3d(dtype=float)
+  flexedge_J: array("nworld", "nJfe", float)
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
@@ -1760,6 +1815,7 @@ class Data:
   cfrc_ext: array("nworld", "nbody", wp.spatial_vector)
   contact: Contact
   efc: Constraint
+  tree_island: array("nworld", "ntree", int)
 
   # warp only fields:
   nworld: int

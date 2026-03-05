@@ -789,6 +789,13 @@ def ccd_kernel_builder(
     if dist >= 0.0 and pairid[1] == -1:
       return 0
 
+    # CCD operates on margin-inflated shapes (support() inflates each geom by
+    # 0.5 * margin).  The returned dist is therefore relative to the inflated
+    # geometry.  Correct back to the true surface-to-surface distance so that
+    # the constraint pipeline (pos = dist - includemargin) works consistently
+    # with the primitive narrowphase, which reports un-inflated distances.
+    dist += margin
+
     witness1[0] = w1
     witness2[0] = w2
 

@@ -1114,6 +1114,60 @@ class CollisionTest(parameterized.TestCase):
       test_dist = d.contact.dist.numpy()[i]
       self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
 
+  def test_ccd_margin_dist(self):
+    """Tests that CCD contact dist matches MuJoCo when margin > 0.
+
+    Two boxes are placed 0.05 m apart (not touching).  With margin=0.1 on
+    each geom the pair margin is 0.2, so contacts are detected within the
+    speculative envelope.  The reported dist must equal the true geometric
+    separation (≈0.05), not the margin-biased value that the inflated
+    GJK/EPA would produce.
+    """
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 0">
+          <freejoint/>
+          <geom type="box" size="0.15 0.15 0.25" margin="0.1" gap="0.1"/>
+        </body>
+        <body pos="0 0 0.35">
+          <freejoint/>
+          <geom type="box" size="0.1 0.1 0.05" margin="0.1" gap="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    mj_ncon = mjd.ncon
+    mjw_ncon = d.nacon.numpy()[0]
+
+    self.assertGreater(mj_ncon, 0, "Classic MuJoCo should detect speculative contacts")
+    self.assertGreater(mjw_ncon, 0, "MuJoCo Warp should detect speculative contacts")
+
+    # All classic MuJoCo contacts should have positive dist (separated)
+    for i in range(mj_ncon):
+      self.assertGreater(mjd.contact.dist[i], 0.0)
+
+    # Check that mujoco-warp dist matches classic MuJoCo dist
+    for i in range(mj_ncon):
+      mj_dist = mjd.contact.dist[i]
+      # Find the matching contact in mujoco-warp
+      found = False
+      for j in range(mjw_ncon):
+        mjw_dist = d.contact.dist.numpy()[j]
+        if np.allclose(mj_dist, mjw_dist, atol=1e-2, rtol=5e-2):
+          found = True
+          break
+      self.assertTrue(found, f"MJ contact {i} dist={mj_dist:.4f} not matched in MJW")
+
+    # Verify no constraint forces are generated (includemargin=0, dist > 0)
+    self.assertEqual(mjd.nefc, 0, "Classic MuJoCo should have no active constraints")
+    self.assertEqual(d.nefc.numpy()[0], 0, "MuJoCo Warp should have no active constraints")
+
 
 if __name__ == "__main__":
   absltest.main()

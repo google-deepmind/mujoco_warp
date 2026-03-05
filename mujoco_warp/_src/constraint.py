@@ -18,6 +18,7 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
@@ -126,6 +127,7 @@ def _equality_connect(
   opt_disableflags: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -204,10 +206,8 @@ def _equality_connect(
   Jqvel = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
-    while body1 > 0 and body_dofnum[body1] == 0:
-      body1 = body_parentid[body1]
-    while body2 > 0 and body_dofnum[body2] == 0:
-      body2 = body_parentid[body2]
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
 
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -424,7 +424,7 @@ def _equality_joint(
     # Two joint constraint
     qposadr2 = jnt_qposadr[jntid_2]
     dofadr2 = jnt_dofadr[jntid_2]
-    dif = qpos_in[worldid, qposadr2] - qpos0[worldid, qposadr2]
+    dif = qpos_in[worldid, qposadr2] - qpos0[qpos0_id, qposadr2]
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
@@ -620,7 +620,7 @@ def _equality_flex(
   eq_flex_adr: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
-  flexedge_J_in: wp.array3d(dtype=float),
+  flexedge_J_in: wp.array2d(dtype=float),
   flexedge_length_in: wp.array2d(dtype=float),
   njmax_in: int,
   nefcdof_in: int,
@@ -655,6 +655,10 @@ def _equality_flex(
 
   Jqvel = float(0.0)
 
+  if not is_sparse:
+    for i in range(nv):
+      efc_J_out[worldid, efcid, i] = 0.0
+
   rownnz = flexedge_J_rownnz[edgeid]
   flex_rowadr = flexedge_J_rowadr[edgeid]
   efc_J_rownnz_out[worldid, efcid] = rownnz
@@ -663,10 +667,16 @@ def _equality_flex(
   for i in range(rownnz):
     flex_sparseid = flex_rowadr + i
     efc_sparseid = efc_rowadr + i
-    colind = flexedge_J_colind[flex_sparseid]
-    J = flexedge_J_in[worldid, 0, flex_sparseid]
+
+    if is_sparse:
+      colind = flexedge_J_colind[flex_sparseid]
+      J = flexedge_J_in[worldid, flex_sparseid]
+    else:
+      efc_J_out[worldid, efcid, colind] = J
+
     efc_J_colind_out[worldid, 0, efc_sparseid] = colind
     efc_J_out[worldid, 0, efc_sparseid] = J
+
     Jqvel += J * qvel_in[worldid, colind]
 
   _efc_row(
@@ -704,6 +714,7 @@ def _equality_weld(
   opt_disableflags: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -793,10 +804,8 @@ def _equality_weld(
   Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
-    while body1 > 0 and body_dofnum[body1] == 0:
-      body1 = body_parentid[body1]
-    while body2 > 0 and body_dofnum[body2] == 0:
-      body2 = body_parentid[body2]
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
 
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -2020,6 +2029,9 @@ def make_constraint(m: types.Model, d: types.Data):
     inputs=[d.ne, d.nf, d.nl, d.nefc],
   )
 
+  if types.SPARSE_CONSTRAINT_JACOBIAN:
+    d.contact.efc_address.fill_(-1)
+
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
@@ -2032,6 +2044,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.body_parentid,
           m.body_rootid,
+          m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
@@ -2044,7 +2057,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.eq_connect_adr,
           d.qvel,
           d.eq_active,
@@ -2083,6 +2096,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.body_parentid,
           m.body_rootid,
+          m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
@@ -2096,7 +2110,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.eq_wld_adr,
           d.qvel,
           d.eq_active,
@@ -2142,7 +2156,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.eq_jnt_adr,
           d.qpos,
           d.qvel,
@@ -2181,7 +2195,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_data,
           m.tendon_length0,
           m.tendon_invweight0,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.eq_ten_adr,
           d.qvel,
           d.eq_active,
@@ -2222,7 +2236,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.flexedge_J_colind,
           m.eq_solref,
           m.eq_solimp,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.eq_flex_adr,
           d.qvel,
           d.flexedge_J,
@@ -2260,7 +2274,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.dof_solimp,
           m.dof_frictionloss,
           m.dof_invweight0,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           d.qvel,
           d.njmax,
           d.nefcdof,
@@ -2294,7 +2308,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_solimp_fri,
           m.tendon_frictionloss,
           m.tendon_invweight0,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           d.qvel,
           d.ten_J,
           d.njmax,
@@ -2334,7 +2348,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_range,
           m.jnt_margin,
           m.dof_invweight0,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.jnt_limited_ball_adr,
           d.qpos,
           d.qvel,
@@ -2373,7 +2387,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_range,
           m.jnt_margin,
           m.dof_invweight0,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.jnt_limited_slide_hinge_adr,
           d.qpos,
           d.qvel,
@@ -2415,7 +2429,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_invweight0,
           m.wrap_type,
           m.wrap_objid,
-          m.is_sparse,
+          SPARSE_CONSTRAINT_JACOBIAN,
           m.tendon_limited_adr,
           d.qvel,
           d.ten_J,
@@ -2461,7 +2475,7 @@ def make_constraint(m: types.Model, d: types.Data):
             m.dof_bodyid,
             m.dof_parentid,
             m.geom_bodyid,
-            m.is_sparse,
+            SPARSE_CONSTRAINT_JACOBIAN,
             d.qvel,
             d.subtree_com,
             d.cdof,
@@ -2515,7 +2529,7 @@ def make_constraint(m: types.Model, d: types.Data):
             m.dof_bodyid,
             m.dof_parentid,
             m.geom_bodyid,
-            m.is_sparse,
+            SPARSE_CONSTRAINT_JACOBIAN,
             d.qvel,
             d.subtree_com,
             d.cdof,

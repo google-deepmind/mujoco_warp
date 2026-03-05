@@ -26,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -58,7 +59,7 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
 
   # convert sparse to dense if necessary
-  if m.is_sparse:
+  if SPARSE_CONSTRAINT_JACOBIAN:
     efc_J = np.zeros((nefc, nv))
     mujoco.mju_sparse2dense(
       efc_J,

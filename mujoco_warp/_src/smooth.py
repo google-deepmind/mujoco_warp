@@ -21,6 +21,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -258,7 +259,7 @@ def _flex_edges(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
-  flexedge_J_out: wp.array3d(dtype=float),
+  flexedge_J_out: wp.array2d(dtype=float),
   flexedge_length_out: wp.array2d(dtype=float),
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
@@ -337,12 +338,12 @@ def _flex_edges(
   jacdif = jacp2 - jacp1
   Jj2 = wp.dot(jacdif, edge)
 
-  flexedge_J_out[worldid, 0, sparseid0] = Ji0
-  flexedge_J_out[worldid, 0, sparseid1] = Ji1
-  flexedge_J_out[worldid, 0, sparseid2] = Ji2
-  flexedge_J_out[worldid, 0, sparseid3] = Jj0
-  flexedge_J_out[worldid, 0, sparseid4] = Jj1
-  flexedge_J_out[worldid, 0, sparseid5] = Jj2
+  flexedge_J_out[worldid, sparseid0] = Ji0
+  flexedge_J_out[worldid, sparseid1] = Ji1
+  flexedge_J_out[worldid, sparseid2] = Ji2
+  flexedge_J_out[worldid, sparseid3] = Jj0
+  flexedge_J_out[worldid, sparseid4] = Jj1
+  flexedge_J_out[worldid, sparseid5] = Jj2
 
 
 @event_scope
@@ -818,7 +819,7 @@ def _qM_sparse(
   bodyid = dof_bodyid[dofid]
 
   # init M(i,i) with armature inertia
-  qM_out[worldid, 0, madr_ij] = dof_armature[worldid, dofid]
+  qM_out[worldid, 0, madr_ij] = dof_armature[worldid % dof_armature.shape[0], dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
@@ -907,7 +908,7 @@ def _tendon_armature(
   if is_sparse:  # is_sparse is not batched
     madr_ij = dof_Madr[dofid]
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
 
   if armature == 0.0:
     return
@@ -1320,7 +1321,7 @@ def _cfrc_ext_equality(
   )
 
   id = efc_id_in[worldid, efcid]
-  eq_data_ = eq_data[worldid, id]
+  eq_data_ = eq_data[worldid % eq_data.shape[0], id]
   body_semantic = eq_objtype[id] == ObjType.BODY
 
   obj1 = eq_obj1id[id]
@@ -1341,7 +1342,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
     else:
-      offset = site_pos[worldid, obj1]
+      offset = site_pos[worldid % site_pos.shape[0], obj1]
 
     # transform point on body1: local -> global
     pos = xmat_in[worldid, bodyid1] @ offset + xpos_in[worldid, bodyid1]
@@ -1363,7 +1364,7 @@ def _cfrc_ext_equality(
       else:
         offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
     else:
-      offset = site_pos[worldid, obj2]
+      offset = site_pos[worldid % site_pos.shape[0], obj2]
 
     # transform point on body2: local -> global
     pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
@@ -1558,7 +1559,7 @@ def _tendon_dot(
 ):
   worldid, tenid = wp.tid()
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
@@ -1716,7 +1717,7 @@ def _tendon_bias_coef(
 ):
   worldid, tenid, dofid = wp.tid()
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
@@ -1740,7 +1741,7 @@ def _tendon_bias_qfrc(
 ):
   worldid, tenid, dofid = wp.tid()
 
-  armature = tendon_armature[worldid, tenid]
+  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
@@ -2077,7 +2078,7 @@ def _transmission(
     siteid = trnid[0]
     refid = trnid[1]
 
-    gear = actuator_gear[worldid, actid]
+    gear = actuator_gear[actuator_gear_id, actid]
     site_quat_id = worldid % site_quat.shape[0]
     gear_translation = wp.spatial_top(gear)
     gear_rotational = wp.spatial_bottom(gear)
@@ -2308,10 +2309,15 @@ def _transmission_body_moment(
     if is_sparse:
       # get Jacobian difference
       efcid0 = contact_efc_address_in[conid][0]
-      if dofid >= efc_J_rownnz_in[worldid, efcid0]:
-        return
-      sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
-      colind = efc_J_colind_in[worldid, 0, sparseid]
+      if efcid0 >= 0:
+        # contact has valid efc row: use sparse pattern
+        if dofid >= efc_J_rownnz_in[worldid, efcid0]:
+          return
+        sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
+        colind = efc_J_colind_in[worldid, 0, sparseid]
+      else:
+        # excluded contact with no efc row: use dofid directly
+        colind = dofid
 
       jacp1, _ = support.jac_dof(
         body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, colind, worldid
@@ -2416,7 +2422,7 @@ def transmission(m: Model, d: Data):
         m.dof_bodyid,
         m.geom_bodyid,
         m.actuator_trnid,
-        m.is_sparse,
+        SPARSE_CONSTRAINT_JACOBIAN,
         m.actuator_trntype_body_adr,
         d.subtree_com,
         d.cdof,
@@ -2942,7 +2948,7 @@ def _spatial_geom_tendon(
   # get geom information
   geom_xpos = geom_xpos_in[worldid, wrap_objid_geom]
   geom_xmat = geom_xmat_in[worldid, wrap_objid_geom]
-  geomsize = geom_size[worldid, wrap_objid_geom][0]
+  geomsize = geom_size[worldid % geom_size.shape[0], wrap_objid_geom][0]
   geom_type = wrap_type[wrap_adr]
 
   # get body ids for site-geom-site instances

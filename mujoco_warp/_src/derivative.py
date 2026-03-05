@@ -25,6 +25,7 @@ from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 
 wp.set_module_options({"enable_backward": False})
 
@@ -287,13 +288,14 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
       else:
         vel_3d = vel.reshape(vel.shape + (1,))
         for tile in m.qM_tiles:
-          wp.launch_tiled(
-            _qderiv_actuator_passive_actuation_dense(tile, m.nu),
-            dim=(d.nworld, tile.adr.size),
-            inputs=[d.actuator_moment, d.qM, vel_3d, tile.adr],
-            outputs=[out],
-            block_dim=m.block_dim.qderiv_actuator_dense,
-          )
+          with scoped_mathdx_gemm_disabled():
+            wp.launch_tiled(
+              _qderiv_actuator_passive_actuation_dense(tile, m.nu),
+              dim=(d.nworld, tile.adr.size),
+              inputs=[d.actuator_moment, d.qM, vel_3d, tile.adr],
+              outputs=[out],
+              block_dim=m.block_dim.qderiv_actuator_dense,
+            )
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, qMi.size),

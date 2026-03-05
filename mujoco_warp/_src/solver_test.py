@@ -26,6 +26,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import solver
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -129,7 +130,7 @@ class SolverTest(parameterized.TestCase):
       # Calculate target values
       nefc = d.nefc.numpy()[0]
       ctx_search_np = ctx.search.numpy()[0]
-      if m.is_sparse:
+      if SPARSE_CONSTRAINT_JACOBIAN:
         efc_J_np = np.zeros((nefc, m.nv))
         mujoco.mju_sparse2dense(
           efc_J_np,
@@ -408,10 +409,34 @@ class SolverTest(parameterized.TestCase):
     efc_J1 = mjd1.efc_J.reshape((mjd1.nefc, mjm1.nv))
     efc_J2 = mjd2.efc_J.reshape((mjd2.nefc, mjm2.nv))
 
-    efc_J_fill = np.zeros((3, d.njmax_pad, m.nv_pad))
-    efc_J_fill[0, : mjd0.nefc, : mjm0.nv] = efc_J0
-    efc_J_fill[1, : mjd1.nefc, : mjm1.nv] = efc_J1
-    efc_J_fill[2, : mjd2.nefc, : mjm2.nv] = efc_J2
+    if SPARSE_CONSTRAINT_JACOBIAN:
+      nv = m.nv
+      njmax = d.njmax
+      J_rownnz = np.zeros((3, njmax), dtype=np.int32)
+      J_rowadr = np.zeros((3, njmax), dtype=np.int32)
+      J_colind = np.zeros((3, 1, njmax * nv), dtype=np.int32)
+      J_vals = np.zeros((3, 1, njmax * nv), dtype=np.float32)
+
+      for w, efc_Jw, nefc_w in [(0, efc_J0, mjd0.nefc), (1, efc_J1, mjd1.nefc), (2, efc_J2, mjd2.nefc)]:
+        offset = 0
+        for i in range(nefc_w):
+          cols = np.nonzero(efc_Jw[i])[0]
+          J_rowadr[w, i] = offset
+          J_rownnz[w, i] = len(cols)
+          J_colind[w, 0, offset : offset + len(cols)] = cols
+          J_vals[w, 0, offset : offset + len(cols)] = efc_Jw[i, cols]
+          offset += len(cols)
+
+      d.efc.J = wp.from_numpy(J_vals, dtype=wp.float32)
+      d.efc.J_rownnz = wp.from_numpy(J_rownnz, dtype=wp.int32)
+      d.efc.J_rowadr = wp.from_numpy(J_rowadr, dtype=wp.int32)
+      d.efc.J_colind = wp.from_numpy(J_colind, dtype=wp.int32)
+    else:
+      efc_J_fill = np.zeros((3, d.njmax_pad, m.nv_pad))
+      efc_J_fill[0, : mjd0.nefc, : mjm0.nv] = efc_J0
+      efc_J_fill[1, : mjd1.nefc, : mjm1.nv] = efc_J1
+      efc_J_fill[2, : mjd2.nefc, : mjm2.nv] = efc_J2
+      d.efc.J = wp.from_numpy(efc_J_fill, dtype=wp.float32)
 
     # Similarly for D and aref values
     efc_D0 = mjd0.efc_D[: mjd0.nefc]
@@ -436,7 +461,6 @@ class SolverTest(parameterized.TestCase):
     d.qM = wp.from_numpy(qM, dtype=wp.float32)
     d.qacc_smooth = wp.from_numpy(qacc_smooth, dtype=wp.float32)
     d.qfrc_smooth = wp.from_numpy(qfrc_smooth, dtype=wp.float32)
-    d.efc.J = wp.from_numpy(efc_J_fill, dtype=wp.float32)
     d.efc.D = wp.from_numpy(efc_D_fill, dtype=wp.float32)
     d.efc.aref = wp.from_numpy(efc_aref_fill, dtype=wp.float32)
 

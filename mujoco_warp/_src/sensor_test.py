@@ -863,6 +863,35 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_sensor_callback(self):
+    """Tests sensor_callback populates user sensor data."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="myplane" type="plane" size="10 10 1"/>
+      </worldbody>
+      <sensor>
+        <user objtype="geom" objname="myplane"
+              datatype="real" needstage="vel" dim="1"/>
+      </sensor>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    @wp.kernel
+    def _set_sensordata(sensordata_out: wp.array2d(dtype=float)):
+      worldid = wp.tid()
+      sensordata_out[worldid, 0] = 17.0
+
+    def my_sensor(m, d, stage):
+      if stage == 1:  # VEL
+        wp.launch(_set_sensordata, dim=(d.nworld,), outputs=[d.sensordata])
+
+    m.callback.sensor = my_sensor
+    mjw.forward(m, d)
+
+    self.assertEqual(d.sensordata.numpy()[0, 0], 17.0)
+
 
 if __name__ == "__main__":
   wp.init()

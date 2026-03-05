@@ -28,6 +28,7 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
@@ -210,6 +211,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   m.opt = opt
   m.stat = stat
+  m.callback = types.Callback()
 
   m.nv_pad = _get_padded_sizes(
     mjm.nv, 0, is_sparse(mjm), types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -714,7 +716,7 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
-  if is_sparse(mjm):
+  if SPARSE_CONSTRAINT_JACOBIAN:
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
     efc.J_colind = wp.zeros((nworld, 1, njmax * nefcdof), dtype=int)
@@ -761,8 +763,9 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
-    # flexedge
-    "flexedge_J": None,
+    # island arrays
+    "nisland": None,
+    "tree_island": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -778,7 +781,9 @@ def make_data(
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  d.flexedge_J = wp.zeros((nworld, 1, mjd.flexedge_J.size), dtype=float)
+  # island discovery arrays
+  d.nisland = wp.zeros((nworld,), dtype=int)
+  d.tree_island = wp.zeros((nworld, mjm.ntree), dtype=int)
 
   return d
 
@@ -918,7 +923,7 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if is_sparse(mjm):
+  if SPARSE_CONSTRAINT_JACOBIAN:
     # TODO(team): process efc_J sparsity structure for nv row shift
     efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
     efc.J_rowadr = wp.array(
@@ -970,8 +975,10 @@ def put_data(
     "qLD": None,
     "ten_J": None,
     "actuator_moment": None,
-    "flexedge_J": None,
     "nacon": None,
+    # island arrays
+    "nisland": None,
+    "tree_island": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -997,7 +1004,9 @@ def put_data(
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
-  d.flexedge_J = wp.array(np.tile(mjd.flexedge_J.reshape(-1), (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
+  # island arrays
+  d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
+  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
 
   ten_J = np.zeros((mjm.ntendon, mjm.nv))
   if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
@@ -1171,19 +1180,15 @@ def get_data_into(
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
-    if is_sparse(mjm):
+    if SPARSE_CONSTRAINT_JACOBIAN:
       efc_J = np.zeros((nefc, mjm.nv))
-      J_rownnz_wp = d.efc.J_rownnz.numpy()[0]
-      J_rowadr_wp = d.efc.J_rowadr.numpy()[0]
-      J_colind_wp = d.efc.J_colind.numpy()[0]
-      J_wp = d.efc.J.numpy()[0, 0]
-      for i in range(nefc):
-        rownnz = J_rownnz_wp[i]
-        rowadr = J_rowadr_wp[i]
-        for j in range(rownnz):
-          sparseid = rowadr + j
-          colind = J_colind_wp[sparseid]
-          efc_J[i, colind] = J_wp[sparseid]
+      mujoco.mju_sparse2dense(
+        efc_J,
+        d.efc.J.numpy()[world_id, 0],
+        d.efc.J_rownnz.numpy()[world_id, :nefc],
+        d.efc.J_rowadr.numpy()[world_id, :nefc],
+        d.efc.J_colind.numpy()[world_id, 0],
+      )
     else:
       efc_J = d.efc.J.numpy()[world_id, :nefc, : mjm.nv]
 
@@ -1236,6 +1241,12 @@ def get_data_into(
 
   # sensors
   result.sensordata[:] = d.sensordata.numpy()[world_id]
+
+  # islands
+  nisland = d.nisland.numpy()[world_id]
+  result.nisland = nisland
+  if nisland:
+    result.tree_island[:] = d.tree_island.numpy()[world_id]
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
@@ -1356,8 +1367,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     mocapid = body_mocapid[bodyid]
 
     if mocapid >= 0:
-      mocap_pos_out[worldid, mocapid] = body_pos[worldid, bodyid]
-      mocap_quat_out[worldid, mocapid] = body_quat[worldid, bodyid]
+      mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
+      mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_contact(
@@ -2531,18 +2542,18 @@ def create_render_context(
 
   cam_res_arr = wp.array(active_cam_res, dtype=wp.vec2i)
 
-  if render_rgb and isinstance(render_rgb, bool):
-    render_rgb = [render_rgb] * ncam
-  elif render_rgb is None:
+  if render_rgb is None:
     render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
+  elif isinstance(render_rgb, bool):
+    render_rgb = [render_rgb] * ncam
 
-  if render_depth and isinstance(render_depth, bool):
-    render_depth = [render_depth] * ncam
-  elif render_depth is None:
+  if render_depth is None:
     render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
+  if isinstance(render_depth, bool):
+    render_depth = [render_depth] * ncam
 
   assert len(render_rgb) == ncam and len(render_depth) == ncam, (
-    f"Render RGB and depth must be provided for all active cameras (got {len(render_rgb)}, {len(render_depth)}, expected {ncam})"
+    f"render_rgb and render_depth must be a bool or a list of bools with length {ncam}"
   )
 
   rgb_adr = -1 * np.ones(ncam, dtype=int)

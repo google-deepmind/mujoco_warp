@@ -25,9 +25,12 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
+from mujoco_warp import ConeType
+from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import set_length_range
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 
 def _assert_eq(a, b, name):
@@ -144,6 +147,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.ne.numpy()[world_id], mjd.ne)
     self.assertEqual(d.nf.numpy()[world_id], mjd.nf)
     self.assertEqual(d.nl.numpy()[world_id], mjd.nl)
+    self.assertEqual(d.nisland.numpy()[world_id], mjd.nisland)
     _assert_eq(d.time.numpy()[world_id], mjd.time, "time")
 
     for field in [
@@ -271,49 +275,57 @@ class IOTest(parameterized.TestCase):
         field,
       )
 
-  @parameterized.parameters(*_IO_TEST_MODELS)
-  def test_get_data_into_io_test_models(self, xml):
+  @parameterized.product(
+    xml=_IO_TEST_MODELS,
+    cone=list(ConeType),
+    integrator=list(IntegratorType),
+  )
+  def test_get_data_into_io_test_models(self, xml, cone, integrator):
     """Tests get_data_into for field coverage across diverse model types."""
-    mjm, mjd, _, d = test_data.fixture(xml)
+    mjm, _, m, d = test_data.fixture(xml, nworld=2, overrides={"opt.cone": cone, "opt.integrator": integrator})
+    mjwarp.step(m, d)
 
-    # Create fresh MjData to verify get_data_into populates it correctly
-    mjd_result = mujoco.MjData(mjm)
+    for world_id in range(2):
+      # Create reference MjData from warp data (resizes contact/efc fields internally)
+      mjd = mujoco.MjData(mjm)
+      mjwarp.get_data_into(mjd, mjm, d, world_id=world_id)
 
-    mjwarp.get_data_into(mjd_result, mjm, d)
+      # Compare key fields, including flex/tendon data not covered by humanoid.xml
+      for field in [
+        "qpos",
+        "qvel",
+        "qacc",
+        "ctrl",
+        "act",
+        "flexvert_xpos",
+        "flexedge_length",
+        "flexedge_velocity",
+        "ten_length",
+        "ten_velocity",
+        "actuator_length",
+        "actuator_velocity",
+        "actuator_force",
+        "xpos",
+        "xquat",
+        "geom_xpos",
+        "tree_island",
+      ]:
+        if field == "tree_island" and d.nisland.numpy()[0] == 0:
+          continue
+        if getattr(mjd, field).size > 0:
+          _assert_eq(
+            getattr(mjd, field).reshape(-1),
+            getattr(d, field).numpy()[world_id].reshape(-1),
+            f"{field} (model: {xml}, world: {world_id})",
+          )
 
-    # Compare key fields, including flex/tendon data not covered by humanoid.xml
-    for field in [
-      "qpos",
-      "qvel",
-      "qacc",
-      "ctrl",
-      "act",
-      "flexvert_xpos",
-      "flexedge_length",
-      "flexedge_velocity",
-      "ten_length",
-      "ten_velocity",
-      "actuator_length",
-      "actuator_velocity",
-      "actuator_force",
-      "xpos",
-      "xquat",
-      "geom_xpos",
-    ]:
-      if getattr(mjd, field).size > 0:
+      # flexedge_J
+      if xml == "flex/floppy.xml":
         _assert_eq(
-          getattr(mjd_result, field).reshape(-1),
-          getattr(mjd, field).reshape(-1),
-          f"{field} (model: {xml})",
+          mjd.flexedge_J.reshape(-1),
+          d.flexedge_J.numpy()[world_id].reshape(-1),
+          f"flexedge_J (world: {world_id})",
         )
-
-    # flexedge_J
-    if xml == "flex/floppy.xml":
-      _assert_eq(
-        mjd_result.flexedge_J.reshape(-1),
-        d.flexedge_J.numpy()[0].reshape(-1),
-        "flexedge_J",
-      )
 
   def test_ellipsoid_fluid_model(self):
     mjm = mujoco.MjModel.from_xml_string(
@@ -1593,7 +1605,10 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    self.assertEqual(d.efc.J.shape[2], m.nv_pad)
+    if SPARSE_CONSTRAINT_JACOBIAN:
+      self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
+    else:
+      self.assertEqual(d.efc.J.shape[2], m.nv_pad)
 
 
 if __name__ == "__main__":
