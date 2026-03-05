@@ -21,7 +21,6 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -1937,7 +1936,6 @@ def _transmission(
   actuator_trnid: wp.array(dtype=wp.vec2i),
   actuator_gear: wp.array2d(dtype=wp.spatial_vector),
   actuator_cranklength: wp.array2d(dtype=float),
-  is_sparse: bool,
   # Data in:
   qpos_in: wp.array2d(dtype=float),
   xquat_in: wp.array2d(dtype=wp.quat),
@@ -1953,8 +1951,8 @@ def _transmission(
   actuator_length_out: wp.array2d(dtype=float),
   moment_rownnz_out: wp.array2d(dtype=int),
   moment_rowadr_out: wp.array2d(dtype=int),
-  moment_colind_out: wp.array3d(dtype=int),
-  actuator_moment_out: wp.array3d(dtype=float),
+  moment_colind_out: wp.array2d(dtype=int),
+  actuator_moment_out: wp.array2d(dtype=float),
 ):
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
@@ -1967,50 +1965,33 @@ def _transmission(
     qadr = jnt_qposadr[jntid]
     vadr = jnt_dofadr[jntid]
     if jnt_typ == JointType.FREE:
-      if is_sparse:
-        moment_rownnz_out[worldid, actid] = 6
-        rowadr = wp.atomic_add(moment_nnz, worldid, 6)
-        moment_rowadr_out[worldid, actid] = rowadr
-        moment_colind_out[worldid, 0, rowadr + 0] = vadr + 0
-        moment_colind_out[worldid, 0, rowadr + 1] = vadr + 1
-        moment_colind_out[worldid, 0, rowadr + 2] = vadr + 2
-        moment_colind_out[worldid, 0, rowadr + 3] = vadr + 3
-        moment_colind_out[worldid, 0, rowadr + 4] = vadr + 4
-        moment_colind_out[worldid, 0, rowadr + 5] = vadr + 5
+      moment_rownnz_out[worldid, actid] = 6
+      rowadr = wp.atomic_add(moment_nnz, worldid, 6)
+      moment_rowadr_out[worldid, actid] = rowadr
+      moment_colind_out[worldid, rowadr + 0] = vadr + 0
+      moment_colind_out[worldid, rowadr + 1] = vadr + 1
+      moment_colind_out[worldid, rowadr + 2] = vadr + 2
+      moment_colind_out[worldid, rowadr + 3] = vadr + 3
+      moment_colind_out[worldid, rowadr + 4] = vadr + 4
+      moment_colind_out[worldid, rowadr + 5] = vadr + 5
       actuator_length_out[worldid, actid] = 0.0
       if trntype == TrnType.JOINTINPARENT:
         quat = wp.normalize(wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6]))
         quat_neg = math.quat_inv(quat)
         gearaxis = math.rot_vec_quat(wp.spatial_bottom(gear), quat_neg)
-        if is_sparse:
-          actuator_moment_out[worldid, 0, rowadr + 0] = gear[0]
-          actuator_moment_out[worldid, 0, rowadr + 1] = gear[1]
-          actuator_moment_out[worldid, 0, rowadr + 2] = gear[2]
-          actuator_moment_out[worldid, 0, rowadr + 3] = gearaxis[0]
-          actuator_moment_out[worldid, 0, rowadr + 4] = gearaxis[1]
-          actuator_moment_out[worldid, 0, rowadr + 5] = gearaxis[2]
-        else:
-          actuator_moment_out[worldid, actid, vadr + 0] = gear[0]
-          actuator_moment_out[worldid, actid, vadr + 1] = gear[1]
-          actuator_moment_out[worldid, actid, vadr + 2] = gear[2]
-          actuator_moment_out[worldid, actid, vadr + 3] = gearaxis[0]
-          actuator_moment_out[worldid, actid, vadr + 4] = gearaxis[1]
-          actuator_moment_out[worldid, actid, vadr + 5] = gearaxis[2]
+        actuator_moment_out[worldid, rowadr + 0] = gear[0]
+        actuator_moment_out[worldid, rowadr + 1] = gear[1]
+        actuator_moment_out[worldid, rowadr + 2] = gear[2]
+        actuator_moment_out[worldid, rowadr + 3] = gearaxis[0]
+        actuator_moment_out[worldid, rowadr + 4] = gearaxis[1]
+        actuator_moment_out[worldid, rowadr + 5] = gearaxis[2]
       else:
-        if is_sparse:
-          actuator_moment_out[worldid, 0, rowadr + 0] = gear[0]
-          actuator_moment_out[worldid, 0, rowadr + 1] = gear[1]
-          actuator_moment_out[worldid, 0, rowadr + 2] = gear[2]
-          actuator_moment_out[worldid, 0, rowadr + 3] = gear[3]
-          actuator_moment_out[worldid, 0, rowadr + 4] = gear[4]
-          actuator_moment_out[worldid, 0, rowadr + 5] = gear[5]
-        else:
-          actuator_moment_out[worldid, actid, vadr + 0] = gear[0]
-          actuator_moment_out[worldid, actid, vadr + 1] = gear[1]
-          actuator_moment_out[worldid, actid, vadr + 2] = gear[2]
-          actuator_moment_out[worldid, actid, vadr + 3] = gear[3]
-          actuator_moment_out[worldid, actid, vadr + 4] = gear[4]
-          actuator_moment_out[worldid, actid, vadr + 5] = gear[5]
+        actuator_moment_out[worldid, rowadr + 0] = gear[0]
+        actuator_moment_out[worldid, rowadr + 1] = gear[1]
+        actuator_moment_out[worldid, rowadr + 2] = gear[2]
+        actuator_moment_out[worldid, rowadr + 3] = gear[3]
+        actuator_moment_out[worldid, rowadr + 4] = gear[4]
+        actuator_moment_out[worldid, rowadr + 5] = gear[5]
     elif jnt_typ == JointType.BALL:
       q = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
       q = wp.normalize(q)
@@ -2021,31 +2002,24 @@ def _transmission(
         gearaxis = math.rot_vec_quat(gearaxis, quat_neg)
       actuator_length_out[worldid, actid] = wp.dot(axis_angle, gearaxis)
 
-      if is_sparse:
-        nnz = 3
-        moment_rownnz_out[worldid, actid] = nnz
-        rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
-        moment_rowadr_out[worldid, actid] = rowadr
+      nnz = 3
+      moment_rownnz_out[worldid, actid] = nnz
+      rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
+      moment_rowadr_out[worldid, actid] = rowadr
 
       for i in range(3):
-        if is_sparse:
-          sparseid = rowadr + i
-          moment_colind_out[worldid, 0, sparseid] = vadr + i
-          actuator_moment_out[worldid, 0, sparseid] = gearaxis[i]
-        else:
-          actuator_moment_out[worldid, actid, vadr + i] = gearaxis[i]
+        sparseid = rowadr + i
+        moment_colind_out[worldid, sparseid] = vadr + i
+        actuator_moment_out[worldid, sparseid] = gearaxis[i]
     elif jnt_typ == JointType.SLIDE or jnt_typ == JointType.HINGE:
       actuator_length_out[worldid, actid] = qpos[qadr] * gear[0]
 
-      if is_sparse:
-        nnz = 1
-        moment_rownnz_out[worldid, actid] = nnz
-        rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
-        moment_rowadr_out[worldid, actid] = rowadr
-        moment_colind_out[worldid, 0, rowadr] = vadr
-        actuator_moment_out[worldid, 0, rowadr] = gear[0]
-      else:
-        actuator_moment_out[worldid, actid, vadr] = gear[0]
+      nnz = 1
+      moment_rownnz_out[worldid, actid] = nnz
+      rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
+      moment_rowadr_out[worldid, actid] = rowadr
+      moment_colind_out[worldid, rowadr] = vadr
+      actuator_moment_out[worldid, rowadr] = gear[0]
     else:
       wp.printf("unrecognized joint type")
   elif trntype == TrnType.SLIDERCRANK:
@@ -2085,10 +2059,9 @@ def _transmission(
       dldv = axis
       dlda = vec
 
-    if is_sparse:
-      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-      moment_rowadr_out[worldid, actid] = rowadr
-      nnz = int(0)
+    rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+    moment_rowadr_out[worldid, actid] = rowadr
+    nnz = int(0)
 
     # apply chain rule
     # TODO(team): parallelization or dof traversal?
@@ -2109,15 +2082,12 @@ def _transmission(
 
       # apply the chain rule
       moment = wp.dot(dlda, jacA) + wp.dot(dldv, jac)
-      if is_sparse:
+      if moment != 0.0:
         sparseid = rowadr + nnz
-        moment_colind_out[worldid, 0, sparseid] = i
-        actuator_moment_out[worldid, 0, sparseid] = moment * gear0
+        moment_colind_out[worldid, sparseid] = i
+        actuator_moment_out[worldid, sparseid] = moment * gear0
         nnz += 1
-      else:
-        actuator_moment_out[worldid, actid, i] = moment * gear0
-    if is_sparse:
-      moment_rownnz_out[worldid, actid] = nnz
+    moment_rownnz_out[worldid, actid] = nnz
   elif trntype == TrnType.TENDON:
     tenid = actuator_trnid[actid][0]
 
@@ -2127,56 +2097,41 @@ def _transmission(
     # fixed
     adr = tendon_adr[tenid]
     if wrap_type[adr] == WrapType.JOINT:
-      if is_sparse:
-        ten_num = tendon_num[tenid]
-        nnz = int(0)
-        rowadr = wp.atomic_add(moment_nnz, worldid, ten_num)
-        moment_rowadr_out[worldid, actid] = rowadr
-
       ten_num = tendon_num[tenid]
+      nnz = int(0)
+      rowadr = wp.atomic_add(moment_nnz, worldid, ten_num)
+      moment_rowadr_out[worldid, actid] = rowadr
+
       for i in range(ten_num):
         dofadr = jnt_dofadr[wrap_objid[adr + i]]
 
-        if is_sparse:
-          sparseid = rowadr + i
-          moment_colind_out[worldid, 0, sparseid] = dofadr
-          actuator_moment_out[worldid, 0, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
-          nnz += 1
-        else:
-          actuator_moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
-      if is_sparse:
-        moment_rownnz_out[worldid, actid] = nnz
+        sparseid = rowadr + i
+        moment_colind_out[worldid, sparseid] = dofadr
+        actuator_moment_out[worldid, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
+        nnz += 1
+      moment_rownnz_out[worldid, actid] = nnz
     else:  # spatial
-      if is_sparse:
-        nnz = int(0)
-        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-        moment_rowadr_out[worldid, actid] = rowadr
+      nnz = int(0)
+      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      moment_rowadr_out[worldid, actid] = rowadr
       for dofadr in range(nv):
-        if is_sparse:
-          sparseid = rowadr + dofadr
-          moment_colind_out[worldid, 0, sparseid] = dofadr
-          actuator_moment_out[worldid, 0, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
-          nnz += 1
-        else:
-          actuator_moment_out[worldid, actid, dofadr] = ten_J_in[worldid, tenid, dofadr] * gear0
-      if is_sparse:
-        moment_rownnz_out[worldid, actid] = nnz
+        sparseid = rowadr + dofadr
+        moment_colind_out[worldid, sparseid] = dofadr
+        actuator_moment_out[worldid, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
+        nnz += 1
+      moment_rownnz_out[worldid, actid] = nnz
   elif trntype == TrnType.BODY:
     # cannot compute meaningful length, set to zero
     actuator_length_out[worldid, actid] = 0.0
 
     # initialize moment
-    if is_sparse:
-      moment_rownnz_out[worldid, actid] = nv
-      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-      moment_rowadr_out[worldid, actid] = rowadr
-      for i in range(nv):
-        sparseid = rowadr + i
-        moment_colind_out[worldid, 0, sparseid] = i
-        actuator_moment_out[worldid, 0, sparseid] = 0.0
-    else:
-      for i in range(nv):
-        actuator_moment_out[worldid, actid, i] = 0.0
+    moment_rownnz_out[worldid, actid] = nv
+    rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+    moment_rowadr_out[worldid, actid] = rowadr
+    for i in range(nv):
+      sparseid = rowadr + i
+      moment_colind_out[worldid, sparseid] = i
+      actuator_moment_out[worldid, sparseid] = 0.0
 
     # moment computed by _transmission_body_moment and _transmission_body_moment_scale
   elif trntype == TrnType.SITE:
@@ -2196,13 +2151,13 @@ def _transmission(
       wrench_translation = site_xmat @ gear_translation
       wrench_rotation = site_xmat @ gear_rotational
 
-      if is_sparse:
-        nnz = int(0)
-        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-        moment_rowadr_out[worldid, actid] = rowadr
+      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      moment_rowadr_out[worldid, actid] = rowadr
+      actuator_length_out[worldid, actid] = 0.0
 
       # moment: global Jacobian projected on wrench
       # TODO(team): parallelize or dof traversal?
+      nnz = int(0)
       for i in range(nv):
         jacp, jacr = support.jac_dof(
           body_parentid,
@@ -2215,15 +2170,13 @@ def _transmission(
           i,
           worldid,
         )
-        actuator_length_out[worldid, actid] = 0.0
         moment = wp.dot(jacp, wrench_translation) + wp.dot(jacr, wrench_rotation)
-
-        if is_sparse:
-          sparseid = rowadr + i
-          moment_colind_out[worldid, 0, sparseid] = i
-          actuator_moment_out[worldid, 0, sparseid] = moment
-        else:
-          actuator_moment_out[worldid, actid, i] = moment
+        if moment != 0.0:
+          sparseid = rowadr + nnz
+          moment_colind_out[worldid, sparseid] = i
+          actuator_moment_out[worldid, sparseid] = moment
+          nnz += 1
+      moment_rownnz_out[worldid, actid] = nnz
     # reference site defined
     else:
       # initialize last dof address for each body
@@ -2281,12 +2234,11 @@ def _transmission(
 
       actuator_length_out[worldid, actid] = length
 
-      if is_sparse:
-        nnz = int(0)
-        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-        moment_rowadr_out[worldid, actid] = rowadr
+      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      moment_rowadr_out[worldid, actid] = rowadr
 
       # TODO(team): parallelize or dof traversal?
+      nnz = int(0)
       for i in range(nv):
         jacp, jacr = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos, site_bodyid[siteid], i, worldid
@@ -2317,14 +2269,12 @@ def _transmission(
         if rotational_transmission:
           moment += wp.dot(jacrdif, wrench_rotation)
 
-        if is_sparse:
-          sparseid = rowadr + i
-          moment_colind_out[worldid, 0, sparseid] = i
-          actuator_moment_out[worldid, 0, sparseid] = moment
-        else:
-          actuator_moment_out[worldid, actid, i] = moment
-      if is_sparse:
-        moment_rownnz_out[worldid, actid] = nnz
+        if moment != 0.0:
+          sparseid = rowadr + nnz
+          moment_colind_out[worldid, sparseid] = i
+          actuator_moment_out[worldid, sparseid] = moment
+          nnz += 1
+      moment_rownnz_out[worldid, actid] = nnz
   else:
     wp.printf("unhandled transmission type %d\n", trntype)
 
@@ -2338,11 +2288,11 @@ def _transmission_body_moment(
   dof_bodyid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
-  is_sparse: bool,
   actuator_trntype_body_adr: wp.array(dtype=int),
   # Data in:
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  moment_rowadr_in: wp.array2d(dtype=int),
   contact_dist_in: wp.array(dtype=float),
   contact_pos_in: wp.array(dtype=wp.vec3),
   contact_frame_in: wp.array(dtype=wp.mat33),
@@ -2356,8 +2306,10 @@ def _transmission_body_moment(
   efc_J_colind_in: wp.array3d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   nacon_in: wp.array(dtype=int),
+  # In:
+  efc_is_sparse: bool,
   # Data out:
-  actuator_moment_out: wp.array3d(dtype=float),
+  actuator_moment_out: wp.array2d(dtype=float),
   # Out:
   actuator_trntype_body_ncon_out: wp.array2d(dtype=int),
 ):
@@ -2392,6 +2344,8 @@ def _transmission_body_moment(
   if dofid == 0:
     wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
 
+  rowadr = moment_rowadr_in[worldid, actid]
+
   # mark contact normals in efc_force
   if contact_exclude == 0:
     contact_dim = contact_dim_in[conid]
@@ -2399,36 +2353,36 @@ def _transmission_body_moment(
 
     if contact_dim == 1 or opt_cone == ConeType.ELLIPTIC:
       efcid0 = contact_efc_address[0]
-      if is_sparse:
+      if efc_is_sparse:
         rownnz = efc_J_rownnz_in[worldid, efcid0]
         if dofid < rownnz:
-          rowadr = efc_J_rowadr_in[worldid, efcid0]
-          sparseid = rowadr + dofid
-          colind = efc_J_colind_in[worldid, 0, sparseid]
-          # TODO(team): sparse actuator_moment
-          wp.atomic_add(actuator_moment_out[worldid, actid], colind, efc_J_in[worldid, 0, sparseid])
+          efc_rowadr = efc_J_rowadr_in[worldid, efcid0]
+          efc_sparseid = efc_rowadr + dofid
+          colind = efc_J_colind_in[worldid, 0, efc_sparseid]
+          wp.atomic_add(actuator_moment_out[worldid], rowadr + colind, efc_J_in[worldid, 0, efc_sparseid])
         else:
           return
       else:
-        wp.atomic_add(actuator_moment_out[worldid, actid], dofid, efc_J_in[worldid, efcid0, dofid])
+        colind = dofid
+        wp.atomic_add(actuator_moment_out[worldid], rowadr + colind, efc_J_in[worldid, efcid0, dofid])
     else:
       npyramid = contact_dim - 1  # number of frictional directions
       efc_force = 0.5 / float(npyramid)
 
       for j in range(2 * npyramid):
         efcid = contact_efc_address[j]
-        if is_sparse:
+        if efc_is_sparse:
           rownnz = efc_J_rownnz_in[worldid, efcid]
           if dofid < rownnz:
-            rowadr = efc_J_rowadr_in[worldid, efcid]
-            sparseid = rowadr + dofid
-            colind = efc_J_colind_in[worldid, 0, sparseid]
-            # TODO(team): sparse actuator_moment
-            wp.atomic_add(actuator_moment_out[worldid, actid], colind, efc_J_in[worldid, 0, sparseid] * efc_force)
+            efc_rowadr = efc_J_rowadr_in[worldid, efcid]
+            efc_sparseid = efc_rowadr + dofid
+            colind = efc_J_colind_in[worldid, 0, efc_sparseid]
+            wp.atomic_add(actuator_moment_out[worldid], rowadr + colind, efc_J_in[worldid, 0, efc_sparseid] * efc_force)
           else:
             return
         else:
-          wp.atomic_add(actuator_moment_out[worldid, actid], dofid, efc_J_in[worldid, efcid, dofid] * efc_force)
+          colind = dofid
+          wp.atomic_add(actuator_moment_out[worldid], rowadr + colind, efc_J_in[worldid, efcid, dofid] * efc_force)
 
   # excluded contact in gap: get Jacobian, accumulate
   elif contact_exclude == 1:
@@ -2436,53 +2390,41 @@ def _transmission_body_moment(
     contact_frame = contact_frame_in[conid]
     normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
 
-    if is_sparse:
-      # get Jacobian difference
-      efcid0 = contact_efc_address_in[conid][0]
-      if efcid0 >= 0:
-        # contact has valid efc row: use sparse pattern
-        if dofid >= efc_J_rownnz_in[worldid, efcid0]:
-          return
-        sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
-        colind = efc_J_colind_in[worldid, 0, sparseid]
-      else:
-        # excluded contact with no efc row: use dofid directly
-        colind = dofid
-
-      jacp1, _ = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, colind, worldid
-      )
-      jacp2, _ = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b2, colind, worldid
-      )
-
-      jacdif = jacp2 - jacp1
-
-      # project Jacobian along the normal of the contact frame
-      wp.atomic_add(actuator_moment_out[worldid, actid], colind, wp.dot(normal, jacdif))
+    # get Jacobian difference
+    efcid0 = contact_efc_address_in[conid][0]
+    if efc_is_sparse and efcid0 >= 0:
+      # contact has valid efc row: use sparse pattern
+      if dofid >= efc_J_rownnz_in[worldid, efcid0]:
+        return
+      sparseid = efc_J_rowadr_in[worldid, efcid0] + dofid
+      colind = efc_J_colind_in[worldid, 0, sparseid]
     else:
-      # get Jacobian difference
-      jacp1, _ = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, dofid, worldid
-      )
-      jacp2, _ = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b2, dofid, worldid
-      )
+      # excluded contact with no efc row or dense: use dofid directly
+      colind = dofid
 
-      jacdif = jacp2 - jacp1
+    jacp1, _ = support.jac_dof(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b1, colind, worldid
+    )
+    jacp2, _ = support.jac_dof(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, contact_pos, b2, colind, worldid
+    )
 
-      # project Jacobian along the normal of the contact frame
-      wp.atomic_add(actuator_moment_out[worldid, actid], dofid, wp.dot(normal, jacdif))
+    jacdif = jacp2 - jacp1
+
+    # project Jacobian along the normal of the contact frame
+    wp.atomic_add(actuator_moment_out[worldid], rowadr + colind, wp.dot(normal, jacdif))
 
 
 @wp.kernel
 def _transmission_body_moment_scale(
   # Model:
   actuator_trntype_body_adr: wp.array(dtype=int),
+  # Data in:
+  moment_rowadr_in: wp.array2d(dtype=int),
   # In:
   actuator_trntype_body_ncon_in: wp.array2d(dtype=int),
   # Data out:
-  actuator_moment_out: wp.array3d(dtype=float),
+  actuator_moment_out: wp.array2d(dtype=float),
 ):
   worldid, trnbodyid, dofid = wp.tid()
 
@@ -2490,7 +2432,23 @@ def _transmission_body_moment_scale(
 
   if ncon > 0:
     actid = actuator_trntype_body_adr[trnbodyid]
-    actuator_moment_out[worldid, actid, dofid] /= -float(ncon)
+    rowadr = moment_rowadr_in[worldid, actid]
+    actuator_moment_out[worldid, rowadr + dofid] /= -float(ncon)
+
+
+@wp.kernel
+def _transmission_zero(
+  # Data out:
+  moment_colind_out: wp.array2d(dtype=int),
+  actuator_moment_out: wp.array2d(dtype=float),
+  # Out:
+  moment_nnz_out: wp.array(dtype=int),
+):
+  worldid, elementid = wp.tid()
+  if elementid == 0:
+    moment_nnz_out[worldid] = 0
+  moment_colind_out[worldid, elementid] = 0
+  actuator_moment_out[worldid, elementid] = 0.0
 
 
 @event_scope
@@ -2500,12 +2458,13 @@ def transmission(m: Model, d: Data):
   Updates the actuator length and moments for all actuators in the model, including joint
   and tendon transmissions.
   """
-  if m.is_sparse:
-    d.moment_colind.zero_()
-    d.actuator_moment.zero_()
-    moment_nnz = wp.zeros((d.nworld,), dtype=int)
-  else:
-    moment_nnz = wp.zeros((0,), dtype=int)
+  moment_nnz = wp.zeros((d.nworld,), dtype=int)
+
+  wp.launch(
+    _transmission_zero,
+    dim=(d.nworld, m.nJmom),
+    outputs=[d.moment_colind, d.actuator_moment, moment_nnz],
+  )
 
   wp.launch(
     _transmission,
@@ -2532,7 +2491,6 @@ def transmission(m: Model, d: Data):
       m.actuator_trnid,
       m.actuator_gear,
       m.actuator_cranklength,
-      m.is_sparse,
       d.qpos,
       d.xquat,
       d.site_xpos,
@@ -2547,10 +2505,6 @@ def transmission(m: Model, d: Data):
   )
 
   if m.nacttrnbody:
-    # TODO(team): sparse body transmission
-    if m.is_sparse:
-      raise ValueError("sparse actuator_moment with body transmission not implemented")
-
     # compute moments
     ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
 
@@ -2564,10 +2518,10 @@ def transmission(m: Model, d: Data):
         m.dof_bodyid,
         m.geom_bodyid,
         m.actuator_trnid,
-        SPARSE_CONSTRAINT_JACOBIAN,
         m.actuator_trntype_body_adr,
         d.subtree_com,
         d.cdof,
+        d.moment_rowadr,
         d.contact.dist,
         d.contact.pos,
         d.contact.frame,
@@ -2581,6 +2535,7 @@ def transmission(m: Model, d: Data):
         d.efc.J_colind,
         d.efc.J,
         d.nacon,
+        m.is_sparse,
       ],
       outputs=[d.actuator_moment, ncon],
     )
@@ -2589,7 +2544,7 @@ def transmission(m: Model, d: Data):
     wp.launch(
       _transmission_body_moment_scale,
       dim=(d.nworld, m.nacttrnbody, m.nv),
-      inputs=[m.actuator_trntype_body_adr, ncon],
+      inputs=[m.actuator_trntype_body_adr, d.moment_rowadr, ncon],
       outputs=[d.actuator_moment],
     )
 

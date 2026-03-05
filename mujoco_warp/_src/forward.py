@@ -546,13 +546,13 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 
 
 @wp.kernel
-def _actuator_velocity_sparse(
+def _actuator_velocity(
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   moment_rownnz_in: wp.array2d(dtype=int),
   moment_rowadr_in: wp.array2d(dtype=int),
-  moment_colind_in: wp.array3d(dtype=int),
-  actuator_moment_in: wp.array3d(dtype=float),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
   # Data out:
   actuator_velocity_out: wp.array2d(dtype=float),
 ):
@@ -564,30 +564,10 @@ def _actuator_velocity_sparse(
   vel = float(0.0)
   for i in range(rownnz):
     sparseid = rowadr + i
-    colind = moment_colind_in[worldid, 0, sparseid]
-    vel += actuator_moment_in[worldid, 0, sparseid] * qvel_in[worldid, colind]
+    colind = moment_colind_in[worldid, sparseid]
+    vel += actuator_moment_in[worldid, sparseid] * qvel_in[worldid, colind]
 
   actuator_velocity_out[worldid, actid] = vel
-
-
-@cache_kernel
-def _actuator_velocity_dense(nv: int):
-  @wp.kernel(module="unique", enable_backward=False)
-  def actuator_velocity_dense(
-    # Data in:
-    qvel_in: wp.array2d(dtype=float),
-    actuator_moment_in: wp.array3d(dtype=float),
-    # Data out:
-    actuator_velocity_out: wp.array2d(dtype=float),
-  ):
-    worldid, actid = wp.tid()
-    moment_tile = wp.tile_load(actuator_moment_in[worldid, actid], shape=wp.static(nv))
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
-    moment_qvel_tile = wp.tile_map(wp.mul, moment_tile, qvel_tile)
-    actuator_velocity_tile = wp.tile_reduce(wp.add, moment_qvel_tile)
-    actuator_velocity_out[worldid, actid] = actuator_velocity_tile[0]
-
-  return actuator_velocity_dense
 
 
 @cache_kernel
@@ -613,22 +593,13 @@ def _tendon_velocity(nv: int):
 @event_scope
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
-  if m.is_sparse:
-    wp.launch_tiled(
-      _actuator_velocity_sparse,
-      dim=(d.nworld, m.nu),
-      inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
-      outputs=[d.actuator_velocity],
-      block_dim=m.block_dim.actuator_velocity,
-    )
-  else:
-    wp.launch_tiled(
-      _actuator_velocity_dense(m.nv),
-      dim=(d.nworld, m.nu),
-      inputs=[d.qvel, d.actuator_moment],
-      outputs=[d.actuator_velocity],
-      block_dim=m.block_dim.actuator_velocity,
-    )
+  wp.launch_tiled(
+    _actuator_velocity,
+    dim=(d.nworld, m.nu),
+    inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
+    outputs=[d.actuator_velocity],
+    block_dim=m.block_dim.actuator_velocity,
+  )
 
   # TODO(team): sparse version
   wp.launch_tiled(
@@ -812,12 +783,12 @@ def _tendon_actuator_force_clamp(
 
 
 @wp.kernel
-def _qfrc_actuator_sparse(
+def _qfrc_actuator(
   # Data in:
   moment_rownnz_in: wp.array2d(dtype=int),
   moment_rowadr_in: wp.array2d(dtype=int),
-  moment_colind_in: wp.array3d(dtype=int),
-  actuator_moment_in: wp.array3d(dtype=float),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
   actuator_force_in: wp.array2d(dtype=float),
   # Data out:
   qfrc_actuator_out: wp.array2d(dtype=float),
@@ -829,13 +800,13 @@ def _qfrc_actuator_sparse(
 
   for i in range(rownnz):
     sparseid = rowadr + i
-    colind = moment_colind_in[worldid, 0, sparseid]
-    qfrc = actuator_moment_in[worldid, 0, sparseid] * actuator_force_in[worldid, actid]
+    colind = moment_colind_in[worldid, sparseid]
+    qfrc = actuator_moment_in[worldid, sparseid] * actuator_force_in[worldid, actid]
     wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
 
 
 @wp.kernel
-def _qfrc_actuator_gravcomp_limits_sparse(
+def _qfrc_actuator_gravcomp_limits(
   # Model:
   ngravcomp: int,
   jnt_actfrclimited: wp.array(dtype=bool),
@@ -858,41 +829,6 @@ def _qfrc_actuator_gravcomp_limits_sparse(
     qfrc += qfrc_gravcomp_in[worldid, dofid]
 
   # limits
-  if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
-    qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
-
-  qfrc_actuator_out[worldid, dofid] = qfrc
-
-
-@wp.kernel
-def _qfrc_actuator_dense(
-  # Model:
-  nu: int,
-  ngravcomp: int,
-  jnt_actfrclimited: wp.array(dtype=bool),
-  jnt_actgravcomp: wp.array(dtype=int),
-  jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
-  dof_jntid: wp.array(dtype=int),
-  # Data in:
-  actuator_moment_in: wp.array3d(dtype=float),
-  qfrc_gravcomp_in: wp.array2d(dtype=float),
-  actuator_force_in: wp.array2d(dtype=float),
-  # Data out:
-  qfrc_actuator_out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-
-  qfrc = float(0.0)
-  for uid in range(nu):
-    qfrc += actuator_moment_in[worldid, uid, dofid] * actuator_force_in[worldid, uid]
-
-  jntid = dof_jntid[dofid]
-
-  # actuator-level gravity compensation, skip if added as passive force
-  if ngravcomp and jnt_actgravcomp[jntid]:
-    qfrc += qfrc_gravcomp_in[worldid, dofid]
-
   if jnt_actfrclimited[jntid]:
     frcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
     qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
@@ -964,52 +900,34 @@ def fwd_actuation(m: Model, d: Data):
       outputs=[d.actuator_force],
     )
 
-  if m.is_sparse:
-    # TODO(team): optimize performance
-    d.qfrc_actuator.zero_()
-    wp.launch(
-      _qfrc_actuator_sparse,
-      dim=(d.nworld, m.nu),
-      inputs=[
-        d.moment_rownnz,
-        d.moment_rowadr,
-        d.moment_colind,
-        d.actuator_moment,
-        d.actuator_force,
-      ],
-      outputs=[d.qfrc_actuator],
-    )
-    wp.launch(
-      _qfrc_actuator_gravcomp_limits_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.ngravcomp,
-        m.jnt_actfrclimited,
-        m.jnt_actgravcomp,
-        m.jnt_actfrcrange,
-        m.dof_jntid,
-        d.qfrc_gravcomp,
-        d.qfrc_actuator,
-      ],
-      outputs=[d.qfrc_actuator],
-    )
-  else:
-    wp.launch(
-      _qfrc_actuator_dense,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.nu,
-        m.ngravcomp,
-        m.jnt_actfrclimited,
-        m.jnt_actgravcomp,
-        m.jnt_actfrcrange,
-        m.dof_jntid,
-        d.actuator_moment,
-        d.qfrc_gravcomp,
-        d.actuator_force,
-      ],
-      outputs=[d.qfrc_actuator],
-    )
+  # TODO(team): optimize performance
+  d.qfrc_actuator.zero_()
+  wp.launch(
+    _qfrc_actuator,
+    dim=(d.nworld, m.nu),
+    inputs=[
+      d.moment_rownnz,
+      d.moment_rowadr,
+      d.moment_colind,
+      d.actuator_moment,
+      d.actuator_force,
+    ],
+    outputs=[d.qfrc_actuator],
+  )
+  wp.launch(
+    _qfrc_actuator_gravcomp_limits,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.ngravcomp,
+      m.jnt_actfrclimited,
+      m.jnt_actgravcomp,
+      m.jnt_actfrcrange,
+      m.dof_jntid,
+      d.qfrc_gravcomp,
+      d.qfrc_actuator,
+    ],
+    outputs=[d.qfrc_actuator],
+  )
 
 
 @wp.kernel
