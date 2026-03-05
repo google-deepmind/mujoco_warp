@@ -259,7 +259,7 @@ def _flex_edges(
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # Data out:
-  flexedge_J_out: wp.array3d(dtype=float),
+  flexedge_J_out: wp.array2d(dtype=float),
   flexedge_length_out: wp.array2d(dtype=float),
   flexedge_velocity_out: wp.array2d(dtype=float),
 ):
@@ -338,12 +338,12 @@ def _flex_edges(
   jacdif = jacp2 - jacp1
   Jj2 = wp.dot(jacdif, edge)
 
-  flexedge_J_out[worldid, 0, sparseid0] = Ji0
-  flexedge_J_out[worldid, 0, sparseid1] = Ji1
-  flexedge_J_out[worldid, 0, sparseid2] = Ji2
-  flexedge_J_out[worldid, 0, sparseid3] = Jj0
-  flexedge_J_out[worldid, 0, sparseid4] = Jj1
-  flexedge_J_out[worldid, 0, sparseid5] = Jj2
+  flexedge_J_out[worldid, sparseid0] = Ji0
+  flexedge_J_out[worldid, sparseid1] = Ji1
+  flexedge_J_out[worldid, sparseid2] = Ji2
+  flexedge_J_out[worldid, sparseid3] = Jj0
+  flexedge_J_out[worldid, sparseid4] = Jj1
+  flexedge_J_out[worldid, sparseid5] = Jj2
 
 
 @event_scope

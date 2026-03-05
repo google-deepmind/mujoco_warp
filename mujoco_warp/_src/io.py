@@ -757,8 +757,6 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
-    # flexedge
-    "flexedge_J": None,
     # island arrays
     "nisland": None,
     "tree_island": None,
@@ -776,8 +774,6 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  d.flexedge_J = wp.zeros((nworld, 1, mjd.flexedge_J.size), dtype=float)
 
   # island discovery arrays
   d.nisland = wp.zeros((nworld,), dtype=int)
@@ -963,7 +959,6 @@ def put_data(
     "qLD": None,
     "ten_J": None,
     "actuator_moment": None,
-    "flexedge_J": None,
     "nacon": None,
     # island arrays
     "nisland": None,
@@ -992,8 +987,6 @@ def put_data(
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
-
-  d.flexedge_J = wp.array(np.tile(mjd.flexedge_J.reshape(-1), (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
 
   # island arrays
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
