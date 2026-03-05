@@ -566,24 +566,31 @@ def _actuator_velocity(nv: int):
   return actuator_velocity
 
 
-@cache_kernel
-def _tendon_velocity(nv: int):
-  @wp.kernel(module="unique", enable_backward=False)
-  def tendon_velocity(
-    # Data in:
-    qvel_in: wp.array2d(dtype=float),
-    ten_J_in: wp.array3d(dtype=float),
-    # Data out:
-    ten_velocity_out: wp.array2d(dtype=float),
-  ):
-    worldid, tenid = wp.tid()
-    ten_J_tile = wp.tile_load(ten_J_in[worldid, tenid], shape=wp.static(nv))
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=wp.static(nv))
-    ten_J_qvel_tile = wp.tile_map(wp.mul, ten_J_tile, qvel_tile)
-    ten_velocity_tile = wp.tile_reduce(wp.add, ten_J_qvel_tile)
-    ten_velocity_out[worldid, tenid] = ten_velocity_tile[0]
+@wp.kernel
+def _tendon_velocity(
+  # Model:
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  # Data in:
+  qvel_in: wp.array2d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
+  # Data out:
+  ten_velocity_out: wp.array2d(dtype=float),
+):
+  worldid, tenid = wp.tid()
 
-  return tendon_velocity
+  velocity = float(0.0)
+  rownnz = ten_J_rownnz[tenid]
+  rowadr = ten_J_rowadr[tenid]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    J = ten_J_in[worldid, sparseid]
+    if J != 0.0:
+      colind = ten_J_colind[sparseid]
+      velocity += J * qvel_in[worldid, colind]
+
+  ten_velocity_out[worldid, tenid] = velocity
 
 
 @event_scope
@@ -597,13 +604,11 @@ def fwd_velocity(m: Model, d: Data):
     block_dim=m.block_dim.actuator_velocity,
   )
 
-  # TODO(team): sparse version
-  wp.launch_tiled(
-    _tendon_velocity(m.nv),
+  wp.launch(
+    _tendon_velocity,
     dim=(d.nworld, m.ntendon),
-    inputs=[d.qvel, d.ten_J],
+    inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.qvel, d.ten_J],
     outputs=[d.ten_velocity],
-    block_dim=m.block_dim.tendon_velocity,
   )
 
   smooth.com_vel(m, d)

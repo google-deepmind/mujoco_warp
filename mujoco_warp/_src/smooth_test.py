@@ -379,20 +379,23 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.subtree_linvel.numpy()[0], mjd.subtree_linvel, "subtree_linvel")
     _assert_eq(d.subtree_angmom.numpy()[0], mjd.subtree_angmom, "subtree_angmom")
 
-  @parameterized.parameters(
-    "tendon/fixed.xml",
-    "tendon/site.xml",
-    "tendon/pulley_site.xml",
-    "tendon/fixed_site.xml",
-    "tendon/pulley_fixed_site.xml",
-    "tendon/site_fixed.xml",
-    "tendon/pulley_site_fixed.xml",
-    "tendon/wrap.xml",
-    "tendon/pulley_wrap.xml",
+  @parameterized.product(
+    xml=[
+      "tendon/fixed.xml",
+      "tendon/site.xml",
+      "tendon/pulley_site.xml",
+      "tendon/fixed_site.xml",
+      "tendon/pulley_fixed_site.xml",
+      "tendon/site_fixed.xml",
+      "tendon/pulley_site_fixed.xml",
+      "tendon/wrap.xml",
+      "tendon/pulley_wrap.xml",
+    ],
+    jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
   )
-  def test_tendon(self, xml):
+  def test_tendon(self, xml, jacobian):
     """Tests tendon."""
-    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0)
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, overrides={"opt.jacobian": jacobian})
 
     for arr in (d.ten_length, d.ten_J, d.actuator_length, d.actuator_moment):
       arr.zero_()
@@ -401,12 +404,26 @@ class SmoothTest(parameterized.TestCase):
     mjw.transmission(m, d)
 
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
-    if check_version("mujoco>=3.5.1.dev872479828"):
-      ten_J = np.zeros((mjm.ntendon, mjm.nv))
-      mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
+
+    if check_version("mujoco>=3.5.1.dev875093374"):
+      _assert_eq(d.ten_J.numpy()[0], mjd.ten_J, "ten_J")
     else:
-      ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    _assert_eq(d.ten_J.numpy()[0], ten_J, "ten_J")
+      ten_J_mj = np.zeros((mjm.ntendon, mjm.nv))
+      if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
+        mujoco.mju_sparse2dense(
+          ten_J_mj, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1)
+        )
+      else:
+        ten_J_mj[:] = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+      ten_J_wp = np.zeros((mjm.ntendon, mjm.nv))
+      mujoco.mju_sparse2dense(
+        ten_J_wp,
+        d.ten_J.numpy()[0].reshape(-1),
+        m.ten_J_rownnz.numpy(),
+        m.ten_J_rowadr.numpy(),
+        m.ten_J_colind.numpy().reshape(-1),
+      )
+      _assert_eq(ten_J_wp, ten_J_mj, "ten_J")
     _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
     _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
     _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")

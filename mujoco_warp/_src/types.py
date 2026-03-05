@@ -53,7 +53,6 @@ class BlockDim:
   # forward
   euler_dense: int = 32
   actuator_velocity: int = 32
-  tendon_velocity: int = 32
   # ray
   ray: int = 64
   # sensor
@@ -857,6 +856,7 @@ class Model:
     nexclude: number of excluded geom pairs
     neq: number of equality constraints
     ntendon: number of tendons
+    nJten: number of non-zeros in sparse tendon Jacobian
     nwrap: number of wrap objects in all tendon paths
     nsensor: number of sensors
     nmocap: number of mocap bodies
@@ -1041,6 +1041,9 @@ class Model:
     eq_data: numeric data for constraint                     (*, neq, mjNEQDATA)
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
+    ten_J_rownnz: number of non-zeros in each tendon row     (ntendon,)
+    ten_J_rowadr: row start address for sparse ten_J         (ntendon,)
+    ten_J_colind: column indices in sparse ten_J             (nJten,)
     tendon_limited: does tendon have length limits           (ntendon,)
     tendon_actfrclimited: does ten have actuator force limit (ntendon,)
     tendon_solref_lim: constraint solver reference: limit    (*, ntendon, mjNREF)
@@ -1223,6 +1226,7 @@ class Model:
   nexclude: int
   neq: int
   ntendon: int
+  nJten: int
   nwrap: int
   nsensor: int
   nmocap: int
@@ -1407,6 +1411,9 @@ class Model:
   eq_data: array("*", "neq", vec11)
   tendon_adr: array("ntendon", int)
   tendon_num: array("ntendon", int)
+  ten_J_rownnz: array("ntendon", int)
+  ten_J_rowadr: array("ntendon", int)
+  ten_J_colind: array("nJten", int)
   tendon_limited: array("ntendon", int)
   tendon_actfrclimited: array("ntendon", bool)
   tendon_solref_lim: array("*", "ntendon", wp.vec2)
@@ -1686,7 +1693,7 @@ class Data:
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
-    ten_J: tendon Jacobian                                      (nworld, ntendon, nv)
+    ten_J: tendon Jacobian                                      (nworld, nJten)
     ten_length: tendon lengths                                  (nworld, ntendon)
     wrap_obj: geomid; -1: site; -2: pulley                      (nworld, nwrap, 2)
     wrap_xpos: Cartesian 3D points in all paths                 (nworld, nwrap, 6)
@@ -1780,7 +1787,7 @@ class Data:
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
-  ten_J: array("nworld", "ntendon", "nv", float)
+  ten_J: array("nworld", "nJten", float)
   ten_length: array("nworld", "ntendon", float)
   wrap_obj: array("nworld", "nwrap", wp.vec2i)
   wrap_xpos: array("nworld", "nwrap", wp.spatial_vector)

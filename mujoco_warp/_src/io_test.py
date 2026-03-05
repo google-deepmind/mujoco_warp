@@ -1611,6 +1611,9 @@ class IOTest(parameterized.TestCase):
       self.assertEqual(d.efc.J.shape[2], m.nv_pad)
 
 
+# TODO(team): test set_const_0 sparse
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()
