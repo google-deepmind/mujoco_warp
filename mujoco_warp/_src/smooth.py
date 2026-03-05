@@ -2900,7 +2900,6 @@ def _joint_tendon(
 @wp.kernel
 def _spatial_site_tendon(
   # Model:
-  nv: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
@@ -2944,25 +2943,21 @@ def _spatial_site_tendon(
   body0 = site_bodyid[id0]
   body1 = site_bodyid[id1]
   if body0 != body1:
+    rownnz = ten_J_rownnz[tenid]
     rowadr = ten_J_rowadr[tenid]
-    # TODO(team): parallelize
-    for dofid in range(nv):
+    for ptr in range(rownnz):
+      sparseid = rowadr + ptr
+      dofid = ten_J_colind[sparseid]
       jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt0, body0, dofid, worldid)
       jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt1, body1, dofid, worldid)
-
       J = wp.dot(jacp2 - jacp1, vec)
       if J != 0.0:
-        rownnz = ten_J_rownnz[tenid]
-        for k in range(rownnz):
-          if ten_J_colind[rowadr + k] == dofid:
-            wp.atomic_add(ten_J_out[worldid], rowadr + k, J * pulley_scale)
-            break
+        wp.atomic_add(ten_J_out[worldid], sparseid, J * pulley_scale)
 
 
 @wp.kernel
 def _spatial_geom_tendon(
   # Model:
-  nv: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
   dof_bodyid: wp.array(dtype=int),
@@ -3030,6 +3025,9 @@ def _spatial_geom_tendon(
   # store geom points
   wrap_geom_xpos_out[worldid, elementid] = wp.spatial_vector(geom_pnt0, geom_pnt1)
 
+  rownnz = ten_J_rownnz[tenid]
+  rowadr = ten_J_rowadr[tenid]
+
   if length_geomgeom >= 0.0:
     dif_sitegeom = geom_pnt0 - site_pnt0
     dif_geomsite = site_pnt1 - geom_pnt1
@@ -3052,7 +3050,10 @@ def _spatial_geom_tendon(
     dif_body_sitegeom = bodyid_site0 != bodyid_geom
     dif_body_geomsite = bodyid_geom != bodyid_site1
 
-    for dofid in range(nv):
+    for ptr in range(rownnz):
+      sparseid = rowadr + ptr
+      dofid = ten_J_colind[sparseid]
+
       J = float(0.0)
       # site-geom
       if dif_body_sitegeom:
@@ -3079,12 +3080,7 @@ def _spatial_geom_tendon(
         J += wp.dot(jacp_site1 - jacp_geom1, vec_geomsite)
 
       if J != 0.0:
-        rowadr = ten_J_rowadr[tenid]
-        rownnz = ten_J_rownnz[tenid]
-        for k in range(rownnz):
-          if ten_J_colind[rowadr + k] == dofid:
-            wp.atomic_add(ten_J_out[worldid], rowadr + k, J * pulley_scale)
-            break
+        wp.atomic_add(ten_J_out[worldid], sparseid, J * pulley_scale)
   else:
     dif_sitesite = site_pnt1 - site_pnt0
     vec_sitesite, length_sitesite = math.normalize_with_norm(dif_sitesite)
@@ -3098,8 +3094,10 @@ def _spatial_geom_tendon(
       vec_sitesite = wp.vec3(1.0, 0.0, 0.0)
 
     if bodyid_site0 != bodyid_site1:
-      # TODO(team): parallelize
-      for dofid in range(nv):
+      for ptr in range(rownnz):
+        sparseid = rowadr + ptr
+        dofid = ten_J_colind[sparseid]
+
         jacp1, _ = support.jac_dof(
           body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt0, bodyid_site0, dofid, worldid
         )
@@ -3110,12 +3108,7 @@ def _spatial_geom_tendon(
         J = wp.dot(jacp2 - jacp1, vec_sitesite)
 
         if J != 0.0:
-          rowadr = ten_J_rowadr[tenid]
-          rownnz = ten_J_rownnz[tenid]
-          for k in range(rownnz):
-            if ten_J_colind[rowadr + k] == dofid:
-              wp.atomic_add(ten_J_out[worldid], rowadr + k, J * pulley_scale)
-              break
+          wp.atomic_add(ten_J_out[worldid], sparseid, J * pulley_scale)
 
 
 @wp.kernel
@@ -3323,7 +3316,6 @@ def tendon(m: Model, d: Data):
     _spatial_site_tendon,
     dim=(d.nworld, m.wrap_site_pair_adr.size),
     inputs=[
-      m.nv,
       m.body_parentid,
       m.body_rootid,
       m.dof_bodyid,
@@ -3347,7 +3339,6 @@ def tendon(m: Model, d: Data):
     _spatial_geom_tendon,
     dim=(d.nworld, m.wrap_geom_adr.size),
     inputs=[
-      m.nv,
       m.body_parentid,
       m.body_rootid,
       m.dof_bodyid,
