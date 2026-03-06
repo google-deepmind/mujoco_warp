@@ -1724,6 +1724,9 @@ def _contact_pyramidal(
           da2 = dof_parentid[da2]
         da = wp.max(da1, da2)
         if is_sparse:
+          # early termination: remaining DOFs have zero Jacobian difference
+          if da1 == da2 and da1 >= 0:
+            break
           dofid = da
         else:
           dofid -= 1
@@ -1932,6 +1935,9 @@ def _contact_elliptic(
           da2 = dof_parentid[da2]
         da = wp.max(da1, da2)
         if is_sparse:
+          # early termination: remaining DOFs have zero Jacobian difference
+          if da1 == da2 and da1 >= 0:
+            break
           dofid = da
         else:
           dofid -= 1
