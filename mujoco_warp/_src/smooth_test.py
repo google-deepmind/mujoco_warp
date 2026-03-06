@@ -335,23 +335,37 @@ class SmoothTest(parameterized.TestCase):
     for arr in (d.actuator_length, d.actuator_moment):
       arr.fill_(wp.inf)
 
-    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(
-      actuator_moment,
+      mj_actuator_moment,
       mjd.actuator_moment,
       mjd.moment_rownnz,
       mjd.moment_rowadr,
       mjd.moment_colind,
     )
 
-    mjw._src.smooth.transmission(m, d)
-    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+    mjw.transmission(m, d)
 
-  @parameterized.product(keyframe=list(range(4)), cone=list(ConeType))
-  def test_actuator_adhesion(self, keyframe, cone):
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      actuator_moment,
+      d.actuator_moment.numpy()[0],
+      d.moment_rownnz.numpy()[0],
+      d.moment_rowadr.numpy()[0],
+      d.moment_colind.numpy()[0],
+    )
+
+    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
+    _assert_eq(actuator_moment, mj_actuator_moment, "actuator_moment")
+
+  @parameterized.product(
+    keyframe=list(range(4)), cone=list(ConeType), jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE]
+  )
+  def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
-    mjm, mjd, m, d = test_data.fixture("actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone})
+    mjm, mjd, m, d = test_data.fixture(
+      "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
+    )
 
     for arr in (d.actuator_length, d.actuator_moment):
       arr.fill_(wp.inf)
@@ -364,7 +378,15 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
 
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+    wp_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      wp_actuator_moment,
+      d.actuator_moment.numpy()[0],
+      d.moment_rownnz.numpy()[0],
+      d.moment_rowadr.numpy()[0],
+      d.moment_colind.numpy()[0],
+    )
+    _assert_eq(wp_actuator_moment, actuator_moment, "actuator_moment")
 
   def test_subtree_vel(self):
     """Tests subtree_vel."""
@@ -415,15 +437,24 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
     _assert_eq(d.ten_wrapadr.numpy()[0], mjd.ten_wrapadr, "ten_wrapadr")
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    actuator_moment = np.zeros((mjm.nu, mjm.nv))
-    mujoco.mju_sparse2dense(
-      actuator_moment,
-      mjd.actuator_moment,
-      mjd.moment_rownnz,
-      mjd.moment_rowadr,
-      mjd.moment_colind,
-    )
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+    if mjm.nu:
+      mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        mj_actuator_moment,
+        mjd.actuator_moment,
+        mjd.moment_rownnz,
+        mjd.moment_rowadr,
+        mjd.moment_colind,
+      )
+      wp_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        wp_actuator_moment,
+        d.actuator_moment.numpy()[0],
+        d.moment_rownnz.numpy()[0],
+        d.moment_rowadr.numpy()[0],
+        d.moment_colind.numpy()[0],
+      )
+      _assert_eq(wp_actuator_moment, mj_actuator_moment, "actuator_moment")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_solve_i(self, jacobian):
