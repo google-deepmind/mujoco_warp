@@ -68,7 +68,7 @@ def _geom_dist(
   def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
+    geom_dataid: wp.array2d(dtype=int),
     geom_size: wp.array2d(dtype=wp.vec3),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
@@ -130,8 +130,8 @@ def _geom_dist(
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
-    if geom_dataid[gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
-      dataid = geom_dataid[gid1]
+    if geom_dataid[0, gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
+      dataid = geom_dataid[0, gid1]
       geom1.vertadr = mesh_vertadr[dataid]
       geom1.vertnum = mesh_vertnum[dataid]
       geom1.mesh_polynum = mesh_polynum[dataid]
@@ -161,8 +161,8 @@ def _geom_dist(
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 
-    if geom_dataid[gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
-      dataid = geom_dataid[gid2]
+    if geom_dataid[0, gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
+      dataid = geom_dataid[0, gid2]
       geom2.vertadr = mesh_vertadr[dataid]
       geom2.vertnum = mesh_vertnum[dataid]
       geom2.mesh_polynum = mesh_polynum[dataid]
