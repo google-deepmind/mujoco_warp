@@ -2099,35 +2099,30 @@ def _transmission(
     adr = tendon_adr[tenid]
     if wrap_type[adr] == WrapType.JOINT:
       ten_num = tendon_num[tenid]
-      nnz = int(0)
       rowadr = wp.atomic_add(moment_nnz, worldid, ten_num)
+      moment_rownnz_out[worldid, actid] = ten_num
       moment_rowadr_out[worldid, actid] = rowadr
 
       for i in range(ten_num):
         dofadr = jnt_dofadr[wrap_objid[adr + i]]
-
         sparseid = rowadr + i
         moment_colind_out[worldid, sparseid] = dofadr
         actuator_moment_out[worldid, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
-        nnz += 1
-      moment_rownnz_out[worldid, actid] = nnz
     else:  # spatial
-      nnz = int(0)
       rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      moment_rownnz_out[worldid, actid] = nv
       moment_rowadr_out[worldid, actid] = rowadr
       for dofadr in range(nv):
         sparseid = rowadr + dofadr
         moment_colind_out[worldid, sparseid] = dofadr
         actuator_moment_out[worldid, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
-        nnz += 1
-      moment_rownnz_out[worldid, actid] = nnz
   elif trntype == TrnType.BODY:
     # cannot compute meaningful length, set to zero
     actuator_length_out[worldid, actid] = 0.0
 
     # initialize moment
-    moment_rownnz_out[worldid, actid] = nv
     rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+    moment_rownnz_out[worldid, actid] = nv
     moment_rowadr_out[worldid, actid] = rowadr
     for i in range(nv):
       sparseid = rowadr + i
@@ -2459,7 +2454,6 @@ def transmission(m: Model, d: Data):
   Updates the actuator length and moments for all actuators in the model, including joint
   and tendon transmissions.
   """
-
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
   moment_nnz = wp.zeros((d.nworld,), dtype=int)
 
