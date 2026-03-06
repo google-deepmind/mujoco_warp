@@ -211,6 +211,7 @@ def _equality_connect(
   Jqvel = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
+    # TODO(team): pre-compute number of non-zeros
     body1 = body_weldid[body1]
     body2 = body_weldid[body2]
 
@@ -827,6 +828,7 @@ def _equality_weld(
   Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
+    # TODO(team): pre-compute number of non-zeros
     body1 = body_weldid[body1]
     body2 = body_weldid[body2]
 
