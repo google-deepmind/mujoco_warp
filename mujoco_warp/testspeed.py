@@ -67,6 +67,7 @@ _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyf
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 _FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format for results")
 _INFO = flags.DEFINE_bool("info", False, "print Model and Data info")
+_KERNEL_CACHE_DIR = flags.DEFINE_string("kernel_cache_dir", None, "path to Warp kernel cache directory")
 
 # Render
 _WIDTH = flags.DEFINE_integer("width", 64, "render width (pixels)")
@@ -285,6 +286,8 @@ def _main(argv: Sequence[str]):
       ctrls = [mjd.ctrl.copy() for _ in range(_NSTEP.value)]
 
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+  if _KERNEL_CACHE_DIR.value:
+    wp.config.kernel_cache_dir = epath.Path(_KERNEL_CACHE_DIR.value).expanduser()
   wp.init()
   free_mem_at_init = wp.get_device(_DEVICE.value).free_memory
   if _CLEAR_WARP_CACHE.value:
