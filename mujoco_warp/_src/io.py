@@ -270,6 +270,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   if check_version("mujoco<3.5.1.dev875093374"):
     m.nJten, m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind = _make_tendon_sparse(mjm)
+    m.max_ten_J_rownnz = int(m.ten_J_rownnz.max()) if mjm.ntendon else 0
+  else:
+    m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1

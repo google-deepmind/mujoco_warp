@@ -917,7 +917,8 @@ def _tendon_armature(
   if dofid >= rownnz:
     return
   rowadr = ten_J_rowadr[tenid]
-  sparseid = rowadr + dofid
+  dofid_sparse = dofid
+  sparseid = rowadr + dofid_sparse
   dofid = ten_J_colind[sparseid]
   ten_Ji = ten_J_in[worldid, sparseid]
 
@@ -929,16 +930,21 @@ def _tendon_armature(
 
   # sparse backward pass over ancestors
   dofidi = dofid
+  ptr = dofid_sparse
   while dofid >= 0:
     if dofid == dofidi:
       ten_Jj = ten_Ji
     else:
-      ten_Jj = float(0.0)
-      for k in range(rownnz):
-        sparseid = rowadr + k
-        if ten_J_colind[sparseid] == dofid:
-          ten_Jj = ten_J_in[worldid, sparseid]
+      # scan pointer backward to find matching colind entry
+      while ptr >= 0:
+        sparseid = rowadr + ptr
+        if ten_J_colind[sparseid] <= dofid:
           break
+        ptr -= 1
+      if ptr >= 0 and ten_J_colind[sparseid] == dofid:
+        ten_Jj = ten_J_in[worldid, sparseid]
+      else:
+        ten_Jj = float(0.0)
 
     qMij = armature * ten_Jj * ten_Ji
 
@@ -958,7 +964,7 @@ def tendon_armature(m: Model, d: Data):
   """Add tendon armature to qM."""
   wp.launch(
     _tendon_armature,
-    dim=(d.nworld, m.ntendon, m.nv),
+    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
     inputs=[
       m.dof_parentid,
       m.dof_Madr,
@@ -1554,19 +1560,93 @@ def rne_postconstraint(m: Model, d: Data):
   _rne_cfrc_backward(m, d)
 
 
+@wp.func
+def _accumulate_jac_dot_chain(
+  # Model:
+  body_parentid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
+  jnt_type: wp.array(dtype=int),
+  jnt_dofadr: wp.array(dtype=int),
+  dof_jntid: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  # Data in:
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  offset: wp.vec3,
+  pvel_lin: wp.vec3,
+  dpnt: wp.vec3,
+  dvel: wp.vec3,
+  bodyid: int,
+  rowadr: int,
+  rownnz: int,
+  scale: float,
+  worldid: int,
+  # Out:
+  ten_Jdot_out: wp.array2d(dtype=float),
+):
+  """Walk body chain from bodyid to root, accumulate Jdot contributions."""
+  ptr = rownnz - 1
+  bid = bodyid
+  while bid > 0:
+    bdofadr = body_dofadr[bid]
+    bdofnum = body_dofnum[bid]
+    # iterate DOFs in this body in descending order
+    for k_rev in range(bdofnum):
+      dof = bdofadr + bdofnum - 1 - k_rev
+      # scan pointer backward to find matching colind entry
+      while ptr >= 0:
+        sparseid = rowadr + ptr
+        if ten_J_colind[sparseid] <= dof:
+          break
+        ptr -= 1
+      if ptr >= 0 and ten_J_colind[sparseid] == dof:
+        cdof = cdof_in[worldid, dof]
+        cdof_ang = wp.spatial_top(cdof)
+        cdof_lin = wp.spatial_bottom(cdof)
+        cdof_dot = cdof_dot_in[worldid, dof]
+
+        # quaternion override: use cvel of DOF's body (which is bid)
+        dofjntid = dof_jntid[dof]
+        jnttype = jnt_type[dofjntid]
+        jntdofadr = jnt_dofadr[dofjntid]
+        if (jnttype == JointType.BALL) or ((jnttype == JointType.FREE) and dof >= jntdofadr + 3):
+          cdof_dot = math.motion_cross(cvel_in[worldid, bid], cdof)
+
+        cdof_dot_ang = wp.spatial_top(cdof_dot)
+        cdof_dot_lin = wp.spatial_bottom(cdof_dot)
+
+        # jacp_dot (from jac_dot_dof)
+        jacp_dot = cdof_dot_lin + wp.cross(cdof_dot_ang, offset) + wp.cross(cdof_ang, pvel_lin)
+
+        # jacp (from jac_dof)
+        jacp = cdof_lin + wp.cross(cdof_ang, offset)
+
+        # combined: dot(jacdot, dpnt) + dot(jac, dvel)
+        Jdot = (wp.dot(jacp_dot, dpnt) + wp.dot(jacp, dvel)) * scale
+        if Jdot != 0.0:
+          wp.atomic_add(ten_Jdot_out[worldid], sparseid, Jdot)
+    bid = body_parentid[bid]
+
+
 @wp.kernel
 def _tendon_dot(
   # Model:
-  nv: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
   jnt_type: wp.array(dtype=int),
   jnt_dofadr: wp.array(dtype=int),
-  dof_bodyid: wp.array(dtype=int),
   dof_jntid: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_armature: wp.array2d(dtype=float),
   wrap_type: wp.array(dtype=int),
   wrap_objid: wp.array(dtype=int),
@@ -1578,7 +1658,7 @@ def _tendon_dot(
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
   cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
   # Out:
-  ten_Jdot_out: wp.array3d(dtype=float),
+  ten_Jdot_out: wp.array2d(dtype=float),
 ):
   worldid, tenid = wp.tid()
 
@@ -1615,13 +1695,11 @@ def _tendon_dot(
     # init sequence; assume it start with site
     wpnt0 = site_xpos_in[worldid, id0]
 
-    bodyid0 = site_bodyid[id0]
-    pos0 = site_xpos_in[worldid, id0]
-    cvel0 = cvel_in[worldid, bodyid0]
-    subtree_com0 = subtree_com_in[worldid, body_rootid[bodyid0]]
-    dif0 = pos0 - subtree_com0
-    wvel0 = wp.spatial_bottom(cvel0) - wp.cross(dif0, wp.spatial_top(cvel0))
     wbody0 = site_bodyid[id0]
+    cvel0 = cvel_in[worldid, wbody0]
+    subtree_com0 = subtree_com_in[worldid, body_rootid[wbody0]]
+    offset0 = wpnt0 - subtree_com0
+    pvel_lin0 = wp.spatial_bottom(cvel0) - wp.cross(offset0, wp.spatial_top(cvel0))
 
     # second object is geom: process site-geom-site
     if (type1 == WrapType.SPHERE) or (type1 == WrapType.CYLINDER):
@@ -1632,12 +1710,10 @@ def _tendon_dot(
     wbody1 = site_bodyid[id1]
     wpnt1 = site_xpos_in[worldid, id1]
 
-    bodyid1 = site_bodyid[id1]
-    pos1 = site_xpos_in[worldid, id1]
-    cvel1 = cvel_in[worldid, bodyid1]
-    subtree_com1 = subtree_com_in[worldid, body_rootid[bodyid1]]
-    dif1 = pos1 - subtree_com1
-    wvel1 = wp.spatial_bottom(cvel1) - wp.cross(dif1, wp.spatial_top(cvel1))
+    cvel1 = cvel_in[worldid, wbody1]
+    subtree_com1 = subtree_com_in[worldid, body_rootid[wbody1]]
+    offset1 = wpnt1 - subtree_com1
+    pvel_lin1 = wp.spatial_bottom(cvel1) - wp.cross(offset1, wp.spatial_top(cvel1))
 
     # accumulate moments if consecutive points are in different bodies
     if wbody0 != wbody1:
@@ -1645,6 +1721,8 @@ def _tendon_dot(
       dpnt, norm = math.normalize_with_norm(wpnt1 - wpnt0)
 
       # dvel = d / dt (dpnt)
+      wvel0 = wp.spatial_bottom(cvel0) - wp.cross(wpnt0 - subtree_com0, wp.spatial_top(cvel0))
+      wvel1 = wp.spatial_bottom(cvel1) - wp.cross(wpnt1 - subtree_com1, wp.spatial_top(cvel1))
       dvel = wvel1 - wvel0
       dot = wp.dot(dpnt, dvel)
       dvel += dpnt * (-dot)
@@ -1653,75 +1731,55 @@ def _tendon_dot(
       else:
         dvel = wp.vec3(0.0)
 
-      # get endpoint Jacobian time derivatives, subtract
-      # TODO(team): parallelize?
-      for i in range(nv):
-        jac1, _ = support.jac_dot_dof(
-          body_parentid,
-          body_rootid,
-          jnt_type,
-          jnt_dofadr,
-          dof_bodyid,
-          dof_jntid,
-          subtree_com_in,
-          cdof_in,
-          cvel_in,
-          cdof_dot_in,
-          wpnt0,
-          wbody0,
-          i,
-          worldid,
-        )
-        jac2, _ = support.jac_dot_dof(
-          body_parentid,
-          body_rootid,
-          jnt_type,
-          jnt_dofadr,
-          dof_bodyid,
-          dof_jntid,
-          subtree_com_in,
-          cdof_in,
-          cvel_in,
-          cdof_dot_in,
-          wpnt1,
-          wbody1,
-          i,
-          worldid,
-        )
-        jacdif = jac2 - jac1
+      rownnz = ten_J_rownnz[tenid]
+      rowadr = ten_J_rowadr[tenid]
+      inv_divisor = math.safe_div(float(1.0), divisor)
 
-        # chain rule, first term: Jdot += d / dt (jac2 - jac1) * dpnt
-        Jdot = wp.dot(jacdif, dpnt)
-
-        # get endpoint Jacobians, subtract
-        jac1, _ = support.jac_dof(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          wpnt0,
-          wbody0,
-          i,
-          worldid,
-        )
-        jac2, _ = support.jac_dof(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          subtree_com_in,
-          cdof_in,
-          wpnt1,
-          wbody1,
-          i,
-          worldid,
-        )
-        jacdif = jac2 - jac1
-
-        # chain rule, second term: Jdot += (jac2 - jac1) * d / dt (dpnt)
-        Jdot += wp.dot(jacdif, dvel)
-
-        ten_Jdot_out[worldid, tenid, i] += math.safe_div(Jdot, divisor)
+      # body0 contributes with negative sign, body1 with positive
+      _accumulate_jac_dot_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        jnt_type,
+        jnt_dofadr,
+        dof_jntid,
+        ten_J_colind,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        offset0,
+        pvel_lin0,
+        dpnt,
+        dvel,
+        wbody0,
+        rowadr,
+        rownnz,
+        -inv_divisor,
+        worldid,
+        ten_Jdot_out,
+      )
+      _accumulate_jac_dot_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        jnt_type,
+        jnt_dofadr,
+        dof_jntid,
+        ten_J_colind,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        offset1,
+        pvel_lin1,
+        dpnt,
+        dvel,
+        wbody1,
+        rowadr,
+        rownnz,
+        inv_divisor,
+        worldid,
+        ten_Jdot_out,
+      )
 
     # TODO(team): j += 2 if geom wrapping
     j += 1
@@ -1730,24 +1788,33 @@ def _tendon_dot(
 @wp.kernel
 def _tendon_bias_coef(
   # Model:
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_armature: wp.array2d(dtype=float),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   # In:
-  ten_Jdot_in: wp.array3d(dtype=float),
+  ten_Jdot_in: wp.array2d(dtype=float),
   # Out:
   ten_bias_coef_out: wp.array2d(dtype=float),
 ):
-  worldid, tenid, dofid = wp.tid()
+  worldid, tenid, dofid_sparse = wp.tid()
 
   armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
   if armature == 0.0:
     return
 
-  ten_Jdot = ten_Jdot_in[worldid, tenid, dofid]
+  rownnz = ten_J_rownnz[tenid]
+  if dofid_sparse >= rownnz:
+    return
+  rowadr = ten_J_rowadr[tenid]
+  sparseid = rowadr + dofid_sparse
+  ten_Jdot = ten_Jdot_in[worldid, sparseid]
   if ten_Jdot == 0.0:
     return
 
+  dofid = ten_J_colind[sparseid]
   wp.atomic_add(ten_bias_coef_out[worldid], tenid, ten_Jdot * qvel_in[worldid, dofid])
 
 
@@ -1796,21 +1863,24 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
     qfrc: Force.
   """
   # time derivative of tendon Jacobian
-  ten_Jdot = wp.zeros((d.nworld, m.ntendon, m.nv), dtype=float)
+  ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
     inputs=[
-      m.nv,
       m.body_parentid,
       m.body_rootid,
+      m.body_dofnum,
+      m.body_dofadr,
       m.jnt_type,
       m.jnt_dofadr,
-      m.dof_bodyid,
       m.dof_jntid,
       m.site_bodyid,
       m.tendon_adr,
       m.tendon_num,
+      m.ten_J_rownnz,
+      m.ten_J_rowadr,
+      m.ten_J_colind,
       m.tendon_armature,
       m.wrap_type,
       m.wrap_objid,
@@ -1828,14 +1898,14 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
   ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
   wp.launch(
     _tendon_bias_coef,
-    dim=(d.nworld, m.ntendon, m.nv),
-    inputs=[m.tendon_armature, d.qvel, ten_Jdot],
+    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
+    inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, m.tendon_armature, d.qvel, ten_Jdot],
     outputs=[ten_bias_coef],
   )
 
   wp.launch(
     _tendon_bias_qfrc,
-    dim=(d.nworld, m.ntendon, m.nv),
+    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
     inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, m.tendon_armature, d.ten_J, ten_bias_coef],
     outputs=[qfrc],
   )
@@ -2897,12 +2967,59 @@ def _joint_tendon(
       break
 
 
+@wp.func
+def _accumulate_jac_chain(
+  # Model:
+  body_parentid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  # Data in:
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  # In:
+  offset: wp.vec3,
+  vec: wp.vec3,
+  bodyid: int,
+  rowadr: int,
+  rownnz: int,
+  scale: float,
+  worldid: int,
+  # Data out:
+  ten_J_out: wp.array2d(dtype=float),
+):
+  """Walk body chain from bodyid to root, accumulate Jacobian contributions."""
+  ptr = rownnz - 1
+  bid = bodyid
+  while bid > 0:
+    bdofadr = body_dofadr[bid]
+    bdofnum = body_dofnum[bid]
+    # iterate DOFs in this body in descending order
+    for k_rev in range(bdofnum):
+      dof = bdofadr + bdofnum - 1 - k_rev
+      # scan pointer backward to find matching colind entry
+      while ptr >= 0:
+        sparseid = rowadr + ptr
+        if ten_J_colind[sparseid] <= dof:
+          break
+        ptr -= 1
+      if ptr >= 0 and ten_J_colind[sparseid] == dof:
+        cdof = cdof_in[worldid, dof]
+        cdof_ang = wp.spatial_top(cdof)
+        cdof_lin = wp.spatial_bottom(cdof)
+        jacp = cdof_lin + wp.cross(cdof_ang, offset)
+        J = wp.dot(jacp, vec) * scale
+        if J != 0.0:
+          wp.atomic_add(ten_J_out[worldid], sparseid, J)
+    bid = body_parentid[bid]
+
+
 @wp.kernel
 def _spatial_site_tendon(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  dof_bodyid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
   site_bodyid: wp.array(dtype=int),
   ten_J_rownnz: wp.array(dtype=int),
   ten_J_rowadr: wp.array(dtype=int),
@@ -2945,14 +3062,38 @@ def _spatial_site_tendon(
   if body0 != body1:
     rownnz = ten_J_rownnz[tenid]
     rowadr = ten_J_rowadr[tenid]
-    for ptr in range(rownnz):
-      sparseid = rowadr + ptr
-      dofid = ten_J_colind[sparseid]
-      jacp1, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt0, body0, dofid, worldid)
-      jacp2, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pnt1, body1, dofid, worldid)
-      J = wp.dot(jacp2 - jacp1, vec)
-      if J != 0.0:
-        wp.atomic_add(ten_J_out[worldid], sparseid, J * pulley_scale)
+    offset0 = pnt0 - subtree_com_in[worldid, body_rootid[body0]]
+    offset1 = pnt1 - subtree_com_in[worldid, body_rootid[body1]]
+    _accumulate_jac_chain(
+      body_parentid,
+      body_dofnum,
+      body_dofadr,
+      ten_J_colind,
+      cdof_in,
+      offset0,
+      vec,
+      body0,
+      rowadr,
+      rownnz,
+      -pulley_scale,
+      worldid,
+      ten_J_out,
+    )
+    _accumulate_jac_chain(
+      body_parentid,
+      body_dofnum,
+      body_dofadr,
+      ten_J_colind,
+      cdof_in,
+      offset1,
+      vec,
+      body1,
+      rowadr,
+      rownnz,
+      pulley_scale,
+      worldid,
+      ten_J_out,
+    )
 
 
 @wp.kernel
@@ -2960,7 +3101,8 @@ def _spatial_geom_tendon(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
-  dof_bodyid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
+  body_dofadr: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   site_bodyid: wp.array(dtype=int),
@@ -3050,37 +3192,75 @@ def _spatial_geom_tendon(
     dif_body_sitegeom = bodyid_site0 != bodyid_geom
     dif_body_geomsite = bodyid_geom != bodyid_site1
 
-    for ptr in range(rownnz):
-      sparseid = rowadr + ptr
-      dofid = ten_J_colind[sparseid]
+    # site-geom segment
+    if dif_body_sitegeom:
+      offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
+      offset_geom0 = geom_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
+      _accumulate_jac_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        ten_J_colind,
+        cdof_in,
+        offset_site0,
+        vec_sitegeom,
+        bodyid_site0,
+        rowadr,
+        rownnz,
+        -pulley_scale,
+        worldid,
+        ten_J_out,
+      )
+      _accumulate_jac_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        ten_J_colind,
+        cdof_in,
+        offset_geom0,
+        vec_sitegeom,
+        bodyid_geom,
+        rowadr,
+        rownnz,
+        pulley_scale,
+        worldid,
+        ten_J_out,
+      )
 
-      J = float(0.0)
-      # site-geom
-      if dif_body_sitegeom:
-        jacp_site0, _ = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt0, bodyid_site0, dofid, worldid
-        )
-
-        jacp_geom0, _ = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, geom_pnt0, bodyid_geom, dofid, worldid
-        )
-
-        J += wp.dot(jacp_geom0 - jacp_site0, vec_sitegeom)
-
-      # geom-site
-      if dif_body_geomsite:
-        jacp_geom1, _ = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, geom_pnt1, bodyid_geom, dofid, worldid
-        )
-
-        jacp_site1, _ = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt1, bodyid_site1, dofid, worldid
-        )
-
-        J += wp.dot(jacp_site1 - jacp_geom1, vec_geomsite)
-
-      if J != 0.0:
-        wp.atomic_add(ten_J_out[worldid], sparseid, J * pulley_scale)
+    # geom-site segment
+    if dif_body_geomsite:
+      offset_geom1 = geom_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
+      offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
+      _accumulate_jac_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        ten_J_colind,
+        cdof_in,
+        offset_geom1,
+        vec_geomsite,
+        bodyid_geom,
+        rowadr,
+        rownnz,
+        -pulley_scale,
+        worldid,
+        ten_J_out,
+      )
+      _accumulate_jac_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        ten_J_colind,
+        cdof_in,
+        offset_site1,
+        vec_geomsite,
+        bodyid_site1,
+        rowadr,
+        rownnz,
+        pulley_scale,
+        worldid,
+        ten_J_out,
+      )
   else:
     dif_sitesite = site_pnt1 - site_pnt0
     vec_sitesite, length_sitesite = math.normalize_with_norm(dif_sitesite)
@@ -3094,21 +3274,38 @@ def _spatial_geom_tendon(
       vec_sitesite = wp.vec3(1.0, 0.0, 0.0)
 
     if bodyid_site0 != bodyid_site1:
-      for ptr in range(rownnz):
-        sparseid = rowadr + ptr
-        dofid = ten_J_colind[sparseid]
-
-        jacp1, _ = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt0, bodyid_site0, dofid, worldid
-        )
-        jacp2, _ = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_pnt1, bodyid_site1, dofid, worldid
-        )
-
-        J = wp.dot(jacp2 - jacp1, vec_sitesite)
-
-        if J != 0.0:
-          wp.atomic_add(ten_J_out[worldid], sparseid, J * pulley_scale)
+      offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
+      offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
+      _accumulate_jac_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        ten_J_colind,
+        cdof_in,
+        offset_site0,
+        vec_sitesite,
+        bodyid_site0,
+        rowadr,
+        rownnz,
+        -pulley_scale,
+        worldid,
+        ten_J_out,
+      )
+      _accumulate_jac_chain(
+        body_parentid,
+        body_dofnum,
+        body_dofadr,
+        ten_J_colind,
+        cdof_in,
+        offset_site1,
+        vec_sitesite,
+        bodyid_site1,
+        rowadr,
+        rownnz,
+        pulley_scale,
+        worldid,
+        ten_J_out,
+      )
 
 
 @wp.kernel
@@ -3318,7 +3515,8 @@ def tendon(m: Model, d: Data):
     inputs=[
       m.body_parentid,
       m.body_rootid,
-      m.dof_bodyid,
+      m.body_dofnum,
+      m.body_dofadr,
       m.site_bodyid,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
@@ -3341,7 +3539,8 @@ def tendon(m: Model, d: Data):
     inputs=[
       m.body_parentid,
       m.body_rootid,
-      m.dof_bodyid,
+      m.body_dofnum,
+      m.body_dofadr,
       m.geom_bodyid,
       m.geom_size,
       m.site_bodyid,

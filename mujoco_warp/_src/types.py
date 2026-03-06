@@ -1146,6 +1146,7 @@ class Model:
     tendon_site_pair_adr: site pair tendon address
     tendon_geom_adr: geom tendon address
     tendon_limited_adr: addresses for limited tendons
+    max_ten_J_rownnz: maximum number of non-zeros in a tendon row
     ten_wrapadr_site: wrap object starting address for sites
     ten_wrapnum_site: number of site wrap objects per tendon
     wrap_jnt_adr: addresses for joint tendon wrap object
@@ -1509,6 +1510,7 @@ class Model:
   tendon_site_pair_adr: wp.array(dtype=int)
   tendon_geom_adr: wp.array(dtype=int)
   tendon_limited_adr: wp.array(dtype=int)
+  max_ten_J_rownnz: int
   ten_wrapadr_site: wp.array(dtype=int)
   ten_wrapnum_site: wp.array(dtype=int)
   wrap_jnt_adr: wp.array(dtype=int)
