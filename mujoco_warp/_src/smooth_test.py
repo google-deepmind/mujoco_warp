@@ -358,11 +358,14 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(actuator_moment, mj_actuator_moment, "actuator_moment")
 
-  @parameterized.product(keyframe=list(range(4)), cone=list(ConeType))
-  def test_actuator_adhesion(self, keyframe, cone):
+  @parameterized.product(
+    keyframe=list(range(4)), cone=list(ConeType), jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE]
+  )
+  def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
-    # TODO(team): test sparse
-    mjm, mjd, m, d = test_data.fixture("actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone})
+    mjm, mjd, m, d = test_data.fixture(
+      "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
+    )
 
     for arr in (d.actuator_length, d.actuator_moment):
       arr.fill_(wp.inf)
