@@ -540,7 +540,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-xdist", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "warp-lang", specifier = ">=1.11.0", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", specifier = ">=1.12", index = "https://pypi.nvidia.com/" },
     { name = "warp-lang", marker = "extra == 'dev'", specifier = ">=1.11.0.dev0", index = "https://pypi.nvidia.com/" },
 ]
 provides-extras = ["dev", "cpu", "cuda"]
