@@ -2432,21 +2432,6 @@ def _transmission_body_moment_scale(
     actuator_moment_out[worldid, rowadr + dofid] /= -float(ncon)
 
 
-@wp.kernel
-def _transmission_zero(
-  # Data out:
-  moment_colind_out: wp.array2d(dtype=int),
-  actuator_moment_out: wp.array2d(dtype=float),
-  # Out:
-  moment_nnz_out: wp.array(dtype=int),
-):
-  worldid, elementid = wp.tid()
-  if elementid == 0:
-    moment_nnz_out[worldid] = 0
-  moment_colind_out[worldid, elementid] = 0
-  actuator_moment_out[worldid, elementid] = 0.0
-
-
 @event_scope
 def transmission(m: Model, d: Data):
   """Computes actuator/transmission lengths and moments.
@@ -2456,12 +2441,6 @@ def transmission(m: Model, d: Data):
   """
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
   moment_nnz = wp.zeros((d.nworld,), dtype=int)
-
-  wp.launch(
-    _transmission_zero,
-    dim=(d.nworld, m.nJmom),
-    outputs=[d.moment_colind, d.actuator_moment, moment_nnz],
-  )
 
   wp.launch(
     _transmission,
