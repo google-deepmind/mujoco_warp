@@ -722,7 +722,7 @@ class GJKTest(parameterized.TestCase):
     self.assertAlmostEqual(dist, -1.5778851595232846e-05)
     self.assertEqual(ncon, 4)
 
-  def test_test2(self):
+  def test_box_box_max(self):
     """Box-box collision needing 16 iterations of EPA."""
     _, _, m, d = test_data.fixture(
       xml="""
