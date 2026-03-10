@@ -351,6 +351,7 @@ class GeomType(enum.IntEnum):
     BOX: box
     MESH: mesh
     SDF: sdf
+    FLEX: flex
   """
 
   PLANE = mujoco.mjtGeom.mjGEOM_PLANE
@@ -362,6 +363,7 @@ class GeomType(enum.IntEnum):
   BOX = mujoco.mjtGeom.mjGEOM_BOX
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
+  FLEX = mujoco.mjtGeom.mjGEOM_FLEX
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -1850,20 +1852,14 @@ class RenderContext:
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
     hfield_bounds_size: hfield bounds half-extents
-    flex_mesh: flex mesh
+    flex_mesh_registry: per-flex mesh BVH registry (prevents GC)
     flex_rgba: flex rgba
-    flex_bvh_id: flex BVH id
-    flex_face_point: flex face points
-    flex_faceadr: flex face addresses
-    flex_nface: number of flex faces
-    flex_nwork: total flex work items for refit
-    flex_group_root: flex group roots
-    flex_elemdataadr: flex element data addresses
+    flex_bvh_id: per-flex BVH ids
+    flex_dataid: flex data id mapping flex index to BVH index (-1 for 1D)
+    n_flex_bvh: number of flex BVHs
+    flex_group_root: per-flex group roots (flat: dataid * nworld + world_id)
     flex_shell: flex shell data
-    flex_shelldataadr: flex shell data addresses
     flex_radius: flex radius
-    flex_workadr: flex work item addresses for refit
-    flex_worknum: flex work item counts for refit
     flex_render_smooth: whether to render flex meshes smoothly
     bvh: scene BVH
     bvh_id: scene BVH id
@@ -1905,21 +1901,19 @@ class RenderContext:
   hfield_registry: dict
   hfield_bvh_id: array("nhfield", wp.uint64)
   hfield_bounds_size: array("nhfield", wp.vec3)
-  flex_mesh: wp.Mesh
+  flex_mesh_registry: dict
   flex_rgba: array("nflex", wp.vec4)
-  flex_bvh_id: wp.uint64
-  flex_face_point: array("*", wp.vec3)
-  flex_faceadr: array("nflex", int)
-  flex_nface: int
-  flex_nwork: int
-  flex_group_root: array("nworld", int)
-  flex_elemdataadr: array("nflex", int)
+  flex_bvh_id: array("n_flex_bvh", wp.uint64)
+  flex_dataid: array("nflex", int)
+  n_flex_bvh: int
+  flex_group_root: array("*", int)
   flex_shell: array("*", int)
-  flex_shelldataadr: array("nflex", int)
   flex_radius: array("nflex", float)
-  flex_workadr: array("nflex", int)
-  flex_worknum: array("nflex", int)
   flex_render_smooth: bool
+  nflex_bvh_geom: int
+  flex_geom_type: array("*", int)
+  flex_geom_flexid: array("*", int)
+  flex_geom_edgeid: array("*", int)
   bvh: wp.Bvh
   bvh_id: wp.uint64
   lower: array("*", wp.vec3)

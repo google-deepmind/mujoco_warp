@@ -752,7 +752,8 @@ def ray_mesh_with_bvh_anyhit(
 @wp.func
 def ray_flex_with_bvh(
   # In:
-  bvh_id: wp.uint64,
+  flex_bvh_id: wp.array(dtype=wp.uint64),
+  flex_dataid: int,
   group_root: int,
   pnt: wp.vec3,
   vec: wp.vec3,
@@ -769,7 +770,7 @@ def ray_flex_with_bvh(
   n = wp.vec3(0.0, 0.0, 0.0)
   f = int(-1)
 
-  hit = wp.mesh_query_ray(bvh_id, pnt, vec, max_t, t, u, v, sign, n, f, group_root)
+  hit = wp.mesh_query_ray(flex_bvh_id[flex_dataid], pnt, vec, max_t, t, u, v, sign, n, f, group_root)
 
   if hit:
     return t, n, u, v, f

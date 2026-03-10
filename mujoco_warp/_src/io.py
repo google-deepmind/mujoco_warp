@@ -2456,55 +2456,87 @@ def create_render_context(
   hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
   # Flex BVHs
-  flex_bvh_id = wp.uint64(0)
-  flex_group_root = wp.zeros(nworld, dtype=int)
-  flex_mesh = None
-  flex_face_point = None
-  flex_elemdataadr = None
-  flex_shell = None
-  flex_shelldataadr = None
-  flex_faceadr = None
-  flex_nface = 0
-  flex_radius = None
-  flex_workadr = None
-  flex_worknum = None
-  flex_nwork = 0
+  flex_mesh_registry = {}
+  flex_group_root = wp.zeros(1, dtype=int)
+  flex_shell = wp.array(np.zeros(1, dtype=np.int32), dtype=int)
+  flex_radius = wp.zeros(1, dtype=float)
+  flex_dataid_data = np.empty(0, dtype=np.int32)
+  flex_bvh_id_data = np.empty(0, dtype=np.uint64)
+  n_flex_bvh = 0
+
+  # Flex scene BVH layout arrays
+  nflex_bvh_geom = 0
+  flex_geom_type_data = np.empty(0, dtype=np.int32)
+  flex_geom_flexid_data = np.empty(0, dtype=np.int32)
+  flex_geom_edgeid_data = np.empty(0, dtype=np.int32)
 
   if mjm.nflex > 0:
-    (
-      fmesh,
-      face_point,
-      flex_group_roots,
-      flex_shell_data,
-      flex_faceadr_data,
-      flex_nface,
-    ) = bvh.build_flex_bvh(mjm, mjd, nworld)
+    nflex = mjm.nflex
 
-    flex_mesh = fmesh
-    flex_bvh_id = fmesh.id
-    flex_face_point = face_point
-    flex_group_root = flex_group_roots
-    flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
-    flex_shell = flex_shell_data
-    flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
-    flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
+    # Compute flex scene BVH entries:
+    # - 1D: one capsule per edge
+    # - 2D/3D: one bbox per flex
+    flex_geom_type_list = []
+    flex_geom_flexid_list = []
+    flex_geom_edgeid_list = []
+
+    for f in range(nflex):
+      if mjm.flex_dim[f] == 1:
+        edge_adr = mjm.flex_edgeadr[f]
+        for e in range(mjm.flex_edgenum[f]):
+          flex_geom_type_list.append(0)  # capsule
+          flex_geom_flexid_list.append(f)
+          flex_geom_edgeid_list.append(edge_adr + e)
+      else:  # dim 2 or 3
+        flex_geom_type_list.append(1)  # mesh
+        flex_geom_flexid_list.append(f)
+        flex_geom_edgeid_list.append(-1)
+
+    nflex_bvh_geom = len(flex_geom_type_list)
+    flex_geom_type_data = np.array(flex_geom_type_list, dtype=np.int32)
+    flex_geom_flexid_data = np.array(flex_geom_flexid_list, dtype=np.int32)
+    flex_geom_edgeid_data = np.array(flex_geom_edgeid_list, dtype=np.int32)
     flex_radius = wp.array(mjm.flex_radius, dtype=float)
 
-    # precompute work item layout for unified refit kernel
-    nflex = mjm.nflex
-    workadr = np.zeros(nflex, dtype=np.int32)
-    worknum = np.zeros(nflex, dtype=np.int32)
-    cumsum = 0
+    # Build per-flex BVHs for 2D/3D flexes
+    flex_dataid_data = np.full(nflex, -1, dtype=np.int32)
+    flex_bvh_id_list = []
+    flex_group_root_list = []
+    n_flex_bvh = 0
+    flex_shell = wp.array(mjm.flex_shell, dtype=int)
+
     for f in range(nflex):
-      workadr[f] = cumsum
-      if mjm.flex_dim[f] == 2:
-        worknum[f] = mjm.flex_elemnum[f] + mjm.flex_shellnum[f]
-      else:
-        worknum[f] = mjm.flex_shellnum[f]
-      cumsum += worknum[f]
-    flex_workadr = wp.array(workadr, dtype=int)
-    flex_worknum = wp.array(worknum, dtype=int)
-    flex_nwork = int(cumsum)
+      if mjm.flex_dim[f] in (2, 3):
+        (
+          fmesh,
+          face_point,
+          _,  # flex_shell (shared, already set above)
+          group_roots,
+          nface,
+        ) = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+
+        flex_dataid_data[f] = n_flex_bvh
+        flex_bvh_id_list.append(fmesh.id)
+        flex_group_root_list.append(group_roots.numpy())
+        flex_mesh_registry[n_flex_bvh] = {
+          "mesh": fmesh,
+          "face_point": face_point,
+          "nface": nface,
+          "flex_id": f,
+          "dim": int(mjm.flex_dim[f]),
+          "elem_adr": int(mjm.flex_elemdataadr[f]),
+          "shell_adr": int(mjm.flex_shelldataadr[f]),
+          "vert_adr": int(mjm.flex_vertadr[f]),
+          "nelem": int(mjm.flex_elemnum[f]),
+          "radius": float(mjm.flex_radius[f]),
+        }
+        n_flex_bvh += 1
+
+    if n_flex_bvh > 0:
+      flex_bvh_id_data = np.array(flex_bvh_id_list, dtype=np.uint64)
+      # Flat array: flex_group_root[dataid * nworld + world_id]
+      flex_group_root_data = np.concatenate(flex_group_root_list)
+      flex_group_root = wp.array(flex_group_root_data, dtype=int)
 
   textures_registry = []
   # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
@@ -2618,26 +2650,24 @@ def create_render_context(
     hfield_registry=hfield_registry,
     hfield_bvh_id=hfield_bvh_id_arr,
     hfield_bounds_size=hfield_bounds_size_arr,
-    flex_mesh=flex_mesh,
+    flex_mesh_registry=flex_mesh_registry,
     flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
-    flex_bvh_id=flex_bvh_id,
-    flex_face_point=flex_face_point,
-    flex_faceadr=flex_faceadr,
-    flex_nface=flex_nface,
-    flex_nwork=flex_nwork,
+    flex_bvh_id=wp.array(flex_bvh_id_data, dtype=wp.uint64) if n_flex_bvh > 0 else wp.zeros(1, dtype=wp.uint64),
+    flex_dataid=wp.array(flex_dataid_data, dtype=int) if len(flex_dataid_data) > 0 else wp.zeros(1, dtype=int),
+    n_flex_bvh=n_flex_bvh,
     flex_group_root=flex_group_root,
-    flex_elemdataadr=flex_elemdataadr,
     flex_shell=flex_shell,
-    flex_shelldataadr=flex_shelldataadr,
     flex_radius=flex_radius,
-    flex_workadr=flex_workadr,
-    flex_worknum=flex_worknum,
     flex_render_smooth=flex_render_smooth,
+    nflex_bvh_geom=nflex_bvh_geom,
+    flex_geom_type=wp.array(flex_geom_type_data, dtype=int) if nflex_bvh_geom > 0 else wp.zeros(1, dtype=int),
+    flex_geom_flexid=wp.array(flex_geom_flexid_data, dtype=int) if nflex_bvh_geom > 0 else wp.zeros(1, dtype=int),
+    flex_geom_edgeid=wp.array(flex_geom_edgeid_data, dtype=int) if nflex_bvh_geom > 0 else wp.zeros(1, dtype=int),
     bvh=None,
     bvh_id=None,
-    lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
-    upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
-    group=wp.zeros(nworld * bvh_ngeom, dtype=int),
+    lower=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=wp.vec3),
+    upper=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=wp.vec3),
+    group=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=int),
     group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
     rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),

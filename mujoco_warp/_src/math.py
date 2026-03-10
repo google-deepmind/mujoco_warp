@@ -84,6 +84,38 @@ def quat_to_mat(quat: wp.quat) -> wp.mat33:
 
 
 @wp.func
+def quat_z2vec(vec: wp.vec3) -> wp.quat:
+  """Compute quaternion performing rotation from z-axis to given vector."""
+  quat = wp.quat(0.0, 0.0, 0.0, 1.0)
+
+  # normalize vector; if too small, no rotation
+  vn = vec
+  norm = wp.length(vn)
+  if norm < types.MJ_MINVAL:
+    return quat
+  vn = vn / norm
+
+  # compute axis = cross(z, vn) and its norm
+  z = wp.vec3(0.0, 0.0, 1.0)
+  axis = wp.cross(z, vn)
+  a = wp.length(axis)
+
+  # almost parallel
+  if a < types.MJ_MINVAL:
+    # opposite: 180 deg rotation around x axis
+    if wp.dot(vn, z) < 0.0:
+      quat = wp.quat(1.0, 0.0, 0.0, 0.0)
+    return quat
+
+  # make quaternion from angle and axis
+  axis = axis / a
+  angle = wp.atan2(a, wp.dot(vn, z))
+  quat = axis_angle_to_quat(axis, angle)
+
+  return quat
+
+
+@wp.func
 def quat_inv(quat: wp.quat) -> wp.quat:
   return wp.quat(quat[0], -quat[1], -quat[2], -quat[3])
 

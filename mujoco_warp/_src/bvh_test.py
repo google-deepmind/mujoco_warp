@@ -252,7 +252,7 @@ class BvhTest(absltest.TestCase):
 
     mjm, mjd, m, d = test_data.fixture("flex/floppy.xml")
 
-    flex_mesh, face_point, group_root, flex_shell, flex_faceadr, nface = bvh.build_flex_bvh(mjm, mjd, 1)
+    flex_mesh, face_point, flex_shell, group_root, nface = bvh.build_flex_bvh(mjm, mjd, 1, 0)
 
     self.assertNotEqual(flex_mesh.id, wp.uint64(0), "flex_mesh id")
 
