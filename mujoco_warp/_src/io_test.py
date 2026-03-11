@@ -30,6 +30,7 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import set_length_range
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 
 def _assert_eq(a, b, name):
@@ -227,8 +228,16 @@ class IOTest(parameterized.TestCase):
     # actuator_moment
     actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(actuator_moment_dense, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    wp_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      wp_actuator_moment,
+      d.actuator_moment.numpy()[world_id],
+      d.moment_rownnz.numpy()[world_id],
+      d.moment_rowadr.numpy()[world_id],
+      d.moment_colind.numpy()[world_id],
+    )
     _assert_eq(
-      d.actuator_moment.numpy()[world_id].reshape(-1),
+      wp_actuator_moment.reshape(-1),
       actuator_moment_dense.reshape(-1),
       "actuator_moment",
     )
@@ -1604,7 +1613,10 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    self.assertEqual(d.efc.J.shape[2], m.nv_pad)
+    if SPARSE_CONSTRAINT_JACOBIAN:
+      self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
+    else:
+      self.assertEqual(d.efc.J.shape[2], m.nv_pad)
 
 
 # TODO(team): test set_const_0 sparse

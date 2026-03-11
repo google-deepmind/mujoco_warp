@@ -28,6 +28,7 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
@@ -42,7 +43,6 @@ def _assert_eq(a, b, name):
 
 
 class ForwardTest(parameterized.TestCase):
-  # TODO(team): test sparse when actuator_moment and/or ten_J have sparse representation
   @parameterized.product(xml=["humanoid/humanoid.xml", "pendula.xml"])
   def test_fwd_velocity(self, xml):
     _, mjd, m, d = test_data.fixture(xml, qvel_noise=0.01, ctrl_noise=0.1)
@@ -400,7 +400,18 @@ class ForwardTest(parameterized.TestCase):
     nefc = d.nefc.numpy()[0]
     if nefc > 0:
       nv = m.nv
-      d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
+      if SPARSE_CONSTRAINT_JACOBIAN:
+        # Reconstruct dense J from sparse representation
+        d_efc_J = np.zeros((nefc, nv))
+        mujoco.mju_sparse2dense(
+          d_efc_J,
+          d.efc.J.numpy()[0, 0],
+          d.efc.J_rownnz.numpy()[0, :nefc],
+          d.efc.J_rowadr.numpy()[0, :nefc],
+          d.efc.J_colind.numpy()[0, 0],
+        )
+      else:
+        d_efc_J = d.efc.J.numpy()[0, :nefc, :nv]
       if mjd.efc_J.shape[0] != mjd.nefc * mjm.nv:
         mjd_efc_J = np.zeros((mjd.nefc, mjm.nv))
         mujoco.mju_sparse2dense(mjd_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
@@ -432,6 +443,14 @@ class ForwardTest(parameterized.TestCase):
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
         mjd_arr = actuator_moment
+        d_arr = np.zeros((mjm.nu, mjm.nv))
+        mujoco.mju_sparse2dense(
+          d_arr,
+          d.actuator_moment.numpy()[0],
+          d.moment_rownnz.numpy()[0],
+          d.moment_rowadr.numpy()[0],
+          d.moment_colind.numpy()[0],
+        )
       elif arr == "ten_J":
         # convert warp sparse ten_J to dense for comparison
         d_ten_J = np.zeros((mjm.ntendon, mjm.nv))
@@ -446,7 +465,10 @@ class ForwardTest(parameterized.TestCase):
         elif check_version("mujoco>=3.5.1.dev872479828"):
           ten_J = np.zeros((mjm.ntendon, mjm.nv))
           if mjm.ntendon:
-            mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
+            if check_version("mujoco>=3.5.1.dev875093374"):
+              mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind)
+            else:
+              mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
           mjd_arr = ten_J
         else:
           mjd_arr = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
