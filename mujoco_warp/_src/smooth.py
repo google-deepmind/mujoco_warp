@@ -2024,35 +2024,61 @@ def _transmission(
       dldv = axis
       dlda = vec
 
-    rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-    moment_rowadr_out[worldid, actid] = rowadr
-    nnz = int(0)
+    # count dofs
+    b1 = body_weldid[site_bodyid[id]]
+    b2 = body_weldid[site_bodyid[idslider]]
+    da1_init = int(-1)
+    da2_init = int(-1)
+    if b1 > 0:
+      da1_init = body_dofadr[b1] + body_dofnum[b1] - 1
+    if b2 > 0:
+      da2_init = body_dofadr[b2] + body_dofnum[b2] - 1
 
-    # apply chain rule
-    # TODO(team): parallelization or dof traversal?
-    for i in range(nv):
+    da1 = da1_init
+    da2 = da2_init
+    ndof = int(0)
+    while da1 >= 0 or da2 >= 0:
+      da = wp.max(da1, da2)
+      ndof += 1
+      if da1 == da:
+        da1 = dof_parentid[da1]
+      if da2 == da:
+        da2 = dof_parentid[da2]
+
+    moment_rownnz_out[worldid, actid] = ndof
+    rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
+    moment_rowadr_out[worldid, actid] = rowadr
+
+    # traverse dofs
+    da1 = da1_init
+    da2 = da2_init
+
+    ptr = ndof - 1
+    while da1 >= 0 or da2 >= 0:
+      da = wp.max(da1, da2)
+
       # get Jacobians of axis(jacA) and vec(jac)
-      # mj_jacPointAxis
       jacp, jacr = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_idslider, site_bodyid[idslider], i, worldid
+        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_idslider, site_bodyid[idslider], da, worldid
       )
       jacS = jacp
       jacA = wp.cross(jacr, axis)
-
-      # mj_jacSite
       jac, _ = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_id, site_bodyid[id], i, worldid
+        body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos_id, site_bodyid[id], da, worldid
       )
       jac -= jacS
 
       # apply the chain rule
       moment = wp.dot(dlda, jacA) + wp.dot(dldv, jac)
-      if moment != 0.0:
-        sparseid = rowadr + nnz
-        moment_colind_out[worldid, sparseid] = i
-        actuator_moment_out[worldid, sparseid] = moment * gear0
-        nnz += 1
-    moment_rownnz_out[worldid, actid] = nnz
+      sparseid = rowadr + ptr
+      moment_colind_out[worldid, sparseid] = da
+      actuator_moment_out[worldid, sparseid] = moment * gear0
+      ptr -= 1
+
+      if da1 == da:
+        da1 = dof_parentid[da1]
+      if da2 == da:
+        da2 = dof_parentid[da2]
   elif trntype == TrnType.TENDON:
     tenid = actuator_trnid[actid][0]
 
@@ -2073,13 +2099,22 @@ def _transmission(
         moment_colind_out[worldid, sparseid] = dofadr
         actuator_moment_out[worldid, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
     else:  # spatial
-      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
-      moment_rownnz_out[worldid, actid] = nv
-      moment_rowadr_out[worldid, actid] = rowadr
+      # TODO(team): sparse tendon jacobian
+      ten_nnz = int(0)
       for dofadr in range(nv):
-        sparseid = rowadr + dofadr
-        moment_colind_out[worldid, sparseid] = dofadr
-        actuator_moment_out[worldid, sparseid] = ten_J_in[worldid, tenid, dofadr] * gear0
+        if ten_J_in[worldid, tenid, dofadr] != 0.0:
+          ten_nnz += 1
+      rowadr = wp.atomic_add(moment_nnz, worldid, ten_nnz)
+      moment_rownnz_out[worldid, actid] = ten_nnz
+      moment_rowadr_out[worldid, actid] = rowadr
+      ptr = int(0)
+      for dofadr in range(nv):
+        J = ten_J_in[worldid, tenid, dofadr]
+        if J != 0.0:
+          sparseid = rowadr + ptr
+          moment_colind_out[worldid, sparseid] = dofadr
+          actuator_moment_out[worldid, sparseid] = J * gear0
+          ptr += 1
   elif trntype == TrnType.BODY:
     # cannot compute meaningful length, set to zero
     actuator_length_out[worldid, actid] = 0.0
@@ -2111,14 +2146,27 @@ def _transmission(
       wrench_translation = site_xmat @ gear_translation
       wrench_rotation = site_xmat @ gear_rotational
 
-      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      # count dofs
+      b1 = body_weldid[site_bodyid[siteid]]
+      da_init = int(-1)
+      if b1 > 0:
+        da_init = body_dofadr[b1] + body_dofnum[b1] - 1
+
+      da = da_init
+      ndof = int(0)
+      while da >= 0:
+        ndof += 1
+        da = dof_parentid[da]
+
+      moment_rownnz_out[worldid, actid] = ndof
+      rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
       moment_rowadr_out[worldid, actid] = rowadr
       actuator_length_out[worldid, actid] = 0.0
 
-      # moment: global Jacobian projected on wrench
-      # TODO(team): parallelize or dof traversal?
-      nnz = int(0)
-      for i in range(nv):
+      # traverse dofs
+      da = da_init
+      ptr = ndof - 1
+      while da >= 0:
         jacp, jacr = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -2127,16 +2175,15 @@ def _transmission(
           cdof_in,
           site_xpos_in[worldid, siteid],
           site_bodyid[siteid],
-          i,
+          da,
           worldid,
         )
         moment = wp.dot(jacp, wrench_translation) + wp.dot(jacr, wrench_rotation)
-        if moment != 0.0:
-          sparseid = rowadr + nnz
-          moment_colind_out[worldid, sparseid] = i
-          actuator_moment_out[worldid, sparseid] = moment
-          nnz += 1
-      moment_rownnz_out[worldid, actid] = nnz
+        sparseid = rowadr + ptr
+        moment_colind_out[worldid, sparseid] = da
+        actuator_moment_out[worldid, sparseid] = moment
+        ptr -= 1
+        da = dof_parentid[da]
     # reference site defined
     else:
       # initialize last dof address for each body
@@ -2194,47 +2241,63 @@ def _transmission(
 
       actuator_length_out[worldid, actid] = length
 
-      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      # count dofs
+      da1_init = int(-1)
+      da2_init = int(-1)
+      if b0 > 0:
+        da1_init = body_dofadr[b0] + body_dofnum[b0] - 1
+      if b1 > 0:
+        da2_init = body_dofadr[b1] + body_dofnum[b1] - 1
+
+      da1 = da1_init
+      da2 = da2_init
+      ndof = int(0)
+      while da1 >= 0 or da2 >= 0:
+        da = wp.max(da1, da2)
+        if da1 == da and da2 == da:
+          break
+        ndof += 1
+        if da1 == da:
+          da1 = dof_parentid[da1]
+        if da2 == da:
+          da2 = dof_parentid[da2]
+
+      moment_rownnz_out[worldid, actid] = ndof
+      rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
       moment_rowadr_out[worldid, actid] = rowadr
 
-      # TODO(team): parallelize or dof traversal?
-      nnz = int(0)
-      for i in range(nv):
+      # traverse dofs
+      da1 = da1_init
+      da2 = da2_init
+
+      ptr = ndof - 1
+      while da1 >= 0 or da2 >= 0:
+        da = wp.max(da1, da2)
+        if da1 == da and da2 == da:
+          break
+
         jacp, jacr = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos, site_bodyid[siteid], i, worldid
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, site_xpos, site_bodyid[siteid], da, worldid
         )
-
-        # jacref: global Jacobian of reference site
         jacpref, jacrref = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, ref_xpos, site_bodyid[refid], i, worldid
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, ref_xpos, site_bodyid[refid], da, worldid
         )
 
-        jacpdif = jacp - jacpref
-        jacrdif = jacr - jacrref
-
-        # if common ancestral dof was found, clear the columns of its parental chain
-        da = dofadr_common
-        while da >= 0:
-          if da == i:
-            jacpdif = wp.vec3(0.0)
-            jacrdif = wp.vec3(0.0)
-            break
-          da = dof_parentid[da]
-
-        # moment: global Jacobian projected on wrench
         moment = float(0.0)
-
         if translational_transmission:
-          moment += wp.dot(jacpdif, wrench_translation)
+          moment += wp.dot(jacp - jacpref, wrench_translation)
         if rotational_transmission:
-          moment += wp.dot(jacrdif, wrench_rotation)
+          moment += wp.dot(jacr - jacrref, wrench_rotation)
 
-        if moment != 0.0:
-          sparseid = rowadr + nnz
-          moment_colind_out[worldid, sparseid] = i
-          actuator_moment_out[worldid, sparseid] = moment
-          nnz += 1
-      moment_rownnz_out[worldid, actid] = nnz
+        sparseid = rowadr + ptr
+        moment_colind_out[worldid, sparseid] = da
+        actuator_moment_out[worldid, sparseid] = moment
+        ptr -= 1
+
+        if da1 == da:
+          da1 = dof_parentid[da1]
+        if da2 == da:
+          da2 = dof_parentid[da2]
   else:
     wp.printf("unhandled transmission type %d\n", trntype)
 
