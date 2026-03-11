@@ -112,18 +112,20 @@ def _geom_dist(
     ncon_out: wp.array(dtype=int),
     pos_out: wp.array(dtype=wp.vec3),
   ):
+    worldid = wp.tid()
+
     geom1 = Geom()
     geom1.index = -1
     geomtype1 = geom_type[gid1]
     if wp.static(pos1 == None):
-      geom1.pos = geom_xpos_in[0, gid1]
+      geom1.pos = geom_xpos_in[worldid, gid1]
     else:
       geom1.pos = pos1
     if wp.static(mat1 == None):
-      geom1.rot = geom_xmat_in[0, gid1]
+      geom1.rot = geom_xmat_in[worldid, gid1]
     else:
       geom1.rot = mat1
-    geom1.size = geom_size[0, gid1]
+    geom1.size = geom_size[worldid % geom_size.shape[0], gid1]
     geom1.margin = margin
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
@@ -147,14 +149,14 @@ def _geom_dist(
     geom2.index = -1
     geomtype2 = geom_type[gid2]
     if wp.static(pos2 == None):
-      geom2.pos = geom_xpos_in[0, gid2]
+      geom2.pos = geom_xpos_in[worldid, gid2]
     else:
       geom2.pos = pos2
     if wp.static(mat2 == None):
-      geom2.rot = geom_xmat_in[0, gid2]
+      geom2.rot = geom_xmat_in[worldid, gid2]
     else:
       geom2.rot = mat2
-    geom2.size = geom_size[0, gid2]
+    geom2.size = geom_size[worldid % geom_size.shape[0], gid2]
     geom2.margin = margin
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
@@ -719,6 +721,58 @@ class GJKTest(parameterized.TestCase):
     dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -1.5778851595232846e-05)
     self.assertEqual(ncon, 4)
+
+  def test_box_box_max(self):
+    """Box-box collision needing 16 iterations of EPA."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom name="geom1" type="box" size=".018 .018 .01"/>
+           <geom name="geom2" type="box" size=".020 .020 .04"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    rot1 = wp.mat33(
+      0.8378595710,
+      0.3184406757,
+      -0.4433811009,
+      0.5328434706,
+      -0.3006005287,
+      0.7910227776,
+      0.1186132580,
+      -0.8990187645,
+      -0.4215400815,
+    )
+
+    pos1 = wp.vec3(
+      6.0405082703,
+      21.4734001160,
+      0.036854844,
+    )
+
+    rot2 = wp.mat33(
+      -0.6420212388,
+      -0.0727036372,
+      -0.7632319927,
+      0.3801730871,
+      -0.8946756721,
+      -0.2345722020,
+      -0.6657907367,
+      -0.4407605529,
+      0.6020406485,
+    )
+
+    pos2 = wp.vec3(
+      6.0641078949,
+      21.4842395782,
+      0.0212156791,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -0.03636224)
 
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):

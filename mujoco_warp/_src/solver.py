@@ -28,6 +28,7 @@ from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 
 wp.set_module_options({"enable_backward": False})
 
@@ -930,6 +931,9 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     contact_efc_address_in: wp.array2d(dtype=int),
     efc_type_in: wp.array2d(dtype=int),
     efc_id_in: wp.array2d(dtype=int),
+    efc_J_rownnz_in: wp.array2d(dtype=int),
+    efc_J_rowadr_in: wp.array2d(dtype=int),
+    efc_J_colind_in: wp.array3d(dtype=int),
     efc_J_in: wp.array3d(dtype=float),
     efc_D_in: wp.array2d(dtype=float),
     efc_frictionloss_in: wp.array2d(dtype=float),
@@ -965,8 +969,16 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     if wp.static(FUSE_JV):
       for efcid in range(tid, nefc, wp.block_dim()):
         jv = float(0.0)
-        for i in range(nv):
-          jv += efc_J_in[worldid, efcid, i] * ctx_search_in[worldid, i]
+        if wp.static(SPARSE_CONSTRAINT_JACOBIAN):
+          rownnz = efc_J_rownnz_in[worldid, efcid]
+          rowadr = efc_J_rowadr_in[worldid, efcid]
+          for k in range(rownnz):
+            sparseid = rowadr + k
+            colind = efc_J_colind_in[worldid, 0, sparseid]
+            jv += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
+        else:
+          for i in range(nv):
+            jv += efc_J_in[worldid, efcid, i] * ctx_search_in[worldid, i]
         ctx_jv_out[worldid, efcid] = jv
 
       _syncthreads()  # ensure all jv values are written before reading
@@ -1356,6 +1368,9 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       d.contact.efc_address,
       d.efc.type,
       d.efc.id,
+      d.efc.J_rownnz,
+      d.efc.J_rowadr,
+      d.efc.J_colind,
       d.efc.J,
       d.efc.D,
       d.efc.frictionloss,
@@ -1555,7 +1570,7 @@ def linesearch_prepare_quad(
 
     dim = contact_dim_in[conid]
     friction = contact_friction_in[conid]
-    mu = friction[0] * opt_impratio_invsqrt[worldid]
+    mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
     u0 = Jaref * mu
     v0 = jv * mu
@@ -1876,7 +1891,7 @@ def update_constraint_efc(track_changes: bool):
 
       dim = contact_dim_in[conid]
       friction = contact_friction_in[conid]
-      mu = friction[0] * opt_impratio_invsqrt[worldid]
+      mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
       efcid0 = contact_efc_address_in[conid, 0]
       if efcid0 < 0:
@@ -2081,6 +2096,59 @@ def update_gradient_h_incremental(
 
   if delta != 0.0:
     ctx_h_out[worldid, i, j] += delta
+
+
+@wp.kernel
+def update_gradient_h_incremental_sparse(
+  # Data in:
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  # In:
+  changed_ids_in: wp.array2d(dtype=int),
+  changed_count_in: wp.array(dtype=int),
+  # Out:
+  ctx_h_out: wp.array3d(dtype=float),
+):
+  """Incrementally update lower triangle of H for changed constraints (sparse J)."""
+  worldid, change_idx = wp.tid()
+
+  n_changes = changed_count_in[worldid]
+  if change_idx >= n_changes:
+    return
+
+  efcid = changed_ids_in[worldid, change_idx]
+  D = efc_D_in[worldid, efcid]
+  sign = float(0.0)
+  if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+    sign = D
+  else:
+    sign = -D
+
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+
+  for ii in range(rownnz):
+    sparseidi = rowadr + ii
+    Ji = efc_J_in[worldid, 0, sparseidi]
+    if Ji == 0.0:
+      continue
+    colindi = efc_J_colind_in[worldid, 0, sparseidi]
+    for jj in range(ii + 1):
+      sparseidj = rowadr + jj
+      Jj = efc_J_in[worldid, 0, sparseidj]
+      if Jj == 0.0:
+        continue
+      colindj = efc_J_colind_in[worldid, 0, sparseidj]
+      h = sign * Ji * Jj
+      # Ensure lower triangle: larger index first
+      if colindi >= colindj:
+        wp.atomic_add(ctx_h_out[worldid, colindi], colindj, h)
+      else:
+        wp.atomic_add(ctx_h_out[worldid, colindj], colindi, h)
 
 
 def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, track_changes: bool = False):
@@ -2416,7 +2484,7 @@ def update_gradient_JTCJ_sparse(
       return
 
     fri = contact_friction_in[conid]
-    mu = fri[0] * opt_impratio_invsqrt[worldid]
+    mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
     mu2 = mu * mu
     dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
@@ -2581,7 +2649,7 @@ def update_gradient_JTCJ_dense(
       continue
 
     fri = contact_friction_in[conid]
-    mu = fri[0] * opt_impratio_invsqrt[worldid]
+    mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
     mu2 = mu * mu
     dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
@@ -2776,7 +2844,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
-    if m.is_sparse and SPARSE_CONSTRAINT_JACOBIAN:
+    if SPARSE_CONSTRAINT_JACOBIAN:
       # TODO(team): improve performance for sparse code path
       @wp.kernel(module="unique", enable_backward=False)
       def _JTDAJ_sparse(
@@ -2837,28 +2905,53 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
 
-      wp.launch(
-        update_gradient_set_h_qM_lower_sparse,
-        dim=(d.nworld, m.qM_fullm_i.size),
-        inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
-        outputs=[ctx.h],
-      )
+      if m.is_sparse:
+        wp.launch(
+          update_gradient_set_h_qM_lower_sparse,
+          dim=(d.nworld, m.qM_fullm_i.size),
+          inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
+          outputs=[ctx.h],
+        )
+      else:
+        # dense M: copy qM directly into h
+        @wp.kernel(module="unique", enable_backward=False)
+        def _set_h_qM_dense(
+          nv: int,
+          qM_in: wp.array3d(dtype=float),
+          ctx_done_in: wp.array(dtype=bool),
+          ctx_h_out: wp.array3d(dtype=float),
+        ):
+          worldid, i, j = wp.tid()
+          if ctx_done_in[worldid]:
+            return
+          if i >= nv or j >= nv:
+            return
+          if i >= j:
+            ctx_h_out[worldid, i, j] += qM_in[worldid, i, j]
+
+        wp.launch(
+          _set_h_qM_dense,
+          dim=(d.nworld, m.nv, m.nv),
+          inputs=[m.nv, d.qM, ctx.done],
+          outputs=[ctx.h],
+        )
     elif m.is_sparse:
       num_blocks_ceil = ceil(m.nv / types.TILE_SIZE_JTDAJ_SPARSE)
       lower_triangle_dim = int(num_blocks_ceil * (num_blocks_ceil + 1) / 2)
-      wp.launch_tiled(
-        update_gradient_JTDAJ_sparse_tiled(types.TILE_SIZE_JTDAJ_SPARSE, d.njmax),
-        dim=(d.nworld, lower_triangle_dim),
-        inputs=[
-          d.nefc,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          ctx.done,
-        ],
-        outputs=[ctx.h],
-        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
-      )
+      with scoped_mathdx_gemm_disabled():
+        wp.launch_tiled(
+          update_gradient_JTDAJ_sparse_tiled(types.TILE_SIZE_JTDAJ_SPARSE, d.njmax),
+          dim=(d.nworld, lower_triangle_dim),
+          inputs=[
+            d.nefc,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+          block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
+        )
 
       wp.launch(
         update_gradient_set_h_qM_lower_sparse,
@@ -2867,20 +2960,21 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
     else:
-      wp.launch_tiled(
-        update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
-        dim=d.nworld,
-        inputs=[
-          d.nefc,
-          d.qM,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          ctx.done,
-        ],
-        outputs=[ctx.h],
-        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-      )
+      with scoped_mathdx_gemm_disabled():
+        wp.launch_tiled(
+          update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+          dim=d.nworld,
+          inputs=[
+            d.nefc,
+            d.qM,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+        )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
@@ -2983,19 +3077,36 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   )
 
   # Update lower triangle of H with delta from changed constraints
-  lower_tri_dim = m.nv * (m.nv + 1) // 2
-  wp.launch(
-    update_gradient_h_incremental,
-    dim=(d.nworld, lower_tri_dim),
-    inputs=[
-      d.efc.J,
-      d.efc.D,
-      d.efc.state,
-      ctx.changed_efc_ids,
-      ctx.changed_efc_count,
-    ],
-    outputs=[ctx.h],
-  )
+  if SPARSE_CONSTRAINT_JACOBIAN:
+    wp.launch(
+      update_gradient_h_incremental_sparse,
+      dim=(d.nworld, ctx.changed_efc_ids.shape[1]),
+      inputs=[
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.D,
+        d.efc.state,
+        ctx.changed_efc_ids,
+        ctx.changed_efc_count,
+      ],
+      outputs=[ctx.h],
+    )
+  else:
+    lower_tri_dim = m.nv * (m.nv + 1) // 2
+    wp.launch(
+      update_gradient_h_incremental,
+      dim=(d.nworld, lower_tri_dim),
+      inputs=[
+        d.efc.J,
+        d.efc.D,
+        d.efc.state,
+        ctx.changed_efc_ids,
+        ctx.changed_efc_count,
+      ],
+      outputs=[ctx.h],
+    )
 
   _cholesky_factorize_solve(m, d, ctx)
 

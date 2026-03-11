@@ -24,6 +24,7 @@ from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -127,6 +128,7 @@ def _equality_connect(
   opt_disableflags: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -204,10 +206,8 @@ def _equality_connect(
   Jqvel = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
-    while body1 > 0 and body_dofnum[body1] == 0:
-      body1 = body_parentid[body1]
-    while body2 > 0 and body_dofnum[body2] == 0:
-      body2 = body_parentid[body2]
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
 
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -423,7 +423,7 @@ def _equality_joint(
     # Two joint constraint
     qposadr2 = jnt_qposadr[jntid_2]
     dofadr2 = jnt_dofadr[jntid_2]
-    dif = qpos_in[worldid, qposadr2] - qpos0[worldid, qposadr2]
+    dif = qpos_in[worldid, qposadr2] - qpos0[qpos0_id, qposadr2]
 
     # Horner's method for polynomials
     rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
@@ -596,95 +596,109 @@ def _equality_tendon(
   )
 
 
-@wp.kernel
-def _equality_flex(
-  # Model:
-  nv: int,
-  opt_timestep: wp.array(dtype=float),
-  opt_disableflags: int,
-  flexedge_length0: wp.array(dtype=float),
-  flexedge_invweight0: wp.array(dtype=float),
-  flexedge_J_rownnz: wp.array(dtype=int),
-  flexedge_J_rowadr: wp.array(dtype=int),
-  flexedge_J_colind: wp.array(dtype=int),
-  eq_solref: wp.array2d(dtype=wp.vec2),
-  eq_solimp: wp.array2d(dtype=vec5),
-  is_sparse: bool,
-  eq_flex_adr: wp.array(dtype=int),
-  # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  flexedge_J_in: wp.array3d(dtype=float),
-  flexedge_length_in: wp.array2d(dtype=float),
-  njmax_in: int,
-  # Data out:
-  ne_out: wp.array(dtype=int),
-  nefc_out: wp.array(dtype=int),
-  efc_type_out: wp.array2d(dtype=int),
-  efc_id_out: wp.array2d(dtype=int),
-  efc_J_rownnz_out: wp.array2d(dtype=int),
-  efc_J_rowadr_out: wp.array2d(dtype=int),
-  efc_J_colind_out: wp.array3d(dtype=int),
-  efc_J_out: wp.array3d(dtype=float),
-  efc_pos_out: wp.array2d(dtype=float),
-  efc_margin_out: wp.array2d(dtype=float),
-  efc_D_out: wp.array2d(dtype=float),
-  efc_vel_out: wp.array2d(dtype=float),
-  efc_aref_out: wp.array2d(dtype=float),
-  efc_frictionloss_out: wp.array2d(dtype=float),
-):
-  worldid, eqflexid, edgeid = wp.tid()
-  eqid = eq_flex_adr[eqflexid]
+@cache_kernel
+def _equality_flex(is_sparse: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    opt_timestep: wp.array(dtype=float),
+    opt_disableflags: int,
+    flexedge_length0: wp.array(dtype=float),
+    flexedge_invweight0: wp.array(dtype=float),
+    flexedge_J_rownnz: wp.array(dtype=int),
+    flexedge_J_rowadr: wp.array(dtype=int),
+    flexedge_J_colind: wp.array(dtype=int),
+    eq_solref: wp.array2d(dtype=wp.vec2),
+    eq_solimp: wp.array2d(dtype=vec5),
+    eq_flex_adr: wp.array(dtype=int),
+    # Data in:
+    qvel_in: wp.array2d(dtype=float),
+    flexedge_J_in: wp.array2d(dtype=float),
+    flexedge_length_in: wp.array2d(dtype=float),
+    njmax_in: int,
+    # Data out:
+    ne_out: wp.array(dtype=int),
+    nefc_out: wp.array(dtype=int),
+    efc_type_out: wp.array2d(dtype=int),
+    efc_id_out: wp.array2d(dtype=int),
+    efc_J_rownnz_out: wp.array2d(dtype=int),
+    efc_J_rowadr_out: wp.array2d(dtype=int),
+    efc_J_colind_out: wp.array3d(dtype=int),
+    efc_J_out: wp.array3d(dtype=float),
+    efc_pos_out: wp.array2d(dtype=float),
+    efc_margin_out: wp.array2d(dtype=float),
+    efc_D_out: wp.array2d(dtype=float),
+    efc_vel_out: wp.array2d(dtype=float),
+    efc_aref_out: wp.array2d(dtype=float),
+    efc_frictionloss_out: wp.array2d(dtype=float),
+  ):
+    worldid, eqflexid, edgeid = wp.tid()
+    eqid = eq_flex_adr[eqflexid]
 
-  wp.atomic_add(ne_out, worldid, 1)
-  efcid = wp.atomic_add(nefc_out, worldid, 1)
+    wp.atomic_add(ne_out, worldid, 1)
+    efcid = wp.atomic_add(nefc_out, worldid, 1)
 
-  if efcid >= njmax_in:
-    return
+    if efcid >= njmax_in:
+      return
 
-  pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
-  solref = eq_solref[worldid % eq_solref.shape[0], eqid]
-  solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
+    pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
+    solref = eq_solref[worldid % eq_solref.shape[0], eqid]
+    solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
 
-  Jqvel = float(0.0)
+    Jqvel = float(0.0)
 
-  rownnz = flexedge_J_rownnz[edgeid]
-  flex_rowadr = flexedge_J_rowadr[edgeid]
-  efc_J_rownnz_out[worldid, efcid] = rownnz
-  efc_rowadr = efcid * nv
-  efc_J_rowadr_out[worldid, efcid] = efc_rowadr
-  for i in range(rownnz):
-    flex_sparseid = flex_rowadr + i
-    efc_sparseid = efc_rowadr + i
-    colind = flexedge_J_colind[flex_sparseid]
-    J = flexedge_J_in[worldid, 0, flex_sparseid]
-    efc_J_colind_out[worldid, 0, efc_sparseid] = colind
-    efc_J_out[worldid, 0, efc_sparseid] = J
-    Jqvel += J * qvel_in[worldid, colind]
+    rownnz = flexedge_J_rownnz[edgeid]
+    flex_rowadr = flexedge_J_rowadr[edgeid]
 
-  _efc_row(
-    opt_disableflags,
-    worldid,
-    opt_timestep[worldid % opt_timestep.shape[0]],
-    efcid,
-    pos,
-    pos,
-    flexedge_invweight0[edgeid],
-    solref,
-    solimp,
-    0.0,
-    Jqvel,
-    0.0,
-    ConstraintType.EQUALITY,
-    eqid,
-    efc_type_out,
-    efc_id_out,
-    efc_pos_out,
-    efc_margin_out,
-    efc_D_out,
-    efc_vel_out,
-    efc_aref_out,
-    efc_frictionloss_out,
-  )
+    if wp.static(is_sparse):
+      efc_J_rownnz_out[worldid, efcid] = rownnz
+      efc_rowadr = efcid * nv
+      efc_J_rowadr_out[worldid, efcid] = efc_rowadr
+      for i in range(rownnz):
+        flex_sparseid = flex_rowadr + i
+        efc_sparseid = efc_rowadr + i
+        colind = flexedge_J_colind[flex_sparseid]
+        J = flexedge_J_in[worldid, flex_sparseid]
+        efc_J_colind_out[worldid, 0, efc_sparseid] = colind
+        efc_J_out[worldid, 0, efc_sparseid] = J
+        Jqvel += J * qvel_in[worldid, colind]
+    else:
+      for i in range(nv):
+        efc_J_out[worldid, efcid, i] = 0.0
+      for i in range(rownnz):
+        flex_sparseid = flex_rowadr + i
+        colind = flexedge_J_colind[flex_sparseid]
+        J = flexedge_J_in[worldid, flex_sparseid]
+        efc_J_out[worldid, efcid, colind] = J
+        Jqvel += J * qvel_in[worldid, colind]
+
+    _efc_row(
+      opt_disableflags,
+      worldid,
+      opt_timestep[worldid % opt_timestep.shape[0]],
+      efcid,
+      pos,
+      pos,
+      flexedge_invweight0[edgeid],
+      solref,
+      solimp,
+      0.0,
+      Jqvel,
+      0.0,
+      ConstraintType.EQUALITY,
+      eqid,
+      efc_type_out,
+      efc_id_out,
+      efc_pos_out,
+      efc_margin_out,
+      efc_D_out,
+      efc_vel_out,
+      efc_aref_out,
+      efc_frictionloss_out,
+    )
+
+  return kernel
 
 
 @wp.kernel
@@ -696,6 +710,7 @@ def _equality_weld(
   opt_disableflags: int,
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
+  body_weldid: wp.array(dtype=int),
   body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   body_invweight0: wp.array2d(dtype=wp.vec2),
@@ -784,10 +799,8 @@ def _equality_weld(
   Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
-    while body1 > 0 and body_dofnum[body1] == 0:
-      body1 = body_parentid[body1]
-    while body2 > 0 and body_dofnum[body2] == 0:
-      body2 = body_parentid[body2]
+    body1 = body_weldid[body1]
+    body2 = body_weldid[body2]
 
     da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -1994,6 +2007,9 @@ def make_constraint(m: types.Model, d: types.Data):
     inputs=[d.ne, d.nf, d.nl, d.nefc],
   )
 
+  if types.SPARSE_CONSTRAINT_JACOBIAN:
+    d.contact.efc_address.fill_(-1)
+
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
@@ -2006,6 +2022,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.body_parentid,
           m.body_rootid,
+          m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
@@ -2056,6 +2073,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.body_parentid,
           m.body_rootid,
+          m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
@@ -2179,7 +2197,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _equality_flex,
+        _equality_flex(SPARSE_CONSTRAINT_JACOBIAN),
         dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
         inputs=[
           m.nv,
@@ -2192,7 +2210,6 @@ def make_constraint(m: types.Model, d: types.Data):
           m.flexedge_J_colind,
           m.eq_solref,
           m.eq_solimp,
-          SPARSE_CONSTRAINT_JACOBIAN,
           m.eq_flex_adr,
           d.qvel,
           d.flexedge_J,

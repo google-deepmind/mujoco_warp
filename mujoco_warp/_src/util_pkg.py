@@ -23,20 +23,21 @@ def _parse_version(version_str: str) -> tuple[tuple[int, int | str], ...]:
   """Parse a version string into comparable components.
 
   Both '.' and '-' are treated as separators. Each component is wrapped in a
-  tuple: (0, int) for numeric parts, (1, str) for non-numeric. This ensures
-  that numeric components always sort before string components during tuple
-  comparison.
+  tuple: (0, int) for numeric parts, (-1, str) for non-numeric. A (0, 0)
+  sentinel is appended so that stable releases sort above pre-release suffixes
+  during Python tuple comparison (e.g., 1.2.3 >= 1.2.3.dev). Non-numeric
+  components are compared lexicographically (e.g., b >= a).
 
   Args:
     version_str: Version string like "3.5.0" or "3.5.0.dev869102767".
 
   Returns:
     Tuple of (type_order, value) pairs for comparison, where type_order is 0
-    for integers and 1 for strings.
+    for integers and -1 for strings, followed by a (0, 0) sentinel.
   """
   # Split on both '.' and '-'
   parts = re.split(r"[.\-]", version_str)
-  return tuple([(0, int(p)) if p.isdigit() else (1, p) for p in parts])
+  return tuple([(0, int(p)) if p.isdigit() else (-1, p) for p in parts] + [(0, 0)])
 
 
 def check_version(spec: str) -> bool:
@@ -48,7 +49,7 @@ def check_version(spec: str) -> bool:
   - Both '.' and '-' are treated as separators
   - Numeric components are compared numerically
   - Non-numeric components are compared lexicographically
-  - Longer versions are considered greater (e.g., 3.5.0.dev > 3.5.0)
+  - Stable releases are greater than pre-releases (e.g., 1.2.3 >= 1.2.3.dev)
 
   Args:
     spec: Version specification like "numpy>=1.20.0".
@@ -66,7 +67,20 @@ def check_version(spec: str) -> bool:
   package_name, op, version_str = match.groups()
 
   required_version = _parse_version(version_str)
-  installed_version = _parse_version(importlib.metadata.version(package_name))
+
+  try:
+    installed_str = importlib.metadata.version(package_name)
+  except importlib.metadata.PackageNotFoundError as e:
+    # Fallback: import the package and read __version__
+    try:
+      import importlib as _importlib  # noqa: F811
+
+      mod = _importlib.import_module(package_name)
+      installed_str = mod.__version__
+    except (ImportError, AttributeError):
+      raise e
+
+  installed_version = _parse_version(installed_str)
 
   ops = {
     ">=": operator.ge,
