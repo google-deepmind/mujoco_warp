@@ -41,8 +41,6 @@ def _assert_eq(a, b, name):
 
 def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   """Assert equality of efc fields after sorting both sides."""
-  if nv == 0:
-    return
   # Get the ordering indices based on efc_type, efc_pos, efc_vel, efc_aref, efc_d for MJWarp
   efc_type = d.efc.type.numpy()[0, :nefc]
   efc_pos = d.efc.pos.numpy()[0, :nefc]
@@ -77,6 +75,7 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   d_sorted = efc_J[d_sort_indices, :nv].reshape(-1)
 
   # Sort MuJoCo efc fields
+  # For J matrix, need to reshape to 2D, sort rows, then flatten
   nefc = len(mjd_sort_indices)
 
   if mujoco.mj_isSparse(mjm):
