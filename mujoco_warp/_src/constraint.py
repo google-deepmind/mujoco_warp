@@ -186,6 +186,10 @@ def _equality_connect(
   if efcid >= njmax_in - 3:
     return
 
+  efcid0 = efcid + 0
+  efcid1 = efcid + 1
+  efcid2 = efcid + 2
+
   data = eq_data[worldid % eq_data.shape[0], eqid]
   anchor1 = wp.vec3f(data[0], data[1], data[2])
   anchor2 = wp.vec3f(data[3], data[4], data[5])
@@ -219,38 +223,28 @@ def _equality_connect(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     # count non-zeros
-    da1_save = da1
-    da2_save = da2
+    pda1, pda2 = da1, da2
     rownnz = int(0)
-    while da1 >= 0 or da2 >= 0:
-      da = wp.max(da1, da2)
-      if da1 == da:
-        da1 = dof_parentid[da1]
-      if da2 == da:
-        da2 = dof_parentid[da2]
+    while pda1 >= 0 or pda2 >= 0:
+      da = wp.max(pda1, pda2)
+      if pda1 == da:
+        pda1 = dof_parentid[pda1]
+      if pda2 == da:
+        pda2 = dof_parentid[pda2]
       rownnz += 1
 
     # get rowadr
-    rowadr_base = wp.atomic_add(efc_nnz_out, worldid, 3 * rownnz)
-    rowadr0 = rowadr_base
-    rowadr1 = rowadr_base + rownnz
-    rowadr2 = rowadr_base + 2 * rownnz
+    rowadr = wp.atomic_add(efc_nnz_out, worldid, 3 * rownnz)
+    efc_J_rowadr_out[worldid, efcid0] = rowadr
+    efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
+    efc_J_rowadr_out[worldid, efcid2] = rowadr + 2 * rownnz
 
-    efcid0 = efcid + 0
-    efcid1 = efcid + 1
-    efcid2 = efcid + 2
-
-    efc_J_rowadr_out[worldid, efcid0] = rowadr0
-    efc_J_rowadr_out[worldid, efcid1] = rowadr1
-    efc_J_rowadr_out[worldid, efcid2] = rowadr2
     efc_J_rownnz_out[worldid, efcid0] = rownnz
     efc_J_rownnz_out[worldid, efcid1] = rownnz
     efc_J_rownnz_out[worldid, efcid2] = rownnz
 
     # compute J and colind
-    da1 = da1_save
-    da2 = da2_save
-    rownnz = int(0)
+    nnz = int(0)
     while da1 >= 0 or da2 >= 0:
       da = wp.max(da1, da2)
       if da1 == da:
@@ -282,9 +276,9 @@ def _equality_connect(
       )
       j1mj2 = jacp1 - jacp2
 
-      sparseid0 = rowadr0 + rownnz
-      sparseid1 = rowadr1 + rownnz
-      sparseid2 = rowadr2 + rownnz
+      sparseid0 = rowadr + nnz
+      sparseid1 = rowadr + rownnz + nnz
+      sparseid2 = rowadr + 2 * rownnz + nnz
 
       efc_J_colind_out[worldid, 0, sparseid0] = da
       efc_J_colind_out[worldid, 0, sparseid1] = da
@@ -296,7 +290,7 @@ def _equality_connect(
 
       Jqvel += j1mj2 * qvel_in[worldid, da]
 
-      rownnz += 1
+      nnz += 1
   else:
     # TODO(team): dof tree traversal
     for dofid in range(nv):
@@ -324,9 +318,9 @@ def _equality_connect(
       )
       j1mj2 = jacp1 - jacp2
 
-      efc_J_out[worldid, efcid + 0, dofid] = j1mj2[0]
-      efc_J_out[worldid, efcid + 1, dofid] = j1mj2[1]
-      efc_J_out[worldid, efcid + 2, dofid] = j1mj2[2]
+      efc_J_out[worldid, efcid0, dofid] = j1mj2[0]
+      efc_J_out[worldid, efcid1, dofid] = j1mj2[1]
+      efc_J_out[worldid, efcid2, dofid] = j1mj2[2]
 
       Jqvel += j1mj2 * qvel_in[worldid, dofid]
 
@@ -793,6 +787,13 @@ def _equality_weld(
   if efcid >= njmax_in - 6:
     return
 
+  efcid0 = efcid + 0
+  efcid1 = efcid + 1
+  efcid2 = efcid + 2
+  efcid3 = efcid + 3
+  efcid4 = efcid + 4
+  efcid5 = efcid + 5
+
   is_site = eq_objtype[eqid] == types.ObjType.SITE and nsite > 0
 
   obj1id = eq_obj1id[eqid]
@@ -836,39 +837,25 @@ def _equality_weld(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     # count non-zeros
-    da1_save = da1
-    da2_save = da2
+    pda1, pda2 = da1, da2
     rownnz = int(0)
-    while da1 >= 0 or da2 >= 0:
-      da = wp.max(da1, da2)
-      if da1 == da:
-        da1 = dof_parentid[da]
-      if da2 == da:
-        da2 = dof_parentid[da]
+    while pda1 >= 0 or pda2 >= 0:
+      da = wp.max(pda1, pda2)
+      if pda1 == da:
+        pda1 = dof_parentid[da]
+      if pda2 == da:
+        pda2 = dof_parentid[da]
       rownnz += 1
 
     # get rowadr
-    rowadr_base = wp.atomic_add(efc_nnz_out, worldid, 6 * rownnz)
-    rowadr0 = rowadr_base
-    rowadr1 = rowadr_base + rownnz
-    rowadr2 = rowadr_base + 2 * rownnz
-    rowadr3 = rowadr_base + 3 * rownnz
-    rowadr4 = rowadr_base + 4 * rownnz
-    rowadr5 = rowadr_base + 5 * rownnz
+    rowadr = wp.atomic_add(efc_nnz_out, worldid, 6 * rownnz)
+    efc_J_rowadr_out[worldid, efcid0] = rowadr
+    efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
+    efc_J_rowadr_out[worldid, efcid2] = rowadr + 2 * rownnz
+    efc_J_rowadr_out[worldid, efcid3] = rowadr + 3 * rownnz
+    efc_J_rowadr_out[worldid, efcid4] = rowadr + 4 * rownnz
+    efc_J_rowadr_out[worldid, efcid5] = rowadr + 5 * rownnz
 
-    efcid0 = efcid + 0
-    efcid1 = efcid + 1
-    efcid2 = efcid + 2
-    efcid3 = efcid + 3
-    efcid4 = efcid + 4
-    efcid5 = efcid + 5
-
-    efc_J_rowadr_out[worldid, efcid0] = rowadr0
-    efc_J_rowadr_out[worldid, efcid1] = rowadr1
-    efc_J_rowadr_out[worldid, efcid2] = rowadr2
-    efc_J_rowadr_out[worldid, efcid3] = rowadr3
-    efc_J_rowadr_out[worldid, efcid4] = rowadr4
-    efc_J_rowadr_out[worldid, efcid5] = rowadr5
     efc_J_rownnz_out[worldid, efcid0] = rownnz
     efc_J_rownnz_out[worldid, efcid1] = rownnz
     efc_J_rownnz_out[worldid, efcid2] = rownnz
@@ -877,9 +864,7 @@ def _equality_weld(
     efc_J_rownnz_out[worldid, efcid5] = rownnz
 
     # compute J and colind
-    da1 = da1_save
-    da2 = da2_save
-    rownnz = int(0)
+    nnz = int(0)
     while da1 >= 0 or da2 >= 0:
       da = wp.max(da1, da2)
       if da1 == da:
@@ -916,12 +901,12 @@ def _equality_weld(
       jacdifrq = math.mul_quat(math.quat_mul_axis(quat1, jacdifr), quat)
       jacdifr = 0.5 * wp.vec3(jacdifrq[1], jacdifrq[2], jacdifrq[3])
 
-      sparseid0 = rowadr0 + rownnz
-      sparseid1 = rowadr1 + rownnz
-      sparseid2 = rowadr2 + rownnz
-      sparseid3 = rowadr3 + rownnz
-      sparseid4 = rowadr4 + rownnz
-      sparseid5 = rowadr5 + rownnz
+      sparseid0 = rowadr + nnz
+      sparseid1 = rowadr + rownnz + nnz
+      sparseid2 = rowadr + 2 * rownnz + nnz
+      sparseid3 = rowadr + 3 * rownnz + nnz
+      sparseid4 = rowadr + 4 * rownnz + nnz
+      sparseid5 = rowadr + 5 * rownnz + nnz
 
       efc_J_colind_out[worldid, 0, sparseid0] = da
       efc_J_colind_out[worldid, 0, sparseid1] = da
@@ -940,7 +925,7 @@ def _equality_weld(
       Jqvelp += jacdifp * qvel_in[worldid, da]
       Jqvelr += jacdifr * qvel_in[worldid, da]
 
-      rownnz += 1
+      nnz += 1
   else:
     for dofid in range(nv):
       jacp1, jacr1 = support.jac_dof(
@@ -968,15 +953,17 @@ def _equality_weld(
 
       jacdifp = jacp1 - jacp2
 
-      for i in range(3):
-        efc_J_out[worldid, efcid + i, dofid] = jacdifp[i]
+      efc_J_out[worldid, efcid0, dofid] = jacdifp[0]
+      efc_J_out[worldid, efcid1, dofid] = jacdifp[1]
+      efc_J_out[worldid, efcid2, dofid] = jacdifp[2]
 
       jacdifr = (jacr1 - jacr2) * torquescale
       jacdifrq = math.mul_quat(math.quat_mul_axis(quat1, jacdifr), quat)
       jacdifr = 0.5 * wp.vec3(jacdifrq[1], jacdifrq[2], jacdifrq[3])
 
-      for i in range(3):
-        efc_J_out[worldid, efcid + 3 + i, dofid] = jacdifr[i]
+      efc_J_out[worldid, efcid3, dofid] = jacdifr[0]
+      efc_J_out[worldid, efcid4, dofid] = jacdifr[1]
+      efc_J_out[worldid, efcid5, dofid] = jacdifr[2]
 
       Jqvelp += jacdifp * qvel_in[worldid, dofid]
       Jqvelr += jacdifr * qvel_in[worldid, dofid]
@@ -1697,20 +1684,19 @@ def _contact_pyramidal(
     body1 = body_weldid[body1]
     body2 = body_weldid[body2]
 
-    da1 = body_dofadr[body1] + body_dofnum[body1] - 1
-    da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+    da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+    da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     if is_sparse:
       # count non-zeros
-      da1_save = da1
-      da2_save = da2
+      pda1, pda2 = da1, da2
       rownnz = int(0)
-      while da1 >= 0 or da2 >= 0:
-        da = wp.max(da1, da2)
-        if da1 == da:
-          da1 = dof_parentid[da1]
-        if da2 == da:
-          da2 = dof_parentid[da2]
+      while pda1 >= 0 or pda2 >= 0:
+        da = wp.max(pda1, pda2)
+        if pda1 == da:
+          pda1 = dof_parentid[pda1]
+        if pda2 == da:
+          pda2 = dof_parentid[pda2]
         rownnz += 1
 
       # get rowadr
@@ -1718,13 +1704,10 @@ def _contact_pyramidal(
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_rownnz_out[worldid, efcid] = rownnz
 
-      da1 = da1_save
-      da2 = da2_save
-
     da = wp.max(da1, da2)
 
     if is_sparse:
-      rownnz = int(0)
+      nnz = int(0)
       dofid = int(da)
     else:
       dofid = int(nv - 1)
@@ -1784,10 +1767,10 @@ def _contact_pyramidal(
             J -= Ji * frii
 
         if is_sparse:
-          sparseid = rowadr + rownnz
+          sparseid = rowadr + nnz
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
-          rownnz += 1
+          nnz += 1
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
@@ -1934,20 +1917,19 @@ def _contact_elliptic(
     body1 = body_weldid[body1]
     body2 = body_weldid[body2]
 
-    da1 = body_dofadr[body1] + body_dofnum[body1] - 1
-    da2 = body_dofadr[body2] + body_dofnum[body2] - 1
+    da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+    da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     if is_sparse:
       # count non-zeros
-      da1_save = da1
-      da2_save = da2
+      pda1, pda2 = da1, da2
       rownnz = int(0)
-      while da1 >= 0 or da2 >= 0:
-        da = wp.max(da1, da2)
-        if da1 == da:
-          da1 = dof_parentid[da1]
-        if da2 == da:
-          da2 = dof_parentid[da2]
+      while pda1 >= 0 or pda2 >= 0:
+        da = wp.max(pda1, pda2)
+        if pda1 == da:
+          pda1 = dof_parentid[pda1]
+        if pda2 == da:
+          pda2 = dof_parentid[pda2]
         rownnz += 1
 
       # get rowadr
@@ -1955,13 +1937,10 @@ def _contact_elliptic(
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_rownnz_out[worldid, efcid] = rownnz
 
-      da1 = da1_save
-      da2 = da2_save
-
     da = wp.max(da1, da2)
 
     if is_sparse:
-      rownnz = int(0)
+      nnz = int(0)
       dofid = int(da)
     else:
       dofid = int(nv - 1)
@@ -2009,10 +1988,10 @@ def _contact_elliptic(
             J += frame[dimid - 3, xyz] * jac_dif
 
         if is_sparse:
-          sparseid = rowadr + rownnz
+          sparseid = rowadr + nnz
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
-          rownnz += 1
+          nnz += 1
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
