@@ -36,9 +36,6 @@ TILE_SIZE_JTDAJ_DENSE = 16
 # TODO(team): remove after improving performance for sparse constraint jacobian
 SPARSE_CONSTRAINT_JACOBIAN = False
 
-# TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-TEXTURE_DTYPE = wp.Texture2D if hasattr(wp, "Texture2D") else int
-
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -1918,9 +1915,8 @@ class RenderContext:
   mesh_texcoord: array("*", wp.vec2)
   mesh_texcoord_offsets: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
-  # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-  textures: array("*", TEXTURE_DTYPE)
-  textures_registry: list[TEXTURE_DTYPE]
+  textures: array("*", wp.Texture2D)
+  textures_registry: list[wp.Texture2D]
   hfield_registry: dict
   hfield_bvh_id: array("nhfield", wp.uint64)
   hfield_bounds_size: array("nhfield", wp.vec3)
