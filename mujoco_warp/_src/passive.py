@@ -199,7 +199,7 @@ def _spring_damper_tendon_passive(
   qfrc_spring_out: wp.array2d(dtype=float),
   qfrc_damper_out: wp.array2d(dtype=float),
 ):
-  worldid, tenid, dofid = wp.tid()
+  worldid, tenid, dofid_sparse = wp.tid()
 
   stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
   damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
@@ -211,10 +211,10 @@ def _spring_damper_tendon_passive(
     return
 
   rownnz = ten_J_rownnz[tenid]
-  if dofid >= rownnz:
+  if dofid_sparse >= rownnz:
     return
   rowadr = ten_J_rowadr[tenid]
-  sparseid = rowadr + dofid
+  sparseid = rowadr + dofid_sparse
   J = ten_J_in[worldid, sparseid]
   dofid = ten_J_colind[sparseid]
 
@@ -751,7 +751,7 @@ def passive(m: Model, d: Data):
   if m.ntendon:
     wp.launch(
       _spring_damper_tendon_passive,
-      dim=(d.nworld, m.ntendon, m.nv),
+      dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
       inputs=[
         m.ten_J_rownnz,
         m.ten_J_rowadr,
