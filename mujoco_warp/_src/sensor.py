@@ -2855,12 +2855,12 @@ def energy_pos(m: Model, d: Data):
   wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
-  if not m.opt.disableflags & DisableBit.GRAVITY:
+  if not (m.opt.disableflags & DisableBit.GRAVITY):
     wp.launch(
       _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
     )
 
-  if not m.opt.disableflags & DisableBit.SPRING:
+  if not (m.opt.disableflags & DisableBit.SPRING):
     # add joint-level springs
     wp.launch(
       _energy_pos_passive_joint,
