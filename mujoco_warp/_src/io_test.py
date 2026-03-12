@@ -228,8 +228,16 @@ class IOTest(parameterized.TestCase):
     # actuator_moment
     actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(actuator_moment_dense, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    wp_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      wp_actuator_moment,
+      d.actuator_moment.numpy()[world_id],
+      d.moment_rownnz.numpy()[world_id],
+      d.moment_rowadr.numpy()[world_id],
+      d.moment_colind.numpy()[world_id],
+    )
     _assert_eq(
-      d.actuator_moment.numpy()[world_id].reshape(-1),
+      wp_actuator_moment.reshape(-1),
       actuator_moment_dense.reshape(-1),
       "actuator_moment",
     )
@@ -1609,6 +1617,9 @@ class IOTest(parameterized.TestCase):
       self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
     else:
       self.assertEqual(d.efc.J.shape[2], m.nv_pad)
+
+
+# TODO(team): test set_const_0 sparse
 
 
 if __name__ == "__main__":

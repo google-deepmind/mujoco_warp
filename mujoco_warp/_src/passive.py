@@ -182,11 +182,14 @@ def _spring_damper_dof_passive(
 @wp.kernel
 def _spring_damper_tendon_passive(
   # Model:
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_stiffness: wp.array2d(dtype=float),
   tendon_damping: wp.array2d(dtype=float),
   tendon_lengthspring: wp.array2d(dtype=wp.vec2),
   # Data in:
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   ten_velocity_in: wp.array2d(dtype=float),
   # In:
@@ -196,7 +199,7 @@ def _spring_damper_tendon_passive(
   qfrc_spring_out: wp.array2d(dtype=float),
   qfrc_damper_out: wp.array2d(dtype=float),
 ):
-  worldid, tenid, dofid = wp.tid()
+  worldid, tenid, dofid_sparse = wp.tid()
 
   stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
   damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
@@ -207,7 +210,13 @@ def _spring_damper_tendon_passive(
   if not has_stiffness and not has_damping:
     return
 
-  J = ten_J_in[worldid, tenid, dofid]
+  rownnz = ten_J_rownnz[tenid]
+  if dofid_sparse >= rownnz:
+    return
+  rowadr = ten_J_rowadr[tenid]
+  sparseid = rowadr + dofid_sparse
+  J = ten_J_in[worldid, sparseid]
+  dofid = ten_J_colind[sparseid]
 
   if has_stiffness:
     # compute spring force along tendon
@@ -742,8 +751,11 @@ def passive(m: Model, d: Data):
   if m.ntendon:
     wp.launch(
       _spring_damper_tendon_passive,
-      dim=(d.nworld, m.ntendon, m.nv),
+      dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
       inputs=[
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
         m.tendon_stiffness,
         m.tendon_damping,
         m.tendon_lengthspring,

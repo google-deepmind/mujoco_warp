@@ -500,6 +500,9 @@ def _equality_tendon(
   eq_solref: wp.array2d(dtype=wp.vec2),
   eq_solimp: wp.array2d(dtype=vec5),
   eq_data: wp.array2d(dtype=vec11),
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_length0: wp.array2d(dtype=float),
   tendon_invweight0: wp.array2d(dtype=float),
   is_sparse: bool,
@@ -507,7 +510,7 @@ def _equality_tendon(
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   eq_active_in: wp.array2d(dtype=bool),
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   njmax_in: int,
   # Data out:
@@ -549,13 +552,11 @@ def _equality_tendon(
   tendon_length0_id = worldid % tendon_length0.shape[0]
   tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
   pos1 = ten_length_in[worldid, obj1id] - tendon_length0[tendon_length0_id, obj1id]
-  jac1 = ten_J_in[worldid, obj1id]
 
   if obj2id > -1:
     invweight = tendon_invweight0[tendon_invweight0_id, obj1id] + tendon_invweight0[tendon_invweight0_id, obj2id]
 
     pos2 = ten_length_in[worldid, obj2id] - tendon_length0[tendon_length0_id, obj2id]
-    jac2 = ten_J_in[worldid, obj2id]
 
     dif = pos2
     dif2 = dif * dif
@@ -569,25 +570,57 @@ def _equality_tendon(
     pos = pos1 - data[0]
     deriv = 0.0
 
+  rownnz1 = ten_J_rownnz[obj1id]
+  rowadr1 = ten_J_rowadr[obj1id]
+  rownnz2 = 0
+  rowadr2 = 0
+
+  if deriv != 0.0:
+    rownnz2 = ten_J_rownnz[obj2id]
+    rowadr2 = ten_J_rowadr[obj2id]
+
+  ptr1 = int(0)
+  ptr2 = int(0)
+
   Jqvel = float(0.0)
 
   # TODO(team): sparse tendon jacobian
   if is_sparse:
     rowadr = wp.atomic_add(efc_nnz_out, worldid, nv)
-    efc_J_rownnz_out[worldid, efcid] = nv
     efc_J_rowadr_out[worldid, efcid] = rowadr
 
+  nnz = int(0)
   for i in range(nv):
+    J1 = float(0.0)
+    if ptr1 < rownnz1:
+      sparseid1 = rowadr1 + ptr1
+      if ten_J_colind[sparseid1] == i:
+        J1 = ten_J_in[worldid, sparseid1]
+        ptr1 += 1
+
+    J = J1
     if deriv != 0.0:
-      J = jac1[i] + jac2[i] * -deriv
-    else:
-      J = jac1[i]
+      J2 = float(0.0)
+      if ptr2 < rownnz2:
+        sparseid2 = rowadr2 + ptr2
+        if ten_J_colind[sparseid2] == i:
+          J2 = ten_J_in[worldid, sparseid2]
+          ptr2 += 1
+      J += J2 * -deriv
+
     if is_sparse:
-      efc_J_colind_out[worldid, 0, rowadr + i] = i
-      efc_J_out[worldid, 0, rowadr + i] = J
+      if J != 0.0:
+        sparseid = rowadr + nnz
+        efc_J_colind_out[worldid, 0, sparseid] = i
+        efc_J_out[worldid, 0, sparseid] = J
+        nnz += 1
     else:
       efc_J_out[worldid, efcid, i] = J
+
     Jqvel += J * qvel_in[worldid, i]
+
+  if is_sparse:
+    efc_J_rownnz_out[worldid, efcid] = nnz
 
   _efc_row(
     opt_disableflags,
@@ -633,7 +666,7 @@ def _equality_flex(is_sparse: bool):
     eq_flex_adr: wp.array(dtype=int),
     # Data in:
     qvel_in: wp.array2d(dtype=float),
-    flexedge_J_in: wp.array3d(dtype=float),
+    flexedge_J_in: wp.array2d(dtype=float),
     flexedge_length_in: wp.array2d(dtype=float),
     njmax_in: int,
     # Data out:
@@ -680,7 +713,7 @@ def _equality_flex(is_sparse: bool):
         flex_sparseid = flex_rowadr + i
         efc_sparseid = efc_rowadr + i
         colind = flexedge_J_colind[flex_sparseid]
-        J = flexedge_J_in[worldid, 0, flex_sparseid]
+        J = flexedge_J_in[worldid, flex_sparseid]
         efc_J_colind_out[worldid, 0, efc_sparseid] = colind
         efc_J_out[worldid, 0, efc_sparseid] = J
         Jqvel += J * qvel_in[worldid, colind]
@@ -690,7 +723,7 @@ def _equality_flex(is_sparse: bool):
       for i in range(rownnz):
         flex_sparseid = flex_rowadr + i
         colind = flexedge_J_colind[flex_sparseid]
-        J = flexedge_J_in[worldid, 0, flex_sparseid]
+        J = flexedge_J_in[worldid, flex_sparseid]
         efc_J_out[worldid, efcid, colind] = J
         Jqvel += J * qvel_in[worldid, colind]
 
@@ -1132,6 +1165,9 @@ def _friction_tendon(
   nv: int,
   opt_timestep: wp.array(dtype=float),
   opt_disableflags: int,
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_solref_fri: wp.array2d(dtype=wp.vec2),
   tendon_solimp_fri: wp.array2d(dtype=vec5),
   tendon_frictionloss: wp.array2d(dtype=float),
@@ -1139,7 +1175,7 @@ def _friction_tendon(
   is_sparse: bool,
   # Data in:
   qvel_in: wp.array2d(dtype=float),
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   njmax_in: int,
   # Data out:
   nf_out: wp.array(dtype=int),
@@ -1173,24 +1209,36 @@ def _friction_tendon(
   if efcid >= njmax_in:
     return
 
+  if is_sparse:
+    rowadr_efc = efcid * nv
+    efc_J_rowadr_out[worldid, efcid] = rowadr_efc
+
   Jqvel = float(0.0)
 
   # TODO(team): sparse tendon jacobian
   if is_sparse:
     rowadr = wp.atomic_add(efc_nnz_out, worldid, nv)
-    efc_J_rownnz_out[worldid, efcid] = nv
     efc_J_rowadr_out[worldid, efcid] = rowadr
 
+  rownnz_tenJ = ten_J_rownnz[tenid]
+  rowadr_tenJ = ten_J_rowadr[tenid]
+  nnz = int(0)
   for i in range(nv):
-    # TODO(team): sparse ten_J
-    J = ten_J_in[worldid, tenid, i]
-    if is_sparse:
-      efc_J_colind_out[worldid, 0, rowadr + i] = i
-      efc_J_out[worldid, 0, rowadr + i] = J
+    if nnz < rownnz_tenJ and i == ten_J_colind[rowadr_tenJ + nnz]:
+      J = ten_J_in[worldid, rowadr_tenJ + nnz]
+      if is_sparse:
+        efc_J_colind_out[worldid, 0, rowadr_efc + nnz] = i
+        efc_J_out[worldid, 0, rowadr_efc + nnz] = J
+      else:
+        efc_J_out[worldid, efcid, i] = J
+      Jqvel += J * qvel_in[worldid, i]
+      nnz += 1
     else:
-      efc_J_out[worldid, efcid, i] = J
+      if not is_sparse:
+        efc_J_out[worldid, efcid, i] = 0.0
 
-    Jqvel += J * qvel_in[worldid, i]
+  if is_sparse:
+    efc_J_rownnz_out[worldid, efcid] = nnz
 
   tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
   tendon_solref_fri_id = worldid % tendon_solref_fri.shape[0]
@@ -1454,6 +1502,9 @@ def _limit_tendon(
   jnt_dofadr: wp.array(dtype=int),
   tendon_adr: wp.array(dtype=int),
   tendon_num: wp.array(dtype=int),
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_solref_lim: wp.array2d(dtype=wp.vec2),
   tendon_solimp_lim: wp.array2d(dtype=vec5),
   tendon_range: wp.array2d(dtype=wp.vec2),
@@ -1465,7 +1516,7 @@ def _limit_tendon(
   tendon_limited_adr: wp.array(dtype=int),
   # Data in:
   qvel_in: wp.array2d(dtype=float),
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   njmax_in: int,
   # Data out:
@@ -1508,42 +1559,55 @@ def _limit_tendon(
     Jqvel = float(0.0)
     scl = float(dist_min < dist_max) * 2.0 - 1.0
 
-    # TODO(team): sparse tendon jacobian
     if is_sparse:
-      rowadr = wp.atomic_add(efc_nnz_out, worldid, nv)
-      efc_J_rownnz_out[worldid, efcid] = nv
-      efc_J_rowadr_out[worldid, efcid] = rowadr
-      for i in range(nv):
-        efc_J_colind_out[worldid, 0, rowadr + i] = i
-        efc_J_out[worldid, 0, rowadr + i] = 0.0
-
-    adr = tendon_adr[tenid]
-    if wrap_type[adr] == types.WrapType.JOINT:
-      if not is_sparse:
-        for i in range(nv):
-          efc_J_out[worldid, efcid, i] = 0.0
-
-      ten_num = tendon_num[tenid]
-      for i in range(ten_num):
-        dofadr = jnt_dofadr[wrap_objid[adr + i]]
-        J = scl * ten_J_in[worldid, tenid, dofadr]
-
-        if is_sparse:
-          efc_J_out[worldid, 0, rowadr + dofadr] = J
-        else:
-          efc_J_out[worldid, efcid, dofadr] = J
-
-        Jqvel += J * qvel_in[worldid, dofadr]
+      rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, nv)
+      efc_J_rowadr_out[worldid, efcid] = rowadr_efc
     else:
       for i in range(nv):
-        J = scl * ten_J_in[worldid, tenid, i]
+        efc_J_out[worldid, efcid, i] = 0.0
 
-        if is_sparse:
-          efc_J_out[worldid, 0, rowadr + i] = J
+    adr_tenJ = tendon_adr[tenid]
+    rownnz_tenJ = ten_J_rownnz[tenid]
+    rowadr_tenJ = ten_J_rowadr[tenid]
+    nnz = int(0)
+    if wrap_type[adr_tenJ] == types.WrapType.JOINT:
+      ten_num = tendon_num[tenid]
+      for i in range(ten_num):
+        dofadr = jnt_dofadr[wrap_objid[adr_tenJ + i]]
+        for k in range(rownnz_tenJ):
+          sparseid_tenJ = rowadr_tenJ + k
+          colind = ten_J_colind[sparseid_tenJ]
+          if colind == dofadr:
+            J = scl * ten_J_in[worldid, sparseid_tenJ]
+            if is_sparse:
+              sparseid_efc = rowadr_efc + nnz
+              efc_J_colind_out[worldid, 0, sparseid_efc] = dofadr
+              efc_J_out[worldid, 0, sparseid_efc] = J
+            else:
+              efc_J_out[worldid, efcid, dofadr] = J
+            Jqvel += J * qvel_in[worldid, dofadr]
+            nnz += 1
+            break
+    else:
+      for i in range(nv):
+        if nnz < rownnz_tenJ:
+          sparseid_tenJ = rowadr_tenJ + nnz
+          colind = ten_J_colind[sparseid_tenJ]
+          if colind == i:
+            J = scl * ten_J_in[worldid, sparseid_tenJ]
+            if is_sparse:
+              sparseid_efc = rowadr_efc + nnz
+              efc_J_colind_out[worldid, 0, sparseid_efc] = colind
+              efc_J_out[worldid, 0, sparseid_efc] = J
+            else:
+              efc_J_out[worldid, efcid, i] = J
+            Jqvel += J * qvel_in[worldid, colind]
+            nnz += 1
         else:
-          efc_J_out[worldid, efcid, i] = J
+          efc_J_out[worldid, efcid, i] = 0.0
 
-        Jqvel += J * qvel_in[worldid, i]
+    if is_sparse:
+      efc_J_rownnz_out[worldid, efcid] = nnz
 
     tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
     tendon_solref_lim_id = worldid % tendon_solref_lim.shape[0]
@@ -2241,6 +2305,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
+          m.ten_J_rownnz,
+          m.ten_J_rowadr,
+          m.ten_J_colind,
           m.tendon_length0,
           m.tendon_invweight0,
           SPARSE_CONSTRAINT_JACOBIAN,
@@ -2351,6 +2418,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.nv,
           m.opt.timestep,
           m.opt.disableflags,
+          m.ten_J_rownnz,
+          m.ten_J_rowadr,
+          m.ten_J_colind,
           m.tendon_solref_fri,
           m.tendon_solimp_fri,
           m.tendon_frictionloss,
@@ -2469,6 +2539,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_dofadr,
           m.tendon_adr,
           m.tendon_num,
+          m.ten_J_rownnz,
+          m.ten_J_rowadr,
+          m.ten_J_colind,
           m.tendon_solref_lim,
           m.tendon_solimp_lim,
           m.tendon_range,

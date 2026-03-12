@@ -69,6 +69,47 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
     return bool(mujoco.mj_isSparse(mjm))
 
 
+def _make_tendon_sparse(mjm: mujoco.MjModel):
+  """Compute sparse tendon Jacobian structure (nJten, rownnz, rowadr, colind).
+
+  Ports MuJoCo C's makeTendonSparse from engine_setconst.c.
+  """
+  rownnz = np.zeros(mjm.ntendon, dtype=np.int32)
+  colind_list = []
+  for i in range(mjm.ntendon):
+    adr = mjm.tendon_adr[i]
+    num = mjm.tendon_num[i]
+    if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
+      # joint tendon: each wrap object is a joint, colind is its dofadr
+      cols = [int(mjm.jnt_dofadr[mjm.wrap_objid[adr + j]]) for j in range(num)]
+      rownnz[i] = num
+    else:
+      # spatial tendon: collect ancestor DOFs from wrap-object bodies
+      dof_set = set()
+      for j in range(num):
+        wtype = mjm.wrap_type[adr + j]
+        bodyid = -1
+        if wtype == mujoco.mjtWrap.mjWRAP_SITE:
+          bodyid = mjm.site_bodyid[mjm.wrap_objid[adr + j]]
+        elif wtype in (mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER):
+          bodyid = mjm.geom_bodyid[mjm.wrap_objid[adr + j]]
+        if bodyid > 0:
+          bid = bodyid
+          while bid > 0:
+            bdofadr = mjm.body_dofadr[bid]
+            bdofnum = mjm.body_dofnum[bid]
+            for k in range(bdofnum):
+              dof_set.add(bdofadr + k)
+            bid = mjm.body_parentid[bid]
+      cols = sorted(dof_set)
+      rownnz[i] = len(cols)
+    colind_list.extend(cols)
+  nJten = int(sum(rownnz))
+  rowadr = np.concatenate([[0], np.cumsum(rownnz[:-1])]).astype(np.int32) if mjm.ntendon else np.array([], dtype=np.int32)
+  colind = np.array(colind_list, dtype=np.int32)
+  return nJten, rownnz, rowadr, colind
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -226,6 +267,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.block_dim = types.BlockDim()
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
+
+  if check_version("mujoco<3.5.1.dev875093374"):
+    m.nJten, m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind = _make_tendon_sparse(mjm)
+    m.max_ten_J_rownnz = int(m.ten_J_rownnz.max()) if mjm.ntendon else 0
+  else:
+    m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -700,6 +747,8 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  if check_version("mujoco<3.5.1.dev875093374"):
+    sizes["nJten"] = _make_tendon_sparse(mjm)[0]
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -757,8 +806,6 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
-    # flexedge
-    "flexedge_J": None,
     # island arrays
     "nisland": None,
     "tree_island": None,
@@ -776,8 +823,6 @@ def make_data(
   else:
     d.qM = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
-
-  d.flexedge_J = wp.zeros((nworld, 1, mjd.flexedge_J.size), dtype=float)
 
   # island discovery arrays
   d.nisland = wp.zeros((nworld,), dtype=int)
@@ -861,6 +906,8 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  if check_version("mujoco<3.5.1.dev875093374"):
+    sizes["nJten"] = _make_tendon_sparse(mjm)[0]
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -961,14 +1008,13 @@ def put_data(
     "solver_niter": None,
     "qM": None,
     "qLD": None,
-    "ten_J": None,
-    "actuator_moment": None,
-    "flexedge_J": None,
     "nacon": None,
     # island arrays
     "nisland": None,
     "tree_island": None,
   }
+  if check_version("mujoco<3.5.1.dev875093374"):
+    d_kwargs["ten_J"] = None
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
       continue
@@ -993,24 +1039,31 @@ def put_data(
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
-  d.flexedge_J = wp.array(np.tile(mjd.flexedge_J.reshape(-1), (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
-
   # island arrays
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
   d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
 
-  ten_J = np.zeros((mjm.ntendon, mjm.nv))
-  if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
-    if mjm.ntendon:
-      mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1))
-  else:
-    ten_J = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-  d.ten_J = wp.array(np.full((nworld, mjm.ntendon, mjm.nv), ten_J), dtype=float)
-
-  # TODO(taylorhowell): sparse actuator_moment
-  actuator_moment = np.zeros((mjm.nu, mjm.nv))
-  mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
-  d.actuator_moment = wp.array(np.full((nworld, mjm.nu, mjm.nv), actuator_moment), dtype=float)
+  if check_version("mujoco<3.5.1.dev875093374"):
+    ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
+    if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
+      if mjm.ntendon:
+        if check_version("mujoco>=3.5.1.dev875093374"):
+          mujoco.mju_sparse2dense(
+            ten_J, mjd.ten_J.reshape(-1), mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind.reshape(-1)
+          )
+        else:
+          mujoco.mju_sparse2dense(
+            ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1)
+          )
+    else:
+      ten_J_dense = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+    # convert dense to sparse using model's sparse structure
+    nJten = sizes["nJten"]
+    ten_J_sparse = np.zeros(nJten)
+    if nJten > 0:
+      _, _rownnz, _rowadr, _colind = _make_tendon_sparse(mjm)
+      mujoco.mju_dense2sparse(ten_J_sparse, ten_J_dense, _rownnz, _rowadr, _colind)
+    d.ten_J = wp.array(np.tile(ten_J_sparse, (nworld, 1)), dtype=float)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -1118,10 +1171,11 @@ def get_data_into(
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
-  actuator_moment = d.actuator_moment.numpy()[world_id]
-  mujoco.mju_dense2sparse(
-    result.actuator_moment, actuator_moment, result.moment_rownnz, result.moment_rowadr, result.moment_colind
-  )
+  result.moment_rownnz[:] = d.moment_rownnz.numpy()[world_id]
+  result.moment_rowadr[:] = d.moment_rowadr.numpy()[world_id]
+  if mjm.nu:
+    result.moment_colind[:] = d.moment_colind.numpy()[world_id]
+    result.actuator_moment[:] = d.actuator_moment.numpy()[world_id]
   result.crb[:] = d.crb.numpy()[world_id]
   result.qLDiagInv[:] = d.qLDiagInv.numpy()[world_id]
   result.ten_velocity[:] = d.ten_velocity.numpy()[world_id]
@@ -1214,17 +1268,36 @@ def get_data_into(
 
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
-  if check_version("mujoco>=3.5.1.dev869712136"):
-    ten_J = d.ten_J.numpy()[world_id]
-    mujoco.mju_dense2sparse(
-      result.ten_J,
-      ten_J,
-      result.ten_J_rownnz,
-      result.ten_J_rowadr,
-      result.ten_J_colind,
-    )
-  else:
-    result.ten_J[:] = d.ten_J.numpy()[world_id]
+  if mjm.ntendon > 0:
+    if check_version("mujoco>=3.5.1.dev875093374"):
+      result.ten_J[:] = d.ten_J.numpy()[world_id]
+    else:
+      _, _rownnz, _rowadr, _colind = _make_tendon_sparse(mjm)
+
+      # convert sparse ten_J to dense
+      ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
+      ten_J_sparse = d.ten_J.numpy()[world_id]
+      mujoco.mju_sparse2dense(ten_J_dense, ten_J_sparse, _rownnz, _rowadr, _colind)
+
+      if check_version("mujoco>=3.5.1.dev869712136"):
+        ten_J = d.ten_J.numpy()[world_id]
+        if check_version("mujoco>=3.5.1.dev875093374"):
+          ten_J_rownnz = mjm.ten_J_rownnz
+          ten_J_rowadr = mjm.ten_J_rowadr
+          ten_J_colind = mjm.ten_J_colind.reshape(-1)
+        else:
+          ten_J_rownnz = result.ten_J_rownnz
+          ten_J_rowadr = result.ten_J_rowadr
+          ten_J_colind = result.ten_J_colind.reshape(-1)
+        mujoco.mju_dense2sparse(
+          result.ten_J,
+          ten_J,
+          ten_J_rownnz,
+          ten_J_rowadr,
+          ten_J_colind,
+        )
+      else:
+        result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
@@ -1738,28 +1811,45 @@ def _finalize_body_invweight0(
 @wp.kernel
 def _copy_tendon_jacobian(
   tenid_target: int,
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  ten_J_in: wp.array2d(dtype=float),
   ten_J_vec_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   nv = ten_J_in.shape[2]
-  for i in range(nv):
-    ten_J_vec_out[worldid, i] = ten_J_in[worldid, tenid_target, i]
+  rownnz = ten_J_rownnz[tenid_target]
+  rowadr = ten_J_rowadr[tenid_target]
+  for i in range(rownnz):
+    colind = ten_J_colind[rowadr + i]
+    ten_J_vec_out[worldid, colind] = ten_J_in[worldid, rowadr + i]
 
 
 @wp.kernel
 def _compute_tendon_dot_product(
+  # Model:
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
+  # In:
   tenid_target: int,
-  nv: int,
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   result_vec_in: wp.array2d(dtype=float),
+  # Out:
   tendon_invweight0_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
   tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
   dot_prod = float(0.0)
-  for i in range(nv):
-    dot_prod += ten_J_in[worldid, tenid_target, i] * result_vec_in[worldid, i]
+
+  rownnz = ten_J_rownnz[tenid_target]
+  rowadr = ten_J_rowadr[tenid_target]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    colind = ten_J_colind[sparseid]
+    dot_prod += ten_J_in[worldid, sparseid] * result_vec_in[worldid, colind]
+
   tendon_invweight0_out[tendon_invweight0_id, tenid_target] = dot_prod
 
 
@@ -1818,13 +1908,22 @@ def _compute_light_pos0(
 @wp.kernel
 def _copy_actuator_moment(
   actid_target: int,
-  actuator_moment_in: wp.array3d(dtype=float),
+  moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
   act_moment_vec_out: wp.array2d(dtype=float),
 ):
   worldid = wp.tid()
-  nv = actuator_moment_in.shape[2]
+  nv = act_moment_vec_out.shape[1]
   for i in range(nv):
-    act_moment_vec_out[worldid, i] = actuator_moment_in[worldid, actid_target, i]
+    act_moment_vec_out[worldid, i] = 0.0
+  rownnz = moment_rownnz_in[worldid, actid_target]
+  rowadr = moment_rowadr_in[worldid, actid_target]
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    col = moment_colind_in[worldid, sparseid]
+    act_moment_vec_out[worldid, col] = actuator_moment_in[worldid, sparseid]
 
 
 @wp.kernel
@@ -1860,7 +1959,10 @@ def _compute_dof_M0(
 def _resolve_dampratio(
   actuator_biastype: wp.array(dtype=int),
   actuator_gainprm: wp.array2d(dtype=types.vec10f),
-  actuator_moment_in: wp.array3d(dtype=float),
+  moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
   dof_M0_in: wp.array2d(dtype=float),
   nv: int,
   actuator_biasprm: wp.array2d(dtype=types.vec10f),
@@ -1887,8 +1989,12 @@ def _resolve_dampratio(
 
   # compute reflected mass: sum(dof_M0[j] / moment[i,j]^2) for active DOFs
   mass = float(0.0)
-  for j in range(nv):
-    moment = actuator_moment_in[worldid, actid, j]
+  rownnz = moment_rownnz_in[worldid, actid]
+  rowadr = moment_rowadr_in[worldid, actid]
+  for k in range(rownnz):
+    sparseid = rowadr + k
+    j = moment_colind_in[worldid, sparseid]
+    moment = actuator_moment_in[worldid, sparseid]
     if wp.abs(moment) > MJ_MINVAL:
       mass += dof_M0_in[worldid, j] / (moment * moment)
 
@@ -2077,16 +2183,22 @@ def set_const_0(m: types.Model, d: types.Data):
 
   # tendon_invweight0[t] = J_t * inv(M) * J_t'
   if m.ntendon > 0:
-    ten_J_vec = wp.zeros((d.nworld, m.nv), dtype=float)
-    ten_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
+    ten_J_vec = wp.empty((d.nworld, m.nv), dtype=float)
+    ten_result_vec = wp.empty((d.nworld, m.nv), dtype=float)
 
     for tenid in range(m.ntendon):
-      wp.launch(_copy_tendon_jacobian, dim=d.nworld, inputs=[tenid, d.ten_J], outputs=[ten_J_vec])
+      ten_J_vec.zero_()
+      wp.launch(
+        _copy_tendon_jacobian,
+        dim=d.nworld,
+        inputs=[tenid, m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J],
+        outputs=[ten_J_vec],
+      )
       smooth.solve_m(m, d, ten_result_vec, ten_J_vec)
       wp.launch(
         _compute_tendon_dot_product,
         dim=d.nworld,
-        inputs=[tenid, m.nv, d.ten_J, ten_result_vec],
+        inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, tenid, d.ten_J, ten_result_vec],
         outputs=[m.tendon_invweight0],
       )
 
@@ -2110,7 +2222,12 @@ def set_const_0(m: types.Model, d: types.Data):
     act_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
 
     for actid in range(m.nu):
-      wp.launch(_copy_actuator_moment, dim=d.nworld, inputs=[actid, d.actuator_moment], outputs=[act_moment_vec])
+      wp.launch(
+        _copy_actuator_moment,
+        dim=d.nworld,
+        inputs=[actid, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
+        outputs=[act_moment_vec],
+      )
       smooth.solve_m(m, d, act_result_vec, act_moment_vec)
       wp.launch(_compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
 
@@ -2129,6 +2246,9 @@ def set_const_0(m: types.Model, d: types.Data):
       inputs=[
         m.actuator_biastype,
         m.actuator_gainprm,
+        d.moment_rownnz,
+        d.moment_rowadr,
+        d.moment_colind,
         d.actuator_moment,
         dof_M0,
         m.nv,

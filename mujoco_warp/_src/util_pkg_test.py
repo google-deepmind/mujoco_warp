@@ -15,6 +15,7 @@
 
 """Tests for package version utilities."""
 
+import importlib.metadata
 from unittest import mock
 
 from absl.testing import absltest
@@ -27,13 +28,13 @@ class ParseVersionTest(parameterized.TestCase):
   """Tests for version string parsing."""
 
   @parameterized.parameters(
-    ("1.0.0", ((0, 1), (0, 0), (0, 0))),
-    ("3.5.0", ((0, 3), (0, 5), (0, 0))),
-    ("1.20.0", ((0, 1), (0, 20), (0, 0))),
-    ("3.5.0.dev869102767", ((0, 3), (0, 5), (0, 0), (1, "dev869102767"))),
-    ("3.5.0-foobar", ((0, 3), (0, 5), (0, 0), (1, "foobar"))),
-    ("1.0.0-alpha", ((0, 1), (0, 0), (0, 0), (1, "alpha"))),
-    ("2.0.0-beta.1", ((0, 2), (0, 0), (0, 0), (1, "beta"), (0, 1))),
+    ("1.0.0", ((0, 1), (0, 0), (0, 0), (0, 0))),
+    ("3.5.0", ((0, 3), (0, 5), (0, 0), (0, 0))),
+    ("1.20.0", ((0, 1), (0, 20), (0, 0), (0, 0))),
+    ("3.5.0.dev869102767", ((0, 3), (0, 5), (0, 0), (-1, "dev869102767"), (0, 0))),
+    ("3.5.0-foobar", ((0, 3), (0, 5), (0, 0), (-1, "foobar"), (0, 0))),
+    ("1.0.0-alpha", ((0, 1), (0, 0), (0, 0), (-1, "alpha"), (0, 0))),
+    ("2.0.0-beta.1", ((0, 2), (0, 0), (0, 0), (-1, "beta"), (0, 1), (0, 0))),
   )
   def test_parse_version(self, version_str, expected):
     self.assertEqual(util_pkg._parse_version(version_str), expected)
@@ -64,13 +65,18 @@ class CheckVersionTest(parameterized.TestCase):
     # != operator
     ("pkg!=1.0.0", "1.0.1", True),
     ("pkg!=1.0.0", "1.0.0", False),
-    # With dev/pre-release versions
-    ("pkg>=3.5.0", "3.5.0.dev869102767", True),  # dev version > base
-    ("pkg>=3.5.0", "3.5.0-foobar", True),  # foobar > base
-    ("pkg>3.5.0", "3.5.0.dev869102767", True),  # dev version > base
+    # With dev/pre-release versions (pre-release < clean release)
+    ("pkg>=3.5.0", "3.5.0.dev869102767", False),  # dev version < base
+    ("pkg>=3.5.0", "3.5.0-foobar", False),  # foobar < base
+    ("pkg>3.5.0", "3.5.0.dev869102767", False),  # dev version < base
+    ("pkg>=3.5.0", "3.5.0", True),  # exact match
+    ("pkg>=3.5.0.dev", "3.5.0", True),  # clean release > dev
     # Lexicographic ordering: foobar > dev
     ("pkg>=3.5.0-foobar", "3.5.0-foobar", True),
     ("pkg>3.5.0.dev869102767", "3.5.0-foobar", True),
+    # b >= a
+    ("pkg>=1.2.3-a", "1.2.3-b", True),
+    ("pkg>=1.2.3-b", "1.2.3-a", False),
   )
   def test_check_version(self, spec, installed_version, expected):
     with mock.patch("importlib.metadata.version", return_value=installed_version):
@@ -86,13 +92,28 @@ class CheckVersionTest(parameterized.TestCase):
     with self.assertRaises(ValueError):
       util_pkg.check_version(spec)
 
-  def test_check_version_package_not_found(self):
-    """Test that PackageNotFoundError is raised for missing packages."""
-    import importlib.metadata
+  def test_check_version_fallback_to_dunder_version(self):
+    """Test fallback to __version__ when metadata lookup fails."""
+    fake_module = mock.MagicMock()
+    fake_module.__version__ = "2.0.0"
+    with (
+      mock.patch(
+        "importlib.metadata.version",
+        side_effect=importlib.metadata.PackageNotFoundError("pkg"),
+      ),
+      mock.patch("importlib.import_module", return_value=fake_module),
+    ):
+      self.assertTrue(util_pkg.check_version("pkg>=1.5.0"))
+      self.assertFalse(util_pkg.check_version("pkg>=3.0.0"))
 
-    with mock.patch(
-      "importlib.metadata.version",
-      side_effect=importlib.metadata.PackageNotFoundError("nonexistent"),
+  def test_check_version_package_not_found(self):
+    """Test that PackageNotFoundError is raised when both lookups fail."""
+    with (
+      mock.patch(
+        "importlib.metadata.version",
+        side_effect=importlib.metadata.PackageNotFoundError("nonexistent"),
+      ),
+      mock.patch("importlib.import_module", side_effect=ImportError),
     ):
       with self.assertRaises(importlib.metadata.PackageNotFoundError):
         util_pkg.check_version("nonexistent>=1.0.0")

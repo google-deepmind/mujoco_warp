@@ -42,6 +42,12 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 1, "opt")
       mj_fields.insert(mj_fields.index("nbuffer") + 2, "vis")
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
+      if check_version("mujoco<3.5.1.dev872479828"):
+        mj_fields.insert(mj_fields.index("ntendon") + 1, "nJten")
+        idx = mj_fields.index("tendon_num") + 1
+        for f in ("ten_J_rownnz", "ten_J_rowadr", "ten_J_colind"):
+          mj_fields.insert(idx, f)
+          idx += 1
     elif mjw_class is Data:
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
