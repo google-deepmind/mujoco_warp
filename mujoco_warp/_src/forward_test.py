@@ -29,7 +29,6 @@ from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -457,21 +456,10 @@ class ForwardTest(parameterized.TestCase):
         if mjm.ntendon:
           mujoco.mju_sparse2dense(d_ten_J, d_arr, m.ten_J_rownnz.numpy(), m.ten_J_rowadr.numpy(), m.ten_J_colind.numpy())
         d_arr = d_ten_J
-        if check_version("mujoco>=3.5.1.dev875093374"):
-          ten_J = np.zeros((mjm.ntendon, mjm.nv))
-          if mjm.ntendon:
-            mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind)
-          mjd_arr = ten_J
-        elif check_version("mujoco>=3.5.1.dev872479828"):
-          ten_J = np.zeros((mjm.ntendon, mjm.nv))
-          if mjm.ntendon:
-            if check_version("mujoco>=3.5.1.dev875093374"):
-              mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind)
-            else:
-              mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind)
-          mjd_arr = ten_J
-        else:
-          mjd_arr = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
+        ten_J = np.zeros((mjm.ntendon, mjm.nv))
+        if mjm.ntendon:
+          mujoco.mju_sparse2dense(ten_J, mjd.ten_J, mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind)
+        mjd_arr = ten_J
       elif arr == "efc_J" or arr == "efc_id":
         # Already checked earlier
         continue
