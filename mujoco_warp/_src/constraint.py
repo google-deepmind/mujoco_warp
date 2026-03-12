@@ -223,7 +223,8 @@ def _equality_connect(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     # count non-zeros
-    pda1, pda2 = da1, da2
+    pda1 = da1
+    pda2 = da2
     rownnz = int(0)
     while pda1 >= 0 or pda2 >= 0:
       da = wp.max(pda1, pda2)
@@ -886,7 +887,8 @@ def _equality_weld(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     # count non-zeros
-    pda1, pda2 = da1, da2
+    pda1 = da1
+    pda2 = da2
     rownnz = int(0)
     while pda1 >= 0 or pda2 >= 0:
       da = wp.max(pda1, pda2)
@@ -1225,18 +1227,14 @@ def _friction_tendon(
   if efcid >= njmax_in:
     return
 
-  if is_sparse:
-    rowadr_efc = efcid * nv
-    efc_J_rowadr_out[worldid, efcid] = rowadr_efc
-
   Jqvel = float(0.0)
 
   rownnz_tenJ = ten_J_rownnz[tenid]
   rowadr_tenJ = ten_J_rowadr[tenid]
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
-    rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
-    efc_J_rowadr_out[worldid, efcid] = rowadr
+    rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
+    efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
     for i in range(rownnz_tenJ):
       sparseid_ten = rowadr_tenJ + i
@@ -1747,7 +1745,8 @@ def _contact_pyramidal(
 
     if is_sparse:
       # count non-zeros
-      pda1, pda2 = da1, da2
+      pda1 = da1
+      pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
@@ -1980,7 +1979,8 @@ def _contact_elliptic(
 
     if is_sparse:
       # count non-zeros
-      pda1, pda2 = da1, da2
+      pda1 = da1
+      pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
