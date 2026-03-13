@@ -366,6 +366,46 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     )
   )
 
+  # check for unsupported margin + multicontact / box-box CCD combinations
+  use_multiccd = mjm.opt.enableflags & types.EnableBit.MULTICCD
+  nativeccd_disabled = mjm.opt.disableflags & types.DisableBit.NATIVECCD
+  BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
+  MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
+
+  has_boxbox = m.geom_pair_type_count[geom_trid_index(BOX, BOX)] > 0
+  has_multiccd_pairs = has_boxbox or (
+    use_multiccd
+    and (m.geom_pair_type_count[geom_trid_index(BOX, MESH)] > 0 or m.geom_pair_type_count[geom_trid_index(MESH, MESH)] > 0)
+  )
+
+  if has_multiccd_pairs:
+
+    def _check_margin(name, t1, t2, margin):
+      if use_multiccd:
+        raise NotImplementedError(
+          f"{name} has non-zero margin ({margin}) with MULTICCD enabled. Set margin to 0 or disable MULTICCD."
+        )
+      if t1 == BOX and t2 == BOX and not nativeccd_disabled:
+        raise NotImplementedError(
+          f"{name} has non-zero margin ({margin}) with NATIVECCD enabled. Set margin to 0 or disable NATIVECCD."
+        )
+
+    geom_name = lambda g: mujoco.mj_id2name(mjm, mujoco.mjtObj.mjOBJ_GEOM, g) or str(g)
+
+    for idx in np.nonzero(nxn_include & (nxn_pairid_contact == -1))[0]:
+      g1, g2 = int(geom1[idx]), int(geom2[idx])
+      t1, t2 = int(mjm.geom_type[g1]), int(mjm.geom_type[g2])
+      m1, m2 = float(mjm.geom_margin[g1]), float(mjm.geom_margin[g2])
+      if (m1 or m2) and t1 in (BOX, MESH) and t2 in (BOX, MESH):
+        _check_margin(f"geom pair ({geom_name(g1)}, {geom_name(g2)})", t1, t2, (m1, m2))
+
+    for pid in range(mjm.npair):
+      g1, g2 = int(mjm.pair_geom1[pid]), int(mjm.pair_geom2[pid])
+      t1, t2 = int(mjm.geom_type[g1]), int(mjm.geom_type[g2])
+      pm = float(mjm.pair_margin[pid])
+      if pm and t1 in (BOX, MESH) and t2 in (BOX, MESH):
+        _check_margin(f"pair {pid} ({geom_name(g1)}, {geom_name(g2)})", t1, t2, pm)
+
   m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, 0).max()
   m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, 0).max()
 
@@ -2427,11 +2467,6 @@ def create_render_context(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-  if use_textures and not hasattr(wp, "Texture2D"):
-    warnings.warn("Textures require warp >= 1.12. Disabling textures.")
-    use_textures = False
-
   # Mesh BVHs
   nmesh = mjm.nmesh
   geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
@@ -2521,14 +2556,9 @@ def create_render_context(
     flex_nwork = int(cumsum)
 
   textures_registry = []
-  # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-  if hasattr(wp, "Texture2D"):
-    for i in range(mjm.ntex):
-      textures_registry.append(render_util.create_warp_texture(mjm, i))
-    textures = wp.array(textures_registry, dtype=wp.Texture2D)
-  else:
-    # Dummy array when texture support isn't available (warp < 1.12)
-    textures = wp.zeros(1, dtype=int)
+  for i in range(mjm.ntex):
+    textures_registry.append(render_util.create_warp_texture(mjm, i))
+  textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   # Filter active cameras
   if cam_active is not None:

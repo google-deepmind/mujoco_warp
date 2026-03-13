@@ -1202,7 +1202,7 @@ def _is_invalid_face(face: int) -> bool:
 def _epa(
   # In:
   tolerance: float,
-  gjk_iterations: int,
+  ccd_iterations: int,
   epa_iterations: int,
   pt: Polytope,
   geom1: Geom,
@@ -1323,7 +1323,7 @@ def _epa(
     pt.nhorizon = 0
 
     if k == epa_iterations - 1:
-      wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
+      wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", ccd_iterations)
 
   # return from valid face
   if idx > -1:

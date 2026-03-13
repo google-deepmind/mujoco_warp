@@ -1558,11 +1558,6 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
   def test_render_context_with_textures(self):
-    # TODO: remove after mjwarp depends on warp >= 1.12 in pyproject.toml
-    if not hasattr(wp, "Texture2D"):
-      self.skipTest("Skipping test that requires warp >= 1.12")
-      return
-
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
     rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")
@@ -1617,6 +1612,114 @@ class IOTest(parameterized.TestCase):
       self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
     else:
       self.assertEqual(d.efc.J.shape[2], m.nv_pad)
+
+  def test_margin_multiccd_box_box(self):
+    """MULTICCD + box-box with margin raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_margin_multiccd_box_mesh(self):
+    """MULTICCD + box-mesh with margin raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="mesh" mesh="m"/>
+          </body>
+        </worldbody>
+        <asset>
+          <mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+        </asset>
+      </mujoco>
+    """)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_margin_multiccd_mesh_mesh(self):
+    """MULTICCD + mesh-mesh with margin raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="mesh" mesh="m" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="mesh" mesh="m"/>
+          </body>
+        </worldbody>
+        <asset>
+          <mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+        </asset>
+      </mujoco>
+    """)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_margin_box_box_nativeccd_disabled(self):
+    """Box-box with margin and NATIVECCD disabled succeeds without error."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+    mjwarp.put_model(mjm)
+
+  def test_margin_pair_box_box(self):
+    """Pair with margin on box-box raises NotImplementedError."""
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(
+        mujoco.MjModel.from_xml_string("""
+        <mujoco>
+          <worldbody>
+            <body>
+              <freejoint/>
+              <geom name="b1" type="box" size=".1 .1 .1"/>
+            </body>
+            <body pos="0 0 .5">
+              <freejoint/>
+              <geom name="b2" type="box" size=".1 .1 .1"/>
+            </body>
+          </worldbody>
+          <contact>
+            <pair geom1="b1" geom2="b2" margin="0.01"/>
+          </contact>
+        </mujoco>
+      """)
+      )
 
 
 # TODO(team): test set_const_0 sparse
