@@ -46,6 +46,12 @@ from mujoco_warp._src.forward import implicit as implicit
 from mujoco_warp._src.forward import rungekutta4 as rungekutta4
 from mujoco_warp._src.forward import step1 as step1
 from mujoco_warp._src.forward import step2 as step2
+from mujoco_warp._src.grad import SMOOTH_GRAD_FIELDS as SMOOTH_GRAD_FIELDS
+from mujoco_warp._src.grad import diff_forward as diff_forward
+from mujoco_warp._src.grad import diff_step as diff_step
+from mujoco_warp._src.grad import disable_grad as disable_grad
+from mujoco_warp._src.grad import enable_grad as enable_grad
+from mujoco_warp._src.grad import make_diff_data as make_diff_data
 from mujoco_warp._src.inverse import inverse as inverse
 from mujoco_warp._src.io import create_render_context as create_render_context
 from mujoco_warp._src.io import get_data_into as get_data_into

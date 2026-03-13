@@ -39,7 +39,53 @@ from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": True})
+
+
+# kernel_analyzer: off
+@wp.func
+def _process_joint(
+  xpos: wp.vec3,
+  xquat: wp.quat,
+  jntadr: int,
+  jnt_pos_id: int,
+  worldid: int,
+  qpos0: wp.array2d(dtype=float),
+  jnt_type: wp.array(dtype=int),
+  jnt_qposadr: wp.array(dtype=int),
+  jnt_pos: wp.array2d(dtype=wp.vec3),
+  jnt_axis: wp.array2d(dtype=wp.vec3),
+  qpos: wp.array(dtype=float),
+  xanchor_out: wp.array2d(dtype=wp.vec3),
+  xaxis_out: wp.array2d(dtype=wp.vec3),
+):
+  """Process a single joint and return updated xpos, xquat."""
+  qadr = jnt_qposadr[jntadr]
+  jnt_type_ = jnt_type[jntadr]
+  jnt_axis_ = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
+  xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
+  xaxis = math.rot_vec_quat(jnt_axis_, xquat)
+
+  if jnt_type_ == JointType.BALL:
+    qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
+    qloc = wp.normalize(qloc)
+    xquat = math.mul_quat(xquat, qloc)
+    xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+  elif jnt_type_ == JointType.SLIDE:
+    xpos = xpos + xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
+  elif jnt_type_ == JointType.HINGE:
+    qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
+    qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
+    xquat = math.mul_quat(xquat, qloc_)
+    xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+
+  xanchor_out[worldid, jntadr] = xanchor
+  xaxis_out[worldid, jntadr] = xaxis
+
+  return xpos, xquat
+
+
+# kernel_analyzer: on
 
 
 @wp.kernel
@@ -113,31 +159,60 @@ def _kinematics_branch(
       xpos = math.rot_vec_quat(xpos, xquat_out[worldid, pid]) + xpos_out[worldid, pid]
       xquat = math.mul_quat(xquat_out[worldid, pid], xquat)
 
-    for _ in range(jntnum):
-      qadr = jnt_qposadr[jntadr]
-      jnt_type_ = jnt_type[jntadr]
-      jnt_axis_ = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
-      xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
-      xaxis = math.rot_vec_quat(jnt_axis_, xquat)
-
-      if jnt_type_ == JointType.BALL:
-        qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
-        qloc = wp.normalize(qloc)
-        xquat = math.mul_quat(xquat, qloc)
-        # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
-      elif jnt_type_ == JointType.SLIDE:
-        xpos += xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
-      elif jnt_type_ == JointType.HINGE:
-        qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
-        qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
-        xquat = math.mul_quat(xquat, qloc_)
-        # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
-
-      xanchor_out[worldid, jntadr] = xanchor
-      xaxis_out[worldid, jntadr] = xaxis
-      jntadr += 1
+    # Unrolled joint processing — avoids nested dynamic-range loop which
+    # produces incorrect gradients in Warp's AD.
+    if jntnum >= 1:
+      xpos, xquat = _process_joint(
+        xpos, xquat, jntadr, jnt_pos_id, worldid, qpos0, jnt_type, jnt_qposadr, jnt_pos, jnt_axis, qpos, xanchor_out, xaxis_out
+      )
+    if jntnum >= 2:
+      xpos, xquat = _process_joint(
+        xpos,
+        xquat,
+        jntadr + 1,
+        jnt_pos_id,
+        worldid,
+        qpos0,
+        jnt_type,
+        jnt_qposadr,
+        jnt_pos,
+        jnt_axis,
+        qpos,
+        xanchor_out,
+        xaxis_out,
+      )
+    if jntnum >= 3:
+      xpos, xquat = _process_joint(
+        xpos,
+        xquat,
+        jntadr + 2,
+        jnt_pos_id,
+        worldid,
+        qpos0,
+        jnt_type,
+        jnt_qposadr,
+        jnt_pos,
+        jnt_axis,
+        qpos,
+        xanchor_out,
+        xaxis_out,
+      )
+    if jntnum >= 4:
+      xpos, xquat = _process_joint(
+        xpos,
+        xquat,
+        jntadr + 3,
+        jnt_pos_id,
+        worldid,
+        qpos0,
+        jnt_type,
+        jnt_qposadr,
+        jnt_pos,
+        jnt_axis,
+        qpos,
+        xanchor_out,
+        xaxis_out,
+      )
 
     xquat = wp.normalize(xquat)
     xpos_out[worldid, bodyid] = xpos
@@ -1104,6 +1179,28 @@ def _rne_cacc_world(m: Model, d: Data):
     wp.launch(_cacc_world, dim=[d.nworld], inputs=[m.opt.gravity], outputs=[d.cacc])
 
 
+# kernel_analyzer: off
+@wp.func
+def _process_dof_cacc(
+  local_cacc: wp.spatial_vector,
+  dofadr: int,
+  worldid: int,
+  qvel_in: wp.array2d(dtype=float),
+  qacc_in: wp.array2d(dtype=float),
+  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
+  flg_acc: bool,
+):
+  """Accumulate one DOF contribution to body acceleration."""
+  local_cacc += cdof_dot_in[worldid, dofadr] * qvel_in[worldid, dofadr]
+  if flg_acc:
+    local_cacc += cdof_in[worldid, dofadr] * qacc_in[worldid, dofadr]
+  return local_cacc
+
+
+# kernel_analyzer: on
+
+
 @wp.kernel
 def _cacc_branch(
   # Model:
@@ -1134,10 +1231,22 @@ def _cacc_branch(
     bodyid = body_branches[i]
     dofnum = body_dofnum[bodyid]
     dofadr = body_dofadr[bodyid]
-    for j in range(dofnum):
-      local_cacc += cdof_dot_in[worldid, dofadr + j] * qvel_in[worldid, dofadr + j]
-      if flg_acc:
-        local_cacc += cdof_in[worldid, dofadr + j] * qacc_in[worldid, dofadr + j]
+
+    # unrolled dof processing — avoids nested dynamic-range loop which
+    # produces incorrect gradients in warp's AD
+    if dofnum >= 1:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 2:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 1, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 3:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 2, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 4:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 3, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 5:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 4, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 6:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 5, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+
     cacc_out[worldid, bodyid] = local_cacc
 
 
@@ -1193,28 +1302,46 @@ def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
 
 
 @wp.kernel
-def _cfrc_backward(
+def _cfrc_backward_level(
   # Model:
   body_parentid: wp.array(dtype=int),
   # Data in:
   cfrc_int_in: wp.array2d(dtype=wp.spatial_vector),
   # In:
   body_tree_: wp.array(dtype=int),
+  nbody_tree: int,
   # Data out:
   cfrc_int_out: wp.array2d(dtype=wp.spatial_vector),
 ):
-  worldid, nodeid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  pid = body_parentid[bodyid]
-  if bodyid != 0:
-    wp.atomic_add(cfrc_int_out[worldid], pid, cfrc_int_in[worldid, bodyid])
+  # copy input and accumulate child forces to parents in a single kernel
+  # to avoid warp AD output-gradient zeroing when separate copy + atomic_add
+  # target the same array
+  worldid, bodyid = wp.tid()
+  val = cfrc_int_in[worldid, bodyid]
+  for k in range(nbody_tree):
+    child = body_tree_[k]
+    if body_parentid[child] == bodyid and child != 0:
+      val = val + cfrc_int_in[worldid, child]
+  cfrc_int_out[worldid, bodyid] = val
 
 
 def _rne_cfrc_backward(m: Model, d: Data):
+  # accumulate child forces to parents using separate arrays at each level
+  # to avoid warp AD output-gradient zeroing issue (an array that is the
+  # output of multiple wp.launch / wp.copy calls loses gradient from all
+  # but the last operation during backward)
+  current = d.cfrc_int
   for body_tree in reversed(m.body_tree):
+    next_cfrc = wp.zeros_like(current)
+    next_cfrc.requires_grad = True
     wp.launch(
-      _cfrc_backward, dim=[d.nworld, body_tree.size], inputs=[m.body_parentid, d.cfrc_int, body_tree], outputs=[d.cfrc_int]
+      _cfrc_backward_level,
+      dim=[d.nworld, m.nbody],
+      inputs=[m.body_parentid, current, body_tree, body_tree.shape[0]],
+      outputs=[next_cfrc],
     )
+    current = next_cfrc
+  return current
 
 
 @wp.kernel
@@ -1247,8 +1374,10 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
   _rne_cfrc(m, d)
-  _rne_cfrc_backward(m, d)
-  wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
+  cfrc_total = _rne_cfrc_backward(m, d)
+  wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, cfrc_total], outputs=[d.qfrc_bias])
+  # update d.cfrc_int with accumulated forces for downstream consumers
+  d.cfrc_int = cfrc_total
 
 
 @wp.kernel
@@ -1555,7 +1684,7 @@ def rne_postconstraint(m: Model, d: Data):
   _rne_cfrc(m, d, flg_cfrc_ext=True)
 
   # backward pass over bodies: accumulate cfrc_int from children
-  _rne_cfrc_backward(m, d)
+  d.cfrc_int = _rne_cfrc_backward(m, d)
 
 
 @wp.func
@@ -1725,7 +1854,7 @@ def _tendon_dot(
       dot = wp.dot(dpnt, dvel)
       dvel += dpnt * (-dot)
       if norm > MJ_MINVAL:
-        dvel /= norm
+        dvel = dvel / norm
       else:
         dvel = wp.vec3(0.0)
 
@@ -1915,6 +2044,57 @@ def _comvel_root(cvel_out: wp.array2d(dtype=wp.spatial_vector)):
   cvel_out[worldid, 0][elementid] = 0.0
 
 
+# kernel_analyzer: off
+@wp.func
+def _process_joint_vel(
+  cvel: wp.spatial_vector,
+  dofid: int,
+  jntadr: int,
+  worldid: int,
+  jnt_type: wp.array(dtype=int),
+  qvel: wp.array(dtype=float),
+  cdof: wp.array(dtype=wp.spatial_vector),
+  cdof_dot_out: wp.array2d(dtype=wp.spatial_vector),
+):
+  """Process a single joint for velocity propagation, return updated cvel and dofid."""
+  jnttype = jnt_type[jntadr]
+
+  if jnttype == JointType.FREE:
+    cvel += cdof[dofid + 0] * qvel[dofid + 0]
+    cvel += cdof[dofid + 1] * qvel[dofid + 1]
+    cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+    cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
+    cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
+    cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
+
+    cvel += cdof[dofid + 3] * qvel[dofid + 3]
+    cvel += cdof[dofid + 4] * qvel[dofid + 4]
+    cvel += cdof[dofid + 5] * qvel[dofid + 5]
+
+    dofid += 6
+  elif jnttype == JointType.BALL:
+    cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
+    cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
+    cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
+
+    cvel += cdof[dofid + 0] * qvel[dofid + 0]
+    cvel += cdof[dofid + 1] * qvel[dofid + 1]
+    cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+    dofid += 3
+  else:
+    cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
+    cvel += cdof[dofid] * qvel[dofid]
+
+    dofid += 1
+
+  return cvel, dofid
+
+
+# kernel_analyzer: on
+
+
 @wp.kernel
 def _comvel_branch(
   # Model:
@@ -1952,38 +2132,16 @@ def _comvel_branch(
       cvel_out[worldid, bodyid] = cvel
       continue
 
-    for j in range(jntid, jntid + jntnum):
-      jnttype = jnt_type[j]
-
-      if jnttype == JointType.FREE:
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
-        cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
-        cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
-
-        cvel += cdof[dofid + 3] * qvel[dofid + 3]
-        cvel += cdof[dofid + 4] * qvel[dofid + 4]
-        cvel += cdof[dofid + 5] * qvel[dofid + 5]
-
-        dofid += 6
-      elif jnttype == JointType.BALL:
-        cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
-        cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
-        cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
-
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        dofid += 3
-      else:
-        cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
-        cvel += cdof[dofid] * qvel[dofid]
-
-        dofid += 1
+    # unrolled joint processing — avoids nested dynamic-range loop which
+    # produces incorrect gradients in warp's AD
+    if jntnum >= 1:
+      cvel, dofid = _process_joint_vel(cvel, dofid, jntid, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+    if jntnum >= 2:
+      cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 1, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+    if jntnum >= 3:
+      cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 2, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+    if jntnum >= 4:
+      cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 3, worldid, jnt_type, qvel, cdof, cdof_dot_out)
 
     cvel_out[worldid, bodyid] = cvel
 
@@ -2575,7 +2733,7 @@ def _transmission_body_moment_scale(
   if ncon > 0:
     actid = actuator_trntype_body_adr[trnbodyid]
     rowadr = moment_rowadr_in[worldid, actid]
-    actuator_moment_out[worldid, rowadr + dofid] /= -float(ncon)
+    actuator_moment_out[worldid, rowadr + dofid] = actuator_moment_out[worldid, rowadr + dofid] / -float(ncon)
 
 
 @event_scope
@@ -2692,7 +2850,7 @@ def _solve_LD_sparse_qLDiag_mul(
   out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  out[worldid, dofid] *= D[worldid, dofid]
+  out[worldid, dofid] = out[worldid, dofid] * D[worldid, dofid]
 
 
 @wp.kernel
@@ -2910,9 +3068,8 @@ def _subtree_vel_forward(
 
   subtree_linvel_out[worldid, bodyid] = body_mass[body_mass_id, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
-  dv[0] *= body_inertia[body_inertia_id, bodyid][0]
-  dv[1] *= body_inertia[body_inertia_id, bodyid][1]
-  dv[2] *= body_inertia[body_inertia_id, bodyid][2]
+  inertia = body_inertia[body_inertia_id, bodyid]
+  dv = wp.vec3(dv[0] * inertia[0], dv[1] * inertia[1], dv[2] * inertia[2])
   subtree_angmom_out[worldid, bodyid] = ximat @ dv
   subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
@@ -2934,7 +3091,9 @@ def _linear_momentum(
   if bodyid:
     pid = body_parentid[bodyid]
     wp.atomic_add(subtree_linvel_out[worldid], pid, subtree_linvel_in[worldid, bodyid])
-  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid])
+  subtree_linvel_out[worldid, bodyid] = subtree_linvel_out[worldid, bodyid] / wp.max(
+    MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
+  )
 
 
 @wp.kernel
@@ -2985,7 +3144,7 @@ def _angular_momentum(
   # momentum wrt parent
   dx = com - com_parent
   dv = linvel - linvel_parent
-  dv *= subtreemass
+  dv = dv * subtreemass
   dL = wp.cross(dx, dv)
   wp.atomic_add(subtree_angmom_out[worldid], pid, dL)
 
