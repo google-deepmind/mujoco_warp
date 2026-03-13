@@ -68,7 +68,7 @@ def _geom_dist(
   def _ccd_kernel(
     # Model:
     geom_type: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
+    geom_dataid: wp.array2d(dtype=int),
     geom_size: wp.array2d(dtype=wp.vec3),
     mesh_vertadr: wp.array(dtype=int),
     mesh_vertnum: wp.array(dtype=int),
@@ -130,12 +130,12 @@ def _geom_dist(
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
-    if geom_dataid[gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
-      dataid = geom_dataid[gid1]
-      geom1.vertadr = mesh_vertadr[dataid]
-      geom1.vertnum = mesh_vertnum[dataid]
-      geom1.mesh_polynum = mesh_polynum[dataid]
-      geom1.mesh_polyadr = mesh_polyadr[dataid]
+    dataid1 = geom_dataid[0, gid1]  # kernel_analyzer: off
+    if dataid1 >= 0 and geom_type[gid1] == GeomType.MESH:
+      geom1.vertadr = mesh_vertadr[dataid1]
+      geom1.vertnum = mesh_vertnum[dataid1]
+      geom1.mesh_polynum = mesh_polynum[dataid1]
+      geom1.mesh_polyadr = mesh_polyadr[dataid1]
       geom1.vert = mesh_vert
       geom1.mesh_polynormal = mesh_polynormal
       geom1.mesh_polyvertadr = mesh_polyvertadr
@@ -161,12 +161,12 @@ def _geom_dist(
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 
-    if geom_dataid[gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
-      dataid = geom_dataid[gid2]
-      geom2.vertadr = mesh_vertadr[dataid]
-      geom2.vertnum = mesh_vertnum[dataid]
-      geom2.mesh_polynum = mesh_polynum[dataid]
-      geom2.mesh_polyadr = mesh_polyadr[dataid]
+    dataid2 = geom_dataid[0, gid2]  # kernel_analyzer: off
+    if dataid2 >= 0 and geom_type[gid2] == GeomType.MESH:
+      geom2.vertadr = mesh_vertadr[dataid2]
+      geom2.vertnum = mesh_vertnum[dataid2]
+      geom2.mesh_polynum = mesh_polynum[dataid2]
+      geom2.mesh_polyadr = mesh_polyadr[dataid2]
       geom2.vert = mesh_vert
       geom2.mesh_polynormal = mesh_polynormal
       geom2.mesh_polyvertadr = mesh_polyvertadr

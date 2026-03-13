@@ -651,7 +651,7 @@ def _sdf_narrowphase(
   oct_coeff: wp.array(dtype=vec8),
   geom_type: wp.array(dtype=int),
   geom_condim: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
+  geom_dataid: wp.array2d(dtype=int),
   geom_priority: wp.array(dtype=int),
   geom_solmix: wp.array2d(dtype=float),
   geom_solref: wp.array2d(dtype=wp.vec2),
@@ -797,12 +797,32 @@ def _sdf_narrowphase(
   pos1 = geom1.pos
   rot1 = geom1.rot
 
+  dataid_setid = worldid % geom_dataid.shape[0]
+
   attr1, g1_plugin_id, volume_data1, mesh_data1 = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, mesh_octadr, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
+    oct_child,
+    oct_aabb,
+    oct_coeff,
+    mesh_octadr,
+    plugin,
+    plugin_attr,
+    type1,
+    geom1.size,
+    g1_plugin,
+    geom_dataid[dataid_setid, g1],
   )
 
   attr2, g2_plugin_id, volume_data2, mesh_data2 = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, mesh_octadr, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
+    oct_child,
+    oct_aabb,
+    oct_coeff,
+    mesh_octadr,
+    plugin,
+    plugin_attr,
+    type2,
+    geom2.size,
+    g2_plugin,
+    geom_dataid[dataid_setid, g2],
   )
 
   mesh_data1.nmeshface = nmeshface
@@ -810,7 +830,7 @@ def _sdf_narrowphase(
   mesh_data1.mesh_vert = mesh_vert
   mesh_data1.mesh_faceadr = mesh_faceadr
   mesh_data1.mesh_face = mesh_face
-  mesh_data1.data_id = geom_dataid[g1]
+  mesh_data1.data_id = geom_dataid[dataid_setid, g1]
   mesh_data1.pos = geom1.pos
   mesh_data1.mat = geom1.rot
   mesh_data1.size = geom1.size
@@ -823,7 +843,7 @@ def _sdf_narrowphase(
   mesh_data2.mesh_vert = mesh_vert
   mesh_data2.mesh_faceadr = mesh_faceadr
   mesh_data2.mesh_face = mesh_face
-  mesh_data2.data_id = geom_dataid[g2]
+  mesh_data2.data_id = geom_dataid[dataid_setid, g2]
   mesh_data2.pos = geom2.pos
   mesh_data2.mat = geom2.rot
   mesh_data2.size = geom2.size
