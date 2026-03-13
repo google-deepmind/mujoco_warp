@@ -30,7 +30,6 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import set_length_range
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 
 def _assert_eq(a, b, name):
@@ -1613,7 +1612,7 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    if SPARSE_CONSTRAINT_JACOBIAN:
+    if m.is_sparse:
       self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
     else:
       self.assertEqual(d.efc.J.shape[2], m.nv_pad)
