@@ -11,11 +11,10 @@ from mujoco_warp import test_data
 from mujoco_warp._src import math
 from mujoco_warp._src.grad import enable_grad
 
-# Tolerance for AD vs finite-difference comparison.
+# tolerance for AD vs finite-difference comparison
 _FD_TOL = 1e-3
 
-# Simple model XMLs for gradient tests (no contacts/constraints for Phase 1).
-# Force sparse jacobian to avoid tile kernels (which require cuSolverDx).
+# sparse jacobian to avoid tile kernels (which require cuSolverDx)
 _SIMPLE_HINGE_XML = """
 <mujoco>
   <option gravity="0 0 -9.81" jacobian="sparse">
@@ -112,11 +111,7 @@ _SIMPLE_FREE_XML = """
 
 
 def _fd_gradient(fn, x_np, eps=1e-3):
-  """Compute finite-difference gradient of scalar fn w.r.t. x_np.
-
-  Uses central differences.  Default eps=1e-3 balances truncation error
-  and float32 rounding (optimal for float32 is roughly eps ~ 1e-3 to 1e-2).
-  """
+  """Central-difference gradient of scalar fn w.r.t. x_np."""
   grad = np.zeros_like(x_np)
   for i in range(x_np.size):
     x_plus = x_np.copy()
@@ -127,17 +122,11 @@ def _fd_gradient(fn, x_np, eps=1e-3):
   return grad
 
 
-# ---------------------------------------------------------------------------
-# Kernel used by tests to compute a scalar loss from array fields.
-# ---------------------------------------------------------------------------
-
-
 @wp.kernel
 def _sum_xpos_kernel(
   xpos: wp.array2d(dtype=wp.vec3),
   loss: wp.array(dtype=float),
 ):
-  """Loss = sum of all xpos components."""
   worldid, bodyid = wp.tid()
   v = xpos[worldid, bodyid]
   wp.atomic_add(loss, 0, v[0] + v[1] + v[2])
@@ -148,18 +137,11 @@ def _sum_qacc_kernel(
   qacc: wp.array2d(dtype=float),
   loss: wp.array(dtype=float),
 ):
-  """Loss = sum of all qacc components."""
   worldid, dofid = wp.tid()
   wp.atomic_add(loss, 0, qacc[worldid, dofid])
 
 
-# ---------------------------------------------------------------------------
-# Test: AD gradients for smooth pipeline stages
-# ---------------------------------------------------------------------------
-
-
 class GradSmoothTest(parameterized.TestCase):
-  """Validates AD gradients against finite differences for smooth dynamics."""
 
   @parameterized.parameters(
     ("hinge", _SIMPLE_HINGE_XML),
@@ -361,11 +343,6 @@ class GradSmoothTest(parameterized.TestCase):
     )
 
 
-# ---------------------------------------------------------------------------
-# Test: quaternion function adjoints
-# ---------------------------------------------------------------------------
-
-
 @wp.kernel
 def _quat_integrate_kernel(
   q_in: wp.array(dtype=wp.quat),
@@ -388,7 +365,6 @@ def _quat_loss_kernel(
 
 
 class GradQuaternionTest(parameterized.TestCase):
-  """Tests custom adjoints for quaternion functions."""
 
   def test_quat_integrate_nonzero_vel(self):
     """quat_integrate gradient at non-zero angular velocity."""
@@ -509,11 +485,6 @@ class GradQuaternionTest(parameterized.TestCase):
       ad_grad_q, fd_grad_q, atol=5e-2, rtol=5e-2,
       err_msg="quat_integrate grad w.r.t. q",
     )
-
-
-# ---------------------------------------------------------------------------
-# Test: enable_grad / make_diff_data utilities
-# ---------------------------------------------------------------------------
 
 
 class GradUtilTest(absltest.TestCase):

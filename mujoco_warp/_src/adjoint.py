@@ -13,28 +13,15 @@ import warp as wp
 from mujoco_warp._src import math
 
 
-# ---------------------------------------------------------------------------
-# Phase 1: Quaternion / rotation custom adjoints
-# ---------------------------------------------------------------------------
-
-
 @wp.func_grad(math.quat_integrate)
 def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
-  """Custom adjoint for ``quat_integrate``.
-
-  The forward pass uses ``wp.normalize(v)`` which has a gradient singularity
-  when ``|v| = 0``.  We reformulate using the smooth identity
-
-      sin(dt|v|/2) / |v|  ->  dt/2   as  |v| -> 0
-
-  so that all gradients remain finite.
-  """
+  """Custom adjoint avoiding gradient singularity at |v|=0."""
   EPS = float(1e-10)
   norm_v = wp.length(v)
   norm_v_sq = norm_v * norm_v
   half_angle = dt * norm_v * 0.5
 
-  # --- sinc-safe rotation quaternion construction ---
+  # sinc-safe rotation quaternion construction
   if norm_v > EPS:
     s_over_nv = wp.sin(half_angle) / norm_v  # sin(dt|v|/2) / |v|
     c = wp.cos(half_angle)
@@ -53,7 +40,7 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
     s_over_nv * v[2],
   )
 
-  # --- Recompute forward intermediates ---
+  # recompute forward intermediates
   q_len = wp.length(q)
   q_inv_len = 1.0 / wp.max(q_len, EPS)
   q_n = wp.quat(
@@ -67,11 +54,7 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
   res_len = wp.length(q_res)
   res_inv = 1.0 / wp.max(res_len, EPS)
 
-  # ===================================================================
-  # Backward pass, layer by layer
-  # ===================================================================
-
-  # --- Layer 4: result = normalize(q_res) ---
+  # result = normalize(q_res)
   # adj_q_res_k = adj_ret_k / |q_res| - q_res_k * dot(adj_ret, q_res) / |q_res|^3
   dot_ar = (
     adj_ret[0] * q_res[0]
@@ -87,7 +70,7 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
     adj_ret[3] * res_inv - q_res[3] * dot_ar * res_inv3,
   )
 
-  # --- Layer 3: q_res = mul_quat(q_n, q_rot) ---
+  # q_res = mul_quat(q_n, q_rot)
   # adj_q_n  = mul_quat(adj_qr, conj(q_rot))
   # adj_q_rot = mul_quat(conj(q_n), adj_qr)
   q_rot_conj = wp.quat(q_rot[0], -q_rot[1], -q_rot[2], -q_rot[3])
@@ -96,8 +79,7 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
   q_n_conj = wp.quat(q_n[0], -q_n[1], -q_n[2], -q_n[3])
   adj_q_rot = math.mul_quat(q_n_conj, adj_qr)
 
-  # --- Layer 2b: q_rot = (c, s_over_nv * v) ---
-  # Compute adj_v from q_rot dependency on v
+  # q_rot = (c, s_over_nv * v)
   # d(c)/dv_j = -s_over_nv * dt/2 * v_j
   # d(s_over_nv * v_i)/dv_j = ds_coeff * v_j * v_i + s_over_nv * delta_ij
   sv_dot = adj_q_rot[1] * v[0] + adj_q_rot[2] * v[1] + adj_q_rot[3] * v[2]
@@ -108,13 +90,13 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
     common * v[2] + s_over_nv * adj_q_rot[3],
   )
 
-  # Compute adj_dt from q_rot dependency on dt
+  # adj_dt from q_rot dependency on dt
   # d(c)/d(dt)            = -sin(half_angle) * norm_v / 2
   # d(s_over_nv * v_i)/dt = (c / 2) * v_i
   adj_dt_val = adj_q_rot[0] * (-wp.sin(half_angle) * norm_v * 0.5)
   adj_dt_val += sv_dot * c * 0.5
 
-  # --- Layer 1: q_n = normalize(q) ---
+  # q_n = normalize(q)
   # adj_q_k = adj_qn_k / |q| - q_k * dot(adj_qn, q) / |q|^3
   dot_aqn = (
     adj_qn[0] * q[0]
@@ -130,7 +112,7 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
     adj_qn[3] * q_inv_len - q[3] * dot_aqn * q_inv_len3,
   )
 
-  # --- Accumulate adjoints ---
+  # accumulate adjoints
   wp.adjoint[q] += adj_q_val
   wp.adjoint[v] += adj_v_val
   wp.adjoint[dt] += adj_dt_val

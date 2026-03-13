@@ -30,7 +30,6 @@ from mujoco_warp._src.types import Model
 # ensure custom adjoints are registered before any tape recording
 from mujoco_warp._src import adjoint as _adjoint  # noqa: F401
 
-# data fields that require gradient tracking for smooth dynamics
 SMOOTH_GRAD_FIELDS: tuple = (
     # primary state, user-controlled inputs
     "qpos",
@@ -97,7 +96,7 @@ SMOOTH_GRAD_FIELDS: tuple = (
 
 
 def enable_grad(d: Data, fields: Optional[Sequence[str]] = None) -> None:
-  # enable gradient tracking on Data arrays
+  """Enables gradient tracking on Data arrays."""
   if fields is None:
     fields = SMOOTH_GRAD_FIELDS
   for name in fields:
@@ -106,8 +105,8 @@ def enable_grad(d: Data, fields: Optional[Sequence[str]] = None) -> None:
       arr.requires_grad = True
 
 
-#disable gradient tracking on all Data arrays
 def disable_grad(d: Data) -> None:
+  """Disables gradient tracking on all Data arrays."""
   for name in SMOOTH_GRAD_FIELDS:
     arr = getattr(d, name, None)
     if arr is not None and isinstance(arr, wp.array):
@@ -120,7 +119,7 @@ def make_diff_data(
   grad_fields: Optional[Sequence[str]] = None,
   **kwargs,
 ) -> Data:
-  # create a Data object with gradient tracking enabled
+  """Creates a Data object with gradient tracking enabled."""
   d = io.make_data(mjm, nworld=nworld, **kwargs)
   enable_grad(d, fields=grad_fields)
   return d
@@ -131,7 +130,7 @@ def diff_step(
   d: Data,
   loss_fn: Callable[[Model, Data], wp.array],
 ) -> wp.Tape:
-  # run a differentiable physics step
+  """Runs a differentiable physics step."""
   tape = wp.Tape()
   with tape:
     step(m, d)
@@ -145,7 +144,7 @@ def diff_forward(
   d: Data,
   loss_fn: Callable[[Model, Data], wp.array],
 ) -> wp.Tape:
-  # run differentiable forward dynamics (no integration)
+  """Runs differentiable forward dynamics (no integration)."""
   tape = wp.Tape()
   with tape:
     forward(m, d)
