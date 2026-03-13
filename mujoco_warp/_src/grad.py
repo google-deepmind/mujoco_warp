@@ -64,6 +64,10 @@ SMOOTH_GRAD_FIELDS: tuple = (
     "subtree_angmom",
     "actuator_velocity",
     "ten_velocity",
+    # body-level intermediate quantities
+    "cacc",
+    "cfrc_int",
+    "cfrc_ext",
     # force/acceleration outputs
     "qfrc_bias",
     "qfrc_spring",

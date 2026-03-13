@@ -44,7 +44,7 @@ from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": True})
 
 
 @wp.kernel
@@ -235,6 +235,12 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
+  # Clone arrays used as both input and output so that Warp's tape retains the
+  # original values for correct reverse-mode AD.
+  act_in = wp.clone(d.act)
+  qvel_prev = wp.clone(d.qvel)
+  qpos_prev = wp.clone(d.qpos)
+
   # advance activations
   wp.launch(
     _next_activation,
@@ -247,7 +253,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_actlimited,
       m.actuator_dynprm,
       m.actuator_actrange,
-      d.act,
+      act_in,
       d.act_dot,
       1.0,
       True,
@@ -258,7 +264,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   wp.launch(
     _next_velocity,
     dim=(d.nworld, m.nv),
-    inputs=[m.opt.timestep, d.qvel, qacc, 1.0],
+    inputs=[m.opt.timestep, qvel_prev, qacc, 1.0],
     outputs=[d.qvel],
   )
 
@@ -268,7 +274,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   wp.launch(
     _next_position,
     dim=(d.nworld, m.njnt),
-    inputs=[m.opt.timestep, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, qvel_in, 1.0],
+    inputs=[m.opt.timestep, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, qpos_prev, qvel_in, 1.0],
     outputs=[d.qpos],
   )
 
@@ -782,9 +788,9 @@ def _tendon_actuator_force_clamp(
       actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
 
       if ten_actfrc < actfrcrange[0]:
-        actuator_force_out[worldid, actid] *= actfrcrange[0] / ten_actfrc
+        actuator_force_out[worldid, actid] = actuator_force_out[worldid, actid] * (actfrcrange[0] / ten_actfrc)
       elif ten_actfrc > actfrcrange[1]:
-        actuator_force_out[worldid, actid] *= actfrcrange[1] / ten_actfrc
+        actuator_force_out[worldid, actid] = actuator_force_out[worldid, actid] * (actfrcrange[1] / ten_actfrc)
 
 
 @wp.kernel
@@ -919,6 +925,8 @@ def fwd_actuation(m: Model, d: Data):
     ],
     outputs=[d.qfrc_actuator],
   )
+  # clone to break input/output aliasing for correct AD
+  qfrc_actuator_in = wp.clone(d.qfrc_actuator)
   wp.launch(
     _qfrc_actuator_gravcomp_limits,
     dim=(d.nworld, m.nv),
@@ -929,7 +937,7 @@ def fwd_actuation(m: Model, d: Data):
       m.jnt_actfrcrange,
       m.dof_jntid,
       d.qfrc_gravcomp,
-      d.qfrc_actuator,
+      qfrc_actuator_in,
     ],
     outputs=[d.qfrc_actuator],
   )
