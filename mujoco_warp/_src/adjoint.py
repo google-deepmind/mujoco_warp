@@ -1,18 +1,11 @@
 """
 custom adjoint definitions for MuJoCo Warp autodifferentiation.
 
-This module centralizes all ``@wp.func_grad`` registrations.  It must be
+This module centralizes all ``@wp.func_grad`` registrations. It must be
 imported before any tape recording so that custom gradients are registered
 with Warp's AD system.
 
-Import this module via ``grad.py`` — users should never need to import it
-directly.
-
-Organized by subsystem:
-
-* **Phase 1** — Quaternion / rotation functions
-* **Phase 2** — Solver implicit differentiation  *(placeholder)*
-* **Phase 3** — Collision proxy gradients  *(placeholder)*
+Import this module via ``grad.py`` dont import it directly
 """
 
 import warp as wp
@@ -141,16 +134,3 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
   wp.adjoint[q] += adj_q_val
   wp.adjoint[v] += adj_v_val
   wp.adjoint[dt] += adj_dt_val
-
-
-# ---------------------------------------------------------------------------
-# Phase 2: Solver implicit differentiation  (placeholder)
-# ---------------------------------------------------------------------------
-# Custom adjoint for KKT-based implicit differentiation of the constraint
-# solver will be registered here.
-
-
-# ---------------------------------------------------------------------------
-# Phase 2: Collision proxy gradients  (placeholder)
-# ---------------------------------------------------------------------------
-# Smooth collision proxy gradients (e.g. soft contact) will be registered here.
