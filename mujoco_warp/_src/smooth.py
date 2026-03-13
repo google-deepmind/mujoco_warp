@@ -39,7 +39,7 @@ from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": True})
 
 
 @wp.kernel
@@ -1691,7 +1691,7 @@ def _tendon_dot(
       dot = wp.dot(dpnt, dvel)
       dvel += dpnt * (-dot)
       if norm > MJ_MINVAL:
-        dvel /= norm
+        dvel = dvel / norm
       else:
         dvel = wp.vec3(0.0)
 
@@ -2541,7 +2541,7 @@ def _transmission_body_moment_scale(
   if ncon > 0:
     actid = actuator_trntype_body_adr[trnbodyid]
     rowadr = moment_rowadr_in[worldid, actid]
-    actuator_moment_out[worldid, rowadr + dofid] /= -float(ncon)
+    actuator_moment_out[worldid, rowadr + dofid] = actuator_moment_out[worldid, rowadr + dofid] / -float(ncon)
 
 
 @event_scope
@@ -2658,7 +2658,7 @@ def _solve_LD_sparse_qLDiag_mul(
   out: wp.array2d(dtype=float),
 ):
   worldid, dofid = wp.tid()
-  out[worldid, dofid] *= D[worldid, dofid]
+  out[worldid, dofid] = out[worldid, dofid] * D[worldid, dofid]
 
 
 @wp.kernel
@@ -2876,9 +2876,8 @@ def _subtree_vel_forward(
 
   subtree_linvel_out[worldid, bodyid] = body_mass[body_mass_id, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
-  dv[0] *= body_inertia[body_inertia_id, bodyid][0]
-  dv[1] *= body_inertia[body_inertia_id, bodyid][1]
-  dv[2] *= body_inertia[body_inertia_id, bodyid][2]
+  inertia = body_inertia[body_inertia_id, bodyid]
+  dv = wp.vec3(dv[0] * inertia[0], dv[1] * inertia[1], dv[2] * inertia[2])
   subtree_angmom_out[worldid, bodyid] = ximat @ dv
   subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
@@ -2900,7 +2899,7 @@ def _linear_momentum(
   if bodyid:
     pid = body_parentid[bodyid]
     wp.atomic_add(subtree_linvel_out[worldid], pid, subtree_linvel_in[worldid, bodyid])
-  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid])
+  subtree_linvel_out[worldid, bodyid] = subtree_linvel_out[worldid, bodyid] / wp.max(MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid])
 
 
 @wp.kernel
@@ -2951,7 +2950,7 @@ def _angular_momentum(
   # momentum wrt parent
   dx = com - com_parent
   dv = linvel - linvel_parent
-  dv *= subtreemass
+  dv = dv * subtreemass
   dL = wp.cross(dx, dv)
   wp.atomic_add(subtree_angmom_out[worldid], pid, dL)
 
