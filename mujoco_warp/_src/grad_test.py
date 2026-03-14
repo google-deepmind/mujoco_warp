@@ -1,5 +1,16 @@
 """Tests for autodifferentiation gradients."""
 
+# When run as a script, Python adds this file's directory (_src/) to sys.path,
+# which causes types.py to shadow the stdlib 'types' module.  Replace it with
+# the project root so that 'import mujoco_warp' still works.
+import os as _os
+import sys as _sys
+
+_src_dir = _os.path.dirname(_os.path.abspath(__file__))
+_project_root = _os.path.dirname(_os.path.dirname(_src_dir))
+if _src_dir in _sys.path:
+  _sys.path[_sys.path.index(_src_dir)] = _project_root
+
 import mujoco
 import numpy as np
 import warp as wp
