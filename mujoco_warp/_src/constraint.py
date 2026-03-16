@@ -1744,12 +1744,14 @@ def _contact_pyramidal(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     if is_sparse:
-      # count non-zeros
       pda1 = da1
       pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
+        # skip common dofs
+        if pda1 == da and pda2 == da:
+          break
         if pda1 == da:
           pda1 = dof_parentid[pda1]
         if pda2 == da:
@@ -1771,7 +1773,7 @@ def _contact_pyramidal(
 
     while True:
       if is_sparse:
-        if da1 < 0 and da2 < 0:
+        if nnz >= rownnz:
           break
       else:
         if dofid < 0:
@@ -1828,6 +1830,8 @@ def _contact_pyramidal(
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
           nnz += 1
+          if nnz >= rownnz:
+            break
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
@@ -1984,6 +1988,9 @@ def _contact_elliptic(
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
+        # skip common dofs
+        if pda1 == da and pda2 == da:
+          break
         if pda1 == da:
           pda1 = dof_parentid[pda1]
         if pda2 == da:
@@ -2005,7 +2012,7 @@ def _contact_elliptic(
 
     while True:
       if is_sparse:
-        if da1 < 0 and da2 < 0:
+        if nnz >= rownnz:
           break
       else:
         if dofid < 0:
@@ -2050,6 +2057,8 @@ def _contact_elliptic(
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
           nnz += 1
+          if nnz >= rownnz:
+            break
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
