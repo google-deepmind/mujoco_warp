@@ -547,7 +547,10 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.nacon.numpy(), 0, "nacon")
 
     for arr in d.contact.__dataclass_fields__:
-      _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
+      if arr == "efc_address":
+        _assert_eq(getattr(d.contact, arr).numpy(), -1, arr)
+      else:
+        _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
   def test_reset_data_world(self):
     """Tests per-world reset."""

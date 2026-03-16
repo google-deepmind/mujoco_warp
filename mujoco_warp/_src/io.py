@@ -750,6 +750,7 @@ def make_data(
   sizes["njmax"] = njmax
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
+  contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
   if SPARSE_CONSTRAINT_JACOBIAN:
@@ -923,7 +924,7 @@ def put_data(
 
   contact = types.Contact(**contact_kwargs)
 
-  contact.efc_address = np.zeros((naconmax, sizes["nmaxpyramid"]), dtype=int)
+  contact.efc_address = np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int)
   for i in range(mjd.ncon):
     efc_address = mjd.contact.efc_address[i]
     if efc_address == -1:
@@ -1417,7 +1418,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_dim_out[conid] = 0
     contact_geom_out[conid] = wp.vec2i(0, 0)
     for i in range(nefcaddress):
-      contact_efc_address_out[conid, i] = 0
+      contact_efc_address_out[conid, i] = -1
     contact_worldid_out[conid] = 0
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0

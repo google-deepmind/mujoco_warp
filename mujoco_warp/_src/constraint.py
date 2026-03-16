@@ -2135,9 +2135,6 @@ def make_constraint(m: types.Model, d: types.Data):
     inputs=[d.ne, d.nf, d.nl, d.nefc, efc_nnz],
   )
 
-  if types.SPARSE_CONSTRAINT_JACOBIAN:
-    d.contact.efc_address.fill_(-1)
-
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
