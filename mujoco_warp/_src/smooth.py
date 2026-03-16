@@ -228,14 +228,34 @@ def _site_local_to_global(
 @wp.kernel
 def _flex_vertices(
   # Model:
+  nflex: int,
+  flex_vertadr: wp.array(dtype=int),
+  flex_vertnum: wp.array(dtype=int),
+  flex_centered: wp.array(dtype=bool),
   flex_vertbodyid: wp.array(dtype=int),
+  flex_vert: wp.array(dtype=wp.vec3),
   # Data in:
   xpos_in: wp.array2d(dtype=wp.vec3),
+  xmat_in: wp.array2d(dtype=wp.mat33),
   # Data out:
   flexvert_xpos_out: wp.array2d(dtype=wp.vec3),
 ):
   worldid, vertid = wp.tid()
-  flexvert_xpos_out[worldid, vertid] = xpos_in[worldid, flex_vertbodyid[vertid]]
+
+  for f in range(nflex):
+    locid = vertid - flex_vertadr[f]
+    if locid >= 0 and locid < flex_vertnum[f]:
+      break
+
+  bodyid = flex_vertbodyid[vertid]
+  xpos = xpos_in[worldid, bodyid]
+
+  if flex_centered[f]:
+    flexvert_xpos_out[worldid, vertid] = xpos
+  else:
+    xmat = xmat_in[worldid, bodyid]
+    local_pos = flex_vert[vertid]
+    flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
 
 
 @wp.kernel
@@ -375,7 +395,21 @@ def kinematics(m: Model, d: Data):
 
 @event_scope
 def flex(m: Model, d: Data):
-  wp.launch(_flex_vertices, dim=(d.nworld, m.nflexvert), inputs=[m.flex_vertbodyid, d.xpos], outputs=[d.flexvert_xpos])
+  wp.launch(
+    _flex_vertices,
+    dim=(d.nworld, m.nflexvert),
+    inputs=[
+      m.nflex,
+      m.flex_vertadr,
+      m.flex_vertnum,
+      m.flex_centered,
+      m.flex_vertbodyid,
+      m.flex_vert,
+      d.xpos,
+      d.xmat,
+    ],
+    outputs=[d.flexvert_xpos],
+  )
   wp.launch(
     _flex_edges,
     dim=(d.nworld, m.nflexedge),

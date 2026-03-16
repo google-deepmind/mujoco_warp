@@ -548,6 +548,47 @@ class SmoothTest(parameterized.TestCase):
 
     _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
 
+  def test_flex_1d_pinned(self):
+    """Tests that 1D flex vertices pinned to a body are correctly positioned.
+
+    This is a regression test for a bug where non-centered flex vertices were
+    placed at the body origin instead of applying local vertex transformations.
+    """
+    xml = """
+    <mujoco>
+      <option gravity="0 0 -10"/>
+      <worldbody>
+        <body name="rope" pos="0.5 0.5 1.0">
+          <freejoint/>
+          <geom type="sphere" size="0.02" mass="0.01"/>
+          <flexcomp name="line" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                    radius="0.01" dim="1" mass="1">
+            <contact contype="0" conaffinity="0"/>
+            <edge equality="true" damping="0.01"/>
+            <pin id="0"/>
+          </flexcomp>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 1)
+    self.assertEqual(m.nflexvert, 5)
+
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexedge_length.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
+    _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
+
 
 if __name__ == "__main__":
   wp.init()
