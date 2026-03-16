@@ -1530,7 +1530,9 @@ def sphere_triangle(
   Args:
     sphere_pos: Center position of the sphere.
     sphere_radius: Radius of the sphere.
-    t1, t2, t3: Triangle vertex positions.
+    t1: Triangle vertex positions.
+    t2: Triangle vertex positions.
+    t3: Triangle vertex positions.
     tri_radius: Triangle (flex element) radius.
 
   Returns:
@@ -1612,7 +1614,9 @@ def box_triangle(
     box_pos: Center position of the box.
     box_rot: Orientation matrix of the box.
     box_size: Half-sizes of the box.
-    t1, t2, t3: Triangle vertex positions.
+    t1: Triangle vertex positions.
+    t2: Triangle vertex positions.
+    t3: Triangle vertex positions.
     tri_radius: Triangle (flex element) radius.
 
   Returns:
@@ -1729,7 +1733,9 @@ def capsule_triangle(
     capsule_axis: Unit axis direction of the capsule.
     capsule_radius: Radius of the capsule.
     capsule_half_length: Half-length of the capsule cylinder.
-    t1, t2, t3: Triangle vertex positions.
+    t1: Triangle vertex positions.
+    t2: Triangle vertex positions.
+    t3: Triangle vertex positions.
     tri_radius: Triangle (flex element) radius.
 
   Returns:
@@ -1830,7 +1836,9 @@ def cylinder_triangle(
     cylinder_axis: Unit axis direction of the cylinder.
     cylinder_radius: Radius of the cylinder.
     cylinder_half_height: Half-height of the cylinder.
-    t1, t2, t3: Triangle vertex positions.
+    t1: Triangle vertex positions.
+    t2: Triangle vertex positions.
+    t3: Triangle vertex positions.
     tri_radius: Triangle (flex element) radius.
 
   Returns:

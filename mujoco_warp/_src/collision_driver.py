@@ -18,9 +18,9 @@ from typing import Any
 import warp as wp
 
 from mujoco_warp._src.collision_convex import convex_narrowphase
-from mujoco_warp._src.collision_flex import flex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import create_collision_context
+from mujoco_warp._src.collision_flex import flex_narrowphase
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index

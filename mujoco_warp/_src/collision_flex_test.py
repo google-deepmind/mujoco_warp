@@ -32,20 +32,20 @@ class FlexCollisionTest(absltest.TestCase):
 
       <worldbody>
         <light pos="0 0 3" dir="0 0 -1"/>
-        
+
         <!-- Ground plane -->
         <geom name="ground" type="plane" size="5 5 .1" pos="0 0 0"/>
-        
+
         <!-- Sphere positioned just above the cloth -->
         <body pos="0 0 0.12">
           <freejoint/>
           <geom name="ball" type="sphere" size=".1" mass="1"/>
         </body>
-        
+
         <!-- Cloth (dim=2 flex) -->
         <flexcomp type="grid" count="4 4 1" spacing=".2 .2 .1" pos="-.3 -.3 0"
                   radius=".02" name="cloth" dim="2" mass=".5">
-          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" 
+          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
                    selfcollide="none" conaffinity="1" contype="1"/>
           <edge damping="0.01"/>
         </flexcomp>
