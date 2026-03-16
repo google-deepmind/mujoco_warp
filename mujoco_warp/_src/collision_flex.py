@@ -31,7 +31,7 @@ wp.set_module_options({"enable_backward": False})
 @wp.func
 def _write_flex_contact(
   # Data in:
-  naconmax: int,
+  naconmax_in: int,
   # In:
   dist: float,
   pos: wp.vec3,
@@ -67,7 +67,7 @@ def _write_flex_contact(
     return
 
   id_ = wp.atomic_add(nacon_out, 0, 1)
-  if id_ >= naconmax:
+  if id_ >= naconmax_in:
     return
 
   contact_dist_out[id_] = dist
@@ -90,7 +90,7 @@ def _write_flex_contact(
 @wp.func
 def _collide_geom_triangle(
   # Data in:
-  naconmax: int,
+  naconmax_in: int,
   # In:
   gtype: int,
   geom_pos: wp.vec3,
@@ -132,7 +132,7 @@ def _collide_geom_triangle(
     dist, pos, nrm = collision_primitive_core.sphere_triangle(geom_pos, sphere_radius, t1, t2, t3, tri_radius)
     if dist < margin:
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dist,
         pos,
         make_frame(nrm),
@@ -173,7 +173,7 @@ def _collide_geom_triangle(
       p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
       n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dists[0],
         p1,
         make_frame(n1),
@@ -207,7 +207,7 @@ def _collide_geom_triangle(
       p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
       n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dists[1],
         p2,
         make_frame(n2),
@@ -243,7 +243,7 @@ def _collide_geom_triangle(
       p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
       n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dists[0],
         p1,
         make_frame(n1),
@@ -277,7 +277,7 @@ def _collide_geom_triangle(
       p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
       n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dists[1],
         p2,
         make_frame(n2),
@@ -318,7 +318,7 @@ def _collide_geom_triangle(
       p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
       n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dists[0],
         p1,
         make_frame(n1),
@@ -352,7 +352,7 @@ def _collide_geom_triangle(
       p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
       n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
       _write_flex_contact(
-        naconmax,
+        naconmax_in,
         dists[1],
         p2,
         make_frame(n2),
@@ -386,6 +386,7 @@ def _collide_geom_triangle(
 
 @wp.kernel
 def _flex_plane_narrowphase(
+  # Model:
   ngeom: int,
   nflexvert: int,
   geom_type: wp.array(dtype=int),
@@ -397,11 +398,13 @@ def _flex_plane_narrowphase(
   flex_vertflexid: wp.array(dtype=int),
   flex_radius: wp.array(dtype=float),
   flex_margin: wp.array(dtype=float),
+  # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   nworld_in: int,
   naconmax_in: int,
+  # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
   contact_frame_out: wp.array(dtype=wp.mat33),
@@ -438,7 +441,7 @@ def _flex_plane_narrowphase(
     plane_rot = geom_xmat_in[worldid, geomid]
     plane_normal = wp.vec3(plane_rot[0, 2], plane_rot[1, 2], plane_rot[2, 2])
 
-    margin = geom_margin[worldid, geomid] + flex_margin_val
+    margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
 
     diff = vert - plane_pos
     signed_dist = wp.dot(diff, plane_normal)
@@ -446,10 +449,16 @@ def _flex_plane_narrowphase(
 
     if dist < margin:
       condim = geom_condim[geomid]
-      solref = geom_solref[worldid, geomid]
-      solimp = geom_solimp[worldid, geomid]
-      fric = geom_friction[worldid, geomid]
-      friction = vec5(fric[0], fric[1], fric[2], 0.0, 0.0)
+      solref = geom_solref[worldid % geom_solref.shape[0], geomid]
+      solimp = geom_solimp[worldid % geom_solimp.shape[0], geomid]
+      fric = geom_friction[worldid % geom_friction.shape[0], geomid]
+      friction = vec5(
+        wp.max(MJ_MINMU, fric[0]),
+        wp.max(MJ_MINMU, fric[0]),
+        wp.max(MJ_MINMU, fric[1]),
+        wp.max(MJ_MINMU, fric[2]),
+        wp.max(MJ_MINMU, fric[2]),
+      )
 
       contact_pos = vert - plane_normal * (dist * 0.5 + radius)
       _write_flex_contact(
@@ -509,11 +518,11 @@ def _flex_narrowphase_dim2(
   flex_contype: wp.array(dtype=int),
   flex_conaffinity: wp.array(dtype=int),
   # Data in:
-  geom_xpos: wp.array2d(dtype=wp.vec3),
-  geom_xmat: wp.array2d(dtype=wp.mat33),
-  flexvert_xpos: wp.array2d(dtype=wp.vec3),
-  nworld: int,
-  naconmax: int,
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  nworld_in: int,
+  naconmax_in: int,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -533,7 +542,7 @@ def _flex_narrowphase_dim2(
   nacon_out: wp.array(dtype=int),
 ):
   worldid, elemid = wp.tid()
-  if worldid >= nworld:
+  if worldid >= nworld_in:
     return
 
   flexid = int(-1)
@@ -558,9 +567,9 @@ def _flex_narrowphase_dim2(
   v1_local = flex_elem[elem_data_idx + 1]
   v2_local = flex_elem[elem_data_idx + 2]
 
-  t1 = flexvert_xpos[worldid, vert_adr + v0_local]
-  t2 = flexvert_xpos[worldid, vert_adr + v1_local]
-  t3 = flexvert_xpos[worldid, vert_adr + v2_local]
+  t1 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+  t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+  t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
 
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
@@ -582,8 +591,8 @@ def _flex_narrowphase_dim2(
     geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
     margin = geom_margin_val + tri_margin
 
-    geom_pos = geom_xpos[worldid, geomid]
-    geom_rot = geom_xmat[worldid, geomid]
+    geom_pos = geom_xpos_in[worldid, geomid]
+    geom_rot = geom_xmat_in[worldid, geomid]
     geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
     condim = geom_condim[geomid]
@@ -599,7 +608,7 @@ def _flex_narrowphase_dim2(
     solimp = geom_solimp[worldid % geom_solimp.shape[0], geomid]
 
     _collide_geom_triangle(
-      naconmax,
+      naconmax_in,
       gtype,
       geom_pos,
       geom_rot,
@@ -660,11 +669,11 @@ def _flex_narrowphase_dim3(
   flex_shelldataadr: wp.array(dtype=int),
   flex_shell: wp.array(dtype=int),
   # Data in:
-  geom_xpos: wp.array2d(dtype=wp.vec3),
-  geom_xmat: wp.array2d(dtype=wp.mat33),
-  flexvert_xpos: wp.array2d(dtype=wp.vec3),
-  nworld: int,
-  naconmax: int,
+  geom_xpos_in: wp.array2d(dtype=wp.vec3),
+  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  nworld_in: int,
+  naconmax_in: int,
   # Data out:
   contact_dist_out: wp.array(dtype=float),
   contact_pos_out: wp.array(dtype=wp.vec3),
@@ -684,7 +693,7 @@ def _flex_narrowphase_dim3(
   nacon_out: wp.array(dtype=int),
 ):
   worldid, shellid = wp.tid()
-  if worldid >= nworld:
+  if worldid >= nworld_in:
     return
 
   flexid = int(-1)
@@ -713,9 +722,9 @@ def _flex_narrowphase_dim3(
   v1_local = flex_shell[shell_data_idx + 1]
   v2_local = flex_shell[shell_data_idx + 2]
 
-  t1 = flexvert_xpos[worldid, vert_adr + v0_local]
-  t2 = flexvert_xpos[worldid, vert_adr + v1_local]
-  t3 = flexvert_xpos[worldid, vert_adr + v2_local]
+  t1 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+  t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+  t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
 
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
@@ -737,8 +746,8 @@ def _flex_narrowphase_dim3(
     geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
     margin = geom_margin_val + tri_margin
 
-    geom_pos = geom_xpos[worldid, geomid]
-    geom_rot = geom_xmat[worldid, geomid]
+    geom_pos = geom_xpos_in[worldid, geomid]
+    geom_rot = geom_xmat_in[worldid, geomid]
     geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
     condim = geom_condim[geomid]
@@ -754,7 +763,7 @@ def _flex_narrowphase_dim3(
     solimp = geom_solimp[worldid % geom_solimp.shape[0], geomid]
 
     _collide_geom_triangle(
-      naconmax,
+      naconmax_in,
       gtype,
       geom_pos,
       geom_rot,
