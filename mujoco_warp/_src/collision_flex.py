@@ -93,9 +93,9 @@ def _collide_geom_triangle(
   naconmax_in: int,
   # In:
   gtype: int,
-  geom_pos: wp.vec3,
-  geom_rot: wp.mat33,
-  geom_size_val: wp.vec3,
+  pos: wp.vec3,
+  rot: wp.mat33,
+  size_val: wp.vec3,
   t1: wp.vec3,
   t2: wp.vec3,
   t3: wp.vec3,
@@ -128,13 +128,13 @@ def _collide_geom_triangle(
   nacon_out: wp.array(dtype=int),
 ):
   if gtype == int(GeomType.SPHERE):
-    sphere_radius = geom_size_val[0]
-    dist, pos, nrm = collision_primitive_core.sphere_triangle(geom_pos, sphere_radius, t1, t2, t3, tri_radius)
+    sphere_radius = size_val[0]
+    dist, contact_pos, nrm = collision_primitive_core.sphere_triangle(pos, sphere_radius, t1, t2, t3, tri_radius)
     if dist < margin:
       _write_flex_contact(
         naconmax_in,
         dist,
-        pos,
+        contact_pos,
         make_frame(nrm),
         margin,
         condim,
@@ -163,11 +163,11 @@ def _collide_geom_triangle(
         nacon_out,
       )
   elif gtype == int(GeomType.CAPSULE):
-    cap_radius = geom_size_val[0]
-    cap_half_len = geom_size_val[1]
-    cap_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+    cap_radius = size_val[0]
+    cap_half_len = size_val[1]
+    cap_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
     dists, poss, nrms = collision_primitive_core.capsule_triangle(
-      geom_pos, cap_axis, cap_radius, cap_half_len, t1, t2, t3, tri_radius
+      pos, cap_axis, cap_radius, cap_half_len, t1, t2, t3, tri_radius
     )
     if dists[0] < margin:
       p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
@@ -238,7 +238,7 @@ def _collide_geom_triangle(
         nacon_out,
       )
   elif gtype == int(GeomType.BOX):
-    dists, poss, nrms = collision_primitive_core.box_triangle(geom_pos, geom_rot, geom_size_val, t1, t2, t3, tri_radius)
+    dists, poss, nrms = collision_primitive_core.box_triangle(pos, rot, size_val, t1, t2, t3, tri_radius)
     if dists[0] < margin:
       p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
       n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
@@ -308,11 +308,11 @@ def _collide_geom_triangle(
         nacon_out,
       )
   elif gtype == int(GeomType.CYLINDER):
-    cyl_radius = geom_size_val[0]
-    cyl_half_height = geom_size_val[1]
-    cyl_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+    cyl_radius = size_val[0]
+    cyl_half_height = size_val[1]
+    cyl_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
     dists, poss, nrms = collision_primitive_core.cylinder_triangle(
-      geom_pos, cyl_axis, cyl_radius, cyl_half_height, t1, t2, t3, tri_radius
+      pos, cyl_axis, cyl_radius, cyl_half_height, t1, t2, t3, tri_radius
     )
     if dists[0] < margin:
       p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
