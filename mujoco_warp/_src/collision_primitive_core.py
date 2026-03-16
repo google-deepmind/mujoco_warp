@@ -1516,12 +1516,12 @@ def _tri_point_segment(p: wp.vec2, u: wp.vec2, v: wp.vec2) -> wp.vec2:
 
 @wp.func
 def sphere_triangle(
-    sphere_pos: wp.vec3,
-    sphere_radius: float,
-    t1: wp.vec3,
-    t2: wp.vec3,
-    t3: wp.vec3,
-    tri_radius: float,
+  sphere_pos: wp.vec3,
+  sphere_radius: float,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   """Core contact geometry calculation for sphere-triangle collision.
 
@@ -1596,13 +1596,13 @@ def sphere_triangle(
 
 @wp.func
 def box_triangle(
-    box_pos: wp.vec3,
-    box_rot: wp.mat33,
-    box_size: wp.vec3,
-    t1: wp.vec3,
-    t2: wp.vec3,
-    t3: wp.vec3,
-    tri_radius: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
 ) -> Tuple[wp.vec2, mat23f, mat23f]:
   """Core contact geometry calculation for box-triangle collision.
 
@@ -1684,9 +1684,9 @@ def box_triangle(
       break
 
     vec = wp.vec3(
-        wp.where(i & 1, box_size[0], -box_size[0]),
-        wp.where(i & 2, box_size[1], -box_size[1]),
-        wp.where(i & 4, box_size[2], -box_size[2]),
+      wp.where(i & 1, box_size[0], -box_size[0]),
+      wp.where(i & 2, box_size[1], -box_size[1]),
+      wp.where(i & 4, box_size[2], -box_size[2]),
     )
     corner = box_rot @ vec + box_pos
 
@@ -1703,22 +1703,22 @@ def box_triangle(
       cnt += 1
 
   return (
-      wp.vec2(dist1, dist2),
-      mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
-      mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
+    wp.vec2(dist1, dist2),
+    mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
+    mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
   )
 
 
 @wp.func
 def capsule_triangle(
-    capsule_pos: wp.vec3,
-    capsule_axis: wp.vec3,
-    capsule_radius: float,
-    capsule_half_length: float,
-    t1: wp.vec3,
-    t2: wp.vec3,
-    t3: wp.vec3,
-    tri_radius: float,
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
 ) -> Tuple[wp.vec2, mat23f, mat23f]:
   """Core contact geometry calculation for capsule-triangle collision.
 
@@ -1806,22 +1806,22 @@ def capsule_triangle(
         cnt += 1
 
   return (
-      wp.vec2(dist1, dist2),
-      mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
-      mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
+    wp.vec2(dist1, dist2),
+    mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
+    mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
   )
 
 
 @wp.func
 def cylinder_triangle(
-    cylinder_pos: wp.vec3,
-    cylinder_axis: wp.vec3,
-    cylinder_radius: float,
-    cylinder_half_height: float,
-    t1: wp.vec3,
-    t2: wp.vec3,
-    t3: wp.vec3,
-    tri_radius: float,
+  cylinder_pos: wp.vec3,
+  cylinder_axis: wp.vec3,
+  cylinder_radius: float,
+  cylinder_half_height: float,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
 ) -> Tuple[wp.vec2, mat23f, mat23f]:
   """Core contact geometry calculation for cylinder-triangle collision.
 
@@ -1853,7 +1853,6 @@ def cylinder_triangle(
   ab_len_sq = 4.0 * cylinder_half_height * cylinder_half_height
 
   for vi in range(3):
-
     if cnt >= 2:
       break
 
@@ -1963,7 +1962,7 @@ def cylinder_triangle(
           cnt += 1
 
   return (
-      wp.vec2(dist1, dist2),
-      mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
-      mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
+    wp.vec2(dist1, dist2),
+    mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
+    mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
   )

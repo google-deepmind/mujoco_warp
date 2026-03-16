@@ -23,19 +23,17 @@ from mujoco_warp._src.collision_primitive_core import sphere_triangle
 
 @wp.kernel
 def sphere_triangle_kernel(
-    sphere_pos: wp.vec3,
-    sphere_radius: float,
-    t1: wp.vec3,
-    t2: wp.vec3,
-    t3: wp.vec3,
-    tri_radius: float,
-    dist_out: wp.array(dtype=float),
-    pos_out: wp.array(dtype=wp.vec3),
-    normal_out: wp.array(dtype=wp.vec3),
+  sphere_pos: wp.vec3,
+  sphere_radius: float,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
+  dist_out: wp.array(dtype=float),
+  pos_out: wp.array(dtype=wp.vec3),
+  normal_out: wp.array(dtype=wp.vec3),
 ):
-  dist, pos, normal = sphere_triangle(
-      sphere_pos, sphere_radius, t1, t2, t3, tri_radius
-  )
+  dist, pos, normal = sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
   dist_out[0] = dist
   pos_out[0] = pos
   normal_out[0] = normal
@@ -45,13 +43,13 @@ class SphereTriangleTest(parameterized.TestCase):
   """Tests for sphere_triangle collision."""
 
   def _run_sphere_triangle(
-      self,
-      sphere_pos: np.ndarray,
-      sphere_radius: float,
-      t1: np.ndarray,
-      t2: np.ndarray,
-      t3: np.ndarray,
-      tri_radius: float,
+    self,
+    sphere_pos: np.ndarray,
+    sphere_radius: float,
+    t1: np.ndarray,
+    t2: np.ndarray,
+    t3: np.ndarray,
+    tri_radius: float,
   ):
     """Helper to run the sphere_triangle kernel and return results."""
     dist = wp.zeros(1, dtype=float)
@@ -59,17 +57,17 @@ class SphereTriangleTest(parameterized.TestCase):
     normal = wp.zeros(1, dtype=wp.vec3)
 
     wp.launch(
-        sphere_triangle_kernel,
-        dim=1,
-        inputs=[
-            wp.vec3(sphere_pos),
-            sphere_radius,
-            wp.vec3(t1),
-            wp.vec3(t2),
-            wp.vec3(t3),
-            tri_radius,
-        ],
-        outputs=[dist, pos, normal],
+      sphere_triangle_kernel,
+      dim=1,
+      inputs=[
+        wp.vec3(sphere_pos),
+        sphere_radius,
+        wp.vec3(t1),
+        wp.vec3(t2),
+        wp.vec3(t3),
+        tri_radius,
+      ],
+      outputs=[dist, pos, normal],
     )
 
     return dist.numpy()[0], pos.numpy()[0], normal.numpy()[0]
@@ -83,9 +81,7 @@ class SphereTriangleTest(parameterized.TestCase):
     sphere_radius = 0.2
     tri_radius = 0.0
 
-    dist, pos, normal = self._run_sphere_triangle(
-        sphere_pos, sphere_radius, t1, t2, t3, tri_radius
-    )
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
 
     expected_dist = 0.5 - sphere_radius
     np.testing.assert_allclose(dist, expected_dist, atol=1e-5)
@@ -100,9 +96,7 @@ class SphereTriangleTest(parameterized.TestCase):
     sphere_radius = 0.2
     tri_radius = 0.0
 
-    dist, pos, normal = self._run_sphere_triangle(
-        sphere_pos, sphere_radius, t1, t2, t3, tri_radius
-    )
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
 
     expected_dist = 0.1 - sphere_radius
     self.assertLess(dist, 0)
@@ -118,9 +112,7 @@ class SphereTriangleTest(parameterized.TestCase):
     sphere_radius = 0.2
     tri_radius = 0.0
 
-    dist, pos, normal = self._run_sphere_triangle(
-        sphere_pos, sphere_radius, t1, t2, t3, tri_radius
-    )
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
 
     self.assertGreater(dist, 0)
 
@@ -133,9 +125,7 @@ class SphereTriangleTest(parameterized.TestCase):
     sphere_radius = 0.2
     tri_radius = 0.0
 
-    dist, pos, normal = self._run_sphere_triangle(
-        sphere_pos, sphere_radius, t1, t2, t3, tri_radius
-    )
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
 
     expected_vec = sphere_pos - t1
     expected_length = np.linalg.norm(expected_vec)
@@ -151,9 +141,7 @@ class SphereTriangleTest(parameterized.TestCase):
     sphere_radius = 0.2
     tri_radius = 0.1
 
-    dist, pos, normal = self._run_sphere_triangle(
-        sphere_pos, sphere_radius, t1, t2, t3, tri_radius
-    )
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
 
     expected_dist = 0.5 - sphere_radius - tri_radius
     np.testing.assert_allclose(dist, expected_dist, atol=1e-5)
