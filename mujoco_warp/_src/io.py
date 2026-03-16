@@ -114,9 +114,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
-  if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
-    raise NotImplementedError("Flex collisions are not implemented.")
-
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
@@ -2515,6 +2512,7 @@ def create_render_context(
   flex_faceadr = None
   flex_nface = 0
   flex_radius = None
+  flex_vertflexid = None
   flex_workadr = None
   flex_worknum = None
   flex_nwork = 0
@@ -2538,6 +2536,14 @@ def create_render_context(
     flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
     flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
     flex_radius = wp.array(mjm.flex_radius, dtype=float)
+
+    # Compute flex_vertflexid: maps each flex vertex to its flex index
+    flex_vertflexid_data = np.zeros(mjm.nflexvert, dtype=np.int32)
+    for flexid in range(mjm.nflex):
+      vert_start = mjm.flex_vertadr[flexid]
+      vert_end = vert_start + mjm.flex_vertnum[flexid]
+      flex_vertflexid_data[vert_start:vert_end] = flexid
+    flex_vertflexid = wp.array(flex_vertflexid_data, dtype=int)
 
     # precompute work item layout for unified refit kernel
     nflex = mjm.nflex
@@ -2674,6 +2680,7 @@ def create_render_context(
     flex_shell=flex_shell,
     flex_shelldataadr=flex_shelldataadr,
     flex_radius=flex_radius,
+    flex_vertflexid=flex_vertflexid,
     flex_workadr=flex_workadr,
     flex_worknum=flex_worknum,
     flex_render_smooth=flex_render_smooth,

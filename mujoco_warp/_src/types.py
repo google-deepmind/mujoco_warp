@@ -1212,6 +1212,7 @@ class Model:
   nflexelem: int
   nflexelemdata: int
   nflexelemedge: int
+  nflexshelldata: int
   nJfe: int
   nmesh: int
   nmeshvert: int
@@ -1354,6 +1355,7 @@ class Model:
   flex_elemnum: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
+  flex_vertflexid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
@@ -1364,6 +1366,13 @@ class Model:
   flex_stiffness: array("nflexelem", 21, float)
   flex_bending: array("nflexedge", 17, float)
   flex_damping: array("nflex", float)
+  flex_radius: array("nflex", float)
+  flex_margin: array("nflex", float)
+  flex_contype: array("nflex", int)
+  flex_conaffinity: array("nflex", int)
+  flex_shellnum: array("nflex", int)
+  flex_shelldataadr: array("nflex", int)
+  flex_shell: array("nflexshelldata", int)
   flex_centered: array("nflex", bool)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
@@ -1601,6 +1610,8 @@ class Contact:
   solimp: array("naconmax", vec5)
   dim: array("naconmax", int)
   geom: array("naconmax", wp.vec2i)
+  flex: array("naconmax", wp.vec2i)
+  vert: array("naconmax", wp.vec2i)
   efc_address: array("naconmax", "nmaxpyramid", int)
   worldid: array("naconmax", int)
   type: array("naconmax", int)
