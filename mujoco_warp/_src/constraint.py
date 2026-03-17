@@ -1719,17 +1719,19 @@ def _contact_pyramidal(
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
-    flex = flex_in[conid]
-    vert = vert_in[conid]
 
     if geom[0] >= 0:
       body1 = geom_bodyid[geom[0]]
     else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
       body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
 
     if geom[1] >= 0:
       body2 = geom_bodyid[geom[1]]
     else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
       body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
     con_pos = pos_in[conid]
@@ -1980,17 +1982,19 @@ def _contact_elliptic(
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
-    flex = flex_in[conid]
-    vert = vert_in[conid]
 
     if geom[0] >= 0:
       body1 = geom_bodyid[geom[0]]
     else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
       body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
 
     if geom[1] >= 0:
       body2 = geom_bodyid[geom[1]]
     else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
       body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
     con_pos = pos_in[conid]

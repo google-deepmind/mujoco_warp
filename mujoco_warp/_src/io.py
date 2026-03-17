@@ -764,7 +764,7 @@ def make_data(
   for f in dataclasses.fields(types.Contact):
     # Size flex/vert contact arrays to 0 when no flex bodies in scene
     if f.name in ("flex", "vert") and mjm.nflex == 0:
-      contact_kwargs[f.name] = wp.zeros((0, 2), dtype=wp.vec2i)
+      contact_kwargs[f.name] = wp.zeros(0, dtype=wp.vec2i)
     else:
       contact_kwargs[f.name] = _create_array(None, f.type, sizes)
   contact = types.Contact(**contact_kwargs)
@@ -923,7 +923,7 @@ def put_data(
       continue
     # Size flex/vert contact arrays to 0 when no flex bodies in scene
     if f.name in ("flex", "vert") and mjm.nflex == 0:
-      contact_kwargs[f.name] = wp.zeros((0, 2), dtype=wp.vec2i)
+      contact_kwargs[f.name] = wp.zeros(0, dtype=wp.vec2i)
       continue
     val = getattr(mjd.contact, f.name)
     val = np.repeat(val, nworld, axis=0)
