@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@ class FlexCollisionTest(absltest.TestCase):
     """Test that contacts are generated between sphere and cloth."""
     xml = """
     <mujoco>
-      <compiler autolimits="true"/>
       <option solver="CG" tolerance="1e-6" timestep=".001"/>
       <size memory="10M"/>
 
@@ -34,12 +33,12 @@ class FlexCollisionTest(absltest.TestCase):
         <light pos="0 0 3" dir="0 0 -1"/>
 
         <!-- Ground plane -->
-        <geom name="ground" type="plane" size="5 5 .1" pos="0 0 0"/>
+        <geom type="plane" size="5 5 .1" pos="0 0 0"/>
 
         <!-- Sphere positioned just above the cloth -->
         <body pos="0 0 0.12">
           <freejoint/>
-          <geom name="ball" type="sphere" size=".1" mass="1"/>
+          <geom type="sphere" size=".1" mass="1"/>
         </body>
 
         <!-- Cloth (dim=2 flex) -->

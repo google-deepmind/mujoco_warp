@@ -1591,7 +1591,7 @@ def sphere_triangle(
     nrm = N
 
   dist = dst - sphere_radius - tri_radius
-  pos = sphere_pos + nrm * (sphere_radius + dist / 2.0)
+  pos = sphere_pos + nrm * (sphere_radius + 0.5 * dist)
 
   return dist, pos, nrm
 
