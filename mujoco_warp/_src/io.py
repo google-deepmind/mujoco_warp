@@ -2627,7 +2627,7 @@ def create_render_context(
     render_depth = [render_depth] * ncam
 
   if render_seg is None:
-    render_seg = [False] * ncam
+    render_seg = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_SEG for i in active_cam_indices]
   elif isinstance(render_seg, bool):
     render_seg = [render_seg] * ncam
 
