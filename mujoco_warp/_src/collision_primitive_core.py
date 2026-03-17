@@ -1886,10 +1886,23 @@ def cylinder_triangle(
           d = dist_raw - cylinder_radius - tri_radius
           p = (closest + vert + nrm * (cylinder_radius - tri_radius)) * 0.5
         else:
-          tri_normal = wp.normalize(wp.cross(t2 - t1, t3 - t1))
-          nrm = tri_normal
-          d = -cylinder_radius - tri_radius
-          p = closest
+          dist_to_side = cylinder_radius
+          dist_to_p2 = (1.0 - t_param) * wp.sqrt(ab_len_sq)
+          dist_to_p1 = t_param * wp.sqrt(ab_len_sq)
+
+          if dist_to_p2 < dist_to_side and dist_to_p2 < dist_to_p1:
+            nrm = cylinder_axis
+            d = -dist_to_p2 - tri_radius
+            p = vert
+          elif dist_to_p1 < dist_to_side:
+            nrm = -cylinder_axis
+            d = -dist_to_p1 - tri_radius
+            p = vert
+          else:
+            tri_normal = wp.normalize(wp.cross(t2 - t1, t3 - t1))
+            nrm = tri_normal
+            d = -cylinder_radius - tri_radius
+            p = closest
 
         if cnt == 0:
           dist1 = d
