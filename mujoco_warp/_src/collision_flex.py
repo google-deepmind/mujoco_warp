@@ -272,6 +272,7 @@ def _flex_plane_narrowphase(
   flex_friction: wp.array(dtype=wp.vec3),
   flex_margin: wp.array(dtype=float),
   flex_radius: wp.array(dtype=float),
+  flex_vertadr: wp.array(dtype=int),
   flex_vertflexid: wp.array(dtype=int),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -304,6 +305,8 @@ def _flex_plane_narrowphase(
   flex_margin_val = flex_margin[flexid]
   flex_condim_val = flex_condim[flexid]
   flex_fric = flex_friction[flexid]
+  # Convert global vertid to local vertex index within this flex
+  local_vertid = vertid - flex_vertadr[flexid]
 
   vert = flexvert_xpos_in[worldid, vertid]
 
@@ -353,7 +356,7 @@ def _flex_plane_narrowphase(
         solimp,
         geomid,
         flexid,
-        vertid,
+        local_vertid,
         worldid,
         contact_dist_out,
         contact_pos_out,
@@ -800,6 +803,7 @@ def flex_narrowphase(m: Model, d: Data):
       m.flex_friction,
       m.flex_margin,
       m.flex_radius,
+      m.flex_vertadr,
       m.flex_vertflexid,
       d.geom_xpos,
       d.geom_xmat,
