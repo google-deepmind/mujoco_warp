@@ -1880,10 +1880,16 @@ def cylinder_triangle(
       diff = vert - closest
       dist_raw = wp.length(diff)
 
-      if dist_raw > MJ_MINVAL and dist_raw < cylinder_radius + tri_radius:
-        nrm = diff / dist_raw
-        d = dist_raw - cylinder_radius - tri_radius
-        p = (closest + vert + nrm * (cylinder_radius - tri_radius)) * 0.5
+      if dist_raw < cylinder_radius + tri_radius:
+        if dist_raw > MJ_MINVAL:
+          nrm = diff / dist_raw
+          d = dist_raw - cylinder_radius - tri_radius
+          p = (closest + vert + nrm * (cylinder_radius - tri_radius)) * 0.5
+        else:
+          tri_normal = wp.normalize(wp.cross(t2 - t1, t3 - t1))
+          nrm = tri_normal
+          d = -cylinder_radius - tri_radius
+          p = closest
 
         if cnt == 0:
           dist1 = d
