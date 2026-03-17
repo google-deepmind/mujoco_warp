@@ -2680,7 +2680,6 @@ def create_render_context(
     flex_shell=flex_shell,
     flex_shelldataadr=flex_shelldataadr,
     flex_radius=flex_radius,
-    flex_vertflexid=flex_vertflexid,
     flex_workadr=flex_workadr,
     flex_worknum=flex_worknum,
     flex_render_smooth=flex_render_smooth,
