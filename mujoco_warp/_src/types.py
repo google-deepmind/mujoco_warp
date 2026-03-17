@@ -1378,6 +1378,7 @@ class Model:
   flex_elem: array("nflexelemdata", int)
   flex_elemedge: array("nflexelemedge", int)
   flex_shell: array("nflexshelldata", int)
+  flex_vert: array("nflexvert", wp.vec3)
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
   flex_radius: array("nflex", float)
