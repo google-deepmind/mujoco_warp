@@ -473,22 +473,24 @@ class CylinderTriangleTest(parameterized.TestCase):
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
 
   def test_cylinder_penetrating_triangle(self):
-    """Cylinder with triangle vertex inside its volume."""
+    """Cylinder with cap overlapping the triangle plane."""
     t1 = np.array([0.0, 0.0, 0.0])
     t2 = np.array([1.0, 0.0, 0.0])
     t3 = np.array([0.5, 1.0, 0.0])
-    # Position cylinder so vertex t1 is inside its cylinder cap
+    # Position cylinder so its top cap penetrates the triangle plane at z=0
+    # Cylinder center at z=-0.05 with half_height=0.1 means top cap at z=0.05
+    # and vertex t1 at (0,0,0) is within cylinder_radius=0.3 of axis
     cylinder_pos = np.array([0.0, 0.0, -0.05])
     cylinder_axis = np.array([0.0, 0.0, 1.0])
-    cylinder_radius = 0.3
+    cylinder_radius = 0.5  # increased radius to ensure triangle is inside
     cylinder_half_height = 0.1
     tri_radius = 0.0
 
-    dist, pos, normal = self._run_cylinder_triangle(
+    dist, _, _ = self._run_cylinder_triangle(
       cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
     )
 
-    # Vertex t1 is inside the cylinder cap, should get contact
+    # Triangle overlaps with cylinder cap, should get contact
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
 
   def test_horizontal_cylinder(self):

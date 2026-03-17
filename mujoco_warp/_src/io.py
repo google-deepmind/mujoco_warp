@@ -760,6 +760,15 @@ def make_data(
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
 
+  contact_kwargs = {}
+  for f in dataclasses.fields(types.Contact):
+    # Size flex/vert contact arrays to 0 when no flex bodies in scene
+    if f.name in ("flex", "vert") and mjm.nflex == 0:
+      contact_kwargs[f.name] = wp.zeros((0, 2), dtype=wp.vec2i)
+    else:
+      contact_kwargs[f.name] = _create_array(None, f.type, sizes)
+  contact = types.Contact(**contact_kwargs)
+
   # world body and static geom (attached to the world) poses are precomputed
   # this speeds up scenes with many static geoms (e.g. terrains)
   # TODO(team): remove this when we introduce dof islands + sleeping
@@ -911,6 +920,10 @@ def put_data(
   contact_kwargs = {"efc_address": None, "worldid": None, "type": None, "geomcollisionid": None}
   for f in dataclasses.fields(types.Contact):
     if f.name in contact_kwargs:
+      continue
+    # Size flex/vert contact arrays to 0 when no flex bodies in scene
+    if f.name in ("flex", "vert") and mjm.nflex == 0:
+      contact_kwargs[f.name] = wp.zeros((0, 2), dtype=wp.vec2i)
       continue
     val = getattr(mjd.contact, f.name)
     val = np.repeat(val, nworld, axis=0)
