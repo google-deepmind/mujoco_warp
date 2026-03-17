@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import create_collision_context
+from mujoco_warp._src.collision_flex import flex_narrowphase
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index
@@ -745,6 +746,9 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d, ctx)
+
+  if m.nflex > 0:
+    flex_narrowphase(m, d)
 
 
 @event_scope

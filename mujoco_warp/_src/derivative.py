@@ -176,7 +176,7 @@ def _qderiv_actuator_passive(
   else:
     qderiv = qDeriv_in[worldid, dofiid, dofjid]
 
-  if not opt_disableflags & DisableBit.DAMPER and dofiid == dofjid:
+  if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
     qderiv -= dof_damping[worldid % dof_damping.shape[0], dofiid]
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
@@ -262,7 +262,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     # TODO(team): only clear elements not set by _qderiv_actuator_passive
     out.zero_()
-    if m.nu > 0 and not m.opt.disableflags & DisableBit.ACTUATION:
+    if m.nu > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
       vel = wp.empty((d.nworld, m.nu), dtype=float)
       wp.launch(
         _qderiv_actuator_passive_vel,
@@ -308,7 +308,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
     # TODO(team): directly utilize qM for these settings
     wp.copy(out, d.qM)
 
-  if not m.opt.disableflags & DisableBit.DAMPER:
+  if not (m.opt.disableflags & DisableBit.DAMPER):
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),

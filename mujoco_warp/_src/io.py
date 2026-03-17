@@ -32,7 +32,6 @@ from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
-from mujoco_warp._src.util_pkg import check_version
 
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
@@ -67,47 +66,6 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
       return False
   else:
     return bool(mujoco.mj_isSparse(mjm))
-
-
-def _make_tendon_sparse(mjm: mujoco.MjModel):
-  """Compute sparse tendon Jacobian structure (nJten, rownnz, rowadr, colind).
-
-  Ports MuJoCo C's makeTendonSparse from engine_setconst.c.
-  """
-  rownnz = np.zeros(mjm.ntendon, dtype=np.int32)
-  colind_list = []
-  for i in range(mjm.ntendon):
-    adr = mjm.tendon_adr[i]
-    num = mjm.tendon_num[i]
-    if mjm.wrap_type[adr] == mujoco.mjtWrap.mjWRAP_JOINT:
-      # joint tendon: each wrap object is a joint, colind is its dofadr
-      cols = [int(mjm.jnt_dofadr[mjm.wrap_objid[adr + j]]) for j in range(num)]
-      rownnz[i] = num
-    else:
-      # spatial tendon: collect ancestor DOFs from wrap-object bodies
-      dof_set = set()
-      for j in range(num):
-        wtype = mjm.wrap_type[adr + j]
-        bodyid = -1
-        if wtype == mujoco.mjtWrap.mjWRAP_SITE:
-          bodyid = mjm.site_bodyid[mjm.wrap_objid[adr + j]]
-        elif wtype in (mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER):
-          bodyid = mjm.geom_bodyid[mjm.wrap_objid[adr + j]]
-        if bodyid > 0:
-          bid = bodyid
-          while bid > 0:
-            bdofadr = mjm.body_dofadr[bid]
-            bdofnum = mjm.body_dofnum[bid]
-            for k in range(bdofnum):
-              dof_set.add(bdofadr + k)
-            bid = mjm.body_parentid[bid]
-      cols = sorted(dof_set)
-      rownnz[i] = len(cols)
-    colind_list.extend(cols)
-  nJten = int(sum(rownnz))
-  rowadr = np.concatenate([[0], np.cumsum(rownnz[:-1])]).astype(np.int32) if mjm.ntendon else np.array([], dtype=np.int32)
-  colind = np.array(colind_list, dtype=np.int32)
-  return nJten, rownnz, rowadr, colind
 
 
 def put_model(mjm: mujoco.MjModel) -> types.Model:
@@ -155,9 +113,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     unsupported = field & ~np.bitwise_or.reduce(field_type)
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
-
-  if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
-    raise NotImplementedError("Flex collisions are not implemented.")
 
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
@@ -268,11 +223,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
-  if check_version("mujoco<3.5.1.dev875093374"):
-    m.nJten, m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind = _make_tendon_sparse(mjm)
-    m.max_ten_J_rownnz = int(m.ten_J_rownnz.max()) if mjm.ntendon else 0
-  else:
-    m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
+  m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -411,6 +362,46 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
     )
   )
+
+  # check for unsupported margin + multicontact / box-box CCD combinations
+  use_multiccd = mjm.opt.enableflags & types.EnableBit.MULTICCD
+  nativeccd_disabled = mjm.opt.disableflags & types.DisableBit.NATIVECCD
+  BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
+  MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
+
+  has_boxbox = m.geom_pair_type_count[geom_trid_index(BOX, BOX)] > 0
+  has_multiccd_pairs = has_boxbox or (
+    use_multiccd
+    and (m.geom_pair_type_count[geom_trid_index(BOX, MESH)] > 0 or m.geom_pair_type_count[geom_trid_index(MESH, MESH)] > 0)
+  )
+
+  if has_multiccd_pairs:
+
+    def _check_margin(name, t1, t2, margin):
+      if use_multiccd:
+        raise NotImplementedError(
+          f"{name} has non-zero margin ({margin}) with MULTICCD enabled. Set margin to 0 or disable MULTICCD."
+        )
+      if t1 == BOX and t2 == BOX and not nativeccd_disabled:
+        raise NotImplementedError(
+          f"{name} has non-zero margin ({margin}) with NATIVECCD enabled. Set margin to 0 or disable NATIVECCD."
+        )
+
+    geom_name = lambda g: mujoco.mj_id2name(mjm, mujoco.mjtObj.mjOBJ_GEOM, g) or str(g)
+
+    for idx in np.nonzero(nxn_include & (nxn_pairid_contact == -1))[0]:
+      g1, g2 = int(geom1[idx]), int(geom2[idx])
+      t1, t2 = int(mjm.geom_type[g1]), int(mjm.geom_type[g2])
+      m1, m2 = float(mjm.geom_margin[g1]), float(mjm.geom_margin[g2])
+      if (m1 or m2) and t1 in (BOX, MESH) and t2 in (BOX, MESH):
+        _check_margin(f"geom pair ({geom_name(g1)}, {geom_name(g2)})", t1, t2, (m1, m2))
+
+    for pid in range(mjm.npair):
+      g1, g2 = int(mjm.pair_geom1[pid]), int(mjm.pair_geom2[pid])
+      t1, t2 = int(mjm.geom_type[g1]), int(mjm.geom_type[g2])
+      pm = float(mjm.pair_margin[pid])
+      if pm and t1 in (BOX, MESH) and t2 in (BOX, MESH):
+        _check_margin(f"pair {pid} ({geom_name(g1)}, {geom_name(g2)})", t1, t2, pm)
 
   m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, 0).max()
   m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, 0).max()
@@ -749,8 +740,6 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
-  if check_version("mujoco<3.5.1.dev875093374"):
-    sizes["nJten"] = _make_tendon_sparse(mjm)[0]
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -764,6 +753,7 @@ def make_data(
     njmax_nnz = njmax * mjm.nv
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
+  contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
   if SPARSE_CONSTRAINT_JACOBIAN:
@@ -776,6 +766,11 @@ def make_data(
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
+
+  contact_kwargs = {}
+  for f in dataclasses.fields(types.Contact):
+    contact_kwargs[f.name] = _create_array(None, f.type, sizes)
+  contact = types.Contact(**contact_kwargs)
 
   # world body and static geom (attached to the world) poses are precomputed
   # this speeds up scenes with many static geoms (e.g. terrains)
@@ -915,8 +910,6 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
-  if check_version("mujoco<3.5.1.dev875093374"):
-    sizes["nJten"] = _make_tendon_sparse(mjm)[0]
   sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
@@ -946,7 +939,7 @@ def put_data(
 
   contact = types.Contact(**contact_kwargs)
 
-  contact.efc_address = np.zeros((naconmax, sizes["nmaxpyramid"]), dtype=int)
+  contact.efc_address = np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int)
   for i in range(mjd.ncon):
     efc_address = mjd.contact.efc_address[i]
     if efc_address == -1:
@@ -1028,8 +1021,6 @@ def put_data(
     "nisland": None,
     "tree_island": None,
   }
-  if check_version("mujoco<3.5.1.dev875093374"):
-    d_kwargs["ten_J"] = None
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
       continue
@@ -1057,28 +1048,6 @@ def put_data(
   # island arrays
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
   d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
-
-  if check_version("mujoco<3.5.1.dev875093374"):
-    ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
-    if mujoco.mj_isSparse(mjm) or check_version("mujoco>=3.5.1.dev872479828"):
-      if mjm.ntendon:
-        if check_version("mujoco>=3.5.1.dev875093374"):
-          mujoco.mju_sparse2dense(
-            ten_J, mjd.ten_J.reshape(-1), mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind.reshape(-1)
-          )
-        else:
-          mujoco.mju_sparse2dense(
-            ten_J, mjd.ten_J.reshape(-1), mjd.ten_J_rownnz, mjd.ten_J_rowadr, mjd.ten_J_colind.reshape(-1)
-          )
-    else:
-      ten_J_dense = mjd.ten_J.reshape((mjm.ntendon, mjm.nv))
-    # convert dense to sparse using model's sparse structure
-    nJten = sizes["nJten"]
-    ten_J_sparse = np.zeros(nJten)
-    if nJten > 0:
-      _, _rownnz, _rowadr, _colind = _make_tendon_sparse(mjm)
-      mujoco.mju_dense2sparse(ten_J_sparse, ten_J_dense, _rownnz, _rowadr, _colind)
-    d.ten_J = wp.array(np.tile(ten_J_sparse, (nworld, 1)), dtype=float)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -1284,35 +1253,7 @@ def get_data_into(
   # tendon
   result.ten_length[:] = d.ten_length.numpy()[world_id]
   if mjm.ntendon > 0:
-    if check_version("mujoco>=3.5.1.dev875093374"):
-      result.ten_J[:] = d.ten_J.numpy()[world_id]
-    else:
-      _, _rownnz, _rowadr, _colind = _make_tendon_sparse(mjm)
-
-      # convert sparse ten_J to dense
-      ten_J_dense = np.zeros((mjm.ntendon, mjm.nv))
-      ten_J_sparse = d.ten_J.numpy()[world_id]
-      mujoco.mju_sparse2dense(ten_J_dense, ten_J_sparse, _rownnz, _rowadr, _colind)
-
-      if check_version("mujoco>=3.5.1.dev869712136"):
-        ten_J = d.ten_J.numpy()[world_id]
-        if check_version("mujoco>=3.5.1.dev875093374"):
-          ten_J_rownnz = mjm.ten_J_rownnz
-          ten_J_rowadr = mjm.ten_J_rowadr
-          ten_J_colind = mjm.ten_J_colind.reshape(-1)
-        else:
-          ten_J_rownnz = result.ten_J_rownnz
-          ten_J_rowadr = result.ten_J_rowadr
-          ten_J_colind = result.ten_J_colind.reshape(-1)
-        mujoco.mju_dense2sparse(
-          result.ten_J,
-          ten_J,
-          ten_J_rownnz,
-          ten_J_rowadr,
-          ten_J_colind,
-        )
-      else:
-        result.ten_J[:] = d.ten_J.numpy()[world_id]
+    result.ten_J[:] = d.ten_J.numpy()[world_id]
   result.ten_wrapadr[:] = d.ten_wrapadr.numpy()[world_id]
   result.ten_wrapnum[:] = d.ten_wrapnum.numpy()[world_id]
   result.wrap_obj[:] = d.wrap_obj.numpy()[world_id]
@@ -1467,6 +1408,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_solimp_out: wp.array(dtype=types.vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_flex_out: wp.array(dtype=wp.vec2i),
+    contact_vert_out: wp.array(dtype=wp.vec2i),
     contact_efc_address_out: wp.array2d(dtype=int),
     contact_worldid_out: wp.array(dtype=int),
     contact_type_out: wp.array(dtype=int),
@@ -1493,8 +1436,10 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_solimp_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
     contact_dim_out[conid] = 0
     contact_geom_out[conid] = wp.vec2i(0, 0)
+    contact_flex_out[conid] = wp.vec2i(0, 0)
+    contact_vert_out[conid] = wp.vec2i(0, 0)
     for i in range(nefcaddress):
-      contact_efc_address_out[conid, i] = 0
+      contact_efc_address_out[conid, i] = -1
     contact_worldid_out[conid] = 0
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
@@ -1533,6 +1478,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.contact.solimp,
       d.contact.dim,
       d.contact.geom,
+      d.contact.flex,
+      d.contact.vert,
       d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
@@ -2544,11 +2491,6 @@ def create_render_context(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  # TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-  if use_textures and not hasattr(wp, "Texture2D"):
-    warnings.warn("Textures require warp >= 1.12. Disabling textures.")
-    use_textures = False
-
   # Mesh BVHs
   nmesh = mjm.nmesh
   geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
@@ -2597,6 +2539,7 @@ def create_render_context(
   flex_faceadr = None
   flex_nface = 0
   flex_radius = None
+  flex_vertflexid = None
   flex_workadr = None
   flex_worknum = None
   flex_nwork = 0
@@ -2621,6 +2564,14 @@ def create_render_context(
     flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
     flex_radius = wp.array(mjm.flex_radius, dtype=float)
 
+    # Compute flex_vertflexid: maps each flex vertex to its flex index
+    flex_vertflexid_data = np.zeros(mjm.nflexvert, dtype=np.int32)
+    for flexid in range(mjm.nflex):
+      vert_start = mjm.flex_vertadr[flexid]
+      vert_end = vert_start + mjm.flex_vertnum[flexid]
+      flex_vertflexid_data[vert_start:vert_end] = flexid
+    flex_vertflexid = wp.array(flex_vertflexid_data, dtype=int)
+
     # precompute work item layout for unified refit kernel
     nflex = mjm.nflex
     workadr = np.zeros(nflex, dtype=np.int32)
@@ -2638,14 +2589,9 @@ def create_render_context(
     flex_nwork = int(cumsum)
 
   textures_registry = []
-  # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-  if hasattr(wp, "Texture2D"):
-    for i in range(mjm.ntex):
-      textures_registry.append(render_util.create_warp_texture(mjm, i))
-    textures = wp.array(textures_registry, dtype=wp.Texture2D)
-  else:
-    # Dummy array when texture support isn't available (warp < 1.12)
-    textures = wp.zeros(1, dtype=int)
+  for i in range(mjm.ntex):
+    textures_registry.append(render_util.create_warp_texture(mjm, i))
+  textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   # Filter active cameras
   if cam_active is not None:

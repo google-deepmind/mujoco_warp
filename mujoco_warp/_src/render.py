@@ -39,10 +39,6 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
-# TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-from mujoco_warp._src.types import TEXTURE_DTYPE
-
-
 @wp.func
 def sample_texture(
   # Model:
@@ -51,7 +47,7 @@ def sample_texture(
   # In:
   geom_id: int,
   tex_repeat: wp.vec2,
-  tex: TEXTURE_DTYPE,
+  tex: wp.Texture2D,
   pos: wp.vec3,
   rot: wp.mat33,
   mesh_facetexcoord: wp.array(dtype=wp.vec3i),
@@ -467,8 +463,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_id: wp.array(dtype=wp.uint64),
     flex_rgba: wp.array(dtype=wp.vec4),
-    # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-    textures: wp.array(dtype=TEXTURE_DTYPE),
+    textures: wp.array(dtype=wp.Texture2D),
     # Out:
     rgb_out: wp.array2d(dtype=wp.uint32),
     depth_out: wp.array2d(dtype=float),

@@ -224,7 +224,8 @@ def _equality_connect(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     # count non-zeros
-    pda1, pda2 = da1, da2
+    pda1 = da1
+    pda2 = da2
     rownnz = int(0)
     while pda1 >= 0 or pda2 >= 0:
       da = wp.max(pda1, pda2)
@@ -899,7 +900,8 @@ def _equality_weld(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     # count non-zeros
-    pda1, pda2 = da1, da2
+    pda1 = da1
+    pda2 = da2
     rownnz = int(0)
     while pda1 >= 0 or pda2 >= 0:
       da = wp.max(pda1, pda2)
@@ -1244,20 +1246,16 @@ def _friction_tendon(
   if efcid >= njmax_in:
     return
 
-  if is_sparse:
-    rowadr_efc = efcid * nv
-    efc_J_rowadr_out[worldid, efcid] = rowadr_efc
-
   Jqvel = float(0.0)
 
   rownnz_tenJ = ten_J_rownnz[tenid]
   rowadr_tenJ = ten_J_rowadr[tenid]
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
-    rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
-    if rowadr + rownnz_tenJ > njmax_nnz_in:
+    rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
+    if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
       return
-    efc_J_rowadr_out[worldid, efcid] = rowadr
+    efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
     for i in range(rownnz_tenJ):
       sparseid_ten = rowadr_tenJ + i
@@ -1678,6 +1676,8 @@ def _contact_pyramidal(
   dof_bodyid: wp.array(dtype=int),
   dof_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
   is_sparse: bool,
   # Data in:
   qvel_in: wp.array2d(dtype=float),
@@ -1692,6 +1692,8 @@ def _contact_pyramidal(
   includemargin_in: wp.array(dtype=float),
   worldid_in: wp.array(dtype=int),
   geom_in: wp.array(dtype=wp.vec2i),
+  flex_in: wp.array(dtype=wp.vec2i),
+  vert_in: wp.array(dtype=wp.vec2i),
   pos_in: wp.array(dtype=wp.vec3),
   frame_in: wp.array(dtype=wp.mat33),
   friction_in: wp.array(dtype=vec5),
@@ -1748,8 +1750,20 @@ def _contact_pyramidal(
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+
+    if geom[0] >= 0:
+      body1 = geom_bodyid[geom[0]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
+
+    if geom[1] >= 0:
+      body2 = geom_bodyid[geom[1]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
     con_pos = pos_in[conid]
     frame = frame_in[conid]
@@ -1778,7 +1792,8 @@ def _contact_pyramidal(
 
     if is_sparse:
       # count non-zeros
-      pda1, pda2 = da1, da2
+      pda1 = da1
+      pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
@@ -1928,6 +1943,8 @@ def _contact_elliptic(
   dof_bodyid: wp.array(dtype=int),
   dof_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
   is_sparse: bool,
   # Data in:
   qvel_in: wp.array2d(dtype=float),
@@ -1942,6 +1959,8 @@ def _contact_elliptic(
   includemargin_in: wp.array(dtype=float),
   worldid_in: wp.array(dtype=int),
   geom_in: wp.array(dtype=wp.vec2i),
+  flex_in: wp.array(dtype=wp.vec2i),
+  vert_in: wp.array(dtype=wp.vec2i),
   pos_in: wp.array(dtype=wp.vec3),
   frame_in: wp.array(dtype=wp.mat33),
   friction_in: wp.array(dtype=vec5),
@@ -1997,8 +2016,20 @@ def _contact_elliptic(
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+
+    if geom[0] >= 0:
+      body1 = geom_bodyid[geom[0]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
+
+    if geom[1] >= 0:
+      body2 = geom_bodyid[geom[1]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
     con_pos = pos_in[conid]
     frame = frame_in[conid]
@@ -2014,7 +2045,8 @@ def _contact_elliptic(
 
     if is_sparse:
       # count non-zeros
-      pda1, pda2 = da1, da2
+      pda1 = da1
+      pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
@@ -2170,9 +2202,6 @@ def make_constraint(m: types.Model, d: types.Data):
     dim=d.nworld,
     inputs=[d.ne, d.nf, d.nl, d.nefc, efc_nnz],
   )
-
-  if types.SPARSE_CONSTRAINT_JACOBIAN:
-    d.contact.efc_address.fill_(-1)
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
@@ -2630,6 +2659,8 @@ def make_constraint(m: types.Model, d: types.Data):
             m.dof_bodyid,
             m.dof_parentid,
             m.geom_bodyid,
+            m.flex_vertadr,
+            m.flex_vertbodyid,
             SPARSE_CONSTRAINT_JACOBIAN,
             d.qvel,
             d.subtree_com,
@@ -2642,6 +2673,8 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.includemargin,
             d.contact.worldid,
             d.contact.geom,
+            d.contact.flex,
+            d.contact.vert,
             d.contact.pos,
             d.contact.frame,
             d.contact.friction,
@@ -2685,6 +2718,8 @@ def make_constraint(m: types.Model, d: types.Data):
             m.dof_bodyid,
             m.dof_parentid,
             m.geom_bodyid,
+            m.flex_vertadr,
+            m.flex_vertbodyid,
             SPARSE_CONSTRAINT_JACOBIAN,
             d.qvel,
             d.subtree_com,
@@ -2697,6 +2732,8 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.includemargin,
             d.contact.worldid,
             d.contact.geom,
+            d.contact.flex,
+            d.contact.vert,
             d.contact.pos,
             d.contact.frame,
             d.contact.friction,

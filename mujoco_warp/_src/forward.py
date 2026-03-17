@@ -356,7 +356,7 @@ def _tile_euler_dense(tile: TileSet):
 def euler(m: Model, d: Data):
   """Euler integrator, semi-implicit in velocity."""
   # integrate damping implicitly
-  if not m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
+  if not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER)):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     if m.is_sparse:
       qM = wp.clone(d.qM)

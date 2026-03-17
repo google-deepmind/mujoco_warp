@@ -89,8 +89,8 @@ def _spring_damper_dof_passive(
   stiffness = jnt_stiffness[worldid % jnt_stiffness.shape[0], jntid]
   damping = dof_damping[worldid % dof_damping.shape[0], dofid]
 
-  has_stiffness = stiffness != 0.0 and not opt_disableflags & DisableBit.SPRING
-  has_damping = damping != 0.0 and not opt_disableflags & DisableBit.DAMPER
+  has_stiffness = stiffness != 0.0 and not (opt_disableflags & DisableBit.SPRING)
+  has_damping = damping != 0.0 and not (opt_disableflags & DisableBit.DAMPER)
 
   if not has_stiffness:
     qfrc_spring_out[worldid, dofid] = 0.0

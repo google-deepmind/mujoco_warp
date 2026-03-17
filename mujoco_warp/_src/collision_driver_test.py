@@ -1117,9 +1117,9 @@ class CollisionTest(parameterized.TestCase):
   def test_ccd_margin_dist(self):
     """Tests that CCD contact dist matches MuJoCo when margin > 0.
 
-    Two boxes are placed 0.05 m apart (not touching).  With margin=0.1 on
+    Two ellipsoids are placed 0.05 m apart (not touching). With margin=0.1 on
     each geom the pair margin is 0.2, so contacts are detected within the
-    speculative envelope.  The reported dist must equal the true geometric
+    speculative envelope. The reported dist must equal the true geometric
     separation (≈0.05), not the margin-biased value that the inflated
     GJK/EPA would produce.
     """
@@ -1128,11 +1128,11 @@ class CollisionTest(parameterized.TestCase):
       <worldbody>
         <body pos="0 0 0">
           <freejoint/>
-          <geom type="box" size="0.15 0.15 0.25" margin="0.1" gap="0.1"/>
+          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="0.1" gap="0.1"/>
         </body>
         <body pos="0 0 0.35">
           <freejoint/>
-          <geom type="box" size="0.1 0.1 0.05" margin="0.1" gap="0.1"/>
+          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="0.1" gap="0.1"/>
         </body>
       </worldbody>
     </mujoco>
