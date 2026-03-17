@@ -217,6 +217,7 @@ def _populate_dependent_fields(m, spec, padded_model, dataid_table, nworld, geom
 
 def per_world_mesh(spec: mujoco.MjSpec, nworld: int):
   """Per-world mesh randomization from custom/tuple annotations."""
+  spec = spec.copy()
   model = spec.compile()
 
   # no-op if no tuples
