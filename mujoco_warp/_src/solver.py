@@ -2829,6 +2829,59 @@ def _cholesky_factorize_solve(m: types.Model, d: types.Data, ctx: SolverContext)
     )
 
 
+@wp.kernel
+def _JTDAJ_sparse(
+  # Data in:
+  nefc_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  # In:
+  ctx_done_in: wp.array(dtype=bool),
+  # Out:
+  h_out: wp.array3d(dtype=float),
+):
+  worldid, efcid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  efc_D = efc_D_in[worldid, efcid]
+  efc_state = efc_state_in[worldid, efcid]
+
+  if state_check(efc_D, efc_state) == 0.0:
+    return
+
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+
+  for i in range(rownnz):
+    sparseidi = rowadr + i
+    Ji = efc_J_in[worldid, 0, sparseidi]
+    colindi = efc_J_colind_in[worldid, 0, sparseidi]
+    for j in range(i, rownnz):
+      if j == i:
+        sparseidj = sparseidi
+        Jj = Ji
+        colindj = colindi
+      else:
+        sparseidj = rowadr + j
+        Jj = efc_J_in[worldid, 0, sparseidj]
+        colindj = efc_J_colind_in[worldid, 0, sparseidj]
+
+      h = Ji * Jj * efc_D
+      wp.atomic_add(h_out[worldid, colindi], colindj, h)
+
+      if i != j:
+        wp.atomic_add(h_out[worldid, colindj], colindi, h)
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   wp.launch(update_gradient_zero_grad_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.grad_dot])
@@ -2845,59 +2898,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.is_sparse:
-
-      @wp.kernel(module="unique", enable_backward=False)
-      def _JTDAJ_sparse(
-        # Data in:
-        nefc_in: wp.array(dtype=int),
-        efc_J_rownnz_in: wp.array2d(dtype=int),
-        efc_J_rowadr_in: wp.array2d(dtype=int),
-        efc_J_colind_in: wp.array3d(dtype=int),
-        efc_J_in: wp.array3d(dtype=float),
-        efc_D_in: wp.array2d(dtype=float),
-        efc_state_in: wp.array2d(dtype=int),
-        # In:
-        ctx_done_in: wp.array(dtype=bool),
-        # Out:
-        h_out: wp.array3d(dtype=float),
-      ):
-        worldid, efcid = wp.tid()
-
-        if ctx_done_in[worldid]:
-          return
-
-        if efcid >= nefc_in[worldid]:
-          return
-
-        efc_D = efc_D_in[worldid, efcid]
-        efc_state = efc_state_in[worldid, efcid]
-
-        if state_check(efc_D, efc_state) == 0.0:
-          return
-
-        rownnz = efc_J_rownnz_in[worldid, efcid]
-        rowadr = efc_J_rowadr_in[worldid, efcid]
-
-        for i in range(rownnz):
-          sparseidi = rowadr + i
-          Ji = efc_J_in[worldid, 0, sparseidi]
-          colindi = efc_J_colind_in[worldid, 0, sparseidi]
-          for j in range(i, rownnz):
-            if j == i:
-              sparseidj = sparseidi
-              Jj = Ji
-              colindj = colindi
-            else:
-              sparseidj = rowadr + j
-              Jj = efc_J_in[worldid, 0, sparseidj]
-              colindj = efc_J_colind_in[worldid, 0, sparseidj]
-
-            h = Ji * Jj * efc_D
-            wp.atomic_add(h_out[worldid, colindi], colindj, h)
-
-            if i != j:
-              wp.atomic_add(h_out[worldid, colindj], colindi, h)
-
       ctx.h.zero_()
       wp.launch(
         _JTDAJ_sparse,
