@@ -425,8 +425,6 @@ def _flex_plane_narrowphase(
   nacon_out: wp.array(dtype=int),
 ):
   worldid, vertid = wp.tid()
-  if worldid >= nworld_in or vertid >= nflexvert:
-    return
 
   flexid = flex_vertflexid[vertid]
   radius = flex_radius[flexid]
@@ -436,6 +434,7 @@ def _flex_plane_narrowphase(
 
   vert = flexvert_xpos_in[worldid, vertid]
 
+  # TODO: Add a broadphase
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
     if gtype != int(GeomType.PLANE):
@@ -550,8 +549,6 @@ def _flex_narrowphase_dim2(
   nacon_out: wp.array(dtype=int),
 ):
   worldid, elemid = wp.tid()
-  if worldid >= nworld_in:
-    return
 
   flexid = int(-1)
   for i in range(nflex):
@@ -579,6 +576,7 @@ def _flex_narrowphase_dim2(
   t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
   t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
 
+  # TODO: Add a broadphase
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
     if (
@@ -701,8 +699,6 @@ def _flex_narrowphase_dim3(
   nacon_out: wp.array(dtype=int),
 ):
   worldid, shellid = wp.tid()
-  if worldid >= nworld_in:
-    return
 
   flexid = int(-1)
   shell_offset = int(0)
@@ -734,6 +730,7 @@ def _flex_narrowphase_dim3(
   t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
   t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
 
+  # TODO: Add a broadphase
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
     if (
