@@ -582,16 +582,19 @@ def gjk(
   simplex_index2 = wp.vec4i()
   n = int(0)
   coordinates = wp.vec4()  # barycentric coordinates
-  epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  tol2 = tolerance * tolerance
+  epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
 
   # set initial guess
   x_k = x1_0 - x2_0
+  xnorm_old = FLOAT_MAX
 
   for k in range(gjk_iterations):
     xnorm = wp.dot(x_k, x_k)
     # TODO(kbayes): determine new constant here
-    if xnorm < 1e-12:
+    if xnorm < tol2 or wp.abs(xnorm_old - xnorm) < tol2:
       break
+    xnorm_old = xnorm
     dir_neg = x_k / wp.sqrt(xnorm)
 
     # compute kth support point in geom1
