@@ -211,7 +211,7 @@ def _next_time(
   nworld_in: int,
   naconmax_in: int,
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   nacon_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
   # Data out:
@@ -226,8 +226,8 @@ def _next_time(
   elif nefc > 0 and SPARSE_CONSTRAINT_JACOBIAN:
     efcid = wp.min(nefc, njmax_in) - 1
     efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
-    if efc_nnz > nJefc_in:
-      wp.printf("nJefc overflow - please increase nJefc to %u\n", efc_nnz)
+    if efc_nnz > njmax_nnz_in:
+      wp.printf("njmax_nnz overflow - please increase njmax_nnz to %u\n", efc_nnz)
 
   if worldid == 0:
     ncollision = ncollision_in[0]
@@ -293,7 +293,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       d.nworld,
       d.naconmax,
       d.njmax,
-      d.nJefc,
+      d.njmax_nnz,
       d.nacon,
       d.ncollision,
     ],

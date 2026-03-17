@@ -1748,7 +1748,7 @@ class Data:
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
-    nJefc: number of non-zeros in constraint Jacobian
+    njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
   """
@@ -1842,7 +1842,7 @@ class Data:
   naccdmax: int
   njmax: int
   njmax_pad: int
-  nJefc: int
+  njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
 

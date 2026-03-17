@@ -155,7 +155,7 @@ def _equality_connect(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -236,7 +236,7 @@ def _equality_connect(
 
     # get rowadr
     rowadr = wp.atomic_add(efc_nnz_out, worldid, 3 * rownnz)
-    if rowadr + 3 * rownnz > nJefc_in:
+    if rowadr + 3 * rownnz > njmax_nnz_in:
       return
     efc_J_rowadr_out[worldid, efcid0] = rowadr
     efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
@@ -386,7 +386,7 @@ def _equality_joint(
   qvel_in: wp.array2d(dtype=float),
   eq_active_in: wp.array2d(dtype=bool),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -432,7 +432,7 @@ def _equality_joint(
       rownnz = 1
     efc_J_rownnz_out[worldid, efcid] = rownnz
     rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
-    if rowadr + rownnz > nJefc_in:
+    if rowadr + rownnz > njmax_nnz_in:
       return
     efc_J_rowadr_out[worldid, efcid] = rowadr
     efc_J_colind_out[worldid, 0, rowadr] = dofadr1
@@ -519,7 +519,7 @@ def _equality_tendon(
   ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -605,7 +605,7 @@ def _equality_tendon(
       rownnz += 1
 
     rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
-    if rowadr + rownnz > nJefc_in:
+    if rowadr + rownnz > njmax_nnz_in:
       return
     efc_J_rowadr_out[worldid, efcid] = rowadr
 
@@ -694,7 +694,7 @@ def _equality_flex(is_sparse: bool):
     flexedge_J_in: wp.array2d(dtype=float),
     flexedge_length_in: wp.array2d(dtype=float),
     njmax_in: int,
-    nJefc_in: int,
+    njmax_nnz_in: int,
     # Data out:
     ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
@@ -734,7 +734,7 @@ def _equality_flex(is_sparse: bool):
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = rownnz
       efc_rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
-      if efc_rowadr + rownnz > nJefc_in:
+      if efc_rowadr + rownnz > njmax_nnz_in:
         return
       efc_J_rowadr_out[worldid, efcid] = efc_rowadr
       for i in range(rownnz):
@@ -818,7 +818,7 @@ def _equality_weld(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -911,7 +911,7 @@ def _equality_weld(
 
     # get rowadr
     rowadr = wp.atomic_add(efc_nnz_out, worldid, 6 * rownnz)
-    if rowadr + 6 * rownnz > nJefc_in:
+    if rowadr + 6 * rownnz > njmax_nnz_in:
       return
     efc_J_rowadr_out[worldid, efcid0] = rowadr
     efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
@@ -1117,7 +1117,7 @@ def _friction_dof(
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nf_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1152,7 +1152,7 @@ def _friction_dof(
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = 1
     rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
-    if rowadr + 1 > nJefc_in:
+    if rowadr + 1 > njmax_nnz_in:
       return
     efc_J_rowadr_out[worldid, efcid] = rowadr
     efc_J_colind_out[worldid, 0, rowadr] = dofid
@@ -1211,7 +1211,7 @@ def _friction_tendon(
   qvel_in: wp.array2d(dtype=float),
   ten_J_in: wp.array2d(dtype=float),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nf_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1255,7 +1255,7 @@ def _friction_tendon(
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
     rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
-    if rowadr + rownnz_tenJ > nJefc_in:
+    if rowadr + rownnz_tenJ > njmax_nnz_in:
       return
     efc_J_rowadr_out[worldid, efcid] = rowadr
 
@@ -1329,7 +1329,7 @@ def _limit_slide_hinge(
   qpos_in: wp.array2d(dtype=float),
   qvel_in: wp.array2d(dtype=float),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1374,7 +1374,7 @@ def _limit_slide_hinge(
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = 1
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
-      if rowadr + 1 > nJefc_in:
+      if rowadr + 1 > njmax_nnz_in:
         return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofadr
@@ -1434,7 +1434,7 @@ def _limit_ball(
   qpos_in: wp.array2d(dtype=float),
   qvel_in: wp.array2d(dtype=float),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1485,7 +1485,7 @@ def _limit_ball(
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = 3
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 3)
-      if rowadr + 3 > nJefc_in:
+      if rowadr + 3 > njmax_nnz_in:
         return
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
@@ -1561,7 +1561,7 @@ def _limit_tendon(
   ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1607,7 +1607,7 @@ def _limit_tendon(
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
       rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
-      if rowadr_efc + rownnz_tenJ > nJefc_in:
+      if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
         return
       efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
@@ -1684,7 +1684,7 @@ def _contact_pyramidal(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   nacon_in: wp.array(dtype=int),
   # In:
   dist_in: wp.array(dtype=float),
@@ -1790,7 +1790,7 @@ def _contact_pyramidal(
 
       # get rowadr
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
-      if rowadr + rownnz > nJefc_in:
+      if rowadr + rownnz > njmax_nnz_in:
         return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_rownnz_out[worldid, efcid] = rownnz
@@ -1934,7 +1934,7 @@ def _contact_elliptic(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
-  nJefc_in: int,
+  njmax_nnz_in: int,
   nacon_in: wp.array(dtype=int),
   # In:
   dist_in: wp.array(dtype=float),
@@ -2026,7 +2026,7 @@ def _contact_elliptic(
 
       # get rowadr
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
-      if rowadr + rownnz > nJefc_in:
+      if rowadr + rownnz > njmax_nnz_in:
         return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_rownnz_out[worldid, efcid] = rownnz
@@ -2209,7 +2209,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.subtree_com,
           d.cdof,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2264,7 +2264,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.subtree_com,
           d.cdof,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2306,7 +2306,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.eq_active,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2350,7 +2350,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ten_J,
           d.ten_length,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2390,7 +2390,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.flexedge_J,
           d.flexedge_length,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2426,7 +2426,7 @@ def make_constraint(m: types.Model, d: types.Data):
           SPARSE_CONSTRAINT_JACOBIAN,
           d.qvel,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nf,
@@ -2465,7 +2465,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.ten_J,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nf,
@@ -2507,7 +2507,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qpos,
           d.qvel,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nl,
@@ -2547,7 +2547,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qpos,
           d.qvel,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nl,
@@ -2589,7 +2589,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ten_J,
           d.ten_length,
           d.njmax,
-          d.nJefc,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nl,
@@ -2635,7 +2635,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.subtree_com,
             d.cdof,
             d.njmax,
-            d.nJefc,
+            d.njmax_nnz,
             d.nacon,
             d.contact.dist,
             d.contact.dim,
@@ -2690,7 +2690,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.subtree_com,
             d.cdof,
             d.njmax,
-            d.nJefc,
+            d.njmax_nnz,
             d.nacon,
             d.contact.dist,
             d.contact.dim,

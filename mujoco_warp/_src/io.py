@@ -693,7 +693,7 @@ def make_data(
   nconmax: Optional[int] = None,
   nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
-  nJefc: Optional[int] = None,
+  njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
 ) -> types.Data:
@@ -707,7 +707,7 @@ def make_data(
     nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
-    nJefc: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
+    njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
@@ -759,8 +759,8 @@ def make_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
-  if nJefc is None or not SPARSE_CONSTRAINT_JACOBIAN:
-    nJefc = njmax * mjm.nv
+  if njmax_nnz is None or not SPARSE_CONSTRAINT_JACOBIAN:
+    njmax_nnz = njmax * mjm.nv
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
@@ -768,8 +768,8 @@ def make_data(
   if SPARSE_CONSTRAINT_JACOBIAN:
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
-    efc.J_colind = wp.zeros((nworld, 1, nJefc), dtype=int)
-    efc.J = wp.zeros((nworld, 1, nJefc), dtype=float)
+    efc.J_colind = wp.zeros((nworld, 1, njmax_nnz), dtype=int)
+    efc.J = wp.zeros((nworld, 1, njmax_nnz), dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
@@ -795,7 +795,7 @@ def make_data(
     "naccdmax": naccdmax,
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
-    "nJefc": nJefc,
+    "njmax_nnz": njmax_nnz,
     "qM": None,
     "qLD": None,
     # world body
@@ -844,7 +844,7 @@ def put_data(
   nconmax: Optional[int] = None,
   nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
-  nJefc: Optional[int] = None,
+  njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
 ) -> types.Data:
@@ -859,7 +859,7 @@ def put_data(
     nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
-    nJefc: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
+    njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
@@ -924,8 +924,8 @@ def put_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
-  if nJefc is None or not SPARSE_CONSTRAINT_JACOBIAN:
-    nJefc = njmax * mjm.nv
+  if njmax_nnz is None or not SPARSE_CONSTRAINT_JACOBIAN:
+    njmax_nnz = njmax * mjm.nv
 
   # ensure static geom positions are computed
   # TODO: remove once MjData creation semantics are fixed
@@ -980,7 +980,7 @@ def put_data(
     efc.J_rowadr = wp.array(
       np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
     )
-    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1))[:, :, :nJefc], dtype=int)
+    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1))[:, :, :njmax_nnz], dtype=int)
 
     mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
     if mjd.nefc:
@@ -990,7 +990,7 @@ def put_data(
         mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
     efc_J = np.zeros((njmax, mjm.nv), dtype=float)
     efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
-    efc_J_flat = np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1))[:, :, :nJefc]
+    efc_J_flat = np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1))[:, :, :njmax_nnz]
     efc.J = wp.array(efc_J_flat, dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
@@ -1016,7 +1016,7 @@ def put_data(
     "naccdmax": naccdmax,
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
-    "nJefc": nJefc,
+    "njmax_nnz": njmax_nnz,
     # fields set after initialization:
     "solver_niter": None,
     "qM": None,
