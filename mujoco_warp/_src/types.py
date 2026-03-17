@@ -1368,6 +1368,8 @@ class Model:
   flex_damping: array("nflex", float)
   flex_radius: array("nflex", float)
   flex_margin: array("nflex", float)
+  flex_condim: array("nflex", int)
+  flex_friction: array("nflex", wp.vec3)
   flex_contype: array("nflex", int)
   flex_conaffinity: array("nflex", int)
   flex_shellnum: array("nflex", int)

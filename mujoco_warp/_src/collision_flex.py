@@ -398,6 +398,8 @@ def _flex_plane_narrowphase(
   flex_vertflexid: wp.array(dtype=int),
   flex_radius: wp.array(dtype=float),
   flex_margin: wp.array(dtype=float),
+  flex_condim: wp.array(dtype=int),
+  flex_friction: wp.array(dtype=wp.vec3),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
@@ -429,6 +431,8 @@ def _flex_plane_narrowphase(
   flexid = flex_vertflexid[vertid]
   radius = flex_radius[flexid]
   flex_margin_val = flex_margin[flexid]
+  flex_condim_val = flex_condim[flexid]
+  flex_fric = flex_friction[flexid]
 
   vert = flexvert_xpos_in[worldid, vertid]
 
@@ -448,16 +452,20 @@ def _flex_plane_narrowphase(
     dist = signed_dist - radius
 
     if dist < margin:
-      condim = geom_condim[geomid]
+      geom_condim_val = geom_condim[geomid]
+      condim = wp.max(geom_condim_val, flex_condim_val)
       solref = geom_solref[worldid % geom_solref.shape[0], geomid]
       solimp = geom_solimp[worldid % geom_solimp.shape[0], geomid]
-      fric = geom_friction[worldid % geom_friction.shape[0], geomid]
+      geom_fric = geom_friction[worldid % geom_friction.shape[0], geomid]
+      fric0 = wp.max(geom_fric[0], flex_fric[0])
+      fric1 = wp.max(geom_fric[1], flex_fric[1])
+      fric2 = wp.max(geom_fric[2], flex_fric[2])
       friction = vec5(
-        wp.max(MJ_MINMU, fric[0]),
-        wp.max(MJ_MINMU, fric[0]),
-        wp.max(MJ_MINMU, fric[1]),
-        wp.max(MJ_MINMU, fric[2]),
-        wp.max(MJ_MINMU, fric[2]),
+        wp.max(MJ_MINMU, fric0),
+        wp.max(MJ_MINMU, fric0),
+        wp.max(MJ_MINMU, fric1),
+        wp.max(MJ_MINMU, fric2),
+        wp.max(MJ_MINMU, fric2),
       )
 
       contact_pos = vert - plane_normal * (dist * 0.5 + radius)
@@ -923,6 +931,8 @@ def flex_narrowphase(m: Model, d: Data):
       m.flex_vertflexid,
       m.flex_radius,
       m.flex_margin,
+      m.flex_condim,
+      m.flex_friction,
       d.geom_xpos,
       d.geom_xmat,
       d.flexvert_xpos,
