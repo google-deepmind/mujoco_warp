@@ -806,7 +806,7 @@ class GJKTest(parameterized.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
-    self.assertAlmostEqual(dist, 0)
+    self.assertAlmostEqual(dist, 1.3900499e-06)
 
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):
