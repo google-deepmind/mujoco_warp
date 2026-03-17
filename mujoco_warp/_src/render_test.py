@@ -93,6 +93,66 @@ class RenderTest(parameterized.TestCase):
 
     _assert_eq(rgb_np, rc.rgb_data.numpy(), "rgb_data")
 
+  @parameterized.parameters(2, 512)
+  def test_render_segmentation(self, nworld: int):
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=nworld,
+      cam_res=(32, 32),
+      render_rgb=False,
+      render_depth=False,
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()
+
+    # Should have at least one geom hit (>= 0) and multiple distinct geom IDs.
+    self.assertTrue(np.any(seg >= 0), "Expected at least one geom hit (>= 0)")
+    self.assertGreater(np.unique(seg).shape[0], 1)
+
+  def test_get_segmentation(self):
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(32, 32),
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    seg_out = wp.zeros((2, 32, 32), dtype=wp.int32)
+    mjw.get_segmentation(rc, 0, seg_out)
+
+    seg_np = seg_out.numpy()
+    self.assertEqual(seg_np.shape, (2, 32, 32))
+    self.assertTrue(np.any(seg_np >= 0), "Expected at least one geom hit")
+    self.assertGreater(np.unique(seg_np).shape[0], 1)
+
+  def test_render_rgb_and_segmentation(self):
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    rgb = rc.rgb_data.numpy()
+    seg = rc.seg_data.numpy()
+
+    self.assertGreater(np.count_nonzero(rgb), 0)
+    self.assertTrue(np.any(seg >= 0))
+
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):
     """Depth values should match native MuJoCo (planar depth, not Euclidean)."""
