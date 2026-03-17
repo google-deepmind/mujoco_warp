@@ -23,12 +23,14 @@ from mujoco_warp._src.collision_primitive_core import sphere_triangle
 
 @wp.kernel
 def sphere_triangle_kernel(
+  # In:
   sphere_pos: wp.vec3,
   sphere_radius: float,
   t1: wp.vec3,
   t2: wp.vec3,
   t3: wp.vec3,
   tri_radius: float,
+  # Out:
   dist_out: wp.array(dtype=float),
   pos_out: wp.array(dtype=wp.vec3),
   normal_out: wp.array(dtype=wp.vec3),

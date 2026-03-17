@@ -614,8 +614,8 @@ def _build_flex_2d_sides(
   flex_shell: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
-  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
   # In:
+  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
   shell_adr: int,
   vert_adr: int,
   face_offset: int,
@@ -729,8 +729,8 @@ def _update_flex_face_points(
   flex_shell: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
-  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
   # In:
+  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
   flex_elemdataadr: wp.array(dtype=int),
   flex_faceadr: wp.array(dtype=int),
   flex_workadr: wp.array(dtype=int),
