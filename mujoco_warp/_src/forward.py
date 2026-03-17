@@ -29,6 +29,7 @@ from mujoco_warp._src import solver
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -205,9 +206,12 @@ def _next_time(
   # Data in:
   nefc_in: wp.array(dtype=int),
   time_in: wp.array(dtype=float),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
   nworld_in: int,
   naconmax_in: int,
   njmax_in: int,
+  njmax_nnz_in: int,
   nacon_in: wp.array(dtype=int),
   ncollision_in: wp.array(dtype=int),
   # Data out:
@@ -219,6 +223,11 @@ def _next_time(
 
   if nefc > njmax_in:
     wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
+  elif nefc > 0 and SPARSE_CONSTRAINT_JACOBIAN:
+    efcid = wp.min(nefc, njmax_in) - 1
+    efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
+    if efc_nnz > njmax_nnz_in:
+      wp.printf("njmax_nnz overflow - please increase njmax_nnz to %u\n", efc_nnz)
 
   if worldid == 0:
     ncollision = ncollision_in[0]
@@ -275,7 +284,19 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   wp.launch(
     _next_time,
     dim=d.nworld,
-    inputs=[m.opt.timestep, d.nefc, d.time, d.nworld, d.naconmax, d.njmax, d.nacon, d.ncollision],
+    inputs=[
+      m.opt.timestep,
+      d.nefc,
+      d.time,
+      d.efc.J_rownnz,
+      d.efc.J_rowadr,
+      d.nworld,
+      d.naconmax,
+      d.njmax,
+      d.njmax_nnz,
+      d.nacon,
+      d.ncollision,
+    ],
     outputs=[d.time],
   )
 
