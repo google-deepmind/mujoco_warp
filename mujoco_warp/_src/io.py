@@ -2437,18 +2437,16 @@ def create_render_context(
     warnings.warn("Textures require warp >= 1.12. Disabling textures.")
     use_textures = False
 
-  # Mesh BVHs
+  # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh
   geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
-  mesh_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.MESH) & (mjm.geom_dataid >= 0)
-  used_mesh_id = set(mjm.geom_dataid[mesh_geom_mask].astype(int))
   geom_enabled_idx = np.nonzero(geom_enabled_mask)[0]
 
   mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
 
-  for mid in used_mesh_id:
+  for mid in range(nmesh):
     mesh, half = bvh.build_mesh_bvh(mjm, mid)
     mesh_registry[mesh.id] = mesh
     mesh_bvh_id[mid] = mesh.id

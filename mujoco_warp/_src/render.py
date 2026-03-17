@@ -140,15 +140,17 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.HFIELD:
-      d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
-        hfield_bvh_id,
-        geom_dataid[world_id % geom_dataid.shape[0], gi],
-        geom_xpos_in[world_id, gi],
-        geom_xmat_in[world_id, gi],
-        ray_origin_world,
-        ray_dir_world,
-        dist,
-      )
+      hfield_did = geom_dataid[world_id % geom_dataid.shape[0], gi]
+      if hfield_did >= 0:
+        d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
+          hfield_bvh_id,
+          hfield_did,
+          geom_xpos_in[world_id, gi],
+          geom_xmat_in[world_id, gi],
+          ray_origin_world,
+          ray_dir_world,
+          dist,
+        )
     if geom_type[gi] == GeomType.SPHERE:
       d, n = ray_sphere(
         geom_xpos_in[world_id, gi],
@@ -189,15 +191,17 @@ def cast_ray(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      d, n, u, v, f, hit_mesh_id = ray_mesh_with_bvh(
-        mesh_bvh_id,
-        geom_dataid[world_id % geom_dataid.shape[0], gi],
-        geom_xpos_in[world_id, gi],
-        geom_xmat_in[world_id, gi],
-        ray_origin_world,
-        ray_dir_world,
-        dist,
-      )
+      mesh_did = geom_dataid[world_id % geom_dataid.shape[0], gi]
+      if mesh_did >= 0:
+        d, n, u, v, f, hit_mesh_id = ray_mesh_with_bvh(
+          mesh_bvh_id,
+          mesh_did,
+          geom_xpos_in[world_id, gi],
+          geom_xmat_in[world_id, gi],
+          ray_origin_world,
+          ray_dir_world,
+          dist,
+        )
 
     if d >= 0.0 and d < dist:
       dist = d
@@ -251,15 +255,17 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.HFIELD:
-      d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
-        hfield_bvh_id,
-        geom_dataid[world_id % geom_dataid.shape[0], gi],
-        geom_xpos_in[world_id, gi],
-        geom_xmat_in[world_id, gi],
-        ray_origin_world,
-        ray_dir_world,
-        max_dist,
-      )
+      hfield_did = geom_dataid[world_id % geom_dataid.shape[0], gi]
+      if hfield_did >= 0:
+        d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
+          hfield_bvh_id,
+          hfield_did,
+          geom_xpos_in[world_id, gi],
+          geom_xmat_in[world_id, gi],
+          ray_origin_world,
+          ray_dir_world,
+          max_dist,
+        )
     if geom_type[gi] == GeomType.SPHERE:
       d, n = ray_sphere(
         geom_xpos_in[world_id, gi],
@@ -300,16 +306,18 @@ def cast_ray_first_hit(
         ray_dir_world,
       )
     if geom_type[gi] == GeomType.MESH:
-      hit = ray_mesh_with_bvh_anyhit(
-        mesh_bvh_id,
-        geom_dataid[world_id % geom_dataid.shape[0], gi],
-        geom_xpos_in[world_id, gi],
-        geom_xmat_in[world_id, gi],
-        ray_origin_world,
-        ray_dir_world,
-        max_dist,
-      )
-      d = 0.0 if hit else -1.0
+      mesh_did = geom_dataid[world_id % geom_dataid.shape[0], gi]
+      if mesh_did >= 0:
+        hit = ray_mesh_with_bvh_anyhit(
+          mesh_bvh_id,
+          mesh_did,
+          geom_xpos_in[world_id, gi],
+          geom_xmat_in[world_id, gi],
+          ray_origin_world,
+          ray_dir_world,
+          max_dist,
+        )
+        d = 0.0 if hit else -1.0
 
     if d >= 0.0 and d < max_dist:
       return True

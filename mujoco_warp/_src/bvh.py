@@ -205,8 +205,13 @@ def _compute_bvh_bounds(
   elif type == GeomType.PLANE:
     lower_bound, upper_bound = _compute_plane_bounds(pos, rot, size)
   elif type == GeomType.MESH:
-    size = mesh_bounds_size[geom_dataid[world_id % geom_dataid.shape[0], geom_id]]
-    lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
+    did = geom_dataid[world_id % geom_dataid.shape[0], geom_id]
+    if did >= 0:
+      size = mesh_bounds_size[did]
+      lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
+    else:
+      lower_bound = pos
+      upper_bound = pos
   elif type == GeomType.ELLIPSOID:
     lower_bound, upper_bound = _compute_ellipsoid_bounds(pos, rot, size)
   elif type == GeomType.CYLINDER:
@@ -214,9 +219,14 @@ def _compute_bvh_bounds(
   elif type == GeomType.BOX:
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.HFIELD:
-    size = hfield_bounds_size[geom_dataid[world_id % geom_dataid.shape[0], geom_id]]
-    hfield_center = pos + rot[:, 2] * size[2]
-    lower_bound, upper_bound = _compute_box_bounds(hfield_center, rot, size)
+    did = geom_dataid[world_id % geom_dataid.shape[0], geom_id]
+    if did >= 0:
+      size = hfield_bounds_size[did]
+      hfield_center = pos + rot[:, 2] * size[2]
+      lower_bound, upper_bound = _compute_box_bounds(hfield_center, rot, size)
+    else:
+      lower_bound = pos
+      upper_bound = pos
 
   lower_out[world_id * bvh_ngeom + geom_local_id] = lower_bound
   upper_out[world_id * bvh_ngeom + geom_local_id] = upper_bound
