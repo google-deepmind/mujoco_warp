@@ -162,151 +162,22 @@ def _collide_geom_triangle(
         contact_geomcollisionid_out,
         nacon_out,
       )
-  elif gtype == int(GeomType.CAPSULE):
+    return
+
+  # Capsule, box, cylinder all return up to 2 contacts - compute then share writing code
+  dists = wp.vec2(collision_primitive_core.MJ_MAXVAL, collision_primitive_core.MJ_MAXVAL)
+  poss = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  nrms = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+  if gtype == int(GeomType.CAPSULE):
     cap_radius = size_val[0]
     cap_half_len = size_val[1]
     cap_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
     dists, poss, nrms = collision_primitive_core.capsule_triangle(
       pos, cap_axis, cap_radius, cap_half_len, t1, t2, t3, tri_radius
     )
-    if dists[0] < margin:
-      p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
-      n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
-      _write_flex_contact(
-        naconmax_in,
-        dists[0],
-        p1,
-        make_frame(n1),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
-    if dists[1] < margin:
-      p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
-      n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
-      _write_flex_contact(
-        naconmax_in,
-        dists[1],
-        p2,
-        make_frame(n2),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
   elif gtype == int(GeomType.BOX):
     dists, poss, nrms = collision_primitive_core.box_triangle(pos, rot, size_val, t1, t2, t3, tri_radius)
-    if dists[0] < margin:
-      p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
-      n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
-      _write_flex_contact(
-        naconmax_in,
-        dists[0],
-        p1,
-        make_frame(n1),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
-    if dists[1] < margin:
-      p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
-      n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
-      _write_flex_contact(
-        naconmax_in,
-        dists[1],
-        p2,
-        make_frame(n2),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
   elif gtype == int(GeomType.CYLINDER):
     cyl_radius = size_val[0]
     cyl_half_height = size_val[1]
@@ -314,74 +185,76 @@ def _collide_geom_triangle(
     dists, poss, nrms = collision_primitive_core.cylinder_triangle(
       pos, cyl_axis, cyl_radius, cyl_half_height, t1, t2, t3, tri_radius
     )
-    if dists[0] < margin:
-      p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
-      n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
-      _write_flex_contact(
-        naconmax_in,
-        dists[0],
-        p1,
-        make_frame(n1),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
-    if dists[1] < margin:
-      p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
-      n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
-      _write_flex_contact(
-        naconmax_in,
-        dists[1],
-        p2,
-        make_frame(n2),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
+
+  # Write up to 2 contacts (shared code for capsule/box/cylinder)
+  if dists[0] < margin:
+    p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
+    n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
+    _write_flex_contact(
+      naconmax_in,
+      dists[0],
+      p1,
+      make_frame(n1),
+      margin,
+      condim,
+      friction,
+      solref,
+      solimp,
+      geomid,
+      flexid,
+      vertex_id,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_flex_out,
+      contact_vert_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
+  if dists[1] < margin:
+    p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
+    n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
+    _write_flex_contact(
+      naconmax_in,
+      dists[1],
+      p2,
+      make_frame(n2),
+      margin,
+      condim,
+      friction,
+      solref,
+      solimp,
+      geomid,
+      flexid,
+      vertex_id,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_flex_out,
+      contact_vert_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.kernel
