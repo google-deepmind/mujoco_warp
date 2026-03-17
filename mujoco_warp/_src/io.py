@@ -759,6 +759,7 @@ def make_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
+  # TODO(team): heuristic for constraint Jacobian number of non-zeros
   if njmax_nnz is None or not SPARSE_CONSTRAINT_JACOBIAN:
     njmax_nnz = njmax * mjm.nv
 
@@ -924,6 +925,7 @@ def put_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
+  # TODO(team): heuristic for constraint Jacobian number of non-zeros
   if njmax_nnz is None or not SPARSE_CONSTRAINT_JACOBIAN:
     njmax_nnz = njmax * mjm.nv
 
