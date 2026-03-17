@@ -775,7 +775,7 @@ class GJKTest(parameterized.TestCase):
     self.assertAlmostEqual(dist, -0.03636224)
 
   def test_box_box_max2(self):
-    """Box-box collision that triggers GJK to converge very slowly"""
+    """Box-box collision that triggers GJK to converge very slowly."""
     _, _, m, d = test_data.fixture(
       xml="""
        <mujoco>
