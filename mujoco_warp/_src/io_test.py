@@ -546,7 +546,10 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.nacon.numpy(), 0, "nacon")
 
     for arr in d.contact.__dataclass_fields__:
-      _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
+      if arr == "efc_address":
+        _assert_eq(getattr(d.contact, arr).numpy(), -1, arr)
+      else:
+        _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
   def test_reset_data_world(self):
     """Tests per-world reset."""
@@ -1556,12 +1559,33 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), "render_rgb")
     _assert_eq(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
-  def test_render_context_with_textures(self):
-    # TODO: remove after mjwarp depends on warp >= 1.12 in pyproject.toml
-    if not hasattr(wp, "Texture2D"):
-      self.skipTest("Skipping test that requires warp >= 1.12")
-      return
+  def test_segmentation_from_camera_output(self):
+    """Segmentation auto-detected from camera output attribute in XML."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+        <geom type="plane" size="10 10 0.1"/>
+        <geom type="sphere" size="0.2" pos="0 0 0.5" rgba="1 0 0 1"/>
+        <camera name="cam" pos="0 -1 0.5" xyaxes="1 0 0 0 0 1"
+                resolution="32 32" output="segmentation"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=1)
 
+    rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
+    mjwarp.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()
+    self.assertTrue(np.any(seg >= 0), "Expected geom hits from auto-detected seg")
+    self.assertGreater(np.unique(seg).shape[0], 1)
+
+  def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
     rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")
@@ -1616,6 +1640,114 @@ class IOTest(parameterized.TestCase):
       self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
     else:
       self.assertEqual(d.efc.J.shape[2], m.nv_pad)
+
+  def test_margin_multiccd_box_box(self):
+    """MULTICCD + box-box with margin raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_margin_multiccd_box_mesh(self):
+    """MULTICCD + box-mesh with margin raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="mesh" mesh="m"/>
+          </body>
+        </worldbody>
+        <asset>
+          <mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+        </asset>
+      </mujoco>
+    """)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_margin_multiccd_mesh_mesh(self):
+    """MULTICCD + mesh-mesh with margin raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="mesh" mesh="m" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="mesh" mesh="m"/>
+          </body>
+        </worldbody>
+        <asset>
+          <mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+        </asset>
+      </mujoco>
+    """)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_margin_box_box_nativeccd_disabled(self):
+    """Box-box with margin and NATIVECCD disabled succeeds without error."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" margin="0.01"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+    mjwarp.put_model(mjm)
+
+  def test_margin_pair_box_box(self):
+    """Pair with margin on box-box raises NotImplementedError."""
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(
+        mujoco.MjModel.from_xml_string("""
+        <mujoco>
+          <worldbody>
+            <body>
+              <freejoint/>
+              <geom name="b1" type="box" size=".1 .1 .1"/>
+            </body>
+            <body pos="0 0 .5">
+              <freejoint/>
+              <geom name="b2" type="box" size=".1 .1 .1"/>
+            </body>
+          </worldbody>
+          <contact>
+            <pair geom1="b1" geom2="b2" margin="0.01"/>
+          </contact>
+        </mujoco>
+      """)
+      )
 
 
 # TODO(team): test set_const_0 sparse

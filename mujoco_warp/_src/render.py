@@ -39,10 +39,6 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
-# TODO(team): remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-from mujoco_warp._src.types import TEXTURE_DTYPE
-
-
 @wp.func
 def sample_texture(
   # Model:
@@ -51,7 +47,7 @@ def sample_texture(
   # In:
   geom_id: int,
   tex_repeat: wp.vec2,
-  tex: TEXTURE_DTYPE,
+  tex: wp.Texture2D,
   pos: wp.vec3,
   rot: wp.mat33,
   mesh_facetexcoord: wp.array(dtype=wp.vec3i),
@@ -418,6 +414,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   """
   rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
+  rc.seg_data.fill_(-1)
 
   @wp.kernel(module="unique", enable_backward=False)
   def _render_megakernel(
@@ -454,8 +451,10 @@ def render(m: Model, d: Data, rc: RenderContext):
     ray: wp.array(dtype=wp.vec3),
     rgb_adr: wp.array(dtype=int),
     depth_adr: wp.array(dtype=int),
+    seg_adr: wp.array(dtype=int),
     render_rgb: wp.array(dtype=bool),
     render_depth: wp.array(dtype=bool),
+    render_seg: wp.array(dtype=bool),
     bvh_id: wp.uint64,
     group_root: wp.array(dtype=int),
     flex_bvh_id: wp.uint64,
@@ -467,11 +466,11 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_id: wp.array(dtype=wp.uint64),
     flex_rgba: wp.array(dtype=wp.vec4),
-    # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
-    textures: wp.array(dtype=TEXTURE_DTYPE),
+    textures: wp.array(dtype=wp.Texture2D),
     # Out:
     rgb_out: wp.array2d(dtype=wp.uint32),
     depth_out: wp.array2d(dtype=float),
+    seg_out: wp.array2d(dtype=int),
   ):
     world_idx, ray_idx = wp.tid()
 
@@ -489,7 +488,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     if cam_idx == -1 or ray_idx_local < 0:
       return
 
-    if not render_rgb[cam_idx] and not render_depth[cam_idx]:
+    if not render_rgb[cam_idx] and not render_depth[cam_idx] and not render_seg[cam_idx]:
       return
 
     # Map active camera index to MuJoCo camera ID
@@ -546,6 +545,9 @@ def render(m: Model, d: Data, rc: RenderContext):
         dist = d
         normal = n
         geom_id = -2
+
+    if render_seg[cam_idx] and geom_id != -1:
+      seg_out[world_idx, seg_adr[cam_idx] + ray_idx_local] = geom_id
 
     # Early Out
     if geom_id == -1:
@@ -678,8 +680,10 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.ray,
       rc.rgb_adr,
       rc.depth_adr,
+      rc.seg_adr,
       rc.render_rgb,
       rc.render_depth,
+      rc.render_seg,
       rc.bvh_id,
       rc.group_root,
       rc.flex_bvh_id,
@@ -696,5 +700,6 @@ def render(m: Model, d: Data, rc: RenderContext):
     outputs=[
       rc.rgb_data,
       rc.depth_data,
+      rc.seg_data,
     ],
   )
