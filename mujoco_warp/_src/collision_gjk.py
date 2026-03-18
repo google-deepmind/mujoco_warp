@@ -664,7 +664,9 @@ def gjk(
     if n == 4:
       break
 
-    if k == gjk_iterations - 1:
+    # if k hits the cap then there's no contact (geoms very close together but not touching)
+    # so this warning is only relevant for geom distance
+    if k == gjk_iterations - 1 and cutoff > 0:
       wp.printf("Warning: opt.ccd_iterations, currently set to %d, needs to be increased.\n", gjk_iterations)
 
   result = GJKResult()
