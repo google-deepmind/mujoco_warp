@@ -95,10 +95,9 @@ def _nonzero_mask(x: float) -> float:
 
 
 @wp.kernel
-def _qderiv_actuator_passive_actuation_sparse(
+def _qderiv_actuator_passive_actuation_dense(
   # Model:
   nu: int,
-  is_sparse: bool,
   # Data in:
   moment_rownnz_in: wp.array2d(dtype=int),
   moment_rowadr_in: wp.array2d(dtype=int),
@@ -142,12 +141,58 @@ def _qderiv_actuator_passive_actuation_sparse(
 
     qderiv_contrib += moment_i * moment_j * vel
 
-  if is_sparse:
-    qDeriv_out[worldid, 0, elemid] = qderiv_contrib
-  else:
-    qDeriv_out[worldid, dofiid, dofjid] = qderiv_contrib
-    if dofiid != dofjid:
-      qDeriv_out[worldid, dofjid, dofiid] = qderiv_contrib
+  qDeriv_out[worldid, dofiid, dofjid] = qderiv_contrib
+  if dofiid != dofjid:
+    qDeriv_out[worldid, dofjid, dofiid] = qderiv_contrib
+
+
+@wp.kernel
+def _qderiv_actuator_passive_actuation_sparse(
+  # Model:
+  M_rownnz: wp.array(dtype=int),
+  M_rowadr: wp.array(dtype=int),
+  # Data in:
+  moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
+  # In:
+  vel_in: wp.array2d(dtype=float),
+  qMj: wp.array(dtype=int),
+  # Out:
+  qDeriv_out: wp.array3d(dtype=float),
+):
+  worldid, actid = wp.tid()
+
+  vel = vel_in[worldid, actid]
+  if vel == 0.0:
+    return
+
+  rownnz = moment_rownnz_in[worldid, actid]
+  rowadr = moment_rowadr_in[worldid, actid]
+
+  for i in range(rownnz):
+    dofi = moment_colind_in[worldid, rowadr + i]
+    moment_i = actuator_moment_in[worldid, rowadr + i]
+    if moment_i == 0.0:
+      continue
+
+    for j in range(i + 1):
+      dofj = moment_colind_in[worldid, rowadr + j]
+      moment_j = actuator_moment_in[worldid, rowadr + j]
+      if moment_j == 0.0:
+        continue
+
+      contrib = moment_i * moment_j * vel
+
+      # Search the corresponding elemid
+      row = dofi
+      col = dofj
+      row_start = M_rowadr[row]
+      for k in range(M_rownnz[row]):
+        if qMj[row_start + k] == col:
+          wp.atomic_add(qDeriv_out[worldid, 0], row_start + k, contrib)
+          break
 
 
 @wp.kernel
@@ -283,12 +328,20 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         ],
         outputs=[vel],
       )
-      wp.launch(
-        _qderiv_actuator_passive_actuation_sparse,
-        dim=(d.nworld, qMi.size),
-        inputs=[m.nu, m.is_sparse, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
-        outputs=[out],
-      )
+      if m.is_sparse:
+        wp.launch(
+          _qderiv_actuator_passive_actuation_sparse,
+          dim=(d.nworld, m.nu),
+          inputs=[m.M_rownnz, m.M_rowadr, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMj],
+          outputs=[out],
+        )
+      else:
+        wp.launch(
+          _qderiv_actuator_passive_actuation_dense,
+          dim=(d.nworld, qMi.size),
+          inputs=[m.nu, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
+          outputs=[out],
+        )
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, qMi.size),
