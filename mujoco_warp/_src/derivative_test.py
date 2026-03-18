@@ -209,6 +209,87 @@ class DerivativeTest(parameterized.TestCase):
     self.assertFalse(np.any(np.isnan(mjd.qpos)))
     self.assertFalse(np.any(np.isnan(mjd.qvel)))
 
+  def test_smooth_vel_sparse_tendon_coupled(self):
+    """Tests qDeriv kernel with nv > 32 and moment_rownnz > 1.
+
+    Builds a chain of 35 DOFs (forcing sparse path) with a fixed tendon
+    coupling two joints, producing an actuator with moment_rownnz=2.
+    """
+    # Build a chain long enough to force sparse (nv > 32)
+    bodies = ""
+    joints = ""
+    joint_names = []
+    for i in range(35):
+      indent = "  " * (i + 2)
+      joints += f'{indent}<joint name="j{i}" type="hinge" axis="0 1 0"/>\n'
+      bodies += f'{indent}<body pos="0.1 0 0">\n'
+      bodies += f'{indent}  <geom type="sphere" size=".05"/>\n'
+      bodies += joints.split("\n")[-2] + "\n"
+      joint_names.append(f"j{i}")
+
+    body_xml = ""
+    close_xml = ""
+    for i in range(35):
+      indent = "  " * (i + 2)
+      body_xml += f'{indent}<body pos="0.1 0 0">\n'
+      body_xml += f'{indent}  <geom type="sphere" size=".05"/>\n'
+      body_xml += f'{indent}  <joint name="j{i}" type="hinge" axis="0 1 0"/>\n'
+      close_xml = f'{indent}</body>\n' + close_xml
+
+    xml = f"""
+    <mujoco>
+      <option integrator="implicitfast">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+{body_xml}{close_xml}      </worldbody>
+      <tendon>
+        <fixed name="coupled">
+          <joint joint="j10" coef="1"/>
+          <joint joint="j11" coef="0.5"/>
+        </fixed>
+      </tendon>
+      <actuator>
+        <general tendon="coupled" gainprm="100" biasprm="0 -100 0"
+                 dyntype="none" gaintype="fixed" biastype="affine"/>
+        <motor joint="j0" gear="1"/>
+        <motor joint="j5" gear="1"/>
+        <motor joint="j20" gear="1"/>
+      </actuator>
+      <keyframe>
+        <key qpos="{' '.join(['0.1'] * 35)}" qvel="{' '.join(['1'] * 35)}" ctrl="1 1 1 1"/>
+      </keyframe>
+    </mujoco>
+    """
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      keyframe=0,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+    )
+
+    self.assertTrue(m.is_sparse, "Model should use sparse path (nv > 32)")
+
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+      mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse tendon coupled)")
+
   def test_forcerange_clamped_derivative(self):
     """Implicit integration is more accurate than Euler with active forcerange clamping."""
     xml = """
