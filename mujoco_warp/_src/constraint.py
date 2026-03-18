@@ -1878,11 +1878,11 @@ def _contact_pyramidal(
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
           nnz += 1
-          if nnz >= rownnz:
-            break
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
+        if is_sparse and nnz >= rownnz:
+          break
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
@@ -2124,11 +2124,11 @@ def _contact_elliptic(
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
           nnz += 1
-          if nnz >= rownnz:
-            break
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
+        if is_sparse and nnz >= rownnz:
+          break
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
