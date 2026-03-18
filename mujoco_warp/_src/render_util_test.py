@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 from absl.testing import absltest
 
+import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import render_util
 from mujoco_warp._src import types
@@ -75,6 +76,27 @@ class RenderUtilTest(absltest.TestCase):
       np.allclose(np.array(persp_ray), np.array(ortho_ray)),
       "perspective != orthographic raydir",
     )
+
+  def test_get_segmentation(self):
+    """Tests that get_segmentation extracts per-pixel geom IDs."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(32, 32),
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    seg_out = wp.zeros((2, 32, 32), dtype=int)
+    mjw.get_segmentation(rc, 0, seg_out)
+
+    seg_np = seg_out.numpy()
+    self.assertEqual(seg_np.shape, (2, 32, 32))
+    self.assertTrue(np.any(seg_np >= 0), "Expected at least one geom hit")
+    self.assertGreater(np.unique(seg_np).shape[0], 1)
 
 
 if __name__ == "__main__":

@@ -1981,7 +1981,7 @@ class RenderContext:
   depth_adr: array("ncam", int)
   render_rgb: array("ncam", bool)
   render_depth: array("ncam", bool)
-  seg_data: array("*", wp.int32)
+  seg_data: array("*", int)
   seg_adr: array("ncam", int)
   render_seg: array("ncam", bool)
   znear: float

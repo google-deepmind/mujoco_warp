@@ -470,7 +470,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     # Out:
     rgb_out: wp.array2d(dtype=wp.uint32),
     depth_out: wp.array2d(dtype=float),
-    seg_out: wp.array2d(dtype=wp.int32),
+    seg_out: wp.array2d(dtype=int),
   ):
     world_idx, ray_idx = wp.tid()
 
@@ -547,7 +547,7 @@ def render(m: Model, d: Data, rc: RenderContext):
         geom_id = -2
 
     if render_seg[cam_idx] and geom_id != -1:
-      seg_out[world_idx, seg_adr[cam_idx] + ray_idx_local] = wp.int32(geom_id)
+      seg_out[world_idx, seg_adr[cam_idx] + ray_idx_local] = geom_id
 
     # Early Out
     if geom_id == -1:

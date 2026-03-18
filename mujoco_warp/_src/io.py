@@ -2477,7 +2477,8 @@ def create_render_context(
              MuJoCo model values.
     render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
     render_depth: Whether to render depth images. If None, uses the MuJoCo model values.
-    render_seg: Whether to render segmentation (per-pixel geom IDs). Defaults to False.
+    render_seg: Whether to render segmentation (per-pixel geom IDs). If None,
+      uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
     enabled_geom_groups: The geom groups to render.
@@ -2735,7 +2736,7 @@ def create_render_context(
     depth_adr=wp.array(depth_adr, dtype=int),
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
-    seg_data=wp.zeros((nworld, max(si, 1)), dtype=wp.int32),
+    seg_data=wp.zeros((nworld, max(si, 1)), dtype=int),
     seg_adr=wp.array(seg_adr, dtype=int),
     render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
