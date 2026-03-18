@@ -234,7 +234,7 @@ class DerivativeTest(parameterized.TestCase):
       body_xml += f'{indent}<body pos="0.1 0 0">\n'
       body_xml += f'{indent}  <geom type="sphere" size=".05"/>\n'
       body_xml += f'{indent}  <joint name="j{i}" type="hinge" axis="0 1 0"/>\n'
-      close_xml = f'{indent}</body>\n' + close_xml
+      close_xml = f"{indent}</body>\n" + close_xml
 
     xml = f"""
     <mujoco>
@@ -257,7 +257,7 @@ class DerivativeTest(parameterized.TestCase):
         <motor joint="j20" gear="1"/>
       </actuator>
       <keyframe>
-        <key qpos="{' '.join(['0.1'] * 35)}" qvel="{' '.join(['1'] * 35)}" ctrl="1 1 1 1"/>
+        <key qpos="{" ".join(["0.1"] * 35)}" qvel="{" ".join(["1"] * 35)}" ctrl="1 1 1 1"/>
       </keyframe>
     </mujoco>
     """
