@@ -23,6 +23,7 @@ from mujoco_warp._src.ray import ray_capsule
 from mujoco_warp._src.ray import ray_cylinder
 from mujoco_warp._src.ray import ray_ellipsoid
 from mujoco_warp._src.ray import ray_flex_with_bvh
+from mujoco_warp._src.ray import ray_flex_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
@@ -106,14 +107,10 @@ def cast_ray(
   enabled_geom_ids: wp.array(dtype=int),
   mesh_bvh_id: wp.array(dtype=wp.uint64),
   hfield_bvh_id: wp.array(dtype=wp.uint64),
-  flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
   flex_bvh_id: wp.array(dtype=wp.uint64),
-  flex_dataid: wp.array(dtype=int),
-  flex_group_root: wp.array(dtype=int),
-  n_flex_bvh: int,
-  # Ray:
+  flex_group_root: wp.array2d(dtype=int),
   ray_origin_world: wp.vec3,
   ray_dir_world: wp.vec3,
 ) -> Tuple[int, float, wp.vec3, float, float, int, int]:
@@ -220,11 +217,10 @@ def cast_ray(
       )
     if gtype == GeomType.FLEX:
       hit_geom_id = -2
-      flex_gtype = flex_geom_type[gi]
       flexid = flex_geom_flexid[gi]
+      edge_id = flex_geom_edgeid[gi]
 
-      if flex_gtype == 0:
-        edge_id = flex_geom_edgeid[gi]
+      if edge_id >= 0:
         edge = flex_edge[edge_id]
         vert_adr = flex_vertadr[flexid]
         v0 = flexvert_xpos_in[world_id, vert_adr + edge[0]]
@@ -240,9 +236,8 @@ def cast_ray(
         d, n = ray_capsule(pos, mat, size, ray_origin_world, ray_dir_world)
         hit_mesh_id = flexid
       else:
-        dataid = flex_dataid[flexid]
-        flex_gr = flex_group_root[world_id * n_flex_bvh + dataid]
-        d, n, u, v, f = ray_flex_with_bvh(flex_bvh_id, dataid, flex_gr, ray_origin_world, ray_dir_world, dist)
+        flex_gr = flex_group_root[world_id, flexid]
+        d, n, u, v, f = ray_flex_with_bvh(flex_bvh_id, flexid, flex_gr, ray_origin_world, ray_dir_world, dist)
         if d >= 0.0:
           hit_mesh_id = flexid
 
@@ -276,19 +271,14 @@ def cast_ray_first_hit(
   group_root: int,
   world_id: int,
   bvh_ngeom: int,
-  nflex_bvh_geom: int,
+  bvh_nflexgeom: int,
   enabled_geom_ids: wp.array(dtype=int),
   mesh_bvh_id: wp.array(dtype=wp.uint64),
   hfield_bvh_id: wp.array(dtype=wp.uint64),
-  # Flex:
-  flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
   flex_bvh_id: wp.array(dtype=wp.uint64),
-  flex_dataid: wp.array(dtype=int),
-  flex_group_root: wp.array(dtype=int),
-  n_flex_bvh: int,
-  # Ray:
+  flex_group_root: wp.array2d(dtype=int),
   ray_origin_world: wp.vec3,
   ray_dir_world: wp.vec3,
   max_dist: float,
@@ -296,7 +286,7 @@ def cast_ray_first_hit(
   """A simpler version of casting rays that only checks for the first hit."""
   query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
   bounds_nr = int(0)
-  ngeom = bvh_ngeom + nflex_bvh_geom
+  ngeom = bvh_ngeom + bvh_nflexgeom
 
   while wp.bvh_query_next(query, bounds_nr, max_dist):
     gi_global = bounds_nr
@@ -382,11 +372,10 @@ def cast_ray_first_hit(
       )
       d = 0.0 if hit else -1.0
     if gtype == GeomType.FLEX:
-      flex_gtype = flex_geom_type[gi]
       flexid = flex_geom_flexid[gi]
+      edge_id = flex_geom_edgeid[gi]
 
-      if flex_gtype == 0:
-        edge_id = flex_geom_edgeid[gi]
+      if edge_id >= 0:
         edge = flex_edge[edge_id]
         vert_adr = flex_vertadr[flexid]
         v0 = flexvert_xpos_in[world_id, vert_adr + edge[0]]
@@ -401,9 +390,15 @@ def cast_ray_first_hit(
 
         d, n = ray_capsule(pos, mat, size, ray_origin_world, ray_dir_world)
       else:
-        dataid = flex_dataid[flexid]
-        flex_gr = flex_group_root[world_id * n_flex_bvh + dataid]
-        d, n, fu, fv, ff = ray_flex_with_bvh_anyhit(flex_bvh_id, dataid, flex_gr, ray_origin_world, ray_dir_world, max_dist)
+        hit = ray_flex_with_bvh_anyhit(
+          flex_bvh_id,
+          flexid,
+          flex_group_root[world_id, flexid],
+          ray_origin_world,
+          ray_dir_world,
+          max_dist,
+        )
+        d = 0.0 if hit else -1.0
 
     if d >= 0.0 and d < max_dist:
       return True
@@ -429,20 +424,15 @@ def compute_lighting(
   bvh_id: wp.uint64,
   group_root: int,
   bvh_ngeom: int,
-  nflex_bvh_geom: int,
+  bvh_nflexgeom: int,
   enabled_geom_ids: wp.array(dtype=int),
   world_id: int,
   mesh_bvh_id: wp.array(dtype=wp.uint64),
   hfield_bvh_id: wp.array(dtype=wp.uint64),
-  # Flex:
-  flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
   flex_bvh_id: wp.array(dtype=wp.uint64),
-  flex_dataid: wp.array(dtype=int),
-  flex_group_root: wp.array(dtype=int),
-  n_flex_bvh: int,
-  # Light:
+  flex_group_root: wp.array2d(dtype=int),
   lightactive: bool,
   lighttype: int,
   lightcastshadow: bool,
@@ -503,17 +493,14 @@ def compute_lighting(
       group_root,
       world_id,
       bvh_ngeom,
-      nflex_bvh_geom,
+      bvh_nflexgeom,
       enabled_geom_ids,
       mesh_bvh_id,
       hfield_bvh_id,
-      flex_geom_type,
       flex_geom_flexid,
       flex_geom_edgeid,
       flex_bvh_id,
-      flex_dataid,
       flex_group_root,
-      n_flex_bvh,
       shadow_origin,
       L,
       max_t,
@@ -574,7 +561,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     nrender: int,
     use_shadows: bool,
     bvh_ngeom: int,
-    nflex_bvh_geom: int,
+    bvh_nflexgeom: int,
     cam_res: wp.array(dtype=wp.vec2i),
     cam_id_map: wp.array(dtype=int),
     ray: wp.array(dtype=wp.vec3),
@@ -587,8 +574,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     bvh_id: wp.uint64,
     group_root: wp.array(dtype=int),
     flex_bvh_id: wp.array(dtype=wp.uint64),
-    flex_dataid: wp.array(dtype=int),
-    flex_group_root: wp.array(dtype=int),
+    flex_group_root: wp.array2d(dtype=int),
     enabled_geom_ids: wp.array(dtype=int),
     mesh_bvh_id: wp.array(dtype=wp.uint64),
     mesh_facetexcoord: wp.array(dtype=wp.vec3i),
@@ -596,7 +582,6 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_id: wp.array(dtype=wp.uint64),
     flex_rgba: wp.array(dtype=wp.vec4),
-    flex_geom_type: wp.array(dtype=int),
     flex_geom_flexid: wp.array(dtype=int),
     flex_geom_edgeid: wp.array(dtype=int),
     textures: wp.array(dtype=wp.Texture2D),
@@ -663,17 +648,14 @@ def render(m: Model, d: Data, rc: RenderContext):
       group_root[world_idx],
       world_idx,
       bvh_ngeom,
-      nflex_bvh_geom,
+      bvh_nflexgeom,
       enabled_geom_ids,
       mesh_bvh_id,
       hfield_bvh_id,
-      flex_geom_type,
       flex_geom_flexid,
       flex_geom_edgeid,
       flex_bvh_id,
-      flex_dataid,
       flex_group_root,
-      wp.static(rc.n_flex_bvh),
       ray_origin_world,
       ray_dir_world,
     )
@@ -756,18 +738,15 @@ def render(m: Model, d: Data, rc: RenderContext):
         bvh_id,
         group_root[world_idx],
         bvh_ngeom,
-        nflex_bvh_geom,
+        bvh_nflexgeom,
         enabled_geom_ids,
         world_idx,
         mesh_bvh_id,
         hfield_bvh_id,
-        flex_geom_type,
         flex_geom_flexid,
         flex_geom_edgeid,
         flex_bvh_id,
-        flex_dataid,
         flex_group_root,
-        wp.static(rc.n_flex_bvh),
         light_active[world_idx % light_active.shape[0], l],
         light_type[world_idx % light_type.shape[0], l],
         light_castshadow[world_idx % light_castshadow.shape[0], l],
@@ -821,7 +800,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.nrender,
       rc.use_shadows,
       rc.bvh_ngeom,
-      rc.nflex_bvh_geom,
+      rc.bvh_nflexgeom,
       rc.cam_res,
       rc.cam_id_map,
       rc.ray,
@@ -834,7 +813,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.bvh_id,
       rc.group_root,
       rc.flex_bvh_id,
-      rc.flex_dataid,
       rc.flex_group_root,
       rc.enabled_geom_ids,
       rc.mesh_bvh_id,
@@ -843,7 +821,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.mesh_texcoord_offsets,
       rc.hfield_bvh_id,
       rc.flex_rgba,
-      rc.flex_geom_type,
       rc.flex_geom_flexid,
       rc.flex_geom_edgeid,
       rc.textures,

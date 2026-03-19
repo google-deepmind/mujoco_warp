@@ -1896,24 +1896,11 @@ class RenderContext:
     hfield_bvh_id: hfield BVH ids
     hfield_bounds_size: hfield bounds half-extents
     flex_mesh_registry: per-flex mesh BVH registry (prevents GC)
-    flex_bvh_info: per-flex BVH dispatch info [(flex_id, dim)] indexed by dataid
     flex_rgba: flex rgba
     flex_bvh_id: per-flex BVH ids
-    flex_dataid: flex data id mapping flex index to BVH index (-1 for 1D)
-    n_flex_bvh: number of flex BVHs
-    flex_group_root: per-flex group roots (flat: dataid * nworld + world_id)
-    flex_shell: flex shell data
-    flex_radius: flex radius
+    flex_group_root: per-flex group roots (nworld x n_flex_bvh)
     flex_render_smooth: whether to render flex meshes smoothly
     flex_dim: flex dimension per flex (1D/2D/3D)
-    flex_elem: flex element vertex indices
-    flex_elemnum: number of elements per flex
-    flex_elemdataadr: element data address per flex
-    flex_shelldataadr: shell data address per flex
-    flex_vertadr: vertex address per flex
-    flex_vertnum: number of vertices per flex
-    flex_edgeadr: edge address per flex
-    flex_edge: edge vertex pairs
     bvh: scene BVH
     bvh_id: scene BVH id
     lower: lower bounds
@@ -1923,10 +1910,8 @@ class RenderContext:
     ray: rays
     rgb_data: RGB data
     rgb_adr: RGB addresses
-    rgb_size: per-camera RGB buffer sizes
     depth_data: depth data
     depth_adr: depth addresses
-    depth_size: per-camera depth buffer sizes
     render_rgb: per-camera RGB render flags
     render_depth: per-camera depth render flags
     seg_data: segmentation data (per-pixel geom IDs)
@@ -1957,15 +1942,12 @@ class RenderContext:
   hfield_bvh_id: array("nhfield", wp.uint64)
   hfield_bounds_size: array("nhfield", wp.vec3)
   flex_mesh_registry: dict
-  flex_bvh_info: list
   flex_rgba: array("nflex", wp.vec4)
-  flex_bvh_id: array("n_flex_bvh", wp.uint64)
-  flex_dataid: array("nflex", int)
-  n_flex_bvh: int
-  flex_group_root: array("*", int)
+  flex_bvh_id: array("*", wp.uint64)
+  flex_group_root: array("nworld", "*", int)
   flex_render_smooth: bool
-  nflex_bvh_geom: int
-  flex_geom_type: array("*", int)
+  bvh_nflexgeom: int
+  flex_dim_np: array("nflex", int)
   flex_geom_flexid: array("*", int)
   flex_geom_edgeid: array("*", int)
   flex_elemdataadr: array("nflex", int)

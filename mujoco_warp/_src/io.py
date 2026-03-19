@@ -2534,47 +2534,25 @@ def create_render_context(
   nflex = mjm.nflex
   flex_registry = {}
 
-  # Scene BVH primitives: 1D → one capsule per edge, 2D/3D → one bbox per flex
-  flex_geom_type_list = []
-  flex_geom_flexid_list = []
-  flex_geom_edgeid_list = []
-  flex_dataid = np.full(nflex, -1, dtype=np.int32)
-  n_flex_bvh = 0
-  flex_bvh_id_list = []
-  flex_group_root_parts = []
-  flex_bvh_info = []
+  # Scene BVH flex primitives: 1D → one capsule per edge, 2D/3D → one bbox per flex
+  flex_geom_flexid = []
+  flex_geom_edgeid = []
+  flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
+  flex_group_root = []
 
   for f in range(nflex):
     if mjm.flex_dim[f] == 1:
       edge_adr = mjm.flex_edgeadr[f]
-      flex_geom_type_list.extend([0] * mjm.flex_edgenum[f])
-      flex_geom_flexid_list.extend([f] * mjm.flex_edgenum[f])
-      flex_geom_edgeid_list.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
+      flex_geom_flexid.extend([f] * mjm.flex_edgenum[f])
+      flex_geom_edgeid.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
+      flex_group_root.append(np.zeros(nworld, dtype=int))
     else:
-      flex_geom_type_list.append(1)  # mesh
-      flex_geom_flexid_list.append(f)
-      flex_geom_edgeid_list.append(-1)
+      flex_geom_flexid.append(f)
+      flex_geom_edgeid.append(-1)
       fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
-      flex_dataid[f] = n_flex_bvh
-      flex_registry[n_flex_bvh] = fmesh
-      flex_bvh_id_list.append(fmesh.id)
-      flex_group_root_parts.append(group_root.numpy())
-      flex_bvh_info.append((f, int(mjm.flex_dim[f])))
-      n_flex_bvh += 1
-
-  nflex_bvh_geom = len(flex_geom_type_list)
-  flex_geom_type = wp.array(flex_geom_type_list, dtype=int)
-  flex_geom_flexid = wp.array(flex_geom_flexid_list, dtype=int)
-  flex_geom_edgeid = wp.array(flex_geom_edgeid_list, dtype=int)
-
-  if n_flex_bvh > 0:
-    flex_bvh_id_arr = wp.array(flex_bvh_id_list, dtype=wp.uint64)
-    # Layout: flex_group_root[world_id * n_flex_bvh + dataid]
-    gr = np.stack(flex_group_root_parts)  # (n_flex_bvh, nworld)
-    flex_group_root_arr = wp.array(gr.T.flatten(), dtype=int)
-  else:
-    flex_bvh_id_arr = wp.zeros(1, dtype=wp.uint64)
-    flex_group_root_arr = wp.zeros(1, dtype=int)
+      flex_registry[f] = fmesh
+      flex_bvh_id[f] = fmesh.id
+      flex_group_root.append(group_root.numpy())
 
   textures_registry = []
   for i in range(mjm.ntex):
@@ -2694,23 +2672,20 @@ def create_render_context(
     hfield_bvh_id=hfield_bvh_id_arr,
     hfield_bounds_size=hfield_bounds_size_arr,
     flex_mesh_registry=flex_registry,
-    flex_bvh_info=flex_bvh_info,
     flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
-    flex_bvh_id=flex_bvh_id_arr,
-    flex_dataid=wp.array(flex_dataid, dtype=int),
-    n_flex_bvh=n_flex_bvh,
-    flex_group_root=flex_group_root_arr,
+    flex_bvh_id=wp.array(flex_bvh_id, dtype=wp.uint64),
+    flex_group_root=wp.array(flex_group_root, dtype=int),
     flex_render_smooth=flex_render_smooth,
-    nflex_bvh_geom=nflex_bvh_geom,
-    flex_geom_type=flex_geom_type,
-    flex_geom_flexid=flex_geom_flexid,
-    flex_geom_edgeid=flex_geom_edgeid,
+    bvh_nflexgeom=len(flex_geom_flexid),
+    flex_dim_np=mjm.flex_dim,
+    flex_geom_flexid=wp.array(flex_geom_flexid, dtype=int),
+    flex_geom_edgeid=wp.array(flex_geom_edgeid, dtype=int),
     flex_elemdataadr=wp.array(mjm.flex_elemdataadr, dtype=int),
     bvh=None,
     bvh_id=None,
-    lower=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=wp.vec3),
-    upper=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=wp.vec3),
-    group=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=int),
+    lower=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),
+    upper=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),
+    group=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=int),
     group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
     rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),

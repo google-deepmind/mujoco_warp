@@ -35,7 +35,7 @@ wp.set_module_options({"enable_backward": False})
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the dynamic BVH structures in the render context."""
   refit_scene_bvh(m, d, rc)
-  if rc.n_flex_bvh > 0:
+  if m.nflex > 0:
     refit_flex_bvh(m, d, rc)
 
 
@@ -245,7 +245,6 @@ def _compute_flex_bvh_bounds(
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
-  flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
   bvh_ngeom: int,
@@ -258,13 +257,12 @@ def _compute_flex_bvh_bounds(
   world_id, flex_local = wp.tid()
 
   flex_id = flex_geom_flexid[flex_local]
-  gtype = flex_geom_type[flex_local]
+  edge_id = flex_geom_edgeid[flex_local]
   out_idx = world_id * total_bvh_size + bvh_ngeom + flex_local
   radius = flex_radius[flex_id]
   inflate = wp.vec3(radius, radius, radius)
 
-  if gtype == 0:  # capsule (1D edge)
-    edge_id = flex_geom_edgeid[flex_local]
+  if edge_id >= 0:  # capsule (1D edge)
     edge = flex_edge[edge_id]
     vert_adr = flex_vertadr[flex_id]
     v0 = flexvert_xpos_in[world_id, vert_adr + edge[0]]
@@ -288,7 +286,7 @@ def _compute_flex_bvh_bounds(
 
 def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
   """Build a global BVH for all geometries in all worlds."""
-  total_bvh_size = rc.bvh_ngeom + rc.nflex_bvh_geom
+  total_bvh_size = rc.bvh_ngeom + rc.bvh_nflexgeom
 
   geom_type = wp.array(mjm.geom_type, dtype=int)
   geom_dataid = wp.array(mjm.geom_dataid, dtype=int)
@@ -322,18 +320,17 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     ],
   )
 
-  if rc.nflex_bvh_geom > 0:
+  if rc.bvh_nflexgeom > 0:
     flexvert_xpos = wp.array(np.tile(mjd.flexvert_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
     wp.launch(
       kernel=_compute_flex_bvh_bounds,
-      dim=(nworld, rc.nflex_bvh_geom),
+      dim=(nworld, rc.bvh_nflexgeom),
       inputs=[
         flex_vertadr,
         flex_vertnum,
         flex_edge,
         flex_radius,
         flexvert_xpos,
-        rc.flex_geom_type,
         rc.flex_geom_flexid,
         rc.flex_geom_edgeid,
         rc.bvh_ngeom,
@@ -359,7 +356,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
 
 
 def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
-  total_bvh_size = rc.bvh_ngeom + rc.nflex_bvh_geom
+  total_bvh_size = rc.bvh_ngeom + rc.bvh_nflexgeom
 
   wp.launch(
     kernel=_compute_bvh_bounds,
@@ -380,17 +377,16 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
     ],
   )
 
-  if rc.nflex_bvh_geom > 0:
+  if rc.bvh_nflexgeom > 0:
     wp.launch(
       kernel=_compute_flex_bvh_bounds,
-      dim=(d.nworld, rc.nflex_bvh_geom),
+      dim=(d.nworld, rc.bvh_nflexgeom),
       inputs=[
         m.flex_vertadr,
         m.flex_vertnum,
         m.flex_edge,
         m.flex_radius,
         d.flexvert_xpos,
-        rc.flex_geom_type,
         rc.flex_geom_flexid,
         rc.flex_geom_edgeid,
         rc.bvh_ngeom,
@@ -1038,8 +1034,8 @@ def build_flex_bvh(
       kernel=_build_flex_3d_shells,
       dim=(nworld, nshell),
       inputs=[
-        flexvert_xpos,
         flex_shell,
+        flexvert_xpos,
         shell_adr,
         vert_adr,
         0,  # face_offset
@@ -1084,11 +1080,13 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     inputs=[flexvert_norm],
   )
 
-  for dataid, (flex_id, dim_f) in enumerate(rc.flex_bvh_info):
-    mesh = rc.flex_mesh_registry[dataid]
+  for i in range(m.nflex):
+    if rc.flex_dim_np[i] == 1:
+      continue
+    mesh = rc.flex_mesh_registry[i]
     nface = mesh.points.shape[0] // (3 * d.nworld)
 
-    if dim_f == 2:
+    if rc.flex_dim_np[i] == 2:
       wp.launch(
         kernel=_update_flex_2d_face_points,
         dim=(d.nworld, nface // 2),
@@ -1102,7 +1100,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
           d.flexvert_xpos,
           flexvert_norm,
           rc.flex_elemdataadr,
-          flex_id,
+          i,
           nface,
           rc.flex_render_smooth,
         ],
@@ -1117,7 +1115,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
           m.flex_shelldataadr,
           m.flex_shell,
           d.flexvert_xpos,
-          flex_id,
+          i,
           nface,
         ],
         outputs=[mesh.points],
