@@ -622,7 +622,7 @@ def _tendon_velocity(
 @event_scope
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
-  wp.launch_tiled(
+  wp.launch(
     _actuator_velocity,
     dim=(d.nworld, m.nu),
     inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
