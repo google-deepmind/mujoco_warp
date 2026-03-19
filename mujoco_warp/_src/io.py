@@ -580,6 +580,16 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       Madr_ki -= 1
   m.qLD_updates = tuple(wp.array(qLD_updates[i], dtype=wp.vec3i) for i in sorted(qLD_updates))
 
+  # Build concatenated updates for fused kernel
+  all_updates_flat = []
+  level_offsets = [0]
+  for level in sorted(qLD_updates):
+    all_updates_flat.extend(qLD_updates[level])
+    level_offsets.append(len(all_updates_flat))
+  m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
+  m.qLD_level_offsets = level_offsets
+
+
   # indices for sparse qM_fullm (used in solver)
   m.qM_fullm_i, m.qM_fullm_j = [], []
   for i in range(mjm.nv):

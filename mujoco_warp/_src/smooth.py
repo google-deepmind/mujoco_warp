@@ -2693,43 +2693,63 @@ def transmission(m: Model, d: Data):
     )
 
 
-@wp.kernel
-def _solve_LD_sparse_x_acc_up(
-  # In:
-  L: wp.array3d(dtype=float),
-  qLD_updates_: wp.array(dtype=wp.vec3i),
-  # Out:
-  x: wp.array2d(dtype=float),
-):
-  worldid, nodeid = wp.tid()
-  update = qLD_updates_[nodeid]
-  i, k, Madr_ki = update[0], update[1], update[2]
-  wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
+@cache_kernel
+def _solve_LD_sparse_fused(nv: int, nlevels: int):
+  """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
+  @wp.func_native(snippet="WP_TILE_SYNC();")
+  def _syncthreads():
+    pass
 
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    L: wp.array3d(dtype=float),
+    D: wp.array2d(dtype=float),
+    all_updates: wp.array(dtype=wp.vec3i),
+    level_offsets: wp.array(dtype=int),
+    y: wp.array2d(dtype=float),
+    # Out:
+    x: wp.array2d(dtype=float),
+  ):
+    worldid, tid = wp.tid()
+    NV = wp.static(nv)
+    NLEVELS = wp.static(nlevels)
 
-@wp.kernel
-def _solve_LD_sparse_qLDiag_mul(
-  # In:
-  D: wp.array2d(dtype=float),
-  # Out:
-  out: wp.array2d(dtype=float),
-):
-  worldid, dofid = wp.tid()
-  out[worldid, dofid] *= D[worldid, dofid]
+    # Copy y to x
+    for dofid in range(tid, NV, wp.block_dim()):
+      x[worldid, dofid] = y[worldid, dofid]
+    _syncthreads()
 
+    # Forward substitution
+    for level in range(NLEVELS):
+      level_idx = NLEVELS - 1 - level
+      level_offset = level_offsets[level_idx]
+      level_size = level_offsets[level_idx + 1] - level_offset
 
-@wp.kernel
-def _solve_LD_sparse_x_acc_down(
-  # In:
-  L: wp.array3d(dtype=float),
-  qLD_updates_: wp.array(dtype=wp.vec3i),
-  # Out:
-  x: wp.array2d(dtype=float),
-):
-  worldid, nodeid = wp.tid()
-  update = qLD_updates_[nodeid]
-  i, k, Madr_ki = update[0], update[1], update[2]
-  wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
+      for u in range(tid, level_size, wp.block_dim()):
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
+      _syncthreads()
+
+    # Diagonal multiply
+    for dofid in range(tid, NV, wp.block_dim()):
+      x[worldid, dofid] *= D[worldid, dofid]
+    _syncthreads()
+
+    # Backward substitution
+    for level in range(NLEVELS):
+      level_idx = NLEVELS - 1 - level
+      level_offset = level_offsets[level_idx]
+      level_size = level_offsets[level_idx + 1] - level_offset
+
+      for u in range(tid, level_size, wp.block_dim()):
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
+      _syncthreads()
+
+  return kernel
 
 
 def _solve_LD_sparse(
@@ -2741,14 +2761,14 @@ def _solve_LD_sparse(
   y: wp.array2d(dtype=float),
 ):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
-  wp.copy(x, y)
-  for qLD_updates in reversed(m.qLD_updates):
-    wp.launch(_solve_LD_sparse_x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
-
-  wp.launch(_solve_LD_sparse_qLDiag_mul, dim=(d.nworld, m.nv), inputs=[D], outputs=[x])
-
-  for qLD_updates in m.qLD_updates:
-    wp.launch(_solve_LD_sparse_x_acc_down, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
+  nlevels = len(m.qLD_updates)
+  wp.launch(
+    _solve_LD_sparse_fused(m.nv, nlevels),
+    dim=(d.nworld, m.block_dim.solve_LD_sparse_fused),
+    inputs=[L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    outputs=[x],
+    block_dim=m.block_dim.solve_LD_sparse_fused,
+  )
 
 
 @cache_kernel

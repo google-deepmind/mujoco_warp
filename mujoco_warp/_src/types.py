@@ -56,6 +56,7 @@ class BlockDim:
   cholesky_factorize: int = 32
   cholesky_solve: int = 32
   cholesky_factorize_solve: int = 32
+  solve_LD_sparse_fused: int = 64
   # solver
   update_gradient_cholesky: int = 64
   update_gradient_cholesky_blocked: int = 32
@@ -1193,6 +1194,8 @@ class Model:
     taxel_sensorid: address for tactile sensors
     qM_tiles: tiling configuration
     qLD_updates: tuple of index triples for sparse factorization
+    qLD_all_updates: tuple of all levels concatenated
+    qLD_level_offsets: tuple of start offsets for each level
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
     qM_mulm_rowadr: sparse matmul row pointers
@@ -1568,6 +1571,8 @@ class Model:
   taxel_sensorid: wp.array(dtype=int)
   qM_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[wp.array(dtype=wp.vec3i), ...]
+  qLD_all_updates: wp.array(dtype=wp.vec3i)
+  qLD_level_offsets: wp.array(dtype=int)
   qM_fullm_i: wp.array(dtype=int)
   qM_fullm_j: wp.array(dtype=int)
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
