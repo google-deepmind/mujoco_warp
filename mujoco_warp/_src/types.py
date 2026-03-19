@@ -33,9 +33,6 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
-# TODO(team): remove after improving performance for sparse constraint jacobian
-SPARSE_CONSTRAINT_JACOBIAN = False
-
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -837,6 +834,7 @@ class Model:
     nflexelem: number of elements in all flexes
     nflexelemdata: number of element vertex ids in all flexes
     nflexelemedge: number of element edge ids in all flexes
+    nflexshelldata: number of shell fragment vertex ids in all flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
@@ -970,6 +968,11 @@ class Model:
     light_poscom0: global position rel. to sub-com in qpos0  (*, nlight, 3)
     light_pos0: global position rel. to body in qpos0        (*, nlight, 3)
     light_dir0: global direction in qpos0                    (*, nlight, 3)
+    flex_contype: flex contact type                          (nflex,)
+    flex_conaffinity: flex contact affinity                  (nflex,)
+    flex_condim: contact dimensionality (1, 3, 4, 6)         (nflex,)
+    flex_friction: friction for (slide, spin, roll)          (nflex, 3)
+    flex_margin: detect contact if dist<margin               (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
@@ -978,14 +981,18 @@ class Model:
     flex_elemadr: first element address                      (nflex,)
     flex_elemnum: number of elements                         (nflex,)
     flex_elemedgeadr: first element address                  (nflex,)
+    flex_shellnum: number of shells                          (nflex,)
+    flex_shelldataadr: first shell data address              (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
     flex_elemedge: element edge ids                          (nflexelemedge,)
+    flex_shell: shell fragment vertex ids (dim per frag)     (nflexshelldata,)
     flex_vert: vertex local positions                        (nflexvert, 3)
     flexedge_length0: edge lengths in qpos0                  (nflexedge,)
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
+    flex_radius: radius around primitive element             (nflex,)
     flex_stiffness: finite element stiffness matrix          (nflexelem, 21)
     flex_bending: bending stiffness                          (nflexedge, 17)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
@@ -1101,6 +1108,7 @@ class Model:
     M_rowadr: index of each row in qM                        (nv,)
     M_colind: column indices of non-zeros in qM              (nM,)
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
+    flex_vertflexid: flex id for each flex vertex            (nflexvert,)
 
   warp only fields:
     callback: custom physics callbacks
@@ -1212,6 +1220,7 @@ class Model:
   nflexelem: int
   nflexelemdata: int
   nflexelemedge: int
+  nflexshelldata: int
   nJfe: int
   nmesh: int
   nmeshvert: int
@@ -1345,6 +1354,11 @@ class Model:
   light_poscom0: array("*", "nlight", wp.vec3)
   light_pos0: array("*", "nlight", wp.vec3)
   light_dir0: array("*", "nlight", wp.vec3)
+  flex_contype: array("nflex", int)
+  flex_conaffinity: array("nflex", int)
+  flex_condim: array("nflex", int)
+  flex_friction: array("nflex", wp.vec3)
+  flex_margin: array("nflex", float)
   flex_dim: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
@@ -1353,14 +1367,18 @@ class Model:
   flex_elemadr: array("nflex", int)
   flex_elemnum: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
+  flex_shellnum: array("nflex", int)
+  flex_shelldataadr: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
   flex_elemedge: array("nflexelemedge", int)
+  flex_shell: array("nflexshelldata", int)
   flex_vert: array("nflexvert", wp.vec3)
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
+  flex_radius: array("nflex", float)
   flex_stiffness: array("nflexelem", 21, float)
   flex_bending: array("nflexedge", 17, float)
   flex_damping: array("nflex", float)
@@ -1476,6 +1494,7 @@ class Model:
   M_rowadr: array("nv", int)
   M_colind: array("nC", int)
   mapM2M: array("nC", int)
+  flex_vertflexid: array("nflexvert", int)
   # warp only fields:
   callback: Callback
   nbranch: int
@@ -1601,6 +1620,8 @@ class Contact:
   solimp: array("naconmax", vec5)
   dim: array("naconmax", int)
   geom: array("naconmax", wp.vec2i)
+  flex: array("naconmax", wp.vec2i)
+  vert: array("naconmax", wp.vec2i)
   efc_address: array("naconmax", "nmaxpyramid", int)
   worldid: array("naconmax", int)
   type: array("naconmax", int)
@@ -1749,6 +1770,7 @@ class Data:
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
+    njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
   """
@@ -1842,6 +1864,7 @@ class Data:
   naccdmax: int
   njmax: int
   njmax_pad: int
+  njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
 
@@ -1900,6 +1923,9 @@ class RenderContext:
     depth_size: per-camera depth buffer sizes
     render_rgb: per-camera RGB render flags
     render_depth: per-camera depth render flags
+    seg_data: segmentation data (per-pixel geom IDs)
+    seg_adr: segmentation addresses
+    render_seg: per-camera segmentation render flags
     znear: near plane distance
     total_rays: total number of rays
   """
@@ -1952,5 +1978,8 @@ class RenderContext:
   depth_adr: array("ncam", int)
   render_rgb: array("ncam", bool)
   render_depth: array("ncam", bool)
+  seg_data: array("*", int)
+  seg_adr: array("ncam", int)
+  render_seg: array("ncam", bool)
   znear: float
   total_rays: int

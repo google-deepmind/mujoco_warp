@@ -18,7 +18,6 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
@@ -155,6 +154,7 @@ def _equality_connect(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -236,6 +236,8 @@ def _equality_connect(
 
     # get rowadr
     rowadr = wp.atomic_add(efc_nnz_out, worldid, 3 * rownnz)
+    if rowadr + 3 * rownnz > njmax_nnz_in:
+      return
     efc_J_rowadr_out[worldid, efcid0] = rowadr
     efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
     efc_J_rowadr_out[worldid, efcid2] = rowadr + 2 * rownnz
@@ -384,6 +386,7 @@ def _equality_joint(
   qvel_in: wp.array2d(dtype=float),
   eq_active_in: wp.array2d(dtype=bool),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -429,6 +432,8 @@ def _equality_joint(
       rownnz = 1
     efc_J_rownnz_out[worldid, efcid] = rownnz
     rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
+    if rowadr + rownnz > njmax_nnz_in:
+      return
     efc_J_rowadr_out[worldid, efcid] = rowadr
     efc_J_colind_out[worldid, 0, rowadr] = dofadr1
     efc_J_out[worldid, 0, rowadr] = 1.0
@@ -514,6 +519,7 @@ def _equality_tendon(
   ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -599,6 +605,8 @@ def _equality_tendon(
       rownnz += 1
 
     rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
+    if rowadr + rownnz > njmax_nnz_in:
+      return
     efc_J_rowadr_out[worldid, efcid] = rowadr
 
   ptr1 = int(0)
@@ -686,6 +694,7 @@ def _equality_flex(is_sparse: bool):
     flexedge_J_in: wp.array2d(dtype=float),
     flexedge_length_in: wp.array2d(dtype=float),
     njmax_in: int,
+    njmax_nnz_in: int,
     # Data out:
     ne_out: wp.array(dtype=int),
     nefc_out: wp.array(dtype=int),
@@ -725,6 +734,8 @@ def _equality_flex(is_sparse: bool):
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = rownnz
       efc_rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
+      if efc_rowadr + rownnz > njmax_nnz_in:
+        return
       efc_J_rowadr_out[worldid, efcid] = efc_rowadr
       for i in range(rownnz):
         flex_sparseid = flex_rowadr + i
@@ -807,6 +818,7 @@ def _equality_weld(
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   ne_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -900,6 +912,8 @@ def _equality_weld(
 
     # get rowadr
     rowadr = wp.atomic_add(efc_nnz_out, worldid, 6 * rownnz)
+    if rowadr + 6 * rownnz > njmax_nnz_in:
+      return
     efc_J_rowadr_out[worldid, efcid0] = rowadr
     efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
     efc_J_rowadr_out[worldid, efcid2] = rowadr + 2 * rownnz
@@ -1104,6 +1118,7 @@ def _friction_dof(
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nf_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1138,6 +1153,8 @@ def _friction_dof(
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = 1
     rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
+    if rowadr + 1 > njmax_nnz_in:
+      return
     efc_J_rowadr_out[worldid, efcid] = rowadr
     efc_J_colind_out[worldid, 0, rowadr] = dofid
     efc_J_out[worldid, 0, rowadr] = 1.0
@@ -1195,6 +1212,7 @@ def _friction_tendon(
   qvel_in: wp.array2d(dtype=float),
   ten_J_in: wp.array2d(dtype=float),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nf_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1234,6 +1252,8 @@ def _friction_tendon(
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
     rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
+    if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
+      return
     efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
     for i in range(rownnz_tenJ):
@@ -1306,6 +1326,7 @@ def _limit_slide_hinge(
   qpos_in: wp.array2d(dtype=float),
   qvel_in: wp.array2d(dtype=float),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1350,6 +1371,8 @@ def _limit_slide_hinge(
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = 1
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
+      if rowadr + 1 > njmax_nnz_in:
+        return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofadr
       efc_J_out[worldid, 0, rowadr] = J
@@ -1408,6 +1431,7 @@ def _limit_ball(
   qpos_in: wp.array2d(dtype=float),
   qvel_in: wp.array2d(dtype=float),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1458,6 +1482,8 @@ def _limit_ball(
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = 3
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 3)
+      if rowadr + 3 > njmax_nnz_in:
+        return
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
       sparseid0 = rowadr + 0
@@ -1532,6 +1558,7 @@ def _limit_tendon(
   ten_J_in: wp.array2d(dtype=float),
   ten_length_in: wp.array2d(dtype=float),
   njmax_in: int,
+  njmax_nnz_in: int,
   # Data out:
   nl_out: wp.array(dtype=int),
   nefc_out: wp.array(dtype=int),
@@ -1577,6 +1604,8 @@ def _limit_tendon(
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
       rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
+      if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
+        return
       efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
       for i in range(rownnz_tenJ):
@@ -1646,12 +1675,15 @@ def _contact_pyramidal(
   dof_bodyid: wp.array(dtype=int),
   dof_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
   is_sparse: bool,
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
+  njmax_nnz_in: int,
   nacon_in: wp.array(dtype=int),
   # In:
   dist_in: wp.array(dtype=float),
@@ -1659,6 +1691,8 @@ def _contact_pyramidal(
   includemargin_in: wp.array(dtype=float),
   worldid_in: wp.array(dtype=int),
   geom_in: wp.array(dtype=wp.vec2i),
+  flex_in: wp.array(dtype=wp.vec2i),
+  vert_in: wp.array(dtype=wp.vec2i),
   pos_in: wp.array(dtype=wp.vec3),
   frame_in: wp.array(dtype=wp.mat33),
   friction_in: wp.array(dtype=vec5),
@@ -1715,8 +1749,20 @@ def _contact_pyramidal(
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+
+    if geom[0] >= 0:
+      body1 = geom_bodyid[geom[0]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
+
+    if geom[1] >= 0:
+      body2 = geom_bodyid[geom[1]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
     con_pos = pos_in[conid]
     frame = frame_in[conid]
@@ -1744,12 +1790,14 @@ def _contact_pyramidal(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     if is_sparse:
-      # count non-zeros
       pda1 = da1
       pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
+        # skip common dofs
+        if pda1 == da and pda2 == da:
+          break
         if pda1 == da:
           pda1 = dof_parentid[pda1]
         if pda2 == da:
@@ -1758,6 +1806,8 @@ def _contact_pyramidal(
 
       # get rowadr
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
+      if rowadr + rownnz > njmax_nnz_in:
+        return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_rownnz_out[worldid, efcid] = rownnz
 
@@ -1771,7 +1821,7 @@ def _contact_pyramidal(
 
     while True:
       if is_sparse:
-        if da1 < 0 and da2 < 0:
+        if nnz >= rownnz:
           break
       else:
         if dofid < 0:
@@ -1831,6 +1881,8 @@ def _contact_pyramidal(
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
+        if is_sparse and nnz >= rownnz:
+          break
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
@@ -1894,12 +1946,15 @@ def _contact_elliptic(
   dof_bodyid: wp.array(dtype=int),
   dof_parentid: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_vertbodyid: wp.array(dtype=int),
   is_sparse: bool,
   # Data in:
   qvel_in: wp.array2d(dtype=float),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cdof_in: wp.array2d(dtype=wp.spatial_vector),
   njmax_in: int,
+  njmax_nnz_in: int,
   nacon_in: wp.array(dtype=int),
   # In:
   dist_in: wp.array(dtype=float),
@@ -1907,6 +1962,8 @@ def _contact_elliptic(
   includemargin_in: wp.array(dtype=float),
   worldid_in: wp.array(dtype=int),
   geom_in: wp.array(dtype=wp.vec2i),
+  flex_in: wp.array(dtype=wp.vec2i),
+  vert_in: wp.array(dtype=wp.vec2i),
   pos_in: wp.array(dtype=wp.vec3),
   frame_in: wp.array(dtype=wp.mat33),
   friction_in: wp.array(dtype=vec5),
@@ -1962,8 +2019,20 @@ def _contact_elliptic(
     contact_efc_address_out[conid, dimid] = efcid
 
     geom = geom_in[conid]
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+
+    if geom[0] >= 0:
+      body1 = geom_bodyid[geom[0]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
+
+    if geom[1] >= 0:
+      body2 = geom_bodyid[geom[1]]
+    else:
+      flex = flex_in[conid]
+      vert = vert_in[conid]
+      body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
 
     con_pos = pos_in[conid]
     frame = frame_in[conid]
@@ -1984,6 +2053,9 @@ def _contact_elliptic(
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
+        # skip common dofs
+        if pda1 == da and pda2 == da:
+          break
         if pda1 == da:
           pda1 = dof_parentid[pda1]
         if pda2 == da:
@@ -1992,6 +2064,8 @@ def _contact_elliptic(
 
       # get rowadr
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
+      if rowadr + rownnz > njmax_nnz_in:
+        return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_rownnz_out[worldid, efcid] = rownnz
 
@@ -2005,7 +2079,7 @@ def _contact_elliptic(
 
     while True:
       if is_sparse:
-        if da1 < 0 and da2 < 0:
+        if nnz >= rownnz:
           break
       else:
         if dofid < 0:
@@ -2053,6 +2127,8 @@ def _contact_elliptic(
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
+        if is_sparse and nnz >= rownnz:
+          break
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
@@ -2160,7 +2236,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_connect_adr,
           d.qvel,
           d.eq_active,
@@ -2170,6 +2246,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.subtree_com,
           d.cdof,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2213,7 +2290,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_wld_adr,
           d.qvel,
           d.eq_active,
@@ -2224,6 +2301,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.subtree_com,
           d.cdof,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2259,12 +2337,13 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_jnt_adr,
           d.qpos,
           d.qvel,
           d.eq_active,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2301,13 +2380,14 @@ def make_constraint(m: types.Model, d: types.Data):
           m.ten_J_colind,
           m.tendon_length0,
           m.tendon_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_ten_adr,
           d.qvel,
           d.eq_active,
           d.ten_J,
           d.ten_length,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2329,7 +2409,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _equality_flex(SPARSE_CONSTRAINT_JACOBIAN),
+        _equality_flex(m.is_sparse),
         dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
         inputs=[
           m.nv,
@@ -2347,6 +2427,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.flexedge_J,
           d.flexedge_length,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.ne,
@@ -2379,9 +2460,10 @@ def make_constraint(m: types.Model, d: types.Data):
           m.dof_solimp,
           m.dof_frictionloss,
           m.dof_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           d.qvel,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nf,
@@ -2416,10 +2498,11 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_solimp_fri,
           m.tendon_frictionloss,
           m.tendon_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           d.qvel,
           d.ten_J,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nf,
@@ -2456,11 +2539,12 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_range,
           m.jnt_margin,
           m.dof_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.jnt_limited_ball_adr,
           d.qpos,
           d.qvel,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nl,
@@ -2495,11 +2579,12 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_range,
           m.jnt_margin,
           m.dof_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.jnt_limited_slide_hinge_adr,
           d.qpos,
           d.qvel,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nl,
@@ -2535,12 +2620,13 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_range,
           m.tendon_margin,
           m.tendon_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.tendon_limited_adr,
           d.qvel,
           d.ten_J,
           d.ten_length,
           d.njmax,
+          d.njmax_nnz,
         ],
         outputs=[
           d.nl,
@@ -2581,17 +2667,22 @@ def make_constraint(m: types.Model, d: types.Data):
             m.dof_bodyid,
             m.dof_parentid,
             m.geom_bodyid,
-            SPARSE_CONSTRAINT_JACOBIAN,
+            m.flex_vertadr,
+            m.flex_vertbodyid,
+            m.is_sparse,
             d.qvel,
             d.subtree_com,
             d.cdof,
             d.njmax,
+            d.njmax_nnz,
             d.nacon,
             d.contact.dist,
             d.contact.dim,
             d.contact.includemargin,
             d.contact.worldid,
             d.contact.geom,
+            d.contact.flex,
+            d.contact.vert,
             d.contact.pos,
             d.contact.frame,
             d.contact.friction,
@@ -2635,17 +2726,22 @@ def make_constraint(m: types.Model, d: types.Data):
             m.dof_bodyid,
             m.dof_parentid,
             m.geom_bodyid,
-            SPARSE_CONSTRAINT_JACOBIAN,
+            m.flex_vertadr,
+            m.flex_vertbodyid,
+            m.is_sparse,
             d.qvel,
             d.subtree_com,
             d.cdof,
             d.njmax,
+            d.njmax_nnz,
             d.nacon,
             d.contact.dist,
             d.contact.dim,
             d.contact.includemargin,
             d.contact.worldid,
             d.contact.geom,
+            d.contact.flex,
+            d.contact.vert,
             d.contact.pos,
             d.contact.frame,
             d.contact.friction,

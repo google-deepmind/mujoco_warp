@@ -28,7 +28,6 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
@@ -113,9 +112,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     unsupported = field & ~np.bitwise_or.reduce(field_type)
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
-
-  if ((mjm.flex_contype != 0) | (mjm.flex_conaffinity != 0)).any():
-    raise NotImplementedError("Flex collisions are not implemented.")
 
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
@@ -687,6 +683,7 @@ def make_data(
   nconmax: Optional[int] = None,
   nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
+  njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
 ) -> types.Data:
@@ -700,6 +697,7 @@ def make_data(
     nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
+    njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
@@ -749,20 +747,29 @@ def make_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
+  # TODO(team): heuristic for constraint Jacobian number of non-zeros
+  if njmax_nnz is None or not is_sparse(mjm):
+    njmax_nnz = njmax * mjm.nv
+
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
-  if SPARSE_CONSTRAINT_JACOBIAN:
+  if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
-    efc.J_colind = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=int)
-    efc.J = wp.zeros((nworld, 1, njmax * mjm.nv), dtype=float)
+    efc.J_colind = wp.zeros((nworld, 1, njmax_nnz), dtype=int)
+    efc.J = wp.zeros((nworld, 1, njmax_nnz), dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
+
+  contact_kwargs = {}
+  for f in dataclasses.fields(types.Contact):
+    contact_kwargs[f.name] = _create_array(None, f.type, sizes)
+  contact = types.Contact(**contact_kwargs)
 
   # world body and static geom (attached to the world) poses are precomputed
   # this speeds up scenes with many static geoms (e.g. terrains)
@@ -783,6 +790,7 @@ def make_data(
     "naccdmax": naccdmax,
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
+    "njmax_nnz": njmax_nnz,
     "qM": None,
     "qLD": None,
     # world body
@@ -831,6 +839,7 @@ def put_data(
   nconmax: Optional[int] = None,
   nccdmax: Optional[int] = None,
   njmax: Optional[int] = None,
+  njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
 ) -> types.Data:
@@ -845,6 +854,7 @@ def put_data(
     nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
+    njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
 
@@ -907,6 +917,10 @@ def put_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
+  # TODO(team): heuristic for constraint Jacobian number of non-zeros
+  if njmax_nnz is None or not is_sparse(mjm):
+    njmax_nnz = njmax * mjm.nv
+
   # ensure static geom positions are computed
   # TODO: remove once MjData creation semantics are fixed
   mujoco.mj_kinematics(mjm, mjd)
@@ -954,13 +968,13 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if SPARSE_CONSTRAINT_JACOBIAN:
+  if is_sparse(mjm):
     # TODO(team): process efc_J sparsity structure for nv row shift
     efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
     efc.J_rowadr = wp.array(
       np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
     )
-    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1)), dtype=int)
+    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1))[:, :, :njmax_nnz], dtype=int)
 
     mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
     if mjd.nefc:
@@ -970,7 +984,8 @@ def put_data(
         mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
     efc_J = np.zeros((njmax, mjm.nv), dtype=float)
     efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
-    efc.J = wp.array(np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1)), dtype=float)
+    efc_J_flat = np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1))[:, :, :njmax_nnz]
+    efc.J = wp.array(efc_J_flat, dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
@@ -995,6 +1010,7 @@ def put_data(
     "naccdmax": naccdmax,
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
+    "njmax_nnz": njmax_nnz,
     # fields set after initialization:
     "solver_niter": None,
     "qM": None,
@@ -1192,7 +1208,7 @@ def get_data_into(
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
-    if SPARSE_CONSTRAINT_JACOBIAN:
+    if is_sparse(mjm):
       efc_J = np.zeros((nefc, mjm.nv))
       mujoco.mju_sparse2dense(
         efc_J,
@@ -1391,6 +1407,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_solimp_out: wp.array(dtype=types.vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_flex_out: wp.array(dtype=wp.vec2i),
+    contact_vert_out: wp.array(dtype=wp.vec2i),
     contact_efc_address_out: wp.array2d(dtype=int),
     contact_worldid_out: wp.array(dtype=int),
     contact_type_out: wp.array(dtype=int),
@@ -1417,6 +1435,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_solimp_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
     contact_dim_out[conid] = 0
     contact_geom_out[conid] = wp.vec2i(0, 0)
+    contact_flex_out[conid] = wp.vec2i(0, 0)
+    contact_vert_out[conid] = wp.vec2i(0, 0)
     for i in range(nefcaddress):
       contact_efc_address_out[conid, i] = -1
     contact_worldid_out[conid] = 0
@@ -1457,6 +1477,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.contact.solimp,
       d.contact.dim,
       d.contact.geom,
+      d.contact.flex,
+      d.contact.vert,
       d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
@@ -2437,6 +2459,7 @@ def create_render_context(
   cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
   render_rgb: list[bool] | bool | None = None,
   render_depth: list[bool] | bool | None = None,
+  render_seg: list[bool] | bool | None = None,
   use_textures: bool = True,
   use_shadows: bool = False,
   enabled_geom_groups: list[int] = [0, 1, 2],
@@ -2453,6 +2476,8 @@ def create_render_context(
              MuJoCo model values.
     render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
     render_depth: Whether to render depth images. If None, uses the MuJoCo model values.
+    render_seg: Whether to render segmentation (per-pixel geom IDs). If None,
+      uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
     enabled_geom_groups: The geom groups to render.
@@ -2516,6 +2541,7 @@ def create_render_context(
   flex_faceadr = None
   flex_nface = 0
   flex_radius = None
+  flex_vertflexid = None
   flex_workadr = None
   flex_worknum = None
   flex_nwork = 0
@@ -2539,6 +2565,14 @@ def create_render_context(
     flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
     flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
     flex_radius = wp.array(mjm.flex_radius, dtype=float)
+
+    # Compute flex_vertflexid: maps each flex vertex to its flex index
+    flex_vertflexid_data = np.zeros(mjm.nflexvert, dtype=np.int32)
+    for flexid in range(mjm.nflex):
+      vert_start = mjm.flex_vertadr[flexid]
+      vert_end = vert_start + mjm.flex_vertnum[flexid]
+      flex_vertflexid_data[vert_start:vert_end] = flexid
+    flex_vertflexid = wp.array(flex_vertflexid_data, dtype=int)
 
     # precompute work item layout for unified refit kernel
     nflex = mjm.nflex
@@ -2592,15 +2626,22 @@ def create_render_context(
   if isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
 
-  assert len(render_rgb) == ncam and len(render_depth) == ncam, (
-    f"render_rgb and render_depth must be a bool or a list of bools with length {ncam}"
+  if render_seg is None:
+    render_seg = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_SEG for i in active_cam_indices]
+  elif isinstance(render_seg, bool):
+    render_seg = [render_seg] * ncam
+
+  assert len(render_rgb) == ncam and len(render_depth) == ncam and len(render_seg) == ncam, (
+    f"render_rgb, render_depth, and render_seg must be a bool or a list of bools with length {ncam}"
   )
 
   rgb_adr = -1 * np.ones(ncam, dtype=int)
   depth_adr = -1 * np.ones(ncam, dtype=int)
+  seg_adr = -1 * np.ones(ncam, dtype=int)
   cam_res_np = cam_res_arr.numpy()
   ri = 0
   di = 0
+  si = 0
   total = 0
 
   for idx in range(ncam):
@@ -2610,6 +2651,9 @@ def create_render_context(
     if render_depth[idx]:
       depth_adr[idx] = di
       di += cam_res_np[idx][0] * cam_res_np[idx][1]
+    if render_seg[idx]:
+      seg_adr[idx] = si
+      si += cam_res_np[idx][0] * cam_res_np[idx][1]
 
     total += cam_res_np[idx][0] * cam_res_np[idx][1]
 
@@ -2691,6 +2735,9 @@ def create_render_context(
     depth_adr=wp.array(depth_adr, dtype=int),
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
+    seg_data=wp.zeros((nworld, max(si, 1)), dtype=int),
+    seg_adr=wp.array(seg_adr, dtype=int),
+    render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
     total_rays=int(total),
   )
