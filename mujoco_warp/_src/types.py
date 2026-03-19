@@ -1963,22 +1963,12 @@ class RenderContext:
   flex_dataid: array("nflex", int)
   n_flex_bvh: int
   flex_group_root: array("*", int)
-  flex_shell: array("*", int)
-  flex_radius: array("nflex", float)
   flex_render_smooth: bool
   nflex_bvh_geom: int
   flex_geom_type: array("*", int)
   flex_geom_flexid: array("*", int)
   flex_geom_edgeid: array("*", int)
-  flex_dim: array("nflex", int)
-  flex_elem: array("*", int)
-  flex_elemnum: array("nflex", int)
   flex_elemdataadr: array("nflex", int)
-  flex_shelldataadr: array("nflex", int)
-  flex_vertadr: array("nflex", int)
-  flex_vertnum: array("nflex", int)
-  flex_edgeadr: array("nflex", int)
-  flex_edge: array("*", wp.vec2i)
   bvh: wp.Bvh
   bvh_id: wp.uint64
   lower: array("*", wp.vec3)

@@ -90,9 +90,13 @@ def cast_ray(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
+  flex_vertadr: wp.array(dtype=int),
+  flex_edge: wp.array(dtype=wp.vec2i),
+  flex_radius: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
   bvh_id: wp.uint64,
   group_root: int,
@@ -102,14 +106,9 @@ def cast_ray(
   enabled_geom_ids: wp.array(dtype=int),
   mesh_bvh_id: wp.array(dtype=wp.uint64),
   hfield_bvh_id: wp.array(dtype=wp.uint64),
-  # Flex:
   flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
-  flex_edge: wp.array(dtype=wp.vec2i),
-  flex_vertadr: wp.array(dtype=int),
-  flex_radius: wp.array(dtype=float),
-  flexvert_xpos: wp.array2d(dtype=wp.vec3),
   flex_bvh_id: wp.array(dtype=wp.uint64),
   flex_dataid: wp.array(dtype=int),
   flex_group_root: wp.array(dtype=int),
@@ -228,8 +227,8 @@ def cast_ray(
         edge_id = flex_geom_edgeid[gi]
         edge = flex_edge[edge_id]
         vert_adr = flex_vertadr[flexid]
-        v0 = flexvert_xpos[world_id, vert_adr + edge[0]]
-        v1 = flexvert_xpos[world_id, vert_adr + edge[1]]
+        v0 = flexvert_xpos_in[world_id, vert_adr + edge[0]]
+        v1 = flexvert_xpos_in[world_id, vert_adr + edge[1]]
         pos = 0.5 * (v0 + v1)
         vec = v1 - v0
 
@@ -272,9 +271,13 @@ def cast_ray_first_hit(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
+  flex_edge: wp.array(dtype=wp.vec2i),
+  flex_vertadr: wp.array(dtype=int),
+  flex_radius: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
   bvh_id: wp.uint64,
   group_root: int,
@@ -288,10 +291,6 @@ def cast_ray_first_hit(
   flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
-  flex_edge: wp.array(dtype=wp.vec2i),
-  flex_vertadr: wp.array(dtype=int),
-  flex_radius: wp.array(dtype=float),
-  flexvert_xpos: wp.array2d(dtype=wp.vec3),
   flex_bvh_id: wp.array(dtype=wp.uint64),
   flex_dataid: wp.array(dtype=int),
   flex_group_root: wp.array(dtype=int),
@@ -397,8 +396,8 @@ def cast_ray_first_hit(
         edge_id = flex_geom_edgeid[gi]
         edge = flex_edge[edge_id]
         vert_adr = flex_vertadr[flexid]
-        v0 = flexvert_xpos[world_id, vert_adr + edge[0]]
-        v1 = flexvert_xpos[world_id, vert_adr + edge[1]]
+        v0 = flexvert_xpos_in[world_id, vert_adr + edge[0]]
+        v1 = flexvert_xpos_in[world_id, vert_adr + edge[1]]
         pos = 0.5 * (v0 + v1)
         vec = v1 - v0
 
@@ -432,9 +431,13 @@ def compute_lighting(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
+  flex_vertadr: wp.array(dtype=int),
+  flex_edge: wp.array(dtype=wp.vec2i),
+  flex_radius: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
   use_shadows: bool,
   bvh_id: wp.uint64,
@@ -449,10 +452,6 @@ def compute_lighting(
   flex_geom_type: wp.array(dtype=int),
   flex_geom_flexid: wp.array(dtype=int),
   flex_geom_edgeid: wp.array(dtype=int),
-  flex_edge: wp.array(dtype=wp.vec2i),
-  flex_vertadr: wp.array(dtype=int),
-  flex_radius: wp.array(dtype=float),
-  flexvert_xpos: wp.array2d(dtype=wp.vec3),
   flex_bvh_id: wp.array(dtype=wp.uint64),
   flex_dataid: wp.array(dtype=int),
   flex_group_root: wp.array(dtype=int),
@@ -508,8 +507,12 @@ def compute_lighting(
       geom_type,
       geom_dataid,
       geom_size,
+      flex_edge,
+      flex_vertadr,
+      flex_radius,
       geom_xpos_in,
       geom_xmat_in,
+      flexvert_xpos_in,
       bvh_id,
       group_root,
       world_id,
@@ -521,10 +524,6 @@ def compute_lighting(
       flex_geom_type,
       flex_geom_flexid,
       flex_geom_edgeid,
-      flex_edge,
-      flex_vertadr,
-      flex_radius,
-      flexvert_xpos,
       flex_bvh_id,
       flex_dataid,
       flex_group_root,
@@ -567,6 +566,9 @@ def render(m: Model, d: Data, rc: RenderContext):
     cam_fovy: wp.array2d(dtype=float),
     cam_sensorsize: wp.array(dtype=wp.vec2),
     cam_intrinsic: wp.array2d(dtype=wp.vec4),
+    flex_edge: wp.array(dtype=wp.vec2i),
+    flex_vertadr: wp.array(dtype=int),
+    flex_radius: wp.array(dtype=float),
     light_type: wp.array2d(dtype=int),
     light_castshadow: wp.array2d(dtype=bool),
     light_active: wp.array2d(dtype=bool),
@@ -608,13 +610,9 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_texcoord_offsets: wp.array(dtype=int),
     hfield_bvh_id: wp.array(dtype=wp.uint64),
     flex_rgba: wp.array(dtype=wp.vec4),
-    # Flex scene BVH:
     flex_geom_type: wp.array(dtype=int),
     flex_geom_flexid: wp.array(dtype=int),
     flex_geom_edgeid: wp.array(dtype=int),
-    flex_edge: wp.array(dtype=wp.vec2i),
-    flex_vertadr: wp.array(dtype=int),
-    flex_radius_arr: wp.array(dtype=float),
     textures: wp.array(dtype=wp.Texture2D),
     # Out:
     rgb_out: wp.array2d(dtype=wp.uint32),
@@ -669,8 +667,12 @@ def render(m: Model, d: Data, rc: RenderContext):
       geom_type,
       geom_dataid,
       geom_size,
+      flex_vertadr,
+      flex_edge,
+      flex_radius,
       geom_xpos_in,
       geom_xmat_in,
+      flexvert_xpos_in,
       bvh_id,
       group_root[world_idx],
       world_idx,
@@ -682,10 +684,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       flex_geom_type,
       flex_geom_flexid,
       flex_geom_edgeid,
-      flex_edge,
-      flex_vertadr,
-      flex_radius_arr,
-      flexvert_xpos_in,
       flex_bvh_id,
       flex_dataid,
       flex_group_root,
@@ -762,8 +760,12 @@ def render(m: Model, d: Data, rc: RenderContext):
         geom_type,
         geom_dataid,
         geom_size,
+        flex_vertadr,
+        flex_edge,
+        flex_radius,
         geom_xpos_in,
         geom_xmat_in,
+        flexvert_xpos_in,
         use_shadows,
         bvh_id,
         group_root[world_idx],
@@ -776,10 +778,6 @@ def render(m: Model, d: Data, rc: RenderContext):
         flex_geom_type,
         flex_geom_flexid,
         flex_geom_edgeid,
-        flex_edge,
-        flex_vertadr,
-        flex_radius_arr,
-        flexvert_xpos_in,
         flex_bvh_id,
         flex_dataid,
         flex_group_root,
@@ -817,6 +815,9 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.cam_fovy,
       m.cam_sensorsize,
       m.cam_intrinsic,
+      m.flex_edge,
+      m.flex_vertadr,
+      m.flex_radius,
       m.light_type,
       m.light_castshadow,
       m.light_active,
@@ -859,9 +860,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.flex_geom_type,
       rc.flex_geom_flexid,
       rc.flex_geom_edgeid,
-      m.flex_edge,
-      m.flex_vertadr,
-      rc.flex_radius,
       rc.textures,
     ],
     outputs=[

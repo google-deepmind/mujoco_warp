@@ -238,10 +238,8 @@ def compute_bvh_group_roots(
 @wp.kernel
 def _compute_flex_bvh_bounds(
   # Model:
-  flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_vertnum: wp.array(dtype=int),
-  flex_edgeadr: wp.array(dtype=int),
   flex_edge: wp.array(dtype=wp.vec2i),
   flex_radius: wp.array(dtype=float),
   # Data in:
@@ -298,6 +296,13 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xmat = wp.array(np.tile(mjd.geom_xmat.reshape(mjm.ngeom, 3, 3)[np.newaxis, :, :, :], (nworld, 1, 1, 1)), dtype=wp.mat33)
 
+  flex_dim = wp.array(mjm.flex_dim, dtype=int)
+  flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
+  flex_vertnum = wp.array(mjm.flex_vertnum, dtype=int)
+  flex_edgeadr = wp.array(mjm.flex_edgeadr, dtype=int)
+  flex_edge = wp.array(mjm.flex_edge, dtype=wp.vec2i)
+  flex_radius = wp.array(mjm.flex_radius, dtype=float)
+
   wp.launch(
     kernel=_compute_bvh_bounds,
     dim=(nworld, rc.bvh_ngeom),
@@ -325,12 +330,10 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       kernel=_compute_flex_bvh_bounds,
       dim=(nworld, rc.nflex_bvh_geom),
       inputs=[
-        rc.flex_dim,
-        rc.flex_vertadr,
-        rc.flex_vertnum,
-        rc.flex_edgeadr,
-        rc.flex_edge,
-        rc.flex_radius,
+        flex_vertadr,
+        flex_vertnum,
+        flex_edge,
+        flex_radius,
         flexvert_xpos,
         rc.flex_geom_type,
         rc.flex_geom_flexid,
@@ -384,12 +387,10 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       kernel=_compute_flex_bvh_bounds,
       dim=(d.nworld, rc.nflex_bvh_geom),
       inputs=[
-        rc.flex_dim,
-        rc.flex_vertadr,
-        rc.flex_vertnum,
-        rc.flex_edgeadr,
-        rc.flex_edge,
-        rc.flex_radius,
+        m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_edge,
+        m.flex_radius,
         d.flexvert_xpos,
         rc.flex_geom_type,
         rc.flex_geom_flexid,
@@ -826,6 +827,9 @@ def _build_flex_3d_shells(
 @wp.kernel
 def _update_flex_2d_face_points(
   # Model:
+  flex_vertadr: wp.array(dtype=int),
+  flex_elemnum: wp.array(dtype=int),
+  flex_shelldataadr: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
   flex_shell: wp.array(dtype=int),
   flex_radius: wp.array(dtype=float),
@@ -834,10 +838,6 @@ def _update_flex_2d_face_points(
   # In:
   flexvert_norm_in: wp.array2d(dtype=wp.vec3),
   flex_elemdataadr: wp.array(dtype=int),
-  flex_shelldataadr: wp.array(dtype=int),
-  flex_vertadr: wp.array(dtype=int),
-  flex_radius: wp.array(dtype=float),
-  flex_elemnum: wp.array(dtype=int),
   flex_id: int,
   nface: int,
   smooth: bool,
@@ -900,8 +900,8 @@ def _update_flex_2d_face_points(
     shell_adr = flex_shelldataadr[flex_id]
     shellid = workid - nelem
     sbase = shell_adr + 2 * shellid
-    i0 = vert_adr + flex_shell_in[sbase + 0]
-    i1 = vert_adr + flex_shell_in[sbase + 1]
+    i0 = vert_adr + flex_shell[sbase + 0]
+    i1 = vert_adr + flex_shell[sbase + 1]
 
     v0 = flexvert_xpos_in[worldid, i0]
     v1 = flexvert_xpos_in[worldid, i1]
@@ -925,12 +925,13 @@ def _update_flex_2d_face_points(
 
 @wp.kernel
 def _update_flex_3d_face_points(
+  # Model:
+  flex_vertadr: wp.array(dtype=int),
+  flex_shelldataadr: wp.array(dtype=int),
+  flex_shell: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
-  flex_shell_in: wp.array(dtype=int),
-  flex_shelldataadr: wp.array(dtype=int),
-  flex_vertadr: wp.array(dtype=int),
   flex_id: int,
   nface: int,
   # Out:
@@ -945,9 +946,9 @@ def _update_flex_3d_face_points(
   fbase = face_id * 3
 
   sbase = shell_adr + shellid * 3
-  i0 = vert_adr + flex_shell_in[sbase + 0]
-  i1 = vert_adr + flex_shell_in[sbase + 1]
-  i2 = vert_adr + flex_shell_in[sbase + 2]
+  i0 = vert_adr + flex_shell[sbase + 0]
+  i1 = vert_adr + flex_shell[sbase + 1]
+  i2 = vert_adr + flex_shell[sbase + 2]
 
   face_point_out[fbase + 0] = flexvert_xpos_in[worldid, i0]
   face_point_out[fbase + 1] = flexvert_xpos_in[worldid, i1]
@@ -1023,9 +1024,9 @@ def build_flex_bvh(
       kernel=_build_flex_2d_sides,
       dim=(nworld, nshell),
       inputs=[
+        flex_shell,
         flexvert_xpos,
         flexvert_norm,
-        flex_shell,
         shell_adr,
         vert_adr,
         2 * nelem,  # face_offset
@@ -1074,8 +1075,8 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 
   wp.launch(
     kernel=accumulate_flex_vertex_normals,
-    dim=(d.nworld, rc.flex_elem.shape[0] // 3),
-    inputs=[rc.flex_elem, d.flexvert_xpos],
+    dim=(d.nworld, m.flex_elem.shape[0] // 3),
+    inputs=[m.flex_elem, d.flexvert_xpos],
     outputs=[flexvert_norm],
   )
 
@@ -1087,42 +1088,41 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 
   for dataid, (flex_id, dim_f) in enumerate(rc.flex_bvh_info):
     mesh = rc.flex_mesh_registry[dataid]
-    face_point = mesh.points
-    nface = face_point.shape[0] // (3 * d.nworld)
+    nface = mesh.points.shape[0] // (3 * d.nworld)
 
     if dim_f == 2:
       wp.launch(
         kernel=_update_flex_2d_face_points,
         dim=(d.nworld, nface // 2),
         inputs=[
-          rc.flex_elem,
+          m.flex_vertadr,
+          m.flex_elemnum,
+          m.flex_shelldataadr,
+          m.flex_elem,
+          m.flex_shell,
+          m.flex_radius,
           d.flexvert_xpos,
-          rc.flex_shell,
           flexvert_norm,
           rc.flex_elemdataadr,
-          rc.flex_shelldataadr,
-          rc.flex_vertadr,
-          rc.flex_radius,
-          rc.flex_elemnum,
           flex_id,
           nface,
           rc.flex_render_smooth,
         ],
-        outputs=[face_point],
+        outputs=[mesh.points],
       )
     else:
       wp.launch(
         kernel=_update_flex_3d_face_points,
         dim=(d.nworld, nface),
         inputs=[
+          m.flex_vertadr,
+          m.flex_shelldataadr,
+          m.flex_shell,
           d.flexvert_xpos,
-          rc.flex_shell,
-          rc.flex_shelldataadr,
-          rc.flex_vertadr,
           flex_id,
           nface,
         ],
-        outputs=[face_point],
+        outputs=[mesh.points],
       )
 
     mesh.refit()
