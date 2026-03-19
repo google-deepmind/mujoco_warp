@@ -26,7 +26,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -59,7 +58,7 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_d))
 
   # convert sparse to dense if necessary
-  if SPARSE_CONSTRAINT_JACOBIAN:
+  if m.is_sparse:
     efc_J = np.zeros((nefc, nv))
     mujoco.mju_sparse2dense(
       efc_J,
@@ -267,6 +266,46 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  def test_efc_address_inactive_contacts(self):
+    """Test that efc_address is -1 for inactive contacts in the gap zone."""
+    # Sphere at z=0.35 with radius 0.1: dist ~ 0.15 to ground plane.
+    # margin=0.5, gap=0.4 => includemargin = 0.1.
+    # dist(0.15) < margin(0.5) => contact is detected.
+    # dist(0.15) >= includemargin(0.1) => contact is NOT active (in gap zone).
+    xml = """
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="10 10 .001" margin="0.5" gap="0.4"/>
+          <body pos="0 0 0.35">
+            <geom type="sphere" size=".1" margin="0.5" gap="0.4"/>
+            <freejoint/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0.35 1 0 0 0" />
+        </keyframe>
+      </mujoco>
+    """
+
+    for cone in (ConeType.PYRAMIDAL, ConeType.ELLIPTIC):
+      mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.cone": cone})
+
+      # Verify MuJoCo detected a contact but it's not active (nefc == 0)
+      self.assertGreater(mjd.ncon, 0, "Expected at least one contact")
+      self.assertEqual(mjd.nefc, 0, "Expected no active constraints")
+
+      # Pre-fill efc_address with stale positive values to simulate the bug
+      d.contact.efc_address.fill_(999)
+
+      mjw.collision(m, d)
+      mjw.make_constraint(m, d)
+
+      # efc_address for written contacts should be -1 (inactive, in gap zone)
+      nacon = d.nacon.numpy()[0]
+      self.assertGreater(nacon, 0, "Expected at least one contact")
+      efc_address = d.contact.efc_address.numpy()[:nacon]
+      _assert_eq(efc_address, -1, f"efc_address (cone={cone})")
 
 
 if __name__ == "__main__":

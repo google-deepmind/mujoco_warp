@@ -109,6 +109,16 @@ def get_sdf_params(
     volume_data.oct_coeff = oct_coeff
     volume_data.valid = True
 
+  elif g_type == GeomType.MESH and mesh_id != -1 and mesh_octadr[mesh_id] != -1:
+    octadr = mesh_octadr[mesh_id]
+    volume_data.center = oct_aabb[octadr, 0]
+    volume_data.half_size = oct_aabb[octadr, 1]
+    volume_data.root = octadr
+    volume_data.oct_aabb = oct_aabb
+    volume_data.oct_child = oct_child
+    volume_data.oct_coeff = oct_coeff
+    volume_data.valid = True
+
   return attributes, plugin_index, volume_data, MeshData()
 
 
@@ -410,6 +420,8 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
       return sample_volume_sdf(p, volume_data)
     else:
       return user_sdf(p, attr, sdf_type)
+  elif type == GeomType.MESH and volume_data.valid:
+    return sample_volume_sdf(p, volume_data)
   wp.printf("ERROR: SDF type not implemented\n")
   return 0.0
 
@@ -451,6 +463,8 @@ def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: V
       return sample_volume_grad(p, volume_data)
     else:
       return user_sdf_grad(p, attr, sdf_type)
+  elif type == GeomType.MESH and volume_data.valid:
+    return sample_volume_grad(p, volume_data)
   wp.printf("ERROR: SDF grad type not implemented\n")
   return wp.vec3(0.0)
 
@@ -696,6 +710,7 @@ def _sdf_narrowphase(
   contact_solimp_out: wp.array(dtype=vec5),
   contact_dim_out: wp.array(dtype=int),
   contact_geom_out: wp.array(dtype=wp.vec2i),
+  contact_efc_address_out: wp.array2d(dtype=int),
   contact_worldid_out: wp.array(dtype=int),
   contact_type_out: wp.array(dtype=int),
   contact_geomcollisionid_out: wp.array(dtype=int),
@@ -867,6 +882,7 @@ def _sdf_narrowphase(
     contact_solimp_out,
     contact_dim_out,
     contact_geom_out,
+    contact_efc_address_out,
     contact_worldid_out,
     contact_type_out,
     contact_geomcollisionid_out,
@@ -944,6 +960,7 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
       d.contact.solimp,
       d.contact.dim,
       d.contact.geom,
+      d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,

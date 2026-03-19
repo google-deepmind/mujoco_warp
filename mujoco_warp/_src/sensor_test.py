@@ -892,6 +892,53 @@ class SensorTest(parameterized.TestCase):
 
     self.assertEqual(d.sensordata.numpy()[0, 0], 17.0)
 
+  def test_tactile_sensor_geom_deduplication(self):
+    """Test tactile sensor deduplicates contacts by geom.
+
+    Without deduplication, multiple contacts with the same geom cause
+    the sensor value to be doubled (or more), resulting in incorrect output.
+    Uses mesh-sphere vs box collision with multiccd to generate multiple contacts.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="box" size=".7 .7 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    d.sensordata.zero_()
+    mjw.sensor_acc(m, d)
+
+    warp_sensordata = d.sensordata.numpy()[0]
+
+    # Check Warp output matches MuJoCo output, if available
+    _assert_eq(warp_sensordata, mjd.sensordata, "tactile_sensordata")
+
+    # Verify Warp sensor is triggered
+    self.assertTrue(warp_sensordata.any(), "Warp sensordata should not be all zeros")
+
 
 if __name__ == "__main__":
   wp.init()

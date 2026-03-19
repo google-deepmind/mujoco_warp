@@ -21,11 +21,8 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import vec10f
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 
 wp.set_module_options({"enable_backward": False})
 
@@ -97,49 +94,16 @@ def _nonzero_mask(x: float) -> float:
   return 0.0
 
 
-@cache_kernel
-def _qderiv_actuator_passive_actuation_dense(tile: TileSet, nu: int):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Data in:
-    actuator_moment_in: wp.array3d(dtype=float),
-    qM_in: wp.array3d(dtype=float),
-    # In:
-    vel_in: wp.array3d(dtype=float),
-    adr: wp.array(dtype=int),
-    # Out:
-    qDeriv_out: wp.array3d(dtype=float),
-  ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
-    NU = wp.static(nu)
-
-    dofid = adr[nodeid]
-    vel_tile = wp.tile_load(vel_in[worldid], shape=(NU, 1), bounds_check=False)
-    moment_tile = wp.tile_load(actuator_moment_in[worldid], shape=(NU, TILE_SIZE), offset=(0, dofid), bounds_check=False)
-    moment_weighted = wp.tile_map(wp.mul, wp.tile_broadcast(vel_tile, shape=(NU, TILE_SIZE)), moment_tile)
-    qderiv_tile = wp.tile_matmul(wp.tile_transpose(moment_tile), moment_weighted)
-
-    # Mask out cross-terms for DOF pairs that are structurally zero in M
-    # (e.g., sibling DOFs coupled only through tendons).  Without this,
-    # stale actuation values at sibling positions make A = M - dt*qDeriv
-    # non-positive-definite, causing the tiled Cholesky to produce NaN.
-    # Dropping these terms matches MuJoCo CPU's implicitfast approximation.
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid), bounds_check=False)
-    mask_tile = wp.tile_map(_nonzero_mask, qM_tile)
-    qderiv_tile = wp.tile_map(wp.mul, qderiv_tile, mask_tile)
-
-    wp.tile_store(qDeriv_out[worldid], qderiv_tile, offset=(dofid, dofid), bounds_check=False)
-
-  return kernel
-
-
 @wp.kernel
 def _qderiv_actuator_passive_actuation_sparse(
   # Model:
   nu: int,
+  is_sparse: bool,
   # Data in:
-  actuator_moment_in: wp.array3d(dtype=float),
+  moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
   # In:
   vel_in: wp.array2d(dtype=float),
   qMi: wp.array(dtype=int),
@@ -157,12 +121,33 @@ def _qderiv_actuator_passive_actuation_sparse(
     if vel == 0.0:
       continue
 
-    moment_i = actuator_moment_in[worldid, actid, dofiid]
-    moment_j = actuator_moment_in[worldid, actid, dofjid]
+    # TODO(team): restructure sparse version for better parallelism?
+    moment_i = float(0.0)
+    moment_j = float(0.0)
+
+    rownnz = moment_rownnz_in[worldid, actid]
+    rowadr = moment_rowadr_in[worldid, actid]
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      colind = moment_colind_in[worldid, sparseid]
+      if colind == dofiid:
+        moment_i = actuator_moment_in[worldid, sparseid]
+      if colind == dofjid:
+        moment_j = actuator_moment_in[worldid, sparseid]
+      if moment_i != 0.0 and moment_j != 0.0:
+        break
+
+    if moment_i == 0 and moment_j == 0:
+      continue
 
     qderiv_contrib += moment_i * moment_j * vel
 
-  qDeriv_out[worldid, 0, elemid] = qderiv_contrib
+  if is_sparse:
+    qDeriv_out[worldid, 0, elemid] = qderiv_contrib
+  else:
+    qDeriv_out[worldid, dofiid, dofjid] = qderiv_contrib
+    if dofiid != dofjid:
+      qDeriv_out[worldid, dofjid, dofiid] = qderiv_contrib
 
 
 @wp.kernel
@@ -191,7 +176,7 @@ def _qderiv_actuator_passive(
   else:
     qderiv = qDeriv_in[worldid, dofiid, dofjid]
 
-  if not opt_disableflags & DisableBit.DAMPER and dofiid == dofjid:
+  if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
     qderiv -= dof_damping[worldid % dof_damping.shape[0], dofiid]
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
@@ -211,10 +196,13 @@ def _qderiv_tendon_damping(
   # Model:
   ntendon: int,
   opt_timestep: wp.array(dtype=float),
+  ten_J_rownnz: wp.array(dtype=int),
+  ten_J_rowadr: wp.array(dtype=int),
+  ten_J_colind: wp.array(dtype=int),
   tendon_damping: wp.array2d(dtype=float),
   is_sparse: bool,
   # Data in:
-  ten_J_in: wp.array3d(dtype=float),
+  ten_J_in: wp.array2d(dtype=float),
   # In:
   qMi: wp.array(dtype=int),
   qMj: wp.array(dtype=int),
@@ -228,7 +216,24 @@ def _qderiv_tendon_damping(
   qderiv = float(0.0)
   tendon_damping_id = worldid % tendon_damping.shape[0]
   for tenid in range(ntendon):
-    qderiv -= ten_J_in[worldid, tenid, dofiid] * ten_J_in[worldid, tenid, dofjid] * tendon_damping[tendon_damping_id, tenid]
+    damping = tendon_damping[tendon_damping_id, tenid]
+    if damping == 0.0:
+      continue
+
+    rownnz = ten_J_rownnz[tenid]
+    rowadr = ten_J_rowadr[tenid]
+    Ji = float(0.0)
+    Jj = float(0.0)
+    for k in range(rownnz):
+      if Ji != 0.0 and Jj != 0.0:
+        break
+      sparseid = rowadr + k
+      colind = ten_J_colind[sparseid]
+      if colind == dofiid:
+        Ji = ten_J_in[worldid, sparseid]
+      if colind == dofjid:
+        Jj = ten_J_in[worldid, sparseid]
+    qderiv -= Ji * Jj * damping
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -257,7 +262,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     # TODO(team): only clear elements not set by _qderiv_actuator_passive
     out.zero_()
-    if m.nu > 0 and not m.opt.disableflags & DisableBit.ACTUATION:
+    if m.nu > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
       vel = wp.empty((d.nworld, m.nu), dtype=float)
       wp.launch(
         _qderiv_actuator_passive_vel,
@@ -278,24 +283,12 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         ],
         outputs=[vel],
       )
-      if m.is_sparse:
-        wp.launch(
-          _qderiv_actuator_passive_actuation_sparse,
-          dim=(d.nworld, qMi.size),
-          inputs=[m.nu, d.actuator_moment, vel, qMi, qMj],
-          outputs=[out],
-        )
-      else:
-        vel_3d = vel.reshape(vel.shape + (1,))
-        for tile in m.qM_tiles:
-          with scoped_mathdx_gemm_disabled():
-            wp.launch_tiled(
-              _qderiv_actuator_passive_actuation_dense(tile, m.nu),
-              dim=(d.nworld, tile.adr.size),
-              inputs=[d.actuator_moment, d.qM, vel_3d, tile.adr],
-              outputs=[out],
-              block_dim=m.block_dim.qderiv_actuator_dense,
-            )
+      wp.launch(
+        _qderiv_actuator_passive_actuation_sparse,
+        dim=(d.nworld, qMi.size),
+        inputs=[m.nu, m.is_sparse, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
+        outputs=[out],
+      )
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, qMi.size),
@@ -315,11 +308,22 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
     # TODO(team): directly utilize qM for these settings
     wp.copy(out, d.qM)
 
-  if not m.opt.disableflags & DisableBit.DAMPER:
+  if not (m.opt.disableflags & DisableBit.DAMPER):
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, qMi.size),
-      inputs=[m.ntendon, m.opt.timestep, m.tendon_damping, m.is_sparse, d.ten_J, qMi, qMj],
+      inputs=[
+        m.ntendon,
+        m.opt.timestep,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_damping,
+        m.is_sparse,
+        d.ten_J,
+        qMi,
+        qMj,
+      ],
       outputs=[out],
     )
 

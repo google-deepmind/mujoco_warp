@@ -717,11 +717,12 @@ def _build_flex_2d_elements(
 
 @wp.kernel
 def _build_flex_2d_sides(
+  # Model:
+  flex_shell: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
   flexvert_norm_in: wp.array2d(dtype=wp.vec3),
-  flex_shell_in: wp.array(dtype=int),
   shell_adr: int,
   vert_adr: int,
   face_offset: int,
@@ -741,8 +742,8 @@ def _build_flex_2d_sides(
   worldid, shellid = wp.tid()
 
   base = shell_adr + 2 * shellid
-  i0 = vert_adr + flex_shell_in[base + 0]
-  i1 = vert_adr + flex_shell_in[base + 1]
+  i0 = vert_adr + flex_shell[base + 0]
+  i1 = vert_adr + flex_shell[base + 1]
 
   v0 = flexvert_xpos_in[worldid, i0]
   v1 = flexvert_xpos_in[worldid, i1]
@@ -778,10 +779,11 @@ def _build_flex_2d_sides(
 
 @wp.kernel
 def _build_flex_3d_shells(
+  # Model:
+  flex_shell: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
-  flex_shell_in: wp.array(dtype=int),
   shell_adr: int,
   vert_adr: int,
   face_offset: int,
@@ -799,9 +801,9 @@ def _build_flex_3d_shells(
   worldid, shellid = wp.tid()
 
   base = shell_adr + shellid * 3
-  i0 = vert_adr + flex_shell_in[base + 0]
-  i1 = vert_adr + flex_shell_in[base + 1]
-  i2 = vert_adr + flex_shell_in[base + 2]
+  i0 = vert_adr + flex_shell[base + 0]
+  i1 = vert_adr + flex_shell[base + 1]
+  i2 = vert_adr + flex_shell[base + 2]
 
   face_id = worldid * nface + face_offset + shellid
   base = face_id * 3
@@ -825,10 +827,11 @@ def _build_flex_3d_shells(
 def _update_flex_2d_face_points(
   # Model:
   flex_elem: wp.array(dtype=int),
+  flex_shell: wp.array(dtype=int),
+  flex_radius: wp.array(dtype=float),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
-  flex_shell_in: wp.array(dtype=int),
   flexvert_norm_in: wp.array2d(dtype=wp.vec3),
   flex_elemdataadr: wp.array(dtype=int),
   flex_shelldataadr: wp.array(dtype=int),
