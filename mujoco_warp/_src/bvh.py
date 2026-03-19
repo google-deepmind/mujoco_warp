@@ -294,10 +294,8 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xmat = wp.array(np.tile(mjd.geom_xmat.reshape(mjm.ngeom, 3, 3)[np.newaxis, :, :, :], (nworld, 1, 1, 1)), dtype=wp.mat33)
 
-  flex_dim = wp.array(mjm.flex_dim, dtype=int)
   flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
   flex_vertnum = wp.array(mjm.flex_vertnum, dtype=int)
-  flex_edgeadr = wp.array(mjm.flex_edgeadr, dtype=int)
   flex_edge = wp.array(mjm.flex_edge, dtype=wp.vec2i)
   flex_radius = wp.array(mjm.flex_radius, dtype=float)
 
