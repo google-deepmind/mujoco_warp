@@ -239,8 +239,7 @@ def cast_ray(
 
         length = wp.length(vec)
         edgeq = math.quat_z2vec(vec)
-        negq = wp.quat(edgeq[0], -edgeq[1], -edgeq[2], -edgeq[3])
-        mat = math.quat_to_mat(negq)
+        mat = math.quat_to_mat(edgeq)
         size = wp.vec3(flex_radius[flexid], 0.5 * length, 0.0)
 
         d, n = ray_capsule(pos, mat, size, ray_origin_world, ray_dir_world)
@@ -409,8 +408,7 @@ def cast_ray_first_hit(
 
         length = wp.length(vec)
         edgeq = math.quat_z2vec(vec)
-        negq = wp.quat(edgeq[0], -edgeq[1], -edgeq[2], -edgeq[3])
-        mat = math.quat_to_mat(negq)
+        mat = math.quat_to_mat(edgeq)
         size = wp.vec3(flex_radius[flexid], 0.5 * length, 0.0)
 
         d, n = ray_capsule(pos, mat, size, ray_origin_world, ray_dir_world)

@@ -325,12 +325,12 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       kernel=_compute_flex_bvh_bounds,
       dim=(nworld, rc.nflex_bvh_geom),
       inputs=[
-        wp.array(mjm.flex_dim, dtype=int),
-        wp.array(mjm.flex_vertadr, dtype=int),
-        wp.array(mjm.flex_vertnum, dtype=int),
-        wp.array(mjm.flex_edgeadr, dtype=int),
-        wp.array(mjm.flex_edge, dtype=wp.vec2i),
-        wp.array(mjm.flex_radius, dtype=float),
+        rc.flex_dim,
+        rc.flex_vertadr,
+        rc.flex_vertnum,
+        rc.flex_edgeadr,
+        rc.flex_edge,
+        rc.flex_radius,
         flexvert_xpos,
         rc.flex_geom_type,
         rc.flex_geom_flexid,
@@ -384,11 +384,11 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       kernel=_compute_flex_bvh_bounds,
       dim=(d.nworld, rc.nflex_bvh_geom),
       inputs=[
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_vertnum,
-        m.flex_edgeadr,
-        m.flex_edge,
+        rc.flex_dim,
+        rc.flex_vertadr,
+        rc.flex_vertnum,
+        rc.flex_edgeadr,
+        rc.flex_edge,
         rc.flex_radius,
         d.flexvert_xpos,
         rc.flex_geom_type,
@@ -830,11 +830,12 @@ def _update_flex_2d_face_points(
   # In:
   flex_shell_in: wp.array(dtype=int),
   flexvert_norm_in: wp.array2d(dtype=wp.vec3),
-  elem_adr: int,
-  shell_adr: int,
-  vert_adr: int,
-  radius: float,
-  nelem: int,
+  flex_elemdataadr: wp.array(dtype=int),
+  flex_shelldataadr: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_radius: wp.array(dtype=float),
+  flex_elemnum: wp.array(dtype=int),
+  flex_id: int,
   nface: int,
   smooth: bool,
   # Out:
@@ -842,6 +843,10 @@ def _update_flex_2d_face_points(
 ):
   worldid, workid = wp.tid()
 
+  elem_adr = flex_elemdataadr[flex_id]
+  vert_adr = flex_vertadr[flex_id]
+  radius = flex_radius[flex_id]
+  nelem = flex_elemnum[flex_id]
   world_face_offset = worldid * nface
 
   if workid < nelem:
@@ -889,6 +894,7 @@ def _update_flex_2d_face_points(
     face_point_out[base1 + 2] = p2_neg
   else:
     # 2D shell faces
+    shell_adr = flex_shelldataadr[flex_id]
     shellid = workid - nelem
     sbase = shell_adr + 2 * shellid
     i0 = vert_adr + flex_shell_in[sbase + 0]
@@ -920,13 +926,17 @@ def _update_flex_3d_face_points(
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
   flex_shell_in: wp.array(dtype=int),
-  shell_adr: int,
-  vert_adr: int,
+  flex_shelldataadr: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_id: int,
   nface: int,
   # Out:
   face_point_out: wp.array(dtype=wp.vec3),
 ):
   worldid, shellid = wp.tid()
+
+  shell_adr = flex_shelldataadr[flex_id]
+  vert_adr = flex_vertadr[flex_id]
 
   face_id = worldid * nface + shellid
   fbase = face_id * 3
@@ -1052,13 +1062,7 @@ def build_flex_bvh(
     outputs=[group_root],
   )
 
-  return (
-    flex_mesh,
-    face_point,
-    flex_shell,
-    group_root,
-    nface,
-  )
+  return flex_mesh, group_root
 
 
 def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
@@ -1067,47 +1071,37 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 
   wp.launch(
     kernel=accumulate_flex_vertex_normals,
-    dim=(d.nworld, m.nflexelemdata // 3),
-    inputs=[
-      m.flex_elem,
-      d.flexvert_xpos,
-    ],
+    dim=(d.nworld, rc.flex_elem.shape[0] // 3),
+    inputs=[rc.flex_elem, d.flexvert_xpos],
     outputs=[flexvert_norm],
   )
 
   wp.launch(
     kernel=normalize_vertex_normals,
-    dim=(d.nworld, m.nflexvert),
+    dim=(d.nworld, d.flexvert_xpos.shape[1]),
     inputs=[flexvert_norm],
   )
 
-  for dataid, info in rc.flex_mesh_registry.items():
-    mesh = info["mesh"]
-    face_point = info["face_point"]
-    nface = info["nface"]
-    dim_f = info["dim"]
-    elem_adr = info["elem_adr"]
-    shell_adr = info["shell_adr"]
-    vert_adr = info["vert_adr"]
-    nelem = info["nelem"]
-    radius = info["radius"]
+  for dataid, (flex_id, dim_f) in enumerate(rc.flex_bvh_info):
+    mesh = rc.flex_mesh_registry[dataid]
+    face_point = mesh.points
+    nface = face_point.shape[0] // (3 * d.nworld)
 
     if dim_f == 2:
-      nshell_f = (nface - 2 * nelem) // 2
-      nwork = nelem + nshell_f
       wp.launch(
         kernel=_update_flex_2d_face_points,
-        dim=(d.nworld, nwork),
+        dim=(d.nworld, nface // 2),
         inputs=[
-          m.flex_elem,
+          rc.flex_elem,
           d.flexvert_xpos,
           rc.flex_shell,
           flexvert_norm,
-          elem_adr,
-          shell_adr,
-          vert_adr,
-          radius,
-          nelem,
+          rc.flex_elemdataadr,
+          rc.flex_shelldataadr,
+          rc.flex_vertadr,
+          rc.flex_radius,
+          rc.flex_elemnum,
+          flex_id,
           nface,
           rc.flex_render_smooth,
         ],
@@ -1120,8 +1114,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
         inputs=[
           d.flexvert_xpos,
           rc.flex_shell,
-          shell_adr,
-          vert_adr,
+          rc.flex_shelldataadr,
+          rc.flex_vertadr,
+          flex_id,
           nface,
         ],
         outputs=[face_point],

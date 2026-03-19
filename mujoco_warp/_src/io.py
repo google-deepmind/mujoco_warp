@@ -2456,87 +2456,50 @@ def create_render_context(
   hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
   # Flex BVHs
-  flex_mesh_registry = {}
-  flex_group_root = wp.zeros(1, dtype=int)
-  flex_shell = wp.array(np.zeros(1, dtype=np.int32), dtype=int)
-  flex_radius = wp.zeros(1, dtype=float)
-  flex_dataid_data = np.empty(0, dtype=np.int32)
-  flex_bvh_id_data = np.empty(0, dtype=np.uint64)
+  nflex = mjm.nflex
+  flex_registry = {}
+
+  # Scene BVH primitives: 1D → one capsule per edge, 2D/3D → one bbox per flex
+  flex_geom_type_list = []
+  flex_geom_flexid_list = []
+  flex_geom_edgeid_list = []
+  flex_dataid = np.full(nflex, -1, dtype=np.int32)
   n_flex_bvh = 0
+  flex_bvh_id_list = []
+  flex_group_root_parts = []
+  flex_bvh_info = []
 
-  # Flex scene BVH layout arrays
-  nflex_bvh_geom = 0
-  flex_geom_type_data = np.empty(0, dtype=np.int32)
-  flex_geom_flexid_data = np.empty(0, dtype=np.int32)
-  flex_geom_edgeid_data = np.empty(0, dtype=np.int32)
+  for f in range(nflex):
+    if mjm.flex_dim[f] == 1:
+      edge_adr = mjm.flex_edgeadr[f]
+      flex_geom_type_list.extend([0] * mjm.flex_edgenum[f])
+      flex_geom_flexid_list.extend([f] * mjm.flex_edgenum[f])
+      flex_geom_edgeid_list.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
+    else:
+      flex_geom_type_list.append(1)  # mesh
+      flex_geom_flexid_list.append(f)
+      flex_geom_edgeid_list.append(-1)
+      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+      flex_dataid[f] = n_flex_bvh
+      flex_registry[n_flex_bvh] = fmesh
+      flex_bvh_id_list.append(fmesh.id)
+      flex_group_root_parts.append(group_root.numpy())
+      flex_bvh_info.append((f, int(mjm.flex_dim[f])))
+      n_flex_bvh += 1
 
-  if mjm.nflex > 0:
-    nflex = mjm.nflex
+  nflex_bvh_geom = len(flex_geom_type_list)
+  flex_geom_type = wp.array(flex_geom_type_list, dtype=int)
+  flex_geom_flexid = wp.array(flex_geom_flexid_list, dtype=int)
+  flex_geom_edgeid = wp.array(flex_geom_edgeid_list, dtype=int)
 
-    # Compute flex scene BVH entries:
-    # - 1D: one capsule per edge
-    # - 2D/3D: one bbox per flex
-    flex_geom_type_list = []
-    flex_geom_flexid_list = []
-    flex_geom_edgeid_list = []
-
-    for f in range(nflex):
-      if mjm.flex_dim[f] == 1:
-        edge_adr = mjm.flex_edgeadr[f]
-        for e in range(mjm.flex_edgenum[f]):
-          flex_geom_type_list.append(0)  # capsule
-          flex_geom_flexid_list.append(f)
-          flex_geom_edgeid_list.append(edge_adr + e)
-      else:  # dim 2 or 3
-        flex_geom_type_list.append(1)  # mesh
-        flex_geom_flexid_list.append(f)
-        flex_geom_edgeid_list.append(-1)
-
-    nflex_bvh_geom = len(flex_geom_type_list)
-    flex_geom_type_data = np.array(flex_geom_type_list, dtype=np.int32)
-    flex_geom_flexid_data = np.array(flex_geom_flexid_list, dtype=np.int32)
-    flex_geom_edgeid_data = np.array(flex_geom_edgeid_list, dtype=np.int32)
-    flex_radius = wp.array(mjm.flex_radius, dtype=float)
-
-    # Build per-flex BVHs for 2D/3D flexes
-    flex_dataid_data = np.full(nflex, -1, dtype=np.int32)
-    flex_bvh_id_list = []
-    flex_group_root_list = []
-    n_flex_bvh = 0
-    flex_shell = wp.array(mjm.flex_shell, dtype=int)
-
-    for f in range(nflex):
-      if mjm.flex_dim[f] in (2, 3):
-        (
-          fmesh,
-          face_point,
-          _,  # flex_shell (shared, already set above)
-          group_roots,
-          nface,
-        ) = bvh.build_flex_bvh(mjm, mjd, nworld, f)
-
-        flex_dataid_data[f] = n_flex_bvh
-        flex_bvh_id_list.append(fmesh.id)
-        flex_group_root_list.append(group_roots.numpy())
-        flex_mesh_registry[n_flex_bvh] = {
-          "mesh": fmesh,
-          "face_point": face_point,
-          "nface": nface,
-          "flex_id": f,
-          "dim": int(mjm.flex_dim[f]),
-          "elem_adr": int(mjm.flex_elemdataadr[f]),
-          "shell_adr": int(mjm.flex_shelldataadr[f]),
-          "vert_adr": int(mjm.flex_vertadr[f]),
-          "nelem": int(mjm.flex_elemnum[f]),
-          "radius": float(mjm.flex_radius[f]),
-        }
-        n_flex_bvh += 1
-
-    if n_flex_bvh > 0:
-      flex_bvh_id_data = np.array(flex_bvh_id_list, dtype=np.uint64)
-      # Flat array: flex_group_root[dataid * nworld + world_id]
-      flex_group_root_data = np.concatenate(flex_group_root_list)
-      flex_group_root = wp.array(flex_group_root_data, dtype=int)
+  if n_flex_bvh > 0:
+    flex_bvh_id_arr = wp.array(flex_bvh_id_list, dtype=wp.uint64)
+    # Layout: flex_group_root[world_id * n_flex_bvh + dataid]
+    gr = np.stack(flex_group_root_parts)  # (n_flex_bvh, nworld)
+    flex_group_root_arr = wp.array(gr.T.flatten(), dtype=int)
+  else:
+    flex_bvh_id_arr = wp.zeros(1, dtype=wp.uint64)
+    flex_group_root_arr = wp.zeros(1, dtype=int)
 
   textures_registry = []
   # TODO: remove after mjwarp depends on warp-lang >= 1.12 in pyproject.toml
@@ -2650,19 +2613,29 @@ def create_render_context(
     hfield_registry=hfield_registry,
     hfield_bvh_id=hfield_bvh_id_arr,
     hfield_bounds_size=hfield_bounds_size_arr,
-    flex_mesh_registry=flex_mesh_registry,
+    flex_mesh_registry=flex_registry,
+    flex_bvh_info=flex_bvh_info,
     flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
-    flex_bvh_id=wp.array(flex_bvh_id_data, dtype=wp.uint64) if n_flex_bvh > 0 else wp.zeros(1, dtype=wp.uint64),
-    flex_dataid=wp.array(flex_dataid_data, dtype=int) if len(flex_dataid_data) > 0 else wp.zeros(1, dtype=int),
+    flex_bvh_id=flex_bvh_id_arr,
+    flex_dataid=wp.array(flex_dataid, dtype=int),
     n_flex_bvh=n_flex_bvh,
-    flex_group_root=flex_group_root,
-    flex_shell=flex_shell,
-    flex_radius=flex_radius,
+    flex_group_root=flex_group_root_arr,
+    flex_shell=wp.array(mjm.flex_shell, dtype=int),
+    flex_radius=wp.array(mjm.flex_radius, dtype=float),
     flex_render_smooth=flex_render_smooth,
     nflex_bvh_geom=nflex_bvh_geom,
-    flex_geom_type=wp.array(flex_geom_type_data, dtype=int) if nflex_bvh_geom > 0 else wp.zeros(1, dtype=int),
-    flex_geom_flexid=wp.array(flex_geom_flexid_data, dtype=int) if nflex_bvh_geom > 0 else wp.zeros(1, dtype=int),
-    flex_geom_edgeid=wp.array(flex_geom_edgeid_data, dtype=int) if nflex_bvh_geom > 0 else wp.zeros(1, dtype=int),
+    flex_geom_type=flex_geom_type,
+    flex_geom_flexid=flex_geom_flexid,
+    flex_geom_edgeid=flex_geom_edgeid,
+    flex_dim=wp.array(mjm.flex_dim, dtype=int),
+    flex_elem=wp.array(mjm.flex_elem, dtype=int),
+    flex_elemnum=wp.array(mjm.flex_elemnum, dtype=int),
+    flex_elemdataadr=wp.array(mjm.flex_elemdataadr, dtype=int),
+    flex_shelldataadr=wp.array(mjm.flex_shelldataadr, dtype=int),
+    flex_vertadr=wp.array(mjm.flex_vertadr, dtype=int),
+    flex_vertnum=wp.array(mjm.flex_vertnum, dtype=int),
+    flex_edgeadr=wp.array(mjm.flex_edgeadr, dtype=int),
+    flex_edge=wp.array(mjm.flex_edge, dtype=wp.vec2i),
     bvh=None,
     bvh_id=None,
     lower=wp.zeros(nworld * (bvh_ngeom + nflex_bvh_geom), dtype=wp.vec3),
