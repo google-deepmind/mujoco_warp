@@ -42,6 +42,7 @@ _WIDTH = flags.DEFINE_integer("width", 512, "render width (pixels)")
 _HEIGHT = flags.DEFINE_integer("height", 512, "render height (pixels)")
 _RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
 _RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
+_RENDER_SEG = flags.DEFINE_bool("seg", False, "render segmentation image")
 _USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
 _USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
@@ -207,6 +208,7 @@ def _main(argv: Sequence[str]):
       (render_width, render_height),
       _RENDER_RGB.value,
       _RENDER_DEPTH.value,
+      _RENDER_SEG.value,
       _USE_TEXTURES.value,
       _USE_SHADOWS.value,
       enabled_geom_groups=[0, 1, 2],

@@ -15,11 +15,9 @@
       <flexcomp type="grid" count="12 1 1" spacing=".1 .1 .1" pos="0 0 0"
                 radius=".03" rgba="0 .7 .7 1" name="rope" dim="1" mass="1">
         <edge equality="true"/>
-        <contact condim="3" selfcollide="none" vertcollide="true" conaffinity="0" contype="0"/>
+        <contact condim="3" selfcollide="none" conaffinity="0" contype="0"/>
+        <pin id="0"/>
       </flexcomp>
-    </body>
-    <body>
-      <geom type="cylinder" size=".4" fromto="0 -.5 .5 0 .5 .5" density="300"/>
     </body>
   </worldbody>  
 </mujoco>

@@ -779,6 +779,23 @@ def ray_flex_with_bvh(
 
 
 @wp.func
+def ray_flex_with_bvh_anyhit(
+  # In:
+  flex_bvh_id: wp.array(dtype=wp.uint64),
+  flex_dataid: int,
+  group_root: int,
+  pnt: wp.vec3,
+  vec: wp.vec3,
+  max_t: float,
+) -> bool:
+  """Returns True if there is any hit for ray flex intersections.
+
+  Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space.
+  """
+  return wp.mesh_query_ray_anyhit(flex_bvh_id[flex_dataid], pnt, vec, max_t, group_root)
+
+
+@wp.func
 def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> Tuple[float, wp.vec3]:
   """Returns distance along ray to intersection with geom and normal at intersection point.
 

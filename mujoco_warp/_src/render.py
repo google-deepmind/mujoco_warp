@@ -242,14 +242,7 @@ def cast_ray(
       else:
         dataid = flex_dataid[flexid]
         flex_gr = flex_group_root[world_id * n_flex_bvh + dataid]
-        d, n, u, v, f = ray_flex_with_bvh(
-          flex_bvh_id,
-          dataid,
-          flex_gr,
-          ray_origin_world,
-          ray_dir_world,
-          dist,
-        )
+        d, n, u, v, f = ray_flex_with_bvh(flex_bvh_id, dataid, flex_gr, ray_origin_world, ray_dir_world, dist)
         if d >= 0.0:
           hit_mesh_id = flexid
 
@@ -271,8 +264,8 @@ def cast_ray_first_hit(
   geom_type: wp.array(dtype=int),
   geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
-  flex_edge: wp.array(dtype=wp.vec2i),
   flex_vertadr: wp.array(dtype=int),
+  flex_edge: wp.array(dtype=wp.vec2i),
   flex_radius: wp.array(dtype=float),
   # Data in:
   geom_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -410,14 +403,7 @@ def cast_ray_first_hit(
       else:
         dataid = flex_dataid[flexid]
         flex_gr = flex_group_root[world_id * n_flex_bvh + dataid]
-        d, n, fu, fv, ff = ray_flex_with_bvh(
-          flex_bvh_id,
-          dataid,
-          flex_gr,
-          ray_origin_world,
-          ray_dir_world,
-          max_dist,
-        )
+        d, n, fu, fv, ff = ray_flex_with_bvh_anyhit(flex_bvh_id, dataid, flex_gr, ray_origin_world, ray_dir_world, max_dist)
 
     if d >= 0.0 and d < max_dist:
       return True
@@ -507,8 +493,8 @@ def compute_lighting(
       geom_type,
       geom_dataid,
       geom_size,
-      flex_edge,
       flex_vertadr,
+      flex_edge,
       flex_radius,
       geom_xpos_in,
       geom_xmat_in,

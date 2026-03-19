@@ -323,9 +323,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   )
 
   if rc.nflex_bvh_geom > 0:
-    flexvert_xpos = wp.array(
-      np.tile(mjd.flexvert_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3
-    )
+    flexvert_xpos = wp.array(np.tile(mjd.flexvert_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
     wp.launch(
       kernel=_compute_flex_bvh_bounds,
       dim=(nworld, rc.nflex_bvh_geom),
