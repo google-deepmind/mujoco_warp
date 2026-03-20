@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -30,18 +31,24 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _qderiv_actuator_passive_vel(
   # Model:
+  opt_timestep: wp.array(dtype=float),
   actuator_dyntype: wp.array(dtype=int),
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
   actuator_actadr: wp.array(dtype=int),
   actuator_actnum: wp.array(dtype=int),
   actuator_forcelimited: wp.array(dtype=bool),
+  actuator_actlimited: wp.array(dtype=bool),
+  actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array2d(dtype=vec10f),
+  actuator_actearly: wp.array(dtype=bool),
   actuator_forcerange: wp.array2d(dtype=wp.vec2),
+  actuator_actrange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
+  act_dot_in: wp.array2d(dtype=float),
   actuator_force_in: wp.array2d(dtype=float),
   # Out:
   vel_out: wp.array2d(dtype=float),
@@ -76,9 +83,24 @@ def _qderiv_actuator_passive_vel(
   vel = float(bias)
   if actuator_dyntype[actid] != DynType.NONE:
     if gain != 0.0:
-      act_first = actuator_actadr[actid]
-      act_last = act_first + actuator_actnum[actid] - 1
-      vel += gain * act_in[worldid, act_last]
+      act_adr = actuator_actadr[actid] + actuator_actnum[actid] - 1
+
+      # use next activation if actearly is set (matching forward pass)
+      if actuator_actearly[actid]:
+        act = next_act(
+          opt_timestep[worldid % opt_timestep.shape[0]],
+          actuator_dyntype[actid],
+          actuator_dynprm[worldid % actuator_dynprm.shape[0], actid],
+          actuator_actrange[worldid % actuator_actrange.shape[0], actid],
+          act_in[worldid, act_adr],
+          act_dot_in[worldid, act_adr],
+          1.0,
+          actuator_actlimited[actid],
+        )
+      else:
+        act = act_in[worldid, act_adr]
+
+      vel += gain * act
   else:
     if gain != 0.0:
       vel += gain * ctrl_in[worldid, actid]
@@ -268,17 +290,23 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         _qderiv_actuator_passive_vel,
         dim=(d.nworld, m.nu),
         inputs=[
+          m.opt.timestep,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
           m.actuator_actadr,
           m.actuator_actnum,
           m.actuator_forcelimited,
+          m.actuator_actlimited,
+          m.actuator_dynprm,
           m.actuator_gainprm,
           m.actuator_biasprm,
+          m.actuator_actearly,
           m.actuator_forcerange,
+          m.actuator_actrange,
           d.act,
           d.ctrl,
+          d.act_dot,
           d.actuator_force,
         ],
         outputs=[vel],

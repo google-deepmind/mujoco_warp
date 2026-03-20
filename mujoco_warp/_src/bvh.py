@@ -827,6 +827,7 @@ def _update_flex_2d_face_points(
   # Model:
   flex_vertadr: wp.array(dtype=int),
   flex_elemnum: wp.array(dtype=int),
+  flex_elemdataadr: wp.array(dtype=int),
   flex_shelldataadr: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
   flex_shell: wp.array(dtype=int),
@@ -835,7 +836,6 @@ def _update_flex_2d_face_points(
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
   flexvert_norm_in: wp.array2d(dtype=wp.vec3),
-  flex_elemdataadr: wp.array(dtype=int),
   flex_id: int,
   nface: int,
   smooth: bool,
@@ -1104,13 +1104,13 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
         inputs=[
           m.flex_vertadr,
           m.flex_elemnum,
+          m.flex_elemdataadr,
           m.flex_shelldataadr,
           m.flex_elem,
           m.flex_shell,
           m.flex_radius,
           d.flexvert_xpos,
           flexvert_norm,
-          rc.flex_elemdataadr,
           i,
           nface,
           rc.flex_render_smooth,
