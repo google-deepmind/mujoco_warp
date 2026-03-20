@@ -600,18 +600,24 @@ def build_hfield_bvh(
 def accumulate_flex_vertex_normals(
   # Model:
   flex_elem: wp.array(dtype=int),
+  flex_elemdataadr: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  # In:
+  flex_id: int,
   # Out:
   flexvert_norm_out: wp.array2d(dtype=wp.vec3),
 ):
   """Accumulate per-vertex normals by summing adjacent face normals."""
   worldid, elemid = wp.tid()
 
-  elem_base = elemid * 3
-  i0 = flex_elem[elem_base + 0]
-  i1 = flex_elem[elem_base + 1]
-  i2 = flex_elem[elem_base + 2]
+  elem_adr = flex_elemdataadr[flex_id]
+  vert_adr = flex_vertadr[flex_id]
+  elem_base = elem_adr + elemid * 3
+  i0 = vert_adr + flex_elem[elem_base + 0]
+  i1 = vert_adr + flex_elem[elem_base + 1]
+  i2 = vert_adr + flex_elem[elem_base + 2]
 
   v0 = flexvert_xpos_in[worldid, i0]
   v1 = flexvert_xpos_in[worldid, i1]
@@ -960,6 +966,8 @@ def build_flex_bvh(
   nflexelemdata = len(mjm.flex_elem)
 
   flex_elem = wp.array(mjm.flex_elem, dtype=int)
+  flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
+  flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
   flexvert_xpos = wp.array(np.tile(mjd.flexvert_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
 
   dim = int(mjm.flex_dim[flex_id])
@@ -980,8 +988,8 @@ def build_flex_bvh(
 
   wp.launch(
     kernel=accumulate_flex_vertex_normals,
-    dim=(nworld, nflexelemdata // 3),
-    inputs=[flex_elem, flexvert_xpos],
+    dim=(nworld, nelem),
+    inputs=[flex_elem, flex_elemdataadr, flex_vertadr, flexvert_xpos, flex_id],
     outputs=[flexvert_norm],
   )
 
@@ -1065,12 +1073,17 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit per-flex BVHs."""
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
 
-  wp.launch(
-    kernel=accumulate_flex_vertex_normals,
-    dim=(d.nworld, m.flex_elem.shape[0] // 3),
-    inputs=[m.flex_elem, d.flexvert_xpos],
-    outputs=[flexvert_norm],
-  )
+  flex_elemnum_np = m.flex_elemnum.numpy()
+
+  for i in range(m.nflex):
+    if rc.flex_dim_np[i] == 1:
+      continue
+    wp.launch(
+      kernel=accumulate_flex_vertex_normals,
+      dim=(d.nworld, int(flex_elemnum_np[i])),
+      inputs=[m.flex_elem, rc.flex_elemdataadr, m.flex_vertadr, d.flexvert_xpos, i],
+      outputs=[flexvert_norm],
+    )
 
   wp.launch(
     kernel=normalize_vertex_normals,
