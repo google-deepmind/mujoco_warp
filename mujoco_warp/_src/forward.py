@@ -29,7 +29,6 @@ from mujoco_warp._src import solver
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -203,6 +202,7 @@ def _next_activation(
 def _next_time(
   # Model:
   opt_timestep: wp.array(dtype=float),
+  is_sparse: bool,
   # Data in:
   nefc_in: wp.array(dtype=int),
   time_in: wp.array(dtype=float),
@@ -223,7 +223,7 @@ def _next_time(
 
   if nefc > njmax_in:
     wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
-  elif nefc > 0 and SPARSE_CONSTRAINT_JACOBIAN:
+  elif nefc > 0 and is_sparse:
     efcid = wp.min(nefc, njmax_in) - 1
     efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
     if efc_nnz > njmax_nnz_in:
@@ -286,6 +286,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=d.nworld,
     inputs=[
       m.opt.timestep,
+      m.is_sparse,
       d.nefc,
       d.time,
       d.efc.J_rownnz,
@@ -621,7 +622,7 @@ def _tendon_velocity(
 @event_scope
 def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
-  wp.launch_tiled(
+  wp.launch(
     _actuator_velocity,
     dim=(d.nworld, m.nu),
     inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],

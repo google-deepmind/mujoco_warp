@@ -30,7 +30,6 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import set_length_range
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 
 def _assert_eq(a, b, name):
@@ -1560,6 +1559,32 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.render_rgb.numpy(), rc_xml.render_rgb.numpy(), "render_rgb")
     _assert_eq(rc.render_depth.numpy(), rc_xml.render_depth.numpy(), "render_depth")
 
+  def test_segmentation_from_camera_output(self):
+    """Segmentation auto-detected from camera output attribute in XML."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+        <geom type="plane" size="10 10 0.1"/>
+        <geom type="sphere" size="0.2" pos="0 0 0.5" rgba="1 0 0 1"/>
+        <camera name="cam" pos="0 -1 0.5" xyaxes="1 0 0 0 0 1"
+                resolution="32 32" output="segmentation"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=1)
+
+    rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
+    mjwarp.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()
+    self.assertTrue(np.any(seg >= 0), "Expected geom hits from auto-detected seg")
+    self.assertGreater(np.unique(seg).shape[0], 1)
+
   def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
     rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
@@ -1611,7 +1636,7 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    if SPARSE_CONSTRAINT_JACOBIAN:
+    if m.is_sparse:
       self.assertEqual(d.efc.J.shape[2], d.njmax * m.nv)
     else:
       self.assertEqual(d.efc.J.shape[2], m.nv_pad)
