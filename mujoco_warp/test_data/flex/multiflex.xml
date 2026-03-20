@@ -1,5 +1,4 @@
 <mujoco model="multiflex">
-  <compiler autolimits="true"/>
   <option solver="CG" tolerance="1e-6" timestep=".001"/>
 
   <visual>
@@ -33,13 +32,11 @@
         <contact condim="3" selfcollide="none" conaffinity="0" contype="0"/>
         <pin id="0 750"/>
       </flexcomp>
-
       <flexcomp type="grid" count="24 4 4" spacing=".1 .1 .1" pos=".1 -1 0.2"
                 radius=".0" rgba="0 .7 .7 1" name="softbody" dim="3" mass="25">
         <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
         <elasticity young="5e4" damping="0.002" poisson="0.2"/>
       </flexcomp>
     </body>
-
   </worldbody>
 </mujoco>
