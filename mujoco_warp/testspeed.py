@@ -54,6 +54,7 @@ _NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
 _NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
 _NCONMAX = flags.DEFINE_integer("nconmax", None, "override maximum number of contacts per world")
 _NJMAX = flags.DEFINE_integer("njmax", None, "override maximum number of constraints per world")
+_NJMAX_NNZ = flags.DEFINE_integer("njmax_nnz", None, "override maximum number of non-zeros in constraint Jacobian")
 _NCCDMAX = flags.DEFINE_integer("nccdmax", None, "override maximum number of CCD contacts per world")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
 _KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
@@ -303,13 +304,20 @@ def _main(argv: Sequence[str]):
     override_model(mjm, _OVERRIDE.value)
     m = mjw.put_model(mjm)
     override_model(m, _OVERRIDE.value)
-    d = mjw.put_data(mjm, mjd, nworld=_NWORLD.value, nconmax=_NCONMAX.value, njmax=_NJMAX.value, nccdmax=_NCCDMAX.value)
+    d = mjw.put_data(
+      mjm,
+      mjd,
+      nworld=_NWORLD.value,
+      nconmax=_NCONMAX.value,
+      njmax=_NJMAX.value,
+      njmax_nnz=_NJMAX_NNZ.value,
+      nccdmax=_NCCDMAX.value,
+    )
     rc = None
     if "rc" in inspect.signature(_FUNCS[_FUNCTION.value]).parameters.keys():
       rc = mjw.create_render_context(
         mjm,
-        m,
-        d,
+        _NWORLD.value,
         (_WIDTH.value, _HEIGHT.value),
         _RENDER_RGB.value,
         _RENDER_DEPTH.value,
@@ -423,8 +431,8 @@ def _main(argv: Sequence[str]):
 
       if _INFO.value:
         # Collider types grouped by category
-        from mujoco_warp._src import collision_convex
-        from mujoco_warp._src import collision_primitive
+        from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
+        from mujoco_warp._src.types import CollisionType
 
         def trid_to_types(trid):
           """Convert triangular index back to geom type pair."""
@@ -435,10 +443,10 @@ def _main(argv: Sequence[str]):
           j = trid - i * (2 * n - i - 1) // 2
           return mjw.GeomType(i), mjw.GeomType(j)
 
-        # Categorize collision pairs
-        primitive_pairs = set(collision_primitive._PRIMITIVE_COLLISIONS.keys())
-        hfield_ccd_pairs = set(collision_convex._HFIELD_COLLISION_PAIRS)
-        ccd_pairs = set(collision_convex._NON_HFIELD_COLLISION_PAIRS)
+        # Categorize collision pairs using MJ_COLLISION_TABLE
+        primitive_pairs = {k for k, v in MJ_COLLISION_TABLE.items() if v == CollisionType.PRIMITIVE}
+        hfield_ccd_pairs = {k for k, v in MJ_COLLISION_TABLE.items() if v == CollisionType.CONVEX and mjw.GeomType.HFIELD in k}
+        ccd_pairs = {k for k, v in MJ_COLLISION_TABLE.items() if v == CollisionType.CONVEX and mjw.GeomType.HFIELD not in k}
 
         primitive_colliders, hfield_ccd_colliders, ccd_colliders = [], [], []
         for trid, count in enumerate(m.geom_pair_type_count):

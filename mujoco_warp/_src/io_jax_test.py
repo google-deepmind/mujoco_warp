@@ -30,6 +30,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
+from mujoco_warp._src.types import Callback
 
 _IO_TEST_MODELS = (
   "pendula.xml",
@@ -74,6 +75,10 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
     val = getattr(obj, field_name)
     val_type = type(val)
     type_ = field.type
+
+    # skip Callback — not JAX-serializable
+    if isinstance(val, Callback):
+      continue
 
     if dataclasses.is_dataclass(val):
       test_obj.assertTrue(dataclasses.is_dataclass(type_), msg.format(**locals()))
@@ -124,6 +129,10 @@ def _check_annotation_compat(
   for k, v in annotations.items():
     full_key = f"{prefix}{k}"
     info = f"Found {v} for annotation {full_key}."
+
+    # skip Callback — not JAX-serializable
+    if dataclasses.is_dataclass(v) and v.__name__ == "Callback":
+      continue
 
     if v in (int, bool, float):
       continue

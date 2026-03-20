@@ -25,8 +25,8 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
-from mujoco_warp._src.collision_driver import create_collision_context
 from mujoco_warp._src.types import CollisionType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
@@ -862,6 +862,82 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_sensor_callback(self):
+    """Tests sensor_callback populates user sensor data."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="myplane" type="plane" size="10 10 1"/>
+      </worldbody>
+      <sensor>
+        <user objtype="geom" objname="myplane"
+              datatype="real" needstage="vel" dim="1"/>
+      </sensor>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    @wp.kernel
+    def _set_sensordata(sensordata_out: wp.array2d(dtype=float)):
+      worldid = wp.tid()
+      sensordata_out[worldid, 0] = 17.0
+
+    def my_sensor(m, d, stage):
+      if stage == 1:  # VEL
+        wp.launch(_set_sensordata, dim=(d.nworld,), outputs=[d.sensordata])
+
+    m.callback.sensor = my_sensor
+    mjw.forward(m, d)
+
+    self.assertEqual(d.sensordata.numpy()[0, 0], 17.0)
+
+  def test_tactile_sensor_geom_deduplication(self):
+    """Test tactile sensor deduplicates contacts by geom.
+
+    Without deduplication, multiple contacts with the same geom cause
+    the sensor value to be doubled (or more), resulting in incorrect output.
+    Uses mesh-sphere vs box collision with multiccd to generate multiple contacts.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="box" size=".7 .7 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    d.sensordata.zero_()
+    mjw.sensor_acc(m, d)
+
+    warp_sensordata = d.sensordata.numpy()[0]
+
+    # Check Warp output matches MuJoCo output, if available
+    _assert_eq(warp_sensordata, mjd.sensordata, "tactile_sensordata")
+
+    # Verify Warp sensor is triggered
+    self.assertTrue(warp_sensordata.any(), "Warp sensordata should not be all zeros")
 
 
 if __name__ == "__main__":

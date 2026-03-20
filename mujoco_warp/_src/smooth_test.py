@@ -334,23 +334,37 @@ class SmoothTest(parameterized.TestCase):
     for arr in (d.actuator_length, d.actuator_moment):
       arr.fill_(wp.inf)
 
-    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
     mujoco.mju_sparse2dense(
-      actuator_moment,
+      mj_actuator_moment,
       mjd.actuator_moment,
       mjd.moment_rownnz,
       mjd.moment_rowadr,
       mjd.moment_colind,
     )
 
-    mjw._src.smooth.transmission(m, d)
-    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+    mjw.transmission(m, d)
 
-  @parameterized.product(keyframe=list(range(4)), cone=list(ConeType))
-  def test_actuator_adhesion(self, keyframe, cone):
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      actuator_moment,
+      d.actuator_moment.numpy()[0],
+      d.moment_rownnz.numpy()[0],
+      d.moment_rowadr.numpy()[0],
+      d.moment_colind.numpy()[0],
+    )
+
+    _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
+    _assert_eq(actuator_moment, mj_actuator_moment, "actuator_moment")
+
+  @parameterized.product(
+    keyframe=list(range(4)), cone=list(ConeType), jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE]
+  )
+  def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
-    mjm, mjd, m, d = test_data.fixture("actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone})
+    mjm, mjd, m, d = test_data.fixture(
+      "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
+    )
 
     for arr in (d.actuator_length, d.actuator_moment):
       arr.fill_(wp.inf)
@@ -363,7 +377,15 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
 
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "acutator_moment")
+    wp_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(
+      wp_actuator_moment,
+      d.actuator_moment.numpy()[0],
+      d.moment_rownnz.numpy()[0],
+      d.moment_rowadr.numpy()[0],
+      d.moment_colind.numpy()[0],
+    )
+    _assert_eq(wp_actuator_moment, actuator_moment, "actuator_moment")
 
   def test_subtree_vel(self):
     """Tests subtree_vel."""
@@ -378,20 +400,23 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.subtree_linvel.numpy()[0], mjd.subtree_linvel, "subtree_linvel")
     _assert_eq(d.subtree_angmom.numpy()[0], mjd.subtree_angmom, "subtree_angmom")
 
-  @parameterized.parameters(
-    "tendon/fixed.xml",
-    "tendon/site.xml",
-    "tendon/pulley_site.xml",
-    "tendon/fixed_site.xml",
-    "tendon/pulley_fixed_site.xml",
-    "tendon/site_fixed.xml",
-    "tendon/pulley_site_fixed.xml",
-    "tendon/wrap.xml",
-    "tendon/pulley_wrap.xml",
+  @parameterized.product(
+    xml=[
+      "tendon/fixed.xml",
+      "tendon/site.xml",
+      "tendon/pulley_site.xml",
+      "tendon/fixed_site.xml",
+      "tendon/pulley_fixed_site.xml",
+      "tendon/site_fixed.xml",
+      "tendon/pulley_site_fixed.xml",
+      "tendon/wrap.xml",
+      "tendon/pulley_wrap.xml",
+    ],
+    jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
   )
-  def test_tendon(self, xml):
+  def test_tendon(self, xml, jacobian):
     """Tests tendon."""
-    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0)
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, overrides={"opt.jacobian": jacobian})
 
     for arr in (d.ten_length, d.ten_J, d.actuator_length, d.actuator_moment):
       arr.zero_()
@@ -400,21 +425,31 @@ class SmoothTest(parameterized.TestCase):
     mjw.transmission(m, d)
 
     _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
-    _assert_eq(d.ten_J.numpy()[0], mjd.ten_J.reshape((mjm.ntendon, mjm.nv)), "ten_J")
+    ten_J = np.zeros((mjm.ntendon, mjm.nv))
+    mujoco.mju_sparse2dense(ten_J, mjd.ten_J.reshape(-1), mjm.ten_J_rownnz, mjm.ten_J_rowadr, mjm.ten_J_colind.reshape(-1))
     _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
     _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
     _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
     _assert_eq(d.ten_wrapadr.numpy()[0], mjd.ten_wrapadr, "ten_wrapadr")
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
-    actuator_moment = np.zeros((mjm.nu, mjm.nv))
-    mujoco.mju_sparse2dense(
-      actuator_moment,
-      mjd.actuator_moment,
-      mjd.moment_rownnz,
-      mjd.moment_rowadr,
-      mjd.moment_colind,
-    )
-    _assert_eq(d.actuator_moment.numpy()[0], actuator_moment, "actuator_moment")
+    if mjm.nu:
+      mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        mj_actuator_moment,
+        mjd.actuator_moment,
+        mjd.moment_rownnz,
+        mjd.moment_rowadr,
+        mjd.moment_colind,
+      )
+      wp_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        wp_actuator_moment,
+        d.actuator_moment.numpy()[0],
+        d.moment_rownnz.numpy()[0],
+        d.moment_rowadr.numpy()[0],
+        d.moment_colind.numpy()[0],
+      )
+      _assert_eq(wp_actuator_moment, mj_actuator_moment, "actuator_moment")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_solve_i(self, jacobian):
@@ -491,17 +526,9 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_comPos(mjm, mjd)
     mujoco.mj_flex(mjm, mjd)
 
-    # TODO(team): remove after mjwarp depends on mujoco > 3.4.0 in pyproject.toml
-    from mujoco_warp._src.io import BLEEDING_EDGE_MUJOCO
-
-    if BLEEDING_EDGE_MUJOCO:
-      rownnz = mjm.flexedge_J_rownnz
-      rowadr = mjm.flexedge_J_rowadr
-      colind = mjm.flexedge_J_colind.reshape(-1)
-    else:
-      rownnz = mjd.flexedge_J_rownnz
-      rowadr = mjd.flexedge_J_rowadr
-      colind = mjd.flexedge_J_colind.reshape(-1)
+    rownnz = mjm.flexedge_J_rownnz
+    rowadr = mjm.flexedge_J_rowadr
+    colind = mjm.flexedge_J_colind.reshape(-1)
 
     mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
     mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)
@@ -513,7 +540,70 @@ class SmoothTest(parameterized.TestCase):
     flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
     mujoco.mju_sparse2dense(
       flexedge_J,
-      d.flexedge_J.numpy()[0, 0].reshape(-1),
+      d.flexedge_J.numpy()[0].reshape(-1),
+      m.flexedge_J_rownnz.numpy(),
+      m.flexedge_J_rowadr.numpy(),
+      m.flexedge_J_colind.numpy(),
+    )
+
+    _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
+
+  def test_flex_1d_pinned(self):
+    """Tests that 1D flex with pinned vertex computes correct Jacobian and velocity.
+
+    This is a regression test for issue #1229 where the _flex_edges kernel
+    assumed every vertex body has 3 DOFs, causing garbage reads for pinned
+    vertices (body_dofnum=0, body_dofadr=-1) and out-of-plane spinning.
+    """
+    xml = """
+    <mujoco>
+      <option gravity="0 0 -10"/>
+      <worldbody>
+        <body name="rope" pos="0.5 0.5 1.0">
+          <geom type="sphere" size="0.02" mass="0.01"/>
+          <flexcomp name="line" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                    radius="0.01" dim="1" mass="1">
+            <contact contype="0" conaffinity="0"/>
+            <edge equality="true" damping="0.01"/>
+            <pin id="0"/>
+          </flexcomp>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 1)
+    self.assertEqual(m.nflexvert, 5)
+
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexedge_length.fill_(wp.inf)
+    d.flexedge_velocity.fill_(wp.inf)
+    d.flexedge_J.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
+    _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
+    _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
+
+    # Compare dense Jacobians
+    rownnz = mjm.flexedge_J_rownnz
+    rowadr = mjm.flexedge_J_rowadr
+    colind = mjm.flexedge_J_colind.reshape(-1)
+
+    mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)
+
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+    mujoco.mju_sparse2dense(
+      flexedge_J,
+      d.flexedge_J.numpy()[0].reshape(-1),
       m.flexedge_J_rownnz.numpy(),
       m.flexedge_J_rowadr.numpy(),
       m.flexedge_J_colind.numpy(),
