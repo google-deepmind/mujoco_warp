@@ -173,17 +173,17 @@ def _qderiv_actuator_passive_actuation_sparse(
 
   for i in range(rownnz):
     rowadri = rowadr + i
-    dofi = moment_colind_in[worldid, rowadri]
     moment_i = actuator_moment_in[worldid, rowadri]
     if moment_i == 0.0:
       continue
+    dofi = moment_colind_in[worldid, rowadri]
 
     for j in range(i + 1):
       rowadrj = rowadr + j
-      dofj = moment_colind_in[worldid, rowadrj]
       moment_j = actuator_moment_in[worldid, rowadrj]
       if moment_j == 0.0:
         continue
+      dofj = moment_colind_in[worldid, rowadrj]
 
       contrib = moment_i * moment_j * vel
 
