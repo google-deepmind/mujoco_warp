@@ -594,7 +594,6 @@ def _flex_elasticity(
   worldid, elemid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  f = int(0)
   for i in range(nflex):
     locid = elemid - flex_elemadr[i]
     if locid >= 0 and locid < flex_elemnum[i]:
@@ -628,7 +627,7 @@ def _flex_elasticity(
 
   elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
-    idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * int(nedge) + e]
+    idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * nedge + e]
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
     deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
     reference = flexedge_length0[flex_edgeadr[f] + idx]

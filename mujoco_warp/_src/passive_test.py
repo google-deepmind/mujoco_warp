@@ -204,6 +204,13 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
     _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
 
+  def test_multiflex(self):
+    """Tests multiflex model with different flex dimensions."""
+    _, _, m, d = test_data.fixture("flex/multiflex.xml")
+
+    mjw.passive(m, d)
+    mjw.collision(m, d)
+
 
 if __name__ == "__main__":
   wp.init()
