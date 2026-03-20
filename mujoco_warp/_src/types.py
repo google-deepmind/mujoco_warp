@@ -1365,6 +1365,7 @@ class Model:
   flex_edgeadr: array("nflex", int)
   flex_edgenum: array("nflex", int)
   flex_elemadr: array("nflex", int)
+  flex_elemdataadr: array("nflex", int)
   flex_elemnum: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
   flex_shellnum: array("nflex", int)

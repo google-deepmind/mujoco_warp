@@ -397,6 +397,7 @@ def _flex_narrowphase_dim2(
   flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_elemadr: wp.array(dtype=int),
+  flex_elemdataadr: wp.array(dtype=int),
   flex_elemnum: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
   flex_radius: wp.array(dtype=float),
@@ -443,7 +444,7 @@ def _flex_narrowphase_dim2(
   tri_radius = flex_radius[flexid]
   tri_margin = flex_margin[flexid]
 
-  elem_data_idx = elemid * 3
+  elem_data_idx = flex_elemdataadr[flexid] + (elemid - flex_elemadr[flexid]) * 3
   v0_local = flex_elem[elem_data_idx]
   v1_local = flex_elem[elem_data_idx + 1]
   v2_local = flex_elem[elem_data_idx + 2]
@@ -708,6 +709,7 @@ def flex_narrowphase(m: Model, d: Data):
       m.flex_dim,
       m.flex_vertadr,
       m.flex_elemadr,
+      m.flex_elemdataadr,
       m.flex_elemnum,
       m.flex_elem,
       m.flex_radius,
