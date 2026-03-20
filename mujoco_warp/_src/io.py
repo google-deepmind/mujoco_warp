@@ -2680,7 +2680,6 @@ def create_render_context(
     flex_dim_np=mjm.flex_dim,
     flex_geom_flexid=wp.array(flex_geom_flexid, dtype=int),
     flex_geom_edgeid=wp.array(flex_geom_edgeid, dtype=int),
-    flex_elemdataadr=wp.array(mjm.flex_elemdataadr, dtype=int),
     bvh=None,
     bvh_id=None,
     lower=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),

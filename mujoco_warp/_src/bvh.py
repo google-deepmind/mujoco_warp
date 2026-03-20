@@ -963,7 +963,6 @@ def build_flex_bvh(
 ) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, int]:
   """Create a Warp mesh BVH for a single 2D or 3D flex."""
   nflexvert = mjm.nflexvert
-  nflexelemdata = len(mjm.flex_elem)
 
   flex_elem = wp.array(mjm.flex_elem, dtype=int)
   flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
@@ -1081,7 +1080,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     wp.launch(
       kernel=accumulate_flex_vertex_normals,
       dim=(d.nworld, int(flex_elemnum_np[i])),
-      inputs=[m.flex_elem, rc.flex_elemdataadr, m.flex_vertadr, d.flexvert_xpos, i],
+      inputs=[m.flex_elem, m.flex_elemdataadr, m.flex_vertadr, d.flexvert_xpos, i],
       outputs=[flexvert_norm],
     )
 

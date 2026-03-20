@@ -1952,7 +1952,6 @@ class RenderContext:
   flex_dim_np: array("nflex", int)
   flex_geom_flexid: array("*", int)
   flex_geom_edgeid: array("*", int)
-  flex_elemdataadr: array("nflex", int)
   bvh: wp.Bvh
   bvh_id: wp.uint64
   lower: array("*", wp.vec3)
