@@ -216,33 +216,153 @@ class DerivativeTest(parameterized.TestCase):
     coupling two joints, producing an actuator with moment_rownnz=2.
     """
     # Build a chain long enough to force sparse (nv > 32)
-    bodies = ""
-    joints = ""
-    joint_names = []
-    for i in range(35):
-      indent = "  " * (i + 2)
-      joints += f'{indent}<joint name="j{i}" type="hinge" axis="0 1 0"/>\n'
-      bodies += f'{indent}<body pos="0.1 0 0">\n'
-      bodies += f'{indent}  <geom type="sphere" size=".05"/>\n'
-      bodies += joints.split("\n")[-2] + "\n"
-      joint_names.append(f"j{i}")
-
-    body_xml = ""
-    close_xml = ""
-    for i in range(35):
-      indent = "  " * (i + 2)
-      body_xml += f'{indent}<body pos="0.1 0 0">\n'
-      body_xml += f'{indent}  <geom type="sphere" size=".05"/>\n'
-      body_xml += f'{indent}  <joint name="j{i}" type="hinge" axis="0 1 0"/>\n'
-      close_xml = f"{indent}</body>\n" + close_xml
-
     xml = f"""
     <mujoco>
       <option integrator="implicitfast">
         <flag gravity="disable"/>
       </option>
       <worldbody>
-{body_xml}{close_xml}      </worldbody>
+    <body pos="0.1 0 0">
+      <geom type="sphere" size=".05"/>
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <body pos="0.1 0 0">
+        <geom type="sphere" size=".05"/>
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <body pos="0.1 0 0">
+          <geom type="sphere" size=".05"/>
+          <joint name="j2" type="hinge" axis="0 1 0"/>
+          <body pos="0.1 0 0">
+            <geom type="sphere" size=".05"/>
+            <joint name="j3" type="hinge" axis="0 1 0"/>
+            <body pos="0.1 0 0">
+              <geom type="sphere" size=".05"/>
+              <joint name="j4" type="hinge" axis="0 1 0"/>
+              <body pos="0.1 0 0">
+                <geom type="sphere" size=".05"/>
+                <joint name="j5" type="hinge" axis="0 1 0"/>
+                <body pos="0.1 0 0">
+                  <geom type="sphere" size=".05"/>
+                  <joint name="j6" type="hinge" axis="0 1 0"/>
+                  <body pos="0.1 0 0">
+                    <geom type="sphere" size=".05"/>
+                    <joint name="j7" type="hinge" axis="0 1 0"/>
+                    <body pos="0.1 0 0">
+                      <geom type="sphere" size=".05"/>
+                      <joint name="j8" type="hinge" axis="0 1 0"/>
+                      <body pos="0.1 0 0">
+                        <geom type="sphere" size=".05"/>
+                        <joint name="j9" type="hinge" axis="0 1 0"/>
+                        <body pos="0.1 0 0">
+                          <geom type="sphere" size=".05"/>
+                          <joint name="j10" type="hinge" axis="0 1 0"/>
+                          <body pos="0.1 0 0">
+                            <geom type="sphere" size=".05"/>
+                            <joint name="j11" type="hinge" axis="0 1 0"/>
+                            <body pos="0.1 0 0">
+                              <geom type="sphere" size=".05"/>
+                              <joint name="j12" type="hinge" axis="0 1 0"/>
+                              <body pos="0.1 0 0">
+                                <geom type="sphere" size=".05"/>
+                                <joint name="j13" type="hinge" axis="0 1 0"/>
+                                <body pos="0.1 0 0">
+                                  <geom type="sphere" size=".05"/>
+                                  <joint name="j14" type="hinge" axis="0 1 0"/>
+                                  <body pos="0.1 0 0">
+                                    <geom type="sphere" size=".05"/>
+                                    <joint name="j15" type="hinge" axis="0 1 0"/>
+                                    <body pos="0.1 0 0">
+                                      <geom type="sphere" size=".05"/>
+                                      <joint name="j16" type="hinge" axis="0 1 0"/>
+                                      <body pos="0.1 0 0">
+                                        <geom type="sphere" size=".05"/>
+                                        <joint name="j17" type="hinge" axis="0 1 0"/>
+                                        <body pos="0.1 0 0">
+                                          <geom type="sphere" size=".05"/>
+                                          <joint name="j18" type="hinge" axis="0 1 0"/>
+                                          <body pos="0.1 0 0">
+                                            <geom type="sphere" size=".05"/>
+                                            <joint name="j19" type="hinge" axis="0 1 0"/>
+                                            <body pos="0.1 0 0">
+                                              <geom type="sphere" size=".05"/>
+                                              <joint name="j20" type="hinge" axis="0 1 0"/>
+                                              <body pos="0.1 0 0">
+                                                <geom type="sphere" size=".05"/>
+                                                <joint name="j21" type="hinge" axis="0 1 0"/>
+                                                <body pos="0.1 0 0">
+                                                  <geom type="sphere" size=".05"/>
+                                                  <joint name="j22" type="hinge" axis="0 1 0"/>
+                                                  <body pos="0.1 0 0">
+                                                    <geom type="sphere" size=".05"/>
+                                                    <joint name="j23" type="hinge" axis="0 1 0"/>
+                                                    <body pos="0.1 0 0">
+                                                      <geom type="sphere" size=".05"/>
+                                                      <joint name="j24" type="hinge" axis="0 1 0"/>
+                                                      <body pos="0.1 0 0">
+                                                        <geom type="sphere" size=".05"/>
+                                                        <joint name="j25" type="hinge" axis="0 1 0"/>
+                                                        <body pos="0.1 0 0">
+                                                          <geom type="sphere" size=".05"/>
+                                                          <joint name="j26" type="hinge" axis="0 1 0"/>
+                                                          <body pos="0.1 0 0">
+                                                            <geom type="sphere" size=".05"/>
+                                                            <joint name="j27" type="hinge" axis="0 1 0"/>
+                                                            <body pos="0.1 0 0">
+                                                              <geom type="sphere" size=".05"/>
+                                                              <joint name="j28" type="hinge" axis="0 1 0"/>
+                                                              <body pos="0.1 0 0">
+                                                                <geom type="sphere" size=".05"/>
+                                                                <joint name="j29" type="hinge" axis="0 1 0"/>
+                                                                <body pos="0.1 0 0">
+                                                                  <geom type="sphere" size=".05"/>
+                                                                  <joint name="j30" type="hinge" axis="0 1 0"/>
+                                                                  <body pos="0.1 0 0">
+                                                                    <geom type="sphere" size=".05"/>
+                                                                    <joint name="j31" type="hinge" axis="0 1 0"/>
+                                                                    <body pos="0.1 0 0">
+                                                                      <geom type="sphere" size=".05"/>
+                                                                      <joint name="j32" type="hinge" axis="0 1 0"/>
+                                                                      <body pos="0.1 0 0">
+                                                                        <geom type="sphere" size=".05"/>
+                                                                        <joint name="j33" type="hinge" axis="0 1 0"/>
+                                                                        <body pos="0.1 0 0">
+                                                                          <geom type="sphere" size=".05"/>
+                                                                          <joint name="j34" type="hinge" axis="0 1 0"/>
+                                                                        </body>
+                                                                      </body>
+                                                                    </body>
+                                                                  </body>
+                                                                </body>
+                                                              </body>
+                                                            </body>
+                                                          </body>
+                                                        </body>
+                                                      </body>
+                                                    </body>
+                                                  </body>
+                                                </body>
+                                              </body>
+                                            </body>
+                                          </body>
+                                        </body>
+                                      </body>
+                                    </body>
+                                  </body>
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+      </worldbody>
       <tendon>
         <fixed name="coupled">
           <joint joint="j10" coef="1"/>
@@ -257,7 +377,7 @@ class DerivativeTest(parameterized.TestCase):
         <motor joint="j20" gear="1"/>
       </actuator>
       <keyframe>
-        <key qpos="{" ".join(["0.1"] * 35)}" qvel="{" ".join(["1"] * 35)}" ctrl="1 1 1 1"/>
+        <key qpos="0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1" qvel="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1" ctrl="1 1 1 1"/>
       </keyframe>
     </mujoco>
     """
