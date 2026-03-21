@@ -599,9 +599,9 @@ def build_hfield_bvh(
 @wp.kernel
 def accumulate_flex_vertex_normals(
   # Model:
-  flex_elem: wp.array(dtype=int),
-  flex_elemdataadr: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
+  flex_elemdataadr: wp.array(dtype=int),
+  flex_elem: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
   # In:
@@ -988,7 +988,7 @@ def build_flex_bvh(
   wp.launch(
     kernel=accumulate_flex_vertex_normals,
     dim=(nworld, nelem),
-    inputs=[flex_elem, flex_elemdataadr, flex_vertadr, flexvert_xpos, flex_id],
+    inputs=[flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos, flex_id],
     outputs=[flexvert_norm],
   )
 
@@ -1080,7 +1080,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     wp.launch(
       kernel=accumulate_flex_vertex_normals,
       dim=(d.nworld, int(flex_elemnum_np[i])),
-      inputs=[m.flex_elem, m.flex_elemdataadr, m.flex_vertadr, d.flexvert_xpos, i],
+      inputs=[m.flex_vertadr, m.flex_elemdataadr, m.flex_elem, d.flexvert_xpos, i],
       outputs=[flexvert_norm],
     )
 

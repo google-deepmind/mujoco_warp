@@ -231,7 +231,7 @@ class BvhTest(absltest.TestCase):
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
       dim=(nworld, nelem),
-      inputs=[flex_elem, flex_elemdataadr, flex_vertadr, flexvert_xpos, flex_id],
+      inputs=[flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos, flex_id],
       outputs=[flexvert_norm],
     )
 
