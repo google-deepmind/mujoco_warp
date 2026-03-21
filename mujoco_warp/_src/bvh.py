@@ -189,12 +189,12 @@ def _compute_bvh_bounds(
   upper_out: wp.array(dtype=wp.vec3),
   group_out: wp.array(dtype=int),
 ):
-  world_id, geom_local_id = wp.tid()
+  worldid, geom_local_id = wp.tid()
   geom_id = enabled_geom_ids[geom_local_id]
 
-  pos = geom_xpos_in[world_id, geom_id]
-  rot = geom_xmat_in[world_id, geom_id]
-  size = geom_size[world_id % geom_size.shape[0], geom_id]
+  pos = geom_xpos_in[worldid, geom_id]
+  rot = geom_xmat_in[worldid, geom_id]
+  size = geom_size[worldid % geom_size.shape[0], geom_id]
   type = geom_type[geom_id]
 
   # TODO: Investigate branch elimination with static loop unrolling
@@ -218,9 +218,9 @@ def _compute_bvh_bounds(
     hfield_center = pos + rot[:, 2] * size[2]
     lower_bound, upper_bound = _compute_box_bounds(hfield_center, rot, size)
 
-  lower_out[world_id * bvh_ngeom + geom_local_id] = lower_bound
-  upper_out[world_id * bvh_ngeom + geom_local_id] = upper_bound
-  group_out[world_id * bvh_ngeom + geom_local_id] = world_id
+  lower_out[worldid * bvh_ngeom + geom_local_id] = lower_bound
+  upper_out[worldid * bvh_ngeom + geom_local_id] = upper_bound
+  group_out[worldid * bvh_ngeom + geom_local_id] = worldid
 
 
 @wp.kernel
@@ -254,19 +254,19 @@ def _compute_flex_bvh_bounds(
   upper_out: wp.array(dtype=wp.vec3),
   group_out: wp.array(dtype=int),
 ):
-  world_id, flex_local = wp.tid()
+  worldid, flexlocalid = wp.tid()
 
-  flex_id = flex_geom_flexid[flex_local]
-  edge_id = flex_geom_edgeid[flex_local]
-  out_idx = world_id * total_bvh_size + bvh_ngeom + flex_local
+  flex_id = flex_geom_flexid[flexlocalid]
+  edge_id = flex_geom_edgeid[flexlocalid]
+  out_idx = worldid * total_bvh_size + bvh_ngeom + flexlocalid
   radius = flex_radius[flex_id]
   inflate = wp.vec3(radius, radius, radius)
 
   if edge_id >= 0:  # capsule (1D edge)
     edge = flex_edge[edge_id]
     vert_adr = flex_vertadr[flex_id]
-    v0 = flexvert_xpos_in[world_id, vert_adr + edge[0]]
-    v1 = flexvert_xpos_in[world_id, vert_adr + edge[1]]
+    v0 = flexvert_xpos_in[worldid, vert_adr + edge[0]]
+    v1 = flexvert_xpos_in[worldid, vert_adr + edge[1]]
     lower_out[out_idx] = wp.min(v0, v1) - inflate
     upper_out[out_idx] = wp.max(v0, v1) + inflate
   else:  # mesh (2D/3D)
@@ -275,13 +275,13 @@ def _compute_flex_bvh_bounds(
     min_bound = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     max_bound = wp.vec3(-MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL)
     for i in range(nvert):
-      v = flexvert_xpos_in[world_id, vert_adr + i]
+      v = flexvert_xpos_in[worldid, vert_adr + i]
       min_bound = wp.min(min_bound, v)
       max_bound = wp.max(max_bound, v)
     lower_out[out_idx] = min_bound - inflate
     upper_out[out_idx] = max_bound + inflate
 
-  group_out[out_idx] = world_id
+  group_out[out_idx] = worldid
 
 
 def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
