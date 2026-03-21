@@ -213,8 +213,18 @@ class BvhTest(absltest.TestCase):
       dtype=wp.vec3,
     )
     flex_elem = wp.array([0, 1, 2, 1, 3, 2], dtype=int)
-    flex_elemdataadr = wp.array([0,], dtype=int)
-    flex_vertadr = wp.array([0,], dtype=int)
+    flex_elemdataadr = wp.array(
+      [
+        0,
+      ],
+      dtype=int,
+    )
+    flex_vertadr = wp.array(
+      [
+        0,
+      ],
+      dtype=int,
+    )
     flex_id = 0
     flexvert_norm = wp.zeros((nworld, nvert), dtype=wp.vec3)
 
