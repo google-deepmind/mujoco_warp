@@ -408,7 +408,7 @@ class DerivativeTest(parameterized.TestCase):
     mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
-    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse tendon coupled)"
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse tendon coupled)")
 
   def test_actearly_derivative(self):
     """Implicit derivatives should use next activation when actearly is set."""
