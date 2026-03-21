@@ -33,6 +33,7 @@ def _assert_eq(a, b, name):
 @dataclasses.dataclass
 class MinimalRenderContext:
   bvh_ngeom: int
+  bvh_nflexgeom: int
   enabled_geom_ids: wp.array
   mesh_bounds_size: wp.array
   hfield_bounds_size: wp.array
@@ -53,6 +54,7 @@ def _create_minimal_context(mjm, nworld, enabled_geom_groups=None):
 
   return MinimalRenderContext(
     bvh_ngeom=bvh_ngeom,
+    bvh_nflexgeom=0,
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_bounds_size=wp.zeros(max(mjm.nmesh, 1), dtype=wp.vec3),
     hfield_bounds_size=wp.zeros(max(mjm.nhfield, 1), dtype=wp.vec3),
@@ -211,12 +213,15 @@ class BvhTest(absltest.TestCase):
       dtype=wp.vec3,
     )
     flex_elem = wp.array([0, 1, 2, 1, 3, 2], dtype=int)
+    flex_elemdataadr = wp.array([0,], dtype=int)
+    flex_vertadr = wp.array([0,], dtype=int)
+    flex_id = 0
     flexvert_norm = wp.zeros((nworld, nvert), dtype=wp.vec3)
 
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
       dim=(nworld, nelem),
-      inputs=[flex_elem, flexvert_xpos],
+      inputs=[flex_elem, flex_elemdataadr, flex_vertadr, flexvert_xpos, flex_id],
       outputs=[flexvert_norm],
     )
 

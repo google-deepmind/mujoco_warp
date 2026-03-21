@@ -35,7 +35,7 @@ wp.set_module_options({"enable_backward": False})
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the dynamic BVH structures in the render context."""
   refit_scene_bvh(m, d, rc)
-  if m.nflex > 0:
+  if m.nflex:
     refit_flex_bvh(m, d, rc)
 
 

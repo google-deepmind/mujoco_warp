@@ -2538,7 +2538,7 @@ def create_render_context(
   flex_geom_flexid = []
   flex_geom_edgeid = []
   flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
-  flex_group_root = []
+  flex_group_root = [[]]
 
   for f in range(nflex):
     if mjm.flex_dim[f] == 1:
