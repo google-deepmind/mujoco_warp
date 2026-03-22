@@ -18,7 +18,7 @@
 Usage: mjwarp-render <mjcf XML path> [flags]
 
 Example:
-  mjwarp-render benchmark/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
+  mjwarp-render benchmarks/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
 """
 
 import sys
