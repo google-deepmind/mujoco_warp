@@ -681,6 +681,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     hit_point = ray_origin_world + ray_dir_world * dist
 
     if geom_id == -2:
+      # We encode flex_id in mesh_id for flex ray hits during cast_ray
       color = flex_rgba[mesh_id]
     elif geom_matid[worldid % geom_matid.shape[0], geom_id] == -1:
       color = geom_rgba[worldid % geom_rgba.shape[0], geom_id]

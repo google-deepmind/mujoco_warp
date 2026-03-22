@@ -89,27 +89,24 @@ def quat_z2vec(vec: wp.vec3) -> wp.quat:
   quat = wp.quat(0.0, 0.0, 0.0, 1.0)
 
   # normalize vector; if too small, no rotation
-  vn = vec
-  norm = wp.length(vn)
+  norm = wp.length(vec)
   if norm < types.MJ_MINVAL:
     return quat
-  vn = vn / norm
+  vec = vec / norm
 
-  # compute axis = cross(z, vn) and its norm
-  z = wp.vec3(0.0, 0.0, 1.0)
-  axis = wp.cross(z, vn)
+  axis = wp.vec3(-vec[1], vec[0], 0.0)
   a = wp.length(axis)
 
   # almost parallel
   if a < types.MJ_MINVAL:
     # opposite: 180 deg rotation around x axis
-    if wp.dot(vn, z) < 0.0:
+    if vec[2] < 0.0:
       quat = wp.quat(1.0, 0.0, 0.0, 0.0)
     return quat
 
   # make quaternion from angle and axis
   axis = axis / a
-  angle = wp.atan2(a, wp.dot(vn, z))
+  angle = wp.atan2(a, vec[2])
   quat = axis_angle_to_quat(axis, angle)
 
   return quat

@@ -1,4 +1,4 @@
-<mujoco model="multiflex">
+<mujoco model="rope">
   <option solver="CG" tolerance="1e-6" timestep=".001"/>
 
   <visual>
@@ -29,4 +29,3 @@
     </body>
   </worldbody>
 </mujoco>
-

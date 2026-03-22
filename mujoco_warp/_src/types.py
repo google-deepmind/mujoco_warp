@@ -1897,7 +1897,7 @@ class RenderContext:
     hfield_registry: hfield BVH id to warp mesh mapping
     hfield_bvh_id: hfield BVH ids
     hfield_bounds_size: hfield bounds half-extents
-    flex_mesh_registry: per-flex mesh BVH registry (prevents GC)
+    flex_mesh_registry: per-flex mesh BVH registry (prevents garbage collection)
     flex_rgba: flex rgba
     flex_bvh_id: per-flex BVH ids
     flex_group_root: per-flex group roots (nworld x n_flex_bvh)

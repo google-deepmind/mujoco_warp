@@ -2534,7 +2534,7 @@ def create_render_context(
   nflex = mjm.nflex
   flex_registry = {}
 
-  # Scene BVH flex primitives: 1D → one capsule per edge, 2D/3D → one bbox per flex
+  # Scene BVH flex primitives: 1D → one capsule per edge, 2D/3D → one box per flex
   flex_geom_flexid = []
   flex_geom_edgeid = []
   flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
