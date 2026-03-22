@@ -318,26 +318,25 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     ],
   )
 
-  if rc.bvh_nflexgeom > 0:
-    flexvert_xpos = wp.array(np.tile(mjd.flexvert_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
-    wp.launch(
-      kernel=_compute_flex_bvh_bounds,
-      dim=(nworld, rc.bvh_nflexgeom),
-      inputs=[
-        flex_vertadr,
-        flex_vertnum,
-        flex_edge,
-        flex_radius,
-        flexvert_xpos,
-        rc.flex_geom_flexid,
-        rc.flex_geom_edgeid,
-        rc.bvh_ngeom,
-        total_bvh_size,
-        rc.lower,
-        rc.upper,
-        rc.group,
-      ],
-    )
+  flexvert_xpos = wp.array(np.tile(mjd.flexvert_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
+  wp.launch(
+    kernel=_compute_flex_bvh_bounds,
+    dim=(nworld, rc.bvh_nflexgeom),
+    inputs=[
+      flex_vertadr,
+      flex_vertnum,
+      flex_edge,
+      flex_radius,
+      flexvert_xpos,
+      rc.flex_geom_flexid,
+      rc.flex_geom_edgeid,
+      rc.bvh_ngeom,
+      total_bvh_size,
+      rc.lower,
+      rc.upper,
+      rc.group,
+    ],
+  )
 
   bvh = wp.Bvh(rc.lower, rc.upper, groups=rc.group, constructor="sah")
 
@@ -599,22 +598,34 @@ def build_hfield_bvh(
 @wp.kernel
 def accumulate_flex_vertex_normals(
   # Model:
+  nflex: int,
+  flex_dim: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
+  flex_elemadr: wp.array(dtype=int),
+  flex_elemnum: wp.array(dtype=int),
   flex_elemdataadr: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
   # Data in:
   flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
-  # In:
-  flex_id: int,
   # Out:
   flexvert_norm_out: wp.array2d(dtype=wp.vec3),
 ):
   """Accumulate per-vertex normals by summing adjacent face normals."""
   worldid, elemid = wp.tid()
 
-  elem_adr = flex_elemdataadr[flex_id]
-  vert_adr = flex_vertadr[flex_id]
-  elem_base = elem_adr + elemid * 3
+  for i in range(nflex):
+    locid = elemid - flex_elemadr[i]
+    if locid >= 0 and locid < flex_elemnum[i]:
+      f = i
+      break
+
+  if flex_dim[f] == 1 or flex_dim[f] == 3:
+    return
+
+  local_elemid = elemid - flex_elemadr[f]
+  elem_adr = flex_elemdataadr[f]
+  vert_adr = flex_vertadr[f]
+  elem_base = elem_adr + local_elemid * 3
   i0 = vert_adr + flex_elem[elem_base + 0]
   i1 = vert_adr + flex_elem[elem_base + 1]
   i2 = vert_adr + flex_elem[elem_base + 2]
@@ -964,6 +975,9 @@ def build_flex_bvh(
   """Create a Warp mesh BVH for a single 2D or 3D flex."""
   nflexvert = mjm.nflexvert
 
+  flex_dim = wp.array(mjm.flex_dim, dtype=int)
+  flex_elemadr = wp.array(mjm.flex_elemadr, dtype=int)
+  flex_elemnum = wp.array(mjm.flex_elemnum, dtype=int)
   flex_elem = wp.array(mjm.flex_elem, dtype=int)
   flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
   flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
@@ -987,8 +1001,8 @@ def build_flex_bvh(
 
   wp.launch(
     kernel=accumulate_flex_vertex_normals,
-    dim=(nworld, nelem),
-    inputs=[flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos, flex_id],
+    dim=(nworld, mjm.nflexelem),
+    inputs=[mjm.nflex, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
     outputs=[flexvert_norm],
   )
 
@@ -1072,17 +1086,21 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit per-flex BVHs."""
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
 
-  flex_elemnum_np = m.flex_elemnum.numpy()
-
-  for i in range(m.nflex):
-    if rc.flex_dim_np[i] == 1:
-      continue
-    wp.launch(
-      kernel=accumulate_flex_vertex_normals,
-      dim=(d.nworld, int(flex_elemnum_np[i])),
-      inputs=[m.flex_vertadr, m.flex_elemdataadr, m.flex_elem, d.flexvert_xpos, i],
-      outputs=[flexvert_norm],
-    )
+  wp.launch(
+    kernel=accumulate_flex_vertex_normals,
+    dim=(d.nworld, m.nflexelem),
+    inputs=[
+      m.nflex,
+      m.flex_dim,
+      m.flex_vertadr,
+      m.flex_elemadr,
+      m.flex_elemnum,
+      m.flex_elemdataadr,
+      m.flex_elem,
+      d.flexvert_xpos,
+    ],
+    outputs=[flexvert_norm],
+  )
 
   wp.launch(
     kernel=normalize_vertex_normals,
