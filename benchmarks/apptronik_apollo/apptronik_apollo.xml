@@ -8,7 +8,7 @@
    <statistic center="1 -0.8 1.1" extent=".35" />
 
     <default>
-        <geom contype="0" conaffinity="0" condim="3" margin="0.000500" solref="0.005 1" group="1"/>
+        <geom contype="0" conaffinity="0" condim="3" solref="0.005 1" group="1"/>
         <equality solref="0.005 1" solimp="0.99 0.999 0.00001"/>
         <joint limited="true"/>
         <light castshadow="true" diffuse="0.8 0.8 0.8"/>
