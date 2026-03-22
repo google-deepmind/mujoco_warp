@@ -28,7 +28,6 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -399,7 +398,7 @@ class ForwardTest(parameterized.TestCase):
     nefc = d.nefc.numpy()[0]
     if nefc > 0:
       nv = m.nv
-      if SPARSE_CONSTRAINT_JACOBIAN:
+      if m.is_sparse:
         # Reconstruct dense J from sparse representation
         d_efc_J = np.zeros((nefc, nv))
         mujoco.mju_sparse2dense(
@@ -649,6 +648,12 @@ class ForwardTest(parameterized.TestCase):
     t_next = timestamp + mjm.opt.timestep
     np.testing.assert_allclose(d.act.numpy()[0, 0], np.cos(2 * np.pi * frequency * t_next), atol=1e-3)
     np.testing.assert_allclose(d.act.numpy()[0, 1], np.sin(2 * np.pi * frequency * t_next), atol=1e-3)
+
+  def test_multiflex(self):
+    """Tests multiflex model with different flex dimensions."""
+    _, _, m, d = test_data.fixture("flex/multiflex.xml")
+
+    mjw.forward(m, d)
 
 
 if __name__ == "__main__":

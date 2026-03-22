@@ -18,7 +18,6 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
@@ -1791,12 +1790,14 @@ def _contact_pyramidal(
     da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
     if is_sparse:
-      # count non-zeros
       pda1 = da1
       pda2 = da2
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
+        # skip common dofs
+        if pda1 == da and pda2 == da:
+          break
         if pda1 == da:
           pda1 = dof_parentid[pda1]
         if pda2 == da:
@@ -1820,7 +1821,7 @@ def _contact_pyramidal(
 
     while True:
       if is_sparse:
-        if da1 < 0 and da2 < 0:
+        if nnz >= rownnz:
           break
       else:
         if dofid < 0:
@@ -1880,6 +1881,8 @@ def _contact_pyramidal(
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
+        if is_sparse and nnz >= rownnz:
+          break
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
@@ -2050,6 +2053,9 @@ def _contact_elliptic(
       rownnz = int(0)
       while pda1 >= 0 or pda2 >= 0:
         da = wp.max(pda1, pda2)
+        # skip common dofs
+        if pda1 == da and pda2 == da:
+          break
         if pda1 == da:
           pda1 = dof_parentid[pda1]
         if pda2 == da:
@@ -2073,7 +2079,7 @@ def _contact_elliptic(
 
     while True:
       if is_sparse:
-        if da1 < 0 and da2 < 0:
+        if nnz >= rownnz:
           break
       else:
         if dofid < 0:
@@ -2121,6 +2127,8 @@ def _contact_elliptic(
         else:
           efc_J_out[worldid, efcid, dofid] = J
         Jqvel += J * qvel_in[worldid, dofid]
+        if is_sparse and nnz >= rownnz:
+          break
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
@@ -2228,7 +2236,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_connect_adr,
           d.qvel,
           d.eq_active,
@@ -2282,7 +2290,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_wld_adr,
           d.qvel,
           d.eq_active,
@@ -2329,7 +2337,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_data,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_jnt_adr,
           d.qpos,
           d.qvel,
@@ -2372,7 +2380,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.ten_J_colind,
           m.tendon_length0,
           m.tendon_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.eq_ten_adr,
           d.qvel,
           d.eq_active,
@@ -2401,7 +2409,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _equality_flex(SPARSE_CONSTRAINT_JACOBIAN),
+        _equality_flex(m.is_sparse),
         dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
         inputs=[
           m.nv,
@@ -2452,7 +2460,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.dof_solimp,
           m.dof_frictionloss,
           m.dof_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           d.qvel,
           d.njmax,
           d.njmax_nnz,
@@ -2490,7 +2498,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_solimp_fri,
           m.tendon_frictionloss,
           m.tendon_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           d.qvel,
           d.ten_J,
           d.njmax,
@@ -2531,7 +2539,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_range,
           m.jnt_margin,
           m.dof_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.jnt_limited_ball_adr,
           d.qpos,
           d.qvel,
@@ -2571,7 +2579,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_range,
           m.jnt_margin,
           m.dof_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.jnt_limited_slide_hinge_adr,
           d.qpos,
           d.qvel,
@@ -2612,7 +2620,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_range,
           m.tendon_margin,
           m.tendon_invweight0,
-          SPARSE_CONSTRAINT_JACOBIAN,
+          m.is_sparse,
           m.tendon_limited_adr,
           d.qvel,
           d.ten_J,
@@ -2661,7 +2669,7 @@ def make_constraint(m: types.Model, d: types.Data):
             m.geom_bodyid,
             m.flex_vertadr,
             m.flex_vertbodyid,
-            SPARSE_CONSTRAINT_JACOBIAN,
+            m.is_sparse,
             d.qvel,
             d.subtree_com,
             d.cdof,
@@ -2720,7 +2728,7 @@ def make_constraint(m: types.Model, d: types.Data):
             m.geom_bodyid,
             m.flex_vertadr,
             m.flex_vertbodyid,
-            SPARSE_CONSTRAINT_JACOBIAN,
+            m.is_sparse,
             d.qvel,
             d.subtree_com,
             d.cdof,

@@ -21,7 +21,6 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -263,6 +262,7 @@ def _flex_edges(
   # Model:
   nflex: int,
   body_rootid: wp.array(dtype=int),
+  body_dofnum: wp.array(dtype=int),
   body_dofadr: wp.array(dtype=int),
   flex_vertadr: wp.array(dtype=int),
   flex_edgeadr: wp.array(dtype=int),
@@ -302,34 +302,56 @@ def _flex_edges(
   b1 = flex_vertbodyid[vbase0]
   b2 = flex_vertbodyid[vbase1]
 
-  dofi = body_dofadr[b1]
-  dofj = body_dofadr[b2]
+  dofnum1 = body_dofnum[b1]
+  dofnum2 = body_dofnum[b2]
 
-  vel1 = wp.vec3(qvel_in[worldid, dofi], qvel_in[worldid, dofi + 1], qvel_in[worldid, dofi + 2])
-  vel2 = wp.vec3(qvel_in[worldid, dofj], qvel_in[worldid, dofj + 1], qvel_in[worldid, dofj + 2])
-  flexedge_velocity_out[worldid, edgeid] = wp.dot(vel2 - vel1, edge)
+  # velocity via Jacobian: sum_k J_k * qvel_k for each body
+  vel = float(0.0)
+  if dofnum1 > 0:
+    dofi = body_dofadr[b1]
+    offset1 = pos1 - wp.vec3(subtree_com_in[worldid, body_rootid[b1]])
+    for k in range(dofnum1):
+      cdof = cdof_in[worldid, dofi + k]
+      cdof_ang = wp.spatial_top(cdof)
+      cdof_lin = wp.spatial_bottom(cdof)
+      jacp1 = cdof_lin + wp.cross(cdof_ang, offset1)
+      vel -= wp.dot(jacp1, edge) * qvel_in[worldid, dofi + k]
+  if dofnum2 > 0:
+    dofj = body_dofadr[b2]
+    offset2 = pos2 - wp.vec3(subtree_com_in[worldid, body_rootid[b2]])
+    for k in range(dofnum2):
+      cdof = cdof_in[worldid, dofj + k]
+      cdof_ang = wp.spatial_top(cdof)
+      cdof_lin = wp.spatial_bottom(cdof)
+      jacp2 = cdof_lin + wp.cross(cdof_ang, offset2)
+      vel += wp.dot(jacp2, edge) * qvel_in[worldid, dofj + k]
+  flexedge_velocity_out[worldid, edgeid] = vel
 
   rowadr = flexedge_J_rowadr[edgeid]
-
-  # compute offsets once per body (avoids 12 redundant tree-ancestry walks in jac_dof)
-  offset1 = pos1 - wp.vec3(subtree_com_in[worldid, body_rootid[b1]])
-  offset2 = pos2 - wp.vec3(subtree_com_in[worldid, body_rootid[b2]])
+  nnz_offset = 0
 
   # body1 DOFs: b1 is in subtree, b2 is not -> jacdif = 0 - jacp1 = -jacp1
-  for k in range(3):
-    cdof = cdof_in[worldid, dofi + k]
-    cdof_ang = wp.spatial_top(cdof)
-    cdof_lin = wp.spatial_bottom(cdof)
-    jacp1 = cdof_lin + wp.cross(cdof_ang, offset1)
-    flexedge_J_out[worldid, rowadr + k] = wp.dot(-jacp1, edge)
+  if dofnum1 > 0:
+    dofi = body_dofadr[b1]
+    offset1 = pos1 - wp.vec3(subtree_com_in[worldid, body_rootid[b1]])
+    for k in range(dofnum1):
+      cdof = cdof_in[worldid, dofi + k]
+      cdof_ang = wp.spatial_top(cdof)
+      cdof_lin = wp.spatial_bottom(cdof)
+      jacp1 = cdof_lin + wp.cross(cdof_ang, offset1)
+      flexedge_J_out[worldid, rowadr + nnz_offset + k] = wp.dot(-jacp1, edge)
+    nnz_offset += dofnum1
 
   # body2 DOFs: b2 is in subtree, b1 is not -> jacdif = jacp2 - 0 = jacp2
-  for k in range(3):
-    cdof = cdof_in[worldid, dofj + k]
-    cdof_ang = wp.spatial_top(cdof)
-    cdof_lin = wp.spatial_bottom(cdof)
-    jacp2 = cdof_lin + wp.cross(cdof_ang, offset2)
-    flexedge_J_out[worldid, rowadr + 3 + k] = wp.dot(jacp2, edge)
+  if dofnum2 > 0:
+    dofj = body_dofadr[b2]
+    offset2 = pos2 - wp.vec3(subtree_com_in[worldid, body_rootid[b2]])
+    for k in range(dofnum2):
+      cdof = cdof_in[worldid, dofj + k]
+      cdof_ang = wp.spatial_top(cdof)
+      cdof_lin = wp.spatial_bottom(cdof)
+      jacp2 = cdof_lin + wp.cross(cdof_ang, offset2)
+      flexedge_J_out[worldid, rowadr + nnz_offset + k] = wp.dot(jacp2, edge)
 
 
 @event_scope
@@ -416,6 +438,7 @@ def flex(m: Model, d: Data):
     inputs=[
       m.nflex,
       m.body_rootid,
+      m.body_dofnum,
       m.body_dofadr,
       m.flex_vertadr,
       m.flex_edgeadr,
@@ -2656,7 +2679,7 @@ def transmission(m: Model, d: Data):
         d.efc.J_colind,
         d.efc.J,
         d.nacon,
-        SPARSE_CONSTRAINT_JACOBIAN,
+        m.is_sparse,
       ],
       outputs=[d.actuator_moment, ncon],
     )

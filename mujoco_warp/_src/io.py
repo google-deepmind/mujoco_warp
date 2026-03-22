@@ -28,7 +28,6 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import SPARSE_CONSTRAINT_JACOBIAN
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
@@ -910,7 +909,7 @@ def make_data(
   sizes["njmax"] = njmax
 
   if njmax_nnz is None:
-    if SPARSE_CONSTRAINT_JACOBIAN:
+    if is_sparse(mjm):
       njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
     else:
       njmax_nnz = njmax * mjm.nv
@@ -919,7 +918,7 @@ def make_data(
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
   efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
 
-  if SPARSE_CONSTRAINT_JACOBIAN:
+  if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, njmax), dtype=int)
     efc.J_colind = wp.zeros((nworld, 1, njmax_nnz), dtype=int)
@@ -1082,7 +1081,7 @@ def put_data(
   sizes["njmax"] = njmax
 
   if njmax_nnz is None:
-    if SPARSE_CONSTRAINT_JACOBIAN:
+    if is_sparse(mjm):
       njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
     else:
       njmax_nnz = njmax * mjm.nv
@@ -1134,7 +1133,7 @@ def put_data(
 
   efc = types.Constraint(**efc_kwargs)
 
-  if SPARSE_CONSTRAINT_JACOBIAN:
+  if is_sparse(mjm):
     # TODO(team): process efc_J sparsity structure for nv row shift
     efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
     efc.J_rowadr = wp.array(
@@ -1374,7 +1373,7 @@ def get_data_into(
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
-    if SPARSE_CONSTRAINT_JACOBIAN:
+    if is_sparse(mjm):
       efc_J = np.zeros((nefc, mjm.nv))
       mujoco.mju_sparse2dense(
         efc_J,
@@ -2625,6 +2624,7 @@ def create_render_context(
   cam_res: list[tuple[int, int]] | tuple[int, int] | None = None,
   render_rgb: list[bool] | bool | None = None,
   render_depth: list[bool] | bool | None = None,
+  render_seg: list[bool] | bool | None = None,
   use_textures: bool = True,
   use_shadows: bool = False,
   enabled_geom_groups: list[int] = [0, 1, 2],
@@ -2641,6 +2641,8 @@ def create_render_context(
              MuJoCo model values.
     render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
     render_depth: Whether to render depth images. If None, uses the MuJoCo model values.
+    render_seg: Whether to render segmentation (per-pixel geom IDs). If None,
+      uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
     enabled_geom_groups: The geom groups to render.
@@ -2789,15 +2791,22 @@ def create_render_context(
   if isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
 
-  assert len(render_rgb) == ncam and len(render_depth) == ncam, (
-    f"render_rgb and render_depth must be a bool or a list of bools with length {ncam}"
+  if render_seg is None:
+    render_seg = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_SEG for i in active_cam_indices]
+  elif isinstance(render_seg, bool):
+    render_seg = [render_seg] * ncam
+
+  assert len(render_rgb) == ncam and len(render_depth) == ncam and len(render_seg) == ncam, (
+    f"render_rgb, render_depth, and render_seg must be a bool or a list of bools with length {ncam}"
   )
 
   rgb_adr = -1 * np.ones(ncam, dtype=int)
   depth_adr = -1 * np.ones(ncam, dtype=int)
+  seg_adr = -1 * np.ones(ncam, dtype=int)
   cam_res_np = cam_res_arr.numpy()
   ri = 0
   di = 0
+  si = 0
   total = 0
 
   for idx in range(ncam):
@@ -2807,6 +2816,9 @@ def create_render_context(
     if render_depth[idx]:
       depth_adr[idx] = di
       di += cam_res_np[idx][0] * cam_res_np[idx][1]
+    if render_seg[idx]:
+      seg_adr[idx] = si
+      si += cam_res_np[idx][0] * cam_res_np[idx][1]
 
     total += cam_res_np[idx][0] * cam_res_np[idx][1]
 
@@ -2888,6 +2900,9 @@ def create_render_context(
     depth_adr=wp.array(depth_adr, dtype=int),
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
+    seg_data=wp.zeros((nworld, max(si, 1)), dtype=int),
+    seg_adr=wp.array(seg_adr, dtype=int),
+    render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
     total_rays=int(total),
   )

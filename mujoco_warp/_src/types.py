@@ -33,9 +33,6 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
-# TODO(team): remove after improving performance for sparse constraint jacobian
-SPARSE_CONSTRAINT_JACOBIAN = False
-
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
@@ -983,7 +980,8 @@ class Model:
     flex_edgenum: number of edges                            (nflex,)
     flex_elemadr: first element address                      (nflex,)
     flex_elemnum: number of elements                         (nflex,)
-    flex_elemedgeadr: first element address                  (nflex,)
+    flex_elemdataadr: first element vertex id address        (nflex,)
+    flex_elemedgeadr: first element edge id address          (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
@@ -1369,6 +1367,7 @@ class Model:
   flex_edgenum: array("nflex", int)
   flex_elemadr: array("nflex", int)
   flex_elemnum: array("nflex", int)
+  flex_elemdataadr: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
@@ -1926,6 +1925,9 @@ class RenderContext:
     depth_size: per-camera depth buffer sizes
     render_rgb: per-camera RGB render flags
     render_depth: per-camera depth render flags
+    seg_data: segmentation data (per-pixel geom IDs)
+    seg_adr: segmentation addresses
+    render_seg: per-camera segmentation render flags
     znear: near plane distance
     total_rays: total number of rays
   """
@@ -1978,5 +1980,8 @@ class RenderContext:
   depth_adr: array("ncam", int)
   render_rgb: array("ncam", bool)
   render_depth: array("ncam", bool)
+  seg_data: array("*", int)
+  seg_adr: array("ncam", int)
+  render_seg: array("ncam", bool)
   znear: float
   total_rays: int

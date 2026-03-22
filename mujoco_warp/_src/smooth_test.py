@@ -549,17 +549,17 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
 
   def test_flex_1d_pinned(self):
-    """Tests that 1D flex vertices pinned to a body are correctly positioned.
+    """Tests that 1D flex with pinned vertex computes correct Jacobian and velocity.
 
-    This is a regression test for a bug where non-centered flex vertices were
-    placed at the body origin instead of applying local vertex transformations.
+    This is a regression test for issue #1229 where the _flex_edges kernel
+    assumed every vertex body has 3 DOFs, causing garbage reads for pinned
+    vertices (body_dofnum=0, body_dofadr=-1) and out-of-plane spinning.
     """
     xml = """
     <mujoco>
       <option gravity="0 0 -10"/>
       <worldbody>
         <body name="rope" pos="0.5 0.5 1.0">
-          <freejoint/>
           <geom type="sphere" size="0.02" mass="0.01"/>
           <flexcomp name="line" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
                     radius="0.01" dim="1" mass="1">
@@ -578,6 +578,8 @@ class SmoothTest(parameterized.TestCase):
 
     d.flexvert_xpos.fill_(wp.inf)
     d.flexedge_length.fill_(wp.inf)
+    d.flexedge_velocity.fill_(wp.inf)
+    d.flexedge_J.fill_(wp.inf)
 
     mjw.kinematics(m, d)
     mjw.com_pos(m, d)
@@ -588,6 +590,26 @@ class SmoothTest(parameterized.TestCase):
 
     _assert_eq(d.flexvert_xpos.numpy()[0], mjd.flexvert_xpos, "flexvert_xpos")
     _assert_eq(d.flexedge_length.numpy()[0], mjd.flexedge_length, "flexedge_length")
+    _assert_eq(d.flexedge_velocity.numpy()[0], mjd.flexedge_velocity, "flexedge_velocity")
+
+    # Compare dense Jacobians
+    rownnz = mjm.flexedge_J_rownnz
+    rowadr = mjm.flexedge_J_rowadr
+    colind = mjm.flexedge_J_colind.reshape(-1)
+
+    mj_flexedge_J = np.zeros((mjm.nflexedge, mjm.nv), dtype=float)
+    mujoco.mju_sparse2dense(mj_flexedge_J, mjd.flexedge_J.ravel(), rownnz, rowadr, colind)
+
+    flexedge_J = np.zeros((mjm.nflexedge, mjm.nv))
+    mujoco.mju_sparse2dense(
+      flexedge_J,
+      d.flexedge_J.numpy()[0].reshape(-1),
+      m.flexedge_J_rownnz.numpy(),
+      m.flexedge_J_rowadr.numpy(),
+      m.flexedge_J_colind.numpy(),
+    )
+
+    _assert_eq(flexedge_J, mj_flexedge_J, "flexedge_J")
 
 
 if __name__ == "__main__":
