@@ -2739,7 +2739,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Backward substitution
     for level in range(NLEVELS):
-      level_idx = NLEVELS - 1 - level
+      level_idx = level
       level_offset = level_offsets[level_idx]
       level_size = level_offsets[level_idx + 1] - level_offset
 
