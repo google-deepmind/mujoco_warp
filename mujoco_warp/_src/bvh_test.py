@@ -37,6 +37,8 @@ class MinimalRenderContext:
   enabled_geom_ids: wp.array
   mesh_bounds_size: wp.array
   hfield_bounds_size: wp.array
+  flex_geom_flexid: wp.array
+  flex_geom_edgeid: wp.array
   lower: wp.array
   upper: wp.array
   group: wp.array
@@ -58,6 +60,8 @@ def _create_minimal_context(mjm, nworld, enabled_geom_groups=None):
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_bounds_size=wp.zeros(max(mjm.nmesh, 1), dtype=wp.vec3),
     hfield_bounds_size=wp.zeros(max(mjm.nhfield, 1), dtype=wp.vec3),
+    flex_geom_flexid=wp.zeros(max(mjm.nflex, 1), dtype=int),
+    flex_geom_edgeid=wp.zeros(max(mjm.nflex, 1), dtype=int),
     lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
     upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
     group=wp.zeros(nworld * bvh_ngeom, dtype=int),
@@ -214,14 +218,17 @@ class BvhTest(absltest.TestCase):
     )
     flex_elem = wp.array([0, 1, 2, 1, 3, 2], dtype=int)
     flex_elemdataadr = wp.array([0], dtype=int)
+    flex_elemadr = wp.array([0], dtype=int)
+    flex_elemnum = wp.array([len(flex_elem)], dtype=int)
     flex_vertadr = wp.array([0], dtype=int)
+    flex_dim = wp.array([2], dtype=int)
     flex_id = 0
     flexvert_norm = wp.zeros((nworld, nvert), dtype=wp.vec3)
 
     wp.launch(
       kernel=bvh.accumulate_flex_vertex_normals,
       dim=(nworld, nelem),
-      inputs=[flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos, flex_id],
+      inputs=[1, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
       outputs=[flexvert_norm],
     )
 
