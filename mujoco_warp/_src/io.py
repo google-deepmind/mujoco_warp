@@ -1968,6 +1968,95 @@ def _resolve_dampratio(
 
 
 @wp.kernel
+def _set_eq_connect_data(
+  eq_type: wp.array(dtype=int),
+  eq_objtype: wp.array(dtype=int),
+  eq_obj1id: wp.array(dtype=int),
+  eq_obj2id: wp.array(dtype=int),
+  xpos: wp.array2d(dtype=wp.vec3),
+  xmat: wp.array2d(dtype=wp.mat33),
+  eq_data: wp.array2d(dtype=types.vec11),
+):
+  """Recompute eq_data[3:6] for CONNECT constraints (body2-frame anchor).
+
+  For each body-based CONNECT constraint, transforms the body1-frame anchor
+  (eq_data[0:3]) to world coordinates, then into body2's local frame, and
+  writes the result to eq_data[3:6].  Mirrors the C MuJoCo ``set0()`` logic
+  in ``engine_setconst.c``.
+
+  For WELD constraints whose quaternion data (eq_data[6:10]) is all zero,
+  computes the relative pose between the two bodies.
+  """
+  worldid, eqid = wp.tid()
+
+  eqtype = eq_type[eqid]
+  objtype = eq_objtype[eqid]
+
+  # only body-based constraints
+  if objtype != int(types.ObjType.BODY):
+    return
+
+  data_id = worldid % eq_data.shape[0]
+  data = eq_data[data_id, eqid]
+
+  if eqtype == int(types.EqType.CONNECT):
+    id1 = eq_obj1id[eqid]
+    id2 = eq_obj2id[eqid]
+
+    # anchor in body1 local frame
+    anchor = wp.vec3(data[0], data[1], data[2])
+
+    # body1-local -> world: pos = xmat[b1] * anchor + xpos[b1]
+    pos = xmat[worldid, id1] * anchor + xpos[worldid, id1]
+
+    # world -> body2-local: anchor2 = xmat[b2]^T * (pos - xpos[b2])
+    anchor2 = wp.transpose(xmat[worldid, id2]) * (pos - xpos[worldid, id2])
+
+    data[3] = anchor2[0]
+    data[4] = anchor2[1]
+    data[5] = anchor2[2]
+    eq_data[data_id, eqid] = data
+
+  elif eqtype == int(types.EqType.WELD):
+    # skip if user has set any quaternion data (data[6:10] non-zero)
+    has_quat = float(0.0)
+    for i in range(4):
+      has_quat += data[6 + i] * data[6 + i]
+    if has_quat > 0.0:
+      # normalize the quaternion
+      norm = wp.sqrt(has_quat)
+      for i in range(4):
+        data[6 + i] = data[6 + i] / norm
+      eq_data[data_id, eqid] = data
+      return
+
+    id1 = eq_obj1id[eqid]
+    id2 = eq_obj2id[eqid]
+
+    # anchor is in body2 local frame; transform to world
+    anchor = wp.vec3(data[0], data[1], data[2])
+    pos = xmat[worldid, id2] * anchor + xpos[worldid, id2]
+
+    # data[3:6] = anchor in body1 local frame
+    anchor1 = wp.transpose(xmat[worldid, id1]) * (pos - xpos[worldid, id1])
+    data[3] = anchor1[0]
+    data[4] = anchor1[1]
+    data[5] = anchor1[2]
+
+    # data[6:10] = neg(xquat1) * xquat2 = relative orientation
+    # Compute from rotation matrices: relmat = xmat[b1]^T * xmat[b2]
+    relmat = wp.transpose(xmat[worldid, id1]) * xmat[worldid, id2]
+    relquat = wp.quat_from_matrix(relmat)
+    # MuJoCo uses wxyz quaternion order
+    data[6] = relquat[3]  # w
+    data[7] = relquat[0]  # x
+    data[8] = relquat[1]  # y
+    data[9] = relquat[2]  # z
+
+    eq_data[data_id, eqid] = data
+
+
+@wp.kernel
 def _set_length_range(
   actuator_trntype: wp.array(dtype=int),
   actuator_trnid: wp.array(dtype=wp.vec2i),
@@ -2046,6 +2135,10 @@ def set_const_0(m: types.Model, d: types.Data):
     - actuator_biasprm[2] (dampratio resolution): for position actuators where
       gainprm[0] == -biasprm[1] and biasprm[2] > 0, converts dampratio to
       damping via biasprm[2] = -dampratio * 2 * sqrt(kp * reflected_mass)
+    - eq_data: for body-based CONNECT constraints, computes the body2-frame
+      anchor (data[3:6]) from the body1-frame anchor (data[0:3]).  For
+      body-based WELD constraints with unset quaternion data, computes the
+      relative pose (data[3:10]).
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -2215,6 +2308,22 @@ def set_const_0(m: types.Model, d: types.Data):
         m.nv,
       ],
       outputs=[m.actuator_biasprm],
+    )
+
+  # compute missing eq_data for body constraints (CONNECT and WELD)
+  if m.neq > 0:
+    wp.launch(
+      _set_eq_connect_data,
+      dim=(d.nworld, m.neq),
+      inputs=[
+        m.eq_type,
+        m.eq_objtype,
+        m.eq_obj1id,
+        m.eq_obj2id,
+        d.xpos,
+        d.xmat,
+      ],
+      outputs=[m.eq_data],
     )
 
   wp.copy(d.qpos, qpos_saved)

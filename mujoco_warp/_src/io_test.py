@@ -1251,6 +1251,104 @@ class IOTest(parameterized.TestCase):
     for i in range(mjm.nbody):
       _assert_eq(m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], f"body_invweight0[{i}]")
 
+  def test_set_const_eq_data_connect(self):
+    """Test set_const_0 recomputes eq_data for CONNECT constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="b1" pos="1 0 0">
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="2 0 0">
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="b1" body2="b2" anchor="0.5 0 0"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # Overwrite eq_data[3:6] with wrong values.
+    eq_data_np = m.eq_data.numpy().copy()
+    eq_data_np[0, 0, 3:6] = [99.0, 99.0, 99.0]
+    m.eq_data.assign(eq_data_np)
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const_0(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0, 0, :6], mjm.eq_data[0, :6], "eq_data_connect")
+
+  def test_set_const_eq_data_weld(self):
+    """Test set_const_0 recomputes eq_data for WELD constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="b1" pos="1 0 0" euler="0 0 45">
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="2 0 0" euler="0 0 90">
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="b1" body2="b2" anchor="0.3 0.1 0"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # Zero out derived fields (data[3:10]) to force recomputation.
+    eq_data_np = m.eq_data.numpy().copy()
+    eq_data_np[0, 0, 3:10] = 0.0
+    m.eq_data.assign(eq_data_np)
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const_0(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0, 0, :11], mjm.eq_data[0, :11], "eq_data_weld")
+
+  def test_set_const_eq_data_anchor_update(self):
+    """Test set_const_0 recomputes eq_data after modifying the anchor."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="b1" pos="1 0 0">
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="2 0 0">
+          <joint type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="b1" body2="b2" anchor="1 0 0"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # Change anchor from (1,0,0) to (0.5,0,0) on both C and Warp models.
+    mjm.eq_data[0, 0:3] = [0.5, 0.0, 0.0]
+
+    eq_data_np = m.eq_data.numpy().copy()
+    eq_data_np[0, 0, 0:3] = [0.5, 0.0, 0.0]
+    m.eq_data.assign(eq_data_np)
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const_0(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0, 0, :6], mjm.eq_data[0, :6], "eq_data_connect_updated")
+
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   def test_set_const_graph_capture(self):
     """Test that set_const_0 is compatible with CUDA graph capture."""
