@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -30,18 +31,24 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _qderiv_actuator_passive_vel(
   # Model:
+  opt_timestep: wp.array(dtype=float),
   actuator_dyntype: wp.array(dtype=int),
   actuator_gaintype: wp.array(dtype=int),
   actuator_biastype: wp.array(dtype=int),
   actuator_actadr: wp.array(dtype=int),
   actuator_actnum: wp.array(dtype=int),
   actuator_forcelimited: wp.array(dtype=bool),
+  actuator_actlimited: wp.array(dtype=bool),
+  actuator_dynprm: wp.array2d(dtype=vec10f),
   actuator_gainprm: wp.array2d(dtype=vec10f),
   actuator_biasprm: wp.array2d(dtype=vec10f),
+  actuator_actearly: wp.array(dtype=bool),
   actuator_forcerange: wp.array2d(dtype=wp.vec2),
+  actuator_actrange: wp.array2d(dtype=wp.vec2),
   # Data in:
   act_in: wp.array2d(dtype=float),
   ctrl_in: wp.array2d(dtype=float),
+  act_dot_in: wp.array2d(dtype=float),
   actuator_force_in: wp.array2d(dtype=float),
   # Out:
   vel_out: wp.array2d(dtype=float),
@@ -76,9 +83,24 @@ def _qderiv_actuator_passive_vel(
   vel = float(bias)
   if actuator_dyntype[actid] != DynType.NONE:
     if gain != 0.0:
-      act_first = actuator_actadr[actid]
-      act_last = act_first + actuator_actnum[actid] - 1
-      vel += gain * act_in[worldid, act_last]
+      act_adr = actuator_actadr[actid] + actuator_actnum[actid] - 1
+
+      # use next activation if actearly is set (matching forward pass)
+      if actuator_actearly[actid]:
+        act = next_act(
+          opt_timestep[worldid % opt_timestep.shape[0]],
+          actuator_dyntype[actid],
+          actuator_dynprm[worldid % actuator_dynprm.shape[0], actid],
+          actuator_actrange[worldid % actuator_actrange.shape[0], actid],
+          act_in[worldid, act_adr],
+          act_dot_in[worldid, act_adr],
+          1.0,
+          actuator_actlimited[actid],
+        )
+      else:
+        act = act_in[worldid, act_adr]
+
+      vel += gain * act
   else:
     if gain != 0.0:
       vel += gain * ctrl_in[worldid, actid]
@@ -95,10 +117,9 @@ def _nonzero_mask(x: float) -> float:
 
 
 @wp.kernel
-def _qderiv_actuator_passive_actuation_sparse(
+def _qderiv_actuator_passive_actuation_dense(
   # Model:
   nu: int,
-  is_sparse: bool,
   # Data in:
   moment_rownnz_in: wp.array2d(dtype=int),
   moment_rowadr_in: wp.array2d(dtype=int),
@@ -142,12 +163,63 @@ def _qderiv_actuator_passive_actuation_sparse(
 
     qderiv_contrib += moment_i * moment_j * vel
 
-  if is_sparse:
-    qDeriv_out[worldid, 0, elemid] = qderiv_contrib
-  else:
-    qDeriv_out[worldid, dofiid, dofjid] = qderiv_contrib
-    if dofiid != dofjid:
-      qDeriv_out[worldid, dofjid, dofiid] = qderiv_contrib
+  qDeriv_out[worldid, dofiid, dofjid] = qderiv_contrib
+  if dofiid != dofjid:
+    qDeriv_out[worldid, dofjid, dofiid] = qderiv_contrib
+
+
+@wp.kernel
+def _qderiv_actuator_passive_actuation_sparse(
+  # Model:
+  M_rownnz: wp.array(dtype=int),
+  M_rowadr: wp.array(dtype=int),
+  # Data in:
+  moment_rownnz_in: wp.array2d(dtype=int),
+  moment_rowadr_in: wp.array2d(dtype=int),
+  moment_colind_in: wp.array2d(dtype=int),
+  actuator_moment_in: wp.array2d(dtype=float),
+  # In:
+  vel_in: wp.array2d(dtype=float),
+  qMj: wp.array(dtype=int),
+  # Out:
+  qDeriv_out: wp.array3d(dtype=float),
+):
+  worldid, actid = wp.tid()
+
+  vel = vel_in[worldid, actid]
+  if vel == 0.0:
+    return
+
+  rownnz = moment_rownnz_in[worldid, actid]
+  rowadr = moment_rowadr_in[worldid, actid]
+
+  for i in range(rownnz):
+    rowadri = rowadr + i
+    moment_i = actuator_moment_in[worldid, rowadri]
+    if moment_i == 0.0:
+      continue
+    dofi = moment_colind_in[worldid, rowadri]
+
+    for j in range(i + 1):
+      rowadrj = rowadr + j
+      moment_j = actuator_moment_in[worldid, rowadrj]
+      if moment_j == 0.0:
+        continue
+      dofj = moment_colind_in[worldid, rowadrj]
+
+      contrib = moment_i * moment_j * vel
+
+      # Search the corresponding elemid
+      # TODO: This could be precalculated for improved performance
+      row = dofi
+      col = dofj
+      row_startk = M_rowadr[row] - 1
+      row_nnz = M_rownnz[row]
+      for k in range(row_nnz):
+        row_startk += 1
+        if qMj[row_startk] == col:
+          wp.atomic_add(qDeriv_out[worldid, 0], row_startk, contrib)
+          break
 
 
 @wp.kernel
@@ -268,27 +340,41 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d(dtype=float)):
         _qderiv_actuator_passive_vel,
         dim=(d.nworld, m.nu),
         inputs=[
+          m.opt.timestep,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
           m.actuator_actadr,
           m.actuator_actnum,
           m.actuator_forcelimited,
+          m.actuator_actlimited,
+          m.actuator_dynprm,
           m.actuator_gainprm,
           m.actuator_biasprm,
+          m.actuator_actearly,
           m.actuator_forcerange,
+          m.actuator_actrange,
           d.act,
           d.ctrl,
+          d.act_dot,
           d.actuator_force,
         ],
         outputs=[vel],
       )
-      wp.launch(
-        _qderiv_actuator_passive_actuation_sparse,
-        dim=(d.nworld, qMi.size),
-        inputs=[m.nu, m.is_sparse, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
-        outputs=[out],
-      )
+      if m.is_sparse:
+        wp.launch(
+          _qderiv_actuator_passive_actuation_sparse,
+          dim=(d.nworld, m.nu),
+          inputs=[m.M_rownnz, m.M_rowadr, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMj],
+          outputs=[out],
+        )
+      else:
+        wp.launch(
+          _qderiv_actuator_passive_actuation_dense,
+          dim=(d.nworld, qMi.size),
+          inputs=[m.nu, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, vel, qMi, qMj],
+          outputs=[out],
+        )
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, qMi.size),

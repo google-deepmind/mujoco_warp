@@ -18,7 +18,7 @@
 Usage: mjwarp-testspeed <mjcf XML path> [flags]
 
 Example:
-  mjwarp-testspeed benchmark/humanoid/humanoid.xml --nworld 4096 -o "opt.solver=cg"
+  mjwarp-testspeed benchmarks/humanoid/humanoid.xml --nworld 4096 -o "opt.solver=cg"
 """
 
 import dataclasses
