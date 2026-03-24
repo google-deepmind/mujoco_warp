@@ -1134,23 +1134,27 @@ def put_data(
   efc = types.Constraint(**efc_kwargs)
 
   if is_sparse(mjm):
-    # TODO(team): process efc_J sparsity structure for nv row shift
-    efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
-    efc.J_rowadr = wp.array(
-      np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
-    )
-    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1))[:, :, :njmax_nnz], dtype=int)
-
-    mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
+    J_rownnz = np.zeros(njmax, dtype=np.int32)
+    J_rowadr = np.zeros(njmax, dtype=np.int32)
+    J_colind = np.zeros(njmax_nnz, dtype=np.int32)
+    J = np.zeros(njmax_nnz, dtype=np.float64)
     if mjd.nefc:
       if mujoco.mj_isSparse(mjm):
-        mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+        J_rownnz[: mjd.nefc] = mjd.efc_J_rownnz[: mjd.nefc]
+        J_rowadr[: mjd.nefc] = mjd.efc_J_rowadr[: mjd.nefc]
+        nnz = int(mjd.efc_J_rownnz[: mjd.nefc].sum())
+        J_colind[:nnz] = mjd.efc_J_colind[:nnz]
+        J[:nnz] = mjd.efc_J[:nnz]
       else:
-        mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
-    efc_J = np.zeros((njmax, mjm.nv), dtype=float)
-    efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
-    efc_J_flat = np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1))[:, :, :njmax_nnz]
-    efc.J = wp.array(efc_J_flat, dtype=float)
+        dense_J = mjd.efc_J.reshape((-1, mjm.nv))[: mjd.nefc]
+        mujoco.mju_dense2sparse(
+          J[: mjd.nefc * mjm.nv], dense_J, J_rownnz[: mjd.nefc], J_rowadr[: mjd.nefc], J_colind[: mjd.nefc * mjm.nv]
+        )
+
+    efc.J_rownnz = wp.array(np.tile(J_rownnz, (nworld, 1)), dtype=int)
+    efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)
+    efc.J_colind = wp.array(np.tile(J_colind, (nworld, 1)).reshape((nworld, 1, -1)), dtype=int)
+    efc.J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
@@ -2696,64 +2700,28 @@ def create_render_context(
   hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
   # Flex BVHs
-  flex_bvh_id = wp.uint64(0)
-  flex_group_root = wp.zeros(nworld, dtype=int)
-  flex_mesh = None
-  flex_face_point = None
-  flex_elemdataadr = None
-  flex_shell = None
-  flex_shelldataadr = None
-  flex_faceadr = None
-  flex_nface = 0
-  flex_radius = None
-  flex_vertflexid = None
-  flex_workadr = None
-  flex_worknum = None
-  flex_nwork = 0
+  nflex = mjm.nflex
+  flex_registry = {}
 
-  if mjm.nflex > 0:
-    (
-      fmesh,
-      face_point,
-      flex_group_roots,
-      flex_shell_data,
-      flex_faceadr_data,
-      flex_nface,
-    ) = bvh.build_flex_bvh(mjm, mjd, nworld)
+  # Scene BVH flex primitives: 1D → one capsule per edge, 2D/3D → one box per flex
+  flex_geom_flexid = []
+  flex_geom_edgeid = []
+  flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
+  flex_group_root = np.zeros((nflex, nworld), dtype=int)
 
-    flex_mesh = fmesh
-    flex_bvh_id = fmesh.id
-    flex_face_point = face_point
-    flex_group_root = flex_group_roots
-    flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
-    flex_shell = flex_shell_data
-    flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
-    flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
-    flex_radius = wp.array(mjm.flex_radius, dtype=float)
-
-    # Compute flex_vertflexid: maps each flex vertex to its flex index
-    flex_vertflexid_data = np.zeros(mjm.nflexvert, dtype=np.int32)
-    for flexid in range(mjm.nflex):
-      vert_start = mjm.flex_vertadr[flexid]
-      vert_end = vert_start + mjm.flex_vertnum[flexid]
-      flex_vertflexid_data[vert_start:vert_end] = flexid
-    flex_vertflexid = wp.array(flex_vertflexid_data, dtype=int)
-
-    # precompute work item layout for unified refit kernel
-    nflex = mjm.nflex
-    workadr = np.zeros(nflex, dtype=np.int32)
-    worknum = np.zeros(nflex, dtype=np.int32)
-    cumsum = 0
-    for f in range(nflex):
-      workadr[f] = cumsum
-      if mjm.flex_dim[f] == 2:
-        worknum[f] = mjm.flex_elemnum[f] + mjm.flex_shellnum[f]
-      else:
-        worknum[f] = mjm.flex_shellnum[f]
-      cumsum += worknum[f]
-    flex_workadr = wp.array(workadr, dtype=int)
-    flex_worknum = wp.array(worknum, dtype=int)
-    flex_nwork = int(cumsum)
+  for f in range(nflex):
+    if mjm.flex_dim[f] == 1:
+      edge_adr = mjm.flex_edgeadr[f]
+      flex_geom_flexid.extend([f] * mjm.flex_edgenum[f])
+      flex_geom_edgeid.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
+      flex_group_root[f] = np.zeros(nworld, dtype=int)
+    else:
+      flex_geom_flexid.append(f)
+      flex_geom_edgeid.append(-1)
+      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+      flex_registry[f] = fmesh
+      flex_bvh_id[f] = fmesh.id
+      flex_group_root[f] = group_root.numpy()
 
   textures_registry = []
   for i in range(mjm.ntex):
@@ -2872,26 +2840,20 @@ def create_render_context(
     hfield_registry=hfield_registry,
     hfield_bvh_id=hfield_bvh_id_arr,
     hfield_bounds_size=hfield_bounds_size_arr,
-    flex_mesh=flex_mesh,
+    flex_mesh_registry=flex_registry,
     flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
-    flex_bvh_id=flex_bvh_id,
-    flex_face_point=flex_face_point,
-    flex_faceadr=flex_faceadr,
-    flex_nface=flex_nface,
-    flex_nwork=flex_nwork,
-    flex_group_root=flex_group_root,
-    flex_elemdataadr=flex_elemdataadr,
-    flex_shell=flex_shell,
-    flex_shelldataadr=flex_shelldataadr,
-    flex_radius=flex_radius,
-    flex_workadr=flex_workadr,
-    flex_worknum=flex_worknum,
+    flex_bvh_id=wp.array(flex_bvh_id, dtype=wp.uint64),
+    flex_group_root=wp.array(flex_group_root, dtype=int),
     flex_render_smooth=flex_render_smooth,
+    bvh_nflexgeom=len(flex_geom_flexid),
+    flex_dim_np=mjm.flex_dim,
+    flex_geom_flexid=wp.array(flex_geom_flexid, dtype=int),
+    flex_geom_edgeid=wp.array(flex_geom_edgeid, dtype=int),
     bvh=None,
     bvh_id=None,
-    lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
-    upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
-    group=wp.zeros(nworld * bvh_ngeom, dtype=int),
+    lower=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),
+    upper=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),
+    group=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=int),
     group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
     rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),
