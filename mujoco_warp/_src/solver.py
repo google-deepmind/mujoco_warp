@@ -2045,8 +2045,8 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
           gauss_cost += (efc_Ma_in[worldid, ii] - qfrc_smooth_in[worldid, ii]) * (
             qacc_in[worldid, ii] - qacc_smooth_in[worldid, ii]
           )
-      wp.atomic_add(ctx_gauss_out, worldid, gauss_cost)
-      wp.atomic_add(ctx_cost_out, worldid, gauss_cost)
+      wp.atomic_add(ctx_gauss_out, worldid, 0.5 * gauss_cost)
+      wp.atomic_add(ctx_cost_out, worldid, 0.5 * gauss_cost)
 
   return kernel
 
