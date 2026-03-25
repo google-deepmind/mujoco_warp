@@ -33,8 +33,8 @@ from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.util_pkg import check_version
 
-
 BLEEDING_EDGE_WARP = check_version("warp>=1.13")
+
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
   """Creates a warp array and populates it with data.
@@ -2667,7 +2667,8 @@ def create_render_context(
 
   constructor = "sah"
   if BLEEDING_EDGE_WARP:
-    # TODO: The cubql constructor and is_cubql_available exist only in recent Warp 1.13+ builds, modify this after warp is updated to 1.13+.
+    # TODO: The cubql constructor and is_cubql_available exist only in
+    # recent Warp 1.13+ builds, modify this after warp is updated to 1.13+.
     _cubql_avail = getattr(wp, "is_cubql_available", None)
     if callable(_cubql_avail) and _cubql_avail():
       constructor = "cubql"
@@ -2684,8 +2685,7 @@ def create_render_context(
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
 
   for mid in used_mesh_id:
-    mesh, half = bvh.build_mesh_bvh(
-      mjm, mid, constructor=constructor)
+    mesh, half = bvh.build_mesh_bvh(mjm, mid, constructor=constructor)
     mesh_registry[mesh.id] = mesh
     mesh_bvh_id[mid] = mesh.id
     mesh_bounds_size[mid] = half
@@ -2702,8 +2702,7 @@ def create_render_context(
   hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
 
   for hid in used_hfield_id:
-    hmesh, hhalf = bvh.build_hfield_bvh(
-      mjm, hid, constructor=constructor)
+    hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid, constructor=constructor)
     hfield_registry[hmesh.id] = hmesh
     hfield_bvh_id[hid] = hmesh.id
     hfield_bounds_size[hid] = hhalf
