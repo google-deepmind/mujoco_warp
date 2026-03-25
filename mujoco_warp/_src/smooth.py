@@ -2694,7 +2694,7 @@ def transmission(m: Model, d: Data):
 
 
 @cache_kernel
-def _solve_LD_sparse_fused(nv: int, nlevels: int):
+def _solve_LD_sparse_fused(nv: int, nlevels: int, block_dim: int):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -2715,9 +2715,10 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     worldid, tid = wp.tid()
     NV = wp.static(nv)
     NLEVELS = wp.static(nlevels)
+    BLOCK_DIM = wp.static(block_dim)
 
     # Copy y to x_out
-    for dofid in range(tid, NV, wp.block_dim()):
+    for dofid in range(tid, NV, BLOCK_DIM):
       x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
@@ -2727,14 +2728,14 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       level_offset = level_offsets[level_idx]
       level_size = level_offsets[level_idx + 1] - level_offset
 
-      for u in range(tid, level_size, wp.block_dim()):
+      for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
         wp.atomic_sub(x_out[worldid], i, L[worldid, 0, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
     # Diagonal multiply
-    for dofid in range(tid, NV, wp.block_dim()):
+    for dofid in range(tid, NV, BLOCK_DIM):
       x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
@@ -2744,7 +2745,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       level_offset = level_offsets[level_idx]
       level_size = level_offsets[level_idx + 1] - level_offset
 
-      for u in range(tid, level_size, wp.block_dim()):
+      for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
         wp.atomic_sub(x_out[worldid], k, L[worldid, 0, Madr_ki] * x_out[worldid, i])
@@ -2763,12 +2764,18 @@ def _solve_LD_sparse(
 ):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
   nlevels = len(m.qLD_updates)
+  if wp.get_device().is_cuda:
+    dim_block = m.block_dim.solve_LD_sparse_fused
+  else:
+    # Fallback for CPU
+    dim_block = 1
+
   wp.launch(
-    _solve_LD_sparse_fused(m.nv, nlevels),
-    dim=(d.nworld, m.block_dim.solve_LD_sparse_fused),
+    _solve_LD_sparse_fused(m.nv, nlevels, dim_block),
+    dim=(d.nworld, dim_block),
     inputs=[L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
-    block_dim=m.block_dim.solve_LD_sparse_fused,
+    block_dim=dim_block,
   )
 
 
