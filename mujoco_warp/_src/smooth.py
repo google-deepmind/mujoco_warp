@@ -2696,6 +2696,7 @@ def transmission(m: Model, d: Data):
 @cache_kernel
 def _solve_LD_sparse_fused(nv: int, nlevels: int):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
+
   @wp.func_native(snippet="WP_TILE_SYNC();")
   def _syncthreads():
     pass
@@ -2709,15 +2710,15 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     level_offsets: wp.array(dtype=int),
     y: wp.array2d(dtype=float),
     # Out:
-    x: wp.array2d(dtype=float),
+    x_out: wp.array2d(dtype=float),
   ):
     worldid, tid = wp.tid()
     NV = wp.static(nv)
     NLEVELS = wp.static(nlevels)
 
-    # Copy y to x
+    # Copy y to x_out
     for dofid in range(tid, NV, wp.block_dim()):
-      x[worldid, dofid] = y[worldid, dofid]
+      x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
     # Forward substitution
@@ -2729,12 +2730,12 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, wp.block_dim()):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
+        wp.atomic_sub(x_out[worldid], i, L[worldid, 0, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
     # Diagonal multiply
     for dofid in range(tid, NV, wp.block_dim()):
-      x[worldid, dofid] *= D[worldid, dofid]
+      x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -2746,7 +2747,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, wp.block_dim()):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
+        wp.atomic_sub(x_out[worldid], k, L[worldid, 0, Madr_ki] * x_out[worldid, i])
       _syncthreads()
 
   return kernel

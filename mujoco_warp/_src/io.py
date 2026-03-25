@@ -589,7 +589,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-
   # indices for sparse qM_fullm (used in solver)
   m.qM_fullm_i, m.qM_fullm_j = [], []
   for i in range(mjm.nv):
