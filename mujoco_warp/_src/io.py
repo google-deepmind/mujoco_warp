@@ -679,6 +679,167 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
+def _body_pair_nnz(mjm: mujoco.MjModel, body1: int, body2: int) -> int:
+  """Returns the number of unique DOFs in the kinematic tree union of two bodies."""
+  body1 = mjm.body_weldid[body1]
+  body2 = mjm.body_weldid[body2]
+  da1 = mjm.body_dofadr[body1] + mjm.body_dofnum[body1] - 1
+  da2 = mjm.body_dofadr[body2] + mjm.body_dofnum[body2] - 1
+  nnz = 0
+  while da1 >= 0 or da2 >= 0:
+    da = max(da1, da2)
+    if da1 == da:
+      da1 = mjm.dof_parentid[da1]
+    if da2 == da:
+      da2 = mjm.dof_parentid[da2]
+    nnz += 1
+  return nnz
+
+
+def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
+  """Returns a heuristic estimate for the number of non-zeros in the sparse constraint Jacobian.
+
+  Assumes all equality, friction, and limit constraints are active and computes
+  their non-zeros. For contacts, assumes njmax contact rows at the maximum
+  body-pair non-zeros from all enabled collision pairs.
+
+  Args:
+    mjm: The model containing kinematic and dynamic information (host).
+    nconmax: Maximum number of contacts per world.
+    njmax: Maximum number of constraint rows per world.
+
+  Returns:
+    Estimated number of non-zeros in the constraint Jacobian.
+  """
+  total_nnz = 0
+
+  def _eq_bodies(i):
+    """Returns body pair for equality constraint i."""
+    obj1id, obj2id = mjm.eq_obj1id[i], mjm.eq_obj2id[i]
+    if mjm.eq_objtype[i] == mujoco.mjtObj.mjOBJ_SITE:
+      return mjm.site_bodyid[obj1id], mjm.site_bodyid[obj2id]
+    return obj1id, obj2id
+
+  # equality constraints (assume all active)
+  for i in range(mjm.neq):
+    eq_type = mjm.eq_type[i]
+
+    if eq_type == mujoco.mjtEq.mjEQ_CONNECT:
+      total_nnz += 3 * _body_pair_nnz(mjm, *_eq_bodies(i))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_WELD:
+      total_nnz += 6 * _body_pair_nnz(mjm, *_eq_bodies(i))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_JOINT:
+      total_nnz += 2 if mjm.eq_obj2id[i] >= 0 else 1
+
+    elif eq_type == mujoco.mjtEq.mjEQ_TENDON:
+      obj1id = mjm.eq_obj1id[i]
+      obj2id = mjm.eq_obj2id[i]
+      rownnz1 = mjm.ten_J_rownnz[obj1id] if obj1id < mjm.ntendon else 0
+      if obj2id >= 0 and obj2id < mjm.ntendon:
+        rowadr1 = mjm.ten_J_rowadr[obj1id]
+        rowadr2 = mjm.ten_J_rowadr[obj2id]
+        rownnz2 = mjm.ten_J_rownnz[obj2id]
+        cols = set()
+        for j in range(rownnz1):
+          cols.add(mjm.ten_J_colind[rowadr1 + j])
+        for j in range(rownnz2):
+          cols.add(mjm.ten_J_colind[rowadr2 + j])
+        total_nnz += len(cols)
+      else:
+        total_nnz += rownnz1
+
+    elif eq_type == mujoco.mjtEq.mjEQ_FLEX:
+      obj1id = mjm.eq_obj1id[i]
+      if obj1id < mjm.nflex:
+        edge_start = mjm.flex_edgeadr[obj1id]
+        edge_count = mjm.flex_edgenum[obj1id]
+        for e in range(edge_count):
+          total_nnz += mjm.flexedge_J_rownnz[edge_start + e]
+
+  # friction constraints
+  total_nnz += (mjm.dof_frictionloss > 0).sum()
+  for i in range(mjm.ntendon):
+    if mjm.tendon_frictionloss[i] > 0:
+      total_nnz += mjm.ten_J_rownnz[i]
+
+  # limit constraints (assume all active)
+  for i in range(mjm.njnt):
+    if mjm.jnt_limited[i]:
+      jnt_type = mjm.jnt_type[i]
+      if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
+        total_nnz += 3
+      elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+        total_nnz += 1
+  for i in range(mjm.ntendon):
+    if mjm.tendon_limited[i]:
+      total_nnz += mjm.ten_J_rownnz[i]
+
+  # contact constraints: njmax rows at max body-pair non-zeros
+  max_contact_nnz = 0
+
+  # contact pairs
+  for i in range(mjm.npair):
+    g1, g2 = mjm.pair_geom1[i], mjm.pair_geom2[i]
+    b1, b2 = mjm.geom_bodyid[g1], mjm.geom_bodyid[g2]
+    max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, b1, b2))
+
+  # filter geom-geom pairs (unique body pairs, filtered)
+  body_pair_seen = set()
+  for i in range(mjm.ngeom):
+    bi = mjm.geom_bodyid[i]
+    cti, cai = mjm.geom_contype[i], mjm.geom_conaffinity[i]
+    for j in range(i + 1, mjm.ngeom):
+      bj = mjm.geom_bodyid[j]
+      if bi == bj:
+        continue
+      if mjm.body_weldid[bi] == 0 and mjm.body_weldid[bj] == 0:
+        continue
+      bp = (min(bi, bj), max(bi, bj))
+      if bp in body_pair_seen:
+        continue
+      ctj, caj = mjm.geom_contype[j], mjm.geom_conaffinity[j]
+      if not ((cti & caj) or (ctj & cai)):
+        continue
+      body_pair_seen.add(bp)
+      max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, bi, bj))
+
+  # flex vertex contacts
+  for fi in range(mjm.nflex):
+    fct = mjm.flex_contype[fi]
+    fca = mjm.flex_conaffinity[fi]
+
+    vert_start = mjm.flex_vertadr[fi]
+    vert_count = mjm.flex_vertnum[fi]
+    flex_bodies = {mjm.flex_vertbodyid[vert_start + v] for v in range(vert_count)}
+
+    geom_bodies = set()
+    for g in range(mjm.ngeom):
+      ct, ca = mjm.geom_contype[g], mjm.geom_conaffinity[g]
+      if (fct & ca) or (ct & fca):
+        geom_bodies.add(mjm.geom_bodyid[g])
+
+    for fb in flex_bodies:
+      for gb in geom_bodies:
+        if fb != gb:
+          max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, fb, gb))
+
+    # flex self-collision
+    if mjm.flex_selfcollide[fi]:
+      flex_body_list = sorted(flex_bodies)
+      for idx1 in range(len(flex_body_list)):
+        for idx2 in range(idx1 + 1, len(flex_body_list)):
+          max_contact_nnz = max(
+            max_contact_nnz,
+            _body_pair_nnz(mjm, flex_body_list[idx1], flex_body_list[idx2]),
+          )
+
+  total_nnz += njmax * max_contact_nnz
+
+  return int(min(max(total_nnz, 1), njmax * mjm.nv))
+
+
 def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int) -> int:
   if na is not None:
     return na
@@ -757,9 +918,11 @@ def make_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
-  # TODO(team): heuristic for constraint Jacobian number of non-zeros
-  if njmax_nnz is None or not is_sparse(mjm):
-    njmax_nnz = njmax * mjm.nv
+  if njmax_nnz is None:
+    if is_sparse(mjm):
+      njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
+    else:
+      njmax_nnz = njmax * mjm.nv
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
@@ -927,9 +1090,11 @@ def put_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
 
-  # TODO(team): heuristic for constraint Jacobian number of non-zeros
-  if njmax_nnz is None or not is_sparse(mjm):
-    njmax_nnz = njmax * mjm.nv
+  if njmax_nnz is None:
+    if is_sparse(mjm):
+      njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
+    else:
+      njmax_nnz = njmax * mjm.nv
 
   # ensure static geom positions are computed
   # TODO: remove once MjData creation semantics are fixed
@@ -979,23 +1144,27 @@ def put_data(
   efc = types.Constraint(**efc_kwargs)
 
   if is_sparse(mjm):
-    # TODO(team): process efc_J sparsity structure for nv row shift
-    efc.J_rownnz = wp.array(np.full((nworld, njmax), mjm.nv, dtype=int), dtype=int)
-    efc.J_rowadr = wp.array(
-      np.tile(np.arange(0, njmax * mjm.nv, mjm.nv) if mjm.nv else np.zeros(njmax, dtype=int), (nworld, 1)), dtype=int
-    )
-    efc.J_colind = wp.array(np.tile(np.arange(mjm.nv), (nworld, njmax)).reshape((nworld, 1, -1))[:, :, :njmax_nnz], dtype=int)
-
-    mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
+    J_rownnz = np.zeros(njmax, dtype=np.int32)
+    J_rowadr = np.zeros(njmax, dtype=np.int32)
+    J_colind = np.zeros(njmax_nnz, dtype=np.int32)
+    J = np.zeros(njmax_nnz, dtype=np.float64)
     if mjd.nefc:
       if mujoco.mj_isSparse(mjm):
-        mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+        J_rownnz[: mjd.nefc] = mjd.efc_J_rownnz[: mjd.nefc]
+        J_rowadr[: mjd.nefc] = mjd.efc_J_rowadr[: mjd.nefc]
+        nnz = int(mjd.efc_J_rownnz[: mjd.nefc].sum())
+        J_colind[:nnz] = mjd.efc_J_colind[:nnz]
+        J[:nnz] = mjd.efc_J[:nnz]
       else:
-        mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
-    efc_J = np.zeros((njmax, mjm.nv), dtype=float)
-    efc_J[: mjd.nefc, : mjm.nv] = mj_efc_J
-    efc_J_flat = np.tile(efc_J.reshape(-1), (nworld, 1, 1)).reshape((nworld, 1, -1))[:, :, :njmax_nnz]
-    efc.J = wp.array(efc_J_flat, dtype=float)
+        dense_J = mjd.efc_J.reshape((-1, mjm.nv))[: mjd.nefc]
+        mujoco.mju_dense2sparse(
+          J[: mjd.nefc * mjm.nv], dense_J, J_rownnz[: mjd.nefc], J_rowadr[: mjd.nefc], J_colind[: mjd.nefc * mjm.nv]
+        )
+
+    efc.J_rownnz = wp.array(np.tile(J_rownnz, (nworld, 1)), dtype=int)
+    efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)
+    efc.J_colind = wp.array(np.tile(J_colind, (nworld, 1)).reshape((nworld, 1, -1)), dtype=int)
+    efc.J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
@@ -2541,64 +2710,28 @@ def create_render_context(
   hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
   # Flex BVHs
-  flex_bvh_id = wp.uint64(0)
-  flex_group_root = wp.zeros(nworld, dtype=int)
-  flex_mesh = None
-  flex_face_point = None
-  flex_elemdataadr = None
-  flex_shell = None
-  flex_shelldataadr = None
-  flex_faceadr = None
-  flex_nface = 0
-  flex_radius = None
-  flex_vertflexid = None
-  flex_workadr = None
-  flex_worknum = None
-  flex_nwork = 0
+  nflex = mjm.nflex
+  flex_registry = {}
 
-  if mjm.nflex > 0:
-    (
-      fmesh,
-      face_point,
-      flex_group_roots,
-      flex_shell_data,
-      flex_faceadr_data,
-      flex_nface,
-    ) = bvh.build_flex_bvh(mjm, mjd, nworld)
+  # Scene BVH flex primitives: 1D → one capsule per edge, 2D/3D → one box per flex
+  flex_geom_flexid = []
+  flex_geom_edgeid = []
+  flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
+  flex_group_root = np.zeros((nflex, nworld), dtype=int)
 
-    flex_mesh = fmesh
-    flex_bvh_id = fmesh.id
-    flex_face_point = face_point
-    flex_group_root = flex_group_roots
-    flex_elemdataadr = wp.array(mjm.flex_elemdataadr, dtype=int)
-    flex_shell = flex_shell_data
-    flex_shelldataadr = wp.array(mjm.flex_shelldataadr, dtype=int)
-    flex_faceadr = wp.array(flex_faceadr_data, dtype=int)
-    flex_radius = wp.array(mjm.flex_radius, dtype=float)
-
-    # Compute flex_vertflexid: maps each flex vertex to its flex index
-    flex_vertflexid_data = np.zeros(mjm.nflexvert, dtype=np.int32)
-    for flexid in range(mjm.nflex):
-      vert_start = mjm.flex_vertadr[flexid]
-      vert_end = vert_start + mjm.flex_vertnum[flexid]
-      flex_vertflexid_data[vert_start:vert_end] = flexid
-    flex_vertflexid = wp.array(flex_vertflexid_data, dtype=int)
-
-    # precompute work item layout for unified refit kernel
-    nflex = mjm.nflex
-    workadr = np.zeros(nflex, dtype=np.int32)
-    worknum = np.zeros(nflex, dtype=np.int32)
-    cumsum = 0
-    for f in range(nflex):
-      workadr[f] = cumsum
-      if mjm.flex_dim[f] == 2:
-        worknum[f] = mjm.flex_elemnum[f] + mjm.flex_shellnum[f]
-      else:
-        worknum[f] = mjm.flex_shellnum[f]
-      cumsum += worknum[f]
-    flex_workadr = wp.array(workadr, dtype=int)
-    flex_worknum = wp.array(worknum, dtype=int)
-    flex_nwork = int(cumsum)
+  for f in range(nflex):
+    if mjm.flex_dim[f] == 1:
+      edge_adr = mjm.flex_edgeadr[f]
+      flex_geom_flexid.extend([f] * mjm.flex_edgenum[f])
+      flex_geom_edgeid.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
+      flex_group_root[f] = np.zeros(nworld, dtype=int)
+    else:
+      flex_geom_flexid.append(f)
+      flex_geom_edgeid.append(-1)
+      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+      flex_registry[f] = fmesh
+      flex_bvh_id[f] = fmesh.id
+      flex_group_root[f] = group_root.numpy()
 
   textures_registry = []
   for i in range(mjm.ntex):
@@ -2717,26 +2850,20 @@ def create_render_context(
     hfield_registry=hfield_registry,
     hfield_bvh_id=hfield_bvh_id_arr,
     hfield_bounds_size=hfield_bounds_size_arr,
-    flex_mesh=flex_mesh,
+    flex_mesh_registry=flex_registry,
     flex_rgba=wp.array(mjm.flex_rgba, dtype=wp.vec4),
-    flex_bvh_id=flex_bvh_id,
-    flex_face_point=flex_face_point,
-    flex_faceadr=flex_faceadr,
-    flex_nface=flex_nface,
-    flex_nwork=flex_nwork,
-    flex_group_root=flex_group_root,
-    flex_elemdataadr=flex_elemdataadr,
-    flex_shell=flex_shell,
-    flex_shelldataadr=flex_shelldataadr,
-    flex_radius=flex_radius,
-    flex_workadr=flex_workadr,
-    flex_worknum=flex_worknum,
+    flex_bvh_id=wp.array(flex_bvh_id, dtype=wp.uint64),
+    flex_group_root=wp.array(flex_group_root, dtype=int),
     flex_render_smooth=flex_render_smooth,
+    bvh_nflexgeom=len(flex_geom_flexid),
+    flex_dim_np=mjm.flex_dim,
+    flex_geom_flexid=wp.array(flex_geom_flexid, dtype=int),
+    flex_geom_edgeid=wp.array(flex_geom_edgeid, dtype=int),
     bvh=None,
     bvh_id=None,
-    lower=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
-    upper=wp.zeros(nworld * bvh_ngeom, dtype=wp.vec3),
-    group=wp.zeros(nworld * bvh_ngeom, dtype=int),
+    lower=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),
+    upper=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=wp.vec3),
+    group=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=int),
     group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
     rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),
