@@ -574,6 +574,7 @@ def _flex_elasticity(
   flex_edgeadr: wp.array(dtype=int),
   flex_elemadr: wp.array(dtype=int),
   flex_elemnum: wp.array(dtype=int),
+  flex_elemdataadr: wp.array(dtype=int),
   flex_elemedgeadr: wp.array(dtype=int),
   flex_vertbodyid: wp.array(dtype=int),
   flex_elem: wp.array(dtype=int),
@@ -599,6 +600,7 @@ def _flex_elasticity(
       f = i
       break
 
+  local_elemid = elemid - flex_elemadr[f]
   dim = flex_dim[f]
   nvert = dim + 1
   nedge = nvert * (nvert - 1) / 2
@@ -612,10 +614,11 @@ def _flex_elasticity(
   else:
     kD = 0.0
 
+  elem_data_adr = flex_elemdataadr[f] + local_elemid * (dim + 1)
   gradient = wp.matrix(0.0, shape=(6, 6))
   for e in range(nedge):
-    vert0 = flex_elem[(dim + 1) * elemid + edges[e, 0]]
-    vert1 = flex_elem[(dim + 1) * elemid + edges[e, 1]]
+    vert0 = flex_elem[elem_data_adr + edges[e, 0]]
+    vert1 = flex_elem[elem_data_adr + edges[e, 1]]
     xpos0 = flexvert_xpos_in[worldid, vert0]
     xpos1 = flexvert_xpos_in[worldid, vert1]
     for i in range(3):
@@ -624,7 +627,7 @@ def _flex_elasticity(
 
   elongation = wp.spatial_vectorf(0.0)
   for e in range(nedge):
-    idx = flex_elemedge[elemid * nedge + e]
+    idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * nedge + e]
     vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
     deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
     reference = flexedge_length0[flex_edgeadr[f] + idx]
@@ -647,7 +650,7 @@ def _flex_elasticity(
           force[edges[ed2, i], x] -= elongation[ed1] * gradient[ed2, 3 * i + x] * metric[ed1, ed2]
 
   for v in range(nvert):
-    vert = flex_elem[(dim + 1) * elemid + v]
+    vert = flex_elem[elem_data_adr + v]
     bodyid = flex_vertbodyid[flex_vertadr[f] + vert]
     for x in range(3):
       wp.atomic_add(qfrc_spring_out, worldid, body_dofadr[bodyid] + x, force[v, x])
@@ -784,6 +787,7 @@ def passive(m: Model, d: Data):
         m.flex_edgeadr,
         m.flex_elemadr,
         m.flex_elemnum,
+        m.flex_elemdataadr,
         m.flex_elemedgeadr,
         m.flex_vertbodyid,
         m.flex_elem,
