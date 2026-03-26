@@ -190,6 +190,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
   else:
     opt.contact_sensor_maxmatch = 64
+  opt.deterministic = False
 
   # place opt on device
   for f in dataclasses.fields(types.Option):
@@ -2334,7 +2335,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
       "AUTO": mujoco.mjtJacobian.mjJAC_AUTO,
     },
   }
-  mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
+  mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional", "opt.deterministic"}
   mj_only_fields = {"opt.jacobian"}
 
   if not isinstance(overrides, dict):
