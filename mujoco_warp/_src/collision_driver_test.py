@@ -572,7 +572,12 @@ class CollisionTest(parameterized.TestCase):
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
-    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    # mujoco and mujoco warp have different heuristics for generating multiple contacts
+    # for plane<>mesh collisions
+    if "mesh_plane" in fixture:
+      self.assertGreaterEqual(d.nacon.numpy()[0], mjd.ncon)
+    else:
+      self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """
