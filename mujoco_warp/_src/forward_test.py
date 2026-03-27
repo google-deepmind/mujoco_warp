@@ -649,6 +649,12 @@ class ForwardTest(parameterized.TestCase):
     np.testing.assert_allclose(d.act.numpy()[0, 0], np.cos(2 * np.pi * frequency * t_next), atol=1e-3)
     np.testing.assert_allclose(d.act.numpy()[0, 1], np.sin(2 * np.pi * frequency * t_next), atol=1e-3)
 
+  def test_multiflex(self):
+    """Tests multiflex model with different flex dimensions."""
+    _, _, m, d = test_data.fixture("flex/multiflex.xml")
+
+    mjw.forward(m, d)
+
 
 if __name__ == "__main__":
   wp.init()

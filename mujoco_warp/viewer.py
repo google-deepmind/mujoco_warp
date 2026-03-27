@@ -18,7 +18,7 @@
 Usage: mjwarp-viewer <mjcf XML path> [flags]
 
 Example:
-  mjwarp-viewer benchmark/humanoid/humanoid.xml -o "opt.solver=cg"
+  mjwarp-viewer benchmarks/humanoid/humanoid.xml -o "opt.solver=cg"
 """
 
 import copy
