@@ -33,8 +33,6 @@ from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.util_pkg import check_version
 
-BLEEDING_EDGE_WARP = check_version("warp>=1.13.0.dev20260325")
-
 
 def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
   """Creates a warp array and populates it with data.
@@ -2666,7 +2664,7 @@ def create_render_context(
   mujoco.mj_forward(mjm, mjd)
 
   constructor = "sah"
-  if BLEEDING_EDGE_WARP:
+  if check_version("warp>=1.13.0.dev20260325"):
     # TODO: The cubql constructor and is_cubql_available exist only in
     # recent Warp 1.13+ builds, modify this after warp is updated to 1.13+.
     _cubql_avail = getattr(wp, "is_cubql_available", None)
