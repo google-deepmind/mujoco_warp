@@ -21,7 +21,13 @@
     <camera pos="0 -4 2" euler="70 0 0 "/>
     <body name="flexes" pos=".1 -.2 1.5">
       <flexcomp type="grid" count="12 1 1" spacing=".1 .1 .1" pos="-0.5 0 0"
-                radius=".03" rgba="0 .7 .7 1" name="rope" dim="1" mass="1">
+                radius=".03" rgba="0 .7 .7 1" name="rope1" dim="1" mass="1">
+        <edge equality="true"/>
+        <contact condim="3" selfcollide="none" conaffinity="0" contype="0"/>
+        <pin id="0"/>
+      </flexcomp>
+      <flexcomp type="grid" count="12 1 1" spacing=".1 .1 .1" pos="0.5 0 0"
+                radius=".03" rgba="0 .7 .7 1" name="rope2" dim="1" mass="1">
         <edge equality="true"/>
         <contact condim="3" selfcollide="none" conaffinity="0" contype="0"/>
         <pin id="0"/>

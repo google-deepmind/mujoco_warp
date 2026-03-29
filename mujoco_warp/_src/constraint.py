@@ -689,6 +689,9 @@ def _equality_flex(is_sparse: bool):
     eq_solref: wp.array2d(dtype=wp.vec2),
     eq_solimp: wp.array2d(dtype=vec5),
     eq_flex_adr: wp.array(dtype=int),
+    eq_obj1id: wp.array(dtype=int),
+    flex_edgeadr: wp.array(dtype=int),
+    flex_edgenum: wp.array(dtype=int),
     # Data in:
     qvel_in: wp.array2d(dtype=float),
     flexedge_J_in: wp.array2d(dtype=float),
@@ -715,6 +718,9 @@ def _equality_flex(is_sparse: bool):
   ):
     worldid, eqflexid, edgeid = wp.tid()
     eqid = eq_flex_adr[eqflexid]
+    flexid = eq_obj1id[eqid]
+    if edgeid < flex_edgeadr[flexid] or edgeid >= flex_edgeadr[flexid] + flex_edgenum[flexid]:
+      return
 
     wp.atomic_add(ne_out, worldid, 1)
     efcid = wp.atomic_add(nefc_out, worldid, 1)
@@ -2423,6 +2429,9 @@ def make_constraint(m: types.Model, d: types.Data):
           m.eq_solref,
           m.eq_solimp,
           m.eq_flex_adr,
+          m.eq_obj1id,
+          m.flex_edgeadr,
+          m.flex_edgenum,
           d.qvel,
           d.flexedge_J,
           d.flexedge_length,
