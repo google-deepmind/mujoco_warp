@@ -25,7 +25,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": True})
 
 
 @wp.func
@@ -442,8 +442,8 @@ def _fluid_force(
       lfrc_torque -= drag_ang_coef * l_ang
       lfrc_force += magnus_force + kutta_force - drag_lin_coef * l_lin
 
-      lfrc_torque *= coef
-      lfrc_force *= coef
+      lfrc_torque = lfrc_torque * coef
+      lfrc_force = lfrc_force * coef
 
       # map force/torque from local to world frame: lfrc -> bfrc
       torque_global += geom_rot @ lfrc_torque
