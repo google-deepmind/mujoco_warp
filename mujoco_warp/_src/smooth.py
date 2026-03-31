@@ -2694,7 +2694,7 @@ def transmission(m: Model, d: Data):
 
 
 @cache_kernel
-def _solve_LD_sparse_fused(nv: int, nlevels: int, block_dim: int):
+def _solve_LD_sparse_fused(nv: int, nlevels: int):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -2715,7 +2715,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int, block_dim: int):
     worldid, tid = wp.tid()
     NV = wp.static(nv)
     NLEVELS = wp.static(nlevels)
-    BLOCK_DIM = wp.static(block_dim)
+    BLOCK_DIM = wp.block_dim()
 
     # Copy y to x_out
     for dofid in range(tid, NV, BLOCK_DIM):
@@ -2771,7 +2771,7 @@ def _solve_LD_sparse(
     dim_block = 1
 
   wp.launch(
-    _solve_LD_sparse_fused(m.nv, nlevels, dim_block),
+    _solve_LD_sparse_fused(m.nv, nlevels),
     dim=(d.nworld, dim_block),
     inputs=[L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
