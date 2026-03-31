@@ -354,6 +354,65 @@ def _flex_edges(
       flexedge_J_out[worldid, rowadr + nnz_offset + k] = wp.dot(jacp2, edge)
 
 
+@wp.kernel
+def _compute_flexelem_aabb(
+  # Model:
+  nflex: int,
+  flex_dim: wp.array(dtype=int),
+  flex_vertadr: wp.array(dtype=int),
+  flex_elemadr: wp.array(dtype=int),
+  flex_elemnum: wp.array(dtype=int),
+  flex_elem: wp.array(dtype=int),
+  flex_radius: wp.array(dtype=float),
+  # Data in:
+  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  # Data out:
+  flexelem_aabb_out: wp.array3d(dtype=float),
+):
+  worldid, elemid = wp.tid()
+
+  flexid = int(-1)
+  for i in range(nflex):
+    elem_adr = flex_elemadr[i]
+    elem_num = flex_elemnum[i]
+    if elemid >= elem_adr and elemid < elem_adr + elem_num:
+      flexid = i
+      break
+
+  if flexid < 0:
+    return
+
+  dim = flex_dim[flexid]
+  vertadr = flex_vertadr[flexid]
+  radius = flex_radius[flexid]
+
+  # Compute element data offset by accumulating elem counts for preceding
+  # flexes, since elements of different dims are packed contiguously in
+  # flex_elem with strides of (dim+1).
+  elem_data_base = int(0)
+  for i in range(flexid):
+    elem_data_base += flex_elemnum[i] * (flex_dim[i] + 1)
+  local_elem = elemid - flex_elemadr[flexid]
+  elem_data_idx = elem_data_base + local_elem * (dim + 1)
+
+  v0 = flex_elem[elem_data_idx]
+
+  v0 = flex_elem[elemid * (dim + 1)]
+  p0 = flexvert_xpos_in[worldid, vertadr + v0]
+  xmin = wp.vec3(p0[0], p0[1], p0[2])
+  xmax = wp.vec3(p0[0], p0[1], p0[2])
+
+  for i in range(1, dim + 1):
+    vi = flex_elem[elem_data_idx + i]
+    pi = flexvert_xpos_in[worldid, vertadr + vi]
+    xmin = wp.vec3(wp.min(xmin[0], pi[0]), wp.min(xmin[1], pi[1]), wp.min(xmin[2], pi[2]))
+    xmax = wp.vec3(wp.max(xmax[0], pi[0]), wp.max(xmax[1], pi[1]), wp.max(xmax[2], pi[2]))
+
+  for axis in range(3):
+    flexelem_aabb_out[worldid, elemid, axis] = 0.5 * (xmax[axis] + xmin[axis])
+    flexelem_aabb_out[worldid, elemid, axis + 3] = 0.5 * (xmax[axis] - xmin[axis]) + radius
+
+
 @event_scope
 def kinematics(m: Model, d: Data):
   """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
@@ -458,6 +517,25 @@ def flex(m: Model, d: Data):
       d.flexedge_velocity,
     ],
   )
+
+  if m.nflexelem > 0:
+    wp.launch(
+      _compute_flexelem_aabb,
+      dim=(d.nworld, m.nflexelem),
+      inputs=[
+        m.nflex,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_elem,
+        m.flex_radius,
+        d.flexvert_xpos,
+      ],
+      outputs=[
+        d.flexelem_aabb,
+      ],
+    )
 
 
 @wp.kernel

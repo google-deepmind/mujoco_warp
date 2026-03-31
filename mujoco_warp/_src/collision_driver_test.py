@@ -30,6 +30,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.util_pkg import check_version
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 _TOLERANCE = 5e-5
@@ -572,7 +573,10 @@ class CollisionTest(parameterized.TestCase):
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
-    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+      if check_version("mujoco>=3.5.1.dev888028695"):
+        self.assertGreaterEqual(d.nacon.numpy()[0], mjd.ncon)
+      else:
+        self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """

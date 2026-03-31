@@ -96,6 +96,24 @@ class BroadphaseFilter(enum.IntFlag):
   OBB = 8
 
 
+class FlexSelfCollideType(enum.IntEnum):
+  """Type of flex self-collision algorithm.
+
+  Attributes:
+    NONE: No self-collisions
+    NARROW: Skip broadphase, go directly to narrowphase (brute force)
+    BVH: Use BVH in midphase
+    SAP: Use sweep-and-prune in midphase
+    AUTO: Choose automatically based on flex dimension
+  """
+
+  NONE = 0
+  NARROW = 1
+  BVH = 2
+  SAP = 3
+  AUTO = 4
+
+
 class CamLightType(enum.IntEnum):
   """Type of camera light.
 
@@ -973,8 +991,11 @@ class Model:
     flex_contype: flex contact type                          (nflex,)
     flex_conaffinity: flex contact affinity                  (nflex,)
     flex_condim: contact dimensionality (1, 3, 4, 6)         (nflex,)
+    flex_solref: solver reference                            (nflex, 2)
+    flex_solimp: solver impedance                            (nflex, 5)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
+    flex_selfcollide: self-collision mode                    (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
@@ -1150,6 +1171,7 @@ class Model:
     geom_pair_type_count: count of max number of each
                           potential collision
     geom_plugin_index: geom index in plugin array            (ngeom,)
+    flex_self_max_pairs: max number of flex self contact pairs
     eq_connect_adr: eq_* addresses of type `CONNECT`
     eq_wld_adr: eq_* addresses of type `WELD`
     eq_jnt_adr: eq_* addresses of type `JOINT`
@@ -1360,8 +1382,11 @@ class Model:
   flex_contype: array("nflex", int)
   flex_conaffinity: array("nflex", int)
   flex_condim: array("nflex", int)
+  flex_solref: array("nflex", wp.vec2)
+  flex_solimp: array("nflex", vec5)
   flex_friction: array("nflex", wp.vec3)
   flex_margin: array("nflex", float)
+  flex_selfcollide: array("nflex", int)
   flex_dim: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
@@ -1531,6 +1556,7 @@ class Model:
   nxn_pairid_filtered: wp.array(dtype=wp.vec2i)
   geom_pair_type_count: tuple[int, ...]
   geom_plugin_index: array("ngeom", int)
+  flex_self_max_pairs: int
   eq_connect_adr: wp.array(dtype=int)
   eq_wld_adr: wp.array(dtype=int)
   eq_jnt_adr: wp.array(dtype=int)
@@ -1721,6 +1747,7 @@ class Data:
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
+    flexelem_aabb: element bounding boxes (center, half-size)   (nworld, nflexelem, 6)
     flexedge_J: edge length Jacobian                            (nworld, nJfe)
     flexedge_length: flex edge lengths                          (nworld, nflexedge, 1)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
@@ -1819,6 +1846,7 @@ class Data:
   cdof: array("nworld", "nv", wp.spatial_vector)
   cinert: array("nworld", "nbody", vec10)
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
+  flexelem_aabb: array("nworld", "nflexelem", 6, float)
   flexedge_J: array("nworld", "nJfe", float)
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)

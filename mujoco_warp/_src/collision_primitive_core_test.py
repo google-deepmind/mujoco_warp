@@ -531,5 +531,107 @@ class CylinderTriangleTest(parameterized.TestCase):
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
 
 
+@wp.kernel
+def triangle_triangle_kernel(
+  # In:
+  a1: wp.vec3,
+  a2: wp.vec3,
+  a3: wp.vec3,
+  a_radius: float,
+  b1: wp.vec3,
+  b2: wp.vec3,
+  b3: wp.vec3,
+  b_radius: float,
+  # Out:
+  dist_out: wp.array(dtype=float),
+  pos_out: wp.array(dtype=wp.vec3),
+  normal_out: wp.array(dtype=wp.vec3),
+):
+  dist, pos, normal = collision_primitive_core.triangle_triangle(a1, a2, a3, a_radius, b1, b2, b3, b_radius)
+  dist_out[0] = dist
+  pos_out[0] = pos
+  normal_out[0] = normal
+
+
+class TriangleTriangleTest(parameterized.TestCase):
+  def _run(self, a1, a2, a3, a_r, b1, b2, b3, b_r):
+    dist = wp.zeros(1, dtype=float)
+    pos = wp.zeros(1, dtype=wp.vec3)
+    normal = wp.zeros(1, dtype=wp.vec3)
+    wp.launch(
+      triangle_triangle_kernel,
+      dim=1,
+      inputs=[
+        wp.vec3(a1),
+        wp.vec3(a2),
+        wp.vec3(a3),
+        a_r,
+        wp.vec3(b1),
+        wp.vec3(b2),
+        wp.vec3(b3),
+        b_r,
+      ],
+      outputs=[dist, pos, normal],
+    )
+    return dist.numpy()[0], pos.numpy()[0], normal.numpy()[0]
+
+  def test_separated_parallel(self):
+    a1 = np.array([0.0, 0.0, 0.0])
+    a2 = np.array([1.0, 0.0, 0.0])
+    a3 = np.array([0.5, 1.0, 0.0])
+    b1 = np.array([0.0, 0.0, 2.0])
+    b2 = np.array([1.0, 0.0, 2.0])
+    b3 = np.array([0.5, 1.0, 2.0])
+    dist, _, _ = self._run(a1, a2, a3, 0.0, b1, b2, b3, 0.0)
+    self.assertGreater(dist, 1.0)
+
+  def test_vertex_near_face(self):
+    a1 = np.array([0.0, 0.0, 0.0])
+    a2 = np.array([1.0, 0.0, 0.0])
+    a3 = np.array([0.5, 1.0, 0.0])
+    b1 = np.array([0.4, 0.3, 0.1])
+    b2 = np.array([0.4, 0.3, 1.0])
+    b3 = np.array([1.0, 0.3, 1.0])
+    r = 0.02
+    dist, _, normal = self._run(a1, a2, a3, r, b1, b2, b3, r)
+    expected_dist = 0.1 - 2 * r
+    np.testing.assert_allclose(dist, expected_dist, atol=1e-4)
+    self.assertAlmostEqual(abs(normal[2]), 1.0, places=3)
+
+  def test_penetrating(self):
+    a1 = np.array([0.0, 0.0, 0.0])
+    a2 = np.array([1.0, 0.0, 0.0])
+    a3 = np.array([0.5, 1.0, 0.0])
+    b1 = np.array([0.4, 0.3, -0.03])
+    b2 = np.array([0.4, 0.3, 1.0])
+    b3 = np.array([1.0, 0.3, 1.0])
+    r = 0.02
+    dist, _, _ = self._run(a1, a2, a3, r, b1, b2, b3, r)
+    self.assertLess(dist, 0.0)
+
+  def test_with_radius_closes_gap(self):
+    a1 = np.array([0.0, 0.0, 0.0])
+    a2 = np.array([1.0, 0.0, 0.0])
+    a3 = np.array([0.5, 1.0, 0.0])
+    b1 = np.array([0.4, 0.3, 0.08])
+    b2 = np.array([0.4, 0.3, 1.0])
+    b3 = np.array([1.0, 0.3, 1.0])
+    dist_no_r, _, _ = self._run(a1, a2, a3, 0.0, b1, b2, b3, 0.0)
+    dist_with_r, _, _ = self._run(a1, a2, a3, 0.05, b1, b2, b3, 0.05)
+    self.assertGreater(dist_no_r, 0.0)
+    self.assertLess(dist_with_r, 0.0)
+
+  def test_edge_proximity(self):
+    a1 = np.array([0.0, 0.0, 0.0])
+    a2 = np.array([1.0, 0.0, 0.0])
+    a3 = np.array([0.5, 1.0, 0.0])
+    b1 = np.array([0.5, -0.1, 0.15])
+    b2 = np.array([0.5, -0.1, 1.0])
+    b3 = np.array([1.5, -0.1, 0.5])
+    r = 0.02
+    dist, _, _ = self._run(a1, a2, a3, r, b1, b2, b3, r)
+    self.assertLess(dist, collision_primitive_core.MJ_MAXVAL)
+
+
 if __name__ == "__main__":
   absltest.main()

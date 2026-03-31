@@ -1597,6 +1597,176 @@ def sphere_triangle(
 
 
 @wp.func
+def _seg_seg_dist(
+  p1: wp.vec3,
+  d1: wp.vec3,
+  p2: wp.vec3,
+  d2: wp.vec3,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  r = p1 - p2
+  a = wp.dot(d1, d1)
+  e = wp.dot(d2, d2)
+  f = wp.dot(d2, r)
+
+  eps = float(1e-10)
+  s = float(0.0)
+  t = float(0.0)
+  c1 = p1
+  c2 = p2
+
+  if a <= eps and e <= eps:
+    c1 = p1
+    c2 = p2
+  elif a <= eps:
+    t = wp.clamp(f / e, 0.0, 1.0)
+    c1 = p1
+    c2 = p2 + d2 * t
+  elif e <= eps:
+    b = wp.dot(d1, r)
+    s = wp.clamp(-b / a, 0.0, 1.0)
+    c1 = p1 + d1 * s
+    c2 = p2
+  else:
+    b = wp.dot(d1, r)
+    c = wp.dot(d1, d2)
+    denom = a * e - c * c
+    if denom > eps:
+      s = wp.clamp((c * f - b * e) / denom, 0.0, 1.0)
+    else:
+      s = 0.0
+    t = (c * s + f) / e
+    if t < 0.0:
+      t = 0.0
+      s = wp.clamp(-b / a, 0.0, 1.0)
+    elif t > 1.0:
+      t = 1.0
+      s = wp.clamp((c - b) / a, 0.0, 1.0)
+    c1 = p1 + d1 * s
+    c2 = p2 + d2 * t
+
+  return wp.length(c1 - c2), c1, c2
+
+
+@wp.func
+def triangle_triangle(
+  # In:
+  a1: wp.vec3,
+  a2: wp.vec3,
+  a3: wp.vec3,
+  a_radius: float,
+  b1: wp.vec3,
+  b2: wp.vec3,
+  b3: wp.vec3,
+  b_radius: float,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  best_d = MJ_MAXVAL
+  best_c1 = wp.vec3(0.0)
+  best_c2 = wp.vec3(0.0)
+
+  ea = wp.vec3(0.0)
+  eb = wp.vec3(0.0)
+  pa = wp.vec3(0.0)
+  pb = wp.vec3(0.0)
+  for ia in range(3):
+    if ia == 0:
+      pa = a1
+      ea = a2 - a1
+    elif ia == 1:
+      pa = a2
+      ea = a3 - a2
+    else:
+      pa = a3
+      ea = a1 - a3
+    for ib in range(3):
+      if ib == 0:
+        pb = b1
+        eb = b2 - b1
+      elif ib == 1:
+        pb = b2
+        eb = b3 - b2
+      else:
+        pb = b3
+        eb = b1 - b3
+      d, c1, c2 = _seg_seg_dist(pa, ea, pb, eb)
+      if d < best_d:
+        best_d = d
+        best_c1 = c1
+        best_c2 = c2
+
+  for iv in range(6):
+    vert = a1
+    t1 = b1
+    t2 = b2
+    t3 = b3
+    if iv == 1:
+      vert = a2
+    elif iv == 2:
+      vert = a3
+    elif iv == 3:
+      vert = b1
+      t1 = a1
+      t2 = a2
+      t3 = a3
+    elif iv == 4:
+      vert = b2
+      t1 = a1
+      t2 = a2
+      t3 = a3
+    elif iv == 5:
+      vert = b3
+      t1 = a1
+      t2 = a2
+      t3 = a3
+
+    e1 = t2 - t1
+    e2 = t3 - t1
+    nrm = wp.cross(e1, e2)
+    nrm_len = wp.length(nrm)
+    if nrm_len > 1e-10:
+      nrm = nrm / nrm_len
+      diff = vert - t1
+      proj = vert - nrm * wp.dot(diff, nrm)
+
+      v0 = t3 - t1
+      v1 = t2 - t1
+      v2 = proj - t1
+      d00 = wp.dot(v0, v0)
+      d01 = wp.dot(v0, v1)
+      d02 = wp.dot(v0, v2)
+      d11 = wp.dot(v1, v1)
+      d12 = wp.dot(v1, v2)
+      inv = 1.0 / (d00 * d11 - d01 * d01 + 1e-30)
+      u = (d11 * d02 - d01 * d12) * inv
+      v = (d00 * d12 - d01 * d02) * inv
+
+      if u >= 0.0 and v >= 0.0 and u + v <= 1.0:
+        d = wp.length(vert - proj)
+        if d < best_d:
+          best_d = d
+          if iv < 3:
+            best_c1 = vert
+            best_c2 = proj
+          else:
+            best_c1 = proj
+            best_c2 = vert
+
+  total_radius = a_radius + b_radius
+  dist = best_d - total_radius
+
+  diff = best_c2 - best_c1
+  nrm_len = wp.length(diff)
+  if nrm_len > 1e-10:
+    normal = diff / nrm_len
+  else:
+    e1 = a2 - a1
+    e2 = a3 - a1
+    normal = wp.normalize(wp.cross(e1, e2))
+
+  pos = best_c1 + normal * (a_radius + 0.5 * dist)
+  return dist, pos, normal
+
+
+@wp.func
 def box_triangle(
   box_pos: wp.vec3,
   box_rot: wp.mat33,

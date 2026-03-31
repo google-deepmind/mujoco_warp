@@ -15,7 +15,7 @@
 
 <mujoco model="Poncho">
   <include file="mannequin.xml"/>
-  <option solver="CG" tolerance="1e-6" jacobian="sparse"/>
+  <option integrator="Euler" solver="CG" viscosity="0.05" tolerance="1e-6"/>
 
   <visual>
     <map force="0.1" zfar="30"/>
@@ -31,10 +31,11 @@
   <worldbody>
     <light directional="false" diffuse=".2 .2 .2" specular="0 0 0" pos="0 0 5" dir="0 0 -1"/>
 
-    <flexcomp name="towel" type="grid" count="30 30 1" spacing="0.05 0.05 0.05"
-              radius="0.02" dim="2" rgba="1 0.5 0.5 1" pos="0 0 2" mass=".1">
-      <edge equality="true"/>
-      <elasticity young="3e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
+    <flexcomp name="towel" type="grid" count="30 30 1" spacing="0.06 0.06 0.06"
+              radius="0.01" dim="2" rgba="1 0.5 0.5 1" pos="0 0 2" mass="1">
+      <edge equality="true" damping="0.1"/>
+      <elasticity young="3e5" poisson="0" thickness="8e-3" elastic2d="bend"/>
+      <contact selfcollide="narrow"/>
     </flexcomp>
 
   </worldbody>

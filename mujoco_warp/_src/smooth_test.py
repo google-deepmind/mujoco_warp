@@ -563,7 +563,7 @@ class SmoothTest(parameterized.TestCase):
           <geom type="sphere" size="0.02" mass="0.01"/>
           <flexcomp name="line" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
                     radius="0.01" dim="1" mass="1">
-            <contact contype="0" conaffinity="0"/>
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
             <edge equality="true" damping="0.01"/>
             <pin id="0"/>
           </flexcomp>

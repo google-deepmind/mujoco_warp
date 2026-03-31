@@ -223,6 +223,23 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
+  if mjm.nflex > 0:
+    selfcollide = np.array(mjm.flex_selfcollide)
+    unsupported = (selfcollide != 0) & (selfcollide != 1)
+    if unsupported.any():
+      raise NotImplementedError(
+        'flex_selfcollide modes BVH/SAP/AUTO not supported in MuJoCo-Warp. Use selfcollide="narrow" or selfcollide="none".'
+      )
+    # Precompute max self-collision pairs for dim=2 elements to avoid
+    # device→host copies during CUDA graph capture.
+    n_dim2_elems = 0
+    for f in range(mjm.nflex):
+      if selfcollide[f] != 0 and mjm.flex_dim[f] == 2:
+        n_dim2_elems += mjm.flex_elemnum[f]
+    m.flex_self_max_pairs = n_dim2_elems * (n_dim2_elems - 1) // 2
+  else:
+    m.flex_self_max_pairs = 0
+
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
   # body ids grouped by tree level (depth-based traversal)
@@ -1086,6 +1103,11 @@ def put_data(
       njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
     else:
       njmax_nnz = njmax * mjm.nv
+
+  # ensure njmax_nnz can hold the actual data from mjd
+  if is_sparse(mjm) and mjd.nefc > 0 and mujoco.mj_isSparse(mjm):
+    actual_nnz = int(mjd.efc_J_rownnz[: mjd.nefc].sum())
+    njmax_nnz = max(njmax_nnz, actual_nnz)
 
   # ensure static geom positions are computed
   # TODO: remove once MjData creation semantics are fixed
