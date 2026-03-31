@@ -45,7 +45,6 @@ class TypesTest(parameterized.TestCase):
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
       mj_fields.insert(0, mj_fields.pop(mj_fields.index("solver_niter")))
-
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
     # first, put any union fields
@@ -54,6 +53,7 @@ class TypesTest(parameterized.TestCase):
     desired_fields.extend(f for f in mjw_fields if f not in mj_set)
 
     actual_fields = [f.name for f in dataclasses.fields(mjw_class)]
+
     self.assertListEqual(actual_fields, desired_fields)
 
   @parameterized.parameters(Option, Model, Data)

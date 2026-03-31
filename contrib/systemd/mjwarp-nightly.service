@@ -1,0 +1,36 @@
+# MuJoCo Warp Nightly Benchmark Service
+#
+# Installation:
+#   1. Copy this file to ~/.config/systemd/user/mjwarp-nightly.service
+#   2. Copy nightly.sh to ~/.local/bin/mjwarp-nightly
+#   3. Enable with: systemctl --user enable mjwarp-nightly.timer
+#   4. Start with: systemctl --user start mjwarp-nightly.timer
+#
+# To run manually: systemctl --user start mjwarp-nightly.service
+# To check logs: journalctl --user -u mjwarp-nightly.service
+
+[Unit]
+Description=MuJoCo Warp Nightly Benchmark
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Update these paths to match your setup
+Environment="PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=%h"
+Environment="CUDA_DEVICE=0"
+
+ExecStart=%h/.local/bin/mjwarp-nightly
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits (adjust as needed)
+Nice=10
+MemoryMax=32G
+
+[Install]
+WantedBy=default.target

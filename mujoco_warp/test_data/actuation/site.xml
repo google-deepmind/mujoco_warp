@@ -16,6 +16,11 @@
         </body>
       </body>
     </body>
+    <!-- unactuated -->
+    <body pos="1 0 0">
+      <joint name="unactuated" type="hinge" axis="1 0 0"/>
+      <geom type="sphere" size=".1"/>
+    </body>
   </worldbody>
   <actuator>
     <motor site="site0" gear="1 2 3 4 5 6"/>
@@ -26,6 +31,6 @@
     <motor site="site2" refsite="siteworld" gear="1 2 3 4 5 6"/>
   </actuator>
   <keyframe>
-    <key qpos=".1 .2 .3"/>
+    <key qpos=".1 .2 .3 .4"/>
   </keyframe>
 </mujoco>

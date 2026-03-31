@@ -8,6 +8,11 @@
       <geom type="cylinder" size=".2 .01"/>
       <site name="cranksite" pos="0 0.2 0"/>
     </body>
+    <!-- unactuated -->
+    <body pos="2 0 0">
+      <joint name="unactuated" type="hinge" axis="1 0 0"/>
+      <geom type="sphere" size=".1"/>
+    </body>
   </worldbody>
   <actuator>
     <motor cranklength="0.25" cranksite="cranksite" slidersite="slidersite"/>

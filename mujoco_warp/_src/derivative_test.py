@@ -118,6 +118,422 @@ class DerivativeTest(parameterized.TestCase):
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
+  _TENDON_SERIAL_CHAIN_XML = """
+    <mujoco>
+      <compiler angle="radian" autolimits="true"/>
+      <option integrator="implicitfast"/>
+      <default>
+        <general biastype="affine"/>
+      </default>
+
+      <worldbody>
+        <body>
+          <inertial mass="1" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+          <joint name="parent_j" axis="0 1 0"/>
+          <body pos="0 0.03 0.1">
+            <inertial mass="0.01" pos="0 0 0" diaginertia="1e-06 1e-06 1e-06"/>
+            <joint name="j_r" axis="1 0 0" armature="0.005" damping="0.1"/>
+          </body>
+          <body pos="0 -0.03 0.1">
+            <inertial mass="0.01" pos="0 0 0" diaginertia="1e-06 1e-06 1e-06"/>
+            <joint name="j_l" axis="1 0 0" armature="0.005" damping="0.1"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="split">
+          <joint joint="j_r" coef="0.5"/>
+          <joint joint="j_l" coef="0.5"/>
+        </fixed>
+      </tendon>
+      <actuator>
+        <general name="grip" tendon="split" gainprm="80 0 0" biasprm="0 -100 -10"/>
+      </actuator>
+      <keyframe>
+        <key qpos="0 0 0" qvel="0 0 0" ctrl="0"/>
+      </keyframe>
+    </mujoco>
+  """
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_tendon_serial_chain(self, jacobian):
+    """Tests qDeriv for tendon actuator on serial chain.
+
+    Verifies that sibling DOF cross-terms from tendon coupling are dropped
+    (matching MuJoCo CPU's implicitfast approximation) and that no NaN or
+    stale values leak into the result.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._TENDON_SERIAL_CHAIN_XML,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (tendon serial chain)")
+
+  def test_step_tendon_serial_chain_no_nan(self):
+    """Regression: implicitfast + tendon on serial chain must not NaN."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._TENDON_SERIAL_CHAIN_XML,
+      keyframe=0,
+    )
+
+    for _ in range(10):
+      mjw.step(m, d)
+
+    mjw.get_data_into(mjd, mjm, d)
+    self.assertFalse(np.any(np.isnan(mjd.qpos)))
+    self.assertFalse(np.any(np.isnan(mjd.qvel)))
+
+  def test_smooth_vel_sparse_tendon_coupled(self):
+    """Tests qDeriv kernel with nv > 32 and moment_rownnz > 1.
+
+    Builds a chain of 35 DOFs (forcing sparse path) with a fixed tendon
+    coupling two joints, producing an actuator with moment_rownnz=2.
+    """
+    # Build a chain long enough to force sparse (nv > 32)
+    xml = f"""
+    <mujoco>
+      <option integrator="implicitfast">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+        <body pos="0.1 0 0">
+          <geom type="sphere" size=".05"/>
+          <joint name="j0" type="hinge" axis="0 1 0"/>
+          <body pos="0.1 0 0">
+            <geom type="sphere" size=".05"/>
+            <joint name="j1" type="hinge" axis="0 1 0"/>
+            <body pos="0.1 0 0">
+              <geom type="sphere" size=".05"/>
+              <joint name="j2" type="hinge" axis="0 1 0"/>
+              <body pos="0.1 0 0">
+                <geom type="sphere" size=".05"/>
+                <joint name="j3" type="hinge" axis="0 1 0"/>
+                <body pos="0.1 0 0">
+                  <geom type="sphere" size=".05"/>
+                  <joint name="j4" type="hinge" axis="0 1 0"/>
+                  <body pos="0.1 0 0">
+                    <geom type="sphere" size=".05"/>
+                    <joint name="j5" type="hinge" axis="0 1 0"/>
+                    <body pos="0.1 0 0">
+                      <geom type="sphere" size=".05"/>
+                      <joint name="j6" type="hinge" axis="0 1 0"/>
+                      <body pos="0.1 0 0">
+                        <geom type="sphere" size=".05"/>
+                        <joint name="j7" type="hinge" axis="0 1 0"/>
+                        <body pos="0.1 0 0">
+                          <geom type="sphere" size=".05"/>
+                          <joint name="j8" type="hinge" axis="0 1 0"/>
+                          <body pos="0.1 0 0">
+                            <geom type="sphere" size=".05"/>
+                            <joint name="j9" type="hinge" axis="0 1 0"/>
+                            <body pos="0.1 0 0">
+                              <geom type="sphere" size=".05"/>
+                              <joint name="j10" type="hinge" axis="0 1 0"/>
+                              <body pos="0.1 0 0">
+                                <geom type="sphere" size=".05"/>
+                                <joint name="j11" type="hinge" axis="0 1 0"/>
+                                <body pos="0.1 0 0">
+                                  <geom type="sphere" size=".05"/>
+                                  <joint name="j12" type="hinge" axis="0 1 0"/>
+                                  <body pos="0.1 0 0">
+                                    <geom type="sphere" size=".05"/>
+                                    <joint name="j13" type="hinge" axis="0 1 0"/>
+                                    <body pos="0.1 0 0">
+                                      <geom type="sphere" size=".05"/>
+                                      <joint name="j14" type="hinge" axis="0 1 0"/>
+                                      <body pos="0.1 0 0">
+                                        <geom type="sphere" size=".05"/>
+                                        <joint name="j15" type="hinge" axis="0 1 0"/>
+                                        <body pos="0.1 0 0">
+                                          <geom type="sphere" size=".05"/>
+                                          <joint name="j16" type="hinge" axis="0 1 0"/>
+                                          <body pos="0.1 0 0">
+                                            <geom type="sphere" size=".05"/>
+                                            <joint name="j17" type="hinge" axis="0 1 0"/>
+                                            <body pos="0.1 0 0">
+                                              <geom type="sphere" size=".05"/>
+                                              <joint name="j18" type="hinge" axis="0 1 0"/>
+                                              <body pos="0.1 0 0">
+                                                <geom type="sphere" size=".05"/>
+                                                <joint name="j19" type="hinge" axis="0 1 0"/>
+                                                <body pos="0.1 0 0">
+                                                  <geom type="sphere" size=".05"/>
+                                                  <joint name="j20" type="hinge" axis="0 1 0"/>
+                                                  <body pos="0.1 0 0">
+                                                    <geom type="sphere" size=".05"/>
+                                                    <joint name="j21" type="hinge" axis="0 1 0"/>
+                                                    <body pos="0.1 0 0">
+                                                      <geom type="sphere" size=".05"/>
+                                                      <joint name="j22" type="hinge" axis="0 1 0"/>
+                                                      <body pos="0.1 0 0">
+                                                        <geom type="sphere" size=".05"/>
+                                                        <joint name="j23" type="hinge" axis="0 1 0"/>
+                                                        <body pos="0.1 0 0">
+                                                          <geom type="sphere" size=".05"/>
+                                                          <joint name="j24" type="hinge" axis="0 1 0"/>
+                                                          <body pos="0.1 0 0">
+                                                            <geom type="sphere" size=".05"/>
+                                                            <joint name="j25" type="hinge" axis="0 1 0"/>
+                                                            <body pos="0.1 0 0">
+                                                              <geom type="sphere" size=".05"/>
+                                                              <joint name="j26" type="hinge" axis="0 1 0"/>
+                                                              <body pos="0.1 0 0">
+                                                                <geom type="sphere" size=".05"/>
+                                                                <joint name="j27" type="hinge" axis="0 1 0"/>
+                                                                <body pos="0.1 0 0">
+                                                                  <geom type="sphere" size=".05"/>
+                                                                  <joint name="j28" type="hinge" axis="0 1 0"/>
+                                                                  <body pos="0.1 0 0">
+                                                                    <geom type="sphere" size=".05"/>
+                                                                    <joint name="j29" type="hinge" axis="0 1 0"/>
+                                                                    <body pos="0.1 0 0">
+                                                                      <geom type="sphere" size=".05"/>
+                                                                      <joint name="j30" type="hinge" axis="0 1 0"/>
+                                                                      <body pos="0.1 0 0">
+                                                                        <geom type="sphere" size=".05"/>
+                                                                        <joint name="j31" type="hinge" axis="0 1 0"/>
+                                                                        <body pos="0.1 0 0">
+                                                                          <geom type="sphere" size=".05"/>
+                                                                          <joint name="j32" type="hinge" axis="0 1 0"/>
+                                                                          <body pos="0.1 0 0">
+                                                                            <geom type="sphere" size=".05"/>
+                                                                            <joint name="j33" type="hinge" axis="0 1 0"/>
+                                                                            <body pos="0.1 0 0">
+                                                                              <geom type="sphere" size=".05"/>
+                                                                              <joint name="j34" type="hinge" axis="0 1 0"/>
+                                                                            </body>
+                                                                          </body>
+                                                                        </body>
+                                                                      </body>
+                                                                    </body>
+                                                                  </body>
+                                                                </body>
+                                                              </body>
+                                                            </body>
+                                                          </body>
+                                                        </body>
+                                                      </body>
+                                                    </body>
+                                                  </body>
+                                                </body>
+                                              </body>
+                                            </body>
+                                          </body>
+                                        </body>
+                                      </body>
+                                    </body>
+                                  </body>
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="coupled">
+          <joint joint="j10" coef="1"/>
+          <joint joint="j11" coef="0.5"/>
+        </fixed>
+      </tendon>
+      <actuator>
+        <general tendon="coupled" gainprm="100" biasprm="0 -100 0"
+                 dyntype="none" gaintype="fixed" biastype="affine"/>
+        <motor joint="j0" gear="1"/>
+        <motor joint="j5" gear="1"/>
+        <motor joint="j20" gear="1"/>
+      </actuator>
+      <keyframe>
+        <key qpos="0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1" qvel="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1" ctrl="1 1 1 1"/>
+      </keyframe>
+    </mujoco>
+    """
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      keyframe=0,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+    )
+
+    self.assertTrue(m.is_sparse, "Model should use sparse path (nv > 32)")
+
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+      mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse tendon coupled)")
+
+  def test_actearly_derivative(self):
+    """Implicit derivatives should use next activation when actearly is set."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option timestep="1" integrator="implicitfast"/>
+      <worldbody>
+        <body>
+          <joint name="early" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body pos="1 0 0">
+          <joint name="late" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="early" dyntype="integrator" gaintype="affine"
+                 gainprm="1 0 1" actearly="true"/>
+        <general joint="late" dyntype="integrator" gaintype="affine"
+                 gainprm="1 0 1" actearly="false"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="1 1" act="0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    # both should have same act_dot (ctrl = 1 for integrator dynamics)
+    _assert_eq(d.act_dot.numpy()[0, 0], d.act_dot.numpy()[0, 1], "act_dot")
+
+    # compute qDeriv using deriv_smooth_vel
+    out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+
+    # with actearly=true and nonzero act_dot, derivative should differ
+    # because actearly uses next activation: act + act_dot*dt
+    # for our model: next_act = 0 + 1*1 = 1, current_act = 0
+    # derivative adds gain_vel * act to qDeriv diagonal
+    # qDeriv = qM - dt * actuator_vel_derivative
+    # for independent bodies with mass=1: qM diagonal = 1.0
+    # actearly=true: vel = gain_vel * next_act = 1 * 1 = 1, out = 1 - 1*1 = 0
+    # actearly=false: vel = gain_vel * current_act = 1 * 0 = 0, out = 1 - 1*0 = 1
+    self.assertNotAlmostEqual(
+      mjw_out[0, 0],
+      mjw_out[1, 1],
+      msg="actearly=true should use next activation in derivative",
+    )
+    _assert_eq(mjw_out[0, 0], 0.0, "actearly=true: qM - dt*gain_vel*next_act = 1 - 1*1 = 0")
+    _assert_eq(mjw_out[1, 1], 1.0, "actearly=false: qM - dt*gain_vel*current_act = 1 - 1*0 = 1")
+
+  def test_forcerange_clamped_derivative(self):
+    """Implicit integration is more accurate than Euler with active forcerange clamping."""
+    xml = """
+    <mujoco>
+      <option timestep="0.01" integrator="implicitfast"/>
+      <worldbody>
+        <geom type="plane" size="10 10 0.001"/>
+        <body pos="0 0 1">
+          <joint name="slide" type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <position joint="slide" kp="10000" kv="1000" forcerange="-10 10"/>
+      </actuator>
+    </mujoco>
+    """
+
+    dt_small = 5e-4
+    dt_large = 5e-2
+    duration = 1.0
+    nsteps_large = int(duration / dt_large)
+    nsubstep = int(dt_large / dt_small)
+
+    # ground truth: Euler with small timestep
+    mjm_gt = mujoco.MjModel.from_xml_string(xml)
+    mjd_gt = mujoco.MjData(mjm_gt)
+    mjm_gt.opt.timestep = dt_small
+    mjm_gt.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+    mujoco.mj_resetData(mjm_gt, mjd_gt)
+    mjd_gt.ctrl[0] = 0.5
+
+    # implicitfast at large timestep
+    mjm_impl, mjd_impl, m_impl, d_impl = test_data.fixture(xml=xml)
+    m_impl.opt.timestep.fill_(dt_large)
+    m_impl.opt.integrator = int(mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
+    d_impl.ctrl.fill_(0.5)
+
+    # euler at large timestep
+    mjm_euler, mjd_euler, m_euler, d_euler = test_data.fixture(xml=xml)
+    m_euler.opt.timestep.fill_(dt_large)
+    m_euler.opt.integrator = int(mujoco.mjtIntegrator.mjINT_EULER)
+    d_euler.ctrl.fill_(0.5)
+
+    error_implicit = 0.0
+    error_euler = 0.0
+
+    for _ in range(nsteps_large):
+      # ground truth: small steps with Euler
+      mujoco.mj_step(mjm_gt, mjd_gt, nsubstep)
+
+      # implicit at large timestep
+      mjw.step(m_impl, d_impl)
+
+      # euler at large timestep
+      mjw.step(m_euler, d_euler)
+
+      # accumulate errors
+      gt_qpos = mjd_gt.qpos[0]
+      diff_implicit = gt_qpos - d_impl.qpos.numpy()[0, 0]
+      diff_euler = gt_qpos - d_euler.qpos.numpy()[0, 0]
+      error_implicit += diff_implicit * diff_implicit
+      error_euler += diff_euler * diff_euler
+
+    self.assertLess(
+      error_implicit,
+      error_euler,
+      "implicitfast should be more accurate than Euler at large timestep when forcerange derivatives are correctly handled",
+    )
+
 
 if __name__ == "__main__":
   wp.init()

@@ -1,0 +1,68 @@
+<mujoco model="primitives">
+
+  <visual>
+    <map znear="0.01" zfar="200" />
+    <quality shadowsize="8192" />
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
+    <global azimuth="140" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
+    <camera pos="3 0 2" xyaxes="0 1 0 -0.6 0 1"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" />
+
+    <geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+
+    <replicate count="5" offset="0.1 0 0">
+        <replicate count="5" offset="0 0.2 0">
+            <body name="sphere" pos="0.6 -0.4 0.8">
+                <freejoint name="sphere"/>
+                <geom name="geom_sphere" type="sphere" size="0.05" contype="1" conaffinity="1" rgba="1 0 0 1"/>
+            </body>
+        </replicate>
+    </replicate>
+
+    <replicate count="5" offset="0.1 0 0">
+        <replicate count="5" offset="0 0.2 0">
+            <body name="capsule" pos="0.6 -0.4 0.95">
+                <freejoint name="capsule"/>
+                <geom name="geom_capsule" type="capsule" size="0.04 0.05" contype="1" conaffinity="1" rgba="0 1 0 1"/>
+            </body>
+        </replicate>
+    </replicate>
+
+    <replicate count="5" offset="0.1 0 0">
+        <replicate count="5" offset="0 0.2 0">
+            <body name="ellipsoid" pos="0.6 -0.4 1.1">
+                <freejoint name="ellipsoid"/>
+                <geom name="geom_ellipsoid" type="ellipsoid" size="0.05 0.04 0.03" contype="1" conaffinity="1" rgba="0 0 1 1"/>
+            </body>
+        </replicate>
+    </replicate>
+
+    <replicate count="5" offset="0.1 0 0">
+        <replicate count="5" offset="0 0.2 0">
+            <body name="cylinder" pos="0.6 -0.4 1.2">
+                <freejoint name="cylinder"/>
+                <geom name="geom_cylinder" type="cylinder" size="0.04 0.04" contype="1" conaffinity="1" rgba="1 1 0 1"/>
+            </body>
+        </replicate>
+    </replicate>
+
+    <replicate count="5" offset="0.1 0 0">
+        <replicate count="5" offset="0 0.2 0">
+            <body name="box1" pos="0.6 -0.4 1.4">
+                <freejoint name="joint1"/>
+                <geom name="geom1" type="box" size="0.03 0.03 0.03" contype="1" conaffinity="1" rgba="0 1 1 1"/>
+            </body>
+        </replicate>
+    </replicate>
+  </worldbody>
+</mujoco>

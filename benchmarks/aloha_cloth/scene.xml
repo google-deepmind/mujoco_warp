@@ -308,7 +308,6 @@
               radius="0.006" dim="2" rgba="1 0.5 0.5 1" pos="0 0 0" mass=".1">
       <edge equality="true"/>
       <elasticity young="3e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
-      <contact vertcollide="true" conaffinity="0" contype="0"/>
     </flexcomp>
   </worldbody>
   <contact>

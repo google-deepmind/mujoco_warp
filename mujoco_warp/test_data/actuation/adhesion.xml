@@ -8,14 +8,19 @@
       <joint type="slide" axis="0 0 1"/>
       <joint type="hinge" axis="1 0 1"/>
     </body>
+    <!-- unactuated -->
+    <body pos="1 0 0">
+      <joint name="unactuated" type="hinge" axis="1 0 0"/>
+      <geom type="sphere" size=".1"/>
+    </body>
   </worldbody>
   <actuator>
     <adhesion body="body" gain=".123" ctrlrange="0 1"/>
   </actuator>
   <keyframe>
-    <key qpos=".11 0"/>
-    <key qpos=".12 0"/>
-    <key qpos=".09 0"/>
-    <key qpos=".08 0"/>
+    <key qpos=".11 0 1"/>
+    <key qpos=".12 0 1"/>
+    <key qpos=".09 0 1"/>
+    <key qpos=".08 0 1"/>
   </keyframe>
 </mujoco>

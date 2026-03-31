@@ -23,6 +23,8 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.types import MJ_MAXCONPAIR
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
@@ -34,6 +36,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SensorType
+from mujoco_warp._src.types import Stage
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec6
@@ -43,7 +46,6 @@ from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import inside_geom
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
@@ -125,10 +127,10 @@ def _magnetometer(
 @wp.func
 def _cam_projection(
   # Model:
-  cam_fovy: wp.array(dtype=float),
+  cam_fovy: wp.array2d(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
-  cam_intrinsic: wp.array(dtype=wp.vec4),
+  cam_intrinsic: wp.array2d(dtype=wp.vec4),
   # Data in:
   site_xpos_in: wp.array2d(dtype=wp.vec3),
   cam_xpos_in: wp.array2d(dtype=wp.vec3),
@@ -139,8 +141,8 @@ def _cam_projection(
   refid: int,
 ) -> wp.vec2:
   sensorsize = cam_sensorsize[refid]
-  intrinsic = cam_intrinsic[refid]
-  fovy = cam_fovy[refid]
+  intrinsic = cam_intrinsic[worldid % cam_intrinsic.shape[0], refid]
+  fovy = cam_fovy[worldid % cam_fovy.shape[0], refid]
   res = cam_resolution[refid]
 
   target_xpos = site_xpos_in[worldid, objid]
@@ -471,10 +473,10 @@ def _sensor_pos(
   site_quat: wp.array2d(dtype=wp.quat),
   cam_bodyid: wp.array(dtype=int),
   cam_quat: wp.array2d(dtype=wp.quat),
-  cam_fovy: wp.array(dtype=float),
+  cam_fovy: wp.array2d(dtype=float),
   cam_resolution: wp.array(dtype=wp.vec2i),
   cam_sensorsize: wp.array(dtype=wp.vec2),
-  cam_intrinsic: wp.array(dtype=wp.vec4),
+  cam_intrinsic: wp.array2d(dtype=wp.vec4),
   sensor_type: wp.array(dtype=int),
   sensor_datatype: wp.array(dtype=int),
   sensor_objtype: wp.array(dtype=int),
@@ -783,7 +785,7 @@ def sensor_pos(m: Model, d: Data):
       d,
       rangefinder_pnt,
       rangefinder_vec,
-      vec6(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf),
+      vec6(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL),
       True,
       m.sensor_rangefinder_bodyid,
       rangefinder_dist,
@@ -798,8 +800,7 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.empty((d.nworld, m.nsensorcollision, 8, 7), dtype=float)
-  sensor_collision.fill_(1.0e32)
+  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
   if m.nsensorcollision:
     wp.launch(
       _sensor_collision,
@@ -899,6 +900,9 @@ def sensor_pos(m: Model, d: Data):
       d.sensordata,
     ],
   )
+
+  if m.callback.sensor:
+    m.callback.sensor(m, d, Stage.POS)
 
 
 @wp.func
@@ -1439,6 +1443,9 @@ def sensor_vel(m: Model, d: Data):
     ],
   )
 
+  if m.callback.sensor:
+    m.callback.sensor(m, d, Stage.VEL)
+
 
 @wp.func
 def _accelerometer(
@@ -1788,38 +1795,12 @@ def _sensor_acc(
     nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
 
     if reduce == 3:  # netforce
-      # compute point: force-weighted centroid of contact position
+      # Single-pass computation: first compute centroid, then wrench about centroid
+      # Pass 1: compute force-weighted centroid of contact positions
       net_pos = wp.vec3(0.0)
-      total_force_magnitude = float(0.0)
-
-      for i in range(nmatch):
-        cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-
-        contact_forcetorque = support.contact_force_fn(
-          opt_cone,
-          contact_frame_in,
-          contact_friction_in,
-          contact_dim_in,
-          contact_efc_address_in,
-          efc_force_in,
-          njmax_in,
-          nacon_in,
-          worldid,
-          cid,
-          False,
-        )
-
-        weight = wp.norm_l2(wp.spatial_top(contact_forcetorque))
-        net_pos += weight * contact_pos_in[cid]
-        total_force_magnitude += weight
-
-      net_pos /= wp.max(total_force_magnitude, MJ_MINVAL)
-
-      # TODO(team): iterate over matches once
-
-      # compute total wrench about point, in the global frame
       net_force = wp.vec3(0.0)
       net_torque = wp.vec3(0.0)
+      total_force_magnitude = float(0.0)
 
       for i in range(nmatch):
         cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
@@ -1838,8 +1819,15 @@ def _sensor_acc(
           cid,
           False,
         )
-        contact_forcetorque *= dir
 
+        # Accumulate for centroid computation (unsigned force magnitude)
+        weight = wp.norm_l2(wp.spatial_top(contact_forcetorque))
+        contact_pos = contact_pos_in[cid]
+        net_pos += weight * contact_pos
+        total_force_magnitude += weight
+
+        # Apply direction and transform to global frame
+        contact_forcetorque *= dir
         force_local = wp.spatial_top(contact_forcetorque)
         torque_local = wp.spatial_bottom(contact_forcetorque)
 
@@ -1849,12 +1837,18 @@ def _sensor_acc(
         force_global = frameT @ force_local
         torque_global = frameT @ torque_local
 
-        # add to total force, torque
+        # Accumulate force and torque (about origin for now)
         net_force += force_global
         net_torque += torque_global
+        # Accumulate moment contribution: will adjust after centroid is computed
+        net_torque += wp.cross(contact_pos, force_global)
 
-        # add induced moment: torque += (pos - point) x force
-        net_torque += wp.cross(contact_pos_in[cid] - net_pos, force_global)
+      # Finalize centroid
+      net_pos /= wp.max(total_force_magnitude, MJ_MINVAL)
+
+      # Adjust torque: subtract moment from centroid (since we accumulated about origin)
+      # torque_about_centroid = torque_about_origin - centroid x total_force
+      net_torque -= wp.cross(net_pos, net_force)
 
       adr_slot = adr
 
@@ -1889,7 +1883,8 @@ def _sensor_acc(
         out[adr_slot + 1] = 1.0
         out[adr_slot + 2] = 0.0
     else:
-      for i in range(wp.min(nmatch, num)):
+      nslots = wp.min(nmatch, num)
+      for i in range(nslots):
         # sorted contact id
         cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
 
@@ -2087,6 +2082,43 @@ def _transform_spatial(vec: wp.spatial_vector, dif: wp.vec3) -> wp.vec3:
 
 
 @wp.kernel
+def _preprocess_tactile_contacts(
+  # Model:
+  body_weldid: wp.array(dtype=int),
+  geom_bodyid: wp.array(dtype=int),
+  # Data in:
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_worldid_in: wp.array(dtype=int),
+  nacon_in: wp.array(dtype=int),
+  # Out:
+  weld_geom_count_out: wp.array2d(dtype=int),
+  weld_geom_list_out: wp.array3d(dtype=int),
+):
+  conid = wp.tid()
+  ncon = nacon_in[0]
+  if conid >= ncon:
+    return
+  worldid = contact_worldid_in[conid]
+  contact_geom = contact_geom_in[conid]
+  weld1 = body_weldid[geom_bodyid[contact_geom[0]]]
+  weld2 = body_weldid[geom_bodyid[contact_geom[1]]]
+  geom1 = contact_geom[0]
+  geom2 = contact_geom[1]
+
+  for side in range(2):
+    if side == 0:
+      weld = weld1
+      geom = geom2
+    else:
+      weld = weld2
+      geom = geom1
+
+    idx = wp.atomic_add(weld_geom_count_out[worldid], weld, 1)
+    if idx < MJ_MAXCONPAIR:
+      weld_geom_list_out[worldid, weld, idx] = geom
+
+
+@wp.kernel
 def _sensor_tactile(
   # Model:
   body_rootid: wp.array(dtype=int),
@@ -2096,9 +2128,13 @@ def _sensor_tactile(
   oct_coeff: wp.array(dtype=vec8),
   geom_type: wp.array(dtype=int),
   geom_bodyid: wp.array(dtype=int),
+  geom_dataid: wp.array(dtype=int),
   geom_size: wp.array2d(dtype=wp.vec3),
   mesh_vertadr: wp.array(dtype=int),
+  mesh_vertnum: wp.array(dtype=int),
+  mesh_octadr: wp.array(dtype=int),
   mesh_normaladr: wp.array(dtype=int),
+  mesh_normalnum: wp.array(dtype=int),
   mesh_vert: wp.array(dtype=wp.vec3),
   mesh_normal: wp.array(dtype=wp.vec3),
   mesh_quat: wp.array(dtype=wp.quat),
@@ -2116,38 +2152,23 @@ def _sensor_tactile(
   geom_xmat_in: wp.array2d(dtype=wp.mat33),
   subtree_com_in: wp.array2d(dtype=wp.vec3),
   cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_worldid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
+  # In:
+  weld_geom_count_in: wp.array2d(dtype=int),
+  weld_geom_list_in: wp.array3d(dtype=int),
   # Data out:
   sensordata_out: wp.array2d(dtype=float),
 ):
-  conid, taxelid = wp.tid()
+  worldid, taxelid = wp.tid()
 
-  if conid >= nacon_in[0]:
-    return
-
-  worldid = contact_worldid_in[conid]
-
-  # get sensor_id
   sensor_id = taxel_sensorid[taxelid]
-
-  # get parent weld id
   mesh_id = sensor_objid[sensor_id]
   geom_id = sensor_refid[sensor_id]
   parent_body = geom_bodyid[geom_id]
   parent_weld = body_weldid[parent_body]
 
-  # contact geom
-  body1 = body_weldid[geom_bodyid[contact_geom_in[conid][0]]]
-  body2 = body_weldid[geom_bodyid[contact_geom_in[conid][1]]]
-  if body1 == parent_weld:
-    geom = contact_geom_in[conid][1]
-  elif body2 == parent_weld:
-    geom = contact_geom_in[conid][0]
-  else:
+  geom_count = weld_geom_count_in[worldid, parent_weld]
+  if geom_count == 0:
     return
-  body = geom_bodyid[geom]
 
   # vertex local position
   vertid = taxel_vertadr[taxelid] - mesh_vertadr[mesh_id]
@@ -2157,49 +2178,78 @@ def _sensor_tactile(
   xpos = geom_xmat_in[worldid, geom_id] @ pos
   xpos += geom_xpos_in[worldid, geom_id]
 
-  # position in other geom frame
-  tmp = xpos - geom_xpos_in[worldid, geom]
-  lpos = wp.transpose(geom_xmat_in[worldid, geom]) @ tmp
+  has_frame = mesh_normalnum[mesh_id] == 3 * mesh_vertnum[mesh_id]
+  normal_stride = 3 if has_frame else 1
+  offset = mesh_normaladr[mesh_id] + normal_stride * vertid
+  quat = mesh_quat[mesh_id]
+  normal = math.rot_vec_quat(mesh_normal[offset], quat)
+  tang1 = wp.vec3(0.0, 0.0, 0.0)
+  tang2 = wp.vec3(0.0, 0.0, 0.0)
+  if has_frame:
+    tang1 = math.rot_vec_quat(mesh_normal[offset + 1], quat)
+    tang2 = math.rot_vec_quat(mesh_normal[offset + 2], quat)
 
-  plugin_id = geom_plugin_index[geom]
+  for g in range(MJ_MAXCONPAIR):
+    if g >= geom_count:
+      break
 
-  contact_type = geom_type[geom]
+    geom = weld_geom_list_in[worldid, parent_weld, g]
+    if geom < 0:
+      continue
 
-  plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, plugin, plugin_attr, contact_type, geom_size[worldid, geom], plugin_id, mesh_id
-  )
+    is_dup = int(0)
+    for j in range(g):
+      if weld_geom_list_in[worldid, parent_weld, j] == geom:
+        is_dup = int(1)
+        break
+    if is_dup == int(1):
+      continue
 
-  depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)
-  if depth >= 0.0:
-    return
+    body = geom_bodyid[geom]
 
-  # get velocity in global
-  vel_sensor = _transform_spatial(cvel_in[worldid, parent_weld], xpos - subtree_com_in[worldid, body_rootid[parent_weld]])
-  vel_other = _transform_spatial(
-    cvel_in[worldid, body], geom_xpos_in[worldid, geom] - subtree_com_in[worldid, body_rootid[body]]
-  )
-  vel_rel = vel_sensor - vel_other
+    tmp = xpos - geom_xpos_in[worldid, geom]
+    lpos = wp.transpose(geom_xmat_in[worldid, geom]) @ tmp
 
-  # get contact force/torque, rotate into node frame
-  offset = mesh_normaladr[mesh_id] + 3 * vertid
-  normal = math.rot_vec_quat(mesh_normal[offset], mesh_quat[mesh_id])
-  tang1 = math.rot_vec_quat(mesh_normal[offset + 1], mesh_quat[mesh_id])
-  tang2 = math.rot_vec_quat(mesh_normal[offset + 2], mesh_quat[mesh_id])
-  kMaxDepth = 0.05
-  pressure = depth / wp.max(kMaxDepth - depth, MJ_MINVAL)
-  force = wp.mul(normal, pressure)
+    plugin_id = geom_plugin_index[geom]
+    contact_type = geom_type[geom]
 
-  # one row of mat^T * force
-  forceT = wp.vec3()
-  forceT[0] = wp.dot(force, normal)
-  forceT[1] = wp.abs(wp.dot(vel_rel, tang1))
-  forceT[2] = wp.abs(wp.dot(vel_rel, tang2))
+    plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
+      oct_child,
+      oct_aabb,
+      oct_coeff,
+      mesh_octadr,
+      plugin,
+      plugin_attr,
+      contact_type,
+      geom_size[worldid % geom_size.shape[0], geom],
+      plugin_id,
+      geom_dataid[geom],
+    )
 
-  # add to sensor output
-  dim = sensor_dim[sensor_id] / 3
-  wp.atomic_add(sensordata_out[worldid], sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
-  wp.atomic_add(sensordata_out[worldid], sensor_adr[sensor_id] + 1 * dim + vertid, forceT[1])
-  wp.atomic_add(sensordata_out[worldid], sensor_adr[sensor_id] + 2 * dim + vertid, forceT[2])
+    depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)
+    if depth >= 0.0:
+      continue
+
+    vel_sensor = _transform_spatial(cvel_in[worldid, parent_weld], xpos - subtree_com_in[worldid, body_rootid[parent_weld]])
+    vel_other = _transform_spatial(
+      cvel_in[worldid, body], geom_xpos_in[worldid, geom] - subtree_com_in[worldid, body_rootid[body]]
+    )
+    vel_rel = vel_sensor - vel_other
+
+    kMaxDepth = 0.05
+    pressure = depth / wp.max(kMaxDepth - depth, MJ_MINVAL)
+    force = wp.mul(normal, pressure)
+
+    forceT = wp.vec3(0.0, 0.0, 0.0)
+    forceT[0] = wp.dot(force, normal)
+    if has_frame:
+      forceT[1] = wp.abs(wp.dot(vel_rel, tang1))
+      forceT[2] = wp.abs(wp.dot(vel_rel, tang2))
+
+    dim = sensor_dim[sensor_id] // 3
+    wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
+    wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 1 * dim + vertid, forceT[1])
+    wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 2 * dim + vertid, forceT[2])
 
 
 @wp.func
@@ -2358,16 +2408,16 @@ def _contact_match(
 
 @cache_kernel
 def _contact_sort(maxmatch: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def contact_sort(
     # Model:
     sensor_intprm: wp.array2d(dtype=int),
     sensor_contact_adr: wp.array(dtype=int),
-    # Data in:
+    # In:
     sensor_contact_nmatch_in: wp.array2d(dtype=int),
     sensor_contact_matchid_in: wp.array3d(dtype=int),
     sensor_contact_criteria_in: wp.array3d(dtype=float),
-    # Data out:
+    # Out:
     sensor_contact_matchid_out: wp.array3d(dtype=int),
   ):
     worldid, contactsensorid = wp.tid()
@@ -2427,9 +2477,27 @@ def sensor_acc(m: Model, d: Data):
     ],
   )
 
+  weld_geom_count = wp.zeros((d.nworld, m.nbody), dtype=int)
+  weld_geom_list = wp.full((d.nworld, m.nbody, MJ_MAXCONPAIR), -1, dtype=int)
+  wp.launch(
+    _preprocess_tactile_contacts,
+    dim=d.naconmax,
+    inputs=[
+      m.body_weldid,
+      m.geom_bodyid,
+      d.contact.geom,
+      d.contact.worldid,
+      d.nacon,
+    ],
+    outputs=[
+      weld_geom_count,
+      weld_geom_list,
+    ],
+  )
+
   wp.launch(
     _sensor_tactile,
-    dim=(d.naconmax, m.nsensortaxel),
+    dim=(d.nworld, m.nsensortaxel),
     inputs=[
       m.body_rootid,
       m.body_weldid,
@@ -2438,9 +2506,13 @@ def sensor_acc(m: Model, d: Data):
       m.oct_coeff,
       m.geom_type,
       m.geom_bodyid,
+      m.geom_dataid,
       m.geom_size,
       m.mesh_vertadr,
+      m.mesh_vertnum,
+      m.mesh_octadr,
       m.mesh_normaladr,
+      m.mesh_normalnum,
       m.mesh_vert,
       m.mesh_normal,
       m.mesh_quat,
@@ -2457,9 +2529,8 @@ def sensor_acc(m: Model, d: Data):
       d.geom_xmat,
       d.subtree_com,
       d.cvel,
-      d.contact.geom,
-      d.contact.worldid,
-      d.nacon,
+      weld_geom_count,
+      weld_geom_list,
     ],
     outputs=[
       d.sensordata,
@@ -2622,6 +2693,9 @@ def sensor_acc(m: Model, d: Data):
     ],
   )
 
+  if m.callback.sensor:
+    m.callback.sensor(m, d, Stage.ACC)
+
 
 @wp.kernel
 def _energy_pos_zero(
@@ -2782,12 +2856,12 @@ def energy_pos(m: Model, d: Data):
   wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
-  if not m.opt.disableflags & DisableBit.GRAVITY:
+  if not (m.opt.disableflags & DisableBit.GRAVITY):
     wp.launch(
       _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
     )
 
-  if not m.opt.disableflags & DisableBit.SPRING:
+  if not (m.opt.disableflags & DisableBit.SPRING):
     # add joint-level springs
     wp.launch(
       _energy_pos_passive_joint,
@@ -2820,13 +2894,13 @@ def energy_pos(m: Model, d: Data):
 
 @cache_kernel
 def _energy_vel_kinetic(nv: int):
-  @nested_kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(
     # Data in:
     qvel_in: wp.array2d(dtype=float),
     # In:
     Mqvel: wp.array2d(dtype=float),
-    # Out:
+    # Data out:
     energy_out: wp.array(dtype=wp.vec2),
   ):
     worldid = wp.tid()
@@ -2850,12 +2924,13 @@ def energy_vel(m: Model, d: Data):
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel
-  support.mul_m(m, d, d.efc.mv, d.qvel)
+  mv = wp.zeros((d.nworld, m.nv), dtype=float)
+  support.mul_m(m, d, mv, d.qvel)
 
   wp.launch_tiled(
     _energy_vel_kinetic(m.nv),
     dim=d.nworld,
-    inputs=[d.qvel, d.efc.mv],
+    inputs=[d.qvel, mv],
     outputs=[d.energy],
     block_dim=m.block_dim.energy_vel_kinetic,
   )
