@@ -1304,7 +1304,7 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
     # Model:
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
-    geom_dataid: wp.array[int],
+    geom_dataid: wp.array2d[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
     geom_solref: wp.array2d[wp.vec2],

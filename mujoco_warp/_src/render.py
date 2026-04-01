@@ -89,7 +89,7 @@ def sample_texture(
 def cast_ray(
   # Model:
   geom_type: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   flex_vertadr: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
@@ -159,7 +159,7 @@ def cast_ray(
     if gtype == GeomType.HFIELD:
       d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
         hfield_bvh_id,
-        geom_dataid[gi],
+        geom_dataid[worldid % geom_dataid.shape[0], gi],
         geom_xpos_in[worldid, gi],
         geom_xmat_in[worldid, gi],
         ray_origin_world,
@@ -208,7 +208,7 @@ def cast_ray(
     if gtype == GeomType.MESH:
       d, n, u, v, f, hit_mesh_id = ray_mesh_with_bvh(
         mesh_bvh_id,
-        geom_dataid[gi],
+        geom_dataid[worldid % geom_dataid.shape[0], gi],
         geom_xpos_in[worldid, gi],
         geom_xmat_in[worldid, gi],
         ray_origin_world,
@@ -257,7 +257,7 @@ def cast_ray(
 def cast_ray_first_hit(
   # Model:
   geom_type: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   flex_vertadr: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
@@ -314,7 +314,7 @@ def cast_ray_first_hit(
     if gtype == GeomType.HFIELD:
       d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
         hfield_bvh_id,
-        geom_dataid[gi],
+        geom_dataid[worldid % geom_dataid.shape[0], gi],
         geom_xpos_in[worldid, gi],
         geom_xmat_in[worldid, gi],
         ray_origin_world,
@@ -363,7 +363,7 @@ def cast_ray_first_hit(
     if gtype == GeomType.MESH:
       hit = ray_mesh_with_bvh_anyhit(
         mesh_bvh_id,
-        geom_dataid[gi],
+        geom_dataid[worldid % geom_dataid.shape[0], gi],
         geom_xpos_in[worldid, gi],
         geom_xmat_in[worldid, gi],
         ray_origin_world,
@@ -410,7 +410,7 @@ def cast_ray_first_hit(
 def compute_lighting(
   # Model:
   geom_type: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   flex_vertadr: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
@@ -531,7 +531,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   def _render_megakernel(
     # Model:
     geom_type: wp.array[int],
-    geom_dataid: wp.array[int],
+    geom_dataid: wp.array2d[int],
     geom_matid: wp.array2d[int],
     geom_size: wp.array2d[wp.vec3],
     geom_rgba: wp.array2d[wp.vec4],

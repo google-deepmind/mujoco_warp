@@ -452,7 +452,7 @@ def ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.ve
 def ray_hfield(
   # Model:
   geom_type: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   hfield_size: wp.array[wp.vec4],
   hfield_nrow: wp.array[int],
   hfield_ncol: wp.array[int],
@@ -464,13 +464,14 @@ def ray_hfield(
   pnt: wp.vec3,
   vec: wp.vec3,
   id: int,
+  worldid: int,
 ) -> Tuple[float, wp.vec3]:
   # check geom type
   if geom_type[id] != GeomType.HFIELD:
     return -1.0, wp.vec3()
 
   # hfield id and dimensions
-  hid = geom_dataid[id]
+  hid = geom_dataid[worldid % geom_dataid.shape[0], id]
   nrow = hfield_nrow[hid]
   ncol = hfield_ncol[hid]
 
@@ -826,7 +827,7 @@ def _ray_geom_mesh(
   body_weldid: wp.array[int],
   geom_type: wp.array[int],
   geom_bodyid: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_matid: wp.array2d[int],
   geom_group: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
@@ -876,7 +877,7 @@ def _ray_geom_mesh(
         mesh_faceadr,
         mesh_vert,
         mesh_face,
-        geom_dataid[geomid],
+        geom_dataid[worldid % geom_dataid.shape[0], geomid],
         pos,
         mat,
         geom_size[worldid % geom_size.shape[0], geomid],
@@ -897,6 +898,7 @@ def _ray_geom_mesh(
         pnt,
         vec,
         geomid,
+        worldid,
       )
     else:
       return ray_geom(pos, mat, geom_size[worldid % geom_size.shape[0], geomid], pnt, vec, type)
@@ -912,7 +914,7 @@ def _ray(
   body_weldid: wp.array[int],
   geom_type: wp.array[int],
   geom_bodyid: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_matid: wp.array2d[int],
   geom_group: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
@@ -1014,7 +1016,7 @@ def _ray_geom_mesh_bvh(
   body_weldid: wp.array[int],
   geom_type: wp.array[int],
   geom_bodyid: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_matid: wp.array2d[int],
   geom_group: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
@@ -1055,7 +1057,7 @@ def _ray_geom_mesh_bvh(
       bvh_ids = mesh_bvh_id if gtype == GeomType.MESH else hfield_bvh_id
       t, n, u, v, f, geom_mesh_id = ray_mesh_with_bvh(
         bvh_ids,
-        geom_dataid[geomid],
+        geom_dataid[worldid % geom_dataid.shape[0], geomid],
         pos,
         mat,
         pnt,
@@ -1084,7 +1086,7 @@ def _ray_bvh(
   body_weldid: wp.array[int],
   geom_type: wp.array[int],
   geom_bodyid: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_matid: wp.array2d[int],
   geom_group: wp.array[int],
   geom_size: wp.array2d[wp.vec3],

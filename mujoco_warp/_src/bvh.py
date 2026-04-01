@@ -174,7 +174,7 @@ def _compute_cylinder_bounds(
 def _compute_bvh_bounds(
   # Model:
   geom_type: wp.array[int],
-  geom_dataid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
@@ -205,8 +205,13 @@ def _compute_bvh_bounds(
   elif type == GeomType.PLANE:
     lower_bound, upper_bound = _compute_plane_bounds(pos, rot, size)
   elif type == GeomType.MESH:
-    size = mesh_bounds_size[geom_dataid[geom_id]]
-    lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
+    did = geom_dataid[worldid % geom_dataid.shape[0], geom_id]
+    if did >= 0:
+      size = mesh_bounds_size[did]
+      lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
+    else:
+      lower_bound = pos
+      upper_bound = pos
   elif type == GeomType.ELLIPSOID:
     lower_bound, upper_bound = _compute_ellipsoid_bounds(pos, rot, size)
   elif type == GeomType.CYLINDER:
@@ -214,9 +219,14 @@ def _compute_bvh_bounds(
   elif type == GeomType.BOX:
     lower_bound, upper_bound = _compute_box_bounds(pos, rot, size)
   elif type == GeomType.HFIELD:
-    size = hfield_bounds_size[geom_dataid[geom_id]]
-    hfield_center = pos + rot[:, 2] * size[2]
-    lower_bound, upper_bound = _compute_box_bounds(hfield_center, rot, size)
+    did = geom_dataid[worldid % geom_dataid.shape[0], geom_id]
+    if did >= 0:
+      size = hfield_bounds_size[did]
+      hfield_center = pos + rot[:, 2] * size[2]
+      lower_bound, upper_bound = _compute_box_bounds(hfield_center, rot, size)
+    else:
+      lower_bound = pos
+      upper_bound = pos
 
   lower_out[worldid * bvh_ngeom + geom_local_id] = lower_bound
   upper_out[worldid * bvh_ngeom + geom_local_id] = upper_bound
@@ -289,7 +299,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   total_bvh_size = rc.bvh_ngeom + rc.bvh_nflexgeom
 
   geom_type = wp.array(mjm.geom_type, dtype=int)
-  geom_dataid = wp.array(mjm.geom_dataid, dtype=int)
+  geom_dataid = wp.array(np.tile(mjm.geom_dataid, (nworld, 1)), dtype=int)
   geom_size = wp.array(np.tile(mjm.geom_size[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xmat = wp.array(np.tile(mjd.geom_xmat.reshape(mjm.ngeom, 3, 3)[np.newaxis, :, :, :], (nworld, 1, 1, 1)), dtype=wp.mat33)
