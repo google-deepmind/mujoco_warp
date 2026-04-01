@@ -106,27 +106,30 @@ def _compile_step(m, d):
   return capture.graph
 
 
-def _make_warp_step_fn(m, d, graph, ctrls=None):
-  ctrlid = [0]
+def _make_warp_step_fn(mjm, m, d, graph, ctrls=None):
+  ctrlid = 0
+  opt = copy.copy(mjm.opt)
 
   def step_fn(mjm, mjd):
-    if ctrls is not None and ctrlid[0] < len(ctrls):
-      mjd.ctrl[:] = ctrls[ctrlid[0]]
-      ctrlid[0] += 1
-
+    nonlocal ctrlid, opt, m, graph
+    if ctrls is not None and ctrlid < len(ctrls):
+      mjd.ctrl[:] = ctrls[ctrlid]
+      ctrlid += 1
+    if mjm.opt != opt:
+      opt = copy.copy(mjm.opt)
+      m = mjw.put_model(mjm)
+      graph = _compile_step(m, d) if wp.get_device().is_cuda else None
     wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
     wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
     wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
     wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
     wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
     wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
-
     if graph is None:
       mjw.step(m, d)
     else:
       wp.capture_launch(graph)
       wp.synchronize()
-
     mjw.get_data_into(mjd, mjm, d)
 
   return step_fn
@@ -134,17 +137,37 @@ def _make_warp_step_fn(m, d, graph, ctrls=None):
 
 def _make_c_step_fn(ctrls=None):
   if ctrls is None:
-    return None
+    return mujoco.mj_step
 
-  ctrlid = [0]
+  ctrlid = 0
 
   def step_fn(mjm, mjd):
-    if ctrlid[0] < len(ctrls):
-      mjd.ctrl[:] = ctrls[ctrlid[0]]
-      ctrlid[0] += 1
+    nonlocal ctrlid
+    if ctrlid < len(ctrls):
+      mjd.ctrl[:] = ctrls[ctrlid]
+      ctrlid += 1
     mujoco.mj_step(mjm, mjd)
 
   return step_fn
+
+
+def _run_viser_viewer(mjm, mjd, step_fn):
+  from mjviser import Viewer as MjViserViewer
+
+  MjViserViewer(mjm, mjd, step_fn=step_fn).run()
+
+
+def _run_passive_viewer(mjm, mjd, step_fn):
+  with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
+    while True:
+      start = time.time()
+      if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
+        _VIEWER_GLOBAL_STATE["step_once"] = False
+        step_fn(mjm, mjd)
+      viewer.sync()
+      elapsed = time.time() - start
+      if elapsed < mjm.opt.timestep:
+        time.sleep(mjm.opt.timestep - elapsed)
 
 
 def _main(argv: Sequence[str]) -> None:
@@ -157,7 +180,6 @@ def _main(argv: Sequence[str]) -> None:
   mjm = _load_model(epath.Path(argv[1]))
   mjd = mujoco.MjData(mjm)
   ctrls = None
-  ctrlid = 0
   if _REPLAY.value:
     keys = find_keys(mjm, _REPLAY.value)
     if not keys:
@@ -211,58 +233,15 @@ def _main(argv: Sequence[str]) -> None:
     print(f"Data\n  nworld: {d.nworld} nconmax: {int(d.naconmax / d.nworld)} njmax: {d.njmax}\n")
     print(f"MuJoCo Warp simulating with dt = {m.opt.timestep.numpy()[0]:.3f}...")
 
-  if _VIEWER.value == "viser":
-    try:
-      from mjviser import Viewer as MjViserViewer
-    except ImportError:
-      raise SystemExit("mjviser required for --viewer=viser: pip install mjviser")
-
-    if _ENGINE.value == EngineOptions.WARP:
-      step_fn = _make_warp_step_fn(m, d, graph, ctrls)
-    else:
-      step_fn = _make_c_step_fn(ctrls)
-
-    MjViserViewer(mjm, mjd, step_fn=step_fn).run()
+  if _ENGINE.value == EngineOptions.WARP:
+    step_fn = _make_warp_step_fn(mjm, m, d, graph, ctrls)
   else:
-    with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
-      opt = copy.copy(mjm.opt)
+    step_fn = _make_c_step_fn(ctrls)
 
-      while True:
-        start = time.time()
-
-        if ctrls is not None and ctrlid < len(ctrls):
-          mjd.ctrl[:] = ctrls[ctrlid]
-          ctrlid += 1
-
-        if _ENGINE.value == EngineOptions.C:
-          mujoco.mj_step(mjm, mjd)
-        else:  # mjwarp
-          wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
-          wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
-          wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
-          wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
-          wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
-          wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
-          # if the user changed an option in the MuJoCo Simulate UI, go ahead and recompile the step
-          # TODO: update memory tied to option max iterations
-          if mjm.opt != opt:
-            opt = copy.copy(mjm.opt)
-            m = mjw.put_model(mjm)
-            graph = _compile_step(m, d) if wp.get_device().is_cuda else None
-          if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
-            _VIEWER_GLOBAL_STATE["step_once"] = False
-            if graph is None:
-              mjw.step(m, d)
-            else:
-              wp.capture_launch(graph)
-              wp.synchronize()
-          mjw.get_data_into(mjd, mjm, d)
-
-        viewer.sync()
-
-        elapsed = time.time() - start
-        if elapsed < mjm.opt.timestep:
-          time.sleep(mjm.opt.timestep - elapsed)
+  if _VIEWER.value == "viser":
+    _run_viser_viewer(mjm, mjd, step_fn)
+  else:
+    _run_passive_viewer(mjm, mjd, step_fn)
 
 
 def main():
