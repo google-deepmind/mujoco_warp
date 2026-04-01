@@ -58,9 +58,7 @@ The following features are implemented:
 | ------------------ | --------------------------------------------------------------------------------------------------------|
 | Dynamics           | Forward, Inverse                                                                                        |
 | Transmission       | All                                                                                                     |
-| Actuator Dynamics  | All                                                                                                     |
-| Actuator Gain      | All                                                                                                     |
-| Actuator Bias      | All                                                                                                     |
+| Actuator           | All except `PLUGIN`                                                                                     |
 | Geom               | All                                                                                                     |
 | Constraint         | All                                                                                                     |
 | Equality           | All                                                                                                     |
@@ -71,7 +69,7 @@ The following features are implemented:
 | Fluid Model        | All                                                                                                     |
 | Tendon Wrap        | All                                                                                                     |
 | Sensors            | All except `PLUGIN`                                                                                     |
-| Flex               | `VERTCOLLIDE`, `ELASTICITY`                                                                             |
+| Flex               | All except flex-flex collisions, `selfcollide`, `mjEQ_FLEXVERT`, and `mjEQ_FLEXSTRAIN`                  |
 | Mass matrix format | Sparse and Dense                                                                                        |
 | Jacobian format    | `DENSE` only (row-sparse, no islanding yet)                                                             |
 

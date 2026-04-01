@@ -2,9 +2,11 @@ import math
 
 import warp as wp
 
+from mujoco_warp._src.types import vec_pluginattr
+
 
 @wp.func
-def torus(p: wp.vec3, attr: wp.vec3) -> wp.float32:
+def torus(p: wp.vec3, attr: vec_pluginattr) -> wp.float32:
   major_radius = attr[0]
   minor_radius = attr[1]
 
@@ -14,7 +16,7 @@ def torus(p: wp.vec3, attr: wp.vec3) -> wp.float32:
 
 
 @wp.func
-def torus_sdf_grad(p: wp.vec3, attr: wp.vec3) -> wp.vec3:
+def torus_sdf_grad(p: wp.vec3, attr: vec_pluginattr) -> wp.vec3:
   grad = wp.vec3()
   major_radius = attr[0]
   minor_val = attr[1]

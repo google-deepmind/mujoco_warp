@@ -28,7 +28,6 @@ from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.types import CollisionType
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
@@ -935,10 +934,9 @@ class SensorTest(parameterized.TestCase):
     warp_sensordata = d.sensordata.numpy()[0]
 
     # Check Warp output matches MuJoCo output, if available
-    if check_version("mujoco>=3.5.1.dev879036130"):
-      _assert_eq(warp_sensordata, mjd.sensordata, "tactile_sensordata")
+    _assert_eq(warp_sensordata, mjd.sensordata, "tactile_sensordata")
 
-    # Verify Warp sensor is triggered regardless of MuJoCo version
+    # Verify Warp sensor is triggered
     self.assertTrue(warp_sensordata.any(), "Warp sensordata should not be all zeros")
 
 

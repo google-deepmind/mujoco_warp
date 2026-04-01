@@ -774,6 +774,40 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -0.03636224)
 
+  def test_box_box_max2(self):
+    """Box-box collision that triggers GJK to converge very slowly."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom name="geom1" type="box" size=".5 .5 .1"/>
+           <geom name="geom2" type="box" size=".025 .025 .025"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    rot2 = wp.mat33(
+      0.9999999404,
+      0.0004342802,
+      -0.0001755831,
+      -0.0004346797,
+      0.9999973178,
+      -0.0022819033,
+      0.0001745916,
+      0.0022819792,
+      0.9999974370,
+    )
+
+    pos2 = wp.vec3(
+      0.0885666460,
+      0.0911745951,
+      0.1250119805,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, 1.3900499e-06)
+
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):
     """Test support function for height field geoms."""

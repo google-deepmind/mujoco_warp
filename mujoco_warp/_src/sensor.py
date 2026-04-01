@@ -42,6 +42,7 @@ from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec8
 from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import inside_geom
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -2142,7 +2143,7 @@ def _sensor_tactile(
   sensor_dim: wp.array(dtype=int),
   sensor_adr: wp.array(dtype=int),
   plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
+  plugin_attr: wp.array(dtype=vec_pluginattr),
   geom_plugin_index: wp.array(dtype=int),
   taxel_vertadr: wp.array(dtype=int),
   taxel_sensorid: wp.array(dtype=int),
@@ -2855,12 +2856,12 @@ def energy_pos(m: Model, d: Data):
   wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
-  if not m.opt.disableflags & DisableBit.GRAVITY:
+  if not (m.opt.disableflags & DisableBit.GRAVITY):
     wp.launch(
       _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
     )
 
-  if not m.opt.disableflags & DisableBit.SPRING:
+  if not (m.opt.disableflags & DisableBit.SPRING):
     # add joint-level springs
     wp.launch(
       _energy_pos_passive_joint,
