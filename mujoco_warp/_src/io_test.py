@@ -215,13 +215,17 @@ def _populate_dependent_fields(m, spec, padded_model, dataid_table, nworld, geom
 
 
 def per_world_mesh(spec: mujoco.MjSpec, nworld: int):
-  """Per-world mesh randomization from custom/tuple annotations."""
+  """Per-world mesh randomization from custom/tuple annotations.
+
+  Returns:
+    Tuple of (Model, padded MjModel).
+  """
   spec = spec.copy()
   model = spec.compile()
 
   # no-op if no tuples
   if model.ntuple == 0:
-    return put_model(model)
+    return put_model(model), model
 
   body_names = {b.name for b in spec.bodies if b.name}
 
@@ -366,14 +370,14 @@ def per_world_mesh(spec: mujoco.MjSpec, nworld: int):
 
   # no-op if no randomization found
   if not geom_variants and not body_variants:
-    return m
+    return m, model
 
   m.geom_dataid = wp.array(dataid_table, dtype=int)
 
   # Populate dependent per-world fields from variant compilations
   _populate_dependent_fields(m, spec, model, dataid_table, nworld, geom_variants, body_variants)
 
-  return m
+  return m, model
 
 
 def _assert_eq(a, b, name):
@@ -2035,7 +2039,7 @@ class IOTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm = spec.compile()
 
-    m = per_world_mesh(spec, nworld)
+    m, _ = per_world_mesh(spec, nworld)
 
     cube_geom_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "cube")
     cube_s_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MESH, "cube_small")
@@ -2055,7 +2059,7 @@ class IOTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm = spec.compile()
 
-    m = per_world_mesh(spec, nworld)
+    m, _ = per_world_mesh(spec, nworld)
 
     cube_geom_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "cube")
     cube_body_id = mjm.geom_bodyid[cube_geom_id]
@@ -2092,7 +2096,7 @@ class IOTest(parameterized.TestCase):
     # default object has 2 geoms (variant B), ngeom = 3
     self.assertEqual(mjm.ngeom, 3)
 
-    m = per_world_mesh(spec, nworld)
+    m, _ = per_world_mesh(spec, nworld)
 
     # per_world_mesh pads object to 3 geoms (variant A max), ngeom = 4
     self.assertEqual(m.ngeom, 4)
@@ -2138,7 +2142,7 @@ class IOTest(parameterized.TestCase):
     </mujoco>
     """)
     mjm = spec.compile()
-    m = per_world_mesh(spec, nworld=4)
+    m, _ = per_world_mesh(spec, nworld=4)
 
     dataid = m.geom_dataid.numpy()
     self.assertEqual(dataid.shape[0], 1)
@@ -2177,14 +2181,12 @@ class IOTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm = spec.compile()
 
-    m = per_world_mesh(spec, nworld=1)
+    m, padded_mjm = per_world_mesh(spec, nworld=1)
 
     dataid = m.geom_dataid.numpy()
     self.assertEqual(dataid.shape[0], 1)
     # check it doesn't crash on forward
-    # recompile from spec to get padded model (per_world_mesh may add geoms)
-    mjm = spec.compile()
-    d = mjwarp.make_data(mjm)
+    d = mjwarp.make_data(padded_mjm)
     mjwarp.forward(m, d)
 
   def test_mesh_randomize_equal_variant_geoms(self):
@@ -2224,7 +2226,7 @@ class IOTest(parameterized.TestCase):
     mjm = spec.compile()
     original_ngeom = mjm.ngeom
 
-    m = per_world_mesh(spec, nworld=4)
+    m, _ = per_world_mesh(spec, nworld=4)
 
     # no padding should have occurred
     self.assertEqual(m.ngeom, original_ngeom)
@@ -2235,7 +2237,7 @@ class IOTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm = spec.compile()
 
-    m = per_world_mesh(spec, nworld)
+    m, _ = per_world_mesh(spec, nworld)
 
     dataid = m.geom_dataid.numpy()
     self.assertEqual(dataid.shape[0], nworld)
@@ -2265,14 +2267,14 @@ class IOTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm = spec.compile()
 
-    m1 = per_world_mesh(spec, nworld)
+    m1, _ = per_world_mesh(spec, nworld)
     dataid1 = m1.geom_dataid.numpy().copy()
 
     # reset spec and do it again
     spec2 = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm2 = spec2.compile()
 
-    m2 = per_world_mesh(spec2, nworld)
+    m2, _ = per_world_mesh(spec2, nworld)
     dataid2 = m2.geom_dataid.numpy()
 
     np.testing.assert_array_equal(dataid1, dataid2)
@@ -2286,7 +2288,7 @@ class IOTest(parameterized.TestCase):
     # record original mesh assignments
     orig_meshnames = {g.name: g.meshname for g in spec.geoms if g.name}
 
-    m = per_world_mesh(spec, nworld)
+    m, _ = per_world_mesh(spec, nworld)
 
     # verify spec geoms were restored
     for g in spec.geoms:
@@ -2299,7 +2301,7 @@ class IOTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(_MESH_RANDOMIZE_XML)
     mjm = spec.compile()
 
-    m = per_world_mesh(spec, nworld)
+    m, _ = per_world_mesh(spec, nworld)
 
     # body_ipos should be (nworld, nbody, 3)
     body_ipos = m.body_ipos.numpy()
