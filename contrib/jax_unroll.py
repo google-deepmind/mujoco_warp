@@ -38,10 +38,10 @@ d = mjwarp.put_data(mjm, mjd, nworld=NWORLDS, nconmax=64 * NWORLDS, njmax=128)
 
 
 def warp_step(
-  qpos_in: wp.array(dtype=wp.float32, ndim=2),
-  qvel_in: wp.array(dtype=wp.float32, ndim=2),
-  qpos_out: wp.array(dtype=wp.float32, ndim=2),
-  qvel_out: wp.array(dtype=wp.float32, ndim=2),
+  qpos_in: wp.array2d[wp.float32],
+  qvel_in: wp.array2d[wp.float32],
+  qpos_out: wp.array2d[wp.float32],
+  qvel_out: wp.array2d[wp.float32],
 ):
   wp.copy(d.qpos, qpos_in)
   wp.copy(d.qvel, qvel_in)

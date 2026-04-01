@@ -1021,7 +1021,7 @@ class IOTest(parameterized.TestCase):
       # TODO(team): test arrays that are warp only
       if not hasattr(mjm, f.name):
         continue
-      if isinstance(f.type, wp.array):
+      if isinstance(f.type, wp.array) or type(f.type).__name__ == "_ArrayAnnotation":
         # get fields
         arr = getattr(m, f.name)
         mj_arr = getattr(mjm, f.name)

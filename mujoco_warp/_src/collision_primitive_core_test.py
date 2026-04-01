@@ -32,9 +32,9 @@ def sphere_triangle_kernel(
   t3: wp.vec3,
   tri_radius: float,
   # Out:
-  dist_out: wp.array(dtype=float),
-  pos_out: wp.array(dtype=wp.vec3),
-  normal_out: wp.array(dtype=wp.vec3),
+  dist_out: wp.array[float],
+  pos_out: wp.array[wp.vec3],
+  normal_out: wp.array[wp.vec3],
 ):
   dist, pos, normal = sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
   dist_out[0] = dist
@@ -161,9 +161,9 @@ def box_triangle_kernel(
   t3: wp.vec3,
   tri_radius: float,
   # Out:
-  dist_out: wp.array(dtype=wp.vec2),
-  pos_out: wp.array(dtype=collision_primitive_core.mat23f),
-  normal_out: wp.array(dtype=collision_primitive_core.mat23f),
+  dist_out: wp.array[wp.vec2],
+  pos_out: wp.array[collision_primitive_core.mat23f],
+  normal_out: wp.array[collision_primitive_core.mat23f],
 ):
   dist, pos, normal = collision_primitive_core.box_triangle(box_pos, box_rot, box_size, t1, t2, t3, tri_radius)
   dist_out[0] = dist
@@ -273,9 +273,9 @@ def capsule_triangle_kernel(
   t3: wp.vec3,
   tri_radius: float,
   # Out:
-  dist_out: wp.array(dtype=wp.vec2),
-  pos_out: wp.array(dtype=collision_primitive_core.mat23f),
-  normal_out: wp.array(dtype=collision_primitive_core.mat23f),
+  dist_out: wp.array[wp.vec2],
+  pos_out: wp.array[collision_primitive_core.mat23f],
+  normal_out: wp.array[collision_primitive_core.mat23f],
 ):
   dist, pos, normal = collision_primitive_core.capsule_triangle(
     capsule_pos, capsule_axis, capsule_radius, capsule_half_length, t1, t2, t3, tri_radius
@@ -406,9 +406,9 @@ def cylinder_triangle_kernel(
   t3: wp.vec3,
   tri_radius: float,
   # Out:
-  dist_out: wp.array(dtype=wp.vec2),
-  pos_out: wp.array(dtype=collision_primitive_core.mat23f),
-  normal_out: wp.array(dtype=collision_primitive_core.mat23f),
+  dist_out: wp.array[wp.vec2],
+  pos_out: wp.array[collision_primitive_core.mat23f],
+  normal_out: wp.array[collision_primitive_core.mat23f],
 ):
   dist, pos, normal = collision_primitive_core.cylinder_triangle(
     cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius

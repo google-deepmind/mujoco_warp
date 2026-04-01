@@ -173,21 +173,21 @@ def _compute_cylinder_bounds(
 @wp.kernel
 def _compute_bvh_bounds(
   # Model:
-  geom_type: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_type: wp.array[int],
+  geom_dataid: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
   # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
   # In:
   bvh_ngeom: int,
-  enabled_geom_ids: wp.array(dtype=int),
-  mesh_bounds_size: wp.array(dtype=wp.vec3),
-  hfield_bounds_size: wp.array(dtype=wp.vec3),
+  enabled_geom_ids: wp.array[int],
+  mesh_bounds_size: wp.array[wp.vec3],
+  hfield_bounds_size: wp.array[wp.vec3],
   # Out:
-  lower_out: wp.array(dtype=wp.vec3),
-  upper_out: wp.array(dtype=wp.vec3),
-  group_out: wp.array(dtype=int),
+  lower_out: wp.array[wp.vec3],
+  upper_out: wp.array[wp.vec3],
+  group_out: wp.array[int],
 ):
   worldid, geom_local_id = wp.tid()
   geom_id = enabled_geom_ids[geom_local_id]
@@ -228,7 +228,7 @@ def compute_bvh_group_roots(
   # In:
   bvh_id: wp.uint64,
   # Out:
-  group_root_out: wp.array(dtype=int),
+  group_root_out: wp.array[int],
 ):
   tid = wp.tid()
   root = wp.bvh_get_group_root(bvh_id, tid)
@@ -238,21 +238,21 @@ def compute_bvh_group_roots(
 @wp.kernel
 def _compute_flex_bvh_bounds(
   # Model:
-  flex_vertadr: wp.array(dtype=int),
-  flex_vertnum: wp.array(dtype=int),
-  flex_edge: wp.array(dtype=wp.vec2i),
-  flex_radius: wp.array(dtype=float),
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_edge: wp.array[wp.vec2i],
+  flex_radius: wp.array[float],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
-  flex_geom_flexid: wp.array(dtype=int),
-  flex_geom_edgeid: wp.array(dtype=int),
+  flex_geom_flexid: wp.array[int],
+  flex_geom_edgeid: wp.array[int],
   bvh_ngeom: int,
   total_bvh_size: int,
   # Out:
-  lower_out: wp.array(dtype=wp.vec3),
-  upper_out: wp.array(dtype=wp.vec3),
-  group_out: wp.array(dtype=int),
+  lower_out: wp.array[wp.vec3],
+  upper_out: wp.array[wp.vec3],
+  group_out: wp.array[int],
 ):
   worldid, flexlocalid = wp.tid()
 
@@ -599,16 +599,16 @@ def build_hfield_bvh(
 def accumulate_flex_vertex_normals(
   # Model:
   nflex: int,
-  flex_dim: wp.array(dtype=int),
-  flex_vertadr: wp.array(dtype=int),
-  flex_elemadr: wp.array(dtype=int),
-  flex_elemnum: wp.array(dtype=int),
-  flex_elemdataadr: wp.array(dtype=int),
-  flex_elem: wp.array(dtype=int),
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_elem: wp.array[int],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # Out:
-  flexvert_norm_out: wp.array2d(dtype=wp.vec3),
+  flexvert_norm_out: wp.array2d[wp.vec3],
 ):
   """Accumulate per-vertex normals by summing adjacent face normals."""
   worldid, elemid = wp.tid()
@@ -644,7 +644,7 @@ def accumulate_flex_vertex_normals(
 @wp.kernel
 def normalize_vertex_normals(
   # Out:
-  flexvert_norm_out: wp.array2d(dtype=wp.vec3),
+  flexvert_norm_out: wp.array2d[wp.vec3],
 ):
   """Normalize accumulated vertex normals."""
   worldid, vertid = wp.tid()
@@ -654,20 +654,20 @@ def normalize_vertex_normals(
 @wp.kernel
 def _build_flex_2d_elements(
   # Model:
-  flex_elem: wp.array(dtype=int),
+  flex_elem: wp.array[int],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
-  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
+  flexvert_norm_in: wp.array2d[wp.vec3],
   elem_adr: int,
   vert_adr: int,
   face_offset: int,
   radius: float,
   nfaces: int,
   # Out:
-  face_point_out: wp.array(dtype=wp.vec3),
-  face_index_out: wp.array(dtype=int),
-  group_out: wp.array(dtype=int),
+  face_point_out: wp.array[wp.vec3],
+  face_index_out: wp.array[int],
+  group_out: wp.array[int],
 ):
   """Create faces from 2D flex elements (triangles).
 
@@ -728,20 +728,20 @@ def _build_flex_2d_elements(
 @wp.kernel
 def _build_flex_2d_sides(
   # Model:
-  flex_shell: wp.array(dtype=int),
+  flex_shell: wp.array[int],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
-  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
+  flexvert_norm_in: wp.array2d[wp.vec3],
   shell_adr: int,
   vert_adr: int,
   face_offset: int,
   radius: float,
   nface: int,
   # Out:
-  face_point_out: wp.array(dtype=wp.vec3),
-  face_index_out: wp.array(dtype=int),
-  group_out: wp.array(dtype=int),
+  face_point_out: wp.array[wp.vec3],
+  face_index_out: wp.array[int],
+  group_out: wp.array[int],
 ):
   """Create side faces from 2D flex shell fragments.
 
@@ -790,18 +790,18 @@ def _build_flex_2d_sides(
 @wp.kernel
 def _build_flex_3d_shells(
   # Model:
-  flex_shell: wp.array(dtype=int),
+  flex_shell: wp.array[int],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
   shell_adr: int,
   vert_adr: int,
   face_offset: int,
   nface: int,
   # Out:
-  face_point_out: wp.array(dtype=wp.vec3),
-  face_index_out: wp.array(dtype=int),
-  group_out: wp.array(dtype=int),
+  face_point_out: wp.array[wp.vec3],
+  face_index_out: wp.array[int],
+  group_out: wp.array[int],
 ):
   """Create faces from 3D flex shell fragments (triangles).
 
@@ -836,22 +836,22 @@ def _build_flex_3d_shells(
 @wp.kernel
 def _update_flex_2d_face_points(
   # Model:
-  flex_vertadr: wp.array(dtype=int),
-  flex_elemnum: wp.array(dtype=int),
-  flex_elemdataadr: wp.array(dtype=int),
-  flex_shelldataadr: wp.array(dtype=int),
-  flex_elem: wp.array(dtype=int),
-  flex_shell: wp.array(dtype=int),
-  flex_radius: wp.array(dtype=float),
+  flex_vertadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_shelldataadr: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_shell: wp.array[int],
+  flex_radius: wp.array[float],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
-  flexvert_norm_in: wp.array2d(dtype=wp.vec3),
+  flexvert_norm_in: wp.array2d[wp.vec3],
   flex_id: int,
   nface: int,
   smooth: bool,
   # Out:
-  face_point_out: wp.array(dtype=wp.vec3),
+  face_point_out: wp.array[wp.vec3],
 ):
   worldid, workid = wp.tid()
 
@@ -935,16 +935,16 @@ def _update_flex_2d_face_points(
 @wp.kernel
 def _update_flex_3d_face_points(
   # Model:
-  flex_vertadr: wp.array(dtype=int),
-  flex_shelldataadr: wp.array(dtype=int),
-  flex_shell: wp.array(dtype=int),
+  flex_vertadr: wp.array[int],
+  flex_shelldataadr: wp.array[int],
+  flex_shell: wp.array[int],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
   flex_id: int,
   nface: int,
   # Out:
-  face_point_out: wp.array(dtype=wp.vec3),
+  face_point_out: wp.array[wp.vec3],
 ):
   worldid, shellid = wp.tid()
 

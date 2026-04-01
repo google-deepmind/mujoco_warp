@@ -54,9 +54,9 @@ class AABB:
 class VolumeData:
   center: wp.vec3
   half_size: wp.vec3
-  oct_aabb: wp.array2d(dtype=wp.vec3)
-  oct_child: wp.array(dtype=vec8i)
-  oct_coeff: wp.array(dtype=vec8)
+  oct_aabb: wp.array2d[wp.vec3]
+  oct_child: wp.array[vec8i]
+  oct_coeff: wp.array[vec8]
   root: int = 0
   valid: bool = False
 
@@ -64,10 +64,10 @@ class VolumeData:
 @wp.struct
 class MeshData:
   nmeshface: int
-  mesh_vertadr: wp.array(dtype=int)
-  mesh_vert: wp.array(dtype=wp.vec3)
-  mesh_faceadr: wp.array(dtype=int)
-  mesh_face: wp.array(dtype=wp.vec3i)
+  mesh_vertadr: wp.array[int]
+  mesh_vert: wp.array[wp.vec3]
+  mesh_faceadr: wp.array[int]
+  mesh_face: wp.array[wp.vec3i]
   data_id: int
   pos: wp.vec3
   mat: wp.mat33
@@ -80,12 +80,12 @@ class MeshData:
 @wp.func
 def get_sdf_params(
   # Model:
-  oct_child: wp.array(dtype=vec8i),
-  oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8),
-  mesh_octadr: wp.array(dtype=int),
-  plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=vec_pluginattr),
+  oct_child: wp.array[vec8i],
+  oct_aabb: wp.array2d[wp.vec3],
+  oct_coeff: wp.array[vec8],
+  mesh_octadr: wp.array[int],
+  plugin: wp.array[int],
+  plugin_attr: wp.array[vec_pluginattr],
   # In:
   g_type: int,
   g_size: wp.vec3,
@@ -252,7 +252,7 @@ def user_sdf_grad(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> wp.vec3:
 
 @wp.func
 def find_oct(
-  oct_child: wp.array(dtype=vec8i), oct_aabb: wp.array2d(dtype=wp.vec3), p: wp.vec3, grad: bool, root: int
+  oct_child: wp.array[vec8i], oct_aabb: wp.array2d[wp.vec3], p: wp.vec3, grad: bool, root: int
 ) -> Tuple[int, Tuple[vec8, vec8, vec8]]:
   stack = root
   niter = int(100)
@@ -665,75 +665,75 @@ def gradient_descent(
 def _sdf_narrowphase(
   # Model:
   nmeshface: int,
-  oct_child: wp.array(dtype=vec8i),
-  oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8),
-  geom_type: wp.array(dtype=int),
-  geom_condim: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
-  geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array2d(dtype=float),
-  geom_solref: wp.array2d(dtype=wp.vec2),
-  geom_solimp: wp.array2d(dtype=vec5),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_aabb: wp.array3d(dtype=wp.vec3),
-  geom_friction: wp.array2d(dtype=wp.vec3),
-  geom_margin: wp.array2d(dtype=float),
-  geom_gap: wp.array2d(dtype=float),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_octadr: wp.array(dtype=int),
-  mesh_graphadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_face: wp.array(dtype=wp.vec3i),
-  mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
-  mesh_polynormal: wp.array(dtype=wp.vec3),
-  mesh_polyvertadr: wp.array(dtype=int),
-  mesh_polyvertnum: wp.array(dtype=int),
-  mesh_polyvert: wp.array(dtype=int),
-  mesh_polymapadr: wp.array(dtype=int),
-  mesh_polymapnum: wp.array(dtype=int),
-  mesh_polymap: wp.array(dtype=int),
-  pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array2d(dtype=wp.vec2),
-  pair_solreffriction: wp.array2d(dtype=wp.vec2),
-  pair_solimp: wp.array2d(dtype=vec5),
-  pair_margin: wp.array2d(dtype=float),
-  pair_gap: wp.array2d(dtype=float),
-  pair_friction: wp.array2d(dtype=vec5),
-  plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=vec_pluginattr),
-  geom_plugin_index: wp.array(dtype=int),
+  oct_child: wp.array[vec8i],
+  oct_aabb: wp.array2d[wp.vec3],
+  oct_coeff: wp.array[vec8],
+  geom_type: wp.array[int],
+  geom_condim: wp.array[int],
+  geom_dataid: wp.array[int],
+  geom_priority: wp.array[int],
+  geom_solmix: wp.array2d[float],
+  geom_solref: wp.array2d[wp.vec2],
+  geom_solimp: wp.array2d[vec5],
+  geom_size: wp.array2d[wp.vec3],
+  geom_aabb: wp.array3d[wp.vec3],
+  geom_friction: wp.array2d[wp.vec3],
+  geom_margin: wp.array2d[float],
+  geom_gap: wp.array2d[float],
+  mesh_vertadr: wp.array[int],
+  mesh_vertnum: wp.array[int],
+  mesh_faceadr: wp.array[int],
+  mesh_octadr: wp.array[int],
+  mesh_graphadr: wp.array[int],
+  mesh_vert: wp.array[wp.vec3],
+  mesh_face: wp.array[wp.vec3i],
+  mesh_graph: wp.array[int],
+  mesh_polynum: wp.array[int],
+  mesh_polyadr: wp.array[int],
+  mesh_polynormal: wp.array[wp.vec3],
+  mesh_polyvertadr: wp.array[int],
+  mesh_polyvertnum: wp.array[int],
+  mesh_polyvert: wp.array[int],
+  mesh_polymapadr: wp.array[int],
+  mesh_polymapnum: wp.array[int],
+  mesh_polymap: wp.array[int],
+  pair_dim: wp.array[int],
+  pair_solref: wp.array2d[wp.vec2],
+  pair_solreffriction: wp.array2d[wp.vec2],
+  pair_solimp: wp.array2d[vec5],
+  pair_margin: wp.array2d[float],
+  pair_gap: wp.array2d[float],
+  pair_friction: wp.array2d[vec5],
+  plugin: wp.array[int],
+  plugin_attr: wp.array[vec_pluginattr],
+  geom_plugin_index: wp.array[int],
   # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
   naconmax_in: int,
-  ncollision_in: wp.array(dtype=int),
+  ncollision_in: wp.array[int],
   # In:
-  collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=wp.vec2i),
-  collision_worldid_in: wp.array(dtype=int),
+  collision_pair_in: wp.array[wp.vec2i],
+  collision_pairid_in: wp.array[wp.vec2i],
+  collision_worldid_in: wp.array[int],
   sdf_initpoints: int,
   sdf_iterations: int,
   # Data out:
-  contact_dist_out: wp.array(dtype=float),
-  contact_pos_out: wp.array(dtype=wp.vec3),
-  contact_frame_out: wp.array(dtype=wp.mat33),
-  contact_includemargin_out: wp.array(dtype=float),
-  contact_friction_out: wp.array(dtype=vec5),
-  contact_solref_out: wp.array(dtype=wp.vec2),
-  contact_solreffriction_out: wp.array(dtype=wp.vec2),
-  contact_solimp_out: wp.array(dtype=vec5),
-  contact_dim_out: wp.array(dtype=int),
-  contact_geom_out: wp.array(dtype=wp.vec2i),
-  contact_efc_address_out: wp.array2d(dtype=int),
-  contact_worldid_out: wp.array(dtype=int),
-  contact_type_out: wp.array(dtype=int),
-  contact_geomcollisionid_out: wp.array(dtype=int),
-  nacon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array[float],
+  contact_pos_out: wp.array[wp.vec3],
+  contact_frame_out: wp.array[wp.mat33],
+  contact_includemargin_out: wp.array[float],
+  contact_friction_out: wp.array[vec5],
+  contact_solref_out: wp.array[wp.vec2],
+  contact_solreffriction_out: wp.array[wp.vec2],
+  contact_solimp_out: wp.array[vec5],
+  contact_dim_out: wp.array[int],
+  contact_geom_out: wp.array[wp.vec2i],
+  contact_efc_address_out: wp.array2d[int],
+  contact_worldid_out: wp.array[int],
+  contact_type_out: wp.array[int],
+  contact_geomcollisionid_out: wp.array[int],
+  nacon_out: wp.array[int],
 ):
   i, contact_tid = wp.tid()
   if i >= sdf_initpoints:
