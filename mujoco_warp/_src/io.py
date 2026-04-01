@@ -2515,7 +2515,13 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
       "AUTO": mujoco.mjtJacobian.mjJAC_AUTO,
     },
   }
-  mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional"}
+  mjw_only_fields = {
+    "opt.broadphase",
+    "opt.broadphase_filter",
+    "opt.ls_parallel",
+    "opt.graph_conditional",
+    "opt.contact_sensor_maxmatch",
+  }
   mj_only_fields = {"opt.jacobian"}
 
   if not isinstance(overrides, dict):
