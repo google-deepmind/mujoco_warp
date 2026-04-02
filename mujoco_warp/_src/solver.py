@@ -2870,9 +2870,10 @@ def _JTDAJ_sparse(
         colindj = efc_J_colind_in[worldid, 0, sparseidj]
 
       h = Ji * Jj * efc_D
-      wp.atomic_add(h_out[worldid, colindi], colindj, h)
-
-      if i != j:
+      # Store in lower triangle only: larger index as row
+      if colindi >= colindj:
+        wp.atomic_add(h_out[worldid, colindi], colindj, h)
+      else:
         wp.atomic_add(h_out[worldid, colindj], colindi, h)
 
 
