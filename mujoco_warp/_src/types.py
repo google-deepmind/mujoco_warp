@@ -17,6 +17,7 @@ import enum
 from typing import Callable
 
 import mujoco
+import numpy as np
 import warp as wp
 
 MJ_MINVAL = mujoco.mjMINVAL
@@ -795,6 +796,15 @@ class TileSet:
 
   adr: wp.array(dtype=int)
   size: int
+
+  def __eq__(self, other) -> bool:
+    if self.__class__ is not other.__class__:
+      return NotImplemented
+    return self.size == other.size and np.array_equal(np.asarray(self.adr.numpy()), np.asarray(other.adr.numpy()))
+
+  def __hash__(self) -> int:
+    adr = np.asarray(self.adr.numpy())
+    return hash((self.size, adr.dtype.str, adr.shape, adr.tobytes()))
 
 
 @dataclasses.dataclass
