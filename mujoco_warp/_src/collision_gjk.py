@@ -1663,7 +1663,7 @@ def _box_normals(
     # c is 1 if edge is diagonal of a box face
     # c is 2 if edge is an external edge of box
     if c == 1 or c == 2:
-      return 2
+      return c
     return _box_normals2(mat, dir, normal_out, index_out)
 
   if feature_dim == 1:
