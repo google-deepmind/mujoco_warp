@@ -29,6 +29,7 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec8
 from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import halton
 from mujoco_warp._src.warp_util import event_scope
 
@@ -39,8 +40,8 @@ wp.set_module_options({"enable_backward": False})
 class OptimizationParams:
   rel_mat: wp.mat33
   rel_pos: wp.vec3
-  attr1: wp.vec3
-  attr2: wp.vec3
+  attr1: vec_pluginattr
+  attr2: vec_pluginattr
 
 
 @wp.struct
@@ -53,9 +54,9 @@ class AABB:
 class VolumeData:
   center: wp.vec3
   half_size: wp.vec3
-  oct_aabb: wp.array2d(dtype=wp.vec3)
-  oct_child: wp.array(dtype=vec8i)
-  oct_coeff: wp.array(dtype=vec8)
+  oct_aabb: wp.array2d[wp.vec3]
+  oct_child: wp.array[vec8i]
+  oct_coeff: wp.array[vec8]
   root: int = 0
   valid: bool = False
 
@@ -63,10 +64,10 @@ class VolumeData:
 @wp.struct
 class MeshData:
   nmeshface: int
-  mesh_vertadr: wp.array(dtype=int)
-  mesh_vert: wp.array(dtype=wp.vec3)
-  mesh_faceadr: wp.array(dtype=int)
-  mesh_face: wp.array(dtype=wp.vec3i)
+  mesh_vertadr: wp.array[int]
+  mesh_vert: wp.array[wp.vec3]
+  mesh_faceadr: wp.array[int]
+  mesh_face: wp.array[wp.vec3i]
   data_id: int
   pos: wp.vec3
   mat: wp.mat33
@@ -79,19 +80,23 @@ class MeshData:
 @wp.func
 def get_sdf_params(
   # Model:
-  oct_child: wp.array(dtype=vec8i),
-  oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8),
-  mesh_octadr: wp.array(dtype=int),
-  plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
+  oct_child: wp.array[vec8i],
+  oct_aabb: wp.array2d[wp.vec3],
+  oct_coeff: wp.array[vec8],
+  mesh_octadr: wp.array[int],
+  plugin: wp.array[int],
+  plugin_attr: wp.array[vec_pluginattr],
   # In:
   g_type: int,
   g_size: wp.vec3,
   plugin_id: int,
   mesh_id: int,
-) -> Tuple[wp.vec3, int, VolumeData, MeshData]:
-  attributes = g_size
+) -> Tuple[vec_pluginattr, int, VolumeData, MeshData]:
+  # default attributes from geom size, first 3 values copied
+  attributes = vec_pluginattr()
+  attributes[0] = g_size[0]
+  attributes[1] = g_size[1]
+  attributes[2] = g_size[2]
   plugin_index = -1
   volume_data = VolumeData()
 
@@ -226,20 +231,28 @@ def grad_ellipsoid(p: wp.vec3, size: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def user_sdf(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> float:
+def user_sdf(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> float:
+  """User-defined SDF function.
+
+  Access attributes via attr[i] where i is the attribute index (0 to _NPLUGINATTR-1).
+  """
   wp.printf("ERROR: user_sdf function must be implemented by user code\n")
   return 0.0
 
 
 @wp.func
-def user_sdf_grad(p: wp.vec3, attr: wp.vec3, sdf_type: int) -> wp.vec3:
+def user_sdf_grad(p: wp.vec3, attr: vec_pluginattr, sdf_type: int) -> wp.vec3:
+  """User-defined SDF gradient function.
+
+  Access attributes via attr[i] where i is the attribute index (0 to _NPLUGINATTR-1).
+  """
   wp.printf("ERROR: user_sdf_grad function must be implemented by user code\n")
   return wp.vec3(0.0)
 
 
 @wp.func
 def find_oct(
-  oct_child: wp.array(dtype=vec8i), oct_aabb: wp.array2d(dtype=wp.vec3), p: wp.vec3, grad: bool, root: int
+  oct_child: wp.array[vec8i], oct_aabb: wp.array2d[wp.vec3], p: wp.vec3, grad: bool, root: int
 ) -> Tuple[int, Tuple[vec8, vec8, vec8]]:
   stack = root
   niter = int(100)
@@ -374,15 +387,17 @@ def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
 
 
 @wp.func
-def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> float:
+def sdf(type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> float:
+  # extract first 3 elements as vec3 for primitive sdf functions
+  attr_vec3 = wp.vec3(attr[0], attr[1], attr[2])
   if type == GeomType.PLANE:
     return p[2]
   elif type == GeomType.SPHERE:
-    return sphere(p, attr)
+    return sphere(p, attr_vec3)
   elif type == GeomType.BOX:
-    return box(p, attr)
+    return box(p, attr_vec3)
   elif type == GeomType.ELLIPSOID:
-    return ellipsoid(p, attr)
+    return ellipsoid(p, attr_vec3)
   elif type == GeomType.MESH and mesh_data.valid:
     mesh_data.pnt = p
     mesh_data.vec = -wp.normalize(p)
@@ -427,16 +442,20 @@ def sdf(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: Volume
 
 
 @wp.func
-def sdf_grad(type: int, p: wp.vec3, attr: wp.vec3, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData) -> wp.vec3:
+def sdf_grad(
+  type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data: VolumeData, mesh_data: MeshData
+) -> wp.vec3:
+  # extract first 3 elements as vec3 for primitive sdf functions
+  attr_vec3 = wp.vec3(attr[0], attr[1], attr[2])
   if type == GeomType.PLANE:
     grad = wp.vec3(0.0, 0.0, 1.0)
     return grad
   elif type == GeomType.SPHERE:
     return grad_sphere(p)
   elif type == GeomType.BOX:
-    return grad_box(p, attr)
+    return grad_box(p, attr_vec3)
   elif type == GeomType.ELLIPSOID:
-    return grad_ellipsoid(p, attr)
+    return grad_ellipsoid(p, attr_vec3)
   elif type == GeomType.MESH and mesh_data.valid:
     mesh_data.pnt = p
     mesh_data.vec = -wp.normalize(p)
@@ -475,8 +494,8 @@ def clearance(
   type1: int,
   p1: wp.vec3,
   p2: wp.vec3,
-  s1: wp.vec3,
-  s2: wp.vec3,
+  s1: vec_pluginattr,
+  s2: vec_pluginattr,
   sdf_type1: int,
   sdf_type2: int,
   sfd_intersection: bool,
@@ -605,8 +624,8 @@ def gradient_descent(
   # In:
   type1: int,
   x0_initial: wp.vec3,
-  attr1: wp.vec3,
-  attr2: wp.vec3,
+  attr1: vec_pluginattr,
+  attr2: vec_pluginattr,
   pos1: wp.vec3,
   rot1: wp.mat33,
   pos2: wp.vec3,
@@ -646,75 +665,75 @@ def gradient_descent(
 def _sdf_narrowphase(
   # Model:
   nmeshface: int,
-  oct_child: wp.array(dtype=vec8i),
-  oct_aabb: wp.array2d(dtype=wp.vec3),
-  oct_coeff: wp.array(dtype=vec8),
-  geom_type: wp.array(dtype=int),
-  geom_condim: wp.array(dtype=int),
-  geom_dataid: wp.array(dtype=int),
-  geom_priority: wp.array(dtype=int),
-  geom_solmix: wp.array2d(dtype=float),
-  geom_solref: wp.array2d(dtype=wp.vec2),
-  geom_solimp: wp.array2d(dtype=vec5),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_aabb: wp.array3d(dtype=wp.vec3),
-  geom_friction: wp.array2d(dtype=wp.vec3),
-  geom_margin: wp.array2d(dtype=float),
-  geom_gap: wp.array2d(dtype=float),
-  mesh_vertadr: wp.array(dtype=int),
-  mesh_vertnum: wp.array(dtype=int),
-  mesh_faceadr: wp.array(dtype=int),
-  mesh_octadr: wp.array(dtype=int),
-  mesh_graphadr: wp.array(dtype=int),
-  mesh_vert: wp.array(dtype=wp.vec3),
-  mesh_face: wp.array(dtype=wp.vec3i),
-  mesh_graph: wp.array(dtype=int),
-  mesh_polynum: wp.array(dtype=int),
-  mesh_polyadr: wp.array(dtype=int),
-  mesh_polynormal: wp.array(dtype=wp.vec3),
-  mesh_polyvertadr: wp.array(dtype=int),
-  mesh_polyvertnum: wp.array(dtype=int),
-  mesh_polyvert: wp.array(dtype=int),
-  mesh_polymapadr: wp.array(dtype=int),
-  mesh_polymapnum: wp.array(dtype=int),
-  mesh_polymap: wp.array(dtype=int),
-  pair_dim: wp.array(dtype=int),
-  pair_solref: wp.array2d(dtype=wp.vec2),
-  pair_solreffriction: wp.array2d(dtype=wp.vec2),
-  pair_solimp: wp.array2d(dtype=vec5),
-  pair_margin: wp.array2d(dtype=float),
-  pair_gap: wp.array2d(dtype=float),
-  pair_friction: wp.array2d(dtype=vec5),
-  plugin: wp.array(dtype=int),
-  plugin_attr: wp.array(dtype=wp.vec3f),
-  geom_plugin_index: wp.array(dtype=int),
+  oct_child: wp.array[vec8i],
+  oct_aabb: wp.array2d[wp.vec3],
+  oct_coeff: wp.array[vec8],
+  geom_type: wp.array[int],
+  geom_condim: wp.array[int],
+  geom_dataid: wp.array2d[int],
+  geom_priority: wp.array[int],
+  geom_solmix: wp.array2d[float],
+  geom_solref: wp.array2d[wp.vec2],
+  geom_solimp: wp.array2d[vec5],
+  geom_size: wp.array2d[wp.vec3],
+  geom_aabb: wp.array3d[wp.vec3],
+  geom_friction: wp.array2d[wp.vec3],
+  geom_margin: wp.array2d[float],
+  geom_gap: wp.array2d[float],
+  mesh_vertadr: wp.array[int],
+  mesh_vertnum: wp.array[int],
+  mesh_faceadr: wp.array[int],
+  mesh_octadr: wp.array[int],
+  mesh_graphadr: wp.array[int],
+  mesh_vert: wp.array[wp.vec3],
+  mesh_face: wp.array[wp.vec3i],
+  mesh_graph: wp.array[int],
+  mesh_polynum: wp.array[int],
+  mesh_polyadr: wp.array[int],
+  mesh_polynormal: wp.array[wp.vec3],
+  mesh_polyvertadr: wp.array[int],
+  mesh_polyvertnum: wp.array[int],
+  mesh_polyvert: wp.array[int],
+  mesh_polymapadr: wp.array[int],
+  mesh_polymapnum: wp.array[int],
+  mesh_polymap: wp.array[int],
+  pair_dim: wp.array[int],
+  pair_solref: wp.array2d[wp.vec2],
+  pair_solreffriction: wp.array2d[wp.vec2],
+  pair_solimp: wp.array2d[vec5],
+  pair_margin: wp.array2d[float],
+  pair_gap: wp.array2d[float],
+  pair_friction: wp.array2d[vec5],
+  plugin: wp.array[int],
+  plugin_attr: wp.array[vec_pluginattr],
+  geom_plugin_index: wp.array[int],
   # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
   naconmax_in: int,
-  ncollision_in: wp.array(dtype=int),
+  ncollision_in: wp.array[int],
   # In:
-  collision_pair_in: wp.array(dtype=wp.vec2i),
-  collision_pairid_in: wp.array(dtype=wp.vec2i),
-  collision_worldid_in: wp.array(dtype=int),
+  collision_pair_in: wp.array[wp.vec2i],
+  collision_pairid_in: wp.array[wp.vec2i],
+  collision_worldid_in: wp.array[int],
   sdf_initpoints: int,
   sdf_iterations: int,
   # Data out:
-  contact_dist_out: wp.array(dtype=float),
-  contact_pos_out: wp.array(dtype=wp.vec3),
-  contact_frame_out: wp.array(dtype=wp.mat33),
-  contact_includemargin_out: wp.array(dtype=float),
-  contact_friction_out: wp.array(dtype=vec5),
-  contact_solref_out: wp.array(dtype=wp.vec2),
-  contact_solreffriction_out: wp.array(dtype=wp.vec2),
-  contact_solimp_out: wp.array(dtype=vec5),
-  contact_dim_out: wp.array(dtype=int),
-  contact_geom_out: wp.array(dtype=wp.vec2i),
-  contact_efc_address_out: wp.array2d(dtype=int),
-  contact_worldid_out: wp.array(dtype=int),
-  contact_type_out: wp.array(dtype=int),
-  contact_geomcollisionid_out: wp.array(dtype=int),
-  nacon_out: wp.array(dtype=int),
+  contact_dist_out: wp.array[float],
+  contact_pos_out: wp.array[wp.vec3],
+  contact_frame_out: wp.array[wp.mat33],
+  contact_includemargin_out: wp.array[float],
+  contact_friction_out: wp.array[vec5],
+  contact_solref_out: wp.array[wp.vec2],
+  contact_solreffriction_out: wp.array[wp.vec2],
+  contact_solimp_out: wp.array[vec5],
+  contact_dim_out: wp.array[int],
+  contact_geom_out: wp.array[wp.vec2i],
+  contact_efc_address_out: wp.array2d[int],
+  contact_worldid_out: wp.array[int],
+  contact_type_out: wp.array[int],
+  contact_geomcollisionid_out: wp.array[int],
+  nacon_out: wp.array[int],
 ):
   i, contact_tid = wp.tid()
   if i >= sdf_initpoints:
@@ -798,12 +817,32 @@ def _sdf_narrowphase(
   pos1 = geom1.pos
   rot1 = geom1.rot
 
+  dataid_setid = worldid % geom_dataid.shape[0]
+
   attr1, g1_plugin_id, volume_data1, mesh_data1 = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, mesh_octadr, plugin, plugin_attr, type1, geom1.size, g1_plugin, geom_dataid[g1]
+    oct_child,
+    oct_aabb,
+    oct_coeff,
+    mesh_octadr,
+    plugin,
+    plugin_attr,
+    type1,
+    geom1.size,
+    g1_plugin,
+    geom_dataid[dataid_setid, g1],
   )
 
   attr2, g2_plugin_id, volume_data2, mesh_data2 = get_sdf_params(
-    oct_child, oct_aabb, oct_coeff, mesh_octadr, plugin, plugin_attr, type2, geom2.size, g2_plugin, geom_dataid[g2]
+    oct_child,
+    oct_aabb,
+    oct_coeff,
+    mesh_octadr,
+    plugin,
+    plugin_attr,
+    type2,
+    geom2.size,
+    g2_plugin,
+    geom_dataid[dataid_setid, g2],
   )
 
   mesh_data1.nmeshface = nmeshface
@@ -811,7 +850,7 @@ def _sdf_narrowphase(
   mesh_data1.mesh_vert = mesh_vert
   mesh_data1.mesh_faceadr = mesh_faceadr
   mesh_data1.mesh_face = mesh_face
-  mesh_data1.data_id = geom_dataid[g1]
+  mesh_data1.data_id = geom_dataid[dataid_setid, g1]
   mesh_data1.pos = geom1.pos
   mesh_data1.mat = geom1.rot
   mesh_data1.size = geom1.size
@@ -824,7 +863,7 @@ def _sdf_narrowphase(
   mesh_data2.mesh_vert = mesh_vert
   mesh_data2.mesh_faceadr = mesh_faceadr
   mesh_data2.mesh_face = mesh_face
-  mesh_data2.data_id = geom_dataid[g2]
+  mesh_data2.data_id = geom_dataid[dataid_setid, g2]
   mesh_data2.pos = geom2.pos
   mesh_data2.mat = geom2.rot
   mesh_data2.size = geom2.size

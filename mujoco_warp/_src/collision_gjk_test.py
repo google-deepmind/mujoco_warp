@@ -67,50 +67,50 @@ def _geom_dist(
   @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
     # Model:
-    geom_type: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
-    geom_size: wp.array2d(dtype=wp.vec3),
-    mesh_vertadr: wp.array(dtype=int),
-    mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
-    mesh_polynum: wp.array(dtype=int),
-    mesh_polyadr: wp.array(dtype=int),
-    mesh_polynormal: wp.array(dtype=wp.vec3),
-    mesh_polyvertadr: wp.array(dtype=int),
-    mesh_polyvertnum: wp.array(dtype=int),
-    mesh_polyvert: wp.array(dtype=int),
-    mesh_polymapadr: wp.array(dtype=int),
-    mesh_polymapnum: wp.array(dtype=int),
-    mesh_polymap: wp.array(dtype=int),
+    geom_type: wp.array[int],
+    geom_dataid: wp.array2d[int],
+    geom_size: wp.array2d[wp.vec3],
+    mesh_vertadr: wp.array[int],
+    mesh_vertnum: wp.array[int],
+    mesh_vert: wp.array[wp.vec3],
+    mesh_polynum: wp.array[int],
+    mesh_polyadr: wp.array[int],
+    mesh_polynormal: wp.array[wp.vec3],
+    mesh_polyvertadr: wp.array[int],
+    mesh_polyvertnum: wp.array[int],
+    mesh_polyvert: wp.array[int],
+    mesh_polymapadr: wp.array[int],
+    mesh_polymapnum: wp.array[int],
+    mesh_polymap: wp.array[int],
     # Data in:
-    geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
     # In:
     gid1: int,
     gid2: int,
     iterations: int,
-    tolerance: wp.array(dtype=float),
-    vert: wp.array(dtype=wp.vec3),
-    vert_index: wp.array(dtype=int),
-    face: wp.array(dtype=int),
-    face_pr: wp.array(dtype=wp.vec3),
-    face_norm2: wp.array(dtype=float),
-    horizon: wp.array(dtype=int),
-    polygon: wp.array(dtype=wp.vec3),
-    clipped: wp.array(dtype=wp.vec3),
-    pnormal: wp.array(dtype=wp.vec3),
-    pdist: wp.array(dtype=float),
-    idx1: wp.array(dtype=int),
-    idx2: wp.array(dtype=int),
-    n1: wp.array(dtype=wp.vec3),
-    n2: wp.array(dtype=wp.vec3),
-    endvert: wp.array(dtype=wp.vec3),
-    face1: wp.array(dtype=wp.vec3),
-    face2: wp.array(dtype=wp.vec3),
+    tolerance: wp.array[float],
+    vert: wp.array[wp.vec3],
+    vert_index: wp.array[int],
+    face: wp.array[int],
+    face_pr: wp.array[wp.vec3],
+    face_norm2: wp.array[float],
+    horizon: wp.array[int],
+    polygon: wp.array[wp.vec3],
+    clipped: wp.array[wp.vec3],
+    pnormal: wp.array[wp.vec3],
+    pdist: wp.array[float],
+    idx1: wp.array[int],
+    idx2: wp.array[int],
+    n1: wp.array[wp.vec3],
+    n2: wp.array[wp.vec3],
+    endvert: wp.array[wp.vec3],
+    face1: wp.array[wp.vec3],
+    face2: wp.array[wp.vec3],
     # Out:
-    dist_out: wp.array(dtype=float),
-    ncon_out: wp.array(dtype=int),
-    pos_out: wp.array(dtype=wp.vec3),
+    dist_out: wp.array[float],
+    ncon_out: wp.array[int],
+    pos_out: wp.array[wp.vec3],
   ):
     worldid = wp.tid()
 
@@ -130,12 +130,12 @@ def _geom_dist(
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
-    if geom_dataid[gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
-      dataid = geom_dataid[gid1]
-      geom1.vertadr = mesh_vertadr[dataid]
-      geom1.vertnum = mesh_vertnum[dataid]
-      geom1.mesh_polynum = mesh_polynum[dataid]
-      geom1.mesh_polyadr = mesh_polyadr[dataid]
+    dataid1 = geom_dataid[0, gid1]  # kernel_analyzer: off
+    if dataid1 >= 0 and geom_type[gid1] == GeomType.MESH:
+      geom1.vertadr = mesh_vertadr[dataid1]
+      geom1.vertnum = mesh_vertnum[dataid1]
+      geom1.mesh_polynum = mesh_polynum[dataid1]
+      geom1.mesh_polyadr = mesh_polyadr[dataid1]
       geom1.vert = mesh_vert
       geom1.mesh_polynormal = mesh_polynormal
       geom1.mesh_polyvertadr = mesh_polyvertadr
@@ -161,12 +161,12 @@ def _geom_dist(
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 
-    if geom_dataid[gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
-      dataid = geom_dataid[gid2]
-      geom2.vertadr = mesh_vertadr[dataid]
-      geom2.vertnum = mesh_vertnum[dataid]
-      geom2.mesh_polynum = mesh_polynum[dataid]
-      geom2.mesh_polyadr = mesh_polyadr[dataid]
+    dataid2 = geom_dataid[0, gid2]  # kernel_analyzer: off
+    if dataid2 >= 0 and geom_type[gid2] == GeomType.MESH:
+      geom2.vertadr = mesh_vertadr[dataid2]
+      geom2.vertnum = mesh_vertnum[dataid2]
+      geom2.mesh_polynum = mesh_polynum[dataid2]
+      geom2.mesh_polyadr = mesh_polyadr[dataid2]
       geom2.vert = mesh_vert
       geom2.mesh_polynormal = mesh_polynormal
       geom2.mesh_polyvertadr = mesh_polyvertadr
@@ -830,7 +830,7 @@ class GJKTest(parameterized.TestCase):
     def _support_kernel(
       hfprism_in: mat63,
       eps_in: float,
-      support_point: wp.array(dtype=wp.vec3),
+      support_point: wp.array[wp.vec3],
     ):
       geom = Geom()
       geom.pos = wp.vec3(0.0, 0.0, 0.0)

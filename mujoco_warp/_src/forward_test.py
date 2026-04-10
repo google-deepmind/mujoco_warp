@@ -181,7 +181,7 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
 
     # test rungekutta determinism
-    def rk_step() -> wp.array(dtype=wp.float32, ndim=2):
+    def rk_step() -> wp.array2d[wp.float32]:
       d.qpos = wp.ones_like(d.qpos)
       d.qvel = wp.ones_like(d.qvel)
       d.act = wp.ones_like(d.act)
@@ -577,7 +577,7 @@ class ForwardTest(parameterized.TestCase):
     """
 
     @wp.kernel
-    def _set_ctrl(ctrl_out: wp.array2d(dtype=float)):
+    def _set_ctrl(ctrl_out: wp.array2d[float]):
       worldid = wp.tid()
       ctrl_out[worldid, 0] = 2.0
 
@@ -604,9 +604,9 @@ class ForwardTest(parameterized.TestCase):
 
     @wp.kernel
     def _oscillator_act_dot(
-      act_in: wp.array2d(dtype=float),
-      ctrl_in: wp.array2d(dtype=float),
-      act_dot_out: wp.array2d(dtype=float),
+      act_in: wp.array2d[float],
+      ctrl_in: wp.array2d[float],
+      act_dot_out: wp.array2d[float],
     ):
       worldid = wp.tid()
       frequency = wp.static(2.0 * wp.pi) * ctrl_in[worldid, 0]

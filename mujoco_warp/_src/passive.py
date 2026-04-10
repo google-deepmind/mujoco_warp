@@ -71,18 +71,18 @@ def _ellipsoid_max_moment(size: wp.vec3, dir: int) -> float:
 def _spring_damper_dof_passive(
   # Model:
   opt_disableflags: int,
-  qpos_spring: wp.array2d(dtype=float),
-  jnt_type: wp.array(dtype=int),
-  jnt_qposadr: wp.array(dtype=int),
-  jnt_dofadr: wp.array(dtype=int),
-  jnt_stiffness: wp.array2d(dtype=float),
-  dof_damping: wp.array2d(dtype=float),
+  qpos_spring: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_qposadr: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  jnt_stiffness: wp.array2d[float],
+  dof_damping: wp.array2d[float],
   # Data in:
-  qpos_in: wp.array2d(dtype=float),
-  qvel_in: wp.array2d(dtype=float),
+  qpos_in: wp.array2d[float],
+  qvel_in: wp.array2d[float],
   # Data out:
-  qfrc_spring_out: wp.array2d(dtype=float),
-  qfrc_damper_out: wp.array2d(dtype=float),
+  qfrc_spring_out: wp.array2d[float],
+  qfrc_damper_out: wp.array2d[float],
 ):
   worldid, jntid = wp.tid()
   dofid = jnt_dofadr[jntid]
@@ -182,22 +182,22 @@ def _spring_damper_dof_passive(
 @wp.kernel
 def _spring_damper_tendon_passive(
   # Model:
-  ten_J_rownnz: wp.array(dtype=int),
-  ten_J_rowadr: wp.array(dtype=int),
-  ten_J_colind: wp.array(dtype=int),
-  tendon_stiffness: wp.array2d(dtype=float),
-  tendon_damping: wp.array2d(dtype=float),
-  tendon_lengthspring: wp.array2d(dtype=wp.vec2),
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  tendon_stiffness: wp.array2d[float],
+  tendon_damping: wp.array2d[float],
+  tendon_lengthspring: wp.array2d[wp.vec2],
   # Data in:
-  ten_J_in: wp.array2d(dtype=float),
-  ten_length_in: wp.array2d(dtype=float),
-  ten_velocity_in: wp.array2d(dtype=float),
+  ten_J_in: wp.array2d[float],
+  ten_length_in: wp.array2d[float],
+  ten_velocity_in: wp.array2d[float],
   # In:
   dsbl_spring: bool,
   dsbl_damper: bool,
   # Data out:
-  qfrc_spring_out: wp.array2d(dtype=float),
-  qfrc_damper_out: wp.array2d(dtype=float),
+  qfrc_spring_out: wp.array2d[float],
+  qfrc_damper_out: wp.array2d[float],
 ):
   worldid, tenid, dofid_sparse = wp.tid()
 
@@ -246,18 +246,18 @@ def _spring_damper_tendon_passive(
 @wp.kernel
 def _gravity_force(
   # Model:
-  opt_gravity: wp.array(dtype=wp.vec3),
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_mass: wp.array2d(dtype=float),
-  body_gravcomp: wp.array2d(dtype=float),
-  dof_bodyid: wp.array(dtype=int),
+  opt_gravity: wp.array[wp.vec3],
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_gravcomp: wp.array2d[float],
+  dof_bodyid: wp.array[int],
   # Data in:
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
   # Data out:
-  qfrc_gravcomp_out: wp.array2d(dtype=float),
+  qfrc_gravcomp_out: wp.array2d[float],
 ):
   worldid, bodyid, dofid = wp.tid()
   bodyid += 1  # skip world body
@@ -275,27 +275,27 @@ def _gravity_force(
 @wp.kernel
 def _fluid_force(
   # Model:
-  opt_wind: wp.array(dtype=wp.vec3),
-  opt_density: wp.array(dtype=float),
-  opt_viscosity: wp.array(dtype=float),
-  body_rootid: wp.array(dtype=int),
-  body_geomnum: wp.array(dtype=int),
-  body_geomadr: wp.array(dtype=int),
-  body_mass: wp.array2d(dtype=float),
-  body_inertia: wp.array2d(dtype=wp.vec3),
-  geom_type: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_fluid: wp.array2d(dtype=float),
-  body_fluid_ellipsoid: wp.array(dtype=bool),
+  opt_wind: wp.array[wp.vec3],
+  opt_density: wp.array[float],
+  opt_viscosity: wp.array[float],
+  body_rootid: wp.array[int],
+  body_geomnum: wp.array[int],
+  body_geomadr: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_inertia: wp.array2d[wp.vec3],
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_fluid: wp.array2d[float],
+  body_fluid_ellipsoid: wp.array[bool],
   # Data in:
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
+  xipos_in: wp.array2d[wp.vec3],
+  ximat_in: wp.array2d[wp.mat33],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cvel_in: wp.array2d[wp.spatial_vector],
   # Out:
-  fluid_applied_out: wp.array2d(dtype=wp.spatial_vector),
+  fluid_applied_out: wp.array2d[wp.spatial_vector],
 ):
   """Computes body-space fluid forces for both inertia-box and ellipsoid models."""
   worldid, bodyid = wp.tid()
@@ -535,18 +535,18 @@ def _fluid(m: Model, d: Data):
 @wp.kernel
 def _qfrc_passive(
   # Model:
-  jnt_actgravcomp: wp.array(dtype=int),
-  dof_jntid: wp.array(dtype=int),
+  jnt_actgravcomp: wp.array[int],
+  dof_jntid: wp.array[int],
   has_fluid: bool,
   # Data in:
-  qfrc_spring_in: wp.array2d(dtype=float),
-  qfrc_damper_in: wp.array2d(dtype=float),
-  qfrc_gravcomp_in: wp.array2d(dtype=float),
-  qfrc_fluid_in: wp.array2d(dtype=float),
+  qfrc_spring_in: wp.array2d[float],
+  qfrc_damper_in: wp.array2d[float],
+  qfrc_gravcomp_in: wp.array2d[float],
+  qfrc_fluid_in: wp.array2d[float],
   # In:
   gravcomp: bool,
   # Data out:
-  qfrc_passive_out: wp.array2d(dtype=float),
+  qfrc_passive_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   qfrc_passive = qfrc_spring_in[worldid, dofid]
@@ -567,29 +567,29 @@ def _qfrc_passive(
 def _flex_elasticity(
   # Model:
   nflex: int,
-  opt_timestep: wp.array(dtype=float),
-  body_dofadr: wp.array(dtype=int),
-  flex_dim: wp.array(dtype=int),
-  flex_vertadr: wp.array(dtype=int),
-  flex_edgeadr: wp.array(dtype=int),
-  flex_elemadr: wp.array(dtype=int),
-  flex_elemnum: wp.array(dtype=int),
-  flex_elemdataadr: wp.array(dtype=int),
-  flex_elemedgeadr: wp.array(dtype=int),
-  flex_vertbodyid: wp.array(dtype=int),
-  flex_elem: wp.array(dtype=int),
-  flex_elemedge: wp.array(dtype=int),
-  flexedge_length0: wp.array(dtype=float),
-  flex_stiffness: wp.array2d(dtype=float),
-  flex_damping: wp.array(dtype=float),
+  opt_timestep: wp.array[float],
+  body_dofadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_edgeadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_elemedgeadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_elemedge: wp.array[int],
+  flexedge_length0: wp.array[float],
+  flex_stiffness: wp.array2d[float],
+  flex_damping: wp.array[float],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
-  flexedge_length_in: wp.array2d(dtype=float),
-  flexedge_velocity_in: wp.array2d(dtype=float),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  flexedge_length_in: wp.array2d[float],
+  flexedge_velocity_in: wp.array2d[float],
   # In:
   dsbl_damper: bool,
   # Data out:
-  qfrc_spring_out: wp.array2d(dtype=float),
+  qfrc_spring_out: wp.array2d[float],
 ):
   worldid, elemid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
@@ -605,9 +605,13 @@ def _flex_elasticity(
   nvert = dim + 1
   nedge = nvert * (nvert - 1) / 2
   edges = wp.where(
-    dim == 3,
-    wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-    wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+    dim == 1,
+    wp.matrix(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+    wp.where(
+      dim == 3,
+      wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
+      wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+    ),
   )
   if timestep > 0.0 and not dsbl_damper:
     kD = flex_damping[f] / timestep
@@ -615,12 +619,13 @@ def _flex_elasticity(
     kD = 0.0
 
   elem_data_adr = flex_elemdataadr[f] + local_elemid * (dim + 1)
+  vbase = flex_vertadr[f]
   gradient = wp.matrix(0.0, shape=(6, 6))
   for e in range(nedge):
     vert0 = flex_elem[elem_data_adr + edges[e, 0]]
     vert1 = flex_elem[elem_data_adr + edges[e, 1]]
-    xpos0 = flexvert_xpos_in[worldid, vert0]
-    xpos1 = flexvert_xpos_in[worldid, vert1]
+    xpos0 = flexvert_xpos_in[worldid, vbase + vert0]
+    xpos1 = flexvert_xpos_in[worldid, vbase + vert1]
     for i in range(3):
       gradient[e, 0 + i] = xpos0[i] - xpos1[i]
       gradient[e, 3 + i] = xpos1[i] - xpos0[i]
@@ -660,19 +665,19 @@ def _flex_elasticity(
 def _flex_bending(
   # Model:
   nflex: int,
-  body_dofadr: wp.array(dtype=int),
-  flex_dim: wp.array(dtype=int),
-  flex_vertadr: wp.array(dtype=int),
-  flex_edgeadr: wp.array(dtype=int),
-  flex_edgenum: wp.array(dtype=int),
-  flex_vertbodyid: wp.array(dtype=int),
-  flex_edge: wp.array(dtype=wp.vec2i),
-  flex_edgeflap: wp.array(dtype=wp.vec2i),
-  flex_bending: wp.array2d(dtype=float),
+  body_dofadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_edgeadr: wp.array[int],
+  flex_edgenum: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_edge: wp.array[wp.vec2i],
+  flex_edgeflap: wp.array[wp.vec2i],
+  flex_bending: wp.array2d[float],
   # Data in:
-  flexvert_xpos_in: wp.array2d(dtype=wp.vec3),
+  flexvert_xpos_in: wp.array2d[wp.vec3],
   # Data out:
-  qfrc_spring_out: wp.array2d(dtype=float),
+  qfrc_spring_out: wp.array2d[float],
 ):
   worldid, edgeid = wp.tid()
   nvert = 4

@@ -31,16 +31,23 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.util_pkg import check_version
 
 
-def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array | None:
+def _is_array_spec(typ) -> bool:
+  """Check if a type annotation is an array spec (wp.array instance or bracket annotation)."""
+  return isinstance(typ, wp.array) or type(typ).__name__ == "_ArrayAnnotation"
+
+
+def _create_array(data: Any, spec, sizes: dict[str, int]) -> wp.array | None:
   """Creates a warp array and populates it with data.
 
   The array shape is determined by a field spec referencing MjModel / MjData array sizes.
   """
+  spec_shape = getattr(spec, "shape", (0,))
   shape = None
-  if spec.shape != (0,):
-    shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in spec.shape)
+  if spec_shape != (0,):
+    shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in spec_shape)
 
   if data is None and shape is None:
     return None  # nothing to do
@@ -49,7 +56,7 @@ def _create_array(data: Any, spec: wp.array, sizes: dict[str, int]) -> wp.array 
   else:
     array = wp.array(np.array(data), dtype=spec.dtype, shape=shape)
 
-  if spec.shape[0] == "*":
+  if spec_shape and spec_shape[0] == "*":
     # add private attribute for JAX to determine which fields are batched
     array._is_batched = True
     # also set stride 0 to 0 which is expected legacy behavior (but is deprecated)
@@ -194,7 +201,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   # place opt on device
   for f in dataclasses.fields(types.Option):
-    if isinstance(f.type, wp.array):
+    if _is_array_spec(f.type):
       setattr(opt, f.name, _create_array(getattr(opt, f.name), f.type, {"*": 1}))
     else:
       setattr(opt, f.name, f.type(getattr(opt, f.name)))
@@ -429,9 +436,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
           current = []
       else:
         current.append(v)
-    # Pad with zeros if less than 3
-    attr_values += [0.0] * (3 - len(attr_values))
-    m.plugin_attr.append(attr_values[:3])
+    if len(attr_values) > types._NPLUGINATTR:
+      raise ValueError(f"Plugin has {len(attr_values)} attributes, which exceeds the maximum of {types._NPLUGINATTR}. ")
+    # pad with zeros to _NPLUGINATTR
+    attr_values += [0.0] * (types._NPLUGINATTR - len(attr_values))
+    m.plugin_attr.append(attr_values[: types._NPLUGINATTR])
 
   # equality constraint addresses
   m.eq_connect_adr = np.nonzero(mjm.eq_type == types.EqType.CONNECT)[0]
@@ -581,6 +590,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       Madr_ki -= 1
   m.qLD_updates = tuple(wp.array(qLD_updates[i], dtype=wp.vec3i) for i in sorted(qLD_updates))
 
+  # Build concatenated updates for fused kernel
+  all_updates_flat = []
+  level_offsets = [0]
+  for level in sorted(qLD_updates):
+    all_updates_flat.extend(qLD_updates[level])
+    level_offsets.append(len(all_updates_flat))
+  m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
+  m.qLD_level_offsets = level_offsets
+
   # indices for sparse qM_fullm (used in solver)
   m.qM_fullm_i, m.qM_fullm_j = [], []
   for i in range(mjm.nv):
@@ -624,7 +642,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
-    if isinstance(f.type, wp.array):
+    if _is_array_spec(f.type):
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes))
 
   return m
@@ -1448,7 +1466,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   """
 
   @wp.kernel(module="unique", enable_backward=False)
-  def reset_xfrc_applied(reset_in: wp.array(dtype=bool), xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector)):
+  def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
     worldid, bodyid, elemid = wp.tid()
 
     if wp.static(reset is not None):
@@ -1458,7 +1476,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False)
-  def reset_qM(reset_in: wp.array(dtype=bool), qM_out: wp.array3d(dtype=float)):
+  def reset_qM(reset_in: wp.array[bool], qM_out: wp.array3d[float]):
     worldid, elemid1, elemid2 = wp.tid()
 
     if wp.static(reset is not None):
@@ -1476,31 +1494,31 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     na: int,
     neq: int,
     nsensordata: int,
-    qpos0: wp.array2d(dtype=float),
-    eq_active0: wp.array(dtype=bool),
+    qpos0: wp.array2d[float],
+    eq_active0: wp.array[bool],
     # Data in:
     nworld_in: int,
     # In:
-    reset_in: wp.array(dtype=bool),
+    reset_in: wp.array[bool],
     # Data out:
-    solver_niter_out: wp.array(dtype=int),
-    ne_out: wp.array(dtype=int),
-    nf_out: wp.array(dtype=int),
-    nl_out: wp.array(dtype=int),
-    nefc_out: wp.array(dtype=int),
-    time_out: wp.array(dtype=float),
-    energy_out: wp.array(dtype=wp.vec2),
-    qpos_out: wp.array2d(dtype=float),
-    qvel_out: wp.array2d(dtype=float),
-    act_out: wp.array2d(dtype=float),
-    qacc_warmstart_out: wp.array2d(dtype=float),
-    ctrl_out: wp.array2d(dtype=float),
-    qfrc_applied_out: wp.array2d(dtype=float),
-    eq_active_out: wp.array2d(dtype=bool),
-    qacc_out: wp.array2d(dtype=float),
-    act_dot_out: wp.array2d(dtype=float),
-    sensordata_out: wp.array2d(dtype=float),
-    nacon_out: wp.array(dtype=int),
+    solver_niter_out: wp.array[int],
+    ne_out: wp.array[int],
+    nf_out: wp.array[int],
+    nl_out: wp.array[int],
+    nefc_out: wp.array[int],
+    time_out: wp.array[float],
+    energy_out: wp.array[wp.vec2],
+    qpos_out: wp.array2d[float],
+    qvel_out: wp.array2d[float],
+    act_out: wp.array2d[float],
+    qacc_warmstart_out: wp.array2d[float],
+    ctrl_out: wp.array2d[float],
+    qfrc_applied_out: wp.array2d[float],
+    eq_active_out: wp.array2d[bool],
+    qacc_out: wp.array2d[float],
+    act_dot_out: wp.array2d[float],
+    sensordata_out: wp.array2d[float],
+    nacon_out: wp.array[int],
   ):
     worldid = wp.tid()
 
@@ -1538,14 +1556,14 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
     # Model:
-    body_mocapid: wp.array(dtype=int),
-    body_pos: wp.array2d(dtype=wp.vec3),
-    body_quat: wp.array2d(dtype=wp.quat),
+    body_mocapid: wp.array[int],
+    body_pos: wp.array2d[wp.vec3],
+    body_quat: wp.array2d[wp.quat],
     # In:
-    reset_in: wp.array(dtype=bool),
+    reset_in: wp.array[bool],
     # Data out:
-    mocap_pos_out: wp.array2d(dtype=wp.vec3),
-    mocap_quat_out: wp.array2d(dtype=wp.quat),
+    mocap_pos_out: wp.array2d[wp.vec3],
+    mocap_quat_out: wp.array2d[wp.quat],
   ):
     worldid, bodyid = wp.tid()
 
@@ -1562,27 +1580,27 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   @wp.kernel(module="unique", enable_backward=False)
   def reset_contact(
     # Data in:
-    nacon_in: wp.array(dtype=int),
+    nacon_in: wp.array[int],
     # In:
-    reset_in: wp.array(dtype=bool),
+    reset_in: wp.array[bool],
     nefcaddress: int,
     # Data out:
-    contact_dist_out: wp.array(dtype=float),
-    contact_pos_out: wp.array(dtype=wp.vec3),
-    contact_frame_out: wp.array(dtype=wp.mat33),
-    contact_includemargin_out: wp.array(dtype=float),
-    contact_friction_out: wp.array(dtype=types.vec5),
-    contact_solref_out: wp.array(dtype=wp.vec2),
-    contact_solreffriction_out: wp.array(dtype=wp.vec2),
-    contact_solimp_out: wp.array(dtype=types.vec5),
-    contact_dim_out: wp.array(dtype=int),
-    contact_geom_out: wp.array(dtype=wp.vec2i),
-    contact_flex_out: wp.array(dtype=wp.vec2i),
-    contact_vert_out: wp.array(dtype=wp.vec2i),
-    contact_efc_address_out: wp.array2d(dtype=int),
-    contact_worldid_out: wp.array(dtype=int),
-    contact_type_out: wp.array(dtype=int),
-    contact_geomcollisionid_out: wp.array(dtype=int),
+    contact_dist_out: wp.array[float],
+    contact_pos_out: wp.array[wp.vec3],
+    contact_frame_out: wp.array[wp.mat33],
+    contact_includemargin_out: wp.array[float],
+    contact_friction_out: wp.array[types.vec5],
+    contact_solref_out: wp.array[wp.vec2],
+    contact_solreffriction_out: wp.array[wp.vec2],
+    contact_solimp_out: wp.array[types.vec5],
+    contact_dim_out: wp.array[int],
+    contact_geom_out: wp.array[wp.vec2i],
+    contact_flex_out: wp.array[wp.vec2i],
+    contact_vert_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
+    contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
   ):
     conid = wp.tid()
 
@@ -1686,8 +1704,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 # kernel_analyzer: off
 @wp.kernel
 def _init_subtreemass(
-  body_mass_in: wp.array2d(dtype=float),
-  body_subtreemass_out: wp.array2d(dtype=float),
+  body_mass_in: wp.array2d[float],
+  body_subtreemass_out: wp.array2d[float],
 ):
   worldid, bodyid = wp.tid()
   body_mass_id = worldid % body_mass_in.shape[0]
@@ -1697,9 +1715,9 @@ def _init_subtreemass(
 
 @wp.kernel
 def _accumulate_subtreemass(
-  body_parentid: wp.array(dtype=int),
-  body_subtreemass_io: wp.array2d(dtype=float),
-  body_tree_: wp.array(dtype=int),
+  body_parentid: wp.array[int],
+  body_subtreemass_io: wp.array2d[float],
+  body_tree_: wp.array[int],
 ):
   worldid, nodeid = wp.tid()
   body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
@@ -1711,8 +1729,8 @@ def _accumulate_subtreemass(
 
 @wp.kernel
 def _copy_qpos0_to_qpos(
-  qpos0: wp.array2d(dtype=float),
-  qpos_out: wp.array2d(dtype=float),
+  qpos0: wp.array2d[float],
+  qpos_out: wp.array2d[float],
 ):
   worldid, i = wp.tid()
   qpos0_id = worldid % qpos0.shape[0]
@@ -1721,8 +1739,8 @@ def _copy_qpos0_to_qpos(
 
 @wp.kernel
 def _copy_tendon_length0(
-  ten_length_in: wp.array2d(dtype=float),
-  tendon_length0_out: wp.array2d(dtype=float),
+  ten_length_in: wp.array2d[float],
+  tendon_length0_out: wp.array2d[float],
 ):
   worldid, tenid = wp.tid()
   tendon_length0_id = worldid % tendon_length0_out.shape[0]
@@ -1733,9 +1751,9 @@ def _copy_tendon_length0(
 def _compute_meaninertia(
   nv: int,
   is_sparse: bool,
-  dof_Madr_in: wp.array(dtype=int),
-  qM_in: wp.array3d(dtype=float),
-  meaninertia_out: wp.array(dtype=float),
+  dof_Madr_in: wp.array[int],
+  qM_in: wp.array3d[float],
+  meaninertia_out: wp.array[float],
 ):
   """Compute mean diagonal inertia from qM at qpos0."""
   worldid = wp.tid()
@@ -1760,7 +1778,7 @@ def _compute_meaninertia(
 @wp.kernel
 def _set_unit_vector(
   dofid_target: int,
-  unit_vec_out: wp.array2d(dtype=float),
+  unit_vec_out: wp.array2d[float],
 ):
   worldid = wp.tid()
   nv = unit_vec_out.shape[1]
@@ -1774,8 +1792,8 @@ def _set_unit_vector(
 @wp.kernel
 def _extract_dof_A_diag(
   dofid: int,
-  result_vec_in: wp.array2d(dtype=float),
-  dof_A_diag_out: wp.array2d(dtype=float),
+  result_vec_in: wp.array2d[float],
+  dof_A_diag_out: wp.array2d[float],
 ):
   worldid = wp.tid()
   dof_A_diag_id = worldid % dof_A_diag_out.shape[0]
@@ -1784,11 +1802,11 @@ def _extract_dof_A_diag(
 
 @wp.kernel
 def _finalize_dof_invweight0(
-  dof_jntid: wp.array(dtype=int),
-  jnt_type: wp.array(dtype=int),
-  jnt_dofadr: wp.array(dtype=int),
-  dof_A_diag_in: wp.array2d(dtype=float),
-  dof_invweight0_out: wp.array2d(dtype=float),
+  dof_jntid: wp.array[int],
+  jnt_type: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  dof_A_diag_in: wp.array2d[float],
+  dof_invweight0_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   dof_invweight0_id = worldid % dof_invweight0_out.shape[0]
@@ -1831,15 +1849,15 @@ def _compute_body_jac_row(
   nv: int,
   bodyid_target: int,
   row_idx: int,
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_dofadr: wp.array(dtype=int),
-  body_dofnum: wp.array(dtype=int),
-  dof_parentid: wp.array(dtype=int),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  body_jac_row_out: wp.array2d(dtype=float),
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_dofnum: wp.array[int],
+  dof_parentid: wp.array[int],
+  subtree_com_in: wp.array2d[wp.vec3],
+  xipos_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  body_jac_row_out: wp.array2d[float],
 ):
   worldid = wp.tid()
 
@@ -1890,9 +1908,9 @@ def _compute_body_A_diag_entry(
   nv: int,
   bodyid_target: int,
   row_idx: int,
-  body_jac_row_in: wp.array2d(dtype=float),
-  result_vec_in: wp.array2d(dtype=float),
-  body_A_diag_out: wp.array3d(dtype=float),
+  body_jac_row_in: wp.array2d[float],
+  result_vec_in: wp.array2d[float],
+  body_A_diag_out: wp.array3d[float],
 ):
   worldid = wp.tid()
   body_A_diag_id = worldid % body_A_diag_out.shape[0]
@@ -1905,9 +1923,9 @@ def _compute_body_A_diag_entry(
 
 @wp.kernel
 def _finalize_body_invweight0(
-  body_weldid: wp.array(dtype=int),
-  body_A_diag_in: wp.array3d(dtype=float),
-  body_invweight0_out: wp.array2d(dtype=wp.vec2),
+  body_weldid: wp.array[int],
+  body_A_diag_in: wp.array3d[float],
+  body_invweight0_out: wp.array2d[wp.vec2],
 ):
   worldid, bodyid = wp.tid()
   body_invweight0_id = worldid % body_invweight0_out.shape[0]
@@ -1942,11 +1960,11 @@ def _finalize_body_invweight0(
 @wp.kernel
 def _copy_tendon_jacobian(
   tenid_target: int,
-  ten_J_rownnz: wp.array(dtype=int),
-  ten_J_rowadr: wp.array(dtype=int),
-  ten_J_colind: wp.array(dtype=int),
-  ten_J_in: wp.array2d(dtype=float),
-  ten_J_vec_out: wp.array2d(dtype=float),
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  ten_J_in: wp.array2d[float],
+  ten_J_vec_out: wp.array2d[float],
 ):
   worldid = wp.tid()
   nv = ten_J_in.shape[2]
@@ -1960,15 +1978,15 @@ def _copy_tendon_jacobian(
 @wp.kernel
 def _compute_tendon_dot_product(
   # Model:
-  ten_J_rownnz: wp.array(dtype=int),
-  ten_J_rowadr: wp.array(dtype=int),
-  ten_J_colind: wp.array(dtype=int),
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
   # In:
   tenid_target: int,
-  ten_J_in: wp.array2d(dtype=float),
-  result_vec_in: wp.array2d(dtype=float),
+  ten_J_in: wp.array2d[float],
+  result_vec_in: wp.array2d[float],
   # Out:
-  tendon_invweight0_out: wp.array2d(dtype=float),
+  tendon_invweight0_out: wp.array2d[float],
 ):
   worldid = wp.tid()
   tendon_invweight0_id = worldid % tendon_invweight0_out.shape[0]
@@ -1986,15 +2004,15 @@ def _compute_tendon_dot_product(
 
 @wp.kernel
 def _compute_cam_pos0(
-  cam_bodyid: wp.array(dtype=int),
-  cam_targetbodyid: wp.array(dtype=int),
-  cam_xpos_in: wp.array2d(dtype=wp.vec3),
-  cam_xmat_in: wp.array2d(dtype=wp.mat33),
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cam_pos0_out: wp.array2d(dtype=wp.vec3),
-  cam_poscom0_out: wp.array2d(dtype=wp.vec3),
-  cam_mat0_out: wp.array2d(dtype=wp.mat33),
+  cam_bodyid: wp.array[int],
+  cam_targetbodyid: wp.array[int],
+  cam_xpos_in: wp.array2d[wp.vec3],
+  cam_xmat_in: wp.array2d[wp.mat33],
+  xpos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cam_pos0_out: wp.array2d[wp.vec3],
+  cam_poscom0_out: wp.array2d[wp.vec3],
+  cam_mat0_out: wp.array2d[wp.mat33],
 ):
   worldid, camid = wp.tid()
   cam_pos0_id = worldid % cam_pos0_out.shape[0]
@@ -2012,15 +2030,15 @@ def _compute_cam_pos0(
 
 @wp.kernel
 def _compute_light_pos0(
-  light_bodyid: wp.array(dtype=int),
-  light_targetbodyid: wp.array(dtype=int),
-  light_xpos_in: wp.array2d(dtype=wp.vec3),
-  light_xdir_in: wp.array2d(dtype=wp.vec3),
-  xpos_in: wp.array2d(dtype=wp.vec3),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  light_pos0_out: wp.array2d(dtype=wp.vec3),
-  light_poscom0_out: wp.array2d(dtype=wp.vec3),
-  light_dir0_out: wp.array2d(dtype=wp.vec3),
+  light_bodyid: wp.array[int],
+  light_targetbodyid: wp.array[int],
+  light_xpos_in: wp.array2d[wp.vec3],
+  light_xdir_in: wp.array2d[wp.vec3],
+  xpos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  light_pos0_out: wp.array2d[wp.vec3],
+  light_poscom0_out: wp.array2d[wp.vec3],
+  light_dir0_out: wp.array2d[wp.vec3],
 ):
   worldid, lightid = wp.tid()
   light_pos0_id = worldid % light_pos0_out.shape[0]
@@ -2039,11 +2057,11 @@ def _compute_light_pos0(
 @wp.kernel
 def _copy_actuator_moment(
   actid_target: int,
-  moment_rownnz_in: wp.array2d(dtype=int),
-  moment_rowadr_in: wp.array2d(dtype=int),
-  moment_colind_in: wp.array2d(dtype=int),
-  actuator_moment_in: wp.array2d(dtype=float),
-  act_moment_vec_out: wp.array2d(dtype=float),
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  act_moment_vec_out: wp.array2d[float],
 ):
   worldid = wp.tid()
   nv = act_moment_vec_out.shape[1]
@@ -2061,8 +2079,8 @@ def _copy_actuator_moment(
 def _compute_actuator_acc0(
   actid_target: int,
   nv: int,
-  result_vec_in: wp.array2d(dtype=float),
-  actuator_acc0_out: wp.array2d(dtype=float),
+  result_vec_in: wp.array2d[float],
+  actuator_acc0_out: wp.array2d[float],
 ):
   worldid = wp.tid()
   norm_sq = float(0.0)
@@ -2073,11 +2091,11 @@ def _compute_actuator_acc0(
 
 @wp.kernel
 def _compute_dof_M0(
-  dof_bodyid: wp.array(dtype=int),
-  dof_armature: wp.array2d(dtype=float),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  crb_in: wp.array2d(dtype=vec10),
-  dof_M0_out: wp.array2d(dtype=float),
+  dof_bodyid: wp.array[int],
+  dof_armature: wp.array2d[float],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  crb_in: wp.array2d[vec10],
+  dof_M0_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
@@ -2088,15 +2106,15 @@ def _compute_dof_M0(
 
 @wp.kernel
 def _resolve_dampratio(
-  actuator_biastype: wp.array(dtype=int),
-  actuator_gainprm: wp.array2d(dtype=types.vec10f),
-  moment_rownnz_in: wp.array2d(dtype=int),
-  moment_rowadr_in: wp.array2d(dtype=int),
-  moment_colind_in: wp.array2d(dtype=int),
-  actuator_moment_in: wp.array2d(dtype=float),
-  dof_M0_in: wp.array2d(dtype=float),
+  actuator_biastype: wp.array[int],
+  actuator_gainprm: wp.array2d[types.vec10f],
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  dof_M0_in: wp.array2d[float],
   nv: int,
-  actuator_biasprm: wp.array2d(dtype=types.vec10f),
+  actuator_biasprm: wp.array2d[types.vec10f],
 ):
   worldid, actid = wp.tid()
   biastype = actuator_biastype[actid]
@@ -2139,15 +2157,15 @@ def _resolve_dampratio(
 
 @wp.kernel
 def _set_length_range(
-  actuator_trntype: wp.array(dtype=int),
-  actuator_trnid: wp.array(dtype=wp.vec2i),
-  actuator_gear: wp.array2d(dtype=wp.spatial_vector),
-  jnt_limited: wp.array(dtype=int),
-  jnt_range: wp.array2d(dtype=wp.vec2),
-  tendon_limited: wp.array(dtype=int),
-  tendon_range: wp.array2d(dtype=wp.vec2),
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  jnt_limited: wp.array[int],
+  jnt_range: wp.array2d[wp.vec2],
+  tendon_limited: wp.array[int],
+  tendon_range: wp.array2d[wp.vec2],
   ntendon: int,
-  actuator_lengthrange_out: wp.array2d(dtype=wp.vec2),
+  actuator_lengthrange_out: wp.array2d[wp.vec2],
 ):
   worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
@@ -2504,7 +2522,14 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
       "AUTO": mujoco.mjtJacobian.mjJAC_AUTO,
     },
   }
-  mjw_only_fields = {"opt.broadphase", "opt.broadphase_filter", "opt.ls_parallel", "opt.graph_conditional", "opt.deterministic"}
+  mjw_only_fields = {
+    "opt.broadphase",
+    "opt.broadphase_filter",
+    "opt.ls_parallel",
+    "opt.graph_conditional",
+    "opt.contact_sensor_maxmatch",
+    "opt.deterministic",
+  }
   mj_only_fields = {"opt.jacobian"}
 
   if not isinstance(overrides, dict):
@@ -2615,7 +2640,7 @@ def _build_rays(
   intrinsic: wp.vec4,
   znear: float,
   # Out:
-  ray_out: wp.array(dtype=wp.vec3),
+  ray_out: wp.array[wp.vec3],
 ):
   xid, yid = wp.tid()
   ray_out[offset + xid + yid * img_w] = render_util.compute_ray(
@@ -2663,19 +2688,25 @@ def create_render_context(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  # Mesh BVHs
+  constructor = "sah"
+  if check_version("warp>=1.13.0.dev20260325"):
+    # TODO: The cubql constructor and is_cubql_available exist only in
+    # recent Warp 1.13+ builds, modify this after warp is updated to 1.13+.
+    _cubql_avail = getattr(wp, "is_cubql_available", None)
+    if callable(_cubql_avail) and _cubql_avail():
+      constructor = "cubql"
+
+  # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh
   geom_enabled_mask = np.isin(mjm.geom_group, list(enabled_geom_groups))
-  mesh_geom_mask = geom_enabled_mask & (mjm.geom_type == types.GeomType.MESH) & (mjm.geom_dataid >= 0)
-  used_mesh_id = set(mjm.geom_dataid[mesh_geom_mask].astype(int))
   geom_enabled_idx = np.nonzero(geom_enabled_mask)[0]
 
   mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
 
-  for mid in used_mesh_id:
-    mesh, half = bvh.build_mesh_bvh(mjm, mid)
+  for mid in range(nmesh):
+    mesh, half = bvh.build_mesh_bvh(mjm, mid, constructor=constructor)
     mesh_registry[mesh.id] = mesh
     mesh_bvh_id[mid] = mesh.id
     mesh_bounds_size[mid] = half
@@ -2692,7 +2723,7 @@ def create_render_context(
   hfield_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nhfield)]
 
   for hid in used_hfield_id:
-    hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid)
+    hmesh, hhalf = bvh.build_hfield_bvh(mjm, hid, constructor=constructor)
     hfield_registry[hmesh.id] = hmesh
     hfield_bvh_id[hid] = hmesh.id
     hfield_bounds_size[hid] = hhalf

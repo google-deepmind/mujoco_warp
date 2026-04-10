@@ -107,6 +107,12 @@ class MissingModuleUnique(Issue):
 
 
 @dataclasses.dataclass
+class ParenthesizedArraySyntax(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" uses parenthesized wp.array(dtype=X) syntax, use wp.array[X] instead'
+
+
+@dataclasses.dataclass
 class MissingBatchModulo(Issue):
   param_name: str
 
@@ -300,6 +306,11 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       param_type = ast.get_source_segment(source, param.annotation)
       param_type = param_type.replace("types.", "")  # ignore types module prefix
       param_types[param_name] = param_type
+
+      # enforce bracket syntax: wp.array[X] not wp.array(dtype=X)
+      if re.search(r"wp\.array\d*d?\(dtype=", param_type):
+        issues.append(ParenthesizedArraySyntax(param, kernel))
+
       has_suffix = param_name.endswith("_in") or param_name.endswith("_out")
       field_name = param_name[: param_name.rfind("_")] if has_suffix else param_name
       param_out = param_name.endswith("_out") or param_name in ("res", "out")
@@ -334,9 +345,16 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         expected_dtype = expected_type[expected_type.rfind(" ") + 1 : -1]
         expected_ndim = expected_type.count(",")
         if expected_ndim == 1:
-          expected_type = f"wp.array(dtype={expected_dtype})"
+          expected_type = f"wp.array[{expected_dtype}]"
         else:
-          expected_type = f"wp.array{expected_ndim}d(dtype={expected_dtype})"
+          expected_type = f"wp.array{expected_ndim}d[{expected_dtype}]"
+      elif m := re.match(r"wp\.array(\d?)d?\(dtype=([\w.]+)\)", expected_type):
+        # wp.array(dtype=X) or wp.arrayNd(dtype=X) from types.py field specs
+        ndim_str, dtype = m.group(1), m.group(2)
+        if ndim_str and ndim_str != "1":
+          expected_type = f"wp.array{ndim_str}d[{dtype}]"
+        else:
+          expected_type = f"wp.array[{dtype}]"
 
       expected_types[param_name] = expected_type
       if expected_type and param_type != expected_type:

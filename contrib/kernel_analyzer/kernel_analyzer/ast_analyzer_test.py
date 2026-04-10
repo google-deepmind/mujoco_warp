@@ -94,7 +94,7 @@ _WRITE_READONLY_CODE = """
 import warp as wp
 
 @wp.kernel
-def test_write_readonly(qpos0: wp.array(dtype=int), qvel_in: wp.array(dtype=int)):
+def test_write_readonly(qpos0: wp.array[int], qvel_in: wp.array[int]):
     qpos0 = 1  # Writing to Model field
     qvel_in = 2  # Writing to Data _in field
 """
@@ -109,7 +109,7 @@ def test_all_issues(
     qvel_invalid: int,            # Invalid data field suffix
     geom_pos_in: int,             # Model field with suffix
     custom_param: int,            # Non-model/data in the middle
-    act_in: wp.array(dtype=int),  # Data order issue (in after out)
+    act_in: wp.array[int],  # Data order issue (in after out)
     qvel_out: int,                # Out before in
     qpos: int = 0,                # Default param
     *args,                        # Varargs
@@ -125,14 +125,14 @@ import warp as wp
 @wp.kernel
 def test_no_issues(
     # Model:
-    qpos0: wp.array2d(dtype=float),
-    geom_pos: wp.array2d(dtype=wp.vec3),
+    qpos0: wp.array2d[float],
+    geom_pos: wp.array2d[wp.vec3],
     # Data in:
-    qpos_in: wp.array2d(dtype=float),
-    qvel_in: wp.array2d(dtype=float),
-    act_in: wp.array2d(dtype=float),
+    qpos_in: wp.array2d[float],
+    qvel_in: wp.array2d[float],
+    act_in: wp.array2d[float],
     # Data out:
-    act_out: wp.array2d(dtype=float)
+    act_out: wp.array2d[float]
 ):
     x = qpos0  # Reading Model field is fine
     y = act_in  # Reading Data _in field is fine
@@ -143,7 +143,7 @@ _NON_KERNEL_CODE = """
 import warp as wp
 
 @wp.func
-def foo(x: wp.array(int)) -> wp.array(int):
+def foo(x: wp.array[int]) -> wp.array[int]:
   return x + 1
 
 def test_non_kernel(qpos0: int = 0, *args, **kwargs):
@@ -156,7 +156,7 @@ import warp as wp
 @wp.kernel
 def test_ignore(
     # Data in:
-    act_in: wp.array2d(dtype=float)
+    act_in: wp.array2d[float]
 ):
     act_in[0] = 2  # kernel_analyzer: ignore
 """
@@ -167,7 +167,7 @@ import warp as wp
 @wp.kernel
 def test_multiline_ignore(
     # kernel_analyzer: off
-    qpos0: wp.array(dtype=int),   # Type mismatch with Model field
+    qpos0: wp.array[int],   # Type mismatch with Model field
     qvel_invalid: int,            # Invalid data field suffix
     # kernel_analyzer: on
 ):
@@ -324,11 +324,28 @@ class TestAnalyzer(absltest.TestCase):
     self.assertEqual(len(unique_issues), 0, unique_issues)
 
 
+_PARENTHESIZED_ARRAY_SYNTAX_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_paren_syntax(x: wp.array(dtype=float), y: wp.array2d(dtype=int)):
+    pass
+"""
+
+_BRACKET_ARRAY_SYNTAX_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_bracket_syntax(x: wp.array[float], y: wp.array2d[int]):
+    pass
+"""
+
+
 _BATCH_MODULO_INCORRECT_ACCESS_CODE = """
 import warp as wp
 
 @wp.kernel
-def test_incorrect_access(dof_armature: wp.array2d(dtype=float)):
+def test_incorrect_access(dof_armature: wp.array2d[float]):
     worldid = wp.tid()
     x = dof_armature[worldid, 0]
 """
@@ -337,7 +354,7 @@ _BATCH_MODULO_INLINE_CODE = """
 import warp as wp
 
 @wp.kernel
-def test_inline_modulo(dof_armature: wp.array2d(dtype=float)):
+def test_inline_modulo(dof_armature: wp.array2d[float]):
     worldid = wp.tid()
     x = dof_armature[worldid % dof_armature.shape[0], 0]
 """
@@ -346,7 +363,7 @@ _BATCH_MODULO_PRECOMPUTED_CODE = """
 import warp as wp
 
 @wp.kernel
-def test_precomputed_modulo(dof_armature: wp.array2d(dtype=float)):
+def test_precomputed_modulo(dof_armature: wp.array2d[float]):
     worldid = wp.tid()
     dof_armature_id = worldid % dof_armature.shape[0]
     x = dof_armature[dof_armature_id, 0]
@@ -356,10 +373,26 @@ _BATCH_MODULO_IGNORE_CODE = """
 import warp as wp
 
 @wp.kernel
-def test_ignore_modulo(dof_armature: wp.array2d(dtype=float)):
+def test_ignore_modulo(dof_armature: wp.array2d[float]):
     worldid = wp.tid()
     x = dof_armature[worldid, 0]  # kernel_analyzer: ignore
 """
+
+
+class TestArrayBracketSyntax(absltest.TestCase):
+  """Tests for bracket array syntax enforcement."""
+
+  def test_parenthesized_syntax_raises_issue(self):
+    """Parenthesized wp.array(dtype=X) should raise an issue."""
+    issues = _analyze_str(_PARENTHESIZED_ARRAY_SYNTAX_CODE)
+    paren_issues = [i for i in issues if isinstance(i, ast_analyzer.ParenthesizedArraySyntax)]
+    self.assertEqual(len(paren_issues), 2, paren_issues)
+
+  def test_bracket_syntax_no_issue(self):
+    """Bracket wp.array[X] should not raise an issue."""
+    issues = _analyze_str(_BRACKET_ARRAY_SYNTAX_CODE)
+    paren_issues = [i for i in issues if isinstance(i, ast_analyzer.ParenthesizedArraySyntax)]
+    self.assertEqual(len(paren_issues), 0, paren_issues)
 
 
 class TestBatchModulo(absltest.TestCase):

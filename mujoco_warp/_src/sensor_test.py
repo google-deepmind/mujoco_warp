@@ -879,7 +879,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=xml)
 
     @wp.kernel
-    def _set_sensordata(sensordata_out: wp.array2d(dtype=float)):
+    def _set_sensordata(sensordata_out: wp.array2d[float]):
       worldid = wp.tid()
       sensordata_out[worldid, 0] = 17.0
 

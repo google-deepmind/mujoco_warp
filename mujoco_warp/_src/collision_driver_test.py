@@ -36,7 +36,7 @@ _TOLERANCE = 5e-5
 
 
 @wp.kernel
-def plane_convex_test(convex_in: Geom, dist_out: wp.array(dtype=wp.vec4)):
+def plane_convex_test(convex_in: Geom, dist_out: wp.array[wp.vec4]):
   dist, pos, normal = plane_convex(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), convex_in)
   dist_out[0] = dist
 
@@ -572,7 +572,12 @@ class CollisionTest(parameterized.TestCase):
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
-    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    # mujoco and mujoco warp have different heuristics for generating multiple contacts
+    # for plane<>mesh collisions
+    if "mesh_plane" in fixture:
+      self.assertGreaterEqual(d.nacon.numpy()[0], mjd.ncon)
+    else:
+      self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """

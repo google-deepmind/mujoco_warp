@@ -1,5 +1,7 @@
 import warp as wp
 
+from mujoco_warp._src.types import vec_pluginattr
+
 
 @wp.func
 def Fract(x: float) -> float:
@@ -22,7 +24,7 @@ def Intersection(a: float, b: float) -> float:
 
 
 @wp.func
-def bolt(p: wp.vec3, attr: wp.vec3) -> float:
+def bolt(p: wp.vec3, attr: vec_pluginattr) -> float:
   screw = 12.0
   radius = wp.sqrt(p[0] * p[0] + p[1] * p[1]) - attr[0]
   sqrt12 = wp.sqrt(2.0) / 2.0
@@ -52,7 +54,7 @@ def bolt(p: wp.vec3, attr: wp.vec3) -> float:
 
 
 @wp.func
-def bolt_sdf_grad(p: wp.vec3, attr: wp.vec3) -> wp.vec3:
+def bolt_sdf_grad(p: wp.vec3, attr: vec_pluginattr) -> wp.vec3:
   grad = wp.vec3()
   eps = 1e-6
   f_original = bolt(p, attr)
