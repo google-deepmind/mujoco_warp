@@ -2893,6 +2893,7 @@ def create_render_context(
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
     seg_data=wp.zeros((nworld, max(si, 1)), dtype=int),
+    semantic_seg_data=wp.zeros((nworld, max(si, 1)), dtype=wp.vec2i),
     seg_adr=wp.array(seg_adr, dtype=int),
     render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,

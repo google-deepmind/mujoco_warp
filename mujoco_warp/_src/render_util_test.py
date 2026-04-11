@@ -98,6 +98,36 @@ class RenderUtilTest(absltest.TestCase):
     self.assertTrue(np.any(seg_np >= 0), "Expected at least one geom hit")
     self.assertGreater(np.unique(seg_np).shape[0], 1)
 
+  def test_get_semantic_segmentation(self):
+    """Tests that semantic segmentation matches geom segmentation for geoms."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(32, 32),
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    seg_out = wp.zeros((2, 32, 32), dtype=int)
+    semantic_out = wp.zeros((2, 32, 32, 2), dtype=int)
+    mjw.get_segmentation(rc, 0, seg_out)
+    mjw.get_semantic_segmentation(rc, 0, semantic_out)
+
+    seg_np = seg_out.numpy()
+    semantic_np = semantic_out.numpy()
+
+    self.assertEqual(semantic_np.shape, (2, 32, 32, 2))
+    self.assertTrue(np.any(semantic_np[..., 1] == int(types.ObjType.GEOM)))
+
+    geom_mask = semantic_np[..., 1] == int(types.ObjType.GEOM)
+    np.testing.assert_array_equal(semantic_np[..., 0][geom_mask], seg_np[geom_mask])
+
+    background_mask = semantic_np[..., 1] == -1
+    np.testing.assert_array_equal(semantic_np[..., 0][background_mask], -1)
+
 
 if __name__ == "__main__":
   wp.init()

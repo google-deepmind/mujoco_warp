@@ -134,6 +134,34 @@ class RenderTest(parameterized.TestCase):
     self.assertTrue(np.any(seg >= 0))
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  def test_semantic_segmentation_matches_mujoco(self):
+    """Semantic segmentation should match MuJoCo's `(object_id, object_type)` output."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    cam_w, cam_h = 32, 32
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=[True],
+    )
+    mjw.render(m, d, rc)
+
+    warp_semantic = wp.zeros((1, cam_h, cam_w, 2), dtype=int)
+    mjw.get_semantic_segmentation(rc, 0, warp_semantic)
+    warp_semantic_np = warp_semantic.numpy()[0]
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      renderer.enable_segmentation_rendering()
+      mj_semantic = renderer.render()
+
+    np.testing.assert_array_equal(warp_semantic_np[..., 1], mj_semantic[..., 1])
+
+    valid = mj_semantic[..., 1] != -1
+    np.testing.assert_array_equal(warp_semantic_np[..., 0][valid], mj_semantic[..., 0][valid])
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):
     """Depth values should match native MuJoCo (planar depth, not Euclidean)."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)

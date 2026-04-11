@@ -34,6 +34,7 @@ from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
 
@@ -526,6 +527,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
   rc.seg_data.fill_(-1)
+  rc.semantic_seg_data.fill_(wp.vec2i(-1, -1))
 
   @wp.kernel(module="unique", enable_backward=False)
   def _render_megakernel(
@@ -589,6 +591,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     rgb_out: wp.array2d[wp.uint32],
     depth_out: wp.array2d[float],
     seg_out: wp.array2d[int],
+    semantic_seg_out: wp.array2d[wp.vec2i],
   ):
     worldid, rayid = wp.tid()
 
@@ -662,6 +665,10 @@ def render(m: Model, d: Data, rc: RenderContext):
 
     if render_seg[cam_idx] and geom_id != -1:
       seg_out[worldid, seg_adr[cam_idx] + rayid_local] = geom_id
+      if geom_id == -2:
+        semantic_seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(mesh_id, int(ObjType.FLEX))
+      else:
+        semantic_seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(geom_id, int(ObjType.GEOM))
 
     # Early Out
     if geom_id == -1:
@@ -830,5 +837,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.rgb_data,
       rc.depth_data,
       rc.seg_data,
+      rc.semantic_seg_data,
     ],
   )
