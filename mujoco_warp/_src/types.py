@@ -740,7 +740,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
-    deterministic: enable bitwise deterministic simulation (opt-in, ~10-25% overhead)
+    deterministic: enable deterministic contact ordering after narrowphase (opt-in, ~5-10% overhead)
   """
 
   timestep: array("*", float)
