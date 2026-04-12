@@ -2025,8 +2025,7 @@ class IOTest(parameterized.TestCase):
     self.assertFalse(mujoco.mj_isSparse(mjm))
     if mjd.nefc != 0:
       self.skipTest(
-        "Current MuJoCo reports active constraints for this model, so the"
-        " dense zero-nefc efc_J edge case is not reproducible."
+        "Current MuJoCo reports active constraints for this model, so the dense zero-nefc efc_J edge case is not reproducible."
       )
 
     m = mjwarp.put_model(mjm)
