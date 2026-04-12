@@ -64,8 +64,8 @@ from mujoco_warp._src.ray import rays as rays
 from mujoco_warp._src.render import render as render
 from mujoco_warp._src.render_util import get_depth as get_depth
 from mujoco_warp._src.render_util import get_rgb as get_rgb
-from mujoco_warp._src.render_util import get_semantic_segmentation as get_semantic_segmentation
 from mujoco_warp._src.render_util import get_segmentation as get_segmentation
+from mujoco_warp._src.render_util import get_semantic_segmentation as get_semantic_segmentation
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
@@ -105,8 +105,8 @@ from mujoco_warp._src.types import GainType as GainType
 from mujoco_warp._src.types import GeomType as GeomType
 from mujoco_warp._src.types import IntegratorType as IntegratorType
 from mujoco_warp._src.types import JointType as JointType
-from mujoco_warp._src.types import Option as Option
 from mujoco_warp._src.types import ObjType as ObjType
+from mujoco_warp._src.types import Option as Option
 from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
