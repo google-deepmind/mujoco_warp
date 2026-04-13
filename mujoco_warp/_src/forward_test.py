@@ -203,6 +203,8 @@ class ForwardTest(parameterized.TestCase):
         "opt.jacobian": jacobian,
         "opt.disableflags": DisableBit.CONTACT | actuation | spring | damper,
         "opt.integrator": IntegratorType.IMPLICITFAST,
+        # TODO(team): remove override when mujoco warp feature matches mujoco
+        "opt.enableflags": EnableBit.INVDISCRETE,
       },
     )
 
@@ -491,7 +493,11 @@ class ForwardTest(parameterized.TestCase):
     integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.RK4),
   )
   def test_step2(self, xml, integrator):
-    mjm, mjd, m, _ = test_data.fixture(xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.integrator": integrator})
+    # TODO(team): remove enableflags override when mujoco warp feature matches mujoco
+    enableflags = EnableBit.INVDISCRETE if integrator == IntegratorType.IMPLICITFAST else 0
+    mjm, mjd, m, _ = test_data.fixture(
+      xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.integrator": integrator, "opt.enableflags": enableflags}
+    )
 
     # some of the fields updated by step2
     step2_field = [
