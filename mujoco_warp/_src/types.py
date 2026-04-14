@@ -806,6 +806,9 @@ class TileSet:
     adr = np.asarray(self.adr.numpy())
     return hash((self.size, adr.dtype.str, adr.shape, adr.tobytes()))
 
+  def __cache_kernel_key__(self) -> int:
+    return self.size
+
 
 @dataclasses.dataclass
 class Callback:

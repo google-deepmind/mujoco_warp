@@ -17,6 +17,7 @@ import functools
 import inspect
 import warnings
 
+import numpy as np
 import warp as wp
 
 _STACK = None
@@ -122,16 +123,26 @@ def event_scope(fn, name: str = ""):
 _KERNEL_CACHE = {}
 
 
+def _normalize_cache_arg(a):
+  if isinstance(a, np.generic):
+    return _normalize_cache_arg(a.item())
+  if isinstance(a, tuple):
+    return tuple(_normalize_cache_arg(v) for v in a)
+  if isinstance(a, list):
+    return tuple(_normalize_cache_arg(v) for v in a)
+
+  cache_key = getattr(a, "__cache_kernel_key__", None)
+  if cache_key is not None:
+    return _normalize_cache_arg(cache_key())
+
+  return hash(a)
+
+
 def cache_kernel(func):
   # caching kernels to avoid crashes in graph_conditional code
   @functools.wraps(func)
   def wrapper(*args):
-    def _hash_arg(a):
-      if isinstance(a, list):
-        return hash(tuple(a))
-      return hash(a)
-
-    key = tuple(_hash_arg(a) for a in args) + (hash(func.__name__),)
+    key = tuple(_normalize_cache_arg(a) for a in args) + (hash(func.__name__),)
     if key not in _KERNEL_CACHE:
       _KERNEL_CACHE[key] = func(*args)
     return _KERNEL_CACHE[key]
