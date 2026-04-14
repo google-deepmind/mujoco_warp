@@ -127,6 +127,8 @@ def cache_kernel(func):
   @functools.wraps(func)
   def wrapper(*args):
     def _hash_arg(a):
+      if hasattr(a, "size"):
+        return a.size
       if isinstance(a, list):
         return hash(tuple(a))
       return hash(a)
