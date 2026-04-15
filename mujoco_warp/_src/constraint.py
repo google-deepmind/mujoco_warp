@@ -23,7 +23,6 @@ from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec11
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -134,7 +133,10 @@ def _equality_connect(
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
   body_invweight0: wp.array2d[wp.vec2],
+  jnt_type: wp.array[int],
+  jnt_dofadr: wp.array[int],
   dof_bodyid: wp.array[int],
+  dof_jntid: wp.array[int],
   dof_parentid: wp.array[int],
   site_bodyid: wp.array[int],
   eq_obj1id: wp.array[int],
@@ -153,6 +155,9 @@ def _equality_connect(
   site_xpos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
+  cvel_in: wp.array2d[wp.spatial_vector],
+  cdof_dot_in: wp.array2d[wp.spatial_vector],
+  subtree_linvel_in: wp.array2d[wp.vec3],
   njmax_in: int,
   njmax_nnz_in: int,
   # Data out:
@@ -213,6 +218,7 @@ def _equality_connect(
 
   # compute Jacobian difference (opposite of contact: 0 - 1)
   Jqvel = wp.vec3f(0.0, 0.0, 0.0)
+  Jdotv = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
     # TODO(team): pre-compute number of non-zeros
@@ -279,6 +285,40 @@ def _equality_connect(
       )
       j1mj2 = jacp1 - jacp2
 
+      jacp1_dot, _ = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos1,
+        body1,
+        da,
+        worldid,
+      )
+      jacp2_dot, _ = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos2,
+        body2,
+        da,
+        worldid,
+      )
+      j1mj2_dot = jacp1_dot - jacp2_dot
+
       sparseid0 = rowadr + nnz
       sparseid1 = rowadr + rownnz + nnz
       sparseid2 = rowadr + 2 * rownnz + nnz
@@ -291,7 +331,9 @@ def _equality_connect(
       efc_J_out[worldid, 0, sparseid1] = j1mj2[1]
       efc_J_out[worldid, 0, sparseid2] = j1mj2[2]
 
-      Jqvel += j1mj2 * qvel_in[worldid, da]
+      qvel = qvel_in[worldid, da]
+      Jqvel += j1mj2 * qvel
+      Jdotv += j1mj2_dot * qvel
 
       nnz += 1
   else:
@@ -321,11 +363,47 @@ def _equality_connect(
       )
       j1mj2 = jacp1 - jacp2
 
+      jacp1_dot, _ = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos1,
+        body1,
+        dofid,
+        worldid,
+      )
+      jacp2_dot, _ = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos2,
+        body2,
+        dofid,
+        worldid,
+      )
+      j1mj2_dot = jacp1_dot - jacp2_dot
+
       efc_J_out[worldid, efcid0, dofid] = j1mj2[0]
       efc_J_out[worldid, efcid1, dofid] = j1mj2[1]
       efc_J_out[worldid, efcid2, dofid] = j1mj2[2]
 
-      Jqvel += j1mj2 * qvel_in[worldid, dofid]
+      qvel = qvel_in[worldid, dofid]
+      Jqvel += j1mj2 * qvel
+      Jdotv += j1mj2_dot * qvel
 
   body_invweight0_id = worldid % body_invweight0.shape[0]
   invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
@@ -362,6 +440,8 @@ def _equality_connect(
       efc_aref_out,
       efc_frictionloss_out,
     )
+
+    efc_aref_out[worldid, efcidi] -= Jdotv[i]
 
 
 @wp.kernel
@@ -802,7 +882,10 @@ def _equality_weld(
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
   body_invweight0: wp.array2d[wp.vec2],
+  jnt_type: wp.array[int],
+  jnt_dofadr: wp.array[int],
   dof_bodyid: wp.array[int],
+  dof_jntid: wp.array[int],
   dof_parentid: wp.array[int],
   site_bodyid: wp.array[int],
   site_quat: wp.array2d[wp.quat],
@@ -823,6 +906,9 @@ def _equality_weld(
   site_xpos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
+  cvel_in: wp.array2d[wp.spatial_vector],
+  cdof_dot_in: wp.array2d[wp.spatial_vector],
+  subtree_linvel_in: wp.array2d[wp.vec3],
   njmax_in: int,
   njmax_nnz_in: int,
   # Data out:
@@ -892,9 +978,47 @@ def _equality_weld(
     quat = math.mul_quat(xquat_in[worldid, body1], relpose)
     quat1 = math.quat_inv(xquat_in[worldid, body2])
 
+    # quat1 = quat_inv(xquat_in[worldid, body2])
+    q2 = xquat_in[worldid, body2]
+    quat1 = wp.quat(q2[0], -q2[1], -q2[2], -q2[3])
+
+  # compute rotational Jdotv helper quaternions
+  omega1 = wp.spatial_top(cvel_in[worldid, body1])
+  omega2 = wp.spatial_top(cvel_in[worldid, body2])
+  domega = omega1 - omega2
+
+  omega1_q = wp.quat(0.0, omega1[0], omega1[1], omega1[2])
+  omega2_q = wp.quat(0.0, omega2[0], omega2[1], omega2[2])
+  domega_q = wp.quat(0.0, domega[0], domega[1], domega[2])
+
+  qdot0r = wp.quat(0.0, 0.0, 0.0, 0.0)
+  negqdot1 = wp.quat(0.0, 0.0, 0.0, 0.0)
+  negq1 = wp.quat(0.0, 0.0, 0.0, 0.0)
+
+  if is_site:
+    qdot0r = math.mul_quat(omega1_q, quat) * 0.5
+    qfull1 = math.mul_quat(xquat_in[worldid, body2], site_quat[site_quat_id, obj2id])
+    qdot1 = math.mul_quat(omega2_q, qfull1) * 0.5
+
+    negqdot1 = wp.quat(-qdot1[0], -qdot1[1], -qdot1[2], -qdot1[3])
+    negq1 = wp.quat(qfull1[0], -qfull1[1], -qfull1[2], -qfull1[3])
+
+  else:
+    # qdot0 = mul_quat(xquat_in[worldid, body1], omega1_q) * 0.5
+    u7 = xquat_in[worldid, body1]
+    qdot0 = math.mul_quat(omega1_q, xquat_in[worldid, body1]) * 0.5
+    qdot0r = math.mul_quat(qdot0, relpose)
+    q1_non_site = xquat_in[worldid, body2]
+    qdot1 = math.mul_quat(omega2_q, q1_non_site) * 0.5
+
+    negqdot1 = wp.quat(-qdot1[0], -qdot1[1], -qdot1[2], -qdot1[3])
+    negq1 = wp.quat(q1_non_site[0], -q1_non_site[1], -q1_non_site[2], -q1_non_site[3])
+
   # compute Jacobian difference (opposite of contact: 0 - 1)
   Jqvelp = wp.vec3f(0.0, 0.0, 0.0)
   Jqvelr = wp.vec3f(0.0, 0.0, 0.0)
+  Jdotv_p = wp.vec3f(0.0, 0.0, 0.0)
+  Jdotv_r0 = wp.vec3f(0.0, 0.0, 0.0)
 
   if is_sparse:
     # TODO(team): pre-compute number of non-zeros
@@ -972,6 +1096,42 @@ def _equality_weld(
       jacdifrq = math.mul_quat(math.quat_mul_axis(quat1, jacdifr), quat)
       jacdifr = 0.5 * wp.vec3(jacdifrq[1], jacdifrq[2], jacdifrq[3])
 
+      jacp1_dot, jacr1_dot = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos1,
+        body1,
+        da,
+        worldid,
+      )
+      jacp2_dot, jacr2_dot = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos2,
+        body2,
+        da,
+        worldid,
+      )
+
+      jacdifp_dot = jacp1_dot - jacp2_dot
+      jacdifr_dot = jacr1_dot - jacr2_dot
+
       sparseid0 = rowadr + nnz
       sparseid1 = rowadr + rownnz + nnz
       sparseid2 = rowadr + 2 * rownnz + nnz
@@ -995,6 +1155,8 @@ def _equality_weld(
 
       Jqvelp += jacdifp * qvel_in[worldid, da]
       Jqvelr += jacdifr * qvel_in[worldid, da]
+      Jdotv_p += jacdifp_dot * qvel_in[worldid, da]
+      Jdotv_r0 += jacdifr_dot * qvel_in[worldid, da]
 
       nnz += 1
   else:
@@ -1032,12 +1194,50 @@ def _equality_weld(
       jacdifrq = math.mul_quat(math.quat_mul_axis(quat1, jacdifr), quat)
       jacdifr = 0.5 * wp.vec3(jacdifrq[1], jacdifrq[2], jacdifrq[3])
 
+      jacp1_dot, jacr1_dot = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos1,
+        body1,
+        dofid,
+        worldid,
+      )
+      jacp2_dot, jacr2_dot = support.jac_dot_dof(
+        body_parentid,
+        body_rootid,
+        jnt_type,
+        jnt_dofadr,
+        dof_bodyid,
+        dof_jntid,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        pos2,
+        body2,
+        dofid,
+        worldid,
+      )
+
+      jacdifp_dot = jacp1_dot - jacp2_dot
+      jacdifr_dot = jacr1_dot - jacr2_dot
+
       efc_J_out[worldid, efcid3, dofid] = jacdifr[0]
       efc_J_out[worldid, efcid4, dofid] = jacdifr[1]
       efc_J_out[worldid, efcid5, dofid] = jacdifr[2]
 
       Jqvelp += jacdifp * qvel_in[worldid, dofid]
       Jqvelr += jacdifr * qvel_in[worldid, dofid]
+      Jdotv_p += jacdifp_dot * qvel_in[worldid, dofid]
+      Jdotv_r0 += jacdifr_dot * qvel_in[worldid, dofid]
 
   # error is difference in global position and orientation
   cpos = pos1 - pos2
@@ -1054,6 +1254,22 @@ def _equality_weld(
   solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
 
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+
+  djrdv_q = wp.quat(0.0, Jdotv_r0[0], Jdotv_r0[1], Jdotv_r0[2])
+
+  # Term 1: negqdot1 * domega * q0r
+  t1a = math.mul_quat(negqdot1, domega_q)
+  t1 = math.mul_quat(t1a, quat)
+
+  # Term 2: negq1 * djrdv * q0r
+  t2a = math.mul_quat(negq1, djrdv_q)
+  t2 = math.mul_quat(t2a, quat)
+
+  # Term 3: negq1 * domega * qdot0r
+  t3a = math.mul_quat(negq1, domega_q)
+  t3 = math.mul_quat(t3a, qdot0r)
+
+  Jdotv_r = wp.vec3(t1[1] + t2[1] + t3[1], t1[2] + t2[2] + t3[2], t1[3] + t2[3] + t3[3]) * 0.5 * torquescale
 
   for i in range(3):
     _efc_row(
@@ -1080,6 +1296,8 @@ def _equality_weld(
       efc_aref_out,
       efc_frictionloss_out,
     )
+
+    efc_aref_out[worldid, efcid + i] -= Jdotv_p[i]
 
   invweight_r = body_invweight0[body_invweight0_id, body1][1] + body_invweight0[body_invweight0_id, body2][1]
 
@@ -1108,6 +1326,8 @@ def _equality_weld(
       efc_aref_out,
       efc_frictionloss_out,
     )
+
+    efc_aref_out[worldid, efcid + 3 + i] -= Jdotv_r[i]
 
 
 @wp.kernel
@@ -2233,7 +2453,10 @@ def make_constraint(m: types.Model, d: types.Data):
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
+          m.jnt_type,
+          m.jnt_dofadr,
           m.dof_bodyid,
+          m.dof_jntid,
           m.dof_parentid,
           m.site_bodyid,
           m.eq_obj1id,
@@ -2251,6 +2474,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.site_xpos,
           d.subtree_com,
           d.cdof,
+          d.cvel,
+          d.cdof_dot,
+          d.subtree_linvel,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -2286,7 +2512,10 @@ def make_constraint(m: types.Model, d: types.Data):
           m.body_dofnum,
           m.body_dofadr,
           m.body_invweight0,
+          m.jnt_type,
+          m.jnt_dofadr,
           m.dof_bodyid,
+          m.dof_jntid,
           m.dof_parentid,
           m.site_bodyid,
           m.site_quat,
@@ -2306,6 +2535,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.site_xpos,
           d.subtree_com,
           d.cdof,
+          d.cvel,
+          d.cdof_dot,
+          d.subtree_linvel,
           d.njmax,
           d.njmax_nnz,
         ],

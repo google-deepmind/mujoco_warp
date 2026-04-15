@@ -1,0 +1,20 @@
+<mujoco>
+  <option timestep="0.001" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="box1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size=".2 .1 .1" mass="1"/>
+    </body>
+    <body name="box2" pos="0.4 0 1">
+      <freejoint/>
+      <geom type="box" size=".2 .1 .1" mass="1"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="box1" body2="box2" anchor="0.2 0 0"/>
+  </equality>
+  <keyframe>
+    <!-- qpos: pos1(3), quat1(4), pos2(3), quat2(4) -->
+    <key qpos="0 0 1 1 0 0 0 0.4 0 1 1 0 0 0" qvel="1 2 3 0.1 0.2 0.3 -1 -2 -3 -0.1 -0.2 -0.3"/>
+  </keyframe>
+</mujoco>
