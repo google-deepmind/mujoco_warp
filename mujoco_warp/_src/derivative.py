@@ -15,7 +15,9 @@
 
 import warp as wp
 
+from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import next_act
+from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -65,6 +67,28 @@ def _qderiv_actuator_passive_vel(
 
   if actuator_biastype[actid] == BiasType.AFFINE:
     bias = actuator_biasprm[actuator_biasprm_id, actid][2]
+  elif actuator_biastype[actid] == BiasType.DCMOTOR:
+    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
+    te = dynprm[0]
+    if te <= 0.0:
+      gainprm = actuator_gainprm[actuator_gainprm_id, actid]
+      R = gainprm[0]
+      K = gainprm[1]
+
+      slots = util_misc.dcmotor_slots(dynprm, gainprm)
+      slot_Ta = slots[2]
+
+      if slot_Ta >= 0:
+        adr = actuator_actadr[actid] + slot_Ta
+        T = act_in[worldid, adr]
+        alpha = gainprm[2]
+        T0 = gainprm[3]
+        Ta = dynprm[4]
+        R *= 1.0 + alpha * (T + Ta - T0)
+
+      bias = -K * K / wp.max(MJ_MINVAL, R)
+    else:
+      bias = 0.0
   else:
     bias = 0.0
 
