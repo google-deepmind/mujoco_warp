@@ -1941,8 +1941,7 @@ class RenderContext:
     depth_adr: depth addresses
     render_rgb: per-camera RGB render flags
     render_depth: per-camera depth render flags
-    seg_data: segmentation data (per-pixel geom IDs)
-    semantic_seg_data: semantic segmentation data (per-pixel object ID/type pairs)
+    seg_data: segmentation data (per-pixel object ID/type pairs)
     seg_adr: segmentation addresses
     render_seg: per-camera segmentation render flags
     znear: near plane distance
@@ -1991,8 +1990,7 @@ class RenderContext:
   depth_adr: array("ncam", int)
   render_rgb: array("ncam", bool)
   render_depth: array("ncam", bool)
-  seg_data: array("*", int)
-  semantic_seg_data: array("*", wp.vec2i)
+  seg_data: array("*", wp.vec2i)
   seg_adr: array("ncam", int)
   render_seg: array("ncam", bool)
   znear: float

@@ -78,7 +78,7 @@ class RenderUtilTest(absltest.TestCase):
     )
 
   def test_get_segmentation(self):
-    """Tests that get_segmentation extracts per-pixel geom IDs."""
+    """Tests that get_segmentation extracts MuJoCo-style typed IDs."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
 
     rc = mjw.create_render_context(
@@ -90,43 +90,41 @@ class RenderUtilTest(absltest.TestCase):
 
     mjw.render(m, d, rc)
 
-    seg_out = wp.zeros((2, 32, 32), dtype=int)
+    seg_out = wp.zeros((2, 32, 32, 2), dtype=int)
     mjw.get_segmentation(rc, 0, seg_out)
 
     seg_np = seg_out.numpy()
-    self.assertEqual(seg_np.shape, (2, 32, 32))
-    self.assertTrue(np.any(seg_np >= 0), "Expected at least one geom hit")
-    self.assertGreater(np.unique(seg_np).shape[0], 1)
+    self.assertEqual(seg_np.shape, (2, 32, 32, 2))
+    self.assertTrue(np.any(seg_np[..., 1] == int(types.ObjType.GEOM)))
 
-  def test_get_semantic_segmentation(self):
-    """Tests that semantic segmentation matches geom segmentation for geoms."""
-    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
+    geom_mask = seg_np[..., 1] == int(types.ObjType.GEOM)
+    self.assertTrue(np.any(geom_mask), "Expected at least one geom hit")
+    self.assertGreater(np.unique(seg_np[..., 0][geom_mask]).shape[0], 1)
+
+    background_mask = seg_np[..., 1] == -1
+    np.testing.assert_array_equal(seg_np[..., 0][background_mask], -1)
+
+  def test_get_segmentation_preserves_flex_ids(self):
+    """Tests that flex hits keep their real flex ids and type tags."""
+    mjm, mjd, m, d = test_data.fixture("flex/multiflex.xml", nworld=1)
 
     rc = mjw.create_render_context(
       mjm,
-      nworld=2,
-      cam_res=(32, 32),
+      nworld=1,
+      cam_res=(64, 64),
       render_seg=True,
     )
 
     mjw.render(m, d, rc)
 
-    seg_out = wp.zeros((2, 32, 32), dtype=int)
-    semantic_out = wp.zeros((2, 32, 32, 2), dtype=int)
+    seg_out = wp.zeros((1, 64, 64, 2), dtype=int)
     mjw.get_segmentation(rc, 0, seg_out)
-    mjw.get_semantic_segmentation(rc, 0, semantic_out)
+    seg_np = seg_out.numpy()[0]
 
-    seg_np = seg_out.numpy()
-    semantic_np = semantic_out.numpy()
-
-    self.assertEqual(semantic_np.shape, (2, 32, 32, 2))
-    self.assertTrue(np.any(semantic_np[..., 1] == int(types.ObjType.GEOM)))
-
-    geom_mask = semantic_np[..., 1] == int(types.ObjType.GEOM)
-    np.testing.assert_array_equal(semantic_np[..., 0][geom_mask], seg_np[geom_mask])
-
-    background_mask = semantic_np[..., 1] == -1
-    np.testing.assert_array_equal(semantic_np[..., 0][background_mask], -1)
+    flex_mask = seg_np[..., 1] == int(types.ObjType.FLEX)
+    self.assertTrue(np.any(flex_mask), "Expected at least one flex hit")
+    self.assertTrue(np.all(seg_np[..., 0][flex_mask] >= 0))
+    self.assertGreater(np.unique(seg_np[..., 0][flex_mask]).shape[0], 1)
 
 
 if __name__ == "__main__":

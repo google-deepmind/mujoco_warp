@@ -65,7 +65,6 @@ from mujoco_warp._src.render import render as render
 from mujoco_warp._src.render_util import get_depth as get_depth
 from mujoco_warp._src.render_util import get_rgb as get_rgb
 from mujoco_warp._src.render_util import get_segmentation as get_segmentation
-from mujoco_warp._src.render_util import get_semantic_segmentation as get_semantic_segmentation
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc

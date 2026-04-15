@@ -211,76 +211,39 @@ def get_depth(rc: RenderContext, camera_index: int, depth_scale: float, depth_ou
 @wp.kernel
 def _extract_seg_kernel(
   # In:
-  seg_data: wp.array2d[int],
-  seg_adr: wp.array[int],
-  camera_index: int,
-  # Out:
-  seg_out: wp.array3d[int],
-):
-  """Extract per-pixel geom IDs from the render context buffers for a given camera index."""
-  worldid, pixelid = wp.tid()
-  xid = pixelid % seg_out.shape[2]
-  yid = pixelid // seg_out.shape[2]
-
-  seg_adr_offset = seg_adr[camera_index]
-  seg_out[worldid, yid, xid] = seg_data[worldid, seg_adr_offset + pixelid]
-
-
-def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array3d[int]):
-  """Get the segmentation data from the render context buffers for a given camera index.
-
-  Each pixel contains the MuJoCo geom ID of the geometry hit by the ray, -1 for
-  background, or -2 for flex bodies.
-
-  Args:
-    rc: The render context on device.
-    camera_index: The index of the camera to get the segmentation data for.
-    seg_out: The output array to store the geom IDs in, with shape
-      (nworld, height, width).
-  """
-  wp.launch(
-    _extract_seg_kernel,
-    dim=(seg_out.shape[0], seg_out.shape[1] * seg_out.shape[2]),
-    inputs=[rc.seg_data, rc.seg_adr, camera_index],
-    outputs=[seg_out],
-  )
-
-
-@wp.kernel
-def _extract_semantic_seg_kernel(
-  # In:
-  semantic_seg_data: wp.array2d[wp.vec2i],
+  seg_data: wp.array2d[wp.vec2i],
   seg_adr: wp.array[int],
   camera_index: int,
   # Out:
   seg_out: wp.array4d[int],
 ):
-  """Extract per-pixel semantic segmentation pairs for a given camera index."""
+  """Extract per-pixel `(object_id, object_type)` pairs for a camera."""
   worldid, pixelid = wp.tid()
   xid = pixelid % seg_out.shape[2]
   yid = pixelid // seg_out.shape[2]
 
   seg_adr_offset = seg_adr[camera_index]
-  pair = semantic_seg_data[worldid, seg_adr_offset + pixelid]
+  pair = seg_data[worldid, seg_adr_offset + pixelid]
   seg_out[worldid, yid, xid, 0] = pair[0]
   seg_out[worldid, yid, xid, 1] = pair[1]
 
 
-def get_semantic_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array4d[int]):
-  """Get semantic segmentation `(object_id, object_type)` data for a camera.
+def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array4d[int]):
+  """Get the segmentation data from the render context buffers for a given camera index.
 
-  Background pixels are `(-1, -1)`. Regular geometry hits are `(geom_id,
-  mjOBJ_GEOM)`. Flex hits are `(flex_id, mjOBJ_FLEX)`.
+  Each pixel stores MuJoCo-style `(object_id, object_type)` data. Background
+  pixels are `(-1, -1)`. Regular geometry hits are `(geom_id, mjOBJ_GEOM)`.
+  Flex hits are `(flex_id, mjOBJ_FLEX)`.
 
   Args:
     rc: The render context on device.
-    camera_index: The index of the camera to get the semantic segmentation for.
-    seg_out: The output array to store semantic segmentation data in, with shape
+    camera_index: The index of the camera to get the segmentation data for.
+    seg_out: The output array to store segmentation data in, with shape
       `(nworld, height, width, 2)`.
   """
   wp.launch(
-    _extract_semantic_seg_kernel,
+    _extract_seg_kernel,
     dim=(seg_out.shape[0], seg_out.shape[1] * seg_out.shape[2]),
-    inputs=[rc.semantic_seg_data, rc.seg_adr, camera_index],
+    inputs=[rc.seg_data, rc.seg_adr, camera_index],
     outputs=[seg_out],
   )

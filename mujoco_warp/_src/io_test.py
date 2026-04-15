@@ -1973,9 +1973,12 @@ class IOTest(parameterized.TestCase):
     rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
     mjwarp.render(m, d, rc)
 
-    seg = rc.seg_data.numpy()
-    self.assertTrue(np.any(seg >= 0), "Expected geom hits from auto-detected seg")
-    self.assertGreater(np.unique(seg).shape[0], 1)
+    seg = wp.zeros((1, 32, 32, 2), dtype=int)
+    mjwarp.get_segmentation(rc, 0, seg)
+    seg = seg.numpy()
+    geom_mask = seg[..., 1] == int(mjwarp.ObjType.GEOM)
+    self.assertTrue(np.any(geom_mask), "Expected geom hits from auto-detected seg")
+    self.assertGreater(np.unique(seg[..., 0][geom_mask]).shape[0], 1)
 
   def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
