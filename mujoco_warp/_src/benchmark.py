@@ -92,6 +92,7 @@ def benchmark(
   event_trace: bool = False,
   measure_alloc: bool = False,
   measure_solver_niter: bool = False,
+  use_cuda_graph: bool = True,
   render_context: RenderContext | None = None,
 ) -> Tuple[float, float, dict, list, list, list, int]:
   """Benchmark a function of Model and Data.
@@ -105,6 +106,7 @@ def benchmark(
     event_trace: If True, time routines decorated with @event_scope.
     measure_alloc: If True, record number of contacts and constraints.
     measure_solver_niter: If True, record the number of solver iterations.
+    use_cuda_graph: If True, capture and replay fn as a CUDA graph.
     render_context: The render context to use for rendering.
 
   Returns:
@@ -121,20 +123,27 @@ def benchmark(
   center = wp.array([], dtype=wp.float32)
 
   with warp_util.EventTracer(enabled=event_trace) as tracer:
-    # capture the whole function as a CUDA graph
     jit_beg = time.perf_counter()
-
-    if render_context is not None:
-      with wp.ScopedCapture() as capture:
-        fn(m, d, render_context)
+    graph = None
+    if use_cuda_graph:
+      # Capture the whole function as a CUDA graph.
+      if render_context is not None:
+        with wp.ScopedCapture() as capture:
+          fn(m, d, render_context)
+      else:
+        with wp.ScopedCapture() as capture:
+          fn(m, d)
+      graph = capture.graph
     else:
-      with wp.ScopedCapture() as capture:
+      # Run one uncaptured warmup step to trigger JIT compilation.
+      if render_context is not None:
+        fn(m, d, render_context)
+      else:
         fn(m, d)
+      wp.synchronize()
 
     jit_end = time.perf_counter()
     jit_duration = jit_end - jit_beg
-
-    graph = capture.graph
 
     time_vec = np.zeros(nstep)
     for i in range(nstep):
@@ -150,7 +159,12 @@ def benchmark(
         wp.synchronize()
 
         run_beg = time.perf_counter()
-        wp.capture_launch(graph)
+        if use_cuda_graph:
+          wp.capture_launch(graph)
+        elif render_context is not None:
+          fn(m, d, render_context)
+        else:
+          fn(m, d)
         wp.synchronize()
         run_end = time.perf_counter()
 

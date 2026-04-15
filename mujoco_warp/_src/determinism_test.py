@@ -22,6 +22,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
+from mujoco_warp._src.benchmark import benchmark
 
 _NSTEPS = 10
 _CONTACT_FIELDS = (
@@ -328,6 +329,40 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
             err_msg=f"efc.{field} differs: run 0 vs run {run} ({path}, nworld={nworld}, {jacobian})",
           )
 
+  @parameterized.parameters(
+    ("humanoid/humanoid.xml", 16, "DENSE"),
+    ("collision.xml", 16, "SPARSE"),
+  )
+  def test_large_nworld_efc_deterministic(self, path, nworld, jacobian):
+    """Larger nworld cases stay bitwise stable in deterministic mode."""
+    nruns = 2
+    results = [_run_and_collect_efc(path, nworld, _NSTEPS, True, jacobian) for _ in range(nruns)]
+    self.assertGreater(results[0]["nefc"].sum(), 0)
+
+    np.testing.assert_array_equal(
+      results[0]["nefc"],
+      results[1]["nefc"],
+      err_msg=f"nefc differs ({path}, nworld={nworld}, {jacobian})",
+    )
+    for field in _EFC_ROW_FIELDS:
+      np.testing.assert_array_equal(
+        results[0][field],
+        results[1][field],
+        err_msg=f"efc.{field} differs ({path}, nworld={nworld}, {jacobian})",
+      )
+    np.testing.assert_array_equal(
+      results[0]["J"],
+      results[1]["J"],
+      err_msg=f"efc.J differs ({path}, nworld={nworld}, {jacobian})",
+    )
+    if results[0]["is_sparse"]:
+      for field in ("J_rownnz", "J_rowadr", "J_colind"):
+        np.testing.assert_array_equal(
+          results[0][field],
+          results[1][field],
+          err_msg=f"efc.{field} differs ({path}, nworld={nworld}, {jacobian})",
+        )
+
   def test_overflow_raises_in_deterministic_mode(self):
     """Artificially small njmax triggers RuntimeError in deterministic mode."""
     _, _, m, d = test_data.fixture(path="humanoid/humanoid.xml", nworld=1)
@@ -348,6 +383,50 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
     # preserved — we just need it to not crash.
     # Step once with normal njmax to confirm baseline.
     mjw.step(m, d)
+
+
+class DeterminismBenchmarkCollectionTest(absltest.TestCase):
+  """Tests for deterministic benchmark data collection."""
+
+  def test_benchmark_graph_capture_nondeterministic(self):
+    """The existing CUDA-graph benchmark path still works for det=False."""
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=1)
+    m.opt.deterministic = False
+
+    jit_duration, run_duration, _, nacon, nefc, _, nsuccess = benchmark(
+      mjw.step,
+      m,
+      d,
+      nstep=2,
+      measure_alloc=True,
+      use_cuda_graph=True,
+    )
+
+    self.assertGreater(jit_duration, 0.0)
+    self.assertGreater(run_duration, 0.0)
+    self.assertLen(nacon, 2)
+    self.assertLen(nefc, 2)
+    self.assertEqual(nsuccess, d.nworld)
+
+  def test_benchmark_deterministic_without_cuda_graph(self):
+    """Deterministic benchmark collection works with CUDA graphs disabled."""
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=1)
+    m.opt.deterministic = True
+
+    jit_duration, run_duration, _, nacon, nefc, _, nsuccess = benchmark(
+      mjw.step,
+      m,
+      d,
+      nstep=2,
+      measure_alloc=True,
+      use_cuda_graph=False,
+    )
+
+    self.assertGreater(jit_duration, 0.0)
+    self.assertGreater(run_duration, 0.0)
+    self.assertLen(nacon, 2)
+    self.assertLen(nefc, 2)
+    self.assertEqual(nsuccess, d.nworld)
 
 
 if __name__ == "__main__":
