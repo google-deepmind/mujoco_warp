@@ -763,15 +763,15 @@ def _compute_contact_sort_keys(
   # Model:
   ngeom: int,
   # Data in:
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_worldid_in: wp.array(dtype=int),
-  contact_geomcollisionid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  contact_geomcollisionid_in: wp.array[int],
+  nacon_in: wp.array[int],
   # In:
   gcid_max: int,
   # Out:
-  sort_keys_out: wp.array(dtype=int),
-  sort_indices_out: wp.array(dtype=int),
+  sort_keys_out: wp.array[int],
+  sort_indices_out: wp.array[int],
 ):
   """Compute composite sort keys for deterministic contact ordering."""
   cid = wp.tid()
@@ -788,26 +788,26 @@ def _compute_contact_sort_keys(
 @wp.kernel
 def _permute_contacts_geom(
   # Data in:
-  nacon_in: wp.array(dtype=int),
+  nacon_in: wp.array[int],
   # In:
-  perm_in: wp.array(dtype=int),
-  src_dist_in: wp.array(dtype=float),
-  src_pos_in: wp.array(dtype=wp.vec3),
-  src_frame_in: wp.array(dtype=wp.mat33),
-  src_includemargin_in: wp.array(dtype=float),
-  src_friction_in: wp.array(dtype=vec5),
-  src_solref_in: wp.array(dtype=wp.vec2),
-  src_solreffriction_in: wp.array(dtype=wp.vec2),
-  src_solimp_in: wp.array(dtype=vec5),
+  perm_in: wp.array[int],
+  src_dist_in: wp.array[float],
+  src_pos_in: wp.array[wp.vec3],
+  src_frame_in: wp.array[wp.mat33],
+  src_includemargin_in: wp.array[float],
+  src_friction_in: wp.array[vec5],
+  src_solref_in: wp.array[wp.vec2],
+  src_solreffriction_in: wp.array[wp.vec2],
+  src_solimp_in: wp.array[vec5],
   # Out:
-  dst_dist_out: wp.array(dtype=float),
-  dst_pos_out: wp.array(dtype=wp.vec3),
-  dst_frame_out: wp.array(dtype=wp.mat33),
-  dst_includemargin_out: wp.array(dtype=float),
-  dst_friction_out: wp.array(dtype=vec5),
-  dst_solref_out: wp.array(dtype=wp.vec2),
-  dst_solreffriction_out: wp.array(dtype=wp.vec2),
-  dst_solimp_out: wp.array(dtype=vec5),
+  dst_dist_out: wp.array[float],
+  dst_pos_out: wp.array[wp.vec3],
+  dst_frame_out: wp.array[wp.mat33],
+  dst_includemargin_out: wp.array[float],
+  dst_friction_out: wp.array[vec5],
+  dst_solref_out: wp.array[wp.vec2],
+  dst_solreffriction_out: wp.array[wp.vec2],
+  dst_solimp_out: wp.array[vec5],
 ):
   """Permute geometry/physics contact fields using sorted indices."""
   cid = wp.tid()
@@ -827,24 +827,24 @@ def _permute_contacts_geom(
 @wp.kernel
 def _permute_contacts_ids(
   # Data in:
-  nacon_in: wp.array(dtype=int),
+  nacon_in: wp.array[int],
   # In:
-  perm_in: wp.array(dtype=int),
-  src_dim_in: wp.array(dtype=int),
-  src_geom_in: wp.array(dtype=wp.vec2i),
-  src_flex_in: wp.array(dtype=wp.vec2i),
-  src_vert_in: wp.array(dtype=wp.vec2i),
-  src_worldid_in: wp.array(dtype=int),
-  src_type_in: wp.array(dtype=int),
-  src_gcid_in: wp.array(dtype=int),
+  perm_in: wp.array[int],
+  src_dim_in: wp.array[int],
+  src_geom_in: wp.array[wp.vec2i],
+  src_flex_in: wp.array[wp.vec2i],
+  src_vert_in: wp.array[wp.vec2i],
+  src_worldid_in: wp.array[int],
+  src_type_in: wp.array[int],
+  src_gcid_in: wp.array[int],
   # Out:
-  dst_dim_out: wp.array(dtype=int),
-  dst_geom_out: wp.array(dtype=wp.vec2i),
-  dst_flex_out: wp.array(dtype=wp.vec2i),
-  dst_vert_out: wp.array(dtype=wp.vec2i),
-  dst_worldid_out: wp.array(dtype=int),
-  dst_type_out: wp.array(dtype=int),
-  dst_gcid_out: wp.array(dtype=int),
+  dst_dim_out: wp.array[int],
+  dst_geom_out: wp.array[wp.vec2i],
+  dst_flex_out: wp.array[wp.vec2i],
+  dst_vert_out: wp.array[wp.vec2i],
+  dst_worldid_out: wp.array[int],
+  dst_type_out: wp.array[int],
+  dst_gcid_out: wp.array[int],
 ):
   """Permute integer/ID contact fields using sorted indices."""
   cid = wp.tid()
@@ -863,12 +863,12 @@ def _permute_contacts_ids(
 @wp.kernel
 def _permute_contacts_efc(
   # Data in:
-  nacon_in: wp.array(dtype=int),
+  nacon_in: wp.array[int],
   # In:
-  perm_in: wp.array(dtype=int),
-  src_efc_in: wp.array2d(dtype=int),
+  perm_in: wp.array[int],
+  src_efc_in: wp.array2d[int],
   # Out:
-  dst_efc_out: wp.array2d(dtype=int),
+  dst_efc_out: wp.array2d[int],
 ):
   """Permute 2D efc_address contact field using sorted indices."""
   cid = wp.tid()
