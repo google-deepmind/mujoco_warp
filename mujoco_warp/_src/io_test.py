@@ -1973,7 +1973,8 @@ class IOTest(parameterized.TestCase):
     rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
     mjwarp.render(m, d, rc)
 
-    seg = wp.zeros((1, 32, 32, 2), dtype=int)
+    cam_w, cam_h = map(int, rc.cam_res.numpy()[0])
+    seg = wp.zeros((1, cam_h, cam_w, 2), dtype=int)
     mjwarp.get_segmentation(rc, 0, seg)
     seg = seg.numpy()
     geom_mask = seg[..., 1] == int(mjwarp.ObjType.GEOM)
@@ -2026,10 +2027,13 @@ class IOTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
 
     self.assertFalse(mujoco.mj_isSparse(mjm))
-    if mjd.nefc != 0:
-      self.skipTest(
-        "Current MuJoCo reports active constraints for this model, so the dense zero-nefc efc_J edge case is not reproducible."
-      )
+    self.assertGreater(mjd.efc_J.size, 0)
+
+    # Force the dense `nefc == 0` edge case directly. Recent MuJoCo versions
+    # report one active constraint for this setup, but `put_data` still needs
+    # to handle an empty active set with preallocated `efc_J` storage.
+    mjd.nefc = 0
+    self.assertEqual(mjd.nefc, 0)
 
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
