@@ -740,6 +740,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    use_islands: flag to use constraint islands for parallel solving
   """
 
   timestep: array("*", float)
@@ -770,6 +771,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  use_islands: bool
 
 
 @dataclasses.dataclass
@@ -1678,6 +1680,7 @@ class Constraint:
     frictionloss: frictionloss (friction)             (nworld, njmax)
     force: constraint force in constraint space       (nworld, njmax)
     state: constraint state                           (nworld, njmax_pad)
+    island: island ID per constraint                  (nworld, njmax)
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
   """
@@ -1696,6 +1699,7 @@ class Constraint:
   frictionloss: array("nworld", "njmax", float)
   force: array("nworld", "njmax", float)
   state: array("nworld", "njmax_pad", int)
+  island: array("nworld", "njmax", int)
   Ma: array("nworld", "nv", float)
 
 
@@ -1790,6 +1794,8 @@ class Data:
     contact: contact data
     efc: constraint data
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
+    dof_island: island ID per DOF (-1 if unconstrained)         (nworld, nv)
+    island_dofadr: island start address in dof vector           (nworld, ntree)
 
   warp only fields:
     nworld: number of worlds
@@ -1884,6 +1890,8 @@ class Data:
   contact: Contact
   efc: Constraint
   tree_island: array("nworld", "ntree", int)
+  dof_island: array("nworld", "nv", int)
+  island_dofadr: array("nworld", "ntree", int)
 
   # warp only fields:
   nworld: int

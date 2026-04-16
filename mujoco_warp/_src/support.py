@@ -169,6 +169,265 @@ def mul_m(
 
 
 @wp.kernel
+def _mul_m_island_sparse(
+  # Model:
+  qM_mulm_rowadr: wp.array[int],
+  qM_mulm_col: wp.array[int],
+  qM_mulm_madr: wp.array[int],
+  # Data in:
+  qM_in: wp.array3d[float],
+  # In:
+  nidof_in: wp.array[int],
+  map_idof2dof_in: wp.array2d[int],
+  map_dof2idof_in: wp.array2d[int],
+  idof_islandid_in: wp.array2d[int],
+  # In:
+  vec: wp.array2d[float],
+  island_done_in: wp.array2d[bool],
+  check_skip: int,
+  # Out:
+  res: wp.array2d[float],
+):
+  """Sparse island mul_m for ALL islands in parallel."""
+  worldid, idofid = wp.tid()
+
+  nidof = nidof_in[worldid]
+  if idofid >= nidof:
+    return
+
+  islandid = idof_islandid_in[worldid, idofid]
+  if islandid < 0:
+    return
+
+  if check_skip:
+    if island_done_in[worldid, islandid]:
+      return
+
+  dof = map_idof2dof_in[worldid, idofid]
+
+  acc = float(0.0)
+  start = qM_mulm_rowadr[dof]
+  end = qM_mulm_rowadr[dof + 1]
+  for k in range(start, end):
+    col = qM_mulm_col[k]
+    madr = qM_mulm_madr[k]
+    col_idof = map_dof2idof_in[worldid, col]
+    # skip unconstrained DOFs
+    if col_idof < nidof:
+      acc += qM_in[worldid, 0, madr] * vec[worldid, col_idof]
+
+  res[worldid, idofid] = acc
+
+
+@wp.kernel
+def _mul_m_island_dense(
+  # Model:
+  nv: int,
+  # Data in:
+  qM_in: wp.array3d[float],
+  # In:
+  nidof_in: wp.array[int],
+  map_idof2dof_in: wp.array2d[int],
+  map_dof2idof_in: wp.array2d[int],
+  idof_islandid_in: wp.array2d[int],
+  vec: wp.array2d[float],
+  island_done_in: wp.array2d[bool],
+  check_skip: int,
+  # Out:
+  res: wp.array2d[float],
+):
+  """Dense island mul_m for ALL islands in parallel."""
+  worldid, idofid = wp.tid()
+
+  nidof = nidof_in[worldid]
+  if idofid >= nidof:
+    return
+
+  islandid = idof_islandid_in[worldid, idofid]
+  if islandid < 0:
+    return
+
+  if check_skip:
+    if island_done_in[worldid, islandid]:
+      return
+
+  dof = map_idof2dof_in[worldid, idofid]
+
+  acc = float(0.0)
+  for j in range(nv):
+    col_idof = map_dof2idof_in[worldid, j]
+    # skip unconstrained DOFs
+    if col_idof < nidof:
+      acc += qM_in[worldid, dof, j] * vec[worldid, col_idof]
+
+  res[worldid, idofid] = acc
+
+
+@event_scope
+def mul_m_island(
+  m: Model,
+  d: Data,
+  res: wp.array2d[float],
+  vec: wp.array2d[float],
+  nidof: wp.array[int],
+  map_idof2dof: wp.array2d[int],
+  map_dof2idof: wp.array2d[int],
+  idof_islandid: wp.array2d[int],
+  island_done: Optional[wp.array] = None,
+  M: Optional[wp.array] = None,
+):
+  """Multiply island-local vectors by inertia matrix for all islands in parallel.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    res: Result: qM @ vec (island-local DOF order).
+    vec: Input vector (island-local DOF order).
+    nidof: Number of island DOFs per world.
+    map_idof2dof: Island-local DOF → global DOF map.
+    map_dof2idof: Global DOF → island-local DOF map.
+    idof_islandid: Island ID per island-local DOF.
+    island_done: Per-island done flags (nworld, ntree).
+    M: Optional mass matrix override.
+  """
+  check_skip = int(island_done is not None)
+  island_done = island_done or wp.empty((0, 0), dtype=bool)
+
+  if M is None:
+    M = d.qM
+
+  if m.is_sparse:
+    wp.launch(
+      _mul_m_island_sparse,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.qM_mulm_rowadr,
+        m.qM_mulm_col,
+        m.qM_mulm_madr,
+        M,
+        nidof,
+        map_idof2dof,
+        map_dof2idof,
+        idof_islandid,
+        vec,
+        island_done,
+        check_skip,
+      ],
+      outputs=[res],
+    )
+  else:
+    wp.launch(
+      _mul_m_island_dense,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.nv,
+        M,
+        nidof,
+        map_idof2dof,
+        map_dof2idof,
+        idof_islandid,
+        vec,
+        island_done,
+        check_skip,
+      ],
+      outputs=[res],
+    )
+
+
+@wp.kernel
+def _scatter_island_to_global(
+  # In:
+  nidof_in: wp.array[int],
+  map_idof2dof_in: wp.array2d[int],
+  island_vec_in: wp.array2d[float],
+  # Out:
+  global_vec_out: wp.array2d[float],
+):
+  """Scatter island-local DOF array to global DOF order."""
+  worldid, idofid = wp.tid()
+
+  if idofid >= nidof_in[worldid]:
+    return
+
+  dof = map_idof2dof_in[worldid, idofid]
+  global_vec_out[worldid, dof] = island_vec_in[worldid, idofid]
+
+
+@wp.kernel
+def _gather_global_to_island(
+  # In:
+  nidof_in: wp.array[int],
+  map_idof2dof_in: wp.array2d[int],
+  global_vec_in: wp.array2d[float],
+  # Out:
+  island_vec_out: wp.array2d[float],
+):
+  """Gather global DOF array to island-local DOF order."""
+  worldid, idofid = wp.tid()
+
+  if idofid >= nidof_in[worldid]:
+    return
+
+  dof = map_idof2dof_in[worldid, idofid]
+  island_vec_out[worldid, idofid] = global_vec_in[worldid, dof]
+
+
+@event_scope
+def solve_m_island(
+  m: Model,
+  d: Data,
+  res: wp.array2d[float],
+  vec: wp.array2d[float],
+  nidof: wp.array[int],
+  map_idof2dof: wp.array2d[int],
+  scratch_in: Optional[wp.array] = None,
+  scratch_out: Optional[wp.array] = None,
+):
+  """Compute res = M^{-1} @ vec for island-local DOFs via scatter-solve-gather.
+
+  Args:
+    m: Model.
+    d: Data.
+    res: Output in island-local DOF order.
+    vec: Input in island-local DOF order.
+    nidof: Number of island DOFs per world.
+    map_idof2dof: Island-local DOF → global DOF map.
+    scratch_in: Optional pre-allocated scratch buffer (nworld, nv).
+    scratch_out: Optional pre-allocated scratch buffer (nworld, nv).
+  """
+  from mujoco_warp._src import smooth
+
+  # Scratch arrays in global DOF order (use pre-allocated if available)
+  if scratch_in is None:
+    scratch_in = wp.zeros((d.nworld, m.nv), dtype=float)
+  else:
+    scratch_in.zero_()
+  if scratch_out is None:
+    scratch_out = wp.zeros((d.nworld, m.nv), dtype=float)
+  else:
+    scratch_out.zero_()
+
+  # Scatter island-local → global
+  wp.launch(
+    _scatter_island_to_global,
+    dim=(d.nworld, m.nv),
+    inputs=[nidof, map_idof2dof, vec],
+    outputs=[scratch_in],
+  )
+
+  # Solve M^{-1} in global order
+  smooth.solve_m(m, d, scratch_out, scratch_in)
+
+  # Gather global → island-local
+  wp.launch(
+    _gather_global_to_island,
+    dim=(d.nworld, m.nv),
+    inputs=[nidof, map_idof2dof, scratch_out],
+    outputs=[res],
+  )
+
+
+@wp.kernel
 def _apply_ft(
   # Model:
   nbody: int,
