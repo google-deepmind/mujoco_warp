@@ -252,6 +252,7 @@ def _gravity_force(
   body_mass: wp.array2d[float],
   body_gravcomp: wp.array2d[float],
   dof_bodyid: wp.array[int],
+  dof_affects_body: wp.array2d[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -267,7 +268,7 @@ def _gravity_force(
   if gravcomp:
     force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
     pos = xipos_in[worldid, bodyid]
-    jac, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
+    jac, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
 
     wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
 
@@ -840,6 +841,7 @@ def passive(m: Model, d: Data):
         m.body_mass,
         m.body_gravcomp,
         m.dof_bodyid,
+        m.dof_affects_body,
         d.xipos,
         d.subtree_com,
         d.cdof,
