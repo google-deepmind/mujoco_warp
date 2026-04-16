@@ -2787,7 +2787,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 
 @cache_kernel
 def update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size: int):
-  """Like update_gradient_cholesky_blocked but skips factorization per-world when no constraints changed."""
+  """Blocked Cholesky that skips factorization when no constraints changed."""
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
