@@ -741,7 +741,8 @@ class Option:
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     deterministic: enable deterministic contact ordering after narrowphase
-                   TODO update this description as more parts of the simulation pipeline gain optional deterministic results
+                   TODO update this description as more parts of the
+                   simulation pipeline gain optional deterministic results
   """
 
   timestep: array("*", float)

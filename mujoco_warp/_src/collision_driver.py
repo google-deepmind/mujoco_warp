@@ -752,10 +752,10 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     flex_narrowphase(m, d)
 
 
-# Maximum geomcollisionid packed into sort key. Geom pairs generating more
-# contacts than this still sort correctly by (world, geom0, geom1); only the
-# sub-ordering among those excess contacts is left to the stable-sort tie-break.
-_CONTACT_SORT_GCID_MAX = 16
+# Maximum geomcollisionid packed into sort key. Primitive box<>box generates at
+# most 8 contacts, so larger geomcollisionid values need not contribute to the
+# deterministic ordering key.
+_CONTACT_SORT_GCID_MAX = 8
 
 
 @wp.kernel
