@@ -268,7 +268,9 @@ def _gravity_force(
   if gravcomp:
     force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
     pos = xipos_in[worldid, bodyid]
-    jac, _ = support.jac_dof(body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid)
+    jac, _ = support.jac_dof(
+      body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid
+    )
 
     wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
 

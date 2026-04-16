@@ -462,7 +462,16 @@ def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
     worldid, dofid = wp.tid()
 
     jacp_val, jacr_val = jac_dof(
-      body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, point_in[worldid], bodyid_in[worldid], dofid, worldid
+      body_parentid,
+      body_rootid,
+      dof_bodyid,
+      dof_affects_body,
+      subtree_com_in,
+      cdof_in,
+      point_in[worldid],
+      bodyid_in[worldid],
+      dofid,
+      worldid,
     )
 
     if wp.static(has_jacp):

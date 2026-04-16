@@ -1683,34 +1683,34 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_weldid: wp.array(dtype=int),
-    body_dofnum: wp.array(dtype=int),
-    body_dofadr: wp.array(dtype=int),
-    dof_parentid: wp.array(dtype=int),
-    geom_bodyid: wp.array(dtype=int),
-    flex_vertadr: wp.array(dtype=int),
-    flex_vertbodyid: wp.array(dtype=int),
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    dof_parentid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
     # Data in:
     njmax_in: int,
     njmax_nnz_in: int,
-    nacon_in: wp.array(dtype=int),
+    nacon_in: wp.array[int],
     # In:
-    dist_in: wp.array(dtype=float),
-    condim_in: wp.array(dtype=int),
-    includemargin_in: wp.array(dtype=float),
-    worldid_in: wp.array(dtype=int),
-    geom_in: wp.array(dtype=wp.vec2i),
-    flex_in: wp.array(dtype=wp.vec2i),
-    vert_in: wp.array(dtype=wp.vec2i),
-    type_in: wp.array(dtype=int),
+    dist_in: wp.array[float],
+    condim_in: wp.array[int],
+    includemargin_in: wp.array[float],
+    worldid_in: wp.array[int],
+    geom_in: wp.array[wp.vec2i],
+    flex_in: wp.array[wp.vec2i],
+    vert_in: wp.array[wp.vec2i],
+    type_in: wp.array[int],
     # Data out:
-    nefc_out: wp.array(dtype=int),
-    contact_efc_address_out: wp.array2d(dtype=int),
-    efc_J_rownnz_out: wp.array2d(dtype=int),
-    efc_J_rowadr_out: wp.array2d(dtype=int),
-    efc_id_out: wp.array2d(dtype=int),
+    nefc_out: wp.array[int],
+    contact_efc_address_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_J_rownnz_out: wp.array2d[int],
+    efc_J_rowadr_out: wp.array2d[int],
     # Out:
-    efc_nnz_out: wp.array(dtype=int),
+    efc_nnz_out: wp.array[int],
   ):
     conid = wp.tid()
 
@@ -1791,7 +1791,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
       if rowadr + rownnz * ndim > njmax_nnz_in:
         return
       for dim in range(ndim):
-        efcid = base_efcid + dim  
+        efcid = base_efcid + dim
         if efcid < njmax_in:
           efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
           efc_J_rownnz_out[worldid, efcid] = rownnz
@@ -1812,15 +1812,18 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
     dof_bodyid: wp.array[int],
-    dof_affects_body: wp.array2d[int],
     dof_parentid: wp.array[int],
     geom_bodyid: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
+    dof_affects_body: wp.array2d[int],
     # Data in:
     qvel_in: wp.array2d[float],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
+    contact_efc_address_in: wp.array2d[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
     condim_in: wp.array[int],
@@ -1831,9 +1834,6 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
     frame_in: wp.array2d[wp.vec3],
     friction_in: wp.array2d[float],
     worldid_in: wp.array[int],
-    contact_efc_address_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
-    efc_J_rownnz_in: wp.array2d[int],
     # Data out:
     efc_J_colind_out: wp.array3d[int],
     efc_J_out: wp.array3d[float],
@@ -1895,12 +1895,28 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
 
       if dofid == da:
         jac1p, jac1r = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, dof_affects_body,
-          subtree_com_in, cdof_in, con_pos, body1, dofid, worldid,
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          dof_affects_body,
+          subtree_com_in,
+          cdof_in,
+          con_pos,
+          body1,
+          dofid,
+          worldid,
         )
         jac2p, jac2r = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, dof_affects_body,
-          subtree_com_in, cdof_in, con_pos, body2, dofid, worldid,
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          dof_affects_body,
+          subtree_com_in,
+          cdof_in,
+          con_pos,
+          body2,
+          dofid,
+          worldid,
         )
 
         jacp_dif = jac2p - jac1p
@@ -1951,8 +1967,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
 
     efc_Jqvel_out[worldid, efcid] = Jqvel
 
-
   return kernel
+
 
 @cache_kernel
 def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
@@ -1962,34 +1978,34 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_rootid: wp.array(dtype=int),
-    geom_bodyid: wp.array(dtype=int),
-    dof_affects_body: wp.array2d(dtype=int),
+    body_rootid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    dof_affects_body: wp.array2d[int],
     # Data in:
-    ne_in: wp.array(dtype=int),
-    nf_in: wp.array(dtype=int),
-    nl_in: wp.array(dtype=int),
-    nefc_in: wp.array(dtype=int),
-    qvel_in: wp.array2d(dtype=float),
-    subtree_com_in: wp.array2d(dtype=wp.vec3),
-    cdof_in: wp.array2d(dtype=wp.spatial_vector),
-    efc_id_in: wp.array2d(dtype=int),
-    contact_efc_address_in: wp.array2d(dtype=int),
+    ne_in: wp.array[int],
+    nf_in: wp.array[int],
+    nl_in: wp.array[int],
+    nefc_in: wp.array[int],
+    qvel_in: wp.array2d[float],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    contact_efc_address_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
     njmax_in: int,
     # In:
     nv_padded: int,
-    condim_in: wp.array(dtype=int),
-    geom_in: wp.array(dtype=wp.vec2i),
-    flex_in: wp.array(dtype=wp.vec2i),
-    vert_in: wp.array(dtype=wp.vec2i),
-    flex_vertadr: wp.array(dtype=int),
-    flex_vertbodyid: wp.array(dtype=int),
-    pos_in: wp.array(dtype=wp.vec3),
-    frame_in: wp.array2d(dtype=wp.vec3),
-    friction_in: wp.array2d(dtype=float),
+    condim_in: wp.array[int],
+    geom_in: wp.array[wp.vec2i],
+    flex_in: wp.array[wp.vec2i],
+    vert_in: wp.array[wp.vec2i],
+    pos_in: wp.array[wp.vec3],
+    frame_in: wp.array2d[wp.vec3],
+    friction_in: wp.array2d[float],
     # Data out:
-    efc_J_out: wp.array3d(dtype=float),
-    efc_Jqvel_out: wp.array2d(dtype=float),
+    efc_J_out: wp.array3d[float],
+    efc_Jqvel_out: wp.array2d[float],
   ):
     worldid, dof_block_id, tid = wp.tid()
 
@@ -2106,39 +2122,39 @@ def _efc_contact_update(cone_type: types.ConeType):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    opt_timestep: wp.array(dtype=float),
+    opt_timestep: wp.array[float],
     opt_disableflags: int,
-    opt_impratio_invsqrt: wp.array(dtype=float),
-    body_invweight0: wp.array2d(dtype=wp.vec2),
-    geom_bodyid: wp.array(dtype=int),
-    flex_vertadr: wp.array(dtype=int),
-    flex_vertbodyid: wp.array(dtype=int),
+    opt_impratio_invsqrt: wp.array[float],
+    body_invweight0: wp.array2d[wp.vec2],
+    geom_bodyid: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
     # Data in:
-    nacon_in: wp.array(dtype=int),
+    contact_efc_address_in: wp.array2d[int],
+    efc_Jqvel_in: wp.array2d[float],
+    nacon_in: wp.array[int],
     # In:
-    dist_in: wp.array(dtype=float),
-    condim_in: wp.array(dtype=int),
-    includemargin_in: wp.array(dtype=float),
-    worldid_in: wp.array(dtype=int),
-    geom_in: wp.array(dtype=wp.vec2i),
-    flex_in: wp.array(dtype=wp.vec2i),
-    vert_in: wp.array(dtype=wp.vec2i),
-    friction_in: wp.array(dtype=vec5),
-    solref_in: wp.array(dtype=wp.vec2),
-    solreffriction_in: wp.array(dtype=wp.vec2),
-    solimp_in: wp.array(dtype=vec5),
-    type_in: wp.array(dtype=int),
-    contact_efc_address_in: wp.array2d(dtype=int),
-    efc_Jqvel_in: wp.array2d(dtype=float),
+    dist_in: wp.array[float],
+    condim_in: wp.array[int],
+    includemargin_in: wp.array[float],
+    worldid_in: wp.array[int],
+    geom_in: wp.array[wp.vec2i],
+    flex_in: wp.array[wp.vec2i],
+    vert_in: wp.array[wp.vec2i],
+    friction_in: wp.array[vec5],
+    solref_in: wp.array[wp.vec2],
+    solreffriction_in: wp.array[wp.vec2],
+    solimp_in: wp.array[vec5],
+    type_in: wp.array[int],
     # Data out:
-    efc_type_out: wp.array2d(dtype=int),
-    efc_id_out: wp.array2d(dtype=int),
-    efc_pos_out: wp.array2d(dtype=float),
-    efc_margin_out: wp.array2d(dtype=float),
-    efc_D_out: wp.array2d(dtype=float),
-    efc_vel_out: wp.array2d(dtype=float),
-    efc_aref_out: wp.array2d(dtype=float),
-    efc_frictionloss_out: wp.array2d(dtype=float),
+    efc_type_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
   ):
     conid, dimid = wp.tid()
 
@@ -2711,12 +2727,18 @@ def make_constraint(m: types.Model, d: types.Data):
 
       # Reinterpret to avoid unnecessary loads
       contact_frame_2d = wp.array(
-        ptr=d.contact.frame.ptr, dtype=wp.vec3, shape=(d.naconmax, 3),
-        device=d.contact.frame.device, copy=False,
+        ptr=d.contact.frame.ptr,
+        dtype=wp.vec3,
+        shape=(d.naconmax, 3),
+        device=d.contact.frame.device,
+        copy=False,
       )
       contact_friction_2d = wp.array(
-        ptr=d.contact.friction.ptr, dtype=float, shape=(d.naconmax, 5),
-        device=d.contact.friction.device, copy=False,
+        ptr=d.contact.friction.ptr,
+        dtype=float,
+        shape=(d.naconmax, 5),
+        device=d.contact.friction.device,
+        copy=False,
       )
 
       wp.launch(
@@ -2745,9 +2767,9 @@ def make_constraint(m: types.Model, d: types.Data):
         outputs=[
           d.nefc,
           d.contact.efc_address,
+          d.efc.id,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
-          d.efc.id,
           efc_nnz,
         ],
       )
@@ -2763,14 +2785,17 @@ def make_constraint(m: types.Model, d: types.Data):
             m.body_dofnum,
             m.body_dofadr,
             m.dof_bodyid,
-            m.dof_affects_body,
             m.dof_parentid,
             m.geom_bodyid,
             m.flex_vertadr,
             m.flex_vertbodyid,
+            m.dof_affects_body,
             d.qvel,
             d.subtree_com,
             d.cdof,
+            d.contact.efc_address,
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
             d.nacon,
             d.contact.dim,
             d.contact.geom,
@@ -2780,9 +2805,6 @@ def make_constraint(m: types.Model, d: types.Data):
             contact_frame_2d,
             contact_friction_2d,
             d.contact.worldid,
-            d.contact.efc_address,
-            d.efc.J_rowadr,
-            d.efc.J_rownnz,
           ],
           outputs=[
             d.efc.J_colind,
@@ -2801,6 +2823,8 @@ def make_constraint(m: types.Model, d: types.Data):
           inputs=[
             m.body_rootid,
             m.geom_bodyid,
+            m.flex_vertadr,
+            m.flex_vertbodyid,
             m.dof_affects_body,
             d.ne,
             d.nf,
@@ -2809,16 +2833,14 @@ def make_constraint(m: types.Model, d: types.Data):
             d.qvel,
             d.subtree_com,
             d.cdof,
-            d.efc.id,
             d.contact.efc_address,
+            d.efc.id,
             d.njmax,
             m.nv_pad,
             d.contact.dim,
             d.contact.geom,
             d.contact.flex,
             d.contact.vert,
-            m.flex_vertadr,
-            m.flex_vertbodyid,
             d.contact.pos,
             contact_frame_2d,
             contact_friction_2d,
@@ -2841,6 +2863,8 @@ def make_constraint(m: types.Model, d: types.Data):
           m.geom_bodyid,
           m.flex_vertadr,
           m.flex_vertbodyid,
+          d.contact.efc_address,
+          d.efc.Jqvel,
           d.nacon,
           d.contact.dist,
           d.contact.dim,
@@ -2854,8 +2878,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.contact.solreffriction,
           d.contact.solimp,
           d.contact.type,
-          d.contact.efc_address,
-          d.efc.Jqvel,
         ],
         outputs=[
           d.efc.type,

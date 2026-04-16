@@ -2220,12 +2220,30 @@ def _transmission(
 
       # get Jacobians of axis(jacA) and vec(jac)
       jacp, jacr = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, site_xpos_idslider, site_bodyid[idslider], da, worldid
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        dof_affects_body,
+        subtree_com_in,
+        cdof_in,
+        site_xpos_idslider,
+        site_bodyid[idslider],
+        da,
+        worldid,
       )
       jacS = jacp
       jacA = wp.cross(jacr, axis)
       jac, _ = support.jac_dof(
-        body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, site_xpos_id, site_bodyid[id], da, worldid
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        dof_affects_body,
+        subtree_com_in,
+        cdof_in,
+        site_xpos_id,
+        site_bodyid[id],
+        da,
+        worldid,
       )
       jac -= jacS
 
@@ -2421,10 +2439,28 @@ def _transmission(
           break
 
         jacp, jacr = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, site_xpos, site_bodyid[siteid], da, worldid
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          dof_affects_body,
+          subtree_com_in,
+          cdof_in,
+          site_xpos,
+          site_bodyid[siteid],
+          da,
+          worldid,
         )
         jacpref, jacrref = support.jac_dof(
-          body_parentid, body_rootid, dof_bodyid, dof_affects_body, subtree_com_in, cdof_in, ref_xpos, site_bodyid[refid], da, worldid
+          body_parentid,
+          body_rootid,
+          dof_bodyid,
+          dof_affects_body,
+          subtree_com_in,
+          cdof_in,
+          ref_xpos,
+          site_bodyid[refid],
+          da,
+          worldid,
         )
 
         moment = float(0.0)
