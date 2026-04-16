@@ -42,7 +42,6 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 # TODO(team): improve compile time to enable backward pass
@@ -154,7 +153,6 @@ def _hfield_filter(
     return False, xmin, xmax, ymin, ymax, zmin, zmax
 
 
-@cache_kernel
 def ccd_hfield_kernel_builder(
   geomtype1: int,
   geomtype2: int,
@@ -697,7 +695,6 @@ def ccd_hfield_kernel_builder(
   return ccd_hfield_kernel
 
 
-@cache_kernel
 def ccd_kernel_builder(
   geomtype1: int,
   geomtype2: int,
