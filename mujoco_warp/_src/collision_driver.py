@@ -786,7 +786,7 @@ def _compute_contact_sort_keys(
 
 
 @wp.kernel
-def _permute_contacts_geom(
+def _permute_contacts(
   # Data in:
   nacon_in: wp.array[int],
   # In:
@@ -799,6 +799,14 @@ def _permute_contacts_geom(
   src_solref_in: wp.array[wp.vec2],
   src_solreffriction_in: wp.array[wp.vec2],
   src_solimp_in: wp.array[vec5],
+  src_dim_in: wp.array[int],
+  src_geom_in: wp.array[wp.vec2i],
+  src_flex_in: wp.array[wp.vec2i],
+  src_vert_in: wp.array[wp.vec2i],
+  src_worldid_in: wp.array[int],
+  src_type_in: wp.array[int],
+  src_gcid_in: wp.array[int],
+  src_efc_in: wp.array2d[int],
   # Out:
   dst_dist_out: wp.array[float],
   dst_pos_out: wp.array[wp.vec3],
@@ -808,8 +816,16 @@ def _permute_contacts_geom(
   dst_solref_out: wp.array[wp.vec2],
   dst_solreffriction_out: wp.array[wp.vec2],
   dst_solimp_out: wp.array[vec5],
+  dst_dim_out: wp.array[int],
+  dst_geom_out: wp.array[wp.vec2i],
+  dst_flex_out: wp.array[wp.vec2i],
+  dst_vert_out: wp.array[wp.vec2i],
+  dst_worldid_out: wp.array[int],
+  dst_type_out: wp.array[int],
+  dst_gcid_out: wp.array[int],
+  dst_efc_out: wp.array2d[int],
 ):
-  """Permute geometry/physics contact fields using sorted indices."""
+  """Permute contact fields using sorted indices."""
   cid = wp.tid()
   if cid >= nacon_in[0]:
     return
@@ -822,35 +838,6 @@ def _permute_contacts_geom(
   dst_solref_out[cid] = src_solref_in[src]
   dst_solreffriction_out[cid] = src_solreffriction_in[src]
   dst_solimp_out[cid] = src_solimp_in[src]
-
-
-@wp.kernel
-def _permute_contacts_ids(
-  # Data in:
-  nacon_in: wp.array[int],
-  # In:
-  perm_in: wp.array[int],
-  src_dim_in: wp.array[int],
-  src_geom_in: wp.array[wp.vec2i],
-  src_flex_in: wp.array[wp.vec2i],
-  src_vert_in: wp.array[wp.vec2i],
-  src_worldid_in: wp.array[int],
-  src_type_in: wp.array[int],
-  src_gcid_in: wp.array[int],
-  # Out:
-  dst_dim_out: wp.array[int],
-  dst_geom_out: wp.array[wp.vec2i],
-  dst_flex_out: wp.array[wp.vec2i],
-  dst_vert_out: wp.array[wp.vec2i],
-  dst_worldid_out: wp.array[int],
-  dst_type_out: wp.array[int],
-  dst_gcid_out: wp.array[int],
-):
-  """Permute integer/ID contact fields using sorted indices."""
-  cid = wp.tid()
-  if cid >= nacon_in[0]:
-    return
-  src = perm_in[cid]
   dst_dim_out[cid] = src_dim_in[src]
   dst_geom_out[cid] = src_geom_in[src]
   dst_flex_out[cid] = src_flex_in[src]
@@ -858,31 +845,13 @@ def _permute_contacts_ids(
   dst_worldid_out[cid] = src_worldid_in[src]
   dst_type_out[cid] = src_type_in[src]
   dst_gcid_out[cid] = src_gcid_in[src]
-
-
-@wp.kernel
-def _permute_contacts_efc(
-  # Data in:
-  nacon_in: wp.array[int],
-  # In:
-  perm_in: wp.array[int],
-  src_efc_in: wp.array2d[int],
-  # Out:
-  dst_efc_out: wp.array2d[int],
-):
-  """Permute 2D efc_address contact field using sorted indices."""
-  cid = wp.tid()
-  if cid >= nacon_in[0]:
-    return
-  src = perm_in[cid]
   for j in range(src_efc_in.shape[1]):
     dst_efc_out[cid, j] = src_efc_in[src, j]
 
 
 def _sort_contacts(m: Model, d: Data):
   """Sort contacts by (worldid, geom0, geom1, geomcollisionid) for determinism."""
-  naconmax = d.naconmax
-  if naconmax == 0:
+  if d.naconmax == 0:
     return
 
   # Check for sort-key overflow. Fall back to no-gcid key if needed.
@@ -891,13 +860,13 @@ def _sort_contacts(m: Model, d: Data):
     gcid_max = 1
 
   # Allocate sort buffers (radix_sort_pairs needs 2x capacity for internal use).
-  sort_keys = wp.empty(2 * naconmax, dtype=int)
-  sort_indices = wp.empty(2 * naconmax, dtype=int)
+  sort_keys = wp.empty(2 * d.naconmax, dtype=int)
+  sort_indices = wp.empty(2 * d.naconmax, dtype=int)
 
   # Step 1: Compute sort keys and initialise indices to identity.
   wp.launch(
     _compute_contact_sort_keys,
-    dim=naconmax,
+    dim=d.naconmax,
     inputs=[
       m.ngeom,
       d.contact.geom,
@@ -910,8 +879,9 @@ def _sort_contacts(m: Model, d: Data):
   )
 
   # Step 2: Stable radix sort on keys, carrying indices.
-  wp.utils.radix_sort_pairs(sort_keys, sort_indices, naconmax)
+  wp.utils.radix_sort_pairs(sort_keys, sort_indices, d.naconmax)
 
+  # TODO(team): investigate a single kernel that copies all contact fields to scratch.
   # Step 3: Copy contact fields to temporary buffers.
   tmp_dist = wp.empty_like(d.contact.dist)
   tmp_pos = wp.empty_like(d.contact.pos)
@@ -949,8 +919,8 @@ def _sort_contacts(m: Model, d: Data):
 
   # Step 4: Gather-permute from temp buffers back into contact arrays.
   wp.launch(
-    _permute_contacts_geom,
-    dim=naconmax,
+    _permute_contacts,
+    dim=d.naconmax,
     inputs=[
       d.nacon,
       sort_indices,
@@ -962,6 +932,14 @@ def _sort_contacts(m: Model, d: Data):
       tmp_solref,
       tmp_solreffriction,
       tmp_solimp,
+      tmp_dim,
+      tmp_geom,
+      tmp_flex,
+      tmp_vert,
+      tmp_worldid,
+      tmp_type,
+      tmp_gcid,
+      tmp_efc,
     ],
     outputs=[
       d.contact.dist,
@@ -972,24 +950,6 @@ def _sort_contacts(m: Model, d: Data):
       d.contact.solref,
       d.contact.solreffriction,
       d.contact.solimp,
-    ],
-  )
-
-  wp.launch(
-    _permute_contacts_ids,
-    dim=naconmax,
-    inputs=[
-      d.nacon,
-      sort_indices,
-      tmp_dim,
-      tmp_geom,
-      tmp_flex,
-      tmp_vert,
-      tmp_worldid,
-      tmp_type,
-      tmp_gcid,
-    ],
-    outputs=[
       d.contact.dim,
       d.contact.geom,
       d.contact.flex,
@@ -997,14 +957,8 @@ def _sort_contacts(m: Model, d: Data):
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,
+      d.contact.efc_address,
     ],
-  )
-
-  wp.launch(
-    _permute_contacts_efc,
-    dim=naconmax,
-    inputs=[d.nacon, sort_indices, tmp_efc],
-    outputs=[d.contact.efc_address],
   )
 
 
