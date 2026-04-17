@@ -215,7 +215,7 @@ def _extract_seg_kernel(
   seg_adr: wp.array[int],
   camera_index: int,
   # Out:
-  seg_out: wp.array4d[int],
+  seg_out: wp.array3d[wp.vec2i],
 ):
   """Extract per-pixel `(object_id, object_type)` pairs for a camera."""
   worldid, pixelid = wp.tid()
@@ -223,12 +223,10 @@ def _extract_seg_kernel(
   yid = pixelid // seg_out.shape[2]
 
   seg_adr_offset = seg_adr[camera_index]
-  pair = seg_data[worldid, seg_adr_offset + pixelid]
-  seg_out[worldid, yid, xid, 0] = pair[0]
-  seg_out[worldid, yid, xid, 1] = pair[1]
+  seg_out[worldid, yid, xid] = seg_data[worldid, seg_adr_offset + pixelid]
 
 
-def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array4d[int]):
+def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array3d[wp.vec2i]):
   """Get the segmentation data from the render context buffers for a given camera index.
 
   Each pixel stores MuJoCo-style `(object_id, object_type)` data. Background
@@ -239,7 +237,7 @@ def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array4d[i
     rc: The render context on device.
     camera_index: The index of the camera to get the segmentation data for.
     seg_out: The output array to store segmentation data in, with shape
-      `(nworld, height, width, 2)`.
+      `(nworld, height, width)` and dtype `wp.vec2i`.
   """
   wp.launch(
     _extract_seg_kernel,

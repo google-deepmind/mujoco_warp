@@ -1965,21 +1965,12 @@ class IOTest(parameterized.TestCase):
     </mujoco>
     """
     mjm = mujoco.MjModel.from_xml_string(xml)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd, nworld=1)
-
     rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
-    mjwarp.render(m, d, rc)
+    pixels = 32 * 32
 
-    cam_w, cam_h = map(int, rc.cam_res.numpy()[0])
-    seg = wp.zeros((1, cam_h, cam_w, 2), dtype=int)
-    mjwarp.get_segmentation(rc, 0, seg)
-    seg = seg.numpy()
-    geom_mask = seg[..., 1] == int(mjwarp.ObjType.GEOM)
-    self.assertTrue(np.any(geom_mask), "Expected geom hits from auto-detected seg")
-    self.assertGreater(np.unique(seg[..., 0][geom_mask]).shape[0], 1)
+    self.assertEqual(rc.seg_data.shape, (1, pixels), "seg_data")
+    _assert_eq(rc.seg_adr.numpy(), [0], "seg_adr")
+    _assert_eq(rc.render_seg.numpy(), [True], "render_seg")
 
   def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")

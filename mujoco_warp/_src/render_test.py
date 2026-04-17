@@ -147,19 +147,16 @@ class RenderTest(parameterized.TestCase):
     )
     mjw.render(m, d, rc)
 
-    warp_seg = wp.zeros((1, cam_h, cam_w, 2), dtype=int)
+    warp_seg = wp.zeros((1, cam_h, cam_w), dtype=wp.vec2i)
     mjw.get_segmentation(rc, 0, warp_seg)
-    warp_seg_np = warp_seg.numpy()[0]
+    warp_seg_np = warp_seg.numpy()[0].reshape(-1, 2)
 
     with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
       renderer.update_scene(mjd, camera=0)
       renderer.enable_segmentation_rendering()
-      mj_seg = renderer.render()
+      mj_seg = renderer.render().reshape(-1, 2)
 
-    np.testing.assert_array_equal(warp_seg_np[..., 1], mj_seg[..., 1])
-
-    valid = mj_seg[..., 1] != -1
-    np.testing.assert_array_equal(warp_seg_np[..., 0][valid], mj_seg[..., 0][valid])
+    np.testing.assert_array_equal(warp_seg_np, mj_seg)
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):

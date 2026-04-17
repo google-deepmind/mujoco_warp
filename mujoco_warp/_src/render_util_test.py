@@ -90,7 +90,7 @@ class RenderUtilTest(absltest.TestCase):
 
     mjw.render(m, d, rc)
 
-    seg_out = wp.zeros((2, 32, 32, 2), dtype=int)
+    seg_out = wp.zeros((2, 32, 32), dtype=wp.vec2i)
     mjw.get_segmentation(rc, 0, seg_out)
 
     seg_np = seg_out.numpy()
@@ -117,7 +117,7 @@ class RenderUtilTest(absltest.TestCase):
 
     mjw.render(m, d, rc)
 
-    seg_out = wp.zeros((1, 64, 64, 2), dtype=int)
+    seg_out = wp.zeros((1, 64, 64), dtype=wp.vec2i)
     mjw.get_segmentation(rc, 0, seg_out)
     seg_np = seg_out.numpy()[0]
 
