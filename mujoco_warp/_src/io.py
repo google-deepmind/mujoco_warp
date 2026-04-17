@@ -138,6 +138,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if (mjm.sensor_plugin != -1).any():
     raise NotImplementedError("Sensor plugins not supported.")
 
+  # array sizes may change in the future
+  if mujoco.mjNPOLY != 2:
+    warnings.warn(f"mujoco.mjNPOLY is {mujoco.mjNPOLY}, expected 2. Higher order polynomials may not be supported correctly.")
+
   # TODO(team): remove after _update_gradient for Newton uses tile operations for islands
   nv_max = 60
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
