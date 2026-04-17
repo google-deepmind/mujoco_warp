@@ -740,8 +740,8 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
-    deterministic: enable deterministic contact ordering and constraint row allocation
-      TODO: update this description as more optional deterministic pipeline stages are released
+    deterministic: enable deterministic contact ordering and constraint row allocation.
+      TODO update this description as more optional deterministic pipeline stages are released
   """
 
   timestep: array("*", float)
