@@ -35,7 +35,6 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -443,7 +442,6 @@ def _sap_range(
   range_out[worldid, geomid] = limit - geomid
 
 
-@cache_kernel
 def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -644,7 +642,6 @@ def sap_broadphase(m: Model, d: Data, ctx: CollisionContext):
   )
 
 
-@cache_kernel
 def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(

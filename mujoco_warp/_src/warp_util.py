@@ -119,28 +119,6 @@ def event_scope(fn, name: str = ""):
   return wrapper
 
 
-_KERNEL_CACHE = {}
-
-
-def cache_kernel(func):
-  # caching kernels to avoid crashes in graph_conditional code
-  @functools.wraps(func)
-  def wrapper(*args):
-    def _hash_arg(a):
-      if hasattr(a, "size"):
-        return a.size
-      if isinstance(a, list):
-        return hash(tuple(a))
-      return hash(a)
-
-    key = tuple(_hash_arg(a) for a in args) + (hash(func.__name__),)
-    if key not in _KERNEL_CACHE:
-      _KERNEL_CACHE[key] = func(*args)
-    return _KERNEL_CACHE[key]
-
-  return wrapper
-
-
 def check_toolkit_driver():
   wp.init()
   if wp.get_device().is_cuda:

@@ -42,7 +42,6 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10f
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -290,7 +289,6 @@ def _euler_damp_qfrc_sparse(
   qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid % dof_damping.shape[0], tid]
 
 
-@cache_kernel
 def _tile_euler_dense(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def euler_dense(
