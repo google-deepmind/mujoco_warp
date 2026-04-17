@@ -3079,18 +3079,68 @@ def _contact_elliptic(is_sparse: bool, deterministic: bool):
   return kernel
 
 
+def _ensure_det_scratch(m: types.Model, d: types.Data) -> dict:
+  """Lazily allocate persisted scratch for the deterministic constraint pipeline.
+
+  Every deterministic family needs 6 scratch arrays (counts, nnz_counts,
+  offsets, nnz_offsets, nefc_base, nnz_base). Before FP1 these were allocated
+  with wp.empty(...) on every make_constraint() call; this helper allocates
+  once per (m, d) instance and reuses thereafter.
+  """
+  scratch = getattr(d, "_det_scratch", None)
+  if scratch is not None:
+    return scratch
+
+  scratch = {"efc_nnz": wp.empty((d.nworld,), dtype=int)}
+
+  def _alloc(name: str, dim):
+    scratch[f"{name}_counts"] = wp.empty(dim, dtype=int)
+    scratch[f"{name}_nnz_counts"] = wp.empty(dim, dtype=int)
+    scratch[f"{name}_offsets"] = wp.empty(dim, dtype=int)
+    scratch[f"{name}_nnz_offsets"] = wp.empty(dim, dtype=int)
+    scratch[f"{name}_nefc_base"] = wp.empty((d.nworld,), dtype=int)
+    scratch[f"{name}_nnz_base"] = wp.empty((d.nworld,), dtype=int)
+
+  _alloc("eq_connect", (d.nworld, m.eq_connect_adr.size))
+  _alloc("eq_weld", (d.nworld, m.eq_wld_adr.size))
+  _alloc("eq_joint", (d.nworld, m.eq_jnt_adr.size))
+  _alloc("eq_tendon", (d.nworld, m.eq_ten_adr.size))
+  _alloc("eq_flex", (d.nworld, m.eq_flex_adr.size * m.nflexedge))
+  _alloc("friction_dof", (d.nworld, m.nv))
+  _alloc("friction_tendon", (d.nworld, m.ntendon))
+  _alloc("limit_ball", (d.nworld, m.jnt_limited_ball_adr.size))
+  _alloc("limit_slide_hinge", (d.nworld, m.jnt_limited_slide_hinge_adr.size))
+  _alloc("limit_tendon", (d.nworld, m.tendon_limited_adr.size))
+
+  if m.opt.cone == types.ConeType.PYRAMIDAL:
+    contact_nsub = m.nmaxpyramid
+  else:
+    contact_nsub = m.nmaxcondim
+  _alloc("contact", (d.naconmax, contact_nsub))
+  scratch["contact_world_start"] = wp.empty((d.nworld,), dtype=int)
+  scratch["contact_world_end"] = wp.empty((d.nworld,), dtype=int)
+
+  d._det_scratch = scratch
+  return scratch
+
+
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
-  efc_nnz = wp.empty((d.nworld,), dtype=int)
+  det = m.opt.deterministic
+
+  if det:
+    s = _ensure_det_scratch(m, d)
+    efc_nnz = s["efc_nnz"]
+  else:
+    s = None
+    efc_nnz = wp.empty((d.nworld,), dtype=int)
 
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
     inputs=[d.ne, d.nf, d.nl, d.nefc, efc_nnz],
   )
-
-  det = m.opt.deterministic
 
   # Dummy arrays for deterministic-only kernel params in non-det mode.
   _d1 = wp.zeros(1, dtype=int)
@@ -3124,21 +3174,22 @@ def make_constraint(m: types.Model, d: types.Data):
       outputs=[d.nefc, efc_nnz, offsets, nnz_offsets, nefc_base, nnz_base],
     )
 
-  def _alloc_scan_bufs(dim):
-    counts = wp.empty(dim, dtype=int)
-    nnz_counts = wp.empty(dim, dtype=int)
-    offsets = wp.empty(dim, dtype=int)
-    nnz_offsets = wp.empty(dim, dtype=int)
-    nefc_base = wp.empty(d.nworld, dtype=int)
-    nnz_base = wp.empty(d.nworld, dtype=int)
-    return counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base
+  def _alloc_scan_bufs(name: str):
+    return (
+      s[f"{name}_counts"],
+      s[f"{name}_nnz_counts"],
+      s[f"{name}_offsets"],
+      s[f"{name}_nnz_offsets"],
+      s[f"{name}_nefc_base"],
+      s[f"{name}_nnz_base"],
+    )
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       # --- equality_connect ---
       _dim = (d.nworld, m.eq_connect_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_connect")
         wp.launch(
           _equality_connect_count,
           dim=_dim,
@@ -3205,7 +3256,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- equality_weld ---
       _dim = (d.nworld, m.eq_wld_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_weld")
         wp.launch(
           _equality_weld_count,
           dim=_dim,
@@ -3274,7 +3325,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- equality_joint ---
       _dim = (d.nworld, m.eq_jnt_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_joint")
         wp.launch(
           _equality_joint_count,
           dim=_dim,
@@ -3322,7 +3373,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- equality_tendon ---
       _dim = (d.nworld, m.eq_ten_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_tendon")
         wp.launch(
           _equality_tendon_count,
           dim=_dim,
@@ -3378,7 +3429,7 @@ def make_constraint(m: types.Model, d: types.Data):
       _nflex = m.eq_flex_adr.size * m.nflexedge
       _dim_flat = (d.nworld, _nflex)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim_flat)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_flex")
         wp.launch(
           _equality_flex_count,
           dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
@@ -3430,7 +3481,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- friction_dof ---
       _dim = (d.nworld, m.nv)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("friction_dof")
         wp.launch(
           _friction_dof_count,
           dim=_dim,
@@ -3465,7 +3516,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- friction_tendon ---
       _dim = (d.nworld, m.ntendon)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("friction_tendon")
         wp.launch(
           _friction_tendon_count,
           dim=_dim,
@@ -3506,7 +3557,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- limit_ball ---
       _dim = (d.nworld, m.jnt_limited_ball_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_ball")
         wp.launch(
           _limit_ball_count,
           dim=_dim,
@@ -3553,7 +3604,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- limit_slide_hinge ---
       _dim = (d.nworld, m.jnt_limited_slide_hinge_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_slide_hinge")
         wp.launch(
           _limit_slide_hinge_count,
           dim=_dim,
@@ -3600,7 +3651,7 @@ def make_constraint(m: types.Model, d: types.Data):
       # --- limit_tendon ---
       _dim = (d.nworld, m.tendon_limited_adr.size)
       if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs(_dim)
+        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_tendon")
         wp.launch(
           _limit_tendon_count,
           dim=_dim,
@@ -3651,14 +3702,9 @@ def make_constraint(m: types.Model, d: types.Data):
       if m.opt.cone == types.ConeType.PYRAMIDAL:
         _dim = (d.naconmax, m.nmaxpyramid)
         if det:
-          counts = wp.empty(_dim, dtype=int)
-          nnz_counts = wp.empty(_dim, dtype=int)
-          offsets = wp.empty(_dim, dtype=int)
-          nnz_offsets = wp.empty(_dim, dtype=int)
-          nefc_base = wp.empty(d.nworld, dtype=int)
-          nnz_base = wp.empty(d.nworld, dtype=int)
-          world_start = wp.empty(d.nworld, dtype=int)
-          world_end = wp.empty(d.nworld, dtype=int)
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("contact")
+          world_start = s["contact_world_start"]
+          world_end = s["contact_world_end"]
           wp.launch(
             _contact_pyramidal_count,
             dim=_dim,
@@ -3760,14 +3806,9 @@ def make_constraint(m: types.Model, d: types.Data):
       elif m.opt.cone == types.ConeType.ELLIPTIC:
         _dim = (d.naconmax, m.nmaxcondim)
         if det:
-          counts = wp.empty(_dim, dtype=int)
-          nnz_counts = wp.empty(_dim, dtype=int)
-          offsets = wp.empty(_dim, dtype=int)
-          nnz_offsets = wp.empty(_dim, dtype=int)
-          nefc_base = wp.empty(d.nworld, dtype=int)
-          nnz_base = wp.empty(d.nworld, dtype=int)
-          world_start = wp.empty(d.nworld, dtype=int)
-          world_end = wp.empty(d.nworld, dtype=int)
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("contact")
+          world_start = s["contact_world_start"]
+          world_end = s["contact_world_end"]
           wp.launch(
             _contact_elliptic_count,
             dim=_dim,
