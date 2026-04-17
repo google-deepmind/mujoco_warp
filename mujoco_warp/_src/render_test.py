@@ -147,9 +147,7 @@ class RenderTest(parameterized.TestCase):
     )
     mjw.render(m, d, rc)
 
-    warp_seg = wp.zeros((1, cam_h, cam_w), dtype=wp.vec2i)
-    mjw.get_segmentation(rc, 0, warp_seg)
-    warp_seg_np = warp_seg.numpy()[0].reshape(-1, 2)
+    warp_seg_np = rc.seg_data.numpy()[0].reshape(-1, 2)
 
     with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
       renderer.update_scene(mjd, camera=0)
