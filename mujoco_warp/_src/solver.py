@@ -2774,7 +2774,6 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   return kernel
 
 
-@cache_kernel
 def update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size: int):
   """Blocked Cholesky that skips factorization when no constraints changed."""
 
@@ -2820,7 +2819,7 @@ def _cholesky_factorize_solve(m: types.Model, d: types.Data, ctx: SolverContext,
   """Cholesky factorize ctx.h and solve for Mgrad.
 
   If skip_unchanged is True (blocked path only), worlds where no constraints
-  changed reuse the cached L in hfactor instead of refactorizing.
+  changed reuse the cached factorization in hfactor instead of refactorizing.
   """
   if m.nv <= _BLOCK_CHOLESKY_DIM:
     wp.launch_tiled(
