@@ -417,6 +417,27 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
           err_msg=f"efc.{field} differs ({path}, nworld={nworld}, {jacobian})",
         )
 
+  @parameterized.parameters("DENSE", "SPARSE")
+  def test_zero_size_families_skip_cleanly(self, jacobian):
+    """Contact-only models still work when many deterministic families are size 0."""
+    overrides = {"opt.jacobian": jacobian}
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=4, overrides=overrides)
+    m.opt.deterministic = True
+
+    self.assertEqual(m.eq_connect_adr.size, 0)
+    self.assertEqual(m.eq_wld_adr.size, 0)
+    self.assertEqual(m.eq_jnt_adr.size, 0)
+    self.assertEqual(m.eq_ten_adr.size, 0)
+    self.assertEqual(m.eq_flex_adr.size, 0)
+    self.assertEqual(m.ntendon, 0)
+    self.assertEqual(m.jnt_limited_ball_adr.size, 0)
+    self.assertEqual(m.jnt_limited_slide_hinge_adr.size, 0)
+    self.assertEqual(m.tendon_limited_adr.size, 0)
+
+    mjw.step(m, d)
+
+    self.assertGreater(d.nefc.numpy().sum(), 0)
+
   def test_overflow_raises_in_deterministic_mode(self):
     """Artificially small njmax triggers RuntimeError in deterministic mode."""
     _, _, m, d = test_data.fixture(path="humanoid/humanoid.xml", nworld=1)

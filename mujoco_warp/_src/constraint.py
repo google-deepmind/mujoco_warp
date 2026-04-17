@@ -3187,727 +3187,739 @@ def make_constraint(m: types.Model, d: types.Data):
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       # --- equality_connect ---
-      _dim = (d.nworld, m.eq_connect_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_connect")
+      if m.eq_connect_adr.size > 0:
+        _dim = (d.nworld, m.eq_connect_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_connect")
+          wp.launch(
+            _equality_connect_count,
+            dim=_dim,
+            inputs=[
+              m.nsite,
+              m.body_weldid,
+              m.body_dofnum,
+              m.body_dofadr,
+              m.dof_parentid,
+              m.site_bodyid,
+              m.eq_obj1id,
+              m.eq_obj2id,
+              m.eq_objtype,
+              m.is_sparse,
+              m.eq_connect_adr,
+              d.eq_active,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_connect_count,
-          dim=_dim,
-          inputs=[
-            m.nsite,
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.dof_parentid,
-            m.site_bodyid,
-            m.eq_obj1id,
-            m.eq_obj2id,
-            m.eq_objtype,
-            m.is_sparse,
-            m.eq_connect_adr,
-            d.eq_active,
-          ],
-          outputs=[counts, nnz_counts],
-        )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _equality_connect(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.nsite,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_weldid,
-          m.body_dofnum,
-          m.body_dofadr,
-          m.body_invweight0,
-          m.dof_bodyid,
-          m.dof_parentid,
-          m.site_bodyid,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_objtype,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.eq_connect_adr,
-          d.qvel,
-          d.eq_active,
-          d.xpos,
-          d.xmat,
-          d.site_xpos,
-          d.subtree_com,
-          d.cdof,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.ne),
-      )
-
-      # --- equality_weld ---
-      _dim = (d.nworld, m.eq_wld_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_weld")
-        wp.launch(
-          _equality_weld_count,
-          dim=_dim,
-          inputs=[
-            m.nsite,
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.dof_parentid,
-            m.site_bodyid,
-            m.eq_obj1id,
-            m.eq_obj2id,
-            m.eq_objtype,
-            m.is_sparse,
-            m.eq_wld_adr,
-            d.eq_active,
-          ],
-          outputs=[counts, nnz_counts],
-        )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _equality_weld(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.nsite,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_weldid,
-          m.body_dofnum,
-          m.body_dofadr,
-          m.body_invweight0,
-          m.dof_bodyid,
-          m.dof_parentid,
-          m.site_bodyid,
-          m.site_quat,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_objtype,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.eq_wld_adr,
-          d.qvel,
-          d.eq_active,
-          d.xpos,
-          d.xquat,
-          d.xmat,
-          d.site_xpos,
-          d.subtree_com,
-          d.cdof,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.ne),
-      )
-
-      # --- equality_joint ---
-      _dim = (d.nworld, m.eq_jnt_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_joint")
-        wp.launch(
-          _equality_joint_count,
-          dim=_dim,
-          inputs=[
-            m.eq_obj2id,
-            m.is_sparse,
-            m.eq_jnt_adr,
-            d.eq_active,
-          ],
-          outputs=[counts, nnz_counts],
-        )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _equality_joint(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.qpos0,
-          m.jnt_qposadr,
-          m.jnt_dofadr,
-          m.dof_invweight0,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.eq_jnt_adr,
-          d.qpos,
-          d.qvel,
-          d.eq_active,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.ne),
-      )
-
-      # --- equality_tendon ---
-      _dim = (d.nworld, m.eq_ten_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_tendon")
-        wp.launch(
-          _equality_tendon_count,
+          _equality_connect(m.is_sparse, det),
           dim=_dim,
           inputs=[
             m.nv,
+            m.nsite,
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.body_parentid,
+            m.body_rootid,
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
+            m.body_invweight0,
+            m.dof_bodyid,
+            m.dof_parentid,
+            m.site_bodyid,
             m.eq_obj1id,
             m.eq_obj2id,
+            m.eq_objtype,
+            m.eq_solref,
+            m.eq_solimp,
+            m.eq_data,
+            m.eq_connect_adr,
+            d.qvel,
+            d.eq_active,
+            d.xpos,
+            d.xmat,
+            d.site_xpos,
+            d.subtree_com,
+            d.cdof,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
+          ],
+          outputs=_efc_outputs(d.ne),
+        )
+
+      # --- equality_weld ---
+      if m.eq_wld_adr.size > 0:
+        _dim = (d.nworld, m.eq_wld_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_weld")
+          wp.launch(
+            _equality_weld_count,
+            dim=_dim,
+            inputs=[
+              m.nsite,
+              m.body_weldid,
+              m.body_dofnum,
+              m.body_dofadr,
+              m.dof_parentid,
+              m.site_bodyid,
+              m.eq_obj1id,
+              m.eq_obj2id,
+              m.eq_objtype,
+              m.is_sparse,
+              m.eq_wld_adr,
+              d.eq_active,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
+        wp.launch(
+          _equality_weld(m.is_sparse, det),
+          dim=_dim,
+          inputs=[
+            m.nv,
+            m.nsite,
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.body_parentid,
+            m.body_rootid,
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
+            m.body_invweight0,
+            m.dof_bodyid,
+            m.dof_parentid,
+            m.site_bodyid,
+            m.site_quat,
+            m.eq_obj1id,
+            m.eq_obj2id,
+            m.eq_objtype,
+            m.eq_solref,
+            m.eq_solimp,
+            m.eq_data,
+            m.eq_wld_adr,
+            d.qvel,
+            d.eq_active,
+            d.xpos,
+            d.xquat,
+            d.xmat,
+            d.site_xpos,
+            d.subtree_com,
+            d.cdof,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
+          ],
+          outputs=_efc_outputs(d.ne),
+        )
+
+      # --- equality_joint ---
+      if m.eq_jnt_adr.size > 0:
+        _dim = (d.nworld, m.eq_jnt_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_joint")
+          wp.launch(
+            _equality_joint_count,
+            dim=_dim,
+            inputs=[
+              m.eq_obj2id,
+              m.is_sparse,
+              m.eq_jnt_adr,
+              d.eq_active,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
+        wp.launch(
+          _equality_joint(m.is_sparse, det),
+          dim=_dim,
+          inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.qpos0,
+            m.jnt_qposadr,
+            m.jnt_dofadr,
+            m.dof_invweight0,
+            m.eq_obj1id,
+            m.eq_obj2id,
+            m.eq_solref,
+            m.eq_solimp,
+            m.eq_data,
+            m.eq_jnt_adr,
+            d.qpos,
+            d.qvel,
+            d.eq_active,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
+          ],
+          outputs=_efc_outputs(d.ne),
+        )
+
+      # --- equality_tendon ---
+      if m.eq_ten_adr.size > 0:
+        _dim = (d.nworld, m.eq_ten_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_tendon")
+          wp.launch(
+            _equality_tendon_count,
+            dim=_dim,
+            inputs=[
+              m.nv,
+              m.eq_obj1id,
+              m.eq_obj2id,
+              m.ten_J_rownnz,
+              m.ten_J_rowadr,
+              m.ten_J_colind,
+              m.is_sparse,
+              m.eq_ten_adr,
+              d.eq_active,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
+        wp.launch(
+          _equality_tendon(m.is_sparse, det),
+          dim=_dim,
+          inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.eq_obj1id,
+            m.eq_obj2id,
+            m.eq_solref,
+            m.eq_solimp,
+            m.eq_data,
             m.ten_J_rownnz,
             m.ten_J_rowadr,
             m.ten_J_colind,
-            m.is_sparse,
+            m.tendon_length0,
+            m.tendon_invweight0,
             m.eq_ten_adr,
+            d.qvel,
             d.eq_active,
+            d.ten_J,
+            d.ten_length,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
           ],
-          outputs=[counts, nnz_counts],
+          outputs=_efc_outputs(d.ne),
         )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _equality_tendon(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_length0,
-          m.tendon_invweight0,
-          m.eq_ten_adr,
-          d.qvel,
-          d.eq_active,
-          d.ten_J,
-          d.ten_length,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.ne),
-      )
 
       # --- equality_flex ---
       _nflex = m.eq_flex_adr.size * m.nflexedge
-      _dim_flat = (d.nworld, _nflex)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_flex")
+      if _nflex > 0:
+        _dim_flat = (d.nworld, _nflex)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("eq_flex")
+          wp.launch(
+            _equality_flex_count,
+            dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
+            inputs=[
+              m.flex_edgeadr,
+              m.flex_edgenum,
+              m.flexedge_J_rownnz,
+              m.eq_obj1id,
+              m.is_sparse,
+              m.eq_flex_adr,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim_flat, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_flex_count,
+          _equality_flex(m.is_sparse, det),
           dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
           inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
             m.flex_edgeadr,
             m.flex_edgenum,
+            m.flexedge_length0,
+            m.flexedge_invweight0,
             m.flexedge_J_rownnz,
+            m.flexedge_J_rowadr,
+            m.flexedge_J_colind,
             m.eq_obj1id,
-            m.is_sparse,
+            m.eq_solref,
+            m.eq_solimp,
             m.eq_flex_adr,
+            d.qvel,
+            d.flexedge_J,
+            d.flexedge_length,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
           ],
-          outputs=[counts, nnz_counts],
+          outputs=_efc_outputs(d.ne),
         )
-        _scan_launch(_dim_flat, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _equality_flex(m.is_sparse, det),
-        dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.flex_edgeadr,
-          m.flex_edgenum,
-          m.flexedge_length0,
-          m.flexedge_invweight0,
-          m.flexedge_J_rownnz,
-          m.flexedge_J_rowadr,
-          m.flexedge_J_colind,
-          m.eq_obj1id,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_flex_adr,
-          d.qvel,
-          d.flexedge_J,
-          d.flexedge_length,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.ne),
-      )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
       # --- friction_dof ---
-      _dim = (d.nworld, m.nv)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("friction_dof")
+      if m.nv > 0:
+        _dim = (d.nworld, m.nv)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("friction_dof")
+          wp.launch(
+            _friction_dof_count,
+            dim=_dim,
+            inputs=[m.dof_frictionloss, m.is_sparse],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _friction_dof_count,
+          _friction_dof(m.is_sparse, det),
           dim=_dim,
-          inputs=[m.dof_frictionloss, m.is_sparse],
-          outputs=[counts, nnz_counts],
+          inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.dof_solref,
+            m.dof_solimp,
+            m.dof_frictionloss,
+            m.dof_invweight0,
+            d.qvel,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
+          ],
+          outputs=_efc_outputs(d.nf),
         )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _friction_dof(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.dof_solref,
-          m.dof_solimp,
-          m.dof_frictionloss,
-          m.dof_invweight0,
-          d.qvel,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.nf),
-      )
 
       # --- friction_tendon ---
-      _dim = (d.nworld, m.ntendon)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("friction_tendon")
+      if m.ntendon > 0:
+        _dim = (d.nworld, m.ntendon)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("friction_tendon")
+          wp.launch(
+            _friction_tendon_count,
+            dim=_dim,
+            inputs=[m.ten_J_rownnz, m.tendon_frictionloss, m.is_sparse],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _friction_tendon_count,
+          _friction_tendon(m.is_sparse, det),
           dim=_dim,
-          inputs=[m.ten_J_rownnz, m.tendon_frictionloss, m.is_sparse],
-          outputs=[counts, nnz_counts],
+          inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.ten_J_rownnz,
+            m.ten_J_rowadr,
+            m.ten_J_colind,
+            m.tendon_solref_fri,
+            m.tendon_solimp_fri,
+            m.tendon_frictionloss,
+            m.tendon_invweight0,
+            d.qvel,
+            d.ten_J,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
+          ],
+          outputs=_efc_outputs(d.nf),
         )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _friction_tendon(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_solref_fri,
-          m.tendon_solimp_fri,
-          m.tendon_frictionloss,
-          m.tendon_invweight0,
-          d.qvel,
-          d.ten_J,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.nf),
-      )
 
     # limit
     if not (m.opt.disableflags & types.DisableBit.LIMIT):
       # --- limit_ball ---
-      _dim = (d.nworld, m.jnt_limited_ball_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_ball")
+      if m.jnt_limited_ball_adr.size > 0:
+        _dim = (d.nworld, m.jnt_limited_ball_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_ball")
+          wp.launch(
+            _limit_ball_count,
+            dim=_dim,
+            inputs=[
+              m.jnt_qposadr,
+              m.jnt_range,
+              m.jnt_margin,
+              m.is_sparse,
+              m.jnt_limited_ball_adr,
+              d.qpos,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _limit_ball_count,
+          _limit_ball(m.is_sparse, det),
           dim=_dim,
           inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
             m.jnt_qposadr,
+            m.jnt_dofadr,
+            m.jnt_solref,
+            m.jnt_solimp,
             m.jnt_range,
             m.jnt_margin,
-            m.is_sparse,
+            m.dof_invweight0,
             m.jnt_limited_ball_adr,
             d.qpos,
+            d.qvel,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
           ],
-          outputs=[counts, nnz_counts],
+          outputs=_efc_outputs(d.nl),
         )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _limit_ball(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.jnt_qposadr,
-          m.jnt_dofadr,
-          m.jnt_solref,
-          m.jnt_solimp,
-          m.jnt_range,
-          m.jnt_margin,
-          m.dof_invweight0,
-          m.jnt_limited_ball_adr,
-          d.qpos,
-          d.qvel,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.nl),
-      )
 
       # --- limit_slide_hinge ---
-      _dim = (d.nworld, m.jnt_limited_slide_hinge_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_slide_hinge")
+      if m.jnt_limited_slide_hinge_adr.size > 0:
+        _dim = (d.nworld, m.jnt_limited_slide_hinge_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_slide_hinge")
+          wp.launch(
+            _limit_slide_hinge_count,
+            dim=_dim,
+            inputs=[
+              m.jnt_qposadr,
+              m.jnt_range,
+              m.jnt_margin,
+              m.is_sparse,
+              m.jnt_limited_slide_hinge_adr,
+              d.qpos,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _limit_slide_hinge_count,
+          _limit_slide_hinge(m.is_sparse, det),
           dim=_dim,
           inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
             m.jnt_qposadr,
+            m.jnt_dofadr,
+            m.jnt_solref,
+            m.jnt_solimp,
             m.jnt_range,
             m.jnt_margin,
-            m.is_sparse,
+            m.dof_invweight0,
             m.jnt_limited_slide_hinge_adr,
             d.qpos,
+            d.qvel,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
           ],
-          outputs=[counts, nnz_counts],
+          outputs=_efc_outputs(d.nl),
         )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _limit_slide_hinge(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.jnt_qposadr,
-          m.jnt_dofadr,
-          m.jnt_solref,
-          m.jnt_solimp,
-          m.jnt_range,
-          m.jnt_margin,
-          m.dof_invweight0,
-          m.jnt_limited_slide_hinge_adr,
-          d.qpos,
-          d.qvel,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.nl),
-      )
 
       # --- limit_tendon ---
-      _dim = (d.nworld, m.tendon_limited_adr.size)
-      if det:
-        counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_tendon")
+      if m.tendon_limited_adr.size > 0:
+        _dim = (d.nworld, m.tendon_limited_adr.size)
+        if det:
+          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("limit_tendon")
+          wp.launch(
+            _limit_tendon_count,
+            dim=_dim,
+            inputs=[
+              m.ten_J_rownnz,
+              m.tendon_range,
+              m.tendon_margin,
+              m.is_sparse,
+              m.tendon_limited_adr,
+              d.ten_length,
+            ],
+            outputs=[counts, nnz_counts],
+          )
+          _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
+        else:
+          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _limit_tendon_count,
+          _limit_tendon(m.is_sparse, det),
           dim=_dim,
           inputs=[
+            m.nv,
+            m.opt.timestep,
+            m.opt.disableflags,
             m.ten_J_rownnz,
+            m.ten_J_rowadr,
+            m.ten_J_colind,
+            m.tendon_solref_lim,
+            m.tendon_solimp_lim,
             m.tendon_range,
             m.tendon_margin,
-            m.is_sparse,
+            m.tendon_invweight0,
             m.tendon_limited_adr,
+            d.qvel,
+            d.ten_J,
             d.ten_length,
+            d.njmax,
+            d.njmax_nnz,
+            nefc_base,
+            offsets,
+            nnz_base,
+            nnz_offsets,
           ],
-          outputs=[counts, nnz_counts],
+          outputs=_efc_outputs(d.nl),
         )
-        _scan_launch(_dim, counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base)
-      else:
-        nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-      wp.launch(
-        _limit_tendon(m.is_sparse, det),
-        dim=_dim,
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_solref_lim,
-          m.tendon_solimp_lim,
-          m.tendon_range,
-          m.tendon_margin,
-          m.tendon_invweight0,
-          m.tendon_limited_adr,
-          d.qvel,
-          d.ten_J,
-          d.ten_length,
-          d.njmax,
-          d.njmax_nnz,
-          nefc_base,
-          offsets,
-          nnz_base,
-          nnz_offsets,
-        ],
-        outputs=_efc_outputs(d.nl),
-      )
 
     # contact
     if not (m.opt.disableflags & types.DisableBit.CONTACT):
       if m.opt.cone == types.ConeType.PYRAMIDAL:
-        _dim = (d.naconmax, m.nmaxpyramid)
-        if det:
-          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("contact")
-          world_start = s["contact_world_start"]
-          world_end = s["contact_world_end"]
+        if d.naconmax > 0 and m.nmaxpyramid > 0:
+          _dim = (d.naconmax, m.nmaxpyramid)
+          if det:
+            counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("contact")
+            world_start = s["contact_world_start"]
+            world_end = s["contact_world_end"]
+            wp.launch(
+              _contact_pyramidal_count,
+              dim=_dim,
+              inputs=[
+                m.body_weldid,
+                m.body_dofnum,
+                m.body_dofadr,
+                m.dof_parentid,
+                m.geom_bodyid,
+                m.flex_vertadr,
+                m.flex_vertbodyid,
+                m.is_sparse,
+                d.nacon,
+                d.contact.dist,
+                d.contact.dim,
+                d.contact.includemargin,
+                d.contact.geom,
+                d.contact.flex,
+                d.contact.vert,
+                d.contact.type,
+              ],
+              outputs=[counts, nnz_counts],
+            )
+            wp.launch(
+              _contact_world_boundaries,
+              dim=d.nworld,
+              inputs=[d.contact.worldid, d.nacon],
+              outputs=[world_start, world_end],
+            )
+            wp.launch(
+              _contact_per_world_scan,
+              dim=d.nworld,
+              inputs=[counts, nnz_counts, world_start, world_end],
+              outputs=[d.nefc, efc_nnz, offsets, nnz_offsets, nefc_base, nnz_base],
+            )
+          else:
+            nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
           wp.launch(
-            _contact_pyramidal_count,
+            _contact_pyramidal(m.is_sparse, det),
             dim=_dim,
             inputs=[
+              m.nv,
+              m.opt.timestep,
+              m.opt.disableflags,
+              m.opt.impratio_invsqrt,
+              m.body_parentid,
+              m.body_rootid,
               m.body_weldid,
               m.body_dofnum,
               m.body_dofadr,
+              m.body_invweight0,
+              m.dof_bodyid,
               m.dof_parentid,
               m.geom_bodyid,
               m.flex_vertadr,
               m.flex_vertbodyid,
-              m.is_sparse,
+              d.qvel,
+              d.subtree_com,
+              d.cdof,
+              d.njmax,
+              d.njmax_nnz,
               d.nacon,
+              nefc_base,
+              offsets,
+              nnz_base,
+              nnz_offsets,
               d.contact.dist,
               d.contact.dim,
               d.contact.includemargin,
+              d.contact.worldid,
               d.contact.geom,
               d.contact.flex,
               d.contact.vert,
+              d.contact.pos,
+              d.contact.frame,
+              d.contact.friction,
+              d.contact.solref,
+              d.contact.solimp,
               d.contact.type,
             ],
-            outputs=[counts, nnz_counts],
+            outputs=[
+              d.nefc,
+              d.contact.efc_address,
+              d.efc.type,
+              d.efc.id,
+              d.efc.J_rownnz,
+              d.efc.J_rowadr,
+              d.efc.J_colind,
+              d.efc.J,
+              d.efc.pos,
+              d.efc.margin,
+              d.efc.D,
+              d.efc.vel,
+              d.efc.aref,
+              d.efc.frictionloss,
+              efc_nnz,
+            ],
           )
-          wp.launch(
-            _contact_world_boundaries,
-            dim=d.nworld,
-            inputs=[d.contact.worldid, d.nacon],
-            outputs=[world_start, world_end],
-          )
-          wp.launch(
-            _contact_per_world_scan,
-            dim=d.nworld,
-            inputs=[counts, nnz_counts, world_start, world_end],
-            outputs=[d.nefc, efc_nnz, offsets, nnz_offsets, nefc_base, nnz_base],
-          )
-        else:
-          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-        wp.launch(
-          _contact_pyramidal(m.is_sparse, det),
-          dim=_dim,
-          inputs=[
-            m.nv,
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.opt.impratio_invsqrt,
-            m.body_parentid,
-            m.body_rootid,
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.body_invweight0,
-            m.dof_bodyid,
-            m.dof_parentid,
-            m.geom_bodyid,
-            m.flex_vertadr,
-            m.flex_vertbodyid,
-            d.qvel,
-            d.subtree_com,
-            d.cdof,
-            d.njmax,
-            d.njmax_nnz,
-            d.nacon,
-            nefc_base,
-            offsets,
-            nnz_base,
-            nnz_offsets,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.worldid,
-            d.contact.geom,
-            d.contact.flex,
-            d.contact.vert,
-            d.contact.pos,
-            d.contact.frame,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solimp,
-            d.contact.type,
-          ],
-          outputs=[
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.type,
-            d.efc.id,
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            d.efc.J_colind,
-            d.efc.J,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-            efc_nnz,
-          ],
-        )
       elif m.opt.cone == types.ConeType.ELLIPTIC:
-        _dim = (d.naconmax, m.nmaxcondim)
-        if det:
-          counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("contact")
-          world_start = s["contact_world_start"]
-          world_end = s["contact_world_end"]
+        if d.naconmax > 0 and m.nmaxcondim > 0:
+          _dim = (d.naconmax, m.nmaxcondim)
+          if det:
+            counts, nnz_counts, offsets, nnz_offsets, nefc_base, nnz_base = _alloc_scan_bufs("contact")
+            world_start = s["contact_world_start"]
+            world_end = s["contact_world_end"]
+            wp.launch(
+              _contact_elliptic_count,
+              dim=_dim,
+              inputs=[
+                m.body_weldid,
+                m.body_dofnum,
+                m.body_dofadr,
+                m.dof_parentid,
+                m.geom_bodyid,
+                m.flex_vertadr,
+                m.flex_vertbodyid,
+                m.is_sparse,
+                d.nacon,
+                d.contact.dist,
+                d.contact.dim,
+                d.contact.includemargin,
+                d.contact.geom,
+                d.contact.flex,
+                d.contact.vert,
+                d.contact.type,
+              ],
+              outputs=[counts, nnz_counts],
+            )
+            wp.launch(
+              _contact_world_boundaries,
+              dim=d.nworld,
+              inputs=[d.contact.worldid, d.nacon],
+              outputs=[world_start, world_end],
+            )
+            wp.launch(
+              _contact_per_world_scan,
+              dim=d.nworld,
+              inputs=[counts, nnz_counts, world_start, world_end],
+              outputs=[d.nefc, efc_nnz, offsets, nnz_offsets, nefc_base, nnz_base],
+            )
+          else:
+            nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
           wp.launch(
-            _contact_elliptic_count,
+            _contact_elliptic(m.is_sparse, det),
             dim=_dim,
             inputs=[
+              m.nv,
+              m.opt.timestep,
+              m.opt.disableflags,
+              m.opt.impratio_invsqrt,
+              m.body_parentid,
+              m.body_rootid,
               m.body_weldid,
               m.body_dofnum,
               m.body_dofadr,
+              m.body_invweight0,
+              m.dof_bodyid,
               m.dof_parentid,
               m.geom_bodyid,
               m.flex_vertadr,
               m.flex_vertbodyid,
-              m.is_sparse,
+              d.qvel,
+              d.subtree_com,
+              d.cdof,
+              d.njmax,
+              d.njmax_nnz,
               d.nacon,
+              nefc_base,
+              offsets,
+              nnz_base,
+              nnz_offsets,
               d.contact.dist,
               d.contact.dim,
               d.contact.includemargin,
+              d.contact.worldid,
               d.contact.geom,
               d.contact.flex,
               d.contact.vert,
+              d.contact.pos,
+              d.contact.frame,
+              d.contact.friction,
+              d.contact.solref,
+              d.contact.solreffriction,
+              d.contact.solimp,
               d.contact.type,
             ],
-            outputs=[counts, nnz_counts],
+            outputs=[
+              d.nefc,
+              d.contact.efc_address,
+              d.efc.type,
+              d.efc.id,
+              d.efc.J_rownnz,
+              d.efc.J_rowadr,
+              d.efc.J_colind,
+              d.efc.J,
+              d.efc.pos,
+              d.efc.margin,
+              d.efc.D,
+              d.efc.vel,
+              d.efc.aref,
+              d.efc.frictionloss,
+              efc_nnz,
+            ],
           )
-          wp.launch(
-            _contact_world_boundaries,
-            dim=d.nworld,
-            inputs=[d.contact.worldid, d.nacon],
-            outputs=[world_start, world_end],
-          )
-          wp.launch(
-            _contact_per_world_scan,
-            dim=d.nworld,
-            inputs=[counts, nnz_counts, world_start, world_end],
-            outputs=[d.nefc, efc_nnz, offsets, nnz_offsets, nefc_base, nnz_base],
-          )
-        else:
-          nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
-        wp.launch(
-          _contact_elliptic(m.is_sparse, det),
-          dim=_dim,
-          inputs=[
-            m.nv,
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.opt.impratio_invsqrt,
-            m.body_parentid,
-            m.body_rootid,
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.body_invweight0,
-            m.dof_bodyid,
-            m.dof_parentid,
-            m.geom_bodyid,
-            m.flex_vertadr,
-            m.flex_vertbodyid,
-            d.qvel,
-            d.subtree_com,
-            d.cdof,
-            d.njmax,
-            d.njmax_nnz,
-            d.nacon,
-            nefc_base,
-            offsets,
-            nnz_base,
-            nnz_offsets,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.worldid,
-            d.contact.geom,
-            d.contact.flex,
-            d.contact.vert,
-            d.contact.pos,
-            d.contact.frame,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.type,
-          ],
-          outputs=[
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.type,
-            d.efc.id,
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            d.efc.J_colind,
-            d.efc.J,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-            efc_nnz,
-          ],
-        )
 
   # Overflow check for deterministic mode.
   if det:
