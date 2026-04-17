@@ -219,7 +219,7 @@ def _run_and_collect_efc(path, nworld, nsteps, deterministic, jacobian):
   nefc = d.nefc.numpy().copy()
   result = {"nefc": nefc, "is_sparse": m.is_sparse}
   # Per-row fields: (nworld, njmax). Slice per world to its nefc entries.
-  # Tests concatenate across worlds so shape is (sum(nefc),) — ordering within
+  # Tests concatenate across worlds so shape is (sum(nefc),) - ordering within
   # each world is the quantity that must be stable.
   for field in _EFC_ROW_FIELDS:
     arr = getattr(d.efc, field).numpy()
@@ -249,9 +249,39 @@ def _run_and_collect_efc(path, nworld, nsteps, deterministic, jacobian):
   else:
     # Dense J is (nworld, njmax_pad, nv_pad). Slice to nefc rows per world.
     j_dense = d.efc.J.numpy()
+    result["J_row_width"] = j_dense.shape[2]
     result["J"] = np.concatenate([j_dense[w, : nefc[w], :].reshape(-1).copy() for w in range(nworld)])
 
   return result
+
+
+def _sorted_efc_row_records(result):
+  """Returns a canonical multiset representation of efc rows for comparison."""
+  records = []
+  total_rows = int(np.sum(result["nefc"]))
+  j_offset = 0
+
+  for row in range(total_rows):
+    record = [int(result["type"][row])]
+    for field in ("pos", "margin", "D", "vel", "aref", "frictionloss"):
+      record.append(np.asarray(result[field][row]).tobytes())
+
+    if result["is_sparse"]:
+      nnz = int(result["J_rownnz"][row])
+      colind = result["J_colind"][j_offset : j_offset + nnz]
+      j_values = result["J"][j_offset : j_offset + nnz]
+      j_offset += nnz
+      record.append(colind.tobytes())
+      record.append(j_values.tobytes())
+    else:
+      row_width = int(result["J_row_width"])
+      j_values = result["J"][j_offset : j_offset + row_width]
+      j_offset += row_width
+      record.append(j_values.tobytes())
+
+    records.append(tuple(record))
+
+  return sorted(records)
 
 
 class ConstraintAllocationDeterminismTest(parameterized.TestCase):
@@ -308,6 +338,10 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
     ("humanoid/humanoid.xml", 4, "DENSE"),
     ("humanoid/humanoid.xml", 1, "SPARSE"),
     ("humanoid/humanoid.xml", 4, "SPARSE"),
+    ("collision.xml", 1, "DENSE"),
+    ("collision.xml", 4, "DENSE"),
+    ("collision.xml", 1, "SPARSE"),
+    ("collision.xml", 4, "SPARSE"),
   )
   def test_efc_J_deterministic(self, path, nworld, jacobian):
     """Jacobian values (and sparse metadata) are bitwise identical across runs."""
@@ -328,6 +362,26 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
             results[run][field],
             err_msg=f"efc.{field} differs: run 0 vs run {run} ({path}, nworld={nworld}, {jacobian})",
           )
+
+  @parameterized.parameters(
+    ("collision.xml", 1, "DENSE"),
+    ("collision.xml", 1, "SPARSE"),
+  )
+  def test_deterministic_matches_nondeterministic_row_multiset(self, path, nworld, jacobian):
+    """Deterministic allocation preserves the same efc row contents as the legacy path."""
+    deterministic = _run_and_collect_efc(path, nworld, _NSTEPS, True, jacobian)
+    nondeterministic = _run_and_collect_efc(path, nworld, _NSTEPS, False, jacobian)
+
+    self.assertGreater(deterministic["nefc"].sum(), 0)
+    np.testing.assert_array_equal(
+      deterministic["nefc"],
+      nondeterministic["nefc"],
+      err_msg=f"nefc differs between det off/on ({path}, nworld={nworld}, {jacobian})",
+    )
+    self.assertListEqual(
+      _sorted_efc_row_records(deterministic),
+      _sorted_efc_row_records(nondeterministic),
+    )
 
   @parameterized.parameters(
     ("humanoid/humanoid.xml", 16, "DENSE"),
@@ -380,17 +434,22 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
     m.opt.deterministic = False
     # With det=False the overflow check should not run even if we set njmax
     # artificially. The existing silent-return-on-overflow behavior is
-    # preserved — we just need it to not crash.
+    # preserved - we just need it to not crash.
     # Step once with normal njmax to confirm baseline.
     mjw.step(m, d)
 
 
-class DeterminismBenchmarkCollectionTest(absltest.TestCase):
+class DeterminismBenchmarkCollectionTest(parameterized.TestCase):
   """Tests for deterministic benchmark data collection."""
 
-  def test_benchmark_graph_capture_nondeterministic(self):
+  @parameterized.parameters(
+    ("NEWTON", "DENSE"),
+    ("CG", "SPARSE"),
+  )
+  def test_benchmark_graph_capture_nondeterministic(self, solver, jacobian):
     """The existing CUDA-graph benchmark path still works for det=False."""
-    _, _, m, d = test_data.fixture(path="collision.xml", nworld=1)
+    overrides = {"opt.solver": solver, "opt.jacobian": jacobian}
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=1, overrides=overrides)
     m.opt.deterministic = False
 
     jit_duration, run_duration, _, nacon, nefc, _, nsuccess = benchmark(
@@ -408,9 +467,14 @@ class DeterminismBenchmarkCollectionTest(absltest.TestCase):
     self.assertLen(nefc, 2)
     self.assertEqual(nsuccess, d.nworld)
 
-  def test_benchmark_deterministic_without_cuda_graph(self):
+  @parameterized.parameters(
+    ("NEWTON", "DENSE"),
+    ("CG", "SPARSE"),
+  )
+  def test_benchmark_deterministic_without_cuda_graph(self, solver, jacobian):
     """Deterministic benchmark collection works with CUDA graphs disabled."""
-    _, _, m, d = test_data.fixture(path="collision.xml", nworld=1)
+    overrides = {"opt.solver": solver, "opt.jacobian": jacobian}
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=1, overrides=overrides)
     m.opt.deterministic = True
 
     jit_duration, run_duration, _, nacon, nefc, _, nsuccess = benchmark(
