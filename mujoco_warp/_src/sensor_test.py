@@ -469,7 +469,7 @@ class SensorTest(parameterized.TestCase):
       xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.disableflags": DisableBit.CONSTRAINT}
     )
 
-    d.energy.zero_()
+    d.energy.fill_(wp.inf)
 
     mujoco.mj_energyPos(mjm, mjd)
     mjw.energy_pos(m, d)

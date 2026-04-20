@@ -722,16 +722,17 @@ class CollisionTest(parameterized.TestCase):
     )
     self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == 0).all())
 
+    d.nacon.zero_()
+    d.contact.dim.zero_()
+
     for arr in (
-      d.nacon,
       d.contact.includemargin,
-      d.contact.dim,
       d.contact.friction,
       d.contact.solref,
       d.contact.solreffriction,
       d.contact.solimp,
     ):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.collision(m, d)
 
@@ -765,16 +766,17 @@ class CollisionTest(parameterized.TestCase):
     )
     self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == 0).all())
 
+    d.nacon.zero_()
+    d.contact.dim.zero_()
+
     for arr in (
-      d.nacon,
       d.contact.includemargin,
-      d.contact.dim,
       d.contact.friction,
       d.contact.solref,
       d.contact.solreffriction,
       d.contact.solimp,
     ):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.collision(m, d)
 
@@ -809,16 +811,17 @@ class CollisionTest(parameterized.TestCase):
     )
     self.assertTrue((m.nxn_pairid.numpy()[:][:, 0] == 0).all())
 
+    d.nacon.zero_()
+    d.contact.dim.zero_()
+
     for arr in (
-      d.nacon,
       d.contact.includemargin,
-      d.contact.dim,
       d.contact.friction,
       d.contact.solref,
       d.contact.solreffriction,
       d.contact.solimp,
     ):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.collision(m, d)
 
@@ -857,16 +860,17 @@ class CollisionTest(parameterized.TestCase):
     )
     np.testing.assert_equal(m.nxn_pairid.numpy()[:][:, 0], np.array([-2, -1, 0]))
 
+    d.nacon.zero_()
+    d.contact.dim.zero_()
+
     for arr in (
-      d.nacon,
       d.contact.includemargin,
-      d.contact.dim,
       d.contact.friction,
       d.contact.solref,
       d.contact.solreffriction,
       d.contact.solimp,
     ):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.collision(m, d)
 
