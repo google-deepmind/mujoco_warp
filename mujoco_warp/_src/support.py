@@ -415,7 +415,7 @@ def jac_dof(
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
-  dof_affects_body: wp.array2d[int],
+  body_isdofancestor: wp.array2d[int],
   # Data in:
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
@@ -425,7 +425,7 @@ def jac_dof(
   dofid: int,
   worldid: int,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  if dof_affects_body[bodyid, dofid] == 0:
+  if body_isdofancestor[bodyid, dofid] == 0:
     return wp.vec3(0.0), wp.vec3(0.0)
 
   offset = point - wp.vec3(subtree_com_in[worldid, body_rootid[bodyid]])
@@ -448,7 +448,7 @@ def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
     dof_bodyid: wp.array[int],
-    dof_affects_body: wp.array2d[int],
+    body_isdofancestor: wp.array2d[int],
     # Data in:
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
@@ -465,7 +465,7 @@ def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
       body_parentid,
       body_rootid,
       dof_bodyid,
-      dof_affects_body,
+      body_isdofancestor,
       subtree_com_in,
       cdof_in,
       point_in[worldid],
@@ -514,7 +514,7 @@ def jac(
   wp.launch(
     kernel,
     dim=(d.nworld, m.nv),
-    inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, m.dof_affects_body, d.subtree_com, d.cdof, point, body],
+    inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor, d.subtree_com, d.cdof, point, body],
     outputs=[jacp_arr, jacr_arr],
   )
 
@@ -528,7 +528,7 @@ def jac_dot_dof(
   jnt_dofadr: wp.array[int],
   dof_bodyid: wp.array[int],
   dof_jntid: wp.array[int],
-  dof_affects_body: wp.array2d[int],
+  body_isdofancestor: wp.array2d[int],
   # Data in:
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
@@ -540,7 +540,7 @@ def jac_dot_dof(
   dofid: int,
   worldid: int,
 ) -> Tuple[wp.vec3, wp.vec3]:
-  if dof_affects_body[bodyid, dofid] == 0:
+  if body_isdofancestor[bodyid, dofid] == 0:
     return wp.vec3(0.0), wp.vec3(0.0)
 
   com = subtree_com_in[worldid, body_rootid[bodyid]]
