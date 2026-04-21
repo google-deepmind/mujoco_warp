@@ -24,8 +24,7 @@ Example:
 import dataclasses
 import inspect
 import sys
-import typing
-from typing import Annotated, Sequence
+from typing import Sequence
 
 import mujoco
 import numpy as np
@@ -78,7 +77,6 @@ _USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
 
 def _main(argv: Sequence[str]):
   """Run the benchmark."""
-
   if len(argv) < 2:
     raise app.UsageError("Missing required input: mjcf path.")
   elif len(argv) > 2:
@@ -112,7 +110,7 @@ def _main(argv: Sequence[str]):
   if _REPLAY.value:
     keys = find_keys(mjm, _REPLAY.value)
     if not keys:
-      raise app.UsageError(f"Key prefix not find: {_REPLAY.value}")
+      raise app.UsageError(f"Key prefix not found: {_REPLAY.value}")
     ctrls = make_trajectory(mjm, keys)
     mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
   elif mjm.nkey > 0 and _KEYFRAME.value > -1:
@@ -150,11 +148,6 @@ def _main(argv: Sequence[str]):
 
   # Option
   print("Option")
-  disable_names = [f.name for f in mjw.DisableBit if m.opt.disableflags & f]
-  enable_names = [f.name for f in mjw.EnableBit if m.opt.enableflags & f]
-  disableflags_str = ", ".join(disable_names) if disable_names else "none"
-  enableflags_str = ", ".join(enable_names) if enable_names else "none"
-
   if _INFO.value:
     print(
       f"  timestep: {m.opt.timestep.numpy()[0]:g}\n"
@@ -168,8 +161,8 @@ def _main(argv: Sequence[str]):
       f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations}\n"
       f"  ccd_iterations: {m.opt.ccd_iterations}\n"
       f"  sdf_initpoints: {m.opt.sdf_initpoints} sdf_iterations: {m.opt.sdf_iterations}\n"
-      f"  disableflags: [{disableflags_str}]\n"
-      f"  enableflags: [{enableflags_str}]\n"
+      f"  disableflags: [{mjw.DisableBit(m.opt.disableflags).name or 'none'}]\n"
+      f"  enableflags: [{mjw.EnableBit(m.opt.enableflags).name or 'none'}]\n"
       f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
       f"  is_sparse: {m.is_sparse}\n"
       f"  ls_parallel: {m.opt.ls_parallel} ls_parallel_min_step: {m.opt.ls_parallel_min_step:g}\n"
