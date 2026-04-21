@@ -1195,7 +1195,9 @@ def _cfrc(
   cfrc_int_out: wp.array2d[wp.spatial_vector],
 ):
   worldid, bodyid = wp.tid()
-  bodyid += 1  # skip world body
+  if bodyid == 0:
+    cfrc_int_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    return
   cacc = cacc_in[worldid, bodyid]
   cinert = cinert_in[worldid, bodyid]
   cvel = cvel_in[worldid, bodyid]
@@ -1208,9 +1210,7 @@ def _cfrc(
 
 
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
-  wp.launch(
-    _cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[d.cfrc_int]
-  )
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[d.cfrc_int])
 
 
 @wp.kernel
@@ -1981,6 +1981,9 @@ def _comvel_branch(
         cvel += cdof[dofid + 1] * qvel[dofid + 1]
         cvel += cdof[dofid + 2] * qvel[dofid + 2]
 
+        cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
         cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
         cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])

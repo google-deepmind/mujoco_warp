@@ -107,7 +107,7 @@ class InverseTest(parameterized.TestCase):
     qfrc_inverse = d.qfrc_applied.numpy()[0] + d.qfrc_actuator.numpy()[0] + qfrc_xfrc_applied.numpy()[0]
 
     for arr in (d.qfrc_constraint, d.qfrc_inverse):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.inverse(m, d)
 
@@ -156,7 +156,7 @@ class InverseTest(parameterized.TestCase):
     qfrc_inverse = d.qfrc_applied.numpy()[0] + d.qfrc_actuator.numpy()[0] + qfrc_xfrc_applied.numpy()[0]
 
     for arr in (d.qfrc_constraint, d.qfrc_inverse):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.inverse(m, d)
 

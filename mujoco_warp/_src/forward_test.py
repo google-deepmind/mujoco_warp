@@ -46,7 +46,7 @@ class ForwardTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture(xml, qvel_noise=0.01, ctrl_noise=0.1)
 
     for arr in (d.actuator_velocity, d.qfrc_bias):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.fwd_velocity(m, d)
 
@@ -57,7 +57,7 @@ class ForwardTest(parameterized.TestCase):
   def test_fwd_velocity_tendon(self, jacobian):
     _, mjd, m, d = test_data.fixture("tendon/fixed.xml", overrides={"opt.jacobian": jacobian})
 
-    d.ten_velocity.zero_()
+    d.ten_velocity.fill_(wp.inf)
     mjw.fwd_velocity(m, d)
 
     _assert_eq(d.ten_velocity.numpy()[0], mjd.ten_velocity, "ten_velocity")
@@ -70,7 +70,7 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, overrides={"opt.disableflags": disableflags})
 
     for arr in (d.qfrc_actuator, d.actuator_force, d.act_dot):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.fwd_actuation(m, d)
 
@@ -117,7 +117,7 @@ class ForwardTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture("humanoid/humanoid.xml", qvel_noise=0.01, ctrl_noise=0.1)
 
     for arr in (d.qfrc_smooth, d.qacc_smooth):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.fwd_acceleration(m, d)
 
@@ -304,7 +304,7 @@ class ForwardTest(parameterized.TestCase):
         "actuation/tendon_force_limit.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian}
       )
 
-      d.actuator_force.zero_()
+      d.actuator_force.fill_(wp.inf)
 
       mjw.forward(m, d)
 
@@ -596,10 +596,10 @@ class ForwardTest(parameterized.TestCase):
     self.assertEqual(d.ctrl.numpy()[0, 0], 2.0)
 
     # reset ctrl, disable actuation, verify callback not called
-    d.ctrl.zero_()
+    d.ctrl.fill_(5.0)
     m.opt.disableflags |= DisableBit.ACTUATION
     mjw.forward(m, d)
-    self.assertEqual(d.ctrl.numpy()[0, 0], 0.0)
+    self.assertEqual(d.ctrl.numpy()[0, 0], 5.0)
 
   @parameterized.product(
     frequency=(1.5, 0.5),

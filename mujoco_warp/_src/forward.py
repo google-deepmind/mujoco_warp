@@ -837,6 +837,7 @@ def fwd_actuation(m: Model, d: Data):
   if not m.nu or (m.opt.disableflags & DisableBit.ACTUATION):
     d.act_dot.zero_()
     d.qfrc_actuator.zero_()
+    d.actuator_force.zero_()
     return
 
   wp.launch(
