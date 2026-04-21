@@ -1183,7 +1183,7 @@ def put_data(
       if mujoco.mj_isSparse(mjm):
         mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
       else:
-        mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+        mj_efc_J = mjd.efc_J.reshape((-1, mjm.nv))[: mjd.nefc]
     efc_J = np.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
     efc_J[:, : mjd.nefc, : mjm.nv] = np.tile(mj_efc_J, (nworld, 1, 1))
     efc.J = wp.array(efc_J, dtype=float)
