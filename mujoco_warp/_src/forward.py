@@ -42,7 +42,6 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10f
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -275,11 +274,29 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 
 
 @wp.kernel
+def _compute_damping_deriv(
+  # Model:
+  dof_damping: wp.array2d[float],
+  dof_dampingpoly: wp.array2d[wp.vec2],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  # Out:
+  deriv_out: wp.array2d[float],
+):
+  worldid, tid = wp.tid()
+  damping = dof_damping[worldid % dof_damping.shape[0], tid]
+  dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], tid]
+  v = qvel_in[worldid, tid]
+  deriv_out[worldid, tid] = util_misc._poly_force_deriv(damping, dpoly, v, 1)
+
+
+@wp.kernel
 def _euler_damp_qfrc_sparse(
   # Model:
   opt_timestep: wp.array[float],
   dof_Madr: wp.array[int],
-  dof_damping: wp.array2d[float],
+  # In:
+  damp_deriv: wp.array2d[float],
   # Out:
   qM_integration_out: wp.array3d[float],
 ):
@@ -287,20 +304,19 @@ def _euler_damp_qfrc_sparse(
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += timestep * dof_damping[worldid % dof_damping.shape[0], tid]
+  qM_integration_out[worldid, 0, adr] += timestep * damp_deriv[worldid, tid]
 
 
-@cache_kernel
 def _tile_euler_dense(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def euler_dense(
     # Model:
     opt_timestep: wp.array[float],
-    dof_damping: wp.array2d[float],
     # Data in:
     qM_in: wp.array3d[float],
     efc_Ma_in: wp.array2d[float],
     # In:
+    damp_deriv: wp.array2d[float],
     adr_in: wp.array[int],
     # Data out:
     qacc_out: wp.array2d[float],
@@ -311,7 +327,7 @@ def _tile_euler_dense(tile: TileSet):
 
     dofid = adr_in[nodeid]
     M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    damping_tile = wp.tile_load(dof_damping[worldid % dof_damping.shape[0]], shape=(TILE_SIZE,), offset=(dofid,))
+    damping_tile = wp.tile_load(damp_deriv[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     damping_scaled = damping_tile * timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
@@ -329,6 +345,16 @@ def euler(m: Model, d: Data):
   # integrate damping implicitly
   if not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER)):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
+
+    # Compute damping derivative
+    damp_deriv = wp.empty((d.nworld, m.nv), dtype=float)
+    wp.launch(
+      _compute_damping_deriv,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_damping, m.dof_dampingpoly, d.qvel],
+      outputs=[damp_deriv],
+    )
+
     if m.is_sparse:
       qM = wp.clone(d.qM)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
@@ -336,7 +362,7 @@ def euler(m: Model, d: Data):
       wp.launch(
         _euler_damp_qfrc_sparse,
         dim=(d.nworld, m.nv),
-        inputs=[m.opt.timestep, m.dof_Madr, m.dof_damping],
+        inputs=[m.opt.timestep, m.dof_Madr, damp_deriv],
         outputs=[qM],
       )
       smooth.factor_solve_i(m, d, qM, qLD, qLDiagInv, qacc, d.efc.Ma)
@@ -345,7 +371,7 @@ def euler(m: Model, d: Data):
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
-          inputs=[m.opt.timestep, m.dof_damping, d.qM, d.efc.Ma, tile.adr],
+          inputs=[m.opt.timestep, d.qM, d.efc.Ma, damp_deriv, tile.adr],
           outputs=[qacc],
           block_dim=m.block_dim.euler_dense,
         )
@@ -839,6 +865,7 @@ def fwd_actuation(m: Model, d: Data):
   if not m.nu or (m.opt.disableflags & DisableBit.ACTUATION):
     d.act_dot.zero_()
     d.qfrc_actuator.zero_()
+    d.actuator_force.zero_()
     return
 
   wp.launch(
