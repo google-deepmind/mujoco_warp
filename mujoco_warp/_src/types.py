@@ -251,6 +251,7 @@ class DynType(enum.IntEnum):
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
+    DCMOTOR: DC motor dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -259,6 +260,7 @@ class DynType(enum.IntEnum):
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
+  DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
 
 
 class GainType(enum.IntEnum):
@@ -269,12 +271,14 @@ class GainType(enum.IntEnum):
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
+    DCMOTOR: DC motor gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
+  DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
 
 
 class BiasType(enum.IntEnum):
@@ -285,12 +289,14 @@ class BiasType(enum.IntEnum):
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
     USER: user-defined bias via act_bias_callback
+    DCMOTOR: DC motor back-EMF bias
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
   USER = mujoco.mjtBias.mjBIAS_USER
+  DCMOTOR = mujoco.mjtBias.mjBIAS_DCMOTOR
 
 
 class JointType(enum.IntEnum):
@@ -643,6 +649,10 @@ class vec5f(wp.types.vector(length=5, dtype=float)):
 
 
 class vec6f(wp.types.vector(length=6, dtype=float)):
+  pass
+
+
+class vec6i(wp.types.vector(length=6, dtype=int)):
   pass
 
 
