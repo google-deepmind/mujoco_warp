@@ -630,3 +630,34 @@ def inside_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, geomtype: int, point
     return plocal[2] < 0.0
 
   return False
+
+
+@wp.func
+def _poly_force(linear: float, poly: wp.vec2, x: float, flg_odd: int) -> float:
+  x_val = wp.where(flg_odd == 1, wp.abs(x), x)
+  res = linear
+  res += poly[0] * x_val
+  res += poly[1] * x_val * x_val
+  return res
+
+
+@wp.func
+def _poly_force_deriv(linear: float, poly: wp.vec2, x: float, flg_odd: int) -> float:
+  x_val = wp.where(flg_odd == 1, wp.abs(x), x)
+  res = linear
+  res += 2.0 * poly[0] * x_val
+  res += 3.0 * poly[1] * x_val * x_val
+  return res
+
+
+@wp.func
+def poly_potential(linear: float, poly: wp.vec2, x: float, flg_odd: int) -> float:
+  x_val = wp.where(flg_odd == 1, wp.abs(x), x)
+  x_val2 = x_val * x_val
+  x_val3 = x_val2 * x_val
+  x_val4 = x_val3 * x_val
+
+  res = 0.5 * linear * x_val2
+  res += poly[0] * wp.static(1.0 / 3.0) * x_val3
+  res += poly[1] * 0.25 * x_val4
+  return res

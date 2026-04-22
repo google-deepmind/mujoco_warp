@@ -17,6 +17,7 @@ import warp as wp
 
 from mujoco_warp._src import math
 from mujoco_warp._src import support
+from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -76,7 +77,9 @@ def _spring_damper_dof_passive(
   jnt_qposadr: wp.array[int],
   jnt_dofadr: wp.array[int],
   jnt_stiffness: wp.array2d[float],
+  jnt_stiffnesspoly: wp.array2d[wp.vec2],
   dof_damping: wp.array2d[float],
+  dof_dampingpoly: wp.array2d[wp.vec2],
   # Data in:
   qpos_in: wp.array2d[float],
   qvel_in: wp.array2d[float],
@@ -86,22 +89,37 @@ def _spring_damper_dof_passive(
 ):
   worldid, jntid = wp.tid()
   dofid = jnt_dofadr[jntid]
+  jnttype = jnt_type[jntid]
   stiffness = jnt_stiffness[worldid % jnt_stiffness.shape[0], jntid]
+  spoly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
   damping = dof_damping[worldid % dof_damping.shape[0], dofid]
+  dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dofid]
 
-  has_stiffness = stiffness != 0.0 and not (opt_disableflags & DisableBit.SPRING)
-  has_damping = damping != 0.0 and not (opt_disableflags & DisableBit.DAMPER)
+  has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and not (opt_disableflags & DisableBit.SPRING)
+  has_damping = (damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0) and not (opt_disableflags & DisableBit.DAMPER)
 
   if not has_stiffness:
-    qfrc_spring_out[worldid, dofid] = 0.0
+    if jnttype == JointType.FREE:
+      for i in range(6):
+        qfrc_spring_out[worldid, dofid + i] = 0.0
+    elif jnttype == JointType.BALL:
+      for i in range(3):
+        qfrc_spring_out[worldid, dofid + i] = 0.0
+    else:
+      qfrc_spring_out[worldid, dofid] = 0.0
 
   if not has_damping:
-    qfrc_damper_out[worldid, dofid] = 0.0
+    if jnttype == JointType.FREE:
+      for i in range(6):
+        qfrc_damper_out[worldid, dofid + i] = 0.0
+    elif jnttype == JointType.BALL:
+      for i in range(3):
+        qfrc_damper_out[worldid, dofid + i] = 0.0
+    else:
+      qfrc_damper_out[worldid, dofid] = 0.0
 
   if not (has_stiffness or has_damping):
     return
-
-  jnttype = jnt_type[jntid]
   qposid = jnt_qposadr[jntid]
   qpos_spring_id = worldid % qpos_spring.shape[0]
 
@@ -113,9 +131,12 @@ def _spring_damper_dof_passive(
         qpos_in[worldid, qposid + 1] - qpos_spring[qpos_spring_id, qposid + 1],
         qpos_in[worldid, qposid + 2] - qpos_spring[qpos_spring_id, qposid + 2],
       )
-      qfrc_spring_out[worldid, dofid + 0] = -stiffness * dif[0]
-      qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
-      qfrc_spring_out[worldid, dofid + 2] = -stiffness * dif[2]
+      r = wp.length(dif)
+      k = util_misc._poly_force(stiffness, spoly, r, 0)
+      qfrc_spring_out[worldid, dofid + 0] = -k * dif[0]
+      qfrc_spring_out[worldid, dofid + 1] = -k * dif[1]
+      qfrc_spring_out[worldid, dofid + 2] = -k * dif[2]
+
       rot = wp.quat(
         qpos_in[worldid, qposid + 3],
         qpos_in[worldid, qposid + 4],
@@ -130,18 +151,18 @@ def _spring_damper_dof_passive(
         qpos_spring[qpos_spring_id, qposid + 6],
       )
       dif = math.quat_sub(rot, ref)
-      qfrc_spring_out[worldid, dofid + 3] = -stiffness * dif[0]
-      qfrc_spring_out[worldid, dofid + 4] = -stiffness * dif[1]
-      qfrc_spring_out[worldid, dofid + 5] = -stiffness * dif[2]
+      r_rot = wp.length(dif)
+      k_rot = util_misc._poly_force(stiffness, spoly, r_rot, 0)
+      qfrc_spring_out[worldid, dofid + 3] = -k_rot * dif[0]
+      qfrc_spring_out[worldid, dofid + 4] = -k_rot * dif[1]
+      qfrc_spring_out[worldid, dofid + 5] = -k_rot * dif[2]
 
     # damper
     if has_damping:
-      qfrc_damper_out[worldid, dofid + 0] = -damping * qvel_in[worldid, dofid + 0]
-      qfrc_damper_out[worldid, dofid + 1] = -damping * qvel_in[worldid, dofid + 1]
-      qfrc_damper_out[worldid, dofid + 2] = -damping * qvel_in[worldid, dofid + 2]
-      qfrc_damper_out[worldid, dofid + 3] = -damping * qvel_in[worldid, dofid + 3]
-      qfrc_damper_out[worldid, dofid + 4] = -damping * qvel_in[worldid, dofid + 4]
-      qfrc_damper_out[worldid, dofid + 5] = -damping * qvel_in[worldid, dofid + 5]
+      for i in range(6):
+        v = qvel_in[worldid, dofid + i]
+        qfrc_damper_out[worldid, dofid + i] = -v * util_misc._poly_force(damping, dpoly, v, 1)
+
   elif jnttype == JointType.BALL:
     # spring
     if has_stiffness:
@@ -159,24 +180,28 @@ def _spring_damper_dof_passive(
         qpos_spring[qpos_spring_id, qposid + 3],
       )
       dif = math.quat_sub(rot, ref)
-      qfrc_spring_out[worldid, dofid + 0] = -stiffness * dif[0]
-      qfrc_spring_out[worldid, dofid + 1] = -stiffness * dif[1]
-      qfrc_spring_out[worldid, dofid + 2] = -stiffness * dif[2]
+      r = wp.length(dif)
+      k = util_misc._poly_force(stiffness, spoly, r, 0)
+      qfrc_spring_out[worldid, dofid + 0] = -k * dif[0]
+      qfrc_spring_out[worldid, dofid + 1] = -k * dif[1]
+      qfrc_spring_out[worldid, dofid + 2] = -k * dif[2]
 
     # damper
     if has_damping:
-      qfrc_damper_out[worldid, dofid + 0] = -damping * qvel_in[worldid, dofid + 0]
-      qfrc_damper_out[worldid, dofid + 1] = -damping * qvel_in[worldid, dofid + 1]
-      qfrc_damper_out[worldid, dofid + 2] = -damping * qvel_in[worldid, dofid + 2]
+      for i in range(3):
+        v = qvel_in[worldid, dofid + i]
+        qfrc_damper_out[worldid, dofid + i] = -v * util_misc._poly_force(damping, dpoly, v, 1)
+
   else:  # mjJNT_SLIDE, mjJNT_HINGE
     # spring
     if has_stiffness:
       fdif = qpos_in[worldid, qposid] - qpos_spring[qpos_spring_id, qposid]
-      qfrc_spring_out[worldid, dofid] = -stiffness * fdif
+      qfrc_spring_out[worldid, dofid] = -fdif * util_misc._poly_force(stiffness, spoly, fdif, 0)
 
     # damper
     if has_damping:
-      qfrc_damper_out[worldid, dofid] = -damping * qvel_in[worldid, dofid]
+      v = qvel_in[worldid, dofid]
+      qfrc_damper_out[worldid, dofid] = -v * util_misc._poly_force(damping, dpoly, v, 1)
 
 
 @wp.kernel
@@ -186,7 +211,9 @@ def _spring_damper_tendon_passive(
   ten_J_rowadr: wp.array[int],
   ten_J_colind: wp.array[int],
   tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
   tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
   tendon_lengthspring: wp.array2d[wp.vec2],
   # Data in:
   ten_J_in: wp.array2d[float],
@@ -202,10 +229,12 @@ def _spring_damper_tendon_passive(
   worldid, tenid, dofid_sparse = wp.tid()
 
   stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
+  spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
   damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
+  dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
 
-  has_stiffness = stiffness != 0.0 and not dsbl_spring
-  has_damping = damping != 0.0 and not dsbl_damper
+  has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and not dsbl_spring
+  has_damping = (damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0) and not dsbl_damper
 
   if not has_stiffness and not has_damping:
     return
@@ -225,19 +254,16 @@ def _spring_damper_tendon_passive(
     lower = lengthspring[0]
     upper = lengthspring[1]
 
-    if length > upper:
-      frc_spring = stiffness * (upper - length)
-    elif length < lower:
-      frc_spring = stiffness * (lower - length)
-    else:
-      frc_spring = 0.0
+    x = wp.where(length > upper, length - upper, wp.where(length < lower, length - lower, 0.0))
+    frc_spring = -x * util_misc._poly_force(stiffness, spoly, x, 0)
 
     # transform to joint torque
     wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
 
   if has_damping:
-    # compute damper linear force along tendon
-    frc_damper = -damping * ten_velocity_in[worldid, tenid]
+    # compute damper force along tendon
+    v = ten_velocity_in[worldid, tenid]
+    frc_damper = -v * util_misc._poly_force(damping, dpoly, v, 1)
 
     # transform to joint torque
     wp.atomic_add(qfrc_damper_out[worldid], dofid, J * frc_damper)
@@ -749,7 +775,9 @@ def passive(m: Model, d: Data):
       m.jnt_qposadr,
       m.jnt_dofadr,
       m.jnt_stiffness,
+      m.jnt_stiffnesspoly,
       m.dof_damping,
+      m.dof_dampingpoly,
       d.qpos,
       d.qvel,
     ],
@@ -765,7 +793,9 @@ def passive(m: Model, d: Data):
         m.ten_J_rowadr,
         m.ten_J_colind,
         m.tendon_stiffness,
+        m.tendon_stiffnesspoly,
         m.tendon_damping,
+        m.tendon_dampingpoly,
         m.tendon_lengthspring,
         d.ten_J,
         d.ten_length,
