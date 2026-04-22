@@ -2741,21 +2741,21 @@ def create_render_context(
   flex_geom_flexid = []
   flex_geom_edgeid = []
   flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
-  flex_group_root = np.zeros((nflex, nworld), dtype=int)
+  # Indexed later as [worldid, flexid].
+  flex_group_root = np.full((nworld, nflex), -1, dtype=int)
 
   for f in range(nflex):
     if mjm.flex_dim[f] == 1:
       edge_adr = mjm.flex_edgeadr[f]
       flex_geom_flexid.extend([f] * mjm.flex_edgenum[f])
       flex_geom_edgeid.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
-      flex_group_root[f] = np.zeros(nworld, dtype=int)
     else:
       flex_geom_flexid.append(f)
       flex_geom_edgeid.append(-1)
       fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
       flex_registry[f] = fmesh
       flex_bvh_id[f] = fmesh.id
-      flex_group_root[f] = group_root.numpy()
+      flex_group_root[:, f] = group_root.numpy()
 
   textures_registry = []
   for i in range(mjm.ntex):
