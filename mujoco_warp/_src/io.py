@@ -269,19 +269,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # precompute body_isdofancestor: which DOFs affect each body
   body_isdofancestor = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
   for bodyid in range(mjm.nbody):
-    for dofid in range(mjm.nv):
-      dof_bodyid = mjm.dof_bodyid[dofid]
-      # world body (0) affects everything
-      if dof_bodyid == 0:
-        body_isdofancestor[bodyid, dofid] = 1
-        continue
-      # walk up from bodyid to root, check if dof's body is an ancestor
-      parentid = bodyid
-      while parentid != 0:
-        if parentid == dof_bodyid:
-          body_isdofancestor[bodyid, dofid] = 1
-          break
-        parentid = mjm.body_parentid[parentid]
+    b = bodyid
+    while b > 0 and mjm.body_dofnum[b] == 0:
+      b = mjm.body_parentid[b]
+    if mjm.body_dofnum[b] == 0:
+      continue
+    dofid = mjm.body_dofadr[b] + mjm.body_dofnum[b] - 1
+    while dofid >= 0:
+      body_isdofancestor[bodyid, dofid] = 1
+      dofid = mjm.dof_parentid[dofid]
   m.body_isdofancestor = body_isdofancestor
 
   # precalculated geom pairs
