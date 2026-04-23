@@ -4,7 +4,7 @@ BENCHMARKS = [
     "mjcf": "humanoid.xml",
     "nworld": 8192,
     "nconmax": 24,
-    "njmax": 72,
+    "njmax": 64,
   },
   {
     "name": "three_humanoids",

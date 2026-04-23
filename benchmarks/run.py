@@ -1,22 +1,39 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""run.py: runs MuJoCo Warp benchmarks.
+
+Usage: python benchmarks/run.py [flags]
+
+Example:
+  python benchmarks/run.py -f humanoid
+"""
+
 import importlib
 import os
 import re
 import shutil
 import subprocess
-import tempfile
 from typing import Sequence
 
-import mujoco
-import warp as wp
 from absl import app
 from absl import flags
 
-import mujoco_warp as mjw
-from mujoco_warp._src.io import find_keys
-from mujoco_warp._src.io import make_trajectory
-
 _FILTER = flags.DEFINE_string("filter", "", "filter benchmarks by name (regex)", short_name="f")
-_CACHE_DIR = flags.DEFINE_string("cache_dir", "mjwarp_benchmarks_cache", "directory to cache benchmark assets")
+_ASSET_BASE = flags.DEFINE_string("assets", "/tmp/benchmark_assets", "directory to assemble benchmark assets")
+_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
 
 
 def _asset_dir(asset: dict) -> str:
@@ -33,17 +50,18 @@ def _asset_fetch(asset: dict, dst_dir: str):
   uri = asset["source"]
   if uri.endswith(".git"):
     ref = asset["ref"]
-    subprocess.run(["git", "clone", uri, dst_dir, "--depth", "1", "--revision", ref], check=True)
+    subprocess.run(
+      ["git", "clone", uri, dst_dir, "--depth", "1", "--revision", ref],
+      check=True,
+      stdout=subprocess.STD_ERROR_HANDLE,
+      stderr=subprocess.STD_ERROR_HANDLE,
+    )
   else:
     raise ValueError(f"Unsupported asset uri: {uri}")
 
 
 def _main(argv: Sequence[str]):
   script_dir = os.path.dirname(os.path.abspath(__file__))
-  cache_dir = os.path.join(tempfile.gettempdir(), _CACHE_DIR.value)
-
-  wp.config.quiet = True
-  wp.init()
 
   # Find all directories in benchmarks/
   for item in os.listdir(script_dir):
@@ -53,50 +71,68 @@ def _main(argv: Sequence[str]):
     module = importlib.import_module(item)
 
     for asset in getattr(module, "ASSETS", []):
-      asset_dir = os.path.join(cache_dir, _asset_dir(asset))
+      asset_dir = os.path.join(_ASSET_BASE.value, _asset_dir(asset))
       if not os.path.exists(asset_dir):
         _asset_fetch(asset, asset_dir)
 
     for bm in getattr(module, "BENCHMARKS", []):
       name = bm["name"]
+      nstep = bm.get("nstep", 1000)
 
       if _FILTER.value and not re.search(_FILTER.value, name):
         continue
 
-      benchmark_dir = os.path.join(cache_dir, name)
+      benchmark_dir = os.path.join(_ASSET_BASE.value, name)
       if os.path.exists(benchmark_dir):
         shutil.rmtree(benchmark_dir)
       os.makedirs(benchmark_dir)
 
       # copy in any assets
       for asset, subpath in bm.get("assets", []):
-        shutil.copytree(os.path.join(cache_dir, _asset_dir(asset), subpath), benchmark_dir, dirs_exist_ok=True)
+        shutil.copytree(os.path.join(_ASSET_BASE.value, _asset_dir(asset), subpath), benchmark_dir, dirs_exist_ok=True)
 
       # copy in benchmark files
       shutil.copytree(item_path, benchmark_dir, dirs_exist_ok=True)
 
       xml_path = os.path.join(benchmark_dir, bm["mjcf"])
 
-      mjm = mujoco.MjModel.from_xml_path(xml_path)
-      mjd = mujoco.MjData(mjm)
+      # Build command for testspeed
+      cmd = [
+        "mjwarp-testspeed",
+        xml_path,
+        f"--nworld={bm['nworld']}",
+        f"--nstep={nstep}",
+        "--format=short",
+        "--event_trace=true",
+        "--memory=true",
+        "--measure_solver=true",
+        "--measure_alloc=true",
+        f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}",
+      ]
+      for field in ("nconmax", "njmax", "replay"):
+        if field in bm:
+          cmd.append(f"--{field}={bm[field]}")
 
-      ctrls = None
-      if "replay" in bm:
-        keys = find_keys(mjm, bm["replay"])
-        if not keys:
-          raise app.UsageError(f"Key prefix not found: {bm['replay']}")
-        ctrls = make_trajectory(mjm, keys)
-        mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
-      elif mjm.nkey > 0 and _KEYFRAME.value > -1:
-        mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
-        if ctrls is None:
-          ctrls = [mjd.ctrl.copy() for _ in range(_NSTEP.value)]
+      # Run testspeed
+      result = subprocess.run(cmd, capture_output=True, text=True)
+      if result.returncode != 0:
+        print(f"Error running benchmark {name}:")
+        print(result.stderr)
+        continue
 
-      m, d, metrics = mjw.benchmark.init(mjm, mjd, bm["nworld"], bm["nconmax"], bm["njmax"])
-      metrics = mjw.benchmark.run(mjw.step, m, d, metrics, bm.get("nstep", 1000), None, True)
+      # Parse output
+      for line in result.stdout.splitlines():
+        if not line.strip():
+          continue
+        parts = line.split()
+        if len(parts) >= 2:
+          key = parts[0]
+          value = " ".join(parts[1:])
+          print(f"{name}.{key} {value}")
 
-      for metric in metrics.to_short().split("\n"):
-        print(f"{name}.{metric}")
+
+if __name__ == "__main__":
+  app.run(_main)
 
 
 if __name__ == "__main__":

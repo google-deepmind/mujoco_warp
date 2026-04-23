@@ -28,7 +28,7 @@ from mujoco_warp._src.types import Model as Model
 from mujoco_warp._src.types import Data as Data
 # isort: on
 
-from mujoco_warp._src import benchmark as benchmark
+
 from mujoco_warp._src.bvh import refit_bvh as refit_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase

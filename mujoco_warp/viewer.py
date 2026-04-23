@@ -24,7 +24,6 @@ Example:
 import copy
 import enum
 import logging
-import shutil
 import sys
 import time
 from typing import Sequence
@@ -52,16 +51,16 @@ class EngineOptions(enum.IntEnum):
   C = 1
 
 
-_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "Clear warp caches (kernel, LTO, CUDA compute)")
 _ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.WARP, EngineOptions, "Simulation engine")
-_NCONMAX = flags.DEFINE_integer("nconmax", None, "Maximum number of contacts.")
-_NJMAX = flags.DEFINE_integer("njmax", None, "Maximum number of constraints per world.")
-_NJMAX_NNZ = flags.DEFINE_integer("njmax_nnz", None, "Maximum number of non-zeros in constraint Jacobian.")
-_NCCDMAX = flags.DEFINE_integer("nccdmax", None, "Maximum number of CCD contacts per world.")
-_OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
-_KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulation.")
-_DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
-_REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyframe name must prefix match")
+from mujoco_warp._src.cli import DEVICE as _DEVICE
+from mujoco_warp._src.cli import KEYFRAME as _KEYFRAME
+from mujoco_warp._src.cli import NCCDMAX as _NCCDMAX
+from mujoco_warp._src.cli import NCONMAX as _NCONMAX
+from mujoco_warp._src.cli import NJMAX as _NJMAX
+from mujoco_warp._src.cli import NJMAX_NNZ as _NJMAX_NNZ
+from mujoco_warp._src.cli import OVERRIDE as _OVERRIDE
+from mujoco_warp._src.cli import REPLAY as _REPLAY
+
 _VIEWER = flags.DEFINE_enum("viewer", "mujoco", ["mujoco", "viser"], "Viewer backend (mujoco native or mjviser web)")
 
 _VIEWER_GLOBAL_STATE = {"running": True, "step_once": False}
@@ -202,14 +201,6 @@ def _main(argv: Sequence[str]) -> None:
     wp.config.quiet = flags.FLAGS["verbosity"].value < 1
     wp.init()
     wp.set_device(_DEVICE.value)
-    if _CLEAR_WARP_CACHE.value:
-      wp.clear_kernel_cache()
-      wp.clear_lto_cache()
-      # Clear CUDA compute cache for truly cold start JIT
-      compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
-      if compute_cache.exists():
-        shutil.rmtree(compute_cache)
-        compute_cache.mkdir()
 
     override_model(mjm, _OVERRIDE.value)
     m = mjw.put_model(mjm)

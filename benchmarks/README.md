@@ -1,5 +1,8 @@
 # MuJoCo Warp Benchmark Suite
 
+[!WARNING]
+This benchmark is mid-transition to a new python-based framework for fetching assets and running benchmarks. We will update this documentation soon.
+
 MJWarp includes a collection of benchmarks for measuring performance across different robot models and scenarios.
 
 ## Installation
