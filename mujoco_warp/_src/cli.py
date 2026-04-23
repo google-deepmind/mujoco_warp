@@ -21,17 +21,15 @@ from typing import Callable, Tuple, get_type_hints
 import mujoco
 import numpy as np
 import warp as wp
-
 from absl import app
 from absl import flags
-
 from etils import epath
 
 import mujoco_warp as mjw
 from mujoco_warp._src import warp_util
-from mujoco_warp._src.io import override_model
-from mujoco_warp._src.io import make_trajectory
 from mujoco_warp._src.io import find_keys
+from mujoco_warp._src.io import make_trajectory
+from mujoco_warp._src.io import override_model
 from mujoco_warp._src.util_misc import halton
 
 # shared flags for cli tool

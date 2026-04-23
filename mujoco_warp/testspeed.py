@@ -84,6 +84,7 @@ def _flatten_trace(trace: dict[str, float]) -> dict[str, float]:
 
   return metrics
 
+
 def _sum_trace(stack1, stack2):
   """Recursively sum event trace stacks."""
   ret = {}
@@ -100,6 +101,7 @@ def _sum_trace(stack1, stack2):
       ret[k] = (times, _sum_trace(sub_stack1, sub_stack2))
 
   return ret
+
 
 def _print_trace(trace, indent):
   """Recursively print event trace."""
