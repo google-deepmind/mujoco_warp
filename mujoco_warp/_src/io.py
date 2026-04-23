@@ -271,7 +271,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
 
   # precompute body_isdofancestor: which DOFs affect each body
-  #TODO: Investigate alternative approach such as bitmap
+  # TODO: Investigate alternative approach such as bitmap
   body_isdofancestor = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
   for bodyid in range(mjm.nbody):
     b = bodyid
