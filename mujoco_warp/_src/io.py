@@ -2773,7 +2773,7 @@ def create_render_context(
     skybox_face_width = int(mjm.tex_width[skybox_tex_id])
   else:
     skybox_tex_id = -1
-    skybox_face_width = 0
+    skybox_face_width = 1
 
   # Filter active cameras
   if cam_active is not None:
