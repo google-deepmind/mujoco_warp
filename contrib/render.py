@@ -45,6 +45,7 @@ _RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
 _RENDER_SEG = flags.DEFINE_bool("seg", False, "render segmentation image")
 _USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
 _USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
+_RENDER_SKYBOX = flags.DEFINE_bool("skybox", False, "render skybox")
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "clear Warp kernel cache before rendering")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
@@ -212,6 +213,7 @@ def _main(argv: Sequence[str]):
       _USE_TEXTURES.value,
       _USE_SHADOWS.value,
       enabled_geom_groups=[0, 1, 2],
+      render_skybox=_RENDER_SKYBOX.value,
     )
 
     print(f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n")
