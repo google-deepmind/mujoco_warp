@@ -1701,7 +1701,7 @@ class Constraint:
     state: constraint state                           (nworld, njmax_pad)
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
-    Jqvel: precomputed J*qvel per efc row             (nworld, njmax)
+    Jqvel: J*qvel                                     (nworld, njmax)
   """
 
   type: array("nworld", "njmax", int)
