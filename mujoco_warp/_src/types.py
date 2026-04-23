@@ -252,6 +252,7 @@ class DynType(enum.IntEnum):
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
+    DCMOTOR: DC motor dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -260,6 +261,7 @@ class DynType(enum.IntEnum):
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
+  DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
 
 
 class GainType(enum.IntEnum):
@@ -270,12 +272,14 @@ class GainType(enum.IntEnum):
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
+    DCMOTOR: DC motor gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
+  DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
 
 
 class BiasType(enum.IntEnum):
@@ -286,12 +290,14 @@ class BiasType(enum.IntEnum):
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
     USER: user-defined bias via act_bias_callback
+    DCMOTOR: DC motor back-EMF bias
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
   USER = mujoco.mjtBias.mjBIAS_USER
+  DCMOTOR = mujoco.mjtBias.mjBIAS_DCMOTOR
 
 
 class JointType(enum.IntEnum):
@@ -647,6 +653,10 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec6i(wp.types.vector(length=6, dtype=int)):
+  pass
+
+
 class vec8f(wp.types.vector(length=8, dtype=float)):
   pass
 
@@ -922,6 +932,7 @@ class Model:
     jnt_pos: local anchor position                           (*, njnt, 3)
     jnt_axis: local joint axis                               (*, njnt, 3)
     jnt_stiffness: stiffness coefficient                     (*, njnt)
+    jnt_stiffnesspoly: high-order stiffness coefficients     (*, njnt, 2)
     jnt_range: joint limits                                  (*, njnt, 2)
     jnt_actfrcrange: range of total actuator force           (*, njnt, 2)
     jnt_margin: min distance for limit detection             (*, njnt)
@@ -935,6 +946,7 @@ class Model:
     dof_frictionloss: dof friction loss                      (*, nv)
     dof_armature: dof armature inertia/mass                  (*, nv)
     dof_damping: damping coefficient                         (*, nv)
+    dof_dampingpoly: high-order damping coefficients         (*, nv, 2)
     dof_invweight0: diag. inverse inertia in qpos0           (*, nv)
     tree_bodynum: number of bodies in tree (incl. root)      (ntree,)
     tree_dofadr: start address of tree's dofs                (ntree,)
@@ -1085,7 +1097,9 @@ class Model:
     tendon_actfrcrange: range of total actuator force        (*, ntendon, 2)
     tendon_margin: min distance for limit detection          (*, ntendon)
     tendon_stiffness: stiffness coefficient                  (*, ntendon)
+    tendon_stiffnesspoly: high-order stiffness coefficients  (*, ntendon, 2)
     tendon_damping: damping coefficient                      (*, ntendon)
+    tendon_dampingpoly: high-order damping coefficients      (*, ntendon, 2)
     tendon_armature: inertia associated with tendon velocity (*, ntendon)
     tendon_frictionloss: loss due to friction                (*, ntendon)
     tendon_lengthspring: spring resting length range         (*, ntendon, 2)
@@ -1312,6 +1326,7 @@ class Model:
   jnt_pos: array("*", "njnt", wp.vec3)
   jnt_axis: array("*", "njnt", wp.vec3)
   jnt_stiffness: array("*", "njnt", float)
+  jnt_stiffnesspoly: array("*", "njnt", wp.vec2)
   jnt_range: array("*", "njnt", wp.vec2)
   jnt_actfrcrange: array("*", "njnt", wp.vec2)
   jnt_margin: array("*", "njnt", float)
@@ -1325,6 +1340,7 @@ class Model:
   dof_frictionloss: array("*", "nv", float)
   dof_armature: array("*", "nv", float)
   dof_damping: array("*", "nv", float)
+  dof_dampingpoly: array("*", "nv", wp.vec2)
   dof_invweight0: array("*", "nv", float)
   tree_bodynum: array("ntree", int)
   tree_dofadr: array("ntree", int)
@@ -1475,7 +1491,9 @@ class Model:
   tendon_actfrcrange: array("*", "ntendon", wp.vec2)
   tendon_margin: array("*", "ntendon", float)
   tendon_stiffness: array("*", "ntendon", float)
+  tendon_stiffnesspoly: array("*", "ntendon", wp.vec2)
   tendon_damping: array("*", "ntendon", float)
+  tendon_dampingpoly: array("*", "ntendon", wp.vec2)
   tendon_armature: array("*", "ntendon", float)
   tendon_frictionloss: array("*", "ntendon", float)
   tendon_lengthspring: array("*", "ntendon", wp.vec2)

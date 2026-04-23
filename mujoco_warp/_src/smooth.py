@@ -35,7 +35,6 @@ from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec11
-from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -1064,7 +1063,6 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[floa
   wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
 
 
-@cache_kernel
 def _tile_cholesky_factorize(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization of a tile."""
 
@@ -1197,7 +1195,9 @@ def _cfrc(
   cfrc_int_out: wp.array2d[wp.spatial_vector],
 ):
   worldid, bodyid = wp.tid()
-  bodyid += 1  # skip world body
+  if bodyid == 0:
+    cfrc_int_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    return
   cacc = cacc_in[worldid, bodyid]
   cinert = cinert_in[worldid, bodyid]
   cvel = cvel_in[worldid, bodyid]
@@ -1210,9 +1210,7 @@ def _cfrc(
 
 
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
-  wp.launch(
-    _cfrc, dim=[d.nworld, m.nbody - 1], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[d.cfrc_int]
-  )
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[d.cfrc_int])
 
 
 @wp.kernel
@@ -1983,6 +1981,9 @@ def _comvel_branch(
         cvel += cdof[dofid + 1] * qvel[dofid + 1]
         cvel += cdof[dofid + 2] * qvel[dofid + 2]
 
+        cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
         cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
         cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
@@ -2734,7 +2735,6 @@ def transmission(m: Model, d: Data):
     )
 
 
-@cache_kernel
 def _solve_LD_sparse_fused(nv: int, nlevels: int):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
 
@@ -2820,7 +2820,6 @@ def _solve_LD_sparse(
   )
 
 
-@cache_kernel
 def _tile_cholesky_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky backsubstitution of a tile."""
 
@@ -2898,7 +2897,6 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float]):
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
 
 
-@cache_kernel
 def _tile_cholesky_factorize_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization and backsubstitution of a tile."""
 

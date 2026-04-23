@@ -160,7 +160,7 @@ class SmoothTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture("pendula.xml")
 
     for arr in (d.subtree_com, d.cinert, d.cdof):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.com_pos(m, d)
     _assert_eq(d.subtree_com.numpy()[0], mjd.subtree_com, "subtree_com")
@@ -171,10 +171,10 @@ class SmoothTest(parameterized.TestCase):
     """Tests camlight."""
     _, mjd, m, d = test_data.fixture("pendula.xml")
 
-    d.cam_xpos.zero_()
-    d.cam_xmat.zero_()
-    d.light_xpos.zero_()
-    d.light_xdir.zero_()
+    d.cam_xpos.fill_(wp.inf)
+    d.cam_xmat.fill_(wp.inf)
+    d.light_xpos.fill_(wp.inf)
+    d.light_xdir.fill_(wp.inf)
 
     mjw.camlight(m, d)
     _assert_eq(d.cam_xpos.numpy()[0], mjd.cam_xpos, "cam_xpos")
@@ -187,7 +187,7 @@ class SmoothTest(parameterized.TestCase):
     """Tests crb."""
     mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
 
-    d.crb.zero_()
+    d.crb.fill_(wp.inf)
 
     mjw.crb(m, d)
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
@@ -205,8 +205,13 @@ class SmoothTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
 
     qLD = d.qLD.numpy()[0].copy()
-    for arr in (d.qLD, d.qLDiagInv):
-      arr.zero_()
+    d.qLDiagInv.fill_(wp.inf)
+    if jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
+      wp_qLD = qLD.copy()
+      wp_qLD[wp_qLD != 0.0] = np.inf
+      wp.copy(d.qLD, wp.array(wp_qLD, dtype=float))
+    else:
+      d.qLD.fill_(wp.inf)
 
     mjw.factor_m(m, d)
 
@@ -225,7 +230,7 @@ class SmoothTest(parameterized.TestCase):
     qacc_smooth = np.zeros(shape=(1, mjm.nv), dtype=float)
     mujoco.mj_solveM(mjm, mjd, qacc_smooth, qfrc_smooth)
 
-    d.qacc_smooth.zero_()
+    d.qacc_smooth.fill_(wp.inf)
 
     mjw.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
     _assert_eq(d.qacc_smooth.numpy()[0], qacc_smooth[0], "qacc_smooth")
@@ -235,7 +240,7 @@ class SmoothTest(parameterized.TestCase):
     """Tests rne."""
     _, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
 
-    d.qfrc_bias.zero_()
+    d.qfrc_bias.fill_(wp.inf)
 
     mjw.rne(m, d)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
@@ -251,7 +256,7 @@ class SmoothTest(parameterized.TestCase):
     mujoco.mj_rnePostConstraint(mjm, mjd)
 
     for arr in (d.cacc, d.cfrc_int, d.cfrc_ext):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.rne_postconstraint(m, d)
 
@@ -320,7 +325,7 @@ class SmoothTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture("pendula.xml")
 
     for arr in (d.cvel, d.cdof_dot):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.com_vel(m, d)
     _assert_eq(d.cvel.numpy()[0], mjd.cvel, "cvel")
@@ -392,7 +397,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture("pendula.xml")
 
     for arr in (d.subtree_linvel, d.subtree_angmom):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mujoco.mj_subtreeVel(mjm, mjd)
     mjw.subtree_vel(m, d)
@@ -419,7 +424,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, overrides={"opt.jacobian": jacobian})
 
     for arr in (d.ten_length, d.ten_J, d.actuator_length, d.actuator_moment):
-      arr.zero_()
+      arr.fill_(wp.inf)
 
     mjw.tendon(m, d)
     mjw.transmission(m, d)
@@ -494,7 +499,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0)
 
     # qM
-    d.qM.zero_()
+    d.qM.fill_(wp.inf)
 
     mjw._src.smooth.crb(m, d)
     mjw._src.smooth.tendon_armature(m, d)
@@ -504,7 +509,7 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
     # qfrc_bias
-    d.qfrc_bias.zero_()
+    d.qfrc_bias.fill_(wp.inf)
 
     mjw._src.smooth.rne(m, d)
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)

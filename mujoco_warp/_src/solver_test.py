@@ -63,8 +63,8 @@ class SolverTest(parameterized.TestCase):
       mjd_cost = cost(mjd.qacc)
 
       # solve with 0 iterations just initializes constraints and costs and then exits
-      d.efc.force.zero_()
-      d.qfrc_constraint.zero_()
+      d.efc.force.fill_(wp.inf)
+      d.qfrc_constraint.fill_(wp.inf)
       ctx = solver.create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
@@ -167,9 +167,9 @@ class SolverTest(parameterized.TestCase):
       )
 
       # Reset and launch linesearch
-      ctx.jv.zero_()
-      ctx.quad.zero_()
-      ctx.quad_gauss.zero_()
+      ctx.jv.fill_(wp.inf)
+      ctx.quad.fill_(wp.inf)
+      ctx.quad_gauss.fill_(wp.inf)
       step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
       solver._linesearch(m, d, ctx, step_size_cost)
 
@@ -297,9 +297,9 @@ class SolverTest(parameterized.TestCase):
 
       mujoco.mj_forward(mjm, mjd)
 
-      d.qacc.zero_()
-      d.qfrc_constraint.zero_()
-      d.efc.force.zero_()
+      d.qacc.fill_(wp.inf)
+      d.qfrc_constraint.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
 
       if solver_ == mujoco.mjtSolver.mjSOL_CG:
         mjw.factor_m(m, d)
@@ -482,9 +482,9 @@ class SolverTest(parameterized.TestCase):
       qLD = np.vstack([qLD0, qLD1, qLD2])
       d.qLD = wp.from_numpy(qLD, dtype=wp.float32)
 
-    d.qacc.zero_()
-    d.qfrc_constraint.zero_()
-    d.efc.force.zero_()
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
     solver.solve(m, d)
 
     def cost(m, d, qacc):
