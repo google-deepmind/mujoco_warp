@@ -58,7 +58,6 @@ dev = [
     "mujoco>=3.6.0.dev0",
     "warp-lang>=1.11.0.dev0",
     "mjviser>=0.0.10",
-    "mediapy",
     "pillow",
 ]
 # TODO(team): cpu and cuda JAX optional dependencies are temporary, remove after we land MJX:Warp

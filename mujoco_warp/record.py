@@ -25,7 +25,6 @@ import inspect
 import sys
 from typing import Sequence
 
-import mediapy as media
 import mujoco
 import warp as wp
 from absl import app
@@ -102,8 +101,6 @@ def _main(argv: Sequence[str]):
       # minimize_size=True,
       quality=_QUALITY.value,
     )
-  elif _OUTPUT.value.endswith(".mp4"):
-    media.write_video(_OUTPUT.value, frames, fps=_FPS.value)
   else:
     raise ValueError(f"Unsupported video format: {_OUTPUT.value}")
 
