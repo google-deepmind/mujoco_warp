@@ -34,8 +34,7 @@ from etils import epath
 from PIL import Image
 
 import mujoco_warp as mjw
-from mujoco_warp._src.io import find_keys
-from mujoco_warp._src.io import make_trajectory
+from mujoco_warp._src import cli
 
 _FUNCS = {
   n: f
@@ -43,25 +42,10 @@ _FUNCS = {
   if inspect.signature(f).parameters.keys() == {"m", "d"} or inspect.signature(f).parameters.keys() == {"m", "d", "rc"}
 }
 
-_FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to run")
-_NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
-_NWORLD = flags.DEFINE_integer("nworld", 1, "number of parallel rollouts")
-from mujoco_warp._src.cli import DEVICE as _DEVICE
-from mujoco_warp._src.cli import KEYFRAME as _KEYFRAME
-from mujoco_warp._src.cli import NCCDMAX as _NCCDMAX
-from mujoco_warp._src.cli import NCONMAX as _NCONMAX
-from mujoco_warp._src.cli import NJMAX as _NJMAX
-from mujoco_warp._src.cli import NJMAX_NNZ as _NJMAX_NNZ
-from mujoco_warp._src.cli import OVERRIDE as _OVERRIDE
-from mujoco_warp._src.cli import REPLAY as _REPLAY
-from mujoco_warp._src.cli import batch_unroll
-from mujoco_warp._src.cli import init_model_data
-from mujoco_warp._src.cli import load_model as _load_model
-
 _OUTPUT = flags.DEFINE_string("output", None, "output video file path", required=True)
 _FPS = flags.DEFINE_integer("fps", 30, "frames per second for the video")
-_WIDTH = flags.DEFINE_integer("width", 640, "render width (pixels)")
-_HEIGHT = flags.DEFINE_integer("height", 480, "render height (pixels)")
+_QUALITY = flags.DEFINE_integer("quality", 70, "quality setting for webp/gif (0-100)")
+_CAM_DISTANCE = flags.DEFINE_float("cam_distance", 1.5, "camera distance coefficient (multiplier for model extent)")
 
 
 def _main(argv: Sequence[str]):
@@ -75,61 +59,36 @@ def _main(argv: Sequence[str]):
   wp.init()
 
   path = epath.Path(argv[1])
-  fn = _FUNCS.get(_FUNCTION.value)
-  if fn is None:
-    raise app.UsageError(f"Unknown function: {_FUNCTION.value}")
-
-  device = wp.get_device(_DEVICE.value)
-  if device == "cpu":
-    raise ValueError("recorder available for gpu only")
-  wp.set_device(device)
-
   print(f"Loading model from: {path}...\n")
-  mjm = _load_model(path)
-  mjd = mujoco.MjData(mjm)
-  ctrls = None
-
-  if _REPLAY.value:
-    keys = find_keys(mjm, _REPLAY.value)
-    if not keys:
-      raise app.UsageError(f"Key prefix not found: {_REPLAY.value}")
-    ctrls = make_trajectory(mjm, keys)
-    mujoco.mj_resetDataKeyframe(mjm, mjd, keys[0])
-  elif mjm.nkey > 0 and _KEYFRAME.value > -1:
-    mujoco.mj_resetDataKeyframe(mjm, mjd, _KEYFRAME.value)
-    if ctrls is None:
-      ctrls = [mjd.ctrl.copy() for _ in range(_NSTEP.value)]
-
-  m, d = init_model_data(
-    mjm, mjd, _NWORLD.value, _NCONMAX.value, _NJMAX.value, _NJMAX_NNZ.value, _NCCDMAX.value, _OVERRIDE.value, device
-  )
+  mjm = cli.load_model(path)
+  m, d, rc, ctrls = cli.init_structs(mjw.step, mjm)
 
   frames = []
-  renderer = mujoco.Renderer(mjm, height=_HEIGHT.value, width=_WIDTH.value)
+  renderer = mujoco.Renderer(mjm, height=cli.RENDER_HEIGHT.value, width=cli.RENDER_WIDTH.value)
   render_every = max(1, int(1.0 / (_FPS.value * mjm.opt.timestep)))
 
   cam = mujoco.MjvCamera()
   cam.type = mujoco.mjtCamera.mjCAMERA_FREE
   cam.lookat[:] = mjm.stat.center
-  cam.distance = mjm.stat.extent * 1.5
+  cam.distance = mjm.stat.extent * _CAM_DISTANCE.value
   cam.elevation = -20
+  mjd = mujoco.MjData(mjm)
 
-  def callback(step, data):
+  def callback(step, trace, latency):
+    del trace, latency
     if step % render_every != 0:
       return
     # TODO(team): add support for rendering more than one world (overlaid or tiled)
-    mjd.qpos[:] = data.qpos.numpy()[0]
-    mjd.qvel[:] = data.qvel.numpy()[0]
+    mjd.qpos[:] = d.qpos.numpy()[0]
+    mjd.qvel[:] = d.qvel.numpy()[0]
     mujoco.mj_forward(mjm, mjd)
-
     # symmetric orbit
-    cam.azimuth = 90 + (step - _NSTEP.value / 2) * 0.05
-
+    cam.azimuth = 90 + (step - cli.NSTEP.value / 2) * 0.05
     renderer.update_scene(mjd, camera=cam)
     frames.append(renderer.render())
 
-  print(f"Recording {_NSTEP.value} steps...")
-  batch_unroll(fn, m, d, _NSTEP.value, ctrls, False, None, device, False, callback=callback, noise=(0.0, 0.0))
+  print(f"Recording {cli.NSTEP.value} steps...")
+  cli.unroll(mjw.step, m, d, rc, callback, ctrls)
 
   print(f"Saving video to {_OUTPUT.value}...")
   if _OUTPUT.value.endswith((".gif", ".webp")):
@@ -140,8 +99,8 @@ def _main(argv: Sequence[str]):
       append_images=frames[1:],
       duration=int(1000 / _FPS.value),
       loop=0,
-      minimize_size=True,
-      quality=70,
+      # minimize_size=True,
+      quality=_QUALITY.value,
     )
   elif _OUTPUT.value.endswith(".mp4"):
     media.write_video(_OUTPUT.value, frames, fps=_FPS.value)
@@ -150,8 +109,16 @@ def _main(argv: Sequence[str]):
 
 
 def main():
+  # absl flags assumes __main__ is the main running module for printing usage documentation
+  # pyproject bin scripts break this assumption, so manually set argv and docstring
   sys.argv[0] = "mujoco_warp.record"
   sys.modules["__main__"].__doc__ = __doc__
+  # default to single world with no noise
+  flags.FLAGS.set_default("nworld", 1)
+  flags.FLAGS.set_default("noise_std", 0.0)
+  flags.FLAGS.set_default("noise_rate", 0.0)
+  flags.FLAGS.set_default("render_width", 320)
+  flags.FLAGS.set_default("render_height", 240)
   app.run(_main)
 
 

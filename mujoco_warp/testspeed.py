@@ -167,12 +167,27 @@ def _main(argv: Sequence[str]):
   m, d, rc, ctrls = cli.init_structs(_FUNCS[_FUNCTION.value], mjm)
   timestep = m.opt.timestep.numpy()[0]
 
-  # Option
   if _FORMAT.value == "human":
+    # Model
+    print("Model")
+    if _INFO.value:
+      size_fields = [f.name for f in dataclasses.fields(m) if f.type is int and getattr(m, f.name) > 0]
+    else:
+      size_fields = ["nq", "nv", "nu", "nbody", "ngeom"]
+    for i, f in enumerate(size_fields):
+      print(f"{'  ' if i % 5 == 0 else ' '}{f}: {getattr(m, f)}", end="\n" if i % 5 == 4 or i == len(size_fields) - 1 else "")
+
+    # RenderContext
+    if rc is not None:
+      print("RenderContext")
+      print(f"  shadows: {rc.use_shadows} textures: {rc.use_textures} nlight: {m.nlight} bvh_ngeom: {rc.bvh_ngeom}")
+      print(f"  ncam: {rc.nrender} cam_res: {[(int(x[0]), int(x[1])) for x in rc.cam_res.numpy()]}")
+
+    # Option
     print("Option")
     if _INFO.value:
       print(
-        f"  timestep: {timestep:g}\n"
+        f"  timestep: {m.opt.timestep.numpy()[0]:g}\n"
         f"  tolerance: {m.opt.tolerance.numpy()[0]:g} ls_tolerance: {m.opt.ls_tolerance.numpy()[0]:g}\n"
         f"  ccd_tolerance: {m.opt.ccd_tolerance.numpy()[0]:g}\n"
         f"  density: {m.opt.density.numpy()[0]:g} viscosity: {m.opt.viscosity.numpy()[0]:g}\n"
@@ -194,6 +209,30 @@ def _main(argv: Sequence[str]):
         f"  run_collision_detection: {m.opt.run_collision_detection}\n"
         f"  contact_sensor_maxmatch: {m.opt.contact_sensor_maxmatch}"
       )
+      # Colliders
+      print("Colliders")
+      colliders = {"Primitive": [], "HfieldCCD": [], "CCD": []}
+      for trid, count in enumerate(m.geom_pair_type_count):
+        if count == 0:
+          continue
+        # convert triangle index to i, j
+        n = len(mjw.GeomType)
+        i = mjw.GeomType(int((2 * n + 1 - np.sqrt((2 * n + 1) ** 2 - 8 * trid)) / 2))
+        j = mjw.GeomType(trid - i * (2 * n - i - 1) // 2)
+        match MJ_COLLISION_TABLE.get((i, j)):
+          case CollisionType.PRIMITIVE:
+            colliders["Primitive"].append(f"{i.name}-{j.name}: {count}")
+          case CollisionType.CONVEX if mjw.GeomType.HFIELD in (i, j):
+            colliders["HfieldCCD"].append(f"{i.name}-{j.name}: {count}")
+          case CollisionType.CONVEX:
+            colliders["CCD"].append(f"{i.name}-{j.name}: {count}")
+      if any(colliders.values()):
+        for typ, pairs in colliders.items():
+          if pairs:
+            print(f"  {typ}\n" + "\n".join(f"    {p}" for p in pairs))
+      else:
+        print("  none")
+      print(f"  max collisions: {sum(m.geom_pair_type_count)}")
     else:
       print(
         f"  integrator: {mjw.IntegratorType(m.opt.integrator).name}\n"
@@ -204,38 +243,10 @@ def _main(argv: Sequence[str]):
         f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}"
       )
 
-  # Colliders
-  colliders = {"Primitive": [], "HfieldCCD": [], "CCD": []}
-
-  for trid, count in enumerate(m.geom_pair_type_count):
-    if count == 0:
-      continue
-    # convert triangle index to i, j
-    n = len(mjw.GeomType)
-    i = mjw.GeomType(int((2 * n + 1 - np.sqrt((2 * n + 1) ** 2 - 8 * trid)) / 2))
-    j = mjw.GeomType(trid - i * (2 * n - i - 1) // 2)
-    match MJ_COLLISION_TABLE.get((i, j)):
-      case CollisionType.PRIMITIVE:
-        colliders["Primitive"].append(f"{i.name}-{j.name}: {count}")
-      case CollisionType.CONVEX if mjw.GeomType.HFIELD in (i, j):
-        colliders["HfieldCCD"].append(f"{i.name}-{j.name}: {count}")
-      case CollisionType.CONVEX:
-        colliders["CCD"].append(f"{i.name}-{j.name}: {count}")
-
-  steps = cli.NWORLD.value * cli.NSTEP.value
-
-  if _FORMAT.value == "human":
-    if _INFO.value and any(colliders.values()):
-      print("Colliders")
-
-      for typ, pairs in colliders.items():
-        if pairs:
-          print(f"  {typ}\n" + "\n".join(f"    {p}" for p in pairs))
-
-      print(f"  max collisions: {sum(m.geom_pair_type_count)}")
-
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}")
-    print(f"Rolling out {cli.NSTEP.value} steps at dt = {f'{timestep:g}' if timestep < 0.001 else f'{timestep:.3f}'}...")
+    print(
+      f"Rolling out {cli.NSTEP.value} {_FUNCTION.value}s at dt = {f'{timestep:g}' if timestep < 0.001 else f'{timestep:.3f}'}..."
+    )
 
   nacon, nefc, solver_niter = [], [], []
   runtime = 0.0
@@ -252,7 +263,7 @@ def _main(argv: Sequence[str]):
   jit_duration = cli.unroll(_FUNCS[_FUNCTION.value], m, d, rc, callback, ctrls)
 
   nconverged = np.sum(~np.any(np.isnan(d.qpos.numpy()), axis=1))
-
+  steps = cli.NWORLD.value * cli.NSTEP.value
   model_mem = _dataclass_memory(m)
   data_mem = _dataclass_memory(d)
 

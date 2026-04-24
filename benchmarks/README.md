@@ -1,8 +1,5 @@
 # MuJoCo Warp Benchmark Suite
 
-[!WARNING]
-This benchmark is mid-transition to a new python-based framework for fetching assets and running benchmarks. We will update this documentation soon.
-
 MJWarp includes a collection of benchmarks for measuring performance across different robot models and scenarios.
 
 ## Installation
@@ -17,13 +14,13 @@ uv pip install -e .[dev]
 
 ## Running Benchmarks
 
-To execute all benchmarks, from the `benchmarks` directory run:
+To execute all benchmarks, from the repository root run:
 
 ```bash
-./run.sh
+uv run python3 benchmarks/run.py
 ```
 
-This will run all benchmarks defined in `config.txt` and output metrics in a columnar format.
+This will run all benchmarks and output metrics in a columnar format.
 
 ### Filtering Benchmarks
 
@@ -31,29 +28,21 @@ To run specific benchmarks, use the `-f` or `--filter` option with a regex patte
 
 ```bash
 # Run only the humanoid benchmark
-./run.sh -f humanoid
+uv run python3 benchmarks/run.py -f humanoid
 
 # Run all Apollo variants
-./run.sh -f apollo
+uv run python3 benchmarks/run.py -f apollo
 
 # Run all benchmarks with "cloth" in the name
-./run.sh -f cloth
-```
-
-### Clearing the Warp Cache
-
-By default, benchmarks use Warp's caches for faster execution. To measure accurate JIT compilation times, you can disable the cache:
-
-```bash
-./run.sh --clear_warp_cache=true
+uv run python3 benchmarks/run.py -f cloth
 ```
 
 ## Output Format
 
-The benchmark script uses `mjwarp-testspeed` with the `--format=short` option, which outputs metrics in a columnar format:
+The benchmark script outputs metrics in a columnar format:
 
 ```
-2026-01-12 18:57:20] mjwarp-testspeed /home/<username>/mujoco_warp/benchmarks/humanoid/humanoid.xml --nworld=8192 --nconmax=24 --njmax=64 --clear_warp_cache=false --format=short --event_trace=true --memory=true --measure_solver=true --measure_alloc=true
+$ uv run python3 benchmarks/run.py -f humanoid
 [2026-01-12 18:57:26] humanoid:jit_duration                                              0.3430611090734601
 [2026-01-12 18:57:26] humanoid:run_time                                                  3.0016206190921366
 [2026-01-12 18:57:26] humanoid:steps_per_second                                          2729192.3395961127
@@ -67,52 +56,78 @@ The benchmark script uses `mjwarp-testspeed` with the `--format=short` option, w
 
 ## Configuration
 
-Benchmarks are defined in `config.txt`, a simple text file with space-separated columns. Each line specifies a benchmark with the following format:
+Benchmarks are configured using Python modules. Each benchmark directory (e.g., `benchmarks/humanoid/`) must contain an `__init__.py` file that defines `BENCHMARKS` and optionally `ASSETS`.
 
+### `BENCHMARKS` List
+
+The `BENCHMARKS` list contains dictionaries defining each benchmark variant.
+
+Example from `benchmarks/humanoid/__init__.py`:
+
+```python
+BENCHMARKS = [
+  {
+    "name": "humanoid",
+    "mjcf": "humanoid.xml",
+    "nworld": 8192,
+    "nconmax": 24,
+    "njmax": 64,
+  },
+  {
+    "name": "three_humanoids",
+    "mjcf": "three_humanoids.xml",
+    "nworld": 8192,
+    "nconmax": 100,
+    "njmax": 192,
+  },
+]
 ```
-NAME MJCF NWORLD NCONMAX NJMAX NSTEP REPLAY
+
+Fields:
+- `name`: Unique identifier for the benchmark.
+- `mjcf`: Path to the MJCF model file (relative to the benchmark directory).
+- `nworld`: Number of parallel rollouts.
+- `nconmax`: Maximum number of contacts per world.
+- `njmax`: Maximum number of constraints per world.
+- `nstep`: (Optional) Number of steps per rollout.
+- `replay`: (Optional) Keyframe sequence to replay.
+- `assets`: (Optional) List of assets to fetch.
+
+### `ASSETS` List
+
+If a benchmark requires external assets (e.g., from MuJoCo Menagerie), they can be defined in the `ASSETS` list. `run.py` will automatically fetch them before running the benchmark.
+
+Example:
+
+```python
+ASSETS = [
+  {
+    "source": "git@github.com:google-deepmind/mujoco_menagerie.git",
+    "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
+  }
+]
 ```
-
-Where:
-- `NAME`: Benchmark identifier (used for filtering and in output)
-- `MJCF`: Path to the MJCF model file (relative to the `benchmarks` directory)
-- `NWORLD`: Number of parallel simulations to run
-- `NCONMAX`: Maximum number of contacts per world
-- `NJMAX`: Maximum number of constraints per world
-- `NSTEP`: Number of simulation steps (use `-` for default of 1000)
-- `REPLAY`: Keyframe sequence prefix to replay (use `-` if not needed)
-
-Example configuration:
-
-```
-# Format: NAME MJCF NWORLD NCONMAX NJMAX NSTEP REPLAY
-humanoid                  humanoid/humanoid.xml                8192  24   64   -     -
-aloha_pot                 aloha_pot/scene.xml                  8192  24   128  -     lift_pot
-aloha_cloth               aloha_cloth/scene.xml                32    920  6300 100   -
-```
-
-Lines starting with `#` are treated as comments and ignored.
 
 ## Adding New Benchmarks
 
 To add a new benchmark:
 
-1. Place your MJCF model in an appropriate subdirectory under `benchmarks/`
-2. Add a line to `config.txt` with the appropriate parameters (follow the columnar format)
-3. Run `./run.sh -f your_benchmark_name` to test it
+1. Create a new directory under `benchmarks/` (e.g., `benchmarks/my_robot/`).
+2. Place your MJCF model and any local assets in that directory.
+3. Create an `__init__.py` file in that directory defining `BENCHMARKS` (and `ASSETS` if needed).
+4. Run `uv run python3 benchmarks/run.py -f my_robot` to test it.
 
 ## Direct Usage of mjwarp-testspeed
 
 You can also run `mjwarp-testspeed` directly for more control:
 
 ```bash
-mjwarp-testspeed humanoid/humanoid.xml \
+uv run mjwarp-testspeed benchmarks/humanoid/humanoid.xml \
   --nworld=8192 \
   --nconmax=24 \
   --njmax=64 \
   --format=short \
-  --event_trace=true \
-  --memory=true
+  --event_trace=true
 ```
 
 See `mjwarp-testspeed --help` for all available options.

@@ -33,7 +33,7 @@ from absl import flags
 
 _FILTER = flags.DEFINE_string("filter", "", "filter benchmarks by name (regex)", short_name="f")
 _ASSET_BASE = flags.DEFINE_string("assets", "/tmp/benchmark_assets", "directory to assemble benchmark assets")
-_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
+_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", True, "clear warp caches (kernel, LTO, CUDA compute)")
 
 
 def _asset_dir(asset: dict) -> str:
@@ -102,12 +102,11 @@ def _main(argv: Sequence[str]):
         xml_path,
         f"--nworld={bm['nworld']}",
         f"--nstep={nstep}",
-        "--format=short",
+        f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}--format=short",
         "--event_trace=true",
         "--memory=true",
         "--measure_solver=true",
         "--measure_alloc=true",
-        f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}",
       ]
       for field in ("nconmax", "njmax", "replay"):
         if field in bm:
@@ -129,10 +128,6 @@ def _main(argv: Sequence[str]):
           key = parts[0]
           value = " ".join(parts[1:])
           print(f"{name}.{key} {value}")
-
-
-if __name__ == "__main__":
-  app.run(_main)
 
 
 if __name__ == "__main__":

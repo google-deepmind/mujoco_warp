@@ -73,7 +73,12 @@ def load_model(path: epath.Path) -> mujoco.MjModel:
 
     register_sdf_plugins(mjw)
 
-  return spec.compile()
+  mjm = spec.compile()
+
+  if OVERRIDE.value:
+    override_model(mjm, OVERRIDE.value)
+
+  return mjm
 
 
 @wp.kernel
@@ -138,8 +143,6 @@ def init_structs(
     ctrls = [mjd.ctrl.copy() for _ in range(NSTEP.value)]
 
   with wp.ScopedDevice(wp.get_device(DEVICE.value)):
-    if OVERRIDE.value:
-      override_model(mjm, OVERRIDE.value)
     m = mjw.put_model(mjm)
     if OVERRIDE.value:
       override_model(m, OVERRIDE.value)
