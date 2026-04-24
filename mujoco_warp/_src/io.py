@@ -226,7 +226,10 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
   m.nsensorcontact = (mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT).sum()
   m.nrangefinder = (mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER).sum()
-  m.nmaxcondim = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
+  condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
+  if mjm.nflex > 0:
+    condim_arrays.append(mjm.flex_condim)
+  m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
@@ -922,7 +925,10 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
-  sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
+  condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
+  if mjm.nflex > 0:
+    condim_arrays.append(mjm.flex_condim)
+  sizes["nmaxcondim"] = np.concatenate(condim_arrays).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
   sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, is_sparse(mjm), tile_size)
@@ -1094,7 +1100,10 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
-  sizes["nmaxcondim"] = np.concatenate(([0], mjm.geom_condim, mjm.pair_dim)).max()
+  condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
+  if mjm.nflex > 0:
+    condim_arrays.append(mjm.flex_condim)
+  sizes["nmaxcondim"] = np.concatenate(condim_arrays).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
   sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm.nv, njmax, is_sparse(mjm), tile_size)
