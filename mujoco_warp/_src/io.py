@@ -995,6 +995,10 @@ def make_data(
     # island arrays
     "nisland": None,
     "tree_island": None,
+    # sleep state: all trees start fully awake
+    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
+    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1210,6 +1214,10 @@ def put_data(
     # island arrays
     "nisland": None,
     "tree_island": None,
+    # sleep state: all trees start fully awake
+    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
+    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
