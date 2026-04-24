@@ -1258,10 +1258,7 @@ def forward(m: Model, d: Data):
 @event_scope
 def step(m: Model, d: Data):
   """Advance simulation."""
-  # TODO(team): mj_checkPos
-  # TODO(team): mj_checkVel
   forward(m, d)
-  # TODO(team): mj_checkAcc
 
   if m.opt.integrator == IntegratorType.EULER:
     euler(m, d)
@@ -1277,8 +1274,6 @@ def step(m: Model, d: Data):
 def step1(m: Model, d: Data):
   """Advance simulation in two phases: before input is set by user."""
   energy = m.opt.enableflags & EnableBit.ENERGY
-  # TODO(team): mj_checkPos
-  # TODO(team): mj_checkVel
   fwd_position(m, d)
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
@@ -1308,7 +1303,6 @@ def step2(m: Model, d: Data):
   fwd_acceleration(m, d)
   solver.solve(m, d)
   sensor.sensor_acc(m, d)
-  # TODO(team): mj_checkAcc
 
   # integrate with Euler or implicitfast
   # TODO(team): implicit
