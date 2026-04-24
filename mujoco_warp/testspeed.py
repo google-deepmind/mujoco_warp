@@ -68,6 +68,7 @@ _REPLAY = flags.DEFINE_string("replay", None, "keyframe sequence to replay, keyf
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 _FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format for results")
 _INFO = flags.DEFINE_bool("info", False, "print Model and Data info")
+_USE_CUDA_GRAPH = flags.DEFINE_bool("use_cuda_graph", True, "capture the benchmarked function as a CUDA graph")
 
 # Render
 _WIDTH = flags.DEFINE_integer("width", 64, "render width (pixels)")
@@ -491,7 +492,18 @@ def _main(argv: Sequence[str]):
       print(out)
 
     fn = _FUNCS[_FUNCTION.value]
-    res = benchmark(fn, m, d, _NSTEP.value, ctrls, _EVENT_TRACE.value, _MEASURE_ALLOC.value, _MEASURE_SOLVER.value, rc)
+    res = benchmark(
+      fn,
+      m,
+      d,
+      _NSTEP.value,
+      ctrls,
+      _EVENT_TRACE.value,
+      _MEASURE_ALLOC.value,
+      _MEASURE_SOLVER.value,
+      _USE_CUDA_GRAPH.value,
+      rc,
+    )
 
     match _FORMAT.value:
       case "short":
