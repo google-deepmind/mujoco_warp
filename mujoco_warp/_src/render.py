@@ -138,14 +138,14 @@ def sample_skybox(
       sc = -rx
       tc = -ry
 
-  s = (sc / ma + 1.0) * 0.5
-  t = (tc / ma + 1.0) * 0.5
+  s = (math.safe_div(sc, ma) + 1.0) * 0.5
+  t = (math.safe_div(tc, ma) + 1.0) * 0.5
 
   # Keep the linear filter from bleeding between adjacent faces in the vertical strip.
   t_min = 0.5 * face_width_inv
   t = wp.clamp(t, t_min, 1.0 - t_min)
 
-  v = (float(face) + t) / 6.0
+  v = (float(face) + t) * wp.static(1.0 / 6.0)
   color = wp.texture_sample(skybox_tex, wp.vec2(s, v), dtype=wp.vec4)
   return wp.vec3(color[0], color[1], color[2])
 
