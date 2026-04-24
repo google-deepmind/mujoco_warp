@@ -44,6 +44,7 @@ from mujoco_warp._src.types import vec8
 from mujoco_warp._src.types import vec8i
 from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import inside_geom
+from mujoco_warp._src.util_misc import poly_potential
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -2733,6 +2734,7 @@ def _energy_pos_passive_joint(
   jnt_type: wp.array[int],
   jnt_qposadr: wp.array[int],
   jnt_stiffness: wp.array2d[float],
+  jnt_stiffnesspoly: wp.array2d[wp.vec2],
   # Data in:
   qpos_in: wp.array2d[float],
   # Data out:
@@ -2741,8 +2743,9 @@ def _energy_pos_passive_joint(
   worldid, jntid = wp.tid()
   jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
   stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
+  spoly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
 
-  if stiffness == 0.0:
+  if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
     return
 
   padr = jnt_qposadr[jntid]
@@ -2774,8 +2777,11 @@ def _energy_pos_passive_joint(
 
     dif1 = math.quat_sub(quat1, quat_spring)
 
+    r0 = wp.length(dif0)
+    r1 = wp.length(dif1)
+
     energy = wp.vec2(
-      0.5 * stiffness * (wp.dot(dif0, dif0) + wp.dot(dif1, dif1)),
+      poly_potential(stiffness, spoly, r0, 0) + poly_potential(stiffness, spoly, r1, 0),
       0.0,
     )
 
@@ -2798,15 +2804,16 @@ def _energy_pos_passive_joint(
     )
 
     dif = math.quat_sub(quat, quat_spring)
+    r = wp.length(dif)
     energy = wp.vec2(
-      0.5 * stiffness * wp.dot(dif, dif),
+      poly_potential(stiffness, spoly, r, 0),
       0.0,
     )
     wp.atomic_add(energy_out, worldid, energy)
   elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
     dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
     energy = wp.vec2(
-      0.5 * stiffness * dif_ * dif_,
+      poly_potential(stiffness, spoly, dif_, 0),
       0.0,
     )
     wp.atomic_add(energy_out, worldid, energy)
@@ -2816,6 +2823,7 @@ def _energy_pos_passive_joint(
 def _energy_pos_passive_tendon(
   # Model:
   tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
   tendon_lengthspring: wp.array2d[wp.vec2],
   # Data in:
   ten_length_in: wp.array2d[float],
@@ -2826,8 +2834,9 @@ def _energy_pos_passive_tendon(
 
   tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
   stiffness = tendon_stiffness[tendon_stiffness_id, tenid]
+  spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
 
-  if stiffness == 0.0:
+  if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
     return
 
   length = ten_length_in[worldid, tenid]
@@ -2839,13 +2848,13 @@ def _energy_pos_passive_tendon(
   upper = lengthspring[1]
 
   if length > upper:
-    displacement = upper - length
+    x = length - upper
   elif length < lower:
-    displacement = lower - length
+    x = length - lower
   else:
-    displacement = 0.0
+    x = 0.0
 
-  energy = wp.vec2(0.5 * stiffness * displacement * displacement, 0.0)
+  energy = wp.vec2(poly_potential(stiffness, spoly, x, 0), 0.0)
   wp.atomic_add(energy_out, worldid, energy)
 
 
@@ -2869,6 +2878,7 @@ def energy_pos(m: Model, d: Data):
         m.jnt_type,
         m.jnt_qposadr,
         m.jnt_stiffness,
+        m.jnt_stiffnesspoly,
         d.qpos,
       ],
       outputs=[d.energy],
@@ -2881,6 +2891,7 @@ def energy_pos(m: Model, d: Data):
         dim=(d.nworld, m.ntendon),
         inputs=[
           m.tendon_stiffness,
+          m.tendon_stiffnesspoly,
           m.tendon_lengthspring,
           d.ten_length,
         ],
