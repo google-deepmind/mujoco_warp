@@ -1972,6 +1972,9 @@ class RenderContext:
     render_seg: per-camera segmentation render flags
     znear: near plane distance
     total_rays: total number of rays
+    render_skybox: whether to shade missed rays with the MuJoCo skybox texture
+    skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
+    skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
   """
 
   nrender: int
@@ -1981,6 +1984,9 @@ class RenderContext:
   use_shadows: bool
   background_color: wp.uint32
   use_precomputed_rays: bool
+  render_skybox: bool
+  skybox_tex_id: int
+  skybox_face_width: int
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict
