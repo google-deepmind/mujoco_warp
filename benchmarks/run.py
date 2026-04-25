@@ -53,8 +53,6 @@ def _asset_fetch(asset: dict, dst_dir: str):
     subprocess.run(
       ["git", "clone", uri, dst_dir, "--depth", "1", "--revision", ref],
       check=True,
-      stdout=subprocess.STD_ERROR_HANDLE,
-      stderr=subprocess.STD_ERROR_HANDLE,
     )
   else:
     raise ValueError(f"Unsupported asset uri: {uri}")
@@ -87,9 +85,12 @@ def _main(argv: Sequence[str]):
         shutil.rmtree(benchmark_dir)
       os.makedirs(benchmark_dir)
 
-      # copy in any assets
-      for asset, subpath in bm.get("assets", []):
-        shutil.copytree(os.path.join(_ASSET_BASE.value, _asset_dir(asset), subpath), benchmark_dir, dirs_exist_ok=True)
+      for asset_spec in bm.get("assets", []):
+        asset, src_subpath, dst_subpath = (asset_spec + ("",))[:3]
+        src_path = os.path.join(_ASSET_BASE.value, _asset_dir(asset), src_subpath)
+        dst_path = os.path.join(benchmark_dir, dst_subpath)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
 
       # copy in benchmark files
       shutil.copytree(item_path, benchmark_dir, dirs_exist_ok=True)
@@ -102,7 +103,8 @@ def _main(argv: Sequence[str]):
         xml_path,
         f"--nworld={bm['nworld']}",
         f"--nstep={nstep}",
-        f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}--format=short",
+        f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}",
+        "--format=short",
         "--event_trace=true",
         "--memory=true",
         "--measure_solver=true",

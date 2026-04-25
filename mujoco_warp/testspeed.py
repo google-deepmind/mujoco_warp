@@ -143,6 +143,12 @@ def _main(argv: Sequence[str]):
   if _FUNCTION.value not in _FUNCS:
     raise ValueError(f"Unknown function: {_FUNCTION.value}")
 
+  wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+  wp.init()
+  device = wp.get_device(cli.DEVICE.value)
+  if device == "cpu":
+    raise ValueError("testspeed available for gpu only")
+
   if _CLEAR_WARP_CACHE.value:
     wp.clear_kernel_cache()
     wp.clear_lto_cache()
@@ -150,12 +156,6 @@ def _main(argv: Sequence[str]):
     if compute_cache.exists():
       shutil.rmtree(compute_cache)
       compute_cache.mkdir()
-
-  wp.config.quiet = flags.FLAGS["verbosity"].value < 1
-  wp.init()
-  device = wp.get_device(cli.DEVICE.value)
-  if device == "cpu":
-    raise ValueError("testspeed available for gpu only")
 
   path = epath.Path(argv[1])
 

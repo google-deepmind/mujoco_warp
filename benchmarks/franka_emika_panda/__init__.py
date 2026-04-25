@@ -1,6 +1,6 @@
 ASSETS = [
   {
-    "source": "git@github.com:google-deepmind/mujoco_menagerie.git",
+    "source": "https://github.com/google-deepmind/mujoco_menagerie.git",
     "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
   }
 ]
