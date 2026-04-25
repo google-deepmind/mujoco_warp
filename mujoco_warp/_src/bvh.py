@@ -247,7 +247,7 @@ def compute_bvh_group_roots(
 
 # Warp exposes mesh group-root lookup as a kernel builtin in this version.
 @wp.kernel
-def _compute_mesh_group_roots(
+def compute_mesh_group_roots(
   # In:
   mesh_id: wp.uint64,
   # Out:
@@ -1096,7 +1096,7 @@ def build_flex_bvh(
 
   group_root = wp.empty(nworld, dtype=int)
   wp.launch(
-    kernel=_compute_mesh_group_roots,
+    kernel=compute_mesh_group_roots,
     dim=nworld,
     inputs=[flex_mesh.id],
     outputs=[group_root],
