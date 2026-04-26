@@ -36,7 +36,7 @@ from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
-from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat43
@@ -1124,7 +1124,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
 
   # set to true to enable multiccd
-  use_multiccd = m.opt.enableflags & EnableBit.MULTICCD
+  use_multiccd = m.opt.disableflags & DisableBit.MULTICCD == 0
 
   # need at least 4 (square sides) if there's a box collision needing multiccd
   nmaxpolygon = 4 if nboxbox > 0 else 0

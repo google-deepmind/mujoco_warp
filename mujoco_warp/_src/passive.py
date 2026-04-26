@@ -741,9 +741,10 @@ def _flex_bending(
   force = wp.matrix(0.0, shape=(nvert, 3))
   for i in range(nvert):
     for x in range(3):
+      acc = float(0.0)
       for j in range(nvert):
-        force[i, x] -= flex_bending[edgeid, 4 * i + j] * flexvert_xpos_in[worldid, v[j]][x]
-    force[i, x] -= flex_bending[edgeid, 16] * frc[i, x]
+        acc += flex_bending[edgeid, 4 * i + j] * flexvert_xpos_in[worldid, v[j]][x]
+      force[i, x] = -(acc + flex_bending[edgeid, 16] * frc[i, x])
 
   for i in range(nvert):
     bodyid = flex_vertbodyid[v[i]]

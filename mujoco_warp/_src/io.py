@@ -374,7 +374,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   )
 
   # check for unsupported margin + multicontact / box-box CCD combinations
-  use_multiccd = mjm.opt.enableflags & types.EnableBit.MULTICCD
+  use_multiccd = (mjm.opt.disableflags & types.DisableBit.MULTICCD) == 0
   nativeccd_disabled = mjm.opt.disableflags & types.DisableBit.NATIVECCD
   BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
   MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
@@ -2663,6 +2663,7 @@ def create_render_context(
   cam_active: list[bool] | None = None,
   flex_render_smooth: bool = True,
   use_precomputed_rays: bool = True,
+  render_skybox: bool = False,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -2683,6 +2684,8 @@ def create_render_context(
     flex_render_smooth: Whether to render flex meshes smoothly.
     use_precomputed_rays: Use precomputed rays instead of computing during rendering.
                           When using domain randomization for camera intrinsics, set to False.
+    render_skybox: Whether to shade missed rays with the MuJoCo skybox texture.
+                   Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -2761,6 +2764,16 @@ def create_render_context(
   for i in range(mjm.ntex):
     textures_registry.append(render_util.create_warp_texture(mjm, i))
   textures = wp.array(textures_registry, dtype=wp.Texture2D)
+
+  # Locate skybox texture
+  skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
+  if render_skybox:
+    assert skybox_tex_ids.size > 0, "render_skybox=True but the model has no texture with type mjTEXTURE_SKYBOX"
+    skybox_tex_id = int(skybox_tex_ids[0])
+    skybox_face_width = int(mjm.tex_width[skybox_tex_id])
+  else:
+    skybox_tex_id = -1
+    skybox_face_width = 1
 
   # Filter active cameras
   if cam_active is not None:
@@ -2861,6 +2874,9 @@ def create_render_context(
     use_shadows=use_shadows,
     background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
     use_precomputed_rays=use_precomputed_rays,
+    render_skybox=render_skybox,
+    skybox_tex_id=skybox_tex_id,
+    skybox_face_width=skybox_face_width,
     bvh_ngeom=bvh_ngeom,
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
     mesh_registry=mesh_registry,
