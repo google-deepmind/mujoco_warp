@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import BiasType
 from mujoco_warp import DisableBit
+from mujoco_warp import DynType
 from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
@@ -660,6 +661,1198 @@ class ForwardTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture("flex/multiflex.xml")
 
     mjw.forward(m, d)
+
+
+class DCMotorTest(parameterized.TestCase):
+  def test_dcmotor_stateless_steady_state(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" actdim="0"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="12.0" qvel="3.0"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Override types in Warp model (mjGAIN_DCMOTOR=4, mjBIAS_DCMOTOR=4, mjDYN_NONE=0)
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.NONE)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Analytical expected force: 0.29625
+    force = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force, 0.29625, atol=1e-5)
+
+  def test_dcmotor_current_filter(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.0001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="integrator" actdim="1"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="10.0" act="8.646647"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Override types (mjDYN_DCMOTOR=6, mjGAIN_DCMOTOR=4, mjBIAS_DCMOTOR=4)
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 1.0  # R
+    gainprm[0, 0, 1] = 1.0  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 0] = 0.1  # te
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    # Verify derivative instead of looping
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Analytical derivative: (I_ss - I) / te = (10.0 - 8.646647) / 0.1 = 13.53353
+    expected_dot = (10.0 - 8.646647) / 0.1
+
+    act_dot = d.act_dot.numpy()[0, 0]
+    np.testing.assert_allclose(act_dot, expected_dot, atol=1e-2)
+
+  def test_dcmotor_cogging_torque(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint" type="hinge" axis="0 0 1"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" actdim="0"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="5.0" qpos="1.0"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.NONE)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    biasprm = np.zeros((1, 1, 10), dtype=np.float32)
+    biasprm[0, 0, 0] = 0.1  # A
+    biasprm[0, 0, 1] = 6.0  # Np
+    biasprm[0, 0, 2] = 0.0  # phi
+    wp.copy(m.actuator_biasprm, wp.array(biasprm, dtype=m.actuator_biasprm.dtype))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Analytical expected force: K/R * V + A * sin(Np * pos + phi)
+    electrical_force = 0.05 / 2.0 * 5.0
+    cogging = 0.1 * np.sin(6.0 * 1.0 + 0.0)
+    expected_force = electrical_force + cogging
+
+    force = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force, expected_force, atol=1e-5)
+
+  def test_dcmotor_lugre_viscous_friction(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="integrator" actdim="1"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="0.0" qvel="2.0"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 5] = 100.0  # sigma0
+    dynprm[0, 0, 6] = 1.0  # sigma1
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    biasprm = np.zeros((1, 1, 10), dtype=np.float32)
+    biasprm[0, 0, 3] = 0.5  # coulomb
+    biasprm[0, 0, 4] = 0.7  # static
+    biasprm[0, 0, 5] = 10.0  # stribeck
+    wp.copy(m.actuator_biasprm, wp.array(biasprm, dtype=m.actuator_biasprm.dtype))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Analytical expected force:
+    # z = 0 initially
+    # z_dot = velocity = 2.0
+    # lugre_force = sigma0 * z + sigma1 * z_dot = 100 * 0 + 1.0 * 2.0 = 2.0
+    # electrical_force = K / R * (ctrl - K * velocity) = 0.05 / 2.0 * (0 - 0.05 * 2.0) = -0.0025
+    # expected_force = electrical_force - lugre_force = -2.0025
+
+    expected_force = -2.0025
+    force = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force, expected_force, atol=1e-5)
+
+  def test_dcmotor_thermal_affects_force(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="integrator" actdim="1"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="10.0"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    gainprm[0, 0, 2] = 0.004  # alpha
+    gainprm[0, 0, 3] = 25.0  # T0
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 2] = 1.0  # tau_th > 0 to enable temperature state!
+    dynprm[0, 0, 4] = 25.0  # Ta
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    # Cold state (T = 0)
+    act_numpy = np.zeros((1, 1), dtype=np.float32)
+    act_numpy[0, 0] = 0.0
+    wp.copy(d.act, wp.array(act_numpy, device=d.act.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+    force_cold = d.actuator_force.numpy()[0, 0]
+
+    # Expected cold force: K/R * V = 0.05 / 2.0 * 10.0 = 0.25
+    np.testing.assert_allclose(force_cold, 0.25, atol=1e-5)
+
+    # Hot state (T = 50)
+    act_numpy[0, 0] = 50.0
+    wp.copy(d.act, wp.array(act_numpy, device=d.act.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+    force_hot = d.actuator_force.numpy()[0, 0]
+
+    # Expected hot force: K / (R * (1 + alpha * dT)) * V
+    # dT = T + Ta - T0 = 50 + 25 - 25 = 50
+    # R_hot = 2.0 * (1 + 0.004 * 50) = 2.0 * 1.2 = 2.4
+    # force_hot = 0.05 / 2.4 * 10.0 = 0.5 / 2.4 = 0.208333
+
+    expected_hot_force = 0.5 / 2.4
+    np.testing.assert_allclose(force_hot, expected_hot_force, atol=1e-5)
+    self.assertLess(force_hot, force_cold)
+
+  def test_dcmotor_stateful_position_mode(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="user" actdim="2"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="5.0" qvel="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    gainprm[0, 0, 4] = 2.0  # kp
+    gainprm[0, 0, 5] = 0.5  # ki
+    gainprm[0, 0, 6] = 0.1  # kv (kd)
+    gainprm[0, 0, 7] = 10.0  # vmax
+    gainprm[0, 0, 8] = 1.0  # input_mode = position
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 7] = 10.0  # slew rate
+    dynprm[0, 0, 8] = 5.0  # Imax
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    # Set initial state for actuators
+    # adr=0: slew (u_prev) = 1.0
+    # adr=1: ki (x_I) = 2.0
+    act_numpy = np.zeros((1, 2), dtype=np.float32)
+    act_numpy[0, 0] = 1.0
+    act_numpy[0, 1] = 2.0
+    wp.copy(d.act, wp.array(act_numpy, device=d.act.device))
+
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Verify act_dot
+    # slew state dot: (1.01 - 1.0) / 0.001 = 10.0
+    # integral state dot: u_eff = 1.01
+    act_dot = d.act_dot.numpy()[0]
+    np.testing.assert_allclose(act_dot[0], 10.0, atol=1e-5)
+    np.testing.assert_allclose(act_dot[1], 1.01, atol=1e-5)
+
+    # Verify actuator_force
+    # V = 2.0 * 1.01 + 0.5 * 2.0 - 0.1 * 0.5 = 2.97
+    # force = K/R * V - K^2/R * omega = 0.025 * 2.97 - 0.000625 = 0.073625
+    force = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force, 0.073625, atol=1e-5)
+
+  def test_dcmotor_lugre_exact_integration(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1" mass="1e6"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="user" actdim="1"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 5] = 100.0  # sigma0
+    dynprm[0, 0, 6] = 1.0  # sigma1
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    biasprm = np.zeros((1, 1, 10), dtype=np.float32)
+    biasprm[0, 0, 3] = 0.5  # coulomb
+    biasprm[0, 0, 4] = 0.7  # static
+    biasprm[0, 0, 5] = 10.0  # stribeck
+    wp.copy(m.actuator_biasprm, wp.array(biasprm, dtype=m.actuator_biasprm.dtype))
+
+    # Set initial state
+    z0 = 0.002
+    v = 0.5
+    act_numpy = np.zeros((1, 1), dtype=np.float32)
+    act_numpy[0, 0] = z0
+    wp.copy(d.act, wp.array(act_numpy, device=d.act.device))
+
+    qvel_np = np.zeros((1, m.nv), dtype=np.float32)
+    qvel_np[0, 0] = v
+    wp.copy(d.qvel, wp.array(qvel_np, device=d.qvel.device))
+
+    # Analytical expected z_new:
+    sigma0 = 100.0
+    F_C = 0.5
+    F_S = 0.7
+    v_S = 10.0
+    h = 0.001
+
+    ratio = v / v_S
+    g_v = F_C + (F_S - F_C) * np.exp(-ratio * ratio)
+    a = -sigma0 * np.abs(v) / g_v
+    exp_ah = np.exp(a * h)
+    int_h = (exp_ah - 1.0) / a
+    z_new = exp_ah * z0 + int_h * v
+
+    mjw.step(m, d)
+
+    np.testing.assert_allclose(d.act.numpy()[0, 0], z_new, atol=1e-5)
+
+  def test_dcmotor_current_filter_exact_integration(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1" mass="10000"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="user" actdim="1"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 0] = 0.005  # te (L/R)
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    # Set control
+    V = 12.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = V
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    mjw.step(m, d)
+
+    R = 2.0
+    te = 0.01 / R
+    h = 0.001
+    exact_current = V / R * (1.0 - np.exp(-h / te))
+    euler_current = V / R * h / te
+
+    current_actual = d.act.numpy()[0, 0]
+    np.testing.assert_allclose(current_actual, exact_current, atol=1e-5)
+
+    # Verify it is better than Euler
+    self.assertLess(np.abs(current_actual - exact_current), np.abs(current_actual - euler_current))
+
+  def test_dcmotor_stateful_position_with_current_mode(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" type="slide" axis="1 0 0"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="user" actdim="3" actearly="true"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    gainprm[0, 0, 4] = 2.0  # kp
+    gainprm[0, 0, 5] = 0.5  # ki
+    gainprm[0, 0, 6] = 0.1  # kv (kd)
+    gainprm[0, 0, 7] = 10.0  # vmax
+    gainprm[0, 0, 8] = 1.0  # input_mode = position
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    dynprm[0, 0, 0] = 0.5  # te (L/R)
+    dynprm[0, 0, 7] = 10.0  # slew rate
+    dynprm[0, 0, 8] = 5.0  # Imax
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    # Set initial state
+    # Controller states: slew (0), ki (1), current (2)
+    act_numpy = np.zeros((1, 3), dtype=np.float32)
+    act_numpy[0, 0] = 1.0  # u_prev
+    act_numpy[0, 1] = 2.0  # x_I
+    act_numpy[0, 2] = 0.5  # current
+    wp.copy(d.act, wp.array(act_numpy, device=d.act.device))
+
+    # Target 5.0 position, velocity 0.5
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 5.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    qvel_np = np.zeros((1, m.nv), dtype=np.float32)
+    qvel_np[0, 0] = 0.5
+    wp.copy(d.qvel, wp.array(qvel_np, device=d.qvel.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    act_dot_actual = d.act_dot.numpy()[0]
+
+    np.testing.assert_allclose(act_dot_actual[0], 10.0, atol=1e-3)
+    np.testing.assert_allclose(act_dot_actual[1], 1.01, atol=1e-3)
+    np.testing.assert_allclose(act_dot_actual[2], 1.945, atol=1e-3)
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.025097, atol=1e-5)
+
+  def test_dcmotor_int_velocity_equivalence(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 0">
+          <joint name="slide1" type="slide" axis="1 0 0"/>
+          <geom size=".1"/>
+        </body>
+        <body pos="0 1 0">
+          <joint name="slide2" type="slide" axis="1 0 0"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <intvelocity name="intvel" joint="slide1" kp="10" kv="5" actrange="-0.01 0.01"/>
+        <dcmotor name="dcmotor" joint="slide2" motorconst="1" resistance="0.2" input="velocity" controller="0 2 0 0 0.01"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Apply a time-varying velocity command
+    for _ in range(10):
+      t = d.time.numpy()[0]
+      ctrl_val = np.sin(20.0 * t)
+
+      ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+      ctrl_np[0, 0] = ctrl_val
+      ctrl_np[0, 1] = ctrl_val
+      wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+      mjw.step(m, d)
+
+    # Both actuators should integrate identical states
+    np.testing.assert_allclose(d.act.numpy()[0, 0], d.act.numpy()[0, 1], atol=1e-5)
+
+    # Both bodies should move identically
+    np.testing.assert_allclose(d.qpos.numpy()[0, 0], d.qpos.numpy()[0, 1], atol=1e-5)
+    np.testing.assert_allclose(d.qvel.numpy()[0, 0], d.qvel.numpy()[0, 1], atol=1e-5)
+    np.testing.assert_allclose(d.qacc.numpy()[0, 0], d.qacc.numpy()[0, 1], atol=1e-4)
+
+    # Both actuators should produce identical force
+    np.testing.assert_allclose(d.actuator_force.numpy()[0, 0], d.actuator_force.numpy()[0, 1], atol=1e-4)
+
+  def test_dcmotor_cogging_bypasses_saturation(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general name="dcmotor" joint="joint" dyntype="user" actdim="1"
+                 forcerange="0 0.001" forcelimited="true"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Override types in Warp model
+    wp.copy(m.actuator_gaintype, wp.array([int(GainType.DCMOTOR)], dtype=m.actuator_gaintype.dtype))
+    wp.copy(m.actuator_biastype, wp.array([int(BiasType.DCMOTOR)], dtype=m.actuator_biastype.dtype))
+    wp.copy(m.actuator_dyntype, wp.array([int(DynType.DCMOTOR)], dtype=m.actuator_dyntype.dtype))
+
+    # Set parameters
+    dynprm = np.zeros((1, 1, 10), dtype=np.float32)
+    wp.copy(m.actuator_dynprm, wp.array(dynprm, dtype=m.actuator_dynprm.dtype))
+
+    gainprm = np.zeros((1, 1, 10), dtype=np.float32)
+    gainprm[0, 0, 0] = 2.0  # R
+    gainprm[0, 0, 1] = 0.05  # K
+    wp.copy(m.actuator_gainprm, wp.array(gainprm, dtype=m.actuator_gainprm.dtype))
+
+    biasprm = np.zeros((1, 1, 10), dtype=np.float32)
+    biasprm[0, 0, 0] = 0.1  # A
+    biasprm[0, 0, 1] = 6.0  # Np
+    biasprm[0, 0, 2] = 0.0  # phi
+    wp.copy(m.actuator_biasprm, wp.array(biasprm, dtype=m.actuator_biasprm.dtype))
+
+    # Set position
+    pos = 1.0
+    qpos_np = np.zeros((1, m.nq), dtype=np.float32)
+    qpos_np[0, 0] = pos
+    wp.copy(d.qpos, wp.array(qpos_np, device=d.qpos.device))
+
+    # Large control to trigger saturation
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 100.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    A = 0.1
+    Np = 6.0
+    phi = 0.0
+    cogging = A * np.sin(Np * pos + phi)
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+
+    # Expect 0.001 (saturated) + cogging
+    np.testing.assert_allclose(force_actual, 0.001 + cogging, atol=1e-5)
+
+  def test_dcmotor_thermal_rise_and_fall(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" damping="10000"/>
+          <geom size="1" mass="10000"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 thermal="10 5 0 0 25 25"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Apply voltage
+    V = 10.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = V
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    # Step 1
+    mjw.step(m, d)
+
+    R = 2.0
+    P = V * V / R
+    C = 5.0
+    h = 0.001
+    dT1 = h * P / C
+
+    act_actual = d.act.numpy()[0, adr]
+    np.testing.assert_allclose(act_actual, dT1, atol=1e-4)
+
+    # Step 2
+    mjw.step(m, d)
+    RT = 10.0
+    dT2 = dT1 + h * (P - dT1 / RT) / C
+
+    act_actual = d.act.numpy()[0, adr]
+    np.testing.assert_allclose(act_actual, dT2, atol=1e-4)
+
+    # Step 3 (fall)
+    ctrl_np[0, 0] = 0.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    mjw.step(m, d)
+    dT3 = dT2 + h * (0.0 - dT2 / RT) / C
+
+    act_actual = d.act.numpy()[0, adr]
+    np.testing.assert_allclose(act_actual, dT3, atol=1e-4)
+
+  def test_dcmotor_thermal_steady_state(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" damping="10000"/>
+          <geom size="1" mass="10000"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 thermal="0.1 0.1 0 0 25 25"/>
+      </actuator>
+      <keyframe>
+        <key ctrl="10.0" act="5.0"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    # Verify derivative is zero instead of looping
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    adr = m.actuator_actadr.numpy()[0]
+    act_dot = d.act_dot.numpy()[0, adr]
+
+    # Expect act_dot to be close to zero
+    np.testing.assert_allclose(act_dot, 0.0, atol=1e-4)
+
+  def test_dcmotor_thermal_affects_force_with_controller(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 input="position" controller="1.0 1.0 0 5.0 0"
+                 thermal="0.1 0.1 0 0.004 25 25"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Set states
+    act_np = np.zeros((1, m.na), dtype=np.float32)
+    act_np[0, adr] = 1.0  # slew state = ctrl: no rate-limiting applied
+    act_np[0, adr + 1] = 0.0  # integral state x_I = 0
+    act_np[0, adr + 2] = 50.0  # temperature rise above ambient
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # Set control
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 1.0  # position setpoint = 1.0, qpos = 0, error = 1.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    K = 0.05
+    R = 2.0
+    alpha = 0.004
+    dT = 50.0
+
+    R_hot = R * (1.0 + alpha * dT)
+    force_expected = K / R_hot * 1.0  # V = 1.0
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, force_expected, atol=1e-5)
+
+  def test_dcmotor_stateless_position_mode(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" input="position" controller="2.0 0 0.5 0 0"
+                 motorconst="0.05" resistance="2.0"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Position target 5.0, current pos 0.0, current vel 0.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 5.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # V = Kp * (u - theta) = 2.0 * 5.0 = 10.0
+    # force = K / R * V + bias = (0.05 / 2.0) * 10.0 + 0 = 0.25
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.25, atol=1e-5)
+
+    # Velocity penalty
+    qvel_np = np.zeros((1, m.nv), dtype=np.float32)
+    qvel_np[0, 0] = 2.0
+    wp.copy(d.qvel, wp.array(qvel_np, device=d.qvel.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # V = 10.0 - Kd * omega = 10.0 - (0.5 * 2.0) = 9.0
+    # bias = - K^2 / R * omega = -0.0025 / 2.0 * 2.0 = -0.0025
+    # force = K / R * V + bias = 0.225 - 0.0025 = 0.2225
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.2225, atol=1e-5)
+
+  def test_dcmotor_stateless_velocity_mode(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" input="velocity" controller="3.0 0 0 0 0"
+                 motorconst="0.05" resistance="2.0"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Velocity target 4.0, current vel 1.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 4.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    qvel_np = np.zeros((1, m.nv), dtype=np.float32)
+    qvel_np[0, 0] = 1.0
+    wp.copy(d.qvel, wp.array(qvel_np, device=d.qvel.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # V = Kp * (u - omega) = 3.0 * (4.0 - 1.0) = 9.0
+    # bias = - K^2 / R * omega = -0.0025 / 2.0 * 1.0 = -0.00125
+    # force = K / R * V + bias = (0.05 / 2.0) * 9.0 - 0.00125 = 0.22375
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.22375, atol=1e-5)
+
+  def test_dcmotor_stateful_velocity_mode(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" input="velocity" controller="3.0 1.0 0 0 2.0"
+                 motorconst="0.05" resistance="2.0"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Set state: x_I = 2.0
+    act_np = np.zeros((1, m.na), dtype=np.float32)
+    act_np[0, adr] = 2.0
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # target vel 4.0, current vel 1.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 4.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    qvel_np = np.zeros((1, m.nv), dtype=np.float32)
+    qvel_np[0, 0] = 1.0
+    wp.copy(d.qvel, wp.array(qvel_np, device=d.qvel.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # V = Kp * (u_eff - omega) + Ki * (x_I - length)
+    # V = 3.0 * (4.0 - 1.0) + 1.0 * (2.0 - 0.0) = 9.0 + 2.0 = 11.0
+    # bias = - K^2/R * omega = -(0.05)^2 / 2.0 * 1.0 = -0.00125
+    # force = K/R * V + bias = 0.025 * 11.0 - 0.00125 = 0.275 - 0.00125 = 0.27375
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.27375, atol=1e-5)
+
+    # repeat with non-zero joint position
+    qpos_np = np.zeros((1, m.nq), dtype=np.float32)
+    qpos_np[0, 0] = 1.5
+    wp.copy(d.qpos, wp.array(qpos_np, device=d.qpos.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # V = 3.0 * (4.0 - 1.0) + 1.0 * (2.0 - 1.5) = 9.0 + 0.5 = 9.5
+    # force = K/R * V + bias = 0.025 * 9.5 - 0.00125 = 0.2375 - 0.00125 = 0.23625
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.23625, atol=1e-5)
+
+  def test_dcmotor_current_plus_thermal(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" damping="10000"/>
+          <geom size="1" mass="10000"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 inductance="0.01 0" thermal="10 5 0 0.004 25 25"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Set states
+    dT = 10.0
+    current = 3.0
+    act_np = np.zeros((1, m.na), dtype=np.float32)
+    act_np[0, adr] = dT
+    act_np[0, adr + 1] = current
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # Set control
+    V = 12.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = V
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.act_dot.fill_(wp.inf)
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    K = 0.05
+    R = 2.0
+    te = 0.01 / R
+    RT = 10.0
+    C = 5.0
+    h = 0.001
+
+    R_hot = R * (1.0 + 0.004 * dT)
+
+    # Verify act_dot for temperature
+    T_dot_expected = (R_hot * current * current - dT / RT) / C
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, T_dot_expected, atol=1e-3)
+
+    # Verify act_dot for current
+    omega = d.qvel.numpy()[0, 0]
+    i_dot_expected = (V / R_hot - K / R_hot * omega - current) / te
+    act_dot_actual = d.act_dot.numpy()[0, adr + 1]
+    np.testing.assert_allclose(act_dot_actual, i_dot_expected, atol=1e-2)
+
+    # Verify force
+    act_dot_from_data = d.act_dot.numpy()[0, adr + 1]
+    next_i = current + act_dot_from_data * te * (1.0 - np.exp(-h / te))
+    force_expected = K * next_i
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, force_expected, atol=1e-4)
+
+  def test_dcmotor_current_rate_limit(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint" damping="10000"/>
+          <geom size="1" mass="10000"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 inductance="0.01 0" saturation="0 0 100"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Set state: current = 0
+    act_np = np.zeros((1, m.na), dtype=np.float32)
+    act_np[0, adr] = 0.0
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # Set control
+    V = 12.0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = V
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    dimax = 100.0
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, dimax, atol=1e-5)
+
+    # reverse: large negative drive
+    ctrl_np[0, 0] = -V
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, -dimax, atol=1e-5)
+
+  def test_dcmotor_voltage_limit(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 input="position" controller="1 0 0 0 0 10.0"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    # Vmax = 10.0, ctrl = 20.0
+    # force = K/R * Vmax = 0.05 / 2.0 * 10.0 = 0.25
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 20.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    mjw.forward(m, d)
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, 0.25, atol=1e-5)
+
+    # negative drive
+    ctrl_np[0, 0] = -20.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, -0.25, atol=1e-5)
+
+  def test_dcmotor_integral_clamp(self):
+    xml = """
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" input="position" controller="2.0 0.5 0 0 5.0"
+                 motorconst="0.05" resistance="2.0"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # set integral state to Imax
+    act_np = np.zeros((1, m.na), dtype=np.float32)
+    act_np[0, adr] = 5.0
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # set target to generate positive error (ctrl - length)
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    ctrl_np[0, 0] = 1.0  # target
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    # ensure length = 0
+    qpos_np = np.zeros((1, m.nq), dtype=np.float32)
+    wp.copy(d.qpos, wp.array(qpos_np, device=d.qpos.device))
+
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # act_dot should be clamped to 0 because act >= Imax and error > 0
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, 0.0, atol=1e-5)
+
+    # set target to generate negative error
+    ctrl_np[0, 0] = -1.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # act_dot should be negative (not clamped)
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, -1.0, atol=1e-5)
+
+    # set integral state to -Imax
+    act_np[0, adr] = -5.0
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # set target to generate negative error
+    ctrl_np[0, 0] = -1.0
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.act_dot.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # act_dot should be clamped to 0 because act <= -Imax and error < 0
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, 0.0, atol=1e-5)
+
+  def test_dcmotor_lugre_steady_state(self):
+    v_S = 10.0
+    F_C = 0.5
+    F_S = 0.7
+    sigma0 = 100.0
+    v = 0.5
+    ratio = v / v_S
+    g_v = F_C + (F_S - F_C) * np.exp(-ratio * ratio)
+    z_ss = g_v / sigma0
+
+    xml = f"""
+    <mujoco>
+      <option timestep="0.001"/>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1" mass="1e6"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 damping="0.01" lugre="100 1 0.5 0.7 10"/>
+      </actuator>
+      <keyframe>
+        <key qpos="0" qvel="{v}" act="{z_ss}"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Verify derivative and force instead of looping
+    d.act_dot.fill_(wp.inf)
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Verify steady state bristle deflection (loaded from keyframe)
+    act_actual = d.act.numpy()[0, adr]
+    np.testing.assert_allclose(act_actual, z_ss, atol=1e-4)
+
+    # Verify derivative is zero
+    act_dot_actual = d.act_dot.numpy()[0, adr]
+    np.testing.assert_allclose(act_dot_actual, 0.0, atol=1e-4)
+
+    # Verify force
+    K = 0.05
+    R = 2.0
+    back_emf = K * K / R * v
+    lugre_ss = g_v
+    force_expected = -back_emf - lugre_ss
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, force_expected, atol=1e-3)
+
+  def test_dcmotor_lugre_bristle_spring(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="0.05" resistance="2.0"
+                 damping="0.01" lugre="100 1 0.5 0.7 10"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    adr = m.actuator_actadr.numpy()[0]
+
+    # Set state: deflection = 0.01
+    X = 0.01
+    act_np = np.zeros((1, m.na), dtype=np.float32)
+    act_np[0, adr] = X
+    wp.copy(d.act, wp.array(act_np, device=d.act.device))
+
+    # Set control = 0
+    ctrl_np = np.zeros((1, m.nu), dtype=np.float32)
+    wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sigma0 = 100.0
+    force_expected = -sigma0 * X
+
+    force_actual = d.actuator_force.numpy()[0, 0]
+    np.testing.assert_allclose(force_actual, force_expected, atol=1e-5)
 
 
 if __name__ == "__main__":

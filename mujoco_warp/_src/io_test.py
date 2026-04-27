@@ -2333,7 +2333,6 @@ class IOTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
     """)
-    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
@@ -2356,7 +2355,6 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
@@ -2379,7 +2377,6 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
@@ -2400,6 +2397,7 @@ class IOTest(parameterized.TestCase):
       </mujoco>
     """)
     mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):

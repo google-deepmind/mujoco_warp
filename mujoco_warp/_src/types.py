@@ -203,6 +203,7 @@ class DisableBit(enum.IntFlag):
   EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP
   NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
   ISLAND = mujoco.mjtDisableBit.mjDSBL_ISLAND
+  MULTICCD = mujoco.mjtDisableBit.mjDSBL_MULTICCD
   # unsupported: MIDPHASE, AUTORESET
 
 
@@ -217,7 +218,6 @@ class EnableBit(enum.IntFlag):
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
-  MULTICCD = mujoco.mjtEnableBit.mjENBL_MULTICCD
   # unsupported: OVERRIDE, FWDINV, ISLAND
 
 
@@ -251,6 +251,7 @@ class DynType(enum.IntEnum):
     FILTEREXACT: linear filter: da/dt = (u-a) / tau, with exact integration
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
+    DCMOTOR: DC motor dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -259,6 +260,7 @@ class DynType(enum.IntEnum):
   FILTEREXACT = mujoco.mjtDyn.mjDYN_FILTEREXACT
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
+  DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
 
 
 class GainType(enum.IntEnum):
@@ -269,12 +271,14 @@ class GainType(enum.IntEnum):
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
+    DCMOTOR: DC motor gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
   AFFINE = mujoco.mjtGain.mjGAIN_AFFINE
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
+  DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
 
 
 class BiasType(enum.IntEnum):
@@ -285,12 +289,14 @@ class BiasType(enum.IntEnum):
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
     USER: user-defined bias via act_bias_callback
+    DCMOTOR: DC motor back-EMF bias
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
   AFFINE = mujoco.mjtBias.mjBIAS_AFFINE
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
   USER = mujoco.mjtBias.mjBIAS_USER
+  DCMOTOR = mujoco.mjtBias.mjBIAS_DCMOTOR
 
 
 class JointType(enum.IntEnum):
@@ -648,6 +654,10 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
   pass
 
 
+class vec6i(wp.types.vector(length=6, dtype=int)):
+  pass
+
+
 class vec8f(wp.types.vector(length=8, dtype=float)):
   pass
 
@@ -996,8 +1006,13 @@ class Model:
     flex_contype: flex contact type                          (nflex,)
     flex_conaffinity: flex contact affinity                  (nflex,)
     flex_condim: contact dimensionality (1, 3, 4, 6)         (nflex,)
+    flex_priority: geom contact priority                     (nflex,)
+    flex_solmix: mixing coef for solref/imp in geom pair     (nflex,)
+    flex_solref: constraint solver reference: contact        (nflex, mjNREF)
+    flex_solimp: constraint solver impedance: contact        (nflex, mjNIMP)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
+    flex_gap: include in solver if dist<margin-gap           (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
@@ -1148,7 +1163,7 @@ class Model:
     nsensortaxel: number of taxels in all tactile sensors
     nsensorcontact: number of contact sensors
     nrangefinder: number of rangefinder sensors
-    nmaxcondim: maximum condim for geoms
+    nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
@@ -1389,8 +1404,13 @@ class Model:
   flex_contype: array("nflex", int)
   flex_conaffinity: array("nflex", int)
   flex_condim: array("nflex", int)
+  flex_priority: array("nflex", int)
+  flex_solmix: array("nflex", float)
+  flex_solref: array("nflex", wp.vec2)
+  flex_solimp: array("nflex", vec5)
   flex_friction: array("nflex", wp.vec3)
   flex_margin: array("nflex", float)
+  flex_gap: array("nflex", float)
   flex_dim: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
@@ -1954,6 +1974,9 @@ class RenderContext:
     render_seg: per-camera segmentation render flags
     znear: near plane distance
     total_rays: total number of rays
+    render_skybox: whether to shade missed rays with the MuJoCo skybox texture
+    skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
+    skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
   """
 
   nrender: int
@@ -1963,6 +1986,9 @@ class RenderContext:
   use_shadows: bool
   background_color: wp.uint32
   use_precomputed_rays: bool
+  render_skybox: bool
+  skybox_tex_id: int
+  skybox_face_width: int
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict
