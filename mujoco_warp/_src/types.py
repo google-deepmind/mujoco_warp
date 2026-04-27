@@ -1161,7 +1161,7 @@ class Model:
     nsensortaxel: number of taxels in all tactile sensors
     nsensorcontact: number of contact sensors
     nrangefinder: number of rangefinder sensors
-    nmaxcondim: maximum condim for geoms
+    nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
