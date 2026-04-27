@@ -1959,23 +1959,25 @@ class IOTest(parameterized.TestCase):
         <light pos="0 0 3" dir="0 0 -1"/>
         <geom type="plane" size="10 10 0.1"/>
         <geom type="sphere" size="0.2" pos="0 0 0.5" rgba="1 0 0 1"/>
+        <flexcomp type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="-0.1 -0.1 0.7"
+                  radius="0.02" name="cloth" dim="2" mass="0.1">
+          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
+                   selfcollide="none" conaffinity="1" contype="1"/>
+          <edge damping="0.01"/>
+        </flexcomp>
         <camera name="cam" pos="0 -1 0.5" xyaxes="1 0 0 0 0 1"
                 resolution="32 32" output="segmentation"/>
       </worldbody>
     </mujoco>
     """
     mjm = mujoco.MjModel.from_xml_string(xml)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd, nworld=1)
-
+    self.assertEqual(mjm.nflex, 1, "nflex")
     rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
-    mjwarp.render(m, d, rc)
+    pixels = 32 * 32
 
-    seg = rc.seg_data.numpy()
-    self.assertTrue(np.any(seg >= 0), "Expected geom hits from auto-detected seg")
-    self.assertGreater(np.unique(seg).shape[0], 1)
+    self.assertEqual(rc.seg_data.shape, (1, pixels), "seg_data")
+    _assert_eq(rc.seg_adr.numpy(), [0], "seg_adr")
+    _assert_eq(rc.render_seg.numpy(), [True], "render_seg")
 
   def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")

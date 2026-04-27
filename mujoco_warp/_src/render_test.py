@@ -110,9 +110,9 @@ class RenderTest(parameterized.TestCase):
 
     seg = rc.seg_data.numpy()
 
-    # Should have at least one geom hit (>= 0) and multiple distinct geom IDs.
-    self.assertTrue(np.any(seg >= 0), "Expected at least one geom hit (>= 0)")
-    self.assertGreater(np.unique(seg).shape[0], 1)
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    self.assertTrue(np.any(geom_mask), "Expected at least one geom hit")
+    self.assertGreater(np.unique(seg[..., 0][geom_mask]).shape[0], 1)
 
   def test_render_rgb_and_segmentation(self):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
@@ -131,7 +131,30 @@ class RenderTest(parameterized.TestCase):
     seg = rc.seg_data.numpy()
 
     self.assertGreater(np.count_nonzero(rgb), 0)
-    self.assertTrue(np.any(seg >= 0))
+    self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  def test_segmentation_matches_mujoco(self):
+    """Segmentation should match native MuJoCo's `(object_id, object_type)` output."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    cam_w, cam_h = 32, 32
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=[True],
+    )
+    mjw.render(m, d, rc)
+
+    warp_seg_np = rc.seg_data.numpy()[0].reshape(-1, 2)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      renderer.enable_segmentation_rendering()
+      mj_seg = renderer.render().reshape(-1, 2)
+
+    np.testing.assert_array_equal(warp_seg_np, mj_seg)
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):

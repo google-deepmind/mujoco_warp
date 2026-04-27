@@ -104,6 +104,7 @@ from mujoco_warp._src.types import GainType as GainType
 from mujoco_warp._src.types import GeomType as GeomType
 from mujoco_warp._src.types import IntegratorType as IntegratorType
 from mujoco_warp._src.types import JointType as JointType
+from mujoco_warp._src.types import ObjType as ObjType
 from mujoco_warp._src.types import Option as Option
 from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SolverType as SolverType

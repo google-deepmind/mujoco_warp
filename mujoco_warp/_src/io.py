@@ -2683,8 +2683,8 @@ def create_render_context(
              MuJoCo model values.
     render_rgb: Whether to render RGB images. If None, uses the MuJoCo model values.
     render_depth: Whether to render depth images. If None, uses the MuJoCo model values.
-    render_seg: Whether to render segmentation (per-pixel geom IDs). If None,
-      uses the MuJoCo model values.
+    render_seg: Whether to render segmentation (per-pixel object ID/type pairs).
+      If None, uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
     enabled_geom_groups: The geom groups to render.
@@ -2753,21 +2753,21 @@ def create_render_context(
   flex_geom_flexid = []
   flex_geom_edgeid = []
   flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
-  flex_group_root = np.zeros((nflex, nworld), dtype=int)
+  # Indexed later as [worldid, flexid].
+  flex_group_root = np.full((nworld, nflex), -1, dtype=int)
 
   for f in range(nflex):
     if mjm.flex_dim[f] == 1:
       edge_adr = mjm.flex_edgeadr[f]
       flex_geom_flexid.extend([f] * mjm.flex_edgenum[f])
       flex_geom_edgeid.extend([edge_adr + e for e in range(mjm.flex_edgenum[f])])
-      flex_group_root[f] = np.zeros(nworld, dtype=int)
     else:
       flex_geom_flexid.append(f)
       flex_geom_edgeid.append(-1)
       fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
       flex_registry[f] = fmesh
       flex_bvh_id[f] = fmesh.id
-      flex_group_root[f] = group_root.numpy()
+      flex_group_root[:, f] = group_root.numpy()
 
   textures_registry = []
   for i in range(mjm.ntex):
@@ -2921,7 +2921,7 @@ def create_render_context(
     depth_adr=wp.array(depth_adr, dtype=int),
     render_rgb=wp.array(render_rgb, dtype=bool),
     render_depth=wp.array(render_depth, dtype=bool),
-    seg_data=wp.zeros((nworld, max(si, 1)), dtype=int),
+    seg_data=wp.zeros((nworld, max(si, 1)), dtype=wp.vec2i),
     seg_adr=wp.array(seg_adr, dtype=int),
     render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
