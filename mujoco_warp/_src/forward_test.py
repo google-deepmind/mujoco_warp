@@ -494,11 +494,7 @@ class ForwardTest(parameterized.TestCase):
     integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.RK4),
   )
   def test_step2(self, xml, integrator):
-    # TODO(team): remove enableflags override when mujoco warp feature matches mujoco
-    enableflags = EnableBit.INVDISCRETE if integrator == IntegratorType.IMPLICITFAST else 0
-    mjm, mjd, m, _ = test_data.fixture(
-      xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.integrator": integrator, "opt.enableflags": enableflags}
-    )
+    mjm, mjd, m, _ = test_data.fixture(xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.integrator": integrator})
 
     # some of the fields updated by step2
     step2_field = [
@@ -661,6 +657,231 @@ class ForwardTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture("flex/multiflex.xml")
 
     mjw.forward(m, d)
+
+  @parameterized.parameters(1, 2)
+  def test_step2_midpoint(self, xml_idx):
+    # aligned: CoM at joint origin
+    xml1 = """
+    <mujoco>
+      <option integrator="implicitfast" timestep="0.01">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    # non-aligned: CoM offset from joint origin
+    xml2 = """
+    <mujoco>
+      <option integrator="implicitfast" timestep="0.01">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30" pos=".03 .02 .01"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    xmls = [xml1, xml2]
+    xml = xmls[xml_idx - 1]
+
+    mjm, mjd, m, _ = test_data.fixture(xml=xml, overrides={"opt.integrator": IntegratorType.IMPLICITFAST})
+
+    step2_field = [
+      "qfrc_smooth",
+      "qacc",
+      "qacc_warmstart",
+      "qvel",
+      "qpos",
+    ]
+
+    # set initial angular velocity
+    mjd.qvel[3:6] = [1.0, 2.0, 3.0]
+    mujoco.mj_forward(mjm, mjd)
+    mujoco.mj_step1(mjm, mjd)
+
+    d = mjw.put_data(mjm, mjd)
+
+    for arr in step2_field:
+      if arr in ["qpos", "qvel"]:
+        continue
+      attr = getattr(d, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+
+    mujoco.mj_step2(mjm, mjd)
+    mjw.step2(m, d)
+
+    for arr in step2_field:
+      d_arr = getattr(d, arr).numpy()[0]
+      _assert_eq(d_arr, getattr(mjd, arr), arr)
+
+  @parameterized.parameters(1, 2, 3)
+  def test_conservation_midpoint(self, xml_idx):
+    # aligned: CoM at joint origin
+    xml1 = """
+    <mujoco>
+      <option integrator="implicitfast" timestep="0.01">
+        <flag energy="enable" gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    # auto-aligned: CoM at joint origin
+    xml2 = """
+    <mujoco>
+      <option integrator="implicitfast" timestep="0.01">
+        <flag energy="enable" gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint align="true"/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30" pos=".03 .02 .01"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    # non-aligned: CoM offset from joint origin
+    xml3 = """
+    <mujoco>
+      <option integrator="implicitfast" timestep="0.01">
+        <flag energy="enable" gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30" pos=".03 .02 .01"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    xmls = [xml1, xml2, xml3]
+    xml = xmls[xml_idx - 1]
+
+    nstep = 10
+
+    mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.integrator": IntegratorType.IMPLICITFAST})
+
+    # set initial velocity
+    d.qvel.zero_()
+    qvel_init = np.zeros(6)
+    qvel_init[3] = 1.0
+    qvel_init[4] = 2.0
+    qvel_init[5] = 3.0
+    d.qvel.assign(qvel_init.reshape(1, 6))
+
+    mjw.forward(m, d)
+    initial_energy = d.energy.numpy()[0, 1]  # kinetic energy
+
+    # compute subtree angmom
+    mjw.subtree_vel(m, d)
+    initial_angmom = d.subtree_angmom.numpy()[0, 0].copy()  # body 0 is root
+
+    for _ in range(nstep):
+      mjw.step(m, d)
+
+    energy_drift = abs(d.energy.numpy()[0, 1] - initial_energy)
+
+    mjw.subtree_vel(m, d)
+    angmom_err = d.subtree_angmom.numpy()[0, 0] - initial_angmom
+    angmom_drift = np.linalg.norm(angmom_err)
+
+    self.assertLess(angmom_drift, 1e-2)
+    self.assertLess(energy_drift, 1e-2)
+
+  @parameterized.parameters(1, 2)
+  def test_midpoint_convergence_order(self, xml_idx):
+    # aligned: CoM at joint origin
+    xml1 = """
+    <mujoco>
+      <option integrator="implicitfast">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    # non-aligned: CoM offset from joint origin
+    xml2 = """
+    <mujoco>
+      <option integrator="implicitfast">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1" euler="10 20 30" pos=".05 .03 .02"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+    xmls = [xml1, xml2]
+    xml = xmls[xml_idx - 1]
+
+    qvel_init = np.zeros(6)
+    qvel_init[3] = 1.0
+    qvel_init[4] = 2.0
+    qvel_init[5] = 3.0
+
+    # coarse: 2 steps at h=0.04, T=0.08
+    _, _, m, d = test_data.fixture(xml=xml, overrides={"opt.integrator": IntegratorType.IMPLICITFAST})
+    m.opt.timestep.assign(np.array([0.04], dtype=np.float32))
+    d.qvel.assign(qvel_init.reshape(1, 6))
+    for _ in range(2):
+      mjw.step(m, d)
+    quat_coarse = d.qpos.numpy()[0, 3:7].copy()
+
+    # fine: 4 steps at h=0.02, T=0.08
+    _, _, m, d = test_data.fixture(xml=xml, overrides={"opt.integrator": IntegratorType.IMPLICITFAST})
+    m.opt.timestep.assign(np.array([0.02], dtype=np.float32))
+    d.qvel.assign(qvel_init.reshape(1, 6))
+    for _ in range(4):
+      mjw.step(m, d)
+    quat_fine = d.qpos.numpy()[0, 3:7].copy()
+
+    # reference: 8 steps at h=0.01, T=0.08
+    _, _, m, d = test_data.fixture(xml=xml, overrides={"opt.integrator": IntegratorType.IMPLICITFAST})
+    m.opt.timestep.assign(np.array([0.01], dtype=np.float32))
+    d.qvel.assign(qvel_init.reshape(1, 6))
+    for _ in range(8):
+      mjw.step(m, d)
+    quat_ref = d.qpos.numpy()[0, 3:7].copy()
+
+    # quaternion distance
+    def quat_dist(a, b):
+      pos = np.sum((a - b) ** 2)
+      neg = np.sum((a + b) ** 2)
+      return np.sqrt(min(pos, neg))
+
+    err_coarse = quat_dist(quat_coarse, quat_ref)
+    err_fine = quat_dist(quat_fine, quat_ref)
+
+    ratio = err_coarse / err_fine
+    # second-order: error ratio should be ~4 when halving timestep
+    self.assertGreater(ratio, 3.0)
+    self.assertLess(ratio, 5.0)
 
 
 class DCMotorTest(parameterized.TestCase):

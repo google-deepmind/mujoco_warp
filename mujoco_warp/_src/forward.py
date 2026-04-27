@@ -257,6 +257,249 @@ def _next_time(
       wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon_in[0])
 
 
+@wp.kernel
+def _midpoint(
+  # Model:
+  opt_timestep: wp.array[float],
+  body_ipos: wp.array2d[wp.vec3],
+  body_iquat: wp.array2d[wp.quat],
+  body_mass: wp.array2d[float],
+  body_inertia: wp.array2d[wp.vec3],
+  jnt_dofadr: wp.array[int],
+  jnt_bodyid: wp.array[int],
+  jnt_midpoint: wp.array[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  xquat_in: wp.array2d[wp.quat],
+  qfrc_bias_in: wp.array2d[float],
+  qfrc_smooth_in: wp.array2d[float],
+  qfrc_constraint_in: wp.array2d[float],
+  # In:
+  gravity: wp.array[wp.vec3],
+  disableflags: int,
+  # Out:
+  qvel_new_out: wp.array3d[float],
+  qvel_mid_out: wp.array2d[float],
+):
+  worldid, idx = wp.tid()
+  jntid = jnt_midpoint[idx]
+
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  bodyid = jnt_bodyid[jntid]
+  dofadr = jnt_dofadr[jntid]
+
+  mass = body_mass[worldid % body_mass.shape[0], bodyid]
+  inertia = body_inertia[worldid % body_inertia.shape[0], bodyid]
+  ipos = body_ipos[worldid % body_ipos.shape[0], bodyid]
+  iquat = body_iquat[worldid % body_iquat.shape[0], bodyid]
+  xquat_body = xquat_in[worldid, bodyid]
+
+  qvel_old = wp.spatial_vector(
+    qvel_in[worldid, dofadr],
+    qvel_in[worldid, dofadr + 1],
+    qvel_in[worldid, dofadr + 2],
+    qvel_in[worldid, dofadr + 3],
+    qvel_in[worldid, dofadr + 4],
+    qvel_in[worldid, dofadr + 5],
+  )
+
+  qfrc_total = wp.spatial_vector(
+    qfrc_smooth_in[worldid, dofadr] + qfrc_constraint_in[worldid, dofadr] + qfrc_bias_in[worldid, dofadr],
+    qfrc_smooth_in[worldid, dofadr + 1] + qfrc_constraint_in[worldid, dofadr + 1] + qfrc_bias_in[worldid, dofadr + 1],
+    qfrc_smooth_in[worldid, dofadr + 2] + qfrc_constraint_in[worldid, dofadr + 2] + qfrc_bias_in[worldid, dofadr + 2],
+    qfrc_smooth_in[worldid, dofadr + 3] + qfrc_constraint_in[worldid, dofadr + 3] + qfrc_bias_in[worldid, dofadr + 3],
+    qfrc_smooth_in[worldid, dofadr + 4] + qfrc_constraint_in[worldid, dofadr + 4] + qfrc_bias_in[worldid, dofadr + 4],
+    qfrc_smooth_in[worldid, dofadr + 5] + qfrc_constraint_in[worldid, dofadr + 5] + qfrc_bias_in[worldid, dofadr + 5],
+  )
+
+  if not (disableflags & DisableBit.GRAVITY):
+    g = gravity[worldid % gravity.shape[0]]
+  else:
+    g = wp.vec3(0.0, 0.0, 0.0)
+
+  # transform angular velocity and torque to inertial frame
+  iquat_neg = math.quat_inv(iquat)
+
+  v = wp.vec3(qvel_old[0], qvel_old[1], qvel_old[2])
+  w = wp.vec3(qvel_old[3], qvel_old[4], qvel_old[5])
+
+  force = wp.vec3(qfrc_total[0], qfrc_total[1], qfrc_total[2])
+  tau = wp.vec3(qfrc_total[3], qfrc_total[4], qfrc_total[5])
+
+  w_inertial = math.rot_vec_quat(w, iquat_neg)
+  tau_inertial = math.rot_vec_quat(tau, iquat_neg)
+
+  aligned = ipos[0] == 0.0 and ipos[1] == 0.0 and ipos[2] == 0.0
+
+  r_com = wp.vec3(0.0)
+  tau_com = tau_inertial
+  rot_x2i = wp.quat(1.0, 0.0, 0.0, 0.0)
+  force_inertial = wp.vec3(0.0)
+
+  if not aligned:
+    xquat_neg = math.quat_inv(xquat_body)
+    rot_x2i = math.mul_quat(iquat_neg, xquat_neg)
+    force_inertial = math.rot_vec_quat(force, rot_x2i)
+    r_com = math.rot_vec_quat(ipos, iquat_neg)
+    tau_com = tau_inertial - wp.cross(r_com, force_inertial)
+
+  # solve for midpoint angular velocity
+  i2h = 2.0 / timestep
+  dI = wp.vec3(inertia[2] - inertia[1], inertia[0] - inertia[2], inertia[1] - inertia[0])
+  i2h_I = wp.vec3(i2h * inertia[0], i2h * inertia[1], i2h * inertia[2])
+
+  w_mid = w_inertial
+  tol = 1e-6
+
+  converged = bool(False)
+  for niter in range(10):
+    Iw = wp.vec3(inertia[0] * w_mid[0], inertia[1] * w_mid[1], inertia[2] * w_mid[2])
+    coriolis = wp.cross(w_mid, Iw)
+
+    f = wp.vec3(
+      i2h_I[0] * (w_mid[0] - w_inertial[0]) + coriolis[0] - tau_com[0],
+      i2h_I[1] * (w_mid[1] - w_inertial[1]) + coriolis[1] - tau_com[1],
+      i2h_I[2] * (w_mid[2] - w_inertial[2]) + coriolis[2] - tau_com[2],
+    )
+
+    fnorm = wp.length(f)
+    if fnorm < tol * (1.0 + i2h * wp.length(Iw)):
+      converged = True
+      break
+
+    J = wp.mat33(
+      i2h_I[0],
+      w_mid[2] * dI[0],
+      w_mid[1] * dI[0],
+      w_mid[2] * dI[1],
+      i2h_I[1],
+      w_mid[0] * dI[1],
+      w_mid[1] * dI[2],
+      w_mid[0] * dI[2],
+      i2h_I[2],
+    )
+
+    neg_f = -f
+    delta = math.solve3(J, neg_f)
+
+    step = float(1.0)
+    for ls in range(5):
+      w_try = w_mid + step * delta
+      Iw_try = wp.vec3(inertia[0] * w_try[0], inertia[1] * w_try[1], inertia[2] * w_try[2])
+      coriolis_try = wp.cross(w_try, Iw_try)
+
+      f_try = wp.vec3(
+        i2h_I[0] * (w_try[0] - w_inertial[0]) + coriolis_try[0] - tau_com[0],
+        i2h_I[1] * (w_try[1] - w_inertial[1]) + coriolis_try[1] - tau_com[1],
+        i2h_I[2] * (w_try[2] - w_inertial[2]) + coriolis_try[2] - tau_com[2],
+      )
+
+      if wp.length(f_try) < fnorm:
+        w_mid = w_try
+        break
+
+      step = step * 0.5
+
+  if not converged:
+    wp.printf("midpoint Newton solver did not converge, jntid = %d, worldid = %d\n", jntid, worldid)
+
+  w_new = 2.0 * w_mid - w_inertial
+  w_new_body = math.rot_vec_quat(w_new, iquat)
+  w_mid_body = math.rot_vec_quat(w_mid, iquat)
+
+  # write angular DOFs to both qvel_new (3D) and qvel_mid (flat)
+  for k in range(3):
+    qvel_new_out[worldid, jntid, k + 3] = w_new_body[k]
+    qvel_mid_out[worldid, dofadr + k + 3] = w_mid_body[k]
+
+  if aligned:
+    qvel_new_out[worldid, jntid, 0] = v[0]
+    qvel_new_out[worldid, jntid, 1] = v[1]
+    qvel_new_out[worldid, jntid, 2] = v[2]
+  else:
+    # zero linear DOFs at midpoint for non-aligned bodies
+    qvel_mid_out[worldid, dofadr] = 0.0
+    qvel_mid_out[worldid, dofadr + 1] = 0.0
+    qvel_mid_out[worldid, dofadr + 2] = 0.0
+
+    v_inertial = math.rot_vec_quat(v, rot_x2i)
+    vcom = v_inertial + wp.cross(w_inertial, r_com)
+
+    b = force_inertial / mass + i2h * vcom
+    if not (disableflags & DisableBit.GRAVITY):
+      g_inertial = math.rot_vec_quat(g, rot_x2i)
+      b = b + g_inertial
+
+    wnorm2 = wp.dot(w_mid, w_mid)
+    denom = i2h * i2h + wnorm2
+    w_dot_b = wp.dot(w_mid, b)
+    w_cross_b = wp.cross(w_mid, b)
+
+    vcom_mid = (i2h * b + (w_dot_b / i2h) * w_mid - w_cross_b) / denom
+
+    v_mid = vcom_mid - wp.cross(w_mid, r_com)
+    v_new = 2.0 * v_mid - v_inertial
+
+    axis = w_mid_body
+    axis, wnorm = math.normalize_with_norm(axis)
+    qrot_new = math.axis_angle_to_quat(axis, timestep * wnorm)
+    xquat_new = math.mul_quat(xquat_body, qrot_new)
+
+    v_body = math.rot_vec_quat(v_new, iquat)
+    v_world = math.rot_vec_quat(v_body, xquat_new)
+
+    qvel_new_out[worldid, jntid, 0] = v_world[0]
+    qvel_new_out[worldid, jntid, 1] = v_world[1]
+    qvel_new_out[worldid, jntid, 2] = v_world[2]
+
+
+@wp.kernel
+def _prepare_qvel_mid_default(
+  # Model:
+  opt_timestep: wp.array[float],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  # Out:
+  qvel_mid_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  qvel_mid_out[worldid, dofid] = qvel_in[worldid, dofid] + timestep * qacc_in[worldid, dofid]
+
+
+@wp.kernel
+def _overwrite_midpoint_qvel_qacc(
+  # Model:
+  opt_timestep: wp.array[float],
+  body_ipos: wp.array2d[wp.vec3],
+  jnt_dofadr: wp.array[int],
+  jnt_bodyid: wp.array[int],
+  jnt_midpoint: wp.array[int],
+  # In:
+  qvel_old: wp.array2d[float],
+  qvel_new_from_solver: wp.array3d[float],
+  # Data out:
+  qvel_out: wp.array2d[float],
+  qacc_out: wp.array2d[float],
+):
+  worldid, idx = wp.tid()
+  jntid = jnt_midpoint[idx]
+
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  dofadr = jnt_dofadr[jntid]
+
+  ipos = body_ipos[worldid % body_ipos.shape[0], jnt_bodyid[jntid]]
+  aligned = ipos[0] == 0.0 and ipos[1] == 0.0 and ipos[2] == 0.0
+
+  for dof_offset in range(6):
+    dofid = dofadr + dof_offset
+    if not (aligned and dof_offset < 3):
+      qvel_n = qvel_new_from_solver[worldid, jntid, dof_offset]
+      qvel_out[worldid, dofid] = qvel_n
+      qacc_out[worldid, dofid] = (qvel_n - qvel_old[worldid, dofid]) / timestep
+
+
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
@@ -585,7 +828,66 @@ def implicit(m: Model, d: Data):
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
-    _advance(m, d, qacc)
+
+    if m.jnt_midpoint.shape[0] > 0 and not (m.opt.enableflags & EnableBit.INVDISCRETE):
+      qvel_old_arr = wp.clone(d.qvel)
+      qvel_new_arr = wp.zeros((d.nworld, m.njnt, 6), dtype=float)
+
+      # set default qvel_mid for all DOFs (non-midpoint DOFs keep this value)
+      qvel_mid_full = wp.empty((d.nworld, m.nv), dtype=float)
+      wp.launch(
+        _prepare_qvel_mid_default,
+        dim=(d.nworld, m.nv),
+        inputs=[
+          m.opt.timestep,
+          d.qvel,
+          qacc,
+        ],
+        outputs=[qvel_mid_full],
+      )
+
+      # midpoint solver overwrites midpoint DOFs directly in qvel_mid_full
+      wp.launch(
+        _midpoint,
+        dim=(d.nworld, m.jnt_midpoint.shape[0]),
+        inputs=[
+          m.opt.timestep,
+          m.body_ipos,
+          m.body_iquat,
+          m.body_mass,
+          m.body_inertia,
+          m.jnt_dofadr,
+          m.jnt_bodyid,
+          m.jnt_midpoint,
+          d.qvel,
+          d.xquat,
+          d.qfrc_bias,
+          d.qfrc_smooth,
+          d.qfrc_constraint,
+          m.opt.gravity,
+          m.opt.disableflags,
+        ],
+        outputs=[qvel_new_arr, qvel_mid_full],
+      )
+
+      _advance(m, d, qacc, qvel_mid_full)
+
+      wp.launch(
+        _overwrite_midpoint_qvel_qacc,
+        dim=(d.nworld, m.jnt_midpoint.shape[0]),
+        inputs=[
+          m.opt.timestep,
+          m.body_ipos,
+          m.jnt_dofadr,
+          m.jnt_bodyid,
+          m.jnt_midpoint,
+          qvel_old_arr,
+          qvel_new_arr,
+        ],
+        outputs=[d.qvel, d.qacc],
+      )
+    else:
+      _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
 
