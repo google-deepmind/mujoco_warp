@@ -351,6 +351,7 @@ def _midpoint(
   w_mid = w_inertial
   tol = 1e-6
 
+  # TODO(team): investigate alternatives, e.g., parallel linesearch
   converged = bool(False)
   for niter in range(10):
     Iw = wp.vec3(inertia[0] * w_mid[0], inertia[1] * w_mid[1], inertia[2] * w_mid[2])
