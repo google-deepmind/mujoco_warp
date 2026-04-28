@@ -45,6 +45,7 @@ from mujoco_warp._src.types import vec8i
 from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import inside_geom
 from mujoco_warp._src.util_misc import poly_potential
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -2406,6 +2407,7 @@ def _contact_match(
   sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
 
+@cache_kernel
 def _contact_sort(maxmatch: int):
   @wp.kernel(module="unique", enable_backward=False)
   def contact_sort(
@@ -2901,6 +2903,7 @@ def energy_pos(m: Model, d: Data):
     # TODO(team): flex
 
 
+@cache_kernel
 def _energy_vel_kinetic(nv: int):
   @wp.kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(
