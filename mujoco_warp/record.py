@@ -96,7 +96,7 @@ def _main(argv: Sequence[str]):
       _OUTPUT.value,
       save_all=True,
       append_images=frames[1:],
-      duration=int(1000 / _FPS.value),
+      duration=int(render_every * mjm.opt.timestep * 1000),
       loop=0,
       # minimize_size=True,
       quality=_QUALITY.value,
