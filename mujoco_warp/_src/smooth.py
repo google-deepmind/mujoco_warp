@@ -35,6 +35,7 @@ from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -1063,6 +1064,7 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[floa
   wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
 
 
+@cache_kernel
 def _tile_cholesky_factorize(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization of a tile."""
 
@@ -2694,6 +2696,7 @@ def transmission(m: Model, d: Data):
     )
 
 
+@cache_kernel
 def _solve_LD_sparse_fused(nv: int, nlevels: int):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
 
@@ -2779,6 +2782,7 @@ def _solve_LD_sparse(
   )
 
 
+@cache_kernel
 def _tile_cholesky_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky backsubstitution of a tile."""
 
@@ -2856,6 +2860,7 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float]):
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
 
 
+@cache_kernel
 def _tile_cholesky_factorize_solve(tile: TileSet):
   """Returns a kernel for dense Cholesky factorization and backsubstitution of a tile."""
 

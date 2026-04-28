@@ -23,6 +23,7 @@ from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec11
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -672,6 +673,7 @@ def _equality_tendon(
   )
 
 
+@cache_kernel
 def _equality_flex(is_sparse: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(

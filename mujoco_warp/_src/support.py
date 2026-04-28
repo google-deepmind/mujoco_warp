@@ -27,6 +27,7 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import State
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -63,6 +64,7 @@ def next_act(
   return act
 
 
+@cache_kernel
 def mul_m_sparse(check_skip: bool):
   @wp.kernel(module="unique")
   def _mul_m_sparse(
@@ -99,6 +101,7 @@ def mul_m_sparse(check_skip: bool):
   return _mul_m_sparse
 
 
+@cache_kernel
 def mul_m_dense(nv: int, check_skip: bool):
   """Simple SIMT dense matmul: one thread per output element."""
 
@@ -429,6 +432,7 @@ def jac_dof(
   return jacp, jacr
 
 
+@cache_kernel
 def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def _jac(
