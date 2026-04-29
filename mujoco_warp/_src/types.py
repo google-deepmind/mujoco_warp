@@ -1178,6 +1178,7 @@ class Model:
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
+    jnt_midpoint: whether joint is eligible for midpoint integration (njnt,)
     dof_tri_row: dof lower triangle row (used in solver)
     dof_tri_col: dof lower triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
@@ -1574,6 +1575,7 @@ class Model:
   body_fluid_ellipsoid: array("nbody", bool)
   jnt_limited_slide_hinge_adr: wp.array[int]
   jnt_limited_ball_adr: wp.array[int]
+  jnt_midpoint: wp.array[int]
   dof_tri_row: wp.array[int]
   dof_tri_col: wp.array[int]
   nxn_geom_pair: wp.array[wp.vec2i]

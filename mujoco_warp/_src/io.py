@@ -273,6 +273,18 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
   m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
 
+  # precompute midpoint eligibility for free joints
+  jnt_midpoint = np.zeros(mjm.njnt, dtype=bool)
+  for j in range(mjm.njnt):
+    if mjm.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE:
+      body = mjm.jnt_bodyid[j]
+      dofadr = mjm.jnt_dofadr[j]
+      treeid = mjm.dof_treeid[dofadr]
+      if mjm.tree_dofnum[treeid] == 6 and mjm.body_subtreemass[body] == mjm.body_mass[body]:
+        jnt_midpoint[j] = True
+  jnt_midpoint_indices = np.where(jnt_midpoint)[0].astype(np.int32)
+  m.jnt_midpoint = wp.array(jnt_midpoint_indices, dtype=wp.int32)
+
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
 
@@ -648,6 +660,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
+    if f.name == "jnt_midpoint":
+      continue
     if _is_array_spec(f.type):
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes))
 

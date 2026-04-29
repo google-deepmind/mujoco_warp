@@ -331,3 +331,36 @@ def upper_trid_index(n: int, i: int, j: int) -> int:
   if j < i:
     i, j = j, i
   return (i * (2 * n - i - 1)) // 2 + j
+
+
+@wp.func
+def solve3(A: wp.mat33, b: wp.vec3) -> wp.vec3:
+  """Solve 3x3 linear system A*x = b using Cramer's rule."""
+  detA = (
+    A[0, 0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1])
+    - A[0, 1] * (A[1, 0] * A[2, 2] - A[1, 2] * A[2, 0])
+    + A[0, 2] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
+  )
+
+  # replace col 0 with b
+  detA0 = (
+    b[0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1])
+    - A[0, 1] * (b[1] * A[2, 2] - A[1, 2] * b[2])
+    + A[0, 2] * (b[1] * A[2, 1] - A[1, 1] * b[2])
+  )
+
+  # replace col 1 with b
+  detA1 = (
+    A[0, 0] * (b[1] * A[2, 2] - A[1, 2] * b[2])
+    - b[0] * (A[1, 0] * A[2, 2] - A[1, 2] * A[2, 0])
+    + A[0, 2] * (A[1, 0] * b[2] - b[1] * A[2, 0])
+  )
+
+  # replace col 2 with b
+  detA2 = (
+    A[0, 0] * (A[1, 1] * b[2] - b[1] * A[2, 1])
+    - A[0, 1] * (A[1, 0] * b[2] - b[1] * A[2, 0])
+    + b[0] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
+  )
+
+  return wp.vec3(detA0 / detA, detA1 / detA, detA2 / detA)
