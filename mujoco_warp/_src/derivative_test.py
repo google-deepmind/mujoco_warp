@@ -1103,53 +1103,172 @@ class DerivativeTest(parameterized.TestCase):
       err_msg="stateful should converge to stateless as te->0",
     )
 
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_smooth_vel_fluid(self, jacobian):
-    """Tests qDeriv with ellipsoid fluid forces."""
+  _FLUID_SCENARIOS = {
+    "basic": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="0.05 0.05 0.05"
+                  euler="10 20 30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "chain": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05" pos="0.01 0.02 0.03" euler="5 10 15"
+                  fluidshape="ellipsoid"/>
+            <body pos="0.2 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="ellipsoid" size="0.1 0.15 0.2" pos="0.02 0.03 0.04"
+                    euler="10 15 20" fluidshape="ellipsoid"
+                    fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.5 1.0" qvel="1.0 2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "multi_geom": """
+      <mujoco>
+        <option integrator="implicitfast" density="1.225" viscosity="1.8e-5"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".025 .01 0.0001" pos=".025 0 0"
+                  euler="20 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+            <geom type="box" size=".025 .01 0.0001" pos="-.025 0 0"
+                  euler="-19 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.1 -0.2 0.3 0.5 0.8 -0.4"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "wind": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"
+                wind="1 0.5 0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="-0.05 0.05 -0.05"
+                  euler="-10 20 -30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "density_only": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="0.05 -0.05 0.05"
+                  euler="10 -20 30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "viscosity_only": """
+      <mujoco>
+        <option integrator="implicitfast" density="0" viscosity="0.01"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="-0.05 -0.05 0.05"
+                  euler="-10 -20 30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "capsule": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="capsule" size="0.05 0.15" pos="0.03 0.04 0.05"
+                  euler="15 25 35" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+  }
+
+  @parameterized.product(
+    scenario=list(_FLUID_SCENARIOS.keys()),
+    jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE],
+  )
+  def test_smooth_vel_fluid(self, scenario, jacobian):
+    """Tests qDeriv with various ellipsoid fluid force configurations."""
     mjm, mjd, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <option integrator="implicitfast" density="1000" viscosity="0.002"/>
-      <worldbody>
-        <body>
-          <joint type="free"/>
-          <geom type="ellipsoid" size="0.1 0.15 0.2" fluidshape="ellipsoid"
-                fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
-        </body>
-      </worldbody>
-      <keyframe>
-        <key qvel="1 2 3 0.5 0.8 1.2"/>
-      </keyframe>
-    </mujoco>
-    """,
+      xml=self._FLUID_SCENARIOS[scenario],
       keyframe=0,
       overrides={"opt.jacobian": jacobian},
     )
-
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
-    else:
-      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
-
+    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
-    else:
-      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mjw_out,
+      out_smooth_vel.numpy().reshape(-1).astype(np.float64),
+      mjm.M_rownnz,
+      mjm.M_rowadr,
+      mjm.M_colind,
+    )
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
-    mj_qM = np.zeros((m.nv, m.nv))
-    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
-    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mj_M,
+      mjd.M,
+      mjm.M_rownnz,
+      mjm.M_rowadr,
+      mjm.M_colind,
+    )
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
-    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid)")
+    name = f"M - dt * qDeriv (fluid {scenario})"
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mask = m.M_elemid.numpy() >= 0
+      _assert_eq(mjw_out[mask], mj_out[mask], name)
+    else:
+      _assert_eq(mjw_out, mj_out, name)
 
 
 if __name__ == "__main__":
