@@ -123,11 +123,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
-  if (mjm.opt.viscosity > 0 or mjm.opt.density > 0) and mjm.opt.integrator in (
-    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-    mujoco.mjtIntegrator.mjINT_IMPLICIT,
-  ):
-    raise NotImplementedError(f"Implicit integrators and fluid model not implemented.")
+  has_fluid = mjm.opt.viscosity > 0 or mjm.opt.density > 0
+  if has_fluid and mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICIT:
+    raise NotImplementedError("Implicit integrator and fluid model not implemented.")
+  if has_fluid and mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+    fluid_geom = mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)[:, 0] > 0
+    ellipsoid_bodies = set(mjm.geom_bodyid[fluid_geom])
+    has_box_fluid = any(i not in ellipsoid_bodies and mjm.body_mass[i] > 0 for i in range(1, mjm.nbody))
+    if has_box_fluid:
+      raise NotImplementedError("Implicitfast integrator and inertia-box fluid model not implemented.")
 
   if (mjm.body_plugin != -1).any():
     raise NotImplementedError("Body plugins not supported.")
@@ -268,6 +272,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
   m.body_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
   m.body_fluid_ellipsoid[mjm.geom_bodyid[mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)[:, 0] > 0]] = True
+  m.body_fluid_ellipsoid_adr = np.nonzero(m.body_fluid_ellipsoid)[0]
   jnt_limited_slide_hinge = mjm.jnt_limited & np.isin(mjm.jnt_type, (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE))
   m.jnt_limited_slide_hinge_adr = np.nonzero(jnt_limited_slide_hinge)[0]
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]

@@ -534,6 +534,392 @@ class DerivativeTest(parameterized.TestCase):
       "implicitfast should be more accurate than Euler at large timestep when forcerange derivatives are correctly handled",
     )
 
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid(self, jacobian):
+    """Tests qDeriv with ellipsoid fluid forces."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+      <worldbody>
+        <body>
+          <joint type="free"/>
+          <geom type="ellipsoid" size="0.1 0.15 0.2" fluidshape="ellipsoid"
+                fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qvel="1 2 3 0.5 0.8 1.2"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid_chain(self, jacobian):
+    """Tests qDeriv for multi-body chain with fluid on child body.
+
+    Verifies cross-body DOF derivative terms: the parent hinge DOF
+    contributes to the child body's fluid derivative through the Jacobian.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05" fluidshape="ellipsoid"/>
+            <body pos="0.2 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="ellipsoid" size="0.1 0.15 0.2"
+                    fluidshape="ellipsoid" fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.5 1.0" qvel="1.0 2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid chain)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid_multi_geom(self, jacobian):
+    """Tests qDeriv for body with multiple oriented geoms (C reference model)."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1.225" viscosity="1.8e-5"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".025 .01 0.0001" pos=".025 0 0"
+                  euler="20 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+            <geom type="box" size=".025 .01 0.0001" pos="-.025 0 0"
+                  euler="-19 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.1 -0.2 0.3 0.5 0.8 -0.4"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid multi-geom)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid_wind(self, jacobian):
+    """Tests qDeriv with non-zero wind."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"
+                wind="1 0.5 0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid wind)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid_density_only(self, jacobian):
+    """Tests qDeriv with density only (no viscosity)."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid density-only)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid_viscosity_only(self, jacobian):
+    """Tests qDeriv with viscosity only (no density)."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="0" viscosity="0.01"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid viscosity-only)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_smooth_vel_fluid_capsule(self, jacobian):
+    """Tests qDeriv with capsule geom using ellipsoid fluid model."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="capsule" size="0.05 0.15" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    else:
+      out_smooth_vel = wp.zeros((1, m.nv, m.nv), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+        mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    else:
+      mjw_out = out_smooth_vel.numpy()[0]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (fluid capsule)")
+
+  def test_step_fluid_chain_no_nan(self):
+    """Regression: implicitfast + fluid on chain must not NaN."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05" fluidshape="ellipsoid"/>
+            <body pos="0.2 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="ellipsoid" size="0.1 0.15 0.2"
+                    fluidshape="ellipsoid" fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.5 1.0" qvel="1.0 2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    for _ in range(10):
+      mjw.step(m, d)
+
+    mjw.get_data_into(mjd, mjm, d)
+    self.assertFalse(np.any(np.isnan(mjd.qpos)))
+    self.assertFalse(np.any(np.isnan(mjd.qvel)))
+
 
 if __name__ == "__main__":
   wp.init()
