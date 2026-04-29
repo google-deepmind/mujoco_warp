@@ -67,6 +67,7 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
   linesearch_iterative: int = 32
+  contact_jac_tiled: int = 32
   # derivative
   qderiv_actuator_dense: int = 32
 
@@ -1178,6 +1179,7 @@ class Model:
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
+    body_isdofancestor: precomputed mask of which DOFs affect each body
     dof_tri_row: dof lower triangle row (used in solver)
     dof_tri_col: dof lower triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
@@ -1574,6 +1576,7 @@ class Model:
   body_fluid_ellipsoid: array("nbody", bool)
   jnt_limited_slide_hinge_adr: wp.array[int]
   jnt_limited_ball_adr: wp.array[int]
+  body_isdofancestor: array("nbody", "nv_pad", int)
   dof_tri_row: wp.array[int]
   dof_tri_col: wp.array[int]
   nxn_geom_pair: wp.array[wp.vec2i]
@@ -1710,6 +1713,7 @@ class Constraint:
     state: constraint state                           (nworld, njmax_pad)
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
+    Jqvel: J*qvel                                     (nworld, njmax)
   """
 
   type: array("nworld", "njmax", int)
@@ -1727,6 +1731,7 @@ class Constraint:
   force: array("nworld", "njmax", float)
   state: array("nworld", "njmax_pad", int)
   Ma: array("nworld", "nv", float)
+  Jqvel: array("nworld", "njmax", float)
 
 
 @dataclasses.dataclass

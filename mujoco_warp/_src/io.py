@@ -273,6 +273,21 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
   m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
 
+  # precompute body_isdofancestor: which DOFs affect each body
+  # TODO: Investigate alternative approach such as bitmap
+  body_isdofancestor = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
+  for bodyid in range(mjm.nbody):
+    b = bodyid
+    while b > 0 and mjm.body_dofnum[b] == 0:
+      b = mjm.body_parentid[b]
+    if mjm.body_dofnum[b] == 0:
+      continue
+    dofid = mjm.body_dofadr[b] + mjm.body_dofnum[b] - 1
+    while dofid >= 0:
+      body_isdofancestor[bodyid, dofid] = 1
+      dofid = mjm.dof_parentid[dofid]
+  m.body_isdofancestor = body_isdofancestor
+
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
 
