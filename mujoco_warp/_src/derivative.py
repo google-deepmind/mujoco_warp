@@ -361,12 +361,11 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
     out: qM - dt * qDeriv (derivatives of smooth forces w.r.t velocities).
-    flg_rne: Whether to include RNE derivatives.
+
   """
   qMi = m.qM_fullm_i
   qMj = m.qM_fullm_j
 
-  # TODO(team): implicit requires different sparsity structure
 
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     # TODO(team): only clear elements not set by _qderiv_actuator_passive
@@ -454,8 +453,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       outputs=[out],
     )
 
-  if flg_rne:
-    rne_vel(m, d, out)
+
 
 
 @wp.kernel

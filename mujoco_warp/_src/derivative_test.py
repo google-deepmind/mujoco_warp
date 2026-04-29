@@ -108,7 +108,7 @@ class DerivativeTest(parameterized.TestCase):
     forward.fwd_velocity(m, d)
 
     # 1. Test with RNE Disabled (Matches MuJoCo's ImplicitFast)
-    mjw.deriv_smooth_vel(m, d, out_smooth_vel, flg_rne=False)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_out = np.zeros((m.nv, m.nv))
@@ -129,27 +129,6 @@ class DerivativeTest(parameterized.TestCase):
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
 
-    # 2. RNE Smoke Test: Verify Coriolis/Centrifugal terms
-    # Reuse buffers to check if flg_rne=True changes the result
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_rne = wp.zeros((1, 1, m.nM), dtype=float)
-    else:
-      out_rne = wp.zeros(d.qM.shape, dtype=float)
-
-    mjw.deriv_smooth_vel(m, d, out_rne, flg_rne=True)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_rne_out = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-        mjw_rne_out[i, j] = out_rne.numpy()[0, 0, elem]
-    else:
-      mjw_rne_out = out_rne.numpy()[0, : m.nv, : m.nv]
-
-    diff_norm = np.linalg.norm(mjw_rne_out - mjw_out)
-    if diff_norm < 1e-6:
-      qvel_norm = np.linalg.norm(mjd.qvel)
-      if qvel_norm > 1e-3:
-        raise AssertionError(f"RNE enabled but no derivative change detected! (Diff={diff_norm}, qvel={qvel_norm})")
 
   def _create_random_model_xml(self):
     # Create a simple chain with Free Joint
@@ -245,8 +224,7 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
 
-    # Disable RNE to match MuJoCo's implicit integrator (which ignores Coriolis terms).
-    mjw.deriv_smooth_vel(m, d, out_smooth_vel, flg_rne=False)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_out = np.zeros((m.nv, m.nv))
@@ -255,26 +233,6 @@ class DerivativeTest(parameterized.TestCase):
     else:
       mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
-    # Verify RNE contributes non-zero Coriolis/Centrifugal terms.
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_rne = wp.zeros((1, 1, m.nM), dtype=float)
-    else:
-      out_rne = wp.zeros(d.qM.shape, dtype=float)
-
-    mjw.deriv_smooth_vel(m, d, out_rne, flg_rne=True)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_rne_out = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-        mjw_rne_out[i, j] = out_rne.numpy()[0, 0, elem]
-    else:
-      mjw_rne_out = out_rne.numpy()[0, : m.nv, : m.nv]
-
-    diff_norm = np.linalg.norm(mjw_rne_out - mjw_out)
-    if diff_norm < 1e-6:
-      qvel_norm = np.linalg.norm(mjd.qvel)
-      if qvel_norm > 1e-3:
-        raise AssertionError(f"RNE enabled but no derivative change detected! (Diff={diff_norm})")
 
     # Final comparison against new ground truth: qM - dt * qDeriv
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
