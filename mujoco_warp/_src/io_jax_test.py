@@ -30,6 +30,8 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
+from mujoco_warp._src.io import _is_array_spec
+from mujoco_warp._src.types import Callback
 
 _IO_TEST_MODELS = (
   "pendula.xml",
@@ -50,7 +52,7 @@ def _dims_match(test_obj, d1: Any, d2: Any, prefix: str = ""):
       _dims_match(test_obj, a1, a2, prefix + f1.name + ".")
       continue
 
-    if isinstance(f1.type, wp.array) or isinstance(f2.type, wp.array):
+    if _is_array_spec(f1.type) or _is_array_spec(f2.type):
       s1, s2 = a1.shape, a2.shape
       test_obj.assertEqual(len(s1), len(s2), f"{full_name} dims mismatch. Got {s1} and {s2}.")
       test_obj.assertEqual(s1, s2, f"{full_name} dims mismatch. Got {s1} and {s2}.")
@@ -75,6 +77,10 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
     val_type = type(val)
     type_ = field.type
 
+    # skip Callback — not JAX-serializable
+    if isinstance(val, Callback):
+      continue
+
     if dataclasses.is_dataclass(val):
       test_obj.assertTrue(dataclasses.is_dataclass(type_), msg.format(**locals()))
       _check_type_matches_annotation(test_obj, val, prefix + field_name + ".")
@@ -85,7 +91,7 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
       test_obj.assertIsInstance(np_scalar_type(val), type_, msg.format(**locals()))
       continue
 
-    if isinstance(type_, wp.array):
+    if _is_array_spec(type_):
       test_obj.assertIsInstance(val, wp.array, msg.format(**locals()))
       continue
 
@@ -107,7 +113,7 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
           test_obj.assertIsInstance(np_scalar_type(val), type_, msg.format(**locals()))
           continue
 
-        if isinstance(type_, wp.array):
+        if _is_array_spec(type_):
           test_obj.assertIsInstance(val, wp.array, msg.format(**locals()))
           continue
 
@@ -125,10 +131,14 @@ def _check_annotation_compat(
     full_key = f"{prefix}{k}"
     info = f"Found {v} for annotation {full_key}."
 
+    # skip Callback — not JAX-serializable
+    if dataclasses.is_dataclass(v) and v.__name__ == "Callback":
+      continue
+
     if v in (int, bool, float):
       continue
 
-    if isinstance(v, wp.array):
+    if _is_array_spec(v):
       continue
 
     if wp.types.type_is_composite(v):
@@ -177,7 +187,7 @@ def _leading_dims_scale_w_nworld(test_obj, d1: Any, d2: Any, nworld1: int, nworl
       _leading_dims_scale_w_nworld(test_obj, a1, a2, nworld1, nworld2, prefix + f1.name + ".")
       continue
 
-    if isinstance(f1.type, wp.array) or isinstance(f2.type, wp.array):
+    if _is_array_spec(f1.type) or _is_array_spec(f2.type):
       s1, s2 = a1.shape[0], a2.shape[0]
       if s1 == s2:
         continue

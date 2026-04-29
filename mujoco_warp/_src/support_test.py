@@ -204,11 +204,11 @@ class SupportTest(parameterized.TestCase):
     # Create combined factor and solve kernel as in solver.py
     @wp.kernel(module="unique", enable_backward=False)
     def combined_cholesky_kernel(
-      grad_in: wp.array3d(dtype=float),
-      h_in: wp.array3d(dtype=float),
-      done_in: wp.array(dtype=bool),
-      hfactor_in: wp.array3d(dtype=float),
-      Mgrad_out: wp.array3d(dtype=float),
+      grad_in: wp.array3d[float],
+      h_in: wp.array3d[float],
+      done_in: wp.array[bool],
+      hfactor_in: wp.array3d[float],
+      Mgrad_out: wp.array3d[float],
     ):
       worldid = wp.tid()
       TILE_SIZE = wp.static(16)

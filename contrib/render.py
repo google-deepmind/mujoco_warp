@@ -18,7 +18,7 @@
 Usage: mjwarp-render <mjcf XML path> [flags]
 
 Example:
-  mjwarp-render benchmark/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
+  mjwarp-render benchmarks/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
 """
 
 import sys
@@ -42,8 +42,10 @@ _WIDTH = flags.DEFINE_integer("width", 512, "render width (pixels)")
 _HEIGHT = flags.DEFINE_integer("height", 512, "render height (pixels)")
 _RENDER_RGB = flags.DEFINE_bool("rgb", True, "render RGB image")
 _RENDER_DEPTH = flags.DEFINE_bool("depth", True, "render depth image")
+_RENDER_SEG = flags.DEFINE_bool("seg", False, "render segmentation image")
 _USE_TEXTURES = flags.DEFINE_bool("textures", True, "use textures")
 _USE_SHADOWS = flags.DEFINE_bool("shadows", False, "use shadows")
+_RENDER_SKYBOX = flags.DEFINE_bool("skybox", False, "render skybox")
 _DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 _CLEAR_KERNEL_CACHE = flags.DEFINE_bool("clear_kernel_cache", False, "clear Warp kernel cache before rendering")
 _OVERRIDE = flags.DEFINE_multi_string("override", [], "Model overrides (notation: foo.bar = baz)", short_name="o")
@@ -207,9 +209,11 @@ def _main(argv: Sequence[str]):
       (render_width, render_height),
       _RENDER_RGB.value,
       _RENDER_DEPTH.value,
+      _RENDER_SEG.value,
       _USE_TEXTURES.value,
       _USE_SHADOWS.value,
       enabled_geom_groups=[0, 1, 2],
+      render_skybox=_RENDER_SKYBOX.value,
     )
 
     print(f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n")

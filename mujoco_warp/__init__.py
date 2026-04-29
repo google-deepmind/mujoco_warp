@@ -28,6 +28,7 @@ from mujoco_warp._src.types import Model as Model
 from mujoco_warp._src.types import Data as Data
 # isort: on
 
+
 from mujoco_warp._src.bvh import refit_bvh as refit_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
@@ -56,12 +57,15 @@ from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.io import set_const as set_const
 from mujoco_warp._src.io import set_const_0 as set_const_0
 from mujoco_warp._src.io import set_const_fixed as set_const_fixed
+from mujoco_warp._src.io import set_length_range as set_length_range
+from mujoco_warp._src.island import island as island
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
 from mujoco_warp._src.render import render as render
 from mujoco_warp._src.render_util import get_depth as get_depth
 from mujoco_warp._src.render_util import get_rgb as get_rgb
+from mujoco_warp._src.render_util import get_segmentation as get_segmentation
 from mujoco_warp._src.sensor import energy_pos as energy_pos
 from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
@@ -90,6 +94,7 @@ from mujoco_warp._src.support import xfrc_accumulate as xfrc_accumulate
 from mujoco_warp._src.types import BiasType as BiasType
 from mujoco_warp._src.types import BroadphaseFilter as BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType as BroadphaseType
+from mujoco_warp._src.types import Callback as Callback
 from mujoco_warp._src.types import ConeType as ConeType
 from mujoco_warp._src.types import Constraint as Constraint
 from mujoco_warp._src.types import Contact as Contact
@@ -100,6 +105,7 @@ from mujoco_warp._src.types import GainType as GainType
 from mujoco_warp._src.types import GeomType as GeomType
 from mujoco_warp._src.types import IntegratorType as IntegratorType
 from mujoco_warp._src.types import JointType as JointType
+from mujoco_warp._src.types import ObjType as ObjType
 from mujoco_warp._src.types import Option as Option
 from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SolverType as SolverType

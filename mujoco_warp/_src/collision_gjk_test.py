@@ -22,10 +22,10 @@ from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
+from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
-from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import mat63
@@ -67,73 +67,75 @@ def _geom_dist(
   @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
     # Model:
-    geom_type: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
-    geom_size: wp.array2d(dtype=wp.vec3),
-    mesh_vertadr: wp.array(dtype=int),
-    mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
-    mesh_polynum: wp.array(dtype=int),
-    mesh_polyadr: wp.array(dtype=int),
-    mesh_polynormal: wp.array(dtype=wp.vec3),
-    mesh_polyvertadr: wp.array(dtype=int),
-    mesh_polyvertnum: wp.array(dtype=int),
-    mesh_polyvert: wp.array(dtype=int),
-    mesh_polymapadr: wp.array(dtype=int),
-    mesh_polymapnum: wp.array(dtype=int),
-    mesh_polymap: wp.array(dtype=int),
+    geom_type: wp.array[int],
+    geom_dataid: wp.array2d[int],
+    geom_size: wp.array2d[wp.vec3],
+    mesh_vertadr: wp.array[int],
+    mesh_vertnum: wp.array[int],
+    mesh_vert: wp.array[wp.vec3],
+    mesh_polynum: wp.array[int],
+    mesh_polyadr: wp.array[int],
+    mesh_polynormal: wp.array[wp.vec3],
+    mesh_polyvertadr: wp.array[int],
+    mesh_polyvertnum: wp.array[int],
+    mesh_polyvert: wp.array[int],
+    mesh_polymapadr: wp.array[int],
+    mesh_polymapnum: wp.array[int],
+    mesh_polymap: wp.array[int],
     # Data in:
-    geom_xpos_in: wp.array2d(dtype=wp.vec3),
-    geom_xmat_in: wp.array2d(dtype=wp.mat33),
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
     # In:
     gid1: int,
     gid2: int,
     iterations: int,
-    tolerance: wp.array(dtype=float),
-    vert: wp.array(dtype=wp.vec3),
-    vert_index: wp.array(dtype=int),
-    face: wp.array(dtype=int),
-    face_pr: wp.array(dtype=wp.vec3),
-    face_norm2: wp.array(dtype=float),
-    horizon: wp.array(dtype=int),
-    polygon: wp.array(dtype=wp.vec3),
-    clipped: wp.array(dtype=wp.vec3),
-    pnormal: wp.array(dtype=wp.vec3),
-    pdist: wp.array(dtype=float),
-    idx1: wp.array(dtype=int),
-    idx2: wp.array(dtype=int),
-    n1: wp.array(dtype=wp.vec3),
-    n2: wp.array(dtype=wp.vec3),
-    endvert: wp.array(dtype=wp.vec3),
-    face1: wp.array(dtype=wp.vec3),
-    face2: wp.array(dtype=wp.vec3),
+    tolerance: wp.array[float],
+    vert: wp.array[wp.vec3],
+    vert_index: wp.array[int],
+    face: wp.array[int],
+    face_pr: wp.array[wp.vec3],
+    face_norm2: wp.array[float],
+    horizon: wp.array[int],
+    polygon: wp.array[wp.vec3],
+    clipped: wp.array[wp.vec3],
+    pnormal: wp.array[wp.vec3],
+    pdist: wp.array[float],
+    idx1: wp.array[int],
+    idx2: wp.array[int],
+    n1: wp.array[wp.vec3],
+    n2: wp.array[wp.vec3],
+    endvert: wp.array[wp.vec3],
+    face1: wp.array[wp.vec3],
+    face2: wp.array[wp.vec3],
     # Out:
-    dist_out: wp.array(dtype=float),
-    ncon_out: wp.array(dtype=int),
-    pos_out: wp.array(dtype=wp.vec3),
+    dist_out: wp.array[float],
+    ncon_out: wp.array[int],
+    pos_out: wp.array[wp.vec3],
   ):
+    worldid = wp.tid()
+
     geom1 = Geom()
     geom1.index = -1
     geomtype1 = geom_type[gid1]
     if wp.static(pos1 == None):
-      geom1.pos = geom_xpos_in[0, gid1]
+      geom1.pos = geom_xpos_in[worldid, gid1]
     else:
       geom1.pos = pos1
     if wp.static(mat1 == None):
-      geom1.rot = geom_xmat_in[0, gid1]
+      geom1.rot = geom_xmat_in[worldid, gid1]
     else:
       geom1.rot = mat1
-    geom1.size = geom_size[0, gid1]
+    geom1.size = geom_size[worldid % geom_size.shape[0], gid1]
     geom1.margin = margin
     geom1.graphadr = -1
     geom1.mesh_polyadr = -1
 
-    if geom_dataid[gid1] >= 0 and geom_type[gid1] == GeomType.MESH:
-      dataid = geom_dataid[gid1]
-      geom1.vertadr = mesh_vertadr[dataid]
-      geom1.vertnum = mesh_vertnum[dataid]
-      geom1.mesh_polynum = mesh_polynum[dataid]
-      geom1.mesh_polyadr = mesh_polyadr[dataid]
+    dataid1 = geom_dataid[0, gid1]  # kernel_analyzer: off
+    if dataid1 >= 0 and geom_type[gid1] == GeomType.MESH:
+      geom1.vertadr = mesh_vertadr[dataid1]
+      geom1.vertnum = mesh_vertnum[dataid1]
+      geom1.mesh_polynum = mesh_polynum[dataid1]
+      geom1.mesh_polyadr = mesh_polyadr[dataid1]
       geom1.vert = mesh_vert
       geom1.mesh_polynormal = mesh_polynormal
       geom1.mesh_polyvertadr = mesh_polyvertadr
@@ -147,24 +149,24 @@ def _geom_dist(
     geom2.index = -1
     geomtype2 = geom_type[gid2]
     if wp.static(pos2 == None):
-      geom2.pos = geom_xpos_in[0, gid2]
+      geom2.pos = geom_xpos_in[worldid, gid2]
     else:
       geom2.pos = pos2
     if wp.static(mat2 == None):
-      geom2.rot = geom_xmat_in[0, gid2]
+      geom2.rot = geom_xmat_in[worldid, gid2]
     else:
       geom2.rot = mat2
-    geom2.size = geom_size[0, gid2]
+    geom2.size = geom_size[worldid % geom_size.shape[0], gid2]
     geom2.margin = margin
     geom2.graphadr = -1
     geom2.mesh_polyadr = -1
 
-    if geom_dataid[gid2] >= 0 and geom_type[gid2] == GeomType.MESH:
-      dataid = geom_dataid[gid2]
-      geom2.vertadr = mesh_vertadr[dataid]
-      geom2.vertnum = mesh_vertnum[dataid]
-      geom2.mesh_polynum = mesh_polynum[dataid]
-      geom2.mesh_polyadr = mesh_polyadr[dataid]
+    dataid2 = geom_dataid[0, gid2]  # kernel_analyzer: off
+    if dataid2 >= 0 and geom_type[gid2] == GeomType.MESH:
+      geom2.vertadr = mesh_vertadr[dataid2]
+      geom2.vertnum = mesh_vertnum[dataid2]
+      geom2.mesh_polynum = mesh_polynum[dataid2]
+      geom2.mesh_polyadr = mesh_polyadr[dataid2]
       geom2.vert = mesh_vert
       geom2.mesh_polynormal = mesh_polynormal
       geom2.mesh_polyvertadr = mesh_polyvertadr
@@ -720,6 +722,92 @@ class GJKTest(parameterized.TestCase):
     self.assertAlmostEqual(dist, -1.5778851595232846e-05)
     self.assertEqual(ncon, 4)
 
+  def test_box_box_max(self):
+    """Box-box collision needing 16 iterations of EPA."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom name="geom1" type="box" size=".018 .018 .01"/>
+           <geom name="geom2" type="box" size=".020 .020 .04"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    rot1 = wp.mat33(
+      0.8378595710,
+      0.3184406757,
+      -0.4433811009,
+      0.5328434706,
+      -0.3006005287,
+      0.7910227776,
+      0.1186132580,
+      -0.8990187645,
+      -0.4215400815,
+    )
+
+    pos1 = wp.vec3(
+      6.0405082703,
+      21.4734001160,
+      0.036854844,
+    )
+
+    rot2 = wp.mat33(
+      -0.6420212388,
+      -0.0727036372,
+      -0.7632319927,
+      0.3801730871,
+      -0.8946756721,
+      -0.2345722020,
+      -0.6657907367,
+      -0.4407605529,
+      0.6020406485,
+    )
+
+    pos2 = wp.vec3(
+      6.0641078949,
+      21.4842395782,
+      0.0212156791,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -0.03636224)
+
+  def test_box_box_max2(self):
+    """Box-box collision that triggers GJK to converge very slowly."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom name="geom1" type="box" size=".5 .5 .1"/>
+           <geom name="geom2" type="box" size=".025 .025 .025"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    rot2 = wp.mat33(
+      0.9999999404,
+      0.0004342802,
+      -0.0001755831,
+      -0.0004346797,
+      0.9999973178,
+      -0.0022819033,
+      0.0001745916,
+      0.0022819792,
+      0.9999974370,
+    )
+
+    pos2 = wp.vec3(
+      0.0885666460,
+      0.0911745951,
+      0.1250119805,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, 1.3900499e-06)
+
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):
     """Test support function for height field geoms."""
@@ -742,7 +830,7 @@ class GJKTest(parameterized.TestCase):
     def _support_kernel(
       hfprism_in: mat63,
       eps_in: float,
-      support_point: wp.array(dtype=wp.vec3),
+      support_point: wp.array[wp.vec3],
     ):
       geom = Geom()
       geom.pos = wp.vec3(0.0, 0.0, 0.0)

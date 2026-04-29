@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 from absl.testing import absltest
 
+import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import render_util
 from mujoco_warp._src import types
@@ -25,11 +26,6 @@ from mujoco_warp._src import types
 
 class RenderUtilTest(absltest.TestCase):
   def test_create_warp_texture(self):
-    # TODO: remove after mjwarp depends on warp >= 1.12 in pyproject.toml
-    if not hasattr(wp, "Texture2D"):
-      self.skipTest("Skipping test that requires warp >= 1.12")
-      return
-
     """Tests that create_warp_texture creates a valid texture."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
     texture = render_util.create_warp_texture(mjm, 0)
@@ -80,6 +76,55 @@ class RenderUtilTest(absltest.TestCase):
       np.allclose(np.array(persp_ray), np.array(ortho_ray)),
       "perspective != orthographic raydir",
     )
+
+  def test_get_segmentation(self):
+    """Tests that get_segmentation extracts MuJoCo-style typed IDs."""
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(32, 32),
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    seg_out = wp.zeros((2, 32, 32), dtype=wp.vec2i)
+    mjw.get_segmentation(rc, 0, seg_out)
+
+    seg_np = seg_out.numpy()
+    self.assertEqual(seg_np.shape, (2, 32, 32, 2))
+    self.assertTrue(np.any(seg_np[..., 1] == int(types.ObjType.GEOM)))
+
+    geom_mask = seg_np[..., 1] == int(types.ObjType.GEOM)
+    self.assertTrue(np.any(geom_mask), "Expected at least one geom hit")
+    self.assertGreater(np.unique(seg_np[..., 0][geom_mask]).shape[0], 1)
+
+    background_mask = seg_np[..., 1] == -1
+    np.testing.assert_array_equal(seg_np[..., 0][background_mask], -1)
+
+  def test_get_segmentation_preserves_flex_ids(self):
+    """Tests that flex hits keep their real flex ids and type tags."""
+    mjm, mjd, m, d = test_data.fixture("flex/multiflex.xml", nworld=1)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(64, 64),
+      render_seg=True,
+    )
+
+    mjw.render(m, d, rc)
+
+    seg_out = wp.zeros((1, 64, 64), dtype=wp.vec2i)
+    mjw.get_segmentation(rc, 0, seg_out)
+    seg_np = seg_out.numpy()[0]
+
+    flex_mask = seg_np[..., 1] == int(types.ObjType.FLEX)
+    self.assertTrue(np.any(flex_mask), "Expected at least one flex hit")
+    self.assertTrue(np.all(seg_np[..., 0][flex_mask] >= 0))
+    self.assertGreater(np.unique(seg_np[..., 0][flex_mask]).shape[0], 1)
 
 
 if __name__ == "__main__":

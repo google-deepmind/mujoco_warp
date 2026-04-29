@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.13"]
 
     steps:
       - uses: actions/checkout@v6
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.13"]
 
     steps:
       - uses: actions/checkout@v6
@@ -55,56 +55,74 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.27"
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Set up Python
         run: uv python install
       - name: Run pre-commit
         run: |
           uvx --with absl-py pre-commit run -a
 
-  test-locked-deps:
-    name: Test with locked uv dependencies
-    # Tests against exact versions pinned in uv.lock
+  test:
+    name: Test with ${{ matrix.dep-type }} dependencies (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.13"]
+        dep-type: ["locked uv", stable]
     steps:
       - uses: actions/checkout@v6
+      
+      # Setup for locked uv dependencies
       - name: Install uv
+        if: matrix.dep-type == 'locked uv'
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.27"
           python-version: ${{ matrix.python-version }}
-      - name: Set up Python ${{ matrix.python-version }}
+          
+      - name: Set up Python ${{ matrix.python-version }} (uv)
+        if: matrix.dep-type == 'locked uv'
         run: uv python install
-      - name: Test with pytest
-        run: |
-          uv run --with pytest --with pytest-xdist pytest -n 2
-
-  test-stable-deps:
-    name: Test with stable PyPI dependencies
-    # Tests against stable releases from pypi.org (not custom indexes like pypi.nvidia.com)
-    # This ensures the library works for users installing dependencies from standard PyPI
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.12"]
-    steps:
-      - uses: actions/checkout@v6
-      - name: Set up Python ${{ matrix.python-version }}
+        
+      # Setup for stable dependencies
+      - name: Set up Python ${{ matrix.python-version }} (standard)
+        if: matrix.dep-type == 'stable'
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          
+      # Common Cache step
+      - name: Restore Warp kernel cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/warp
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'mujoco_warp/**/*.py') }}
+          restore-keys: |
+            warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ matrix.python-version }}-
+            
+      # Install for stable
       - name: Install stable dependencies
+        if: matrix.dep-type == 'stable'
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest pytest-xdist
           python -m pip install .
-      - name: Test with pytest
+          
+      # Run tests for locked uv
+      - name: Test with pytest (locked uv)
+        if: matrix.dep-type == 'locked uv'
+        run: |
+          uv run --with pytest --with pytest-xdist pytest -n 2
+          
+      # Run tests for stable
+      - name: Test with pytest (stable)
+        if: matrix.dep-type == 'stable'
         run: |
           pytest -n 2
+          
+      # Extra step for stable
       - name: Out-of-bounds check for batched model fields
+        if: matrix.dep-type == 'stable'
         run: |
           pytest -k io_test --debug_mode
 

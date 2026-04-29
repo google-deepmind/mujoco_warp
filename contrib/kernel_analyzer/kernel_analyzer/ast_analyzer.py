@@ -106,6 +106,20 @@ class MissingModuleUnique(Issue):
     return f'"{self.kernel}" nested kernel missing module="unique"'
 
 
+@dataclasses.dataclass
+class ParenthesizedArraySyntax(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" uses parenthesized wp.array(dtype=X) syntax, use wp.array[X] instead'
+
+
+@dataclasses.dataclass
+class MissingBatchModulo(Issue):
+  param_name: str
+
+  def __str__(self):
+    return f'"{self.param_name}" is a *-dimensioned field; first index must use "% {self.param_name}.shape[0]"'
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -177,16 +191,25 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   # get class fields and types for Model and Data
   type_classes = _get_classes(type_source)
   field_info = {}
+  star_fields = set()  # fields with "*" first dimension
 
   for field, typ in type_classes["Model"]:
     if field == "opt":
       for sfield, styp in type_classes["Option"]:
-        field_info[field + "_" + sfield] = ("Model", styp, len(field_info))
+        full_name = field + "_" + sfield
+        field_info[full_name] = ("Model", styp, len(field_info))
+        if styp.startswith('array("*"'):
+          star_fields.add(full_name)
     elif field == "stat":
       for sfield, styp in type_classes["Statistic"]:
-        field_info[field + "_" + sfield] = ("Model", styp, len(field_info))
+        full_name = field + "_" + sfield
+        field_info[full_name] = ("Model", styp, len(field_info))
+        if styp.startswith('array("*"'):
+          star_fields.add(full_name)
     else:
       field_info[field] = ("Model", typ, len(field_info))
+      if typ.startswith('array("*"'):
+        star_fields.add(field)
 
   for field, typ in type_classes["Data"]:
     if field == "efc":
@@ -283,6 +306,11 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       param_type = ast.get_source_segment(source, param.annotation)
       param_type = param_type.replace("types.", "")  # ignore types module prefix
       param_types[param_name] = param_type
+
+      # enforce bracket syntax: wp.array[X] not wp.array(dtype=X)
+      if re.search(r"wp\.array\d*d?\(dtype=", param_type):
+        issues.append(ParenthesizedArraySyntax(param, kernel))
+
       has_suffix = param_name.endswith("_in") or param_name.endswith("_out")
       field_name = param_name[: param_name.rfind("_")] if has_suffix else param_name
       param_out = param_name.endswith("_out") or param_name in ("res", "out")
@@ -317,9 +345,16 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         expected_dtype = expected_type[expected_type.rfind(" ") + 1 : -1]
         expected_ndim = expected_type.count(",")
         if expected_ndim == 1:
-          expected_type = f"wp.array(dtype={expected_dtype})"
+          expected_type = f"wp.array[{expected_dtype}]"
         else:
-          expected_type = f"wp.array{expected_ndim}d(dtype={expected_dtype})"
+          expected_type = f"wp.array{expected_ndim}d[{expected_dtype}]"
+      elif m := re.match(r"wp\.array(\d?)d?\(dtype=([\w.]+)\)", expected_type):
+        # wp.array(dtype=X) or wp.arrayNd(dtype=X) from types.py field specs
+        ndim_str, dtype = m.group(1), m.group(2)
+        if ndim_str and ndim_str != "1":
+          expected_type = f"wp.array{ndim_str}d[{dtype}]"
+        else:
+          expected_type = f"wp.array[{dtype}]"
 
       expected_types[param_name] = expected_type
       if expected_type and param_type != expected_type:
@@ -377,6 +412,63 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         if assignee in param_names and assignee not in param_outs and assignee in param_reftypes:
           issues.append(InvalidWrite(sub_node.value, kernel))
       # TODO: atomic_add, atomic_sub
+
+    # check *-dimensioned Model fields are indexed with % shape[0]
+    star_params = {p for p in param_names if p in star_fields and p in param_reftypes}
+    if star_params:
+
+      def _is_modulo_shape0(index_node: ast.AST, param_name: str) -> bool:
+        """Check if index is `expr % param.shape[0]`."""
+        if not isinstance(index_node, ast.BinOp):
+          return False
+        if not isinstance(index_node.op, ast.Mod):
+          return False
+        # right side must be param.shape[0]
+        rhs = index_node.right
+        if not isinstance(rhs, ast.Subscript):
+          return False
+        rhs_src = ast.get_source_segment(source, rhs)
+        return rhs_src == f"{param_name}.shape[0]"
+
+      # Pass 1: find precomputed safe indices
+      # e.g., `gear_id = worldid % actuator_gear.shape[0]`
+      safe_indices: Dict[str, str] = {}  # var_name -> param_name
+      for sub_node in ast.walk(node):
+        if isinstance(sub_node, ast.Assign) and len(sub_node.targets) == 1:
+          target = sub_node.targets[0]
+          if isinstance(target, ast.Name) and isinstance(sub_node.value, ast.BinOp):
+            for sp in star_params:
+              if _is_modulo_shape0(sub_node.value, sp):
+                safe_indices[target.id] = sp
+                break
+
+      # Pass 2: check all subscript accesses on *-dimensioned params
+      for sub_node in ast.walk(node):
+        if not isinstance(sub_node, ast.Subscript):
+          continue
+        # check if the subscript target is a *-dimensioned param
+        if not isinstance(sub_node.value, ast.Name):
+          continue
+        param_name = sub_node.value.id
+        if param_name not in star_params:
+          continue
+
+        # get the first index (the batch/world dimension)
+        idx = sub_node.slice
+        if isinstance(idx, ast.Tuple) and idx.elts:
+          first_idx = idx.elts[0]
+        else:
+          first_idx = idx
+
+        # check: inline modulo pattern
+        if _is_modulo_shape0(first_idx, param_name):
+          continue
+
+        # check: precomputed safe index variable
+        if isinstance(first_idx, ast.Name) and safe_indices.get(first_idx.id) == param_name:
+          continue
+
+        issues.append(MissingBatchModulo(sub_node, kernel, param_name))
 
   # Analyze all top-level function definitions
   for node in ast.iter_child_nodes(tree):

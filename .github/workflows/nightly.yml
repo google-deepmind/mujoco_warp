@@ -10,12 +10,13 @@ permissions:
 
 jobs:
   test-latest-deps:
+    if: github.event_name != 'schedule' || github.repository == 'google-deepmind/mujoco_warp'
     name: Test with latest dependencies (including pre-releases)
     # Early warning: tests against latest upstream versions to catch breaking changes
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v6
       - name: Install uv

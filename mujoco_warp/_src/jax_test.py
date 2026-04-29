@@ -59,10 +59,10 @@ class JAXTest(parameterized.TestCase):
     d = mjw.put_data(mjm, mjd, nworld=2, nconmax=NCONTACTS, njmax=4 * NCONTACTS)
 
     def warp_step(
-      qpos_in: wp.array(dtype=wp.float32, ndim=2),
-      qvel_in: wp.array(dtype=wp.float32, ndim=2),
-      qpos_out: wp.array(dtype=wp.float32, ndim=2),
-      qvel_out: wp.array(dtype=wp.float32, ndim=2),
+      qpos_in: wp.array2d[wp.float32],
+      qvel_in: wp.array2d[wp.float32],
+      qpos_out: wp.array2d[wp.float32],
+      qvel_out: wp.array2d[wp.float32],
     ):
       wp.copy(d.qpos, qpos_in)
       wp.copy(d.qvel, qvel_in)

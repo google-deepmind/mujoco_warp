@@ -204,6 +204,197 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
     _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
 
+  def test_polynomial_stiffness(self):
+    """Tests polynomial stiffness."""
+    xml = """
+    <mujoco model="Polynomial Stiffness">
+      <default>
+        <geom condim="3"/>
+        <site rgba="0 .8 0 .5" size=".03"/>
+        <tendon width=".01" rgba=".9 .9 .9 1" springlength="0 .3"/>
+        <default class="box">
+          <geom type="box" size=".2 .2 .2" mass="5"/>
+        </default>
+      </default>
+      <worldbody>
+        <geom type="plane" size="3 3 .01"/>
+        <light directional="true" diffuse=".4 .4 .4" specular="0 0 0" pos="0 0 5" dir="0 0 -1" castshadow="false"/>
+        <site name="anchor_linear"    pos="-1.5 0 2"/>
+        <site name="anchor_quadratic" pos="-.5  0 2"/>
+        <site name="anchor_cubic"     pos=".5   0 2"/>
+        <site name="anchor_combi"     pos="1.5  0 2"/>
+        <body name="linear" pos="-1.5 0 1.5">
+          <freejoint/>
+          <geom class="box" rgba=".2 .6 1 1"/>
+          <site name="hook_linear" pos="0 0 .2"/>
+        </body>
+        <body name="quadratic" pos="-.5 0 1.5">
+          <freejoint/>
+          <geom class="box" rgba="1 .4 .1 1"/>
+          <site name="hook_quadratic" pos="0 0 .2"/>
+        </body>
+        <body name="cubic" pos=".5 0 1.5">
+          <freejoint/>
+          <geom class="box" rgba=".2 .8 .2 1"/>
+          <site name="hook_cubic" pos="0 0 .2"/>
+        </body>
+        <body name="combi" pos="1.5 0 1.5">
+          <freejoint/>
+          <geom class="box" rgba=".8 .2 .8 1"/>
+          <site name="hook_combi" pos="0 0 .2"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="linear" stiffness="100">
+          <site site="anchor_linear"/>
+          <site site="hook_linear"/>
+        </spatial>
+        <spatial name="quadratic" stiffness="0 200">
+          <site site="anchor_quadratic"/>
+          <site site="hook_quadratic"/>
+        </spatial>
+        <spatial name="cubic" stiffness="0 0 300">
+          <site site="anchor_cubic"/>
+          <site site="hook_cubic"/>
+        </spatial>
+        <spatial name="combination" stiffness="100 -400 400">
+          <site site="anchor_combi"/>
+          <site site="hook_combi"/>
+        </spatial>
+      </tendon>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, "qfrc_spring")
+    _assert_eq(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, "qfrc_damper")
+    _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
+
+  def test_polynomial_stiffness_joint(self):
+    """Tests polynomial stiffness for joints."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint type="slide" stiffness="2 3 4"/>
+          <geom size="1" mass="1"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.passive(m, d)
+    _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, "qfrc_spring")
+
+  def test_polynomial_damping_joint(self):
+    """Tests polynomial damping for joints."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint type="slide" damping="2 3 4"/>
+          <geom size="1" mass="1"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qvel="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+    d.qfrc_damper.zero_()
+    mjw.passive(m, d)
+    _assert_eq(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, "qfrc_damper")
+
+  def test_polynomial_stiffness_fixed_tendon(self):
+    """Tests polynomial stiffness for fixed tendons."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint type="slide" name="j"/>
+          <geom size="1" mass="1"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed stiffness="10 5 1">
+          <joint joint="j" coef="1"/>
+        </fixed>
+      </tendon>
+      <keyframe>
+        <key qpos="2"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.passive(m, d)
+    _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, "qfrc_spring")
+
+  def test_polynomial_damping_tendon(self):
+    """Tests polynomial damping for tendons."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint type="slide" name="j"/>
+          <geom size="1" mass="1"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed damping="10 5 1">
+          <joint joint="j" coef="1"/>
+        </fixed>
+      </tendon>
+      <keyframe>
+        <key qvel="2"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+    d.qfrc_damper.fill_(wp.inf)
+    mjw.passive(m, d)
+    _assert_eq(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, "qfrc_damper")
+
+  def test_polynomial_stiffness_energy(self):
+    """Tests energy conservation with polynomial stiffness."""
+    xml = """
+    <mujoco>
+      <option timestep="0.0001">
+        <flag energy="enable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="slide" stiffness="10 5 1"/>
+          <geom size="1" mass="1"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="2"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+
+    d.energy.fill_(wp.inf)
+    mjw.forward(m, d)
+    e0 = d.energy.numpy()[0]
+    total_energy = e0[0] + e0[1]
+
+    for _ in range(10):
+      mjw.step(m, d)
+      e = d.energy.numpy()[0]
+      self.assertAlmostEqual(e[0] + e[1], total_energy, delta=0.005)
+
 
 if __name__ == "__main__":
   wp.init()
