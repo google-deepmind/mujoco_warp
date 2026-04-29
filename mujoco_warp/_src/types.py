@@ -858,6 +858,7 @@ class Model:
     ntree: number of kinematic trees
     nM: number of non-zeros in sparse inertia matrix
     nC: number of non-zeros in sparse body-dof matrix
+    nD: number of non-zeros in sparse derivative matrix
     ngeom: number of geoms
     nsite: number of sites
     ncam: number of cameras
@@ -1242,6 +1243,8 @@ class Model:
     qLD_level_offsets: tuple of start offsets for each level
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
+    qD_fullm_i: D-structure row indices for RNE derivatives
+    qD_fullm_j: D-structure column indices for RNE derivatives
     qM_mulm_rowadr: sparse matmul row pointers
     qM_mulm_col: sparse matmul column indices
     qM_mulm_madr: sparse matmul matrix addresses
@@ -1257,6 +1260,7 @@ class Model:
   ntree: int
   nM: int
   nC: int
+  nD: int
   ngeom: int
   nsite: int
   ncam: int
@@ -1630,6 +1634,8 @@ class Model:
   qLD_level_offsets: wp.array[int]
   qM_fullm_i: wp.array[int]
   qM_fullm_j: wp.array[int]
+  qD_fullm_i: wp.array[int]  # D-structure (full square) row indices for RNE derivatives
+  qD_fullm_j: wp.array[int]  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   qM_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
   qM_mulm_col: wp.array[int]  # column index to gather from

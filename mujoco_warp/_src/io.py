@@ -629,6 +629,17 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       m.qM_fullm_j.append(j)
       j = mjm.dof_parentid[j]
 
+  # indices for sparse qD_fullm (used in RNE derivatives)
+  # D-structure is the full square sparsity pattern (both upper and lower triangle)
+  m.qD_fullm_i, m.qD_fullm_j = [], []
+  for i in range(mjm.nv):
+    rowadr = mjm.D_rowadr[i]
+    rownnz = mjm.D_rownnz[i]
+    for k in range(rownnz):
+      m.qD_fullm_i.append(i)
+      m.qD_fullm_j.append(int(mjm.D_colind[rowadr + k]))
+  m.nD = mjm.nD
+
   # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
   row_elements = [[] for _ in range(mjm.nv)]
 
