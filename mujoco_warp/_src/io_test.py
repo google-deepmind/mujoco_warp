@@ -998,21 +998,21 @@ class IOTest(parameterized.TestCase):
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
 
-  def test_collision_sensor_box_box(self):
-    """Tests for collision sensors that are not implemented."""
+  def test_implicit_integrator_fluid_model(self):
+    """Tests for implicit integrator with fluid model."""
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
-        xml=f"""
-      <mujoco>
-        <worldbody>
-          <geom name="box1" type="box" size=".1 .1 .1"/>
-          <geom name="box2" type="box" size=".1 .1 .1"/>
-        </worldbody>
-        <sensor>
-          <distance geom1="box1" geom2="box2"/>
-        </sensor>
-      </mujoco>
-      """
+        xml="""
+        <mujoco>
+          <option viscosity="1" density="1" integrator="implicitfast"/>
+          <worldbody>
+            <body>
+              <geom type="sphere" size=".1"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
       )
 
   def test_plugin(self):

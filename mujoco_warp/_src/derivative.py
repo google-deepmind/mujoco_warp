@@ -13,10 +13,12 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Tuple
+
 import warp as wp
 
-from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.passive import _ellipsoid_max_moment
 from mujoco_warp._src.passive import geom_semiaxes
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import MJ_MINVAL
@@ -25,9 +27,8 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import GainType
-from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import mat66
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
 
@@ -356,337 +357,94 @@ def _qderiv_tendon_damping(
 
 
 @wp.func
-def _ellipsoid_max_moment_deriv(size: wp.vec3, dir: int) -> float:  # kernel_analyzer: ignore
-  d0 = size[dir]
-  d1 = size[(dir + 1) % 3]
-  d2 = size[(dir + 2) % 3]
-  d_max = wp.max(d1, d2)
-  return wp.static(8.0 / 15.0 * wp.pi) * d0 * d_max * d_max * d_max * d_max
+def _skew_neg(v: wp.vec3) -> wp.mat33:
+  """Skew-symmetric matrix: d/db cross(a, b) = [[0, a3, -a2], [-a3, 0, a1], [a2, -a1, 0]]."""
+  # fmt: off
+  return wp.mat33(
+    0.0,   v[2], -v[1],
+   -v[2],  0.0,   v[0],
+    v[1], -v[0],  0.0,
+  )
+  # fmt: on
 
 
 @wp.func
-def _add_to_quadrant(B: mat66, D: wp.mat33, col_quad: int, row_quad: int) -> mat66:
-  """Add 3x3 matrix D^T to a quadrant of 6x6 matrix B.
+def _skew_pos(v: wp.vec3) -> wp.mat33:
+  """Skew matrix: d/da cross(a, b) = [[0, -b3, b2], [b3, 0, -b1], [-b2, b1, 0]]."""
+  # fmt: off
+  return wp.mat33(
+     0.0, -v[2],  v[1],
+     v[2],  0.0, -v[0],
+    -v[1],  v[0],  0.0,
+  )
+  # fmt: on
 
-  Args:
-    B: The 6x6 matrix to modify
-    D: The 3x3 matrix to add (will be transposed)
-    col_quad: Column quadrant (0 = cols 0-2, 1 = cols 3-5)
-    row_quad: Row quadrant (0 = rows 0-2, 1 = rows 3-5)
 
-  This matches MuJoCo's addToQuadrant(B, D, col_quad, row_quad) convention,
-  which adds D^T to the specified quadrant due to column-major storage.
-  """
-  r = 3 * row_quad
-  c = 3 * col_quad
+@wp.func
+def _scale_cols(M: wp.mat33, s: wp.vec3) -> wp.mat33:
+  """Scale column j of M by s[j]."""
+  # fmt: off
+  return wp.mat33(
+    M[0, 0] * s[0], M[0, 1] * s[1], M[0, 2] * s[2],
+    M[1, 0] * s[0], M[1, 1] * s[1], M[1, 2] * s[2],
+    M[2, 0] * s[0], M[2, 1] * s[1], M[2, 2] * s[2],
+  )
+  # fmt: on
+
+
+@wp.func
+def _symmetrize33(A: wp.mat33, B: wp.mat33) -> Tuple[wp.mat33, wp.mat33]:
+  """Symmetrize off-diagonal quadrants: avg = 0.5*(A + B^T), return (avg, avg^T)."""
+  S = wp.mat33(0.0)
   for i in range(3):
     for j in range(3):
-      B[r + i, c + j] += D[j, i]  # Note: D[j,i] transposes D
-  return B
+      S[i, j] = 0.5 * (A[i, j] + B[j, i])
+  return S, wp.transpose(S)
 
 
 @wp.func
-def _cross_deriv(a: wp.vec3, b: wp.vec3) -> tuple[wp.mat33, wp.mat33]:  # kernel_analyzer: ignore
-  """Returns derivatives of cross product a x b w.r.t. both inputs.
-
-  Returns:
-    (deriv_a, deriv_b): Derivatives w.r.t. a and b respectively
-  """
-  deriv_a = wp.mat33(0.0, b[2], -b[1], -b[2], 0.0, b[0], b[1], -b[0], 0.0)
-  deriv_b = wp.mat33(0.0, -a[2], a[1], a[2], 0.0, -a[0], -a[1], a[0], 0.0)
-  return deriv_a, deriv_b
-
-
-@wp.func
-def _added_mass_forces_deriv(  # kernel_analyzer: ignore
-  local_vels: wp.spatial_vector, fluid_density: float, virtual_mass: wp.vec3, virtual_inertia: wp.vec3
-) -> mat66:
-  lin_vel = wp.spatial_bottom(local_vels)
-  ang_vel = wp.spatial_top(local_vels)
-
-  virtual_lin_mom = fluid_density * wp.cw_mul(virtual_mass, lin_vel)
-  virtual_ang_mom = fluid_density * wp.cw_mul(virtual_inertia, ang_vel)
-
-  B = mat66(0.0)
-
-  Da, Db = _cross_deriv(virtual_ang_mom, ang_vel)
-  B = _add_to_quadrant(B, Db, 0, 0)
-  for i in range(3):
-    for j in range(3):
-      Da[i, j] *= fluid_density * virtual_inertia[j]
-  B = _add_to_quadrant(B, Da, 0, 0)
-
-  Da, Db = _cross_deriv(virtual_lin_mom, lin_vel)
-  B = _add_to_quadrant(B, Db, 0, 1)
-  for i in range(3):
-    for j in range(3):
-      Da[i, j] *= fluid_density * virtual_mass[j]
-  B = _add_to_quadrant(B, Da, 0, 1)
-
-  Da, Db = _cross_deriv(virtual_lin_mom, ang_vel)
-  B = _add_to_quadrant(B, Db, 1, 0)
-  for i in range(3):
-    for j in range(3):
-      Da[i, j] *= fluid_density * virtual_mass[j]
-  B = _add_to_quadrant(B, Da, 1, 1)
-
-  return B
-
-
-@wp.func
-def _viscous_torque_deriv(  # kernel_analyzer: ignore
-  lvel: wp.spatial_vector,
-  fluid_density: float,
-  fluid_viscosity: float,
-  size: wp.vec3,
-  slender_drag_coef: float,
-  ang_drag_coef: float,
-) -> wp.mat33:
-  d_max = wp.max(wp.max(size[0], size[1]), size[2])
-  d_min = wp.min(wp.min(size[0], size[1]), size[2])
-  d_mid = size[0] + size[1] + size[2] - d_max - d_min
-
-  eq_sphere_D = wp.static(2.0 / 3.0) * (size[0] + size[1] + size[2])
-  lin_visc_torq_coef = wp.pi * eq_sphere_D * eq_sphere_D * eq_sphere_D
-
-  I_max = wp.static(8.0 / 15.0 * wp.pi) * d_mid * d_max * d_max * d_max * d_max
-  II = wp.vec3(_ellipsoid_max_moment_deriv(size, 0), _ellipsoid_max_moment_deriv(size, 1), _ellipsoid_max_moment_deriv(size, 2))
-
-  ang = wp.spatial_top(lvel)
-  x = ang[0]
-  y = ang[1]
-  z = ang[2]
-
-  mom_coef = wp.vec3(
-    ang_drag_coef * II[0] + slender_drag_coef * (I_max - II[0]),
-    ang_drag_coef * II[1] + slender_drag_coef * (I_max - II[1]),
-    ang_drag_coef * II[2] + slender_drag_coef * (I_max - II[2]),
-  )
-
-  mom_visc = wp.cw_mul(ang, mom_coef)
-  norm = wp.length(mom_visc)
-  density = fluid_density / wp.max(MJ_MINVAL, norm)
-
-  mom_sq = -density * wp.cw_mul(wp.cw_mul(ang, mom_coef), mom_coef)
-
-  lin_coef = fluid_viscosity * lin_visc_torq_coef
-  diag_val = x * mom_sq[0] + y * mom_sq[1] + z * mom_sq[2] - lin_coef
-
-  D = wp.mat33(
-    diag_val + mom_sq[0] * x,
-    mom_sq[1] * x,
-    mom_sq[2] * x,
-    mom_sq[0] * y,
-    diag_val + mom_sq[1] * y,
-    mom_sq[2] * y,
-    mom_sq[0] * z,
-    mom_sq[1] * z,
-    diag_val + mom_sq[2] * z,
-  )
-
-  return D
-
-
-@wp.func
-def _viscous_drag_deriv(  # kernel_analyzer: ignore
-  lvel: wp.spatial_vector,
-  fluid_density: float,
-  fluid_viscosity: float,
-  size: wp.vec3,
-  blunt_drag_coef: float,
-  slender_drag_coef: float,
-) -> wp.mat33:
-  d_max = wp.max(wp.max(size[0], size[1]), size[2])
-  d_min = wp.min(wp.min(size[0], size[1]), size[2])
-  d_mid = size[0] + size[1] + size[2] - d_max - d_min
-
-  eq_sphere_D = wp.static(2.0 / 3.0) * (size[0] + size[1] + size[2])
-  A_max = wp.pi * d_max * d_mid
-
-  a = (size[1] * size[2]) * (size[1] * size[2])
-  b = (size[2] * size[0]) * (size[2] * size[0])
-  c = (size[0] * size[1]) * (size[0] * size[1])
-  aa = a * a
-  bb = b * b
-  cc = c * c
-
-  lin = wp.spatial_bottom(lvel)
-  x = lin[0]
-  y = lin[1]
-  z = lin[2]
-  xx = x * x
-  yy = y * y
-  zz = z * z
-  xy = x * y
-  yz = y * z
-  xz = x * z
-
-  proj_denom = aa * xx + bb * yy + cc * zz
-  proj_num = a * xx + b * yy + c * zz
-  dA_coef = wp.pi / wp.max(MJ_MINVAL, wp.sqrt(proj_num * proj_num * proj_num * proj_denom))
-
-  A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
-
-  norm = wp.sqrt(xx + yy + zz)
-  inv_norm = 1.0 / wp.max(MJ_MINVAL, norm)
-
-  lin_coef = fluid_viscosity * wp.static(3.0 * wp.pi) * eq_sphere_D
-  quad_coef = fluid_density * (A_proj * blunt_drag_coef + slender_drag_coef * (A_max - A_proj))
-  Aproj_coef = fluid_density * norm * (blunt_drag_coef - slender_drag_coef)
-
-  dAproj_dv = wp.vec3(
-    Aproj_coef * dA_coef * a * x * (b * yy * (a - b) + c * zz * (a - c)),
-    Aproj_coef * dA_coef * b * y * (a * xx * (b - a) + c * zz * (b - c)),
-    Aproj_coef * dA_coef * c * z * (a * xx * (c - a) + b * yy * (c - b)),
-  )
-
-  inner = xx + yy + zz
-  D = wp.mat33(xx + inner, xy, xz, xy, yy + inner, yz, xz, yz, zz + inner)
-
-  D *= -quad_coef * inv_norm
-
-  for i in range(3):
-    D[0, i] -= x * dAproj_dv[i]
-    D[1, i] -= y * dAproj_dv[i]
-    D[2, i] -= z * dAproj_dv[i]
-
-  D[0, 0] -= lin_coef
-  D[1, 1] -= lin_coef
-  D[2, 2] -= lin_coef
-
-  return D
-
-
-@wp.func
-def _kutta_lift_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.vec3, kutta_lift_coef: float) -> wp.mat33:  # kernel_analyzer: ignore
-  a = (size[1] * size[2]) * (size[1] * size[2])
-  b = (size[2] * size[0]) * (size[2] * size[0])
-  c = (size[0] * size[1]) * (size[0] * size[1])
-  aa = a * a
-  bb = b * b
-  cc = c * c
-
-  lin = wp.spatial_bottom(lvel)
-  x = lin[0]
-  y = lin[1]
-  z = lin[2]
-  xx = x * x
-  yy = y * y
-  zz = z * z
-  xy = x * y
-  yz = y * z
-  xz = x * z
-
-  proj_denom = aa * xx + bb * yy + cc * zz
-  proj_num = a * xx + b * yy + c * zz
-  norm2 = xx + yy + zz
-  df_denom = wp.pi * kutta_lift_coef * fluid_density / wp.max(MJ_MINVAL, wp.sqrt(proj_denom * proj_num * norm2))
-
-  dfx_coef = yy * (a - b) + zz * (a - c)
-  dfy_coef = xx * (b - a) + zz * (b - c)
-  dfz_coef = xx * (c - a) + yy * (c - b)
-  proj_term = proj_num / wp.max(MJ_MINVAL, proj_denom)
-  cos_term = proj_num / wp.max(MJ_MINVAL, norm2)
-
-  D = wp.mat33(0.0, b - a, c - a, a - b, 0.0, c - b, a - c, b - c, 0.0)
-  D *= wp.static(2.0) * proj_num
-
-  inner_term = (
-    wp.cw_mul(wp.vec3(aa, bb, cc), wp.vec3(proj_term, proj_term, proj_term))
-    - wp.vec3(a, b, c)
-    + wp.vec3(cos_term, cos_term, cos_term)
-  )
-
-  for i in range(3):
-    D[0, i] += inner_term[i] * dfx_coef
-    D[1, i] += inner_term[i] * dfy_coef
-    D[2, i] += inner_term[i] * dfz_coef
-
-  D[0, 0] *= xx
-  D[0, 1] *= xy
-  D[0, 2] *= xz
-  D[1, 0] *= xy
-  D[1, 1] *= yy
-  D[1, 2] *= yz
-  D[2, 0] *= xz
-  D[2, 1] *= yz
-  D[2, 2] *= zz
-
-  D[0, 0] -= dfx_coef * proj_num
-  D[1, 1] -= dfy_coef * proj_num
-  D[2, 2] -= dfz_coef * proj_num
-
-  return D * df_denom
-
-
-@wp.func
-def _magnus_force_deriv(lvel: wp.spatial_vector, fluid_density: float, size: wp.vec3, magnus_lift_coef: float) -> mat66:  # kernel_analyzer: ignore
-  volume = wp.static(4.0 / 3.0 * wp.pi) * size[0] * size[1] * size[2]
-  magnus_coef = magnus_lift_coef * fluid_density * volume
-
-  lin_vel = wp.spatial_bottom(lvel)
-  ang_vel = wp.spatial_top(lvel)
-
-  lin_vel_scaled = lin_vel * magnus_coef
-  ang_vel_scaled = ang_vel * magnus_coef
-
-  D_ang, _ = _cross_deriv(ang_vel_scaled, lin_vel_scaled)
-  _, D_lin = _cross_deriv(ang_vel_scaled, lin_vel_scaled)
-
-  B = mat66(0.0)
-  B = _add_to_quadrant(B, D_ang, 1, 0)
-  B = _add_to_quadrant(B, D_lin, 1, 1)
-
-  return B
-
-
-@wp.func
-def _ellipsoid_fluid_qderiv_contrib(
+def _deriv_ellipsoid_fluid(
   # Model:
-  opt_density: float,
-  opt_viscosity: float,
-  opt_wind: wp.vec3,
   opt_integrator: int,
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_geomnum: wp.array(dtype=int),
-  body_geomadr: wp.array(dtype=int),
-  geom_type: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_fluid: wp.array2d(dtype=float),
-  dof_bodyid: wp.array(dtype=int),
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_fluid: wp.array2d[float],
   # Data in:
-  xipos: wp.vec3,
-  ximat: wp.mat33,
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  cvel: wp.spatial_vector,
+  xipos_in: wp.array2d[wp.vec3],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cvel_in: wp.array2d[wp.spatial_vector],
   # In:
-  bodyid: int,
-  dofiid: int,
-  dofjid: int,
   worldid: int,
+  bodyid: int,
+  rootid: int,
+  geomadr: int,
+  geomnum: int,
+  cdof_i: wp.spatial_vector,
+  cdof_j: wp.spatial_vector,
+  wind: wp.vec3,
+  density: float,
+  viscosity: float,
 ) -> float:
-  """Compute qDeriv contribution for a single DOF pair from ellipsoid fluid forces."""
-  wind = opt_wind
-  density = opt_density
-  viscosity = opt_viscosity
+  """Compute one body's ellipsoid fluid derivative contribution for a DOF pair.
 
-  rotT = wp.transpose(ximat)
+  Returns the scalar J_i^T @ B @ J_j contribution accumulated across geoms.
+  """
+  is_implicitfast = opt_integrator == IntegratorType.IMPLICITFAST
+
+  # Body kinematics
+  xipos = xipos_in[worldid, bodyid]
+  cvel = cvel_in[worldid, bodyid]
   ang_global = wp.spatial_top(cvel)
   lin_global = wp.spatial_bottom(cvel)
-  subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
+  subtree_root = subtree_com_in[worldid, rootid]
   lin_com = lin_global - wp.cross(xipos - subtree_root, ang_global)
 
   qderiv_contrib = float(0.0)
 
-  start = body_geomadr[bodyid]
-  count = body_geomnum[bodyid]
-
-  for i in range(count):
-    geomid = start + i
+  for g in range(geomnum):
+    geomid = geomadr + g
     coef = geom_fluid[geomid, 0]
     if coef <= 0.0:
       continue
@@ -697,226 +455,352 @@ def _ellipsoid_fluid_qderiv_contrib(
     geom_rotT = wp.transpose(geom_rot)
     geom_pos = geom_xpos_in[worldid, geomid]
 
+    # compute local velocity
     lin_point = lin_com + wp.cross(ang_global, geom_pos - xipos)
-
     l_ang = geom_rotT @ ang_global
     l_lin = geom_rotT @ lin_point
 
     if wind[0] != 0.0 or wind[1] != 0.0 or wind[2] != 0.0:
       l_lin -= geom_rotT @ wind
 
-    lvel = wp.spatial_vector(l_ang, l_lin)
+    ang_vel = l_ang
+    lin_vel = l_lin
 
-    B = mat66(0.0)
-
-    magnus_coef = geom_fluid[geomid, 5]
-    kutta_coef = geom_fluid[geomid, 4]
+    # read fluid coefficients
     blunt_drag_coef = geom_fluid[geomid, 1]
     slender_drag_coef = geom_fluid[geomid, 2]
     ang_drag_coef = geom_fluid[geomid, 3]
+    kutta_lift_coef = geom_fluid[geomid, 4]
+    magnus_lift_coef = geom_fluid[geomid, 5]
+    virtual_mass = wp.vec3(geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8])
+    virtual_inertia = wp.vec3(geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11])
+
+    # ===== Build 6x6 B matrix as four 3x3 quadrants =====
+    # B = [[B00, B01], [B10, B11]] where rows are [ang; lin], cols are [ang; lin]
+    B00 = wp.mat33(0.0)  # torque wrt ang_vel
+    B01 = wp.mat33(0.0)  # torque wrt lin_vel
+    B10 = wp.mat33(0.0)  # force wrt ang_vel
+    B11 = wp.mat33(0.0)  # force wrt lin_vel
 
     if density > 0.0:
-      virtual_mass = wp.vec3(geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8])
-      virtual_inertia = wp.vec3(geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11])
-      B += _added_mass_forces_deriv(lvel, density, virtual_mass, virtual_inertia)
+      # --- added mass forces ---
+      virtual_lin_mom = density * wp.cw_mul(virtual_mass, lin_vel)
+      virtual_ang_mom = density * wp.cw_mul(virtual_inertia, ang_vel)
 
-      if magnus_coef != 0.0:
-        B += _magnus_force_deriv(lvel, density, semiaxes, magnus_coef)
+      # torque += cross(virtual_ang_mom, ang_vel) -> B00
+      B00 += _skew_pos(virtual_ang_mom)
+      B00 += _scale_cols(_skew_neg(ang_vel), density * virtual_inertia)
 
-      if kutta_coef != 0.0:
-        D_kutta = _kutta_lift_deriv(lvel, density, semiaxes, kutta_coef)
-        B = _add_to_quadrant(B, D_kutta, 1, 1)
+      # torque += cross(virtual_lin_mom, lin_vel) -> B01
+      B01 += _skew_pos(virtual_lin_mom)
+      B01 += _scale_cols(_skew_neg(lin_vel), density * virtual_mass)
 
-    if viscosity > 0.0:
-      D_drag = _viscous_drag_deriv(lvel, density, viscosity, semiaxes, blunt_drag_coef, slender_drag_coef)
-      B = _add_to_quadrant(B, D_drag, 1, 1)
+      # force += cross(virtual_lin_mom, ang_vel) -> B10
+      B10 += _skew_pos(virtual_lin_mom)
+      # Da = d/d(vlm via lin) = _skew_neg(ang), scaled by density*vm -> B11
+      B11 += _scale_cols(_skew_neg(ang_vel), density * virtual_mass)
 
-      D_torque = _viscous_torque_deriv(lvel, density, viscosity, semiaxes, slender_drag_coef, ang_drag_coef)
-      B = _add_to_quadrant(B, D_torque, 0, 0)
+    # --- Magnus force: force += magnus_coef * cross(ang_vel, lin_vel) ---
+    volume = wp.static(4.0 / 3.0 * wp.pi) * semiaxes[0] * semiaxes[1] * semiaxes[2]
+    magnus_coef = magnus_lift_coef * density * volume
+    B10 += _skew_neg(lin_vel) * magnus_coef
+    ang_vel_scaled = ang_vel * magnus_coef
+    B11 += _skew_pos(ang_vel_scaled)
 
-    B = B * coef
+    # --- Kutta lift (3x3 -> B11) ---
+    a = (semiaxes[1] * semiaxes[2]) * (semiaxes[1] * semiaxes[2])
+    b = (semiaxes[2] * semiaxes[0]) * (semiaxes[2] * semiaxes[0])
+    c = (semiaxes[0] * semiaxes[1]) * (semiaxes[0] * semiaxes[1])
+    aa = a * a
+    bb = b * b
+    cc = c * c
 
-    # Symmetrize B for implicitfast integrator (matches MuJoCo behavior)
-    # Note: MuJoCo only symmetrizes for IMPLICITFAST, not IMPLICIT
-    if opt_integrator == 2:  # mjINT_IMPLICITFAST
-      for row in range(6):
-        for col in range(row + 1, 6):
-          avg = (B[row, col] + B[col, row]) * 0.5
-          B[row, col] = avg
-          B[col, row] = avg
+    x = lin_vel[0]
+    y = lin_vel[1]
+    z = lin_vel[2]
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    xy = x * y
+    yz = y * z
+    xz = x * z
 
-    # Compute Jacobian at geometry position in local frame
-    jacp_i, jacr_i = support.jac(
-      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in,
-      geom_pos, bodyid, dofiid, worldid
+    proj_denom = aa * xx + bb * yy + cc * zz
+    proj_num = a * xx + b * yy + c * zz
+    norm2 = xx + yy + zz
+    df_denom = wp.pi * kutta_lift_coef * density / wp.max(MJ_MINVAL, wp.sqrt(proj_denom * proj_num * norm2))
+
+    dfx_coef = yy * (a - b) + zz * (a - c)
+    dfy_coef = xx * (b - a) + zz * (b - c)
+    dfz_coef = xx * (c - a) + yy * (c - b)
+    proj_term = proj_num / wp.max(MJ_MINVAL, proj_denom)
+    cos_term = proj_num / wp.max(MJ_MINVAL, norm2)
+
+    D = wp.mat33(
+      0.0,
+      b - a,
+      c - a,
+      a - b,
+      0.0,
+      c - b,
+      a - c,
+      b - c,
+      0.0,
     )
-    jacp_i_local = geom_rotT @ jacp_i
-    jacr_i_local = geom_rotT @ jacr_i
+    D *= 2.0 * proj_num
 
-    jacp_j, jacr_j = support.jac(
-      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in,
-      geom_pos, bodyid, dofjid, worldid
+    inner_term = wp.vec3(
+      aa * proj_term - a + cos_term,
+      bb * proj_term - b + cos_term,
+      cc * proj_term - c + cos_term,
     )
-    jacp_j_local = geom_rotT @ jacp_j
-    jacr_j_local = geom_rotT @ jacr_j
 
-    # B matrix is in (angular, linear) order:
-    # B[0:3, 0:3] = angular-angular, B[0:3, 3:6] = angular-linear
-    # B[3:6, 0:3] = linear-angular, B[3:6, 3:6] = linear-linear
-    # Jacobian vectors: jacr = angular, jacp = linear
-    # We compute J^T * B * J where J = [jacr; jacp] (angular first, linear second)
-    cdof_i_local = wp.spatial_vector(jacr_i_local, jacp_i_local)
-    cdof_j_local = wp.spatial_vector(jacr_j_local, jacp_j_local)
+    for i_k in range(3):
+      df_coef_i = wp.where(i_k == 0, dfx_coef, wp.where(i_k == 1, dfy_coef, dfz_coef))
+      for j_k in range(3):
+        D[i_k, j_k] += inner_term[j_k] * df_coef_i
 
-    for k in range(6):
-      for j in range(6):
-        if k < 3:
-          cdof_i_k = wp.spatial_top(cdof_i_local)[k]
-        else:
-          cdof_i_k = wp.spatial_bottom(cdof_i_local)[k - 3]
-        if j < 3:
-          cdof_j_j = wp.spatial_top(cdof_j_local)[j]
-        else:
-          cdof_j_j = wp.spatial_bottom(cdof_j_local)[j - 3]
-        qderiv_contrib += cdof_i_k * B[k, j] * cdof_j_j
+    D[0, 0] *= xx
+    D[0, 1] *= xy
+    D[0, 2] *= xz
+    D[1, 0] *= xy
+    D[1, 1] *= yy
+    D[1, 2] *= yz
+    D[2, 0] *= xz
+    D[2, 1] *= yz
+    D[2, 2] *= zz
+
+    D[0, 0] -= dfx_coef * proj_num
+    D[1, 1] -= dfy_coef * proj_num
+    D[2, 2] -= dfz_coef * proj_num
+
+    D *= df_denom
+    B11 += D
+
+    # --- viscous drag (3x3 -> B11) ---
+    d_max = wp.max(wp.max(semiaxes[0], semiaxes[1]), semiaxes[2])
+    d_min = wp.min(wp.min(semiaxes[0], semiaxes[1]), semiaxes[2])
+    d_mid = semiaxes[0] + semiaxes[1] + semiaxes[2] - d_max - d_min
+    eq_sphere_D = wp.static(2.0 / 3.0) * (semiaxes[0] + semiaxes[1] + semiaxes[2])
+    A_max = wp.pi * d_max * d_mid
+
+    A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
+
+    norm = wp.sqrt(xx + yy + zz)
+    inv_norm = 1.0 / wp.max(MJ_MINVAL, norm)
+
+    lin_coef = viscosity * wp.static(3.0 * wp.pi) * eq_sphere_D
+    quad_coef = density * (A_proj * blunt_drag_coef + slender_drag_coef * (A_max - A_proj))
+    Aproj_coef = density * norm * (blunt_drag_coef - slender_drag_coef)
+    dA_coef = wp.pi / wp.max(MJ_MINVAL, wp.sqrt(proj_num * proj_num * proj_num * proj_denom))
+
+    dAproj_dv = wp.vec3(
+      Aproj_coef * dA_coef * a * x * (b * yy * (a - b) + c * zz * (a - c)),
+      Aproj_coef * dA_coef * b * y * (a * xx * (b - a) + c * zz * (b - c)),
+      Aproj_coef * dA_coef * c * z * (a * xx * (c - a) + b * yy * (c - b)),
+    )
+
+    inner = xx + yy + zz
+    D = wp.mat33(
+      xx + inner,
+      xy,
+      xz,
+      xy,
+      yy + inner,
+      yz,
+      xz,
+      yz,
+      zz + inner,
+    )
+    D *= -quad_coef * inv_norm
+
+    for i_d in range(3):
+      vi = wp.where(i_d == 0, x, wp.where(i_d == 1, y, z))
+      for j_d in range(3):
+        D[i_d, j_d] -= vi * dAproj_dv[j_d]
+
+    D[0, 0] -= lin_coef
+    D[1, 1] -= lin_coef
+    D[2, 2] -= lin_coef
+
+    B11 += D
+
+    # --- viscous torque (3x3 -> B00) ---
+    lin_visc_torq_coef = wp.pi * eq_sphere_D * eq_sphere_D * eq_sphere_D
+    I_max = wp.static(8.0 / 15.0 * wp.pi) * d_mid * d_max * d_max * d_max * d_max
+    II = wp.vec3(
+      _ellipsoid_max_moment(semiaxes, 0),
+      _ellipsoid_max_moment(semiaxes, 1),
+      _ellipsoid_max_moment(semiaxes, 2),
+    )
+
+    ax = ang_vel[0]
+    ay = ang_vel[1]
+    az = ang_vel[2]
+
+    mom_coef = wp.vec3(
+      ang_drag_coef * II[0] + slender_drag_coef * (I_max - II[0]),
+      ang_drag_coef * II[1] + slender_drag_coef * (I_max - II[1]),
+      ang_drag_coef * II[2] + slender_drag_coef * (I_max - II[2]),
+    )
+
+    mom_visc = wp.cw_mul(ang_vel, mom_coef)
+    norm_mom = wp.length(mom_visc)
+    density_scaled = density / wp.max(MJ_MINVAL, norm_mom)
+
+    mom_sq = -density_scaled * wp.cw_mul(wp.cw_mul(ang_vel, mom_coef), mom_coef)
+
+    torq_lin_coef = viscosity * lin_visc_torq_coef
+    diag_val = ax * mom_sq[0] + ay * mom_sq[1] + az * mom_sq[2] - torq_lin_coef
+
+    D = wp.mat33(
+      diag_val + mom_sq[0] * ax,
+      mom_sq[1] * ax,
+      mom_sq[2] * ax,
+      mom_sq[0] * ay,
+      diag_val + mom_sq[1] * ay,
+      mom_sq[2] * ay,
+      mom_sq[0] * az,
+      mom_sq[1] * az,
+      diag_val + mom_sq[2] * az,
+    )
+    B00 += D
+
+    # symmetrize for implicitfast
+    if is_implicitfast:
+      B00 = 0.5 * (B00 + wp.transpose(B00))
+      B11 = 0.5 * (B11 + wp.transpose(B11))
+      B01, B10 = _symmetrize33(B01, B10)
+
+    # --- Jacobian transformation: J_i^T @ B @ J_j ---
+    offset = geom_pos - subtree_root
+
+    # local-frame Jacobian for dof i
+    cdof_ang_i = wp.vec3(cdof_i[0], cdof_i[1], cdof_i[2])
+    cdof_lin_i = wp.vec3(cdof_i[3], cdof_i[4], cdof_i[5])
+    jac_p_i = cdof_lin_i + wp.cross(cdof_ang_i, offset)
+    la_i = geom_rotT @ cdof_ang_i
+    ll_i = geom_rotT @ jac_p_i
+
+    # local-frame Jacobian for dof j
+    cdof_ang_j = wp.vec3(cdof_j[0], cdof_j[1], cdof_j[2])
+    cdof_lin_j = wp.vec3(cdof_j[3], cdof_j[4], cdof_j[5])
+    jac_p_j = cdof_lin_j + wp.cross(cdof_ang_j, offset)
+    la_j = geom_rotT @ cdof_ang_j
+    ll_j = geom_rotT @ jac_p_j
+
+    # B @ J_j = [B00 @ la_j + B01 @ ll_j; B10 @ la_j + B11 @ ll_j]
+    Bj_ang = B00 @ la_j + B01 @ ll_j
+    Bj_lin = B10 @ la_j + B11 @ ll_j
+
+    # J_i^T @ (B @ J_j) = la_i . Bj_ang + ll_i . Bj_lin
+    qderiv_contrib += wp.dot(la_i, Bj_ang) + wp.dot(ll_i, Bj_lin)
 
   return qderiv_contrib
 
 
 @wp.kernel
-def _deriv_ellipsoid_fluid_dense(
+def _qderiv_ellipsoid_fluid(
   # Model:
-  nv: int,
-  opt_density: wp.array(dtype=float),
-  opt_viscosity: wp.array(dtype=float),
-  opt_wind: wp.array(dtype=wp.vec3),
-  opt_timestep: wp.array(dtype=float),
+  opt_timestep: wp.array[float],
+  opt_wind: wp.array[wp.vec3],
+  opt_density: wp.array[float],
+  opt_viscosity: wp.array[float],
   opt_integrator: int,
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_geomnum: wp.array(dtype=int),
-  body_geomadr: wp.array(dtype=int),
-  body_fluid_ellipsoid: wp.array(dtype=bool),
-  geom_type: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_fluid: wp.array2d(dtype=float),
-  dof_bodyid: wp.array(dtype=int),
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_geomnum: wp.array[int],
+  body_geomadr: wp.array[int],
+  dof_bodyid: wp.array[int],
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_fluid: wp.array2d[float],
+  is_sparse: bool,
+  body_fluid_ellipsoid_adr: wp.array[int],
   # Data in:
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  # Out:
-  qDeriv_out: wp.array3d(dtype=float),
-):
-  """Dense version: iterates over all nv x nv DOF pairs."""
-  worldid, dofiid, dofjid = wp.tid()
-
-  # Only process lower triangle (i >= j) to avoid duplicate work
-  if dofiid < dofjid:
-    return
-
-  bodyid_i = dof_bodyid[dofiid]
-  bodyid_j = dof_bodyid[dofjid]
-
-  if bodyid_i == 0 or not body_fluid_ellipsoid[bodyid_i]:
-    return
-
-  if bodyid_i != bodyid_j:
-    return
-
-  bodyid = bodyid_i
-  density = opt_density[worldid % opt_density.shape[0]]
-  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
-  wind = opt_wind[worldid % opt_wind.shape[0]]
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  xipos = xipos_in[worldid, bodyid]
-  ximat = ximat_in[worldid, bodyid]
-  cvel = cvel_in[worldid, bodyid]
-
-  qderiv_contrib = _ellipsoid_fluid_qderiv_contrib(
-    density, viscosity, wind, opt_integrator,
-    body_parentid, body_rootid, body_geomnum, body_geomadr,
-    geom_type, geom_size, geom_fluid, dof_bodyid,
-    xipos, ximat, geom_xpos_in, geom_xmat_in, subtree_com_in, cdof_in, cvel,
-    bodyid, dofiid, dofjid, worldid
-  )
-
-  qderiv_contrib *= timestep
-
-  wp.atomic_sub(qDeriv_out, worldid, dofiid, dofjid, qderiv_contrib)
-  if dofiid != dofjid:
-    wp.atomic_sub(qDeriv_out, worldid, dofjid, dofiid, qderiv_contrib)
-
-
-@wp.kernel
-def _deriv_ellipsoid_fluid_sparse(
-  # Model:
-  opt_density: wp.array(dtype=float),
-  opt_viscosity: wp.array(dtype=float),
-  opt_wind: wp.array(dtype=wp.vec3),
-  opt_timestep: wp.array(dtype=float),
-  opt_integrator: int,
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_geomnum: wp.array(dtype=int),
-  body_geomadr: wp.array(dtype=int),
-  body_fluid_ellipsoid: wp.array(dtype=bool),
-  geom_type: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
-  geom_fluid: wp.array2d(dtype=float),
-  dof_bodyid: wp.array(dtype=int),
-  # Data in:
-  xipos_in: wp.array2d(dtype=wp.vec3),
-  ximat_in: wp.array2d(dtype=wp.mat33),
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cvel_in: wp.array2d(dtype=wp.spatial_vector),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
+  xipos_in: wp.array2d[wp.vec3],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  cvel_in: wp.array2d[wp.spatial_vector],
   # In:
-  qMi: wp.array(dtype=int),
-  qMj: wp.array(dtype=int),
+  qMi: wp.array[int],
+  qMj: wp.array[int],
   # Out:
-  qDeriv_out: wp.array3d(dtype=float),
+  qDeriv_out: wp.array3d[float],
 ):
-  """Sparse version: iterates over sparse matrix elements."""
-  worldid, elemid = wp.tid()
+  """Compute ellipsoid fluid force derivative contribution to qDeriv.
+
+  Parallelized over (world, fluid_body, elem). For each fluid body and DOF
+  pair, computes the 6x6 derivative matrix B in local geom frame via
+  _deriv_ellipsoid_fluid and accumulates J_i^T @ B @ J_j into qDeriv.
+  """
+  worldid, fluid_idx, elemid = wp.tid()
+
+  bodyid = body_fluid_ellipsoid_adr[fluid_idx]
+
   dofiid = qMi[elemid]
   dofjid = qMj[elemid]
 
+  # dofiid is the "deeper" DOF (qMi >= qMj in tree ordering).
+  # Any body that has dofiid in its chain also has dofjid.
   bodyid_i = dof_bodyid[dofiid]
-  bodyid_j = dof_bodyid[dofjid]
 
-  if bodyid_i == 0 or not body_fluid_ellipsoid[bodyid_i]:
+  if bodyid_i == 0:
     return
 
-  if bodyid_i != bodyid_j:
+  # Walk from bodyid up to root; check if bodyid_i is an ancestor.
+  ancestor = bodyid
+  is_in_chain = int(0)
+  while ancestor > 0 and is_in_chain == 0:
+    if ancestor == bodyid_i:
+      is_in_chain = 1
+    ancestor = body_parentid[ancestor]
+  if is_in_chain == 0:
     return
 
-  bodyid = bodyid_i
+  wind = opt_wind[worldid % opt_wind.shape[0]]
   density = opt_density[worldid % opt_density.shape[0]]
   viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
-  wind = opt_wind[worldid % opt_wind.shape[0]]
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  xipos = xipos_in[worldid, bodyid]
-  ximat = ximat_in[worldid, bodyid]
-  cvel = cvel_in[worldid, bodyid]
 
-  qderiv_contrib = _ellipsoid_fluid_qderiv_contrib(
-    density, viscosity, wind, opt_integrator,
-    body_parentid, body_rootid, body_geomnum, body_geomadr,
-    geom_type, geom_size, geom_fluid, dof_bodyid,
-    xipos, ximat, geom_xpos_in, geom_xmat_in, subtree_com_in, cdof_in, cvel,
-    bodyid, dofiid, dofjid, worldid
+  if density <= 0.0 and viscosity <= 0.0:
+    return
+
+  cdof_i = cdof_in[worldid, dofiid]
+  cdof_j = cdof_in[worldid, dofjid]
+
+  contrib = _deriv_ellipsoid_fluid(
+    opt_integrator,
+    geom_type,
+    geom_size,
+    geom_fluid,
+    xipos_in,
+    geom_xpos_in,
+    geom_xmat_in,
+    subtree_com_in,
+    cvel_in,
+    worldid,
+    bodyid,
+    body_rootid[bodyid],
+    body_geomadr[bodyid],
+    body_geomnum[bodyid],
+    cdof_i,
+    cdof_j,
+    wind,
+    density,
+    viscosity,
   )
 
-  qderiv_contrib *= timestep
+  contrib *= timestep
 
-  wp.atomic_sub(qDeriv_out, worldid, 0, elemid, qderiv_contrib)
+  if is_sparse:
+    wp.atomic_add(qDeriv_out[worldid, 0], elemid, -contrib)
+  else:
+    wp.atomic_add(qDeriv_out[worldid, dofiid], dofjid, -contrib)
+    if dofiid != dofjid:
+      wp.atomic_add(qDeriv_out[worldid, dofjid], dofiid, -contrib)
 
 
 @event_scope
@@ -1019,68 +903,36 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       outputs=[out],
     )
 
-  if m.opt.has_fluid and not m.opt.disableflags & DisableBit.DAMPER:
-    if m.opt.is_sparse:
-      wp.launch(
-        _deriv_ellipsoid_fluid_sparse,
-        dim=(d.nworld, qMi.size),
-        inputs=[
-          m.opt.density,
-          m.opt.viscosity,
-          m.opt.wind,
-          m.opt.timestep,
-          m.opt.integrator,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_geomnum,
-          m.body_geomadr,
-          m.body_fluid_ellipsoid,
-          m.geom_type,
-          m.geom_size,
-          m.geom_fluid,
-          m.dof_bodyid,
-          d.xipos,
-          d.ximat,
-          d.geom_xpos,
-          d.geom_xmat,
-          d.subtree_com,
-          d.cvel,
-          d.cdof,
-          qMi,
-          qMj,
-        ],
-        outputs=[out],
-      )
-    else:
-      # Dense mode: iterate over all nv x nv DOF pairs
-      wp.launch(
-        _deriv_ellipsoid_fluid_dense,
-        dim=(d.nworld, m.nv, m.nv),
-        inputs=[
-          m.nv,
-          m.opt.density,
-          m.opt.viscosity,
-          m.opt.wind,
-          m.opt.timestep,
-          m.opt.integrator,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_geomnum,
-          m.body_geomadr,
-          m.body_fluid_ellipsoid,
-          m.geom_type,
-          m.geom_size,
-          m.geom_fluid,
-          m.dof_bodyid,
-          d.xipos,
-          d.ximat,
-          d.geom_xpos,
-          d.geom_xmat,
-          d.subtree_com,
-          d.cvel,
-          d.cdof,
-        ],
-        outputs=[out],
-      )
+  if m.has_fluid:
+    wp.launch(
+      _qderiv_ellipsoid_fluid,
+      dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, qMi.size),
+      inputs=[
+        m.opt.timestep,
+        m.opt.wind,
+        m.opt.density,
+        m.opt.viscosity,
+        m.opt.integrator,
+        m.body_parentid,
+        m.body_rootid,
+        m.body_geomnum,
+        m.body_geomadr,
+        m.dof_bodyid,
+        m.geom_type,
+        m.geom_size,
+        m.geom_fluid,
+        m.is_sparse,
+        m.body_fluid_ellipsoid_adr,
+        d.xipos,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.subtree_com,
+        d.cdof,
+        d.cvel,
+        qMi,
+        qMj,
+      ],
+      outputs=[out],
+    )
 
   # TODO(team): rne derivative
