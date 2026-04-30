@@ -613,8 +613,8 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
-  # TODO(team): remove False after island features are more complete
-  if False and not (m.opt.disableflags & DisableBit.ISLAND):
+  # TODO(team): m.opt.disableflags & DisableBit.ISLAND
+  if m.opt.use_islands:
     island.island(m, d)
   smooth.transmission(m, d)
 

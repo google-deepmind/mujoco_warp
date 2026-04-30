@@ -201,6 +201,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
   else:
     opt.contact_sensor_maxmatch = 64
+  # TODO(team): remove and use opt.disableflags logic
+  opt.use_islands = False
 
   # place opt on device
   for f in dataclasses.fields(types.Option):
@@ -1173,7 +1175,7 @@ def put_data(
       continue
     shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
     val = np.zeros(shape, dtype=f.type.dtype)
-    if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
+    if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force", "island"):
       val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
     efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
 
@@ -1234,6 +1236,8 @@ def put_data(
     # island arrays
     "nisland": None,
     "tree_island": None,
+    "dof_island": None,
+    "island_dofadr": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1262,6 +1266,11 @@ def put_data(
   # island arrays
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
   d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
+  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1)), dtype=int)
+  val = np.zeros((nworld, mjm.ntree), dtype=int)
+  if mjd.nisland > 0:
+    val[:, : mjd.nisland] = np.tile(mjd.island_dofadr, (nworld, 1))
+  d.island_dofadr = wp.array(val, dtype=int)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -1458,6 +1467,7 @@ def get_data_into(
   result.efc_frictionloss[:] = d.efc.frictionloss.numpy()[world_id, efc_idx]
   result.efc_state[:] = d.efc.state.numpy()[world_id, efc_idx]
   result.efc_force[:] = d.efc.force.numpy()[world_id, efc_idx]
+  result.efc_island[:] = d.efc.island.numpy()[world_id, efc_idx]
 
   # rne_postconstraint
   result.cacc[:] = d.cacc.numpy()[world_id]
@@ -1481,6 +1491,8 @@ def get_data_into(
   result.nisland = nisland
   if nisland:
     result.tree_island[:] = d.tree_island.numpy()[world_id]
+    result.dof_island[:] = d.dof_island.numpy()[world_id]
+    result.island_dofadr[:nisland] = d.island_dofadr.numpy()[world_id, :nisland]
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
@@ -2555,6 +2567,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.ls_parallel",
     "opt.graph_conditional",
     "opt.contact_sensor_maxmatch",
+    "opt.use_islands",
   }
   mj_only_fields = {"opt.jacobian"}
 

@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import island
 from mujoco_warp._src import solver
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
@@ -536,14 +537,20 @@ class SolverTest(parameterized.TestCase):
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
-  @parameterized.parameters(
-    mujoco.mjtJacobian.mjJAC_DENSE,
-    mujoco.mjtJacobian.mjJAC_SPARSE,
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    use_islands=(True, False),
   )
-  def test_frictionloss(self, jacobian):
+  def test_frictionloss(self, jacobian, use_islands):
     """Tests solver with frictionloss."""
     for keyframe in range(3):
-      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian})
+      _, mjd, m, d = test_data.fixture(
+        "constraints.xml",
+        keyframe=keyframe,
+        overrides={"opt.jacobian": jacobian, "opt.use_islands": use_islands},
+      )
+      if use_islands:
+        island.island(m, d)
       mjw.solve(m, d)
 
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")

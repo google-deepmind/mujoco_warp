@@ -25,6 +25,9 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
+from mujoco_warp._src import island
+from mujoco_warp._src import solver
+from mujoco_warp._src import support
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 
@@ -395,6 +398,63 @@ class SupportTest(parameterized.TestCase):
     for w in range(2):
       _assert_eq(jacp_wp.numpy()[w], jacp_mj, f"jacp world {w}")
       _assert_eq(jacr_wp.numpy()[w], jacr_mj, f"jacr world {w}")
+
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+    mujoco.mjtJacobian.mjJAC_DENSE,
+  )
+  def test_mul_m_island(self, jacobian):
+    """Tests mul_m_island matches mul_m for all islands in parallel."""
+    mjm, mjd, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={"opt.jacobian": jacobian, "opt.use_islands": True},
+    )
+
+    ctx = solver.create_solver_context(m, d)
+    island.compute_island_mapping(m, d, ctx)
+
+    # Random vector in global DOF order
+    np.random.seed(0)
+    vec_np = np.random.randn(1, m.nv).astype(np.float32)
+
+    # Global mul_m
+    vec_global = wp.from_numpy(vec_np, dtype=float)
+    res_global = wp.zeros((1, m.nv), dtype=float)
+    mjwarp.mul_m(m, d, res_global, vec_global)
+    res_global_np = res_global.numpy()[0]
+
+    # Gather vec into island-local order
+    nidof = ctx.nidof.numpy()[0]
+    map_idof2dof = ctx.map_idof2dof.numpy()[0]
+    vec_island_np = np.zeros((1, m.nv), dtype=np.float32)
+    for idof in range(nidof):
+      vec_island_np[0, idof] = vec_np[0, map_idof2dof[idof]]
+
+    vec_island = wp.from_numpy(vec_island_np, dtype=float)
+    res_island = wp.zeros((1, m.nv), dtype=float)
+
+    support.mul_m_island(
+      m,
+      d,
+      res_island,
+      vec_island,
+      ctx.nidof,
+      ctx.map_idof2dof,
+      ctx.map_dof2idof,
+      ctx.idof_islandid,
+    )
+
+    # Scatter result back to global order and compare
+    res_island_np = res_island.numpy()[0]
+    for idof in range(nidof):
+      dof = map_idof2dof[idof]
+      dof_isl = d.dof_island.numpy()[0, dof]
+      if dof_isl >= 0:
+        _assert_eq(
+          res_island_np[idof],
+          res_global_np[dof],
+          f"mul_m_island idof={idof} dof={dof}",
+        )
 
 
 if __name__ == "__main__":
