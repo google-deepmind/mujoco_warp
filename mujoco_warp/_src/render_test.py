@@ -188,6 +188,97 @@ class RenderTest(parameterized.TestCase):
       rtol=1e-2,
     )
 
+  # Scenes for the backface-cull tests live in `mujoco_warp/test_data/backface_cull/`,
+  # one XML per primitive type. Each places the camera at the origin fully
+  # enclosed by the primitive, with a marker box at +Y (in front of the camera)
+  # well outside the enclosure. A correctly backface-culling renderer must drop
+  # the far exit-face hit on the enclosure and "see through" to the marker.
+  _BACKFACE_CULL_PRIMITIVES = (
+    ("sphere", "backface_cull/sphere.xml"),
+    ("ellipsoid", "backface_cull/ellipsoid.xml"),
+    ("capsule", "backface_cull/capsule.xml"),
+    ("cylinder", "backface_cull/cylinder.xml"),
+    ("box", "backface_cull/box.xml"),
+  )
+
+  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
+  def test_backface_cull_camera_inside_primitive(self, mjcf: str):
+    """Camera inside a primitive must not render that primitive's back face.
+
+    Mirrors MuJoCo's mesh ray rule (`dot(lvec, n) < 0`) for primitives: an
+    exit-face hit (ray going outward through the surface) is dropped, so a ray
+    originating inside a primitive sees through it. Without this cull, the
+    enclosing geom would fill the frame with its back wall.
+    """
+    mjm, mjd, m, d = test_data.fixture(mjcf, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    depth = rc.depth_data.numpy()[0]
+
+    enclosure_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "enclosure")
+    marker_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "marker")
+
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    hit_ids = seg[..., 0][geom_mask]
+
+    # The enclosing primitive must never appear in segmentation: every ray
+    # originates inside it, so every "hit" against it is an exit-face hit and
+    # must be culled.
+    self.assertFalse(
+      np.any(hit_ids == enclosure_id),
+      f"enclosing geom in {mjcf} should be backface-culled but appeared in segmentation",
+    )
+
+    # The marker box sits directly in front of the camera and is well outside
+    # the enclosure, so at least one ray should reach it.
+    self.assertTrue(
+      np.any(hit_ids == marker_id),
+      f"camera in {mjcf} should see through to the marker box",
+    )
+
+    # Depth on enclosure-only pixels would equal the inner surface distance
+    # (~size). Since we cull those, depth where we hit the marker must be
+    # consistent with its world position (~5m away), not the small enclosure.
+    marker_depth = depth.reshape(cam_h, cam_w)[
+      seg[..., 0].reshape(cam_h, cam_w) == marker_id
+    ]
+    if marker_depth.size > 0:
+      self.assertGreater(float(np.min(marker_depth)), 1.0)
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
+  def test_backface_cull_matches_mujoco(self, mjcf: str):
+    """Backface-cull behavior for primitives must match native MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(mjcf, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=[True],
+    )
+    mjw.render(m, d, rc)
+    warp_seg = rc.seg_data.numpy()[0].reshape(-1, 2)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      renderer.enable_segmentation_rendering()
+      mj_seg = renderer.render().reshape(-1, 2)
+
+    np.testing.assert_array_equal(warp_seg, mj_seg)
+
 
 if __name__ == "__main__":
   wp.init()
