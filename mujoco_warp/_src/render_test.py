@@ -188,21 +188,33 @@ class RenderTest(parameterized.TestCase):
       rtol=1e-2,
     )
 
-  # Scenes for the backface-cull tests live in `mujoco_warp/test_data/backface_cull/`,
-  # one XML per primitive type. Each places the camera at the origin fully
-  # enclosed by the primitive, with a marker box at +Y (in front of the camera)
-  # well outside the enclosure. A correctly backface-culling renderer must drop
-  # the far exit-face hit on the enclosure and "see through" to the marker.
+  # Each scene places the camera at the origin fully enclosed by a primitive,
+  # with a marker box at +Y (in front of the camera) well outside the
+  # enclosure. A correctly backface-culling renderer must drop the far
+  # exit-face hit on the enclosure and "see through" to the marker.
+  _BACKFACE_CULL_SCENE = """
+<mujoco>
+  <visual>
+    <map znear="0.001" />
+  </visual>
+  <worldbody>
+    <camera name="cam" xyaxes="1 0 0 0 0 1" />
+    <geom name="enclosure" type="{geom_type}" size="{size}" />
+    <geom name="marker" type="box" size="0.5 0.5 0.5" pos="0 5 0" />
+  </worldbody>
+</mujoco>
+"""
+
   _BACKFACE_CULL_PRIMITIVES = (
-    ("sphere", "backface_cull/sphere.xml"),
-    ("ellipsoid", "backface_cull/ellipsoid.xml"),
-    ("capsule", "backface_cull/capsule.xml"),
-    ("cylinder", "backface_cull/cylinder.xml"),
-    ("box", "backface_cull/box.xml"),
+    ("sphere", "sphere", "1"),
+    ("ellipsoid", "ellipsoid", "1 1 1"),
+    ("capsule", "capsule", "0.5 0.5"),
+    ("cylinder", "cylinder", "1 1"),
+    ("box", "box", "1 1 1"),
   )
 
   @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
-  def test_backface_cull_camera_inside_primitive(self, mjcf: str):
+  def test_backface_cull_camera_inside_primitive(self, geom_type: str, size: str):
     """Camera inside a primitive must not render that primitive's back face.
 
     Mirrors MuJoCo's mesh ray rule (`dot(lvec, n) < 0`) for primitives: an
@@ -210,7 +222,8 @@ class RenderTest(parameterized.TestCase):
     originating inside a primitive sees through it. Without this cull, the
     enclosing geom would fill the frame with its back wall.
     """
-    mjm, mjd, m, d = test_data.fixture(mjcf, nworld=1)
+    xml = self._BACKFACE_CULL_SCENE.format(geom_type=geom_type, size=size)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
 
     cam_w, cam_h = 16, 16
     rc = mjw.create_render_context(
@@ -237,14 +250,14 @@ class RenderTest(parameterized.TestCase):
     # must be culled.
     self.assertFalse(
       np.any(hit_ids == enclosure_id),
-      f"enclosing geom in {mjcf} should be backface-culled but appeared in segmentation",
+      f"enclosing {geom_type} should be backface-culled but appeared in segmentation",
     )
 
     # The marker box sits directly in front of the camera and is well outside
     # the enclosure, so at least one ray should reach it.
     self.assertTrue(
       np.any(hit_ids == marker_id),
-      f"camera in {mjcf} should see through to the marker box",
+      f"camera inside {geom_type} should see through to the marker box",
     )
 
     # Depth on enclosure-only pixels would equal the inner surface distance
@@ -256,9 +269,10 @@ class RenderTest(parameterized.TestCase):
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
-  def test_backface_cull_matches_mujoco(self, mjcf: str):
+  def test_backface_cull_matches_mujoco(self, geom_type: str, size: str):
     """Backface-cull behavior for primitives must match native MuJoCo."""
-    mjm, mjd, m, d = test_data.fixture(mjcf, nworld=1)
+    xml = self._BACKFACE_CULL_SCENE.format(geom_type=geom_type, size=size)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
 
     cam_w, cam_h = 16, 16
     rc = mjw.create_render_context(
