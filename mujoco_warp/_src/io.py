@@ -2654,6 +2654,39 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
   return np.array(ctrls)
 
 
+def load_trajectory(npz_path: str, mjm: mujoco.MjModel, mjd: mujoco.MjData) -> np.ndarray:
+  """Load ctrl sequence from NPZ and interpolate to model timestep.
+
+  If the trajectory dt differs from mjm.opt.timestep, each ctrl value is held
+  constant (zero-order hold) for the appropriate number of physics steps.
+
+  The NPZ file should contain:
+    - 'ctrl': array of shape (nstep, nu) with ctrl values
+    - 'times': array of shape (nstep,) with timestamps
+    - 'qpos' (optional): array of shape (1, nq) - initial state
+    - 'qvel' (optional): array of shape (1, nv) - initial state
+  """
+  data = np.load(npz_path)
+  ctrl = data["ctrl"]
+  times = data["times"]
+
+  if ctrl.shape[1] != mjm.nu:
+    raise ValueError(f"ctrl shape {ctrl.shape} does not match model nu={mjm.nu}")
+
+  # set initial state from first frame if available
+  if "qpos" in data and data["qpos"].shape[1] == mjm.nq:
+    mjd.qpos[:] = data["qpos"][0]
+  if "qvel" in data and data["qvel"].shape[1] == mjm.nv:
+    mjd.qvel[:] = data["qvel"][0]
+
+  # determine decimation from timing
+  ctrl_dt = (times[1] - times[0]) if len(times) > 1 else mjm.opt.timestep
+  decimation = max(1, round(ctrl_dt / mjm.opt.timestep))
+
+  # expand: each ctrl held constant for decimation physics steps
+  return np.repeat(ctrl, decimation, axis=0)
+
+
 @wp.kernel
 def _build_rays(
   # In:
