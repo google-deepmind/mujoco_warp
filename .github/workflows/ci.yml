@@ -124,7 +124,7 @@ jobs:
       - name: Out-of-bounds check for batched model fields
         if: matrix.dep-type == 'stable'
         run: |
-          pytest -k io_test --debug_mode
+          pytest mujoco_warp/_src/io_test.py  -k test_model_batched_fields --debug_mode
 
   kernel_analyzer:
     name: Kernel analyzer
