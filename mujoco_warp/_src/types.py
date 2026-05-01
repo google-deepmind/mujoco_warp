@@ -664,6 +664,7 @@ class EqType(enum.IntEnum):
     WELD: fix relative position and orientation of two bodies
     TENDON: couple the lengths of two tendons with cubic
     FLEX: couple the edge lengths of a flex
+    FLEXSTRAIN: strain constraint for interpolated flex
   """
 
   CONNECT = mujoco.mjtEq.mjEQ_CONNECT
@@ -671,6 +672,7 @@ class EqType(enum.IntEnum):
   JOINT = mujoco.mjtEq.mjEQ_JOINT
   TENDON = mujoco.mjtEq.mjEQ_TENDON
   FLEX = mujoco.mjtEq.mjEQ_FLEX
+  FLEXSTRAIN = mujoco.mjtEq.mjEQ_FLEXSTRAIN
   # unsupported: DISTANCE
 
 
@@ -974,6 +976,7 @@ class Model:
     ncam: number of cameras
     nlight: number of lights
     nflex: number of flexes
+    nflexnode: number of nodes in all flexes
     nflexvert: number of vertices in all flexes
     nflexedge: number of edges in all flexes
     nflexelem: number of elements in all flexes
@@ -1140,6 +1143,10 @@ class Model:
     flex_internal: internal collision enabled                (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
+    flex_interp: interpolation order (0: vertex, 1+: nodes)  (nflex,)
+    flex_cellnum: cell count per dimension                   (nflex, 3)
+    flex_nodeadr: first node address                         (nflex,)
+    flex_nodenum: number of nodes                            (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
     flex_edgeadr: first edge address                         (nflex,)
@@ -1147,13 +1154,14 @@ class Model:
     flex_elemadr: first element address                      (nflex,)
     flex_elemnum: number of elements                         (nflex,)
     flex_elemdataadr: first element vertex id address        (nflex,)
-    flex_stiffnessadr: stiffness matrix address               (nflex,)
+    flex_stiffnessadr: stiffness matrix address              (nflex,)
     flex_elemedgeadr: first element edge id address          (nflex,)
     flex_bendingadr: first bending data address              (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_evpairadr: first element-vertex pair address        (nflex,)
     flex_evpairnum: number of element-vertex pairs           (nflex,)
+    flex_nodebodyid: node body ids                           (nflexnode,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
@@ -1162,12 +1170,17 @@ class Model:
     flex_shell: shell fragment vertex ids (dim per frag)     (nflexshelldata,)
     flex_evpair: element-vertex pair indices                 (nflexevpair, 2)
     flex_vert: vertex local positions                        (nflexvert, 3)
+    flex_vert0: reference vertex positions in qpos0          (nflexvert, 3)
+    flex_node: node local positions                          (nflexnode, 3)
+    flex_node0: reference node positions in qpos0            (nflexnode, 3)
     flexedge_length0: edge lengths in qpos0                  (nflexedge,)
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
     flex_radius: radius around primitive element             (nflex,)
     flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
     flex_bending: bending stiffness                          (nflexbending,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
+
+    flex_edgeequality: edge equality type (0:none,1:edge,2:vert,3:strain) (nflex,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
     flexedge_J_rowadr: row start address in colind array     (nflexedge,)
@@ -1312,6 +1325,7 @@ class Model:
     nrangefinder: number of rangefinder sensors
     nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
+    nflexintcell: total interp cells (non-strain) for passive forces
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
@@ -1327,6 +1341,7 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
+    has_trilinear: whether the model contains trilinear flexes
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1356,6 +1371,7 @@ class Model:
     eq_jnt_adr: eq_* addresses of type `JOINT`
     eq_ten_adr: eq_* addresses of type `TENDON`
     eq_flex_adr: eq * addresses of type `FLEX
+    eq_flexstrain_adr: eq_* addresses of type `FLEXSTRAIN`
     tendon_jnt_adr: joint tendon address
     tendon_site_pair_adr: site pair tendon address
     tendon_geom_adr: geom tendon address
@@ -1420,6 +1436,12 @@ class Model:
     flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
+    flex_cell_map: precomputed flex cell mapping (nflexintcell,)
+    flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row (neq_flexstrain,)
+    flexstrain_J_rowadr: row start address in colind array (neq_flexstrain,)
+    flexstrain_J_colind: column indices in sparse flex strain Jacobian (nJfs,)
+    neq_flexstrain: number of flex strain equality constraints
+    nJfs: number of non-zeros in sparse flex strain Jacobian
   """
 
   nq: int
@@ -1438,6 +1460,7 @@ class Model:
   ncam: int
   nlight: int
   nflex: int
+  nflexnode: int
   nflexvert: int
   nflexedge: int
   nflexelem: int
@@ -1604,6 +1627,10 @@ class Model:
   flex_internal: array("nflex", int)
   flex_selfcollide: array("nflex", int)
   flex_dim: array("nflex", int)
+  flex_interp: array("nflex", int)
+  flex_cellnum: array("nflex", wp.vec3i)
+  flex_nodeadr: array("nflex", int)
+  flex_nodenum: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
   flex_edgeadr: array("nflex", int)
@@ -1618,6 +1645,7 @@ class Model:
   flex_shelldataadr: array("nflex", int)
   flex_evpairadr: array("nflex", int)
   flex_evpairnum: array("nflex", int)
+  flex_nodebodyid: array("nflexnode", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
@@ -1626,12 +1654,16 @@ class Model:
   flex_shell: array("nflexshelldata", int)
   flex_evpair: array("nflexevpair", wp.vec2i)
   flex_vert: array("nflexvert", wp.vec3)
+  flex_vert0: array("nflexvert", wp.vec3)
+  flex_node: array("nflexnode", wp.vec3)
+  flex_node0: array("nflexnode", wp.vec3)
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
   flex_radius: array("nflex", float)
   flex_stiffness: array("nflexstiffness", float)
   flex_bending: array("nflexbending", float)
   flex_damping: array("nflex", float)
+  flex_edgeequality: array("nflex", int)
   flex_centered: array("nflex", bool)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
@@ -1774,6 +1806,7 @@ class Model:
   nrangefinder: int
   nmaxcondim: int
   nmaxpyramid: int
+  nflexintcell: int
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
@@ -1788,6 +1821,7 @@ class Model:
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
+  has_trilinear: bool
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
@@ -1813,6 +1847,7 @@ class Model:
   eq_jnt_adr: wp.array[int]
   eq_ten_adr: wp.array[int]
   eq_flex_adr: wp.array[int]
+  eq_flexstrain_adr: wp.array[int]
   tendon_jnt_adr: wp.array[int]
   tendon_site_pair_adr: wp.array[int]
   tendon_geom_adr: wp.array[int]
@@ -1875,6 +1910,12 @@ class Model:
   flex_evpairflexid: array("nflexevpair", int)
   flex_vertflexid: array("nflexvert", int)
   flex_shelladr: array("nflex", int)
+  flex_cell_map: array("nflexintcell", wp.vec4i)
+  flexstrain_J_rownnz: array("neq_flexstrain", int)
+  flexstrain_J_rowadr: array("neq_flexstrain", int)
+  flexstrain_J_colind: array("nJfs", int)
+  neq_flexstrain: int
+  nJfs: int
 
 
 class ContactType(enum.IntFlag):
@@ -2136,6 +2177,7 @@ class Data:
     ncollision: collision count from broadphase                 (1,)
     flex_aabb_min: dynamic flex object bounding box min         (nworld, nflex, 3)
     flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
+    flexnode_xpos: cartesian flex node positions                (nworld, nflexnode, 3)
     overflow: overflow bitmask (OverflowType)                   (nworld,)
   """
 
@@ -2279,6 +2321,7 @@ class Data:
   ncollision: array(1, int)
   flex_aabb_min: array("nworld", "nflex", wp.vec3)
   flex_aabb_max: array("nworld", "nflex", wp.vec3)
+  flexnode_xpos: array("nworld", "nflexnode", wp.vec3)
   overflow: array("nworld", int)
 
 

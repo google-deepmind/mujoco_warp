@@ -353,6 +353,7 @@ def _flex_broadphase_plane(
 
   diff_center = flex_center - geom_pos
   dist_center = wp.dot(diff_center, plane_normal)
+
   if dist_center - proj_half > margin:
     return
 
@@ -415,6 +416,7 @@ def _write_flex_contact(
   contact_dim_out: wp.array[int],
   contact_geom_out: wp.array[wp.vec2i],
   contact_flex_out: wp.array[wp.vec2i],
+  contact_elem_out: wp.array[wp.vec2i],
   contact_vert_out: wp.array[wp.vec2i],
   contact_worldid_out: wp.array[int],
   contact_type_out: wp.array[int],
@@ -452,8 +454,9 @@ def _write_flex_contact(
     contact_solimp_out[c_idx] = solimp
     contact_dim_out[c_idx] = condim
     contact_geom_out[c_idx] = wp.vec2i(geomid, -1)
-    contact_flex_out[c_idx] = wp.vec2i(flexid, elemid)
-    contact_vert_out[c_idx] = wp.vec2i(vertid, -1)
+    contact_flex_out[c_idx] = wp.vec2i(-1, flexid)
+    contact_elem_out[c_idx] = wp.vec2i(-1, elemid)
+    contact_vert_out[c_idx] = wp.vec2i(-1, vertid)
     contact_worldid_out[c_idx] = worldid
     contact_type_out[c_idx] = ContactType.CONSTRAINT
     contact_geomcollisionid_out[c_idx] = collisionid
@@ -1004,6 +1007,7 @@ def _flex_plane_narrowphase(
   contact_dim_out: wp.array[int],
   contact_geom_out: wp.array[wp.vec2i],
   contact_flex_out: wp.array[wp.vec2i],
+  contact_elem_out: wp.array[wp.vec2i],
   contact_vert_out: wp.array[wp.vec2i],
   contact_worldid_out: wp.array[int],
   contact_type_out: wp.array[int],
@@ -1082,6 +1086,7 @@ def _flex_plane_narrowphase(
       contact_dim_out,
       contact_geom_out,
       contact_flex_out,
+      contact_elem_out,
       contact_vert_out,
       contact_worldid_out,
       contact_type_out,
@@ -2106,6 +2111,162 @@ def _flex_narrowphase_unified(
 
 
 @wp.kernel
+def _flex_narrowphase_tet_detect(
+  # Model:
+  ngeom: int,
+  nflex: int,
+  geom_type: wp.array[int],
+  geom_contype: wp.array[int],
+  geom_conaffinity: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_margin: wp.array2d[float],
+  flex_contype: wp.array[int],
+  flex_conaffinity: wp.array[int],
+  flex_margin: wp.array[float],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_radius: wp.array[float],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  nworld_in: int,
+  # In:
+  max_candidates: int,
+  # Data out:
+  overflow_out: wp.array[int],
+  # Out:
+  cand_dist_out: wp.array[float],
+  cand_pos_out: wp.array[wp.vec3],
+  cand_nrm_out: wp.array[wp.vec3],
+  cand_geom_out: wp.array[wp.vec2i],
+  cand_flex_out: wp.array[wp.vec2i],
+  cand_elem_out: wp.array[wp.vec2i],
+  cand_vert_out: wp.array[wp.vec2i],
+  cand_worldid_out: wp.array[int],
+  cand_type_out: wp.array[int],
+  cand_geomcollisionid_out: wp.array[int],
+  ncand_out: wp.array[int],
+):
+  worldid, elemid = wp.tid()
+
+  # Find which flex owns this element
+  flexid = int(-1)
+  for i in range(nflex):
+    if flex_dim[i] != 3:
+      continue
+    elem_adr = flex_elemadr[i]
+    elem_num = flex_elemnum[i]
+    if elemid >= elem_adr and elemid < elem_adr + elem_num:
+      flexid = i
+      break
+
+  if flexid < 0:
+    return
+
+  vert_adr = flex_vertadr[flexid]
+  tri_radius = flex_radius[flexid]
+  tri_margin = flex_margin[flexid]
+
+  # Extract 4 tet vertex indices (dim+1 = 4 for dim=3)
+  local_elemid = elemid - flex_elemadr[flexid]
+  edata_idx = flex_elemdataadr[flexid] + local_elemid * 4
+  v0 = flex_elem[edata_idx]
+  v1 = flex_elem[edata_idx + 1]
+  v2 = flex_elem[edata_idx + 2]
+  v3 = flex_elem[edata_idx + 3]
+
+  # Fetch world-space vertex positions
+  p0 = flexvert_xpos_in[worldid, vert_adr + v0]
+  p1 = flexvert_xpos_in[worldid, vert_adr + v1]
+  p2 = flexvert_xpos_in[worldid, vert_adr + v2]
+  p3 = flexvert_xpos_in[worldid, vert_adr + v3]
+
+  # TODO: Add a broadphase
+  for geomid in range(ngeom):
+    gtype = geom_type[geomid]
+    if (
+      gtype != int(GeomType.SPHERE)
+      and gtype != int(GeomType.CAPSULE)
+      and gtype != int(GeomType.BOX)
+      and gtype != int(GeomType.CYLINDER)
+    ):
+      continue
+
+    g_contype = geom_contype[geomid]
+    g_conaffinity = geom_conaffinity[geomid]
+    f_contype = flex_contype[flexid]
+    f_conaffinity = flex_conaffinity[flexid]
+    if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
+      continue
+
+    geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+    margin = geom_margin_val + tri_margin
+
+    geom_pos = geom_xpos_in[worldid, geomid]
+    geom_rot = geom_xmat_in[worldid, geomid]
+    geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
+
+    # Test all 4 triangular faces of the tet against the geom.
+    # Face k is the triangle opposite vertex k:
+    #   Face 0: (v1, v2, v3)
+    #   Face 1: (v0, v2, v3)
+    #   Face 2: (v0, v1, v3)
+    #   Face 3: (v0, v1, v2)
+    for face in range(4):
+      if face == 0:
+        t1 = p1
+        t2 = p2
+        t3 = p3
+      elif face == 1:
+        t1 = p0
+        t2 = p2
+        t3 = p3
+      elif face == 2:
+        t1 = p0
+        t2 = p1
+        t3 = p3
+      else:
+        t1 = p0
+        t2 = p1
+        t3 = p2
+
+      _collide_geom_triangle_detect(
+        max_candidates,
+        gtype,
+        geom_pos,
+        geom_rot,
+        geom_size_val,
+        t1,
+        t2,
+        t3,
+        tri_radius,
+        margin,
+        geomid,
+        flexid,
+        elemid,
+        -1,
+        worldid,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+
+@wp.kernel
 def _filter_flex_candidates(
   # In:
   max_candidates: int,
@@ -2376,6 +2537,50 @@ def flex_collision(m: Model, d: Data, ctx):
   ncollision_dim2 = wp.zeros(1, dtype=int)
   ncollision_dim3 = wp.zeros(1, dtype=int)
   ncollision_plane = wp.zeros(1, dtype=int)
+
+  if m.has_trilinear:
+    wp.launch(
+      _flex_narrowphase_tet_detect,
+      dim=(d.nworld, m.nflexelem),
+      inputs=[
+        m.ngeom,
+        m.nflex,
+        m.geom_type,
+        m.geom_contype,
+        m.geom_conaffinity,
+        m.geom_size,
+        m.geom_margin,
+        m.flex_contype,
+        m.flex_conaffinity,
+        m.flex_margin,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_elemdataadr,
+        m.flex_elem,
+        m.flex_radius,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.nworld,
+        d.naconmax,
+      ],
+      outputs=[
+        d.overflow,
+        cand_dist,
+        cand_pos,
+        cand_nrm,
+        cand_geom,
+        cand_flex,
+        cand_elem,
+        cand_vert,
+        cand_worldid,
+        cand_type,
+        cand_geomcollisionid,
+        ncand,
+      ],
+    )
 
   # Update dynamic flex object bounding boxes
   flex_broadphase(m, d)
@@ -2695,6 +2900,7 @@ def flex_collision(m: Model, d: Data, ctx):
         d.contact.dim,
         d.contact.geom,
         d.contact.flex,
+        d.contact.elem,
         d.contact.vert,
         d.contact.worldid,
         d.contact.type,
