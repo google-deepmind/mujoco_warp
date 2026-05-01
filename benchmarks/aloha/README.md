@@ -77,10 +77,10 @@ Object assets sourced from [aloha_sim](https://github.com/google-deepmind/aloha_
 
 | Property | Value |
 |----------|-------|
-| Bodies | 41 |
-| DoFs | 28 |
-| Actuators | 21 |
-| Geoms | 593 |
+| Bodies | 42 |
+| DoFs | 136 |
+| Actuators | 14 |
+| Geoms | 548 |
 | Timestep | 0.002s |
 | Solver | Newton |
 | Friction | Elliptic |
