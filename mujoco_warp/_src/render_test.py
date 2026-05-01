@@ -250,9 +250,7 @@ class RenderTest(parameterized.TestCase):
     # Depth on enclosure-only pixels would equal the inner surface distance
     # (~size). Since we cull those, depth where we hit the marker must be
     # consistent with its world position (~5m away), not the small enclosure.
-    marker_depth = depth.reshape(cam_h, cam_w)[
-      seg[..., 0].reshape(cam_h, cam_w) == marker_id
-    ]
+    marker_depth = depth.reshape(cam_h, cam_w)[seg[..., 0].reshape(cam_h, cam_w) == marker_id]
     if marker_depth.size > 0:
       self.assertGreater(float(np.min(marker_depth)), 1.0)
 
