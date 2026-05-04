@@ -2,7 +2,7 @@
 
 ## Description
 
-Full-body humanoid locomotion benchmark using the [Unitree G1](https://www.unitree.com/g1/) (29 DOF) with capsule-based collision geometry. Designed to locomotion with simulation settings matching those used for training in [mjlab](https://github.com/mujocolab/mjlab). Two scene variants test performance on flat terrain and randomized heightfield terrain.
+Full-body humanoid locomotion benchmark using the [Unitree G1](https://www.unitree.com/g1/) (29 DOF) with capsule-based collision geometry. Designed for locomotion with simulation settings matching those used for training in [mjlab](https://github.com/mujocolab/mjlab). Two scene variants test performance on flat terrain and randomized heightfield terrain.
 
 ### unitree_g1_flat
 
