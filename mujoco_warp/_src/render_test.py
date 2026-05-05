@@ -36,6 +36,13 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _unpack_rgb(packed):
+  r = ((packed >> 16) & 0xFF).astype(np.uint8)
+  g = ((packed >> 8) & 0xFF).astype(np.uint8)
+  b = (packed & 0xFF).astype(np.uint8)
+  return np.stack([r, g, b], axis=-1)
+
+
 class RenderTest(parameterized.TestCase):
   @parameterized.parameters(2, 512)
   def test_render(self, nworld: int):
@@ -132,6 +139,51 @@ class RenderTest(parameterized.TestCase):
 
     self.assertGreater(np.count_nonzero(rgb), 0)
     self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
+
+  def test_disable_ambient_lighting(self):
+    xml = """
+    <mujoco>
+      <visual>
+        <headlight active="0" ambient="0 0 0" diffuse="0 0 0" specular="0 0 0"/>
+      </visual>
+      <worldbody>
+        <camera name="cam" pos="0 -3 1" xyaxes="1 0 0 0 0.25 1" resolution="32 32" output="rgb"/>
+        <geom type="sphere" pos="0 0 0.5" size="0.5" rgba="1 0 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    self.assertEqual(mjm.nlight, 0)
+    self.assertEqual(m.nlight, 0)
+
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_seg=True,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    geom_mask = seg[:, 1] == int(mjw.ObjType.GEOM)
+    self.assertTrue(np.any(geom_mask), "Expected at least one geom hit")
+
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0])
+    self.assertGreater(np.count_nonzero(rgb[geom_mask]), 0)
+
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_seg=True,
+      use_ambient_lighting=False,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    geom_mask = seg[:, 1] == int(mjw.ObjType.GEOM)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0])
+    np.testing.assert_array_equal(rgb[geom_mask], 0)
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_segmentation_matches_mujoco(self):

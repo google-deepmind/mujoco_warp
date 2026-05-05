@@ -2668,6 +2668,7 @@ def create_render_context(
   render_seg: list[bool] | bool | None = None,
   use_textures: bool = True,
   use_shadows: bool = False,
+  use_ambient_lighting: bool = True,
   enabled_geom_groups: list[int] = [0, 1, 2],
   cam_active: list[bool] | None = None,
   flex_render_smooth: bool = True,
@@ -2687,6 +2688,8 @@ def create_render_context(
       If None, uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
+    use_ambient_lighting: Whether to add the renderer's hemispheric ambient
+      lighting term before applying model lights.
     enabled_geom_groups: The geom groups to render.
     cam_active: List of booleans indicating which cameras to include in rendering.
                 If None, all cameras are included.
@@ -2881,6 +2884,7 @@ def create_render_context(
     cam_id_map=wp.array(active_cam_indices, dtype=int),
     use_textures=use_textures,
     use_shadows=use_shadows,
+    use_ambient_lighting=use_ambient_lighting,
     background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
     use_precomputed_rays=use_precomputed_rays,
     render_skybox=render_skybox,

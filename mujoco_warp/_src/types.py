@@ -1936,6 +1936,7 @@ class RenderContext:
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
+    use_ambient_lighting: whether to use renderer ambient lighting
     use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
@@ -1984,6 +1985,7 @@ class RenderContext:
   cam_id_map: array("ncam", int)
   use_textures: bool
   use_shadows: bool
+  use_ambient_lighting: bool
   background_color: wp.uint32
   use_precomputed_rays: bool
   render_skybox: bool

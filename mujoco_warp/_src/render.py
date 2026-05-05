@@ -798,12 +798,14 @@ def render(m: Model, d: Data, rc: RenderContext):
             )
             base_color = wp.cw_mul(base_color, tex_color)
 
-    len_n = wp.length(normal)
-    n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
-    n = wp.normalize(n)
-    hemispheric = 0.5 * (n[2] + 1.0)
-    ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
-    result = 0.5 * wp.cw_mul(base_color, ambient_color)
+    result = wp.vec3(0.0, 0.0, 0.0)
+    if wp.static(rc.use_ambient_lighting):
+      len_n = wp.length(normal)
+      n = normal if len_n > 0.0 else wp.vec3(0.0, 0.0, 1.0)
+      n = wp.normalize(n)
+      hemispheric = 0.5 * (n[2] + 1.0)
+      ambient_color = wp.vec3(0.4, 0.4, 0.45) * hemispheric + wp.vec3(0.1, 0.1, 0.12) * (1.0 - hemispheric)
+      result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
     for l in range(wp.static(m.nlight)):
