@@ -42,6 +42,7 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -1296,6 +1297,7 @@ _PRIMITIVE_COLLISIONS = {
 }
 
 
+@cache_kernel
 def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func):
   @wp.kernel(module="unique", enable_backward=False)
   def primitive_narrowphase(

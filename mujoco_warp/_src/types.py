@@ -67,6 +67,7 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
   linesearch_iterative: int = 32
+  contact_jac_tiled: int = 32
   # derivative
   qderiv_actuator_dense: int = 32
 
@@ -866,6 +867,8 @@ class Model:
     nflexedge: number of edges in all flexes
     nflexelem: number of elements in all flexes
     nflexelemdata: number of element vertex ids in all flexes
+    nflexstiffness: number of stiffness parameters in all flexes
+    nflexbending: number of bending parameters in all flexes
     nflexelemedge: number of element edge ids in all flexes
     nflexshelldata: number of shell fragment vertex ids in all flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
@@ -1021,7 +1024,9 @@ class Model:
     flex_elemadr: first element address                      (nflex,)
     flex_elemnum: number of elements                         (nflex,)
     flex_elemdataadr: first element vertex id address        (nflex,)
+    flex_stiffnessadr: stiffness matrix address               (nflex,)
     flex_elemedgeadr: first element edge id address          (nflex,)
+    flex_bendingadr: first bending data address              (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
@@ -1034,8 +1039,8 @@ class Model:
     flexedge_length0: edge lengths in qpos0                  (nflexedge,)
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
     flex_radius: radius around primitive element             (nflex,)
-    flex_stiffness: finite element stiffness matrix          (nflexelem, 21)
-    flex_bending: bending stiffness                          (nflexedge, 17)
+    flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
+    flex_bending: bending stiffness                          (nflexbending,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
@@ -1178,6 +1183,7 @@ class Model:
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
+    body_isdofancestor: precomputed mask of which DOFs affect each body
     dof_tri_row: dof lower triangle row (used in solver)
     dof_tri_col: dof lower triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
@@ -1264,6 +1270,8 @@ class Model:
   nflexedge: int
   nflexelem: int
   nflexelemdata: int
+  nflexstiffness: int
+  nflexbending: int
   nflexelemedge: int
   nflexshelldata: int
   nJfe: int
@@ -1419,7 +1427,9 @@ class Model:
   flex_elemadr: array("nflex", int)
   flex_elemnum: array("nflex", int)
   flex_elemdataadr: array("nflex", int)
+  flex_stiffnessadr: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
+  flex_bendingadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
@@ -1432,8 +1442,8 @@ class Model:
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
   flex_radius: array("nflex", float)
-  flex_stiffness: array("nflexelem", 21, float)
-  flex_bending: array("nflexedge", 17, float)
+  flex_stiffness: array("nflexstiffness", float)
+  flex_bending: array("nflexbending", float)
   flex_damping: array("nflex", float)
   flex_centered: array("nflex", bool)
   flexedge_J_rownnz: array("nflexedge", int)
@@ -1574,6 +1584,7 @@ class Model:
   body_fluid_ellipsoid: array("nbody", bool)
   jnt_limited_slide_hinge_adr: wp.array[int]
   jnt_limited_ball_adr: wp.array[int]
+  body_isdofancestor: array("nbody", "nv_pad", int)
   dof_tri_row: wp.array[int]
   dof_tri_col: wp.array[int]
   nxn_geom_pair: wp.array[wp.vec2i]
@@ -1710,6 +1721,7 @@ class Constraint:
     state: constraint state                           (nworld, njmax_pad)
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
+    Jqvel: J*qvel                                     (nworld, njmax)
   """
 
   type: array("nworld", "njmax", int)
@@ -1727,6 +1739,7 @@ class Constraint:
   force: array("nworld", "njmax", float)
   state: array("nworld", "njmax_pad", int)
   Ma: array("nworld", "nv", float)
+  Jqvel: array("nworld", "njmax", float)
 
 
 @dataclasses.dataclass
