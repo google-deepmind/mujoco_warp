@@ -539,15 +539,8 @@ class DerivativeTest(parameterized.TestCase):
       "implicitfast should be more accurate than Euler at large timestep when forcerange derivatives are correctly handled",
     )
 
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_rne_derivative_hinge_chain(self, jacobian):
-    """Tests RNE derivative on a serial chain of hinge joints.
-
-    Calls rne_vel directly and compares against MuJoCo's qDeriv computed
-    with mjINT_IMPLICIT (RNE-only, no actuators or dampers).
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
+  _RNE_MODELS = {
+    "hinge_chain": """
     <mujoco>
       <option>
         <flag gravity="disable"/>
@@ -575,43 +568,7 @@ class DerivativeTest(parameterized.TestCase):
       </keyframe>
     </mujoco>
     """,
-      keyframe=0,
-      overrides={"opt.jacobian": jacobian},
-    )
-
-    # set MuJoCo integrator to implicit so mj_step computes RNE derivatives
-    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
-    mujoco.mj_step(mjm, mjd)  # step w/ implicit calls mjd_smooth_vel + mjd_rne_vel
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_rne = wp.zeros((1, 1, m.nD), dtype=float)
-    else:
-      out_rne = wp.zeros(d.qM.shape, dtype=float)
-
-    derivative.rne_vel_deriv(m, d, out_rne)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_rne = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qD_fullm_i.numpy(), m.qD_fullm_j.numpy())):
-        mjw_rne[i, j] = out_rne.numpy()[0, 0, elem]
-    else:
-      mjw_rne = out_rne.numpy()[0, : m.nv, : m.nv]
-
-    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
-
-    # rne_vel output is +dt * (cdof . Dcfrc), MuJoCo C's qDeriv is -(d qfrc_bias / d qvel)
-    _assert_eq(mjw_rne, -mjm.opt.timestep * mj_qDeriv, "RNE hinge chain")
-
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_rne_derivative_free_joint(self, jacobian):
-    """Tests RNE derivative for a free-floating body.
-
-    Free joints exercise the specialized free-joint derivative code path
-    where rotation and translation DOFs are handled separately.
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
+    "free_joint": """
     <mujoco>
       <option>
         <flag gravity="disable" contact="disable"/>
@@ -627,44 +584,7 @@ class DerivativeTest(parameterized.TestCase):
       </keyframe>
     </mujoco>
     """,
-      keyframe=0,
-      overrides={"opt.jacobian": jacobian},
-    )
-
-    # set MuJoCo integrator to implicit so mj_step computes RNE derivatives
-    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
-    mujoco.mj_step(mjm, mjd)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_rne = wp.zeros((1, 1, m.nD), dtype=float)
-    else:
-      out_rne = wp.zeros(d.qM.shape, dtype=float)
-
-    derivative.rne_vel_deriv(m, d, out_rne)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_rne = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qD_fullm_i.numpy(), m.qD_fullm_j.numpy())):
-        mjw_rne[i, j] = out_rne.numpy()[0, 0, elem]
-    else:
-      mjw_rne = out_rne.numpy()[0, : m.nv, : m.nv]
-
-    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
-
-    _assert_eq(mjw_rne, -mjm.opt.timestep * mj_qDeriv, "RNE free joint")
-
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_rne_derivative_mixed_chain(self, jacobian):
-    """Tests RNE derivative on a serial chain with mixed joint types.
-
-    Ported from MuJoCo's energy_conserving_pendulum.xml which exercises
-    hinge -> slide -> ball -> hinge in a single serial chain with gravity
-    enabled. This tests transitions between different DOF counts within
-    a single body traversal.
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
+    "mixed_chain": """
     <mujoco>
       <option>
         <flag constraint="disable"/>
@@ -688,49 +608,12 @@ class DerivativeTest(parameterized.TestCase):
         </body>
       </worldbody>
       <keyframe>
-        <key qpos="0.5 0.02 1 0 0 0 0.7"
-             qvel="2.0 -0.5 0.3 0.8 -1.2 1.0"/>
+        <key qpos="0.974068045 0.09778919028 0.8824329717 0.2947814751 -0.3653561696 0.03050904378 -0.5772862322"
+             qvel="5.241365683 1.565431578 3.319814864 -2.229322074 -0.2737814514 -1.358480177"/>
       </keyframe>
     </mujoco>
     """,
-      keyframe=0,
-      overrides={"opt.jacobian": jacobian},
-    )
-
-    # set MuJoCo integrator to implicit so mj_step computes RNE derivatives
-    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
-    mujoco.mj_step(mjm, mjd)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_rne = wp.zeros((1, 1, m.nD), dtype=float)
-    else:
-      out_rne = wp.zeros(d.qM.shape, dtype=float)
-
-    derivative.rne_vel_deriv(m, d, out_rne)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_rne = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qD_fullm_i.numpy(), m.qD_fullm_j.numpy())):
-        mjw_rne[i, j] = out_rne.numpy()[0, 0, elem]
-    else:
-      mjw_rne = out_rne.numpy()[0, : m.nv, : m.nv]
-
-    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
-
-    _assert_eq(mjw_rne, -mjm.opt.timestep * mj_qDeriv, "RNE mixed chain")
-
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_rne_derivative_branched(self, jacobian):
-    """Tests RNE derivative on a branched kinematic tree.
-
-    Ported from MuJoCo's damped_actuators.xml which has two independent
-    branches from the world body, each with a slide+hinge serial chain.
-    Gravity is enabled. This exercises multiple branches being processed
-    correctly by the level-based traversal.
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
+    "branched": """
     <mujoco>
       <option/>
       <worldbody>
@@ -752,15 +635,125 @@ class DerivativeTest(parameterized.TestCase):
         </body>
       </worldbody>
       <keyframe>
-        <key qpos="0.1 0.5 -0.2 1.0" qvel="1.0 -0.5 0.3 -0.8"/>
+        <key qpos="-0.198162 0 -0.198162 0" qvel="-1.962 0 -1.962 0"/>
       </keyframe>
     </mujoco>
     """,
+    "tumbling_thin_object": """
+    <mujoco>
+      <option density="1.225" viscosity="1.8e-5" wind="0 0 1">
+        <flag constraint="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <body>
+            <geom type="box" size=".025 .01 0.0001" pos=".025 0 0" euler="20 0 0" mass="1e-4"/>
+          </body>
+          <body>
+            <geom type="box" size=".025 .01 0.0001" pos="-.025 0 0" euler="-19 0 0" mass="1e-4"/>
+          </body>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="0.0004946999296 -0.001202060483 -0.0555835832 0.7523249953 0.001535295742 0.01207989364 -0.6586796038"
+             qvel="0.007826319845 -0.0166791028 -0.4384455175 0.09592236433 0.1566970362 -15.31785051"/>
+      </keyframe>
+    </mujoco>
+    """,
+    "tumbling_ellipsoid": """
+    <mujoco>
+      <option density="1.225" viscosity="1.8e-5" wind="0 0 1">
+        <flag constraint="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".025 .01 0.0001" pos=".025 0 0" euler="20 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+          <geom type="box" size=".025 .01 0.0001" pos="-.025 0 0" euler="-19 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="-7.555310792e-05 9.606312749e-05 -0.03860222825 0.3270616399 -0.002154923278 0.005836083002 -0.944982529"
+             qvel="-0.0002248200636 3.956744354e-06 -0.1660734509 0.000756193568 0.2852354411 -23.83662532"/>
+      </keyframe>
+    </mujoco>
+    """,
+    "pendulum_stiffness": """
+    <mujoco>
+      <option>
+        <flag constraint="disable"/>
+      </option>
+      <worldbody>
+        <body pos="0.15 0 0">
+          <joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0 .1 0 0"/>
+          <body pos="0.1 0 0">
+            <joint type="slide" axis="1 0 0" stiffness="200"/>
+            <geom type="capsule" size="0.015" fromto="-.1 0 0 .1 0 0"/>
+            <body pos=".1 0 0">
+              <joint type="ball"/>
+              <geom type="box" size=".02" fromto="0 0 0 0 .1 0"/>
+              <body pos="0 .1 0">
+                <joint axis="1 0 0"/>
+                <geom type="capsule" size="0.02" fromto="0 0 0 0 .1 0"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="1.046766071 0.02856001812 0.9491354349 0.2279934469 -0.09267758993 -0.1963969926 0.05635068068"
+             qvel="6.031731375 0.1635244246 -3.466530779 9.931235553 -9.339705364 16.62432373"/>
+      </keyframe>
+    </mujoco>
+    """,
+    "damped_pendulum": """
+    <mujoco>
+      <default>
+        <joint damping=".01"/>
+      </default>
+      <option>
+        <flag constraint="disable"/>
+      </option>
+      <worldbody>
+        <body pos="0.15 0 0">
+          <joint name="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0 .1 0 0"/>
+          <body pos="0.1 0 0">
+            <joint type="slide" axis="1 0 0" stiffness="200"/>
+            <geom type="capsule" size="0.015" fromto="-.1 0 0 .1 0 0"/>
+            <body pos=".1 0 0">
+              <joint type="ball"/>
+              <geom type="box" size=".02" fromto="0 0 0 0 .1 0"/>
+              <body pos="0 .1 0">
+                <joint axis="1 0 0"/>
+                <geom type="capsule" size="0.02" fromto="0 0 0 0 0 .1"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="0.9260158353 0.02554858795 0.9692205685 0.07944192314 -0.115133083 -0.2025952704 -0.12351129"
+             qvel="6.446399218 0.2195989631 0.230254317 0.2110774142 -9.605579935 -3.906956847"/>
+      </keyframe>
+    </mujoco>
+    """,
+  }
+
+  @parameterized.named_parameters(
+    [dict(testcase_name=f"{name}_dense", xml_name=name, jacobian=mujoco.mjtJacobian.mjJAC_DENSE) for name in _RNE_MODELS]
+    + [dict(testcase_name=f"{name}_sparse", xml_name=name, jacobian=mujoco.mjtJacobian.mjJAC_SPARSE) for name in _RNE_MODELS]
+  )
+  def test_rne_derivative(self, xml_name, jacobian):
+    """Tests RNE derivative matches MuJoCo's qDeriv with mjINT_IMPLICIT."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._RNE_MODELS[xml_name],
       keyframe=0,
       overrides={"opt.jacobian": jacobian},
     )
 
-    # set MuJoCo integrator to implicit so mj_step computes RNE derivatives
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
     mujoco.mj_step(mjm, mjd)
 
@@ -781,7 +774,7 @@ class DerivativeTest(parameterized.TestCase):
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
-    _assert_eq(mjw_rne, -mjm.opt.timestep * mj_qDeriv, "RNE branched")
+    _assert_eq(mjw_rne, -mjm.opt.timestep * mj_qDeriv, f"RNE {xml_name}")
 
 
 if __name__ == "__main__":
