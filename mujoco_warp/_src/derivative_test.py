@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
+from mujoco_warp._src import forward
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -102,8 +103,6 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
 
-    from mujoco_warp._src import forward
-
     # Compute kinematics without factorizing qM to allow direct comparison
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
@@ -129,48 +128,6 @@ class DerivativeTest(parameterized.TestCase):
     mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
 
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
-
-  def _create_random_model_xml(self):
-    # Create a simple chain with Free Joint
-    return """
-    <mujoco>
-      <option timestep="0.002"/>
-      <worldbody>
-        <body pos="0 0 1">
-          <joint type="free"/>
-          <geom type="capsule" size="0.1 0.5" density="100"/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_rne_stress(self, jacobian):
-    """Tests deriv_smooth_vel logic (qM generation) with RNE disabled."""
-    xml = self._create_random_model_xml()
-
-    mjm, mjd, m, d = test_data.fixture(
-      xml=xml,
-      keyframe=None,
-      overrides={"opt.jacobian": jacobian},
-    )
-
-    rng = np.random.RandomState(0)
-    mjd.qpos = rng.randn(mjm.nq)
-    mjd.qvel = rng.randn(mjm.nv)
-
-    mujoco.mj_normalizeQuat(mjm, mjd.qpos)
-
-    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
-    mujoco.mj_step(mjm, mjd)
-
-    d.qpos = wp.from_numpy(mjd.qpos.reshape(1, -1), dtype=float, device=d.qpos.device)
-    d.qvel = wp.from_numpy(mjd.qvel.reshape(1, -1), dtype=float, device=d.qvel.device)
-
-    from mujoco_warp._src import forward
-
-    forward.fwd_position(m, d)
-    forward.fwd_velocity(m, d)
 
   _TENDON_SERIAL_CHAIN_XML = """
     <mujoco>
@@ -631,7 +588,7 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_rne = wp.zeros(d.qM.shape, dtype=float)
 
-    derivative.rne_vel(m, d, out_rne)
+    derivative.rne_vel_deriv(m, d, out_rne)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_rne = np.zeros((m.nv, m.nv))
@@ -683,7 +640,7 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_rne = wp.zeros(d.qM.shape, dtype=float)
 
-    derivative.rne_vel(m, d, out_rne)
+    derivative.rne_vel_deriv(m, d, out_rne)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_rne = np.zeros((m.nv, m.nv))
@@ -749,7 +706,7 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_rne = wp.zeros(d.qM.shape, dtype=float)
 
-    derivative.rne_vel(m, d, out_rne)
+    derivative.rne_vel_deriv(m, d, out_rne)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_rne = np.zeros((m.nv, m.nv))
@@ -812,7 +769,7 @@ class DerivativeTest(parameterized.TestCase):
     else:
       out_rne = wp.zeros(d.qM.shape, dtype=float)
 
-    derivative.rne_vel(m, d, out_rne)
+    derivative.rne_vel_deriv(m, d, out_rne)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_rne = np.zeros((m.nv, m.nv))

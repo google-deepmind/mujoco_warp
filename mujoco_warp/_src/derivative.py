@@ -354,7 +354,7 @@ def _qderiv_tendon_damping(
 
 
 @wp.kernel
-def _rne_dcvel_level(
+def rne_deriv_cvel_cdof_dot(
   # Model:
   body_parentid: wp.array[int],
   body_jntnum: wp.array[int],
@@ -377,7 +377,7 @@ def _rne_dcvel_level(
   forward pass sets cdof_dot[dofid+0..2] = 0.  The Dcdof_dot array is
   zero-initialized so no explicit write is needed.
   """
-  worldid, nodeid, k = wp.tid()
+  worldid, nodeid, dofid = wp.tid()
   bodyid = body_tree_[nodeid]
   dofadr = body_dofadr[bodyid]
   jntid = body_jntadr[bodyid]
@@ -387,58 +387,58 @@ def _rne_dcvel_level(
   cdof = cdof_in[worldid]
 
   # Initialize from parent
-  cvel_k = Dcvel_out[worldid, pid, k]
+  cvel_k = Dcvel_out[worldid, pid, dofid]
 
   if jntnum == 0:
-    Dcvel_out[worldid, bodyid, k] = cvel_k
+    Dcvel_out[worldid, bodyid, dofid] = cvel_k
     return
 
-  dofid = dofadr
+  dof_i = dofadr
 
   for j in range(jntid, jntid + jntnum):
     jnttype = jnt_type[j]
 
     if jnttype == 0:  # FREE
-      # rotation DOFs (dofid+0..2) contribute to cvel
-      if k >= dofid and k < dofid + 3:
-        cvel_k += cdof[k]
+      # rotation DOFs (dof_i+0..2) contribute to cvel
+      if dofid >= dof_i and dofid < dof_i + 3:
+        cvel_k += cdof[dofid]
 
       # cdof_dot for rotation DOFs is zero (set in forward kinematics),
       # so Dcdof_dot for rotation DOFs is zero (from wp.zeros init)
 
       # derivative of cdof_dot for translation DOFs 3,4,5
-      Dcdof_dot_out[worldid, dofid + 3, k] = math.motion_cross(cvel_k, cdof[dofid + 3])
-      Dcdof_dot_out[worldid, dofid + 4, k] = math.motion_cross(cvel_k, cdof[dofid + 4])
-      Dcdof_dot_out[worldid, dofid + 5, k] = math.motion_cross(cvel_k, cdof[dofid + 5])
+      Dcdof_dot_out[worldid, dof_i + 3, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 3])
+      Dcdof_dot_out[worldid, dof_i + 4, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 4])
+      Dcdof_dot_out[worldid, dof_i + 5, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 5])
 
-      # translation DOFs (dofid+3..5) contribute to cvel
-      if k >= dofid + 3 and k < dofid + 6:
-        cvel_k += cdof[k]
-
-      dofid += 6
-
-    elif jnttype == 1:  # BALL
-      Dcdof_dot_out[worldid, dofid + 0, k] = math.motion_cross(cvel_k, cdof[dofid + 0])
-      Dcdof_dot_out[worldid, dofid + 1, k] = math.motion_cross(cvel_k, cdof[dofid + 1])
-      Dcdof_dot_out[worldid, dofid + 2, k] = math.motion_cross(cvel_k, cdof[dofid + 2])
-
-      if k >= dofid and k < dofid + 3:
-        cvel_k += cdof[k]
-
-      dofid += 3
-    else:  # HINGE or SLIDE
-      Dcdof_dot_out[worldid, dofid, k] = math.motion_cross(cvel_k, cdof[dofid])
-
-      if k == dofid:
+      # translation DOFs (dof_i+3..5) contribute to cvel
+      if dofid >= dof_i + 3 and dofid < dof_i + 6:
         cvel_k += cdof[dofid]
 
-      dofid += 1
+      dof_i += 6
 
-  Dcvel_out[worldid, bodyid, k] = cvel_k
+    elif jnttype == 1:  # BALL
+      Dcdof_dot_out[worldid, dof_i + 0, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 0])
+      Dcdof_dot_out[worldid, dof_i + 1, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 1])
+      Dcdof_dot_out[worldid, dof_i + 2, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 2])
+
+      if dofid >= dof_i and dofid < dof_i + 3:
+        cvel_k += cdof[dofid]
+
+      dof_i += 3
+    else:  # HINGE or SLIDE
+      Dcdof_dot_out[worldid, dof_i, dofid] = math.motion_cross(cvel_k, cdof[dof_i])
+
+      if dofid == dof_i:
+        cvel_k += cdof[dof_i]
+
+      dof_i += 1
+
+  Dcvel_out[worldid, bodyid, dofid] = cvel_k
 
 
 @wp.kernel
-def _rne_forward_level(
+def rne_deriv_cacc_cfrcbody_forward(
   # Model:
   body_parentid: wp.array[int],
   body_dofnum: wp.array[int],
@@ -457,7 +457,7 @@ def _rne_forward_level(
   Dcfrcbody_out: wp.array3d[wp.spatial_vector],
 ):
   """Forward pass: compute d(cacc)/d(qvel_k) and d(cfrc_body)/d(qvel_k)."""
-  worldid, nodeid, k = wp.tid()
+  worldid, nodeid, dofid = wp.tid()
   bodyid = body_tree_[nodeid]
   dofadr = body_dofadr[bodyid]
   dofnum = body_dofnum[bodyid]
@@ -465,23 +465,23 @@ def _rne_forward_level(
 
   qvel = qvel_in[worldid]
 
-  dcacc = Dcacc_out[worldid, pid, k]
+  dcacc = Dcacc_out[worldid, pid, dofid]
 
   for j in range(dofadr, dofadr + dofnum):
-    # Term 1: d(cdof_dot * qvel)/d(qvel_k) when j == k
-    if j == k:
+    # Term 1: d(cdof_dot * qvel)/d(qvel_k) when j == dofid
+    if j == dofid:
       dcacc += cdof_dot_in[worldid, j]
 
     # Term 2: cdof_dot depends on cvel which depends on qvel_k
-    dcdofdot = Dcdof_dot_in[worldid, j, k]
+    dcdofdot = Dcdof_dot_in[worldid, j, dofid]
     dcacc += dcdofdot * qvel[j]
 
-  Dcacc_out[worldid, bodyid, k] = dcacc
+  Dcacc_out[worldid, bodyid, dofid] = dcacc
 
   # d(cfrc_body)/d(qvel_k)
   cinert = cinert_in[worldid, bodyid]
   cvel = cvel_in[worldid, bodyid]
-  dcvel = Dcvel_in[worldid, bodyid, k]
+  dcvel = Dcvel_in[worldid, bodyid, dofid]
 
   # term1 = cinert * d(cacc)/d(qvel_k)
   term1 = math.inert_vec(cinert, dcacc)
@@ -491,11 +491,11 @@ def _rne_forward_level(
   cinert_dcvel = math.inert_vec(cinert, dcvel)
   term2 = math.motion_cross_force(dcvel, cinert_cvel) + math.motion_cross_force(cvel, cinert_dcvel)
 
-  Dcfrcbody_out[worldid, bodyid, k] = term1 + term2
+  Dcfrcbody_out[worldid, bodyid, dofid] = term1 + term2
 
 
 @wp.kernel
-def _rne_backward_level(
+def rne_deriv_cfrcbody_backward(
   # Model:
   body_parentid: wp.array[int],
   # In:
@@ -504,18 +504,18 @@ def _rne_backward_level(
   Dcfrcbody_out: wp.array3d[wp.spatial_vector],
 ):
   """Backward pass: accumulate d(cfrc_body) from children to parents."""
-  worldid, nodeid, k = wp.tid()
+  worldid, nodeid, dofid = wp.tid()
   bodyid = body_tree_[nodeid]
   pid = body_parentid[bodyid]
 
   # body_tree never contains bodyid=0 (worldbody), so pid >= 0 is always valid.
   # Siblings at the same level may share a parent; atomic_add handles this.
-  val = Dcfrcbody_out[worldid, bodyid, k]
-  wp.atomic_add(Dcfrcbody_out[worldid, pid], k, val)
+  val = Dcfrcbody_out[worldid, bodyid, dofid]
+  wp.atomic_add(Dcfrcbody_out[worldid, pid], dofid, val)
 
 
 @wp.kernel
-def _rne_update_sparse(
+def rne_deriv_body2jnt_sparse(
   # Model:
   dof_bodyid: wp.array[int],
   # Data in:
@@ -543,7 +543,7 @@ def _rne_update_sparse(
 
 
 @wp.kernel
-def _rne_update_dense(
+def rne_deriv_body2jnt_dense(
   # Model:
   dof_bodyid: wp.array[int],
   # Data in:
@@ -565,7 +565,7 @@ def _rne_update_dense(
   qDeriv_out[worldid, i, j] += dt * term
 
 
-def rne_vel(m: Model, d: Data, out: wp.array2d[float]):
+def rne_vel_deriv(m: Model, d: Data, out: wp.array2d[float]):
   """Compute RNE velocity derivatives and add to qDeriv output.
 
   Implements the analytical derivative of inverse-dynamics Coriolis/centrifugal
@@ -577,7 +577,6 @@ def rne_vel(m: Model, d: Data, out: wp.array2d[float]):
     d: The data (device).
     out: qDeriv-like output array to accumulate RNE terms into.
   """
-  # Temporary dense allocations for derivative propagation
   # TODO(team): consider caching these allocations
   Dcvel = wp.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
   Dcdof_dot = wp.zeros((d.nworld, m.nv, m.nv), dtype=wp.spatial_vector)
@@ -587,7 +586,7 @@ def rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Forward pass 1: compute Dcvel and Dcdof_dot
   for body_tree in m.body_tree:
     wp.launch(
-      _rne_dcvel_level,
+      rne_deriv_cvel_cdof_dot,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.body_parentid,
@@ -604,7 +603,7 @@ def rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Forward pass 2: compute Dcacc and Dcfrcbody
   for body_tree in m.body_tree:
     wp.launch(
-      _rne_forward_level,
+      rne_deriv_cacc_cfrcbody_forward,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.body_parentid,
@@ -624,7 +623,7 @@ def rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Backward pass: accumulate Dcfrcbody from children to parents
   for body_tree in reversed(m.body_tree):
     wp.launch(
-      _rne_backward_level,
+      rne_deriv_cfrcbody_backward,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[m.body_parentid, body_tree],
       outputs=[Dcfrcbody],
@@ -633,14 +632,14 @@ def rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Project body-space derivatives into joint-space qDeriv
   if m.is_sparse:
     wp.launch(
-      _rne_update_sparse,
+      rne_deriv_body2jnt_sparse,
       dim=(d.nworld, m.qD_fullm_i.size),
       inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, Dcfrcbody],
       outputs=[out],
     )
   else:
     wp.launch(
-      _rne_update_dense,
+      rne_deriv_body2jnt_dense,
       dim=(d.nworld, m.nv, m.nv),
       inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, Dcfrcbody],
       outputs=[out],
@@ -655,7 +654,6 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
     out: qM - dt * qDeriv (derivatives of smooth forces w.r.t velocities).
-
   """
   qMi = m.qM_fullm_i
   qMj = m.qM_fullm_j
