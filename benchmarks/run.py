@@ -22,10 +22,10 @@ Example:
 """
 
 import importlib
-import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Sequence
 
 from absl import app
@@ -36,22 +36,19 @@ _ASSET_BASE = flags.DEFINE_string("assets", "/tmp/benchmark_assets", "directory 
 _CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", True, "clear warp caches (kernel, LTO, CUDA compute)")
 
 
-def _asset_dir(asset: dict) -> str:
+def _asset_dir(asset: dict) -> Path:
   """Returns a base dir for an asset uri in the cache."""
   uri = asset["source"]
   if uri.endswith(".git"):
-    ref = asset["ref"]
-    return os.path.join(os.path.basename(uri).replace(".git", ""), ref)
-  else:
-    raise ValueError(f"Unsupported asset uri: {uri}")
+    return Path(uri.split("/")[-1].replace(".git", "")) / asset["ref"]
+  raise ValueError(f"Unsupported asset uri: {uri}")
 
 
-def _asset_fetch(asset: dict, dst_dir: str):
+def _asset_fetch(asset: dict, dst_dir: Path):
   uri = asset["source"]
   if uri.endswith(".git"):
-    ref = asset["ref"]
     subprocess.run(
-      ["git", "clone", uri, dst_dir, "--depth", "1", "--revision", ref],
+      ["git", "clone", uri, str(dst_dir), "--depth", "1", "--revision", asset["ref"]],
       check=True,
     )
   else:
@@ -59,18 +56,18 @@ def _asset_fetch(asset: dict, dst_dir: str):
 
 
 def _main(argv: Sequence[str]):
-  script_dir = os.path.dirname(os.path.abspath(__file__))
+  script_dir = Path(__file__).resolve().parent
+  asset_base = Path(_ASSET_BASE.value)
 
   # Find all directories in benchmarks/
-  for item in os.listdir(script_dir):
-    item_path = os.path.join(script_dir, item)
-    if not os.path.isdir(item_path) or not os.path.exists(os.path.join(item_path, "__init__.py")):
+  for item_path in sorted(script_dir.iterdir()):
+    if not item_path.is_dir() or not (item_path / "__init__.py").exists():
       continue
-    module = importlib.import_module(item)
+    module = importlib.import_module(item_path.name)
 
     for asset in getattr(module, "ASSETS", []):
-      asset_dir = os.path.join(_ASSET_BASE.value, _asset_dir(asset))
-      if not os.path.exists(asset_dir):
+      asset_dir = asset_base / _asset_dir(asset)
+      if not asset_dir.exists():
         _asset_fetch(asset, asset_dir)
 
     for bm in getattr(module, "BENCHMARKS", []):
@@ -80,27 +77,40 @@ def _main(argv: Sequence[str]):
       if _FILTER.value and not re.search(_FILTER.value, name):
         continue
 
-      benchmark_dir = os.path.join(_ASSET_BASE.value, name)
-      if os.path.exists(benchmark_dir):
+      benchmark_dir = asset_base / name
+      if benchmark_dir.exists():
         shutil.rmtree(benchmark_dir)
-      os.makedirs(benchmark_dir)
+      benchmark_dir.mkdir(parents=True)
 
       for asset_spec in bm.get("assets", []):
         asset, src_subpath, dst_subpath = (asset_spec + ("",))[:3]
-        src_path = os.path.join(_ASSET_BASE.value, _asset_dir(asset), src_subpath)
-        dst_path = os.path.join(benchmark_dir, dst_subpath)
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+        src_root = asset_base / _asset_dir(asset)
+        if "*" in src_subpath:
+          # glob: copy each match into dst using the *-matched segment as subdir
+          # e.g. "ycb/*/google_64k" → star at index 1 of 3 parts → offset -2
+          src_parts = Path(src_subpath).parts
+          offset = src_parts.index("*") - len(src_parts)
+          for src_path in sorted(src_root.glob(src_subpath)):
+            if not src_path.is_dir():
+              continue
+            segment = src_path.parts[offset]
+            dst_path = benchmark_dir / dst_subpath / segment
+            dst_path.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+        else:
+          dst_path = benchmark_dir / dst_subpath
+          dst_path.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copytree(src_root / src_subpath, dst_path, dirs_exist_ok=True)
 
       # copy in benchmark files
       shutil.copytree(item_path, benchmark_dir, dirs_exist_ok=True)
 
-      xml_path = os.path.join(benchmark_dir, bm["mjcf"])
+      xml_path = benchmark_dir / bm["mjcf"]
 
       # Build command for testspeed
       cmd = [
         "mjwarp-testspeed",
-        xml_path,
+        str(xml_path),
         f"--nworld={bm['nworld']}",
         f"--nstep={nstep}",
         f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}",
@@ -110,9 +120,11 @@ def _main(argv: Sequence[str]):
         "--measure_solver=true",
         "--measure_alloc=true",
       ]
-      for field in ("nconmax", "njmax", "replay"):
+      for field in ("nconmax", "njmax"):
         if field in bm:
           cmd.append(f"--{field}={bm[field]}")
+      if "replay" in bm:
+        cmd.append(f"--replay={benchmark_dir / bm['replay']}")
 
       # Run testspeed
       result = subprocess.run(cmd, capture_output=True, text=True)

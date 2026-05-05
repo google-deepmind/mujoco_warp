@@ -45,6 +45,8 @@ _OUTPUT = flags.DEFINE_string("output", None, "output video file path", required
 _FPS = flags.DEFINE_integer("fps", 30, "frames per second for the video")
 _QUALITY = flags.DEFINE_integer("quality", 70, "quality setting for webp/gif (0-100)")
 _CAM_DISTANCE = flags.DEFINE_float("cam_distance", 1.5, "camera distance coefficient (multiplier for model extent)")
+_CAM_LOOKAT_Z = flags.DEFINE_float("cam_lookat_z", None, "camera lookat z value (absolute); default: mjm.stat.center[2]")
+_CAM_AZIMUTH_SPEED = flags.DEFINE_float("cam_azimuth_speed", 0.05, "camera azimuth orbit speed (degrees per step)")
 
 
 def _main(argv: Sequence[str]):
@@ -69,6 +71,8 @@ def _main(argv: Sequence[str]):
   cam = mujoco.MjvCamera()
   cam.type = mujoco.mjtCamera.mjCAMERA_FREE
   cam.lookat[:] = mjm.stat.center
+  if _CAM_LOOKAT_Z.value is not None:
+    cam.lookat[2] = _CAM_LOOKAT_Z.value
   cam.distance = mjm.stat.extent * _CAM_DISTANCE.value
   cam.elevation = -20
   mjd = mujoco.MjData(mjm)
@@ -82,7 +86,7 @@ def _main(argv: Sequence[str]):
     mjd.qvel[:] = d.qvel.numpy()[0]
     mujoco.mj_forward(mjm, mjd)
     # symmetric orbit
-    cam.azimuth = 90 + (step - cli.NSTEP.value / 2) * 0.05
+    cam.azimuth = 90 + (step - cli.NSTEP.value / 2) * _CAM_AZIMUTH_SPEED.value
     renderer.update_scene(mjd, camera=cam)
     frames.append(renderer.render())
 
