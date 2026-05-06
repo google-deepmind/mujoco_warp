@@ -197,8 +197,7 @@ def _qderiv_actuator_passive_actuation_dense(
 @wp.kernel
 def _qderiv_actuator_passive_actuation_sparse(
   # Model:
-  qM_fullm_rownnz: wp.array[int],
-  qM_fullm_rowadr: wp.array[int],
+  qM_fullm_elemid: wp.array2d[int],
   # Data in:
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
@@ -206,7 +205,6 @@ def _qderiv_actuator_passive_actuation_sparse(
   actuator_moment_in: wp.array2d[float],
   # In:
   vel_in: wp.array2d[float],
-  qMj: wp.array[int],
   # Out:
   qDeriv_out: wp.array3d[float],
 ):
@@ -233,23 +231,15 @@ def _qderiv_actuator_passive_actuation_sparse(
         continue
       dofj = moment_colind_in[worldid, rowadrj]
 
-      contrib = moment_i * moment_j * vel
-
-      # Search the corresponding elemid in qM_fullm. Use the chain-aware row
-      # offsets (qM_fullm_rownnz / qM_fullm_rowadr) that match qMj's layout
-      # rather than the compact (M_rownnz, M_rowadr); the two diverge whenever
-      # a joint with diagonal-only compact storage (e.g. free joint) precedes
-      # actuated dofs in qvel order.
-      # TODO: This could be precalculated for improved performance
-      row = dofi
-      col = dofj
-      row_startk = qM_fullm_rowadr[row] - 1
-      row_nnz = qM_fullm_rownnz[row]
-      for k in range(row_nnz):
-        row_startk += 1
-        if qMj[row_startk] == col:
-          wp.atomic_add(qDeriv_out[worldid, 0], row_startk, contrib)
-          break
+      # qM_fullm_elemid is the chain-aware (row, col) -> elemid map matching
+      # qM_fullm_i / qM_fullm_j; -1 means col is not a chain ancestor of row.
+      # The compact (M_rownnz, M_rowadr) layout cannot be used here: it diverges
+      # from qM_fullm whenever a joint with diagonal-only compact storage
+      # (e.g. free joint) precedes actuated dofs in qvel order.
+      elemid = qM_fullm_elemid[dofi, dofj]
+      if elemid >= 0:
+        contrib = moment_i * moment_j * vel
+        wp.atomic_add(qDeriv_out[worldid, 0], elemid, contrib)
 
 
 @wp.kernel
@@ -697,14 +687,12 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           _qderiv_actuator_passive_actuation_sparse,
           dim=(d.nworld, m.nu),
           inputs=[
-            m.qM_fullm_rownnz,
-            m.qM_fullm_rowadr,
+            m.qM_fullm_elemid,
             d.moment_rownnz,
             d.moment_rowadr,
             d.moment_colind,
             d.actuator_moment,
             vel,
-            qMj,
           ],
           outputs=[out],
         )
