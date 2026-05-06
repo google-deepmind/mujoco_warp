@@ -415,6 +415,65 @@ class DerivativeTest(parameterized.TestCase):
     self.assertFalse(np.any(np.isnan(mjw_out)))
     _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse tendon coupled)")
 
+  def test_smooth_vel_sparse_free_joint_precedes_actuator(self):
+    """Sparse qDeriv uses chain-aware row offsets when indexing qM_fullm.
+
+    A free joint's internal block is stored diagonal-only in the compact
+    (M_rownnz, M_rowadr) layout but fully chained (1+2+...+n entries per
+    internal dof) in qM_fullm_i / qM_fullm_j. For any actuated dof that
+    follows the free joint in qvel order, indexing qM_fullm with the compact
+    offsets lands in slots that belong to the free-joint block, the actuator
+    contribution to qDeriv is silently dropped, and the implicit step loses
+    damping for the actuated dof.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option integrator="implicitfast">
+        <flag gravity="disable"/>
+      </option>
+      <worldbody>
+        <body name="floater">
+          <joint type="free"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+        <body pos="1 0 0">
+          <joint name="hinge0" type="hinge" axis="0 1 0"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <position joint="hinge0" kp="10" kv="1"/>
+      </actuator>
+      <keyframe>
+        <key qpos="0 0 0 1 0 0 0 0" qvel="0 0 0 0 0 0 1" ctrl="0.1"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+    )
+    self.assertTrue(m.is_sparse, "Model should use sparse path")
+
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+      mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+    mj_qM = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
+    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse, free joint precedes actuated dof)")
+
   def test_actearly_derivative(self):
     """Implicit derivatives should use next activation when actearly is set."""
     mjm, mjd, m, d = test_data.fixture(

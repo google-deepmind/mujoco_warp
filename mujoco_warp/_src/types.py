@@ -1247,6 +1247,8 @@ class Model:
     qLD_level_offsets: tuple of start offsets for each level
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
+    qM_fullm_rownnz: number of qM_fullm entries per row (chain-aware)
+    qM_fullm_rowadr: start offset into qM_fullm_i/qM_fullm_j per row
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     qM_mulm_rowadr: sparse matmul row pointers
@@ -1642,6 +1644,8 @@ class Model:
   qLD_level_offsets: wp.array[int]
   qM_fullm_i: wp.array[int]
   qM_fullm_j: wp.array[int]
+  qM_fullm_rownnz: wp.array[int]  # chain-aware nnz per row, matching qM_fullm_i/j layout
+  qM_fullm_rowadr: wp.array[int]  # chain-aware row start offset into qM_fullm_i/j (cumsum of qM_fullm_rownnz)
   qD_fullm_i: wp.array[int]  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: wp.array[int]  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
