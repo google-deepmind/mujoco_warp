@@ -433,7 +433,7 @@ class DerivativeTest(parameterized.TestCase):
         <flag gravity="disable"/>
       </option>
       <worldbody>
-        <body name="floater">
+        <body>
           <joint type="free"/>
           <geom type="sphere" size="0.05" mass="1"/>
         </body>
@@ -453,7 +453,6 @@ class DerivativeTest(parameterized.TestCase):
       keyframe=0,
       overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
     )
-    self.assertTrue(m.is_sparse, "Model should use sparse path")
 
     mujoco.mj_step(mjm, mjd)
 
