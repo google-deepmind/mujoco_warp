@@ -291,6 +291,113 @@ class RenderTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(warp_seg, mj_seg)
 
+  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
+  def test_backface_cull_disabled_keeps_enclosure(self, geom_type: str, size: str):
+    """When `enable_backface_culling=False`, the enclosure must reappear.
+
+    This is the inverse of test_backface_cull_camera_inside_primitive: it
+    confirms the option actually toggles renderer behavior. With cull off,
+    rays exit through the enclosing geom's far wall and that geom shows up
+    in segmentation.
+    """
+    xml = self._BACKFACE_CULL_SCENE.format(geom_type=geom_type, size=size)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=True,
+      enable_backface_culling=False,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    enclosure_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "enclosure")
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    hit_ids = seg[..., 0][geom_mask]
+
+    self.assertTrue(
+      np.any(hit_ids == enclosure_id),
+      f"with cull disabled, enclosing {geom_type} should appear in segmentation",
+    )
+
+  # Mesh-encloser scene: a unit-extent tetrahedron centered on the origin, and
+  # a marker box at +Y. The mesh path's cull lives in ray_mesh_with_bvh and is
+  # gated by the same `enable_backface_culling` option as the primitive paths.
+  _BACKFACE_CULL_MESH_SCENE = """
+<mujoco>
+  <visual>
+    <map znear="0.001" />
+  </visual>
+  <asset>
+    <mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" />
+  </asset>
+  <worldbody>
+    <camera name="cam" xyaxes="1 0 0 0 0 1" />
+    <geom name="enclosure" type="mesh" mesh="tetra" />
+    <geom name="marker" type="box" size="0.5 0.5 0.5" pos="0 5 0" />
+  </worldbody>
+</mujoco>
+"""
+
+  def test_backface_cull_mesh_camera_inside(self):
+    """Camera inside a convex mesh sees through it when the cull is on."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._BACKFACE_CULL_MESH_SCENE, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=True,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    enclosure_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "enclosure")
+    marker_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "marker")
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    hit_ids = seg[..., 0][geom_mask]
+
+    self.assertFalse(
+      np.any(hit_ids == enclosure_id),
+      "enclosing mesh should be backface-culled but appeared in segmentation",
+    )
+    self.assertTrue(
+      np.any(hit_ids == marker_id),
+      "camera inside mesh should see through to the marker box",
+    )
+
+  def test_backface_cull_disabled_keeps_mesh_enclosure(self):
+    """With `enable_backface_culling=False`, the mesh enclosure must reappear.
+
+    Confirms the option also gates ray_mesh_with_bvh's local-space cull, not
+    just the renderer-level trailing cull on primitives.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=self._BACKFACE_CULL_MESH_SCENE, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=True,
+      enable_backface_culling=False,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    enclosure_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "enclosure")
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    hit_ids = seg[..., 0][geom_mask]
+
+    self.assertTrue(
+      np.any(hit_ids == enclosure_id),
+      "with cull disabled, enclosing mesh should appear in segmentation",
+    )
+
 
 if __name__ == "__main__":
   wp.init()

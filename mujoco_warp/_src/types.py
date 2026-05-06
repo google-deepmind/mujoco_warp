@@ -1982,6 +1982,11 @@ class RenderContext:
     render_skybox: whether to shade missed rays with the MuJoCo skybox texture
     skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
     skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    enable_backface_culling: drop primitive ray hits whose normal faces away
+      from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
+      mesh-ray rule. When False, the renderer reports inner-surface hits, which
+      is faster but causes a camera placed inside a geom to render that geom's
+      back wall.
   """
 
   nrender: int
@@ -2034,3 +2039,4 @@ class RenderContext:
   render_seg: array("ncam", bool)
   znear: float
   total_rays: int
+  enable_backface_culling: bool

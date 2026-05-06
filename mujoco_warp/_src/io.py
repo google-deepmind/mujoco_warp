@@ -2688,6 +2688,7 @@ def create_render_context(
   flex_render_smooth: bool = True,
   use_precomputed_rays: bool = True,
   render_skybox: bool = False,
+  enable_backface_culling: bool = True,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -2710,6 +2711,10 @@ def create_render_context(
                           When using domain randomization for camera intrinsics, set to False.
     render_skybox: Whether to shade missed rays with the MuJoCo skybox texture.
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
+    enable_backface_culling: Drop primitive-ray hits whose normal faces away from
+                             the ray (ray origin inside the geom). Matches MuJoCo's
+                             mesh-ray rule. Default True. Disable for a small
+                             performance gain when no camera is ever inside a geom.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -2941,6 +2946,7 @@ def create_render_context(
     render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
     total_rays=int(total),
+    enable_backface_culling=enable_backface_culling,
   )
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)
