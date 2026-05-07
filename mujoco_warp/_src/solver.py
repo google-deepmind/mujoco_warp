@@ -25,6 +25,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 
@@ -882,6 +883,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
+@cache_kernel
 def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool, is_sparse: bool):
   """Factory for iterative linesearch kernel.
 
@@ -1408,6 +1410,7 @@ def linesearch_zero_jv(
   ctx_jv_out[worldid, efcid] = 0.0
 
 
+@cache_kernel
 def linesearch_jv_fused(is_sparse: bool, nv: int, dofs_per_thread: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1468,6 +1471,7 @@ def linesearch_jv_fused(is_sparse: bool, nv: int, dofs_per_thread: int):
   return kernel
 
 
+@cache_kernel
 def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1715,6 +1719,7 @@ def solve_init_efc(
   ctx_search_dot_out[worldid] = 0.0
 
 
+@cache_kernel
 def solve_init_jaref(is_sparse: bool, nv: int, dofs_per_thread: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1797,6 +1802,7 @@ def update_constraint_init_cost(
   ctx_cost_out[worldid] = 0.0
 
 
+@cache_kernel
 def update_constraint_efc(track_changes: bool):
   TRACK_CHANGES = track_changes
 
@@ -2004,6 +2010,7 @@ def update_constraint_init_qfrc_constraint_dense(
   qfrc_constraint_out[worldid, dofid] = sum_qfrc
 
 
+@cache_kernel
 def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -2287,6 +2294,7 @@ def active_check(tid: int, threshold: int) -> float:
     return 1.0
 
 
+@cache_kernel
 def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
   TILE_SIZE = tile_size
 
@@ -2356,6 +2364,7 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
   return kernel
 
 
+@cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
   if njmax < tile_size:
     tile_size = njmax
@@ -2719,6 +2728,7 @@ def update_gradient_JTCJ_dense(
     ctx_h_out[worldid, dof1id, dof2id] += h
 
 
+@cache_kernel
 def update_gradient_cholesky(tile_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -2744,6 +2754,7 @@ def update_gradient_cholesky(tile_size: int):
   return kernel
 
 
+@cache_kernel
 def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(

@@ -45,6 +45,7 @@ from mujoco_warp._src.types import vec8i
 from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import inside_geom
 from mujoco_warp._src.util_misc import poly_potential
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -463,6 +464,8 @@ def _sensor_pos(
   body_geomnum: wp.array[int],
   body_geomadr: wp.array[int],
   body_iquat: wp.array2d[wp.quat],
+  body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
   jnt_qposadr: wp.array[int],
   geom_type: wp.array[int],
   geom_bodyid: wp.array[int],
@@ -683,7 +686,18 @@ def _sensor_pos(
     if objtype == ObjType.XBODY:
       xpos = xpos_in[worldid, objid]
     elif objtype == ObjType.BODY:
-      xpos = xipos_in[worldid, objid]
+      # for massless bodies with positive subtree mass (e.g., flex parents),
+      # xipos is the static body frame origin; use subtree_com instead
+      if objid > 0:
+        if (
+          body_mass[worldid % body_mass.shape[0], objid] < MJ_MINVAL
+          and body_subtreemass[worldid % body_subtreemass.shape[0], objid] >= MJ_MINVAL
+        ):
+          xpos = subtree_com_in[worldid, objid]
+        else:
+          xpos = xipos_in[worldid, objid]
+      else:
+        xpos = xipos_in[worldid, objid]
     elif objtype == ObjType.GEOM:
       xpos = geom_xpos_in[worldid, objid]
     elif objtype == ObjType.SITE:
@@ -829,6 +843,8 @@ def sensor_pos(m: Model, d: Data):
       m.body_geomnum,
       m.body_geomadr,
       m.body_iquat,
+      m.body_mass,
+      m.body_subtreemass,
       m.jnt_qposadr,
       m.geom_type,
       m.geom_bodyid,
@@ -2406,6 +2422,7 @@ def _contact_match(
   sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
 
+@cache_kernel
 def _contact_sort(maxmatch: int):
   @wp.kernel(module="unique", enable_backward=False)
   def contact_sort(
@@ -2901,6 +2918,7 @@ def energy_pos(m: Model, d: Data):
     # TODO(team): flex
 
 
+@cache_kernel
 def _energy_vel_kinetic(nv: int):
   @wp.kernel(module="unique", enable_backward=False)
   def energy_vel_kinetic(

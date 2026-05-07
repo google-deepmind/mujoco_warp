@@ -863,6 +863,32 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_insidesite_flex_body(self):
+    """Test insidesite uses subtree_com for massless flex parent bodies."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <site name="sensor_site" type="sphere" size="2" pos="0 0 .5"/>
+        <body name="flex_parent" pos="0 0 .5">
+          <flexcomp type="grid" count="3 3 1" spacing=".1 .1 .1"
+                    radius=".0" name="softbody" dim="2" mass="1">
+            <contact condim="3" selfcollide="none"/>
+          </flexcomp>
+        </body>
+      </worldbody>
+      <sensor>
+        <insidesite site="sensor_site" objtype="body" objname="flex_parent"/>
+      </sensor>
+    </mujoco>
+    """,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   def test_sensor_callback(self):
     """Tests sensor_callback populates user sensor data."""
     xml = """
