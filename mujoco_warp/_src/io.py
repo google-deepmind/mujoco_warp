@@ -2495,27 +2495,31 @@ def set_const(m: types.Model, d: types.Data):
 
   Model fields that can be modified safely with set_const:
 
-    Field                            | Notes
-    ---------------------------------|----------------------------------------------
-    qpos0, qpos_spring               |
-    body_mass, body_inertia,         | Mass and inertia are usually scaled together
-    body_ipos, body_iquat            | since inertia is sum(m * r^2).
-    body_pos, body_quat              | Unsafe for static bodies (invalidates BVH).
-    body_gravcomp                    | If changing from 0 to >0 bodies, required.
-    dof_armature                     |
-    eq_data                          | For connect/weld, offsets computed if not set.
-    hfield_size                      |
-    tendon_stiffness, tendon_damping | Only if changing from/to zero.
-    actuator_gainprm, actuator_biasprm | For position actuators with dampratio.
+  ==================================  ==============================================
+  Field                               Notes
+  ==================================  ==============================================
+  qpos0, qpos_spring
+  body_mass, body_inertia,            Mass and inertia are usually scaled together
+  body_ipos, body_iquat               since inertia is sum(m * r^2).
+  body_pos, body_quat                 Unsafe for static bodies (invalidates BVH).
+  body_gravcomp                       If changing from 0 to >0 bodies, required.
+  dof_armature
+  eq_data                             For connect/weld, offsets computed if not set.
+  hfield_size
+  tendon_stiffness, tendon_damping    Only if changing from/to zero.
+  actuator_gainprm, actuator_biasprm  For position actuators with dampratio.
+  ==================================  ==============================================
 
   For selective updates, use the sub-functions directly based on what changed:
 
-    Modified Field  | Call
-    ----------------|------------------
-    body_mass       | set_const
-    body_gravcomp   | set_const_fixed
-    body_inertia    | set_const_0
-    qpos0           | set_const_0
+  ==============  ===============
+  Modified Field  Call
+  ==============  ===============
+  body_mass       set_const
+  body_gravcomp   set_const_fixed
+  body_inertia    set_const_0
+  qpos0           set_const_0
+  ==============  ===============
 
   Computes:
     - Fixed quantities (via set_const_fixed):
