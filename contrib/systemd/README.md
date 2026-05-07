@@ -1,7 +1,8 @@
 # Systemd Setup for Nightly Benchmarks
 
 This directory contains systemd user service and timer files for running nightly
-MuJoCo Warp benchmarks.
+MuJoCo Warp benchmark sweeps.  By default, the nightly runs a forward sweep to HEAD,
+and pushes the results to the gh-pages branch.  See sweep.py for more details.
 
 ## Setup
 
@@ -11,8 +12,8 @@ mkdir -p ~/.config/systemd/user
 mkdir -p ~/.local/bin
 
 # 2. Copy the nightly script and make it executable
-cp ../../benchmarks/nightly.sh ~/.local/bin/mjwarp-nightly
-chmod +x ~/.local/bin/mjwarp-nightly
+cp ../../benchmarks/sweep.py ~/.local/bin/mjwarp-sweep
+chmod +x ~/.local/bin/mjwarp-sweep
 
 # 3. Copy the service and timer files
 cp mjwarp-nightly.service ~/.config/systemd/user/
@@ -66,10 +67,10 @@ Edit `~/.config/systemd/user/mjwarp-nightly.timer` to change the schedule:
 
 ## Updating
 
-When updating to a newer version of MuJoCo Warp, copy the latest nightly script:
+When updating to a newer version of MuJoCo Warp, copy the latest sweep script:
 
 ```bash
-cp /path/to/mujoco_warp/benchmarks/nightly.sh ~/.local/bin/mjwarp-nightly
+cp /path/to/mujoco_warp/benchmarks/sweep.py ~/.local/bin/mjwarp-sweep
 ```
 
 ## Acknowledgements

@@ -1,4 +1,6 @@
-# Copyright 2025 The Newton Developers
+#!/usr/bin/python3
+
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,21 +21,46 @@ Usage: python benchmarks/run.py [flags]
 
 Example:
   python benchmarks/run.py -f humanoid
+  python benchmarks/run.py --commit abc123f
+  python benchmarks/run.py --local
 """
 
+import argparse
 import importlib
+import logging
+import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
-from typing import Sequence
 
-from absl import app
-from absl import flags
+REPO_URL = "git@github.com:google-deepmind/mujoco_warp.git"
 
-_FILTER = flags.DEFINE_string("filter", "", "filter benchmarks by name (regex)", short_name="f")
-_ASSET_BASE = flags.DEFINE_string("assets", "/tmp/benchmark_assets", "directory to assemble benchmark assets")
-_CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", True, "clear warp caches (kernel, LTO, CUDA compute)")
+logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
+log = logging.getLogger(__name__)
+
+
+def _git(*args, cwd: Path | None = None):
+  """Run a git command, returning CompletedProcess."""
+  env = os.environ.copy()
+  env["TZ"] = "UTC"
+  ssh_key = Path.home() / ".ssh" / "id_ed25519_mujoco_warp_nightly"
+  if ssh_key.exists():
+    env["GIT_SSH_COMMAND"] = f'ssh -i "{ssh_key}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
+  log.info("Command: git %s", " ".join(args))
+  return subprocess.run(("git",) + args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
+
+
+def _uv_run(*args, cwd: Path | None = None):
+  """Run a uv command, returning CompletedProcess."""
+  env = os.environ.copy()
+  # bypass corporate index settings that may interfere with uv
+  env["UV_DEFAULT_INDEX"] = "https://pypi.org/simple"
+  env["PIP_INDEX_URL"] = "https://pypi.org/simple"
+  log.info("Command: uv run %s", " ".join(args))
+  return subprocess.run(("uv", "run") + args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
 
 
 def _asset_dir(asset: dict) -> Path:
@@ -47,23 +74,52 @@ def _asset_dir(asset: dict) -> Path:
 def _asset_fetch(asset: dict, dst_dir: Path):
   uri = asset["source"]
   if uri.endswith(".git"):
-    subprocess.run(
-      ["git", "clone", uri, str(dst_dir), "--depth", "1", "--revision", asset["ref"]],
-      check=True,
-    )
+    _git("clone", uri, str(dst_dir), "--depth", "1", "--revision", asset["ref"])
   else:
     raise ValueError(f"Unsupported asset uri: {uri}")
 
 
-def _main(argv: Sequence[str]):
-  script_dir = Path(__file__).resolve().parent
-  asset_base = Path(_ASSET_BASE.value)
+def main():
+  parser = argparse.ArgumentParser(description="Run MuJoCo Warp benchmarks.")
+  parser.add_argument("-f", "--filter", default="", help="filter benchmarks by name (regex)")
+  parser.add_argument("--assets", default="/tmp/benchmark_assets", help="directory to assemble benchmark assets")
+  parser.add_argument(
+    "--clear_warp_cache",
+    default=True,
+    type=lambda v: v.lower() not in ("false", "0"),
+    help="clear warp caches (kernel, LTO, CUDA compute)",
+  )
+  parser.add_argument("--commit", default=None, help="checkout a specific commit SHA (implies clone)")
+  parser.add_argument("--local", action="store_true", help="run from local checkout instead of cloning")
+  args = parser.parse_args()
 
-  # Find all directories in benchmarks/
-  for item_path in sorted(script_dir.iterdir()):
+  asset_base = Path(args.assets)
+
+  if args.local:
+    work_dir = Path(__file__).resolve().parent.parent
+    log.info("Running from local checkout: %s", work_dir)
+  else:
+    work_dir = Path(tempfile.mkdtemp(prefix="mujoco_warp-run-"))
+    log.info("Cloning mujoco_warp to %s...", work_dir)
+    _git("clone", REPO_URL, str(work_dir))
+    if args.commit:
+      _git("checkout", args.commit, cwd=work_dir)
+      log.info("Checked out commit %s", args.commit)
+
+  benchmarks_dir = work_dir / "benchmarks"
+  if benchmarks_dir.as_posix() not in sys.path:
+    sys.path.insert(0, benchmarks_dir.as_posix())
+
+  # discover and run benchmarks
+  for item_path in sorted(benchmarks_dir.iterdir()):
     if not item_path.is_dir() or not (item_path / "__init__.py").exists():
       continue
-    module = importlib.import_module(item_path.name)
+
+    name = item_path.name
+    if name in sys.modules:
+      module = importlib.reload(sys.modules[name])
+    else:
+      module = importlib.import_module(name)
 
     for asset in getattr(module, "ASSETS", []):
       asset_dir = asset_base / _asset_dir(asset)
@@ -71,13 +127,12 @@ def _main(argv: Sequence[str]):
         _asset_fetch(asset, asset_dir)
 
     for bm in getattr(module, "BENCHMARKS", []):
-      name = bm["name"]
-      nstep = bm.get("nstep", 1000)
+      bm_name = bm["name"]
 
-      if _FILTER.value and not re.search(_FILTER.value, name):
+      if args.filter and not re.search(args.filter, bm_name):
         continue
 
-      benchmark_dir = asset_base / name
+      benchmark_dir = asset_base / bm_name
       if benchmark_dir.exists():
         shutil.rmtree(benchmark_dir)
       benchmark_dir.mkdir(parents=True)
@@ -86,8 +141,6 @@ def _main(argv: Sequence[str]):
         asset, src_subpath, dst_subpath = (asset_spec + ("",))[:3]
         src_root = asset_base / _asset_dir(asset)
         if "*" in src_subpath:
-          # glob: copy each match into dst using the *-matched segment as subdir
-          # e.g. "ycb/*/google_64k" → star at index 1 of 3 parts → offset -2
           src_parts = Path(src_subpath).parts
           offset = src_parts.index("*") - len(src_parts)
           for src_path in sorted(src_root.glob(src_subpath)):
@@ -112,8 +165,7 @@ def _main(argv: Sequence[str]):
         "mjwarp-testspeed",
         str(xml_path),
         f"--nworld={bm['nworld']}",
-        f"--nstep={nstep}",
-        f"--clear_warp_cache={_CLEAR_WARP_CACHE.value}",
+        f"--clear_warp_cache={args.clear_warp_cache}",
         "--format=short",
         "--event_trace=true",
         "--memory=true",
@@ -125,12 +177,14 @@ def _main(argv: Sequence[str]):
           cmd.append(f"--{field}={bm[field]}")
       if "replay" in bm:
         cmd.append(f"--replay={benchmark_dir / bm['replay']}")
+      if "nstep" in bm:
+        cmd.append(f"--nstep={bm['nstep']}")
 
-      # Run testspeed
-      result = subprocess.run(cmd, capture_output=True, text=True)
-      if result.returncode != 0:
-        print(f"Error running benchmark {name}:")
-        print(result.stderr)
+      # Run testspeed via uv in the work_dir
+      try:
+        result = _uv_run(*cmd, cwd=work_dir)
+      except subprocess.CalledProcessError as e:
+        log.error("Benchmark %s failed:\n%s", bm_name, e.stderr)
         continue
 
       # Parse output
@@ -141,8 +195,8 @@ def _main(argv: Sequence[str]):
         if len(parts) >= 2:
           key = parts[0]
           value = " ".join(parts[1:])
-          print(f"{name}.{key} {value}")
+          print(f"{bm_name}.{key} {value}")
 
 
 if __name__ == "__main__":
-  app.run(_main)
+  main()

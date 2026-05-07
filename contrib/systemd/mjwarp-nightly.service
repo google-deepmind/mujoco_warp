@@ -22,7 +22,7 @@ Environment="PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="HOME=%h"
 Environment="CUDA_DEVICE=0"
 
-ExecStart=%h/.local/bin/mjwarp-nightly
+ExecStart=%h/.local/bin/mjwarp-sweep forward
 
 # Logging
 StandardOutput=journal
