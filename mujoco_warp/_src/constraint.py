@@ -1904,7 +1904,7 @@ def _limit_tendon(
       efc_frictionloss_out,
     )
 
-
+@cache_kernel
 def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
@@ -2028,6 +2028,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
   return kernel
 
 
+@cache_kernel
 def _efc_contact_jac_sparse(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
@@ -2198,6 +2199,7 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
   return kernel
 
 
+@cache_kernel
 def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
@@ -2342,6 +2344,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
   return kernel
 
 
+@cache_kernel
 def _efc_contact_update(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
