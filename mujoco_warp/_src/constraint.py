@@ -1904,6 +1904,7 @@ def _limit_tendon(
       efc_frictionloss_out,
     )
 
+
 @cache_kernel
 def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
